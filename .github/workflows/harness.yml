@@ -50,13 +50,21 @@ jobs:
       - uses: ./.github/actions/setup-harness-leg
       - name: Run Rust client harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
+        # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
+        # --testNamePattern matched every one of these pairs, so it was redundant).
+        # assert-run-count pins the executed pair count so a title rename or a
+        # selector typo that runs fewer/zero payment tests fails loud.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 11
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: rust
@@ -84,7 +92,9 @@ jobs:
           MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic
           X402_HARNESS_CLIENTS: rust-x402,go-x402
           X402_HARNESS_SERVERS: go
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 12
 
   python:
     name: "Harness: Python"
@@ -97,15 +107,15 @@ jobs:
           python-version: "3.11"
           cache: pip
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-      - name: Install Python SDK
+      - name: Verify uv.lock is up to date
         working-directory: python
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv lock --check
+      - name: Install Python SDK (frozen)
+        working-directory: python
+        # Install from the committed uv.lock (not a floating `pip install -e`) so
+        # the harness Python SDK matches every other SDK gate's frozen install.
+        run: uv sync --frozen --extra dev
       - uses: ./.github/actions/setup-harness-leg
-      - name: Sync Python uv environment
-        working-directory: python
-        run: uv sync --extra dev
       - name: Run Python cross-SDK conformance vectors
         working-directory: harness
         env:
@@ -118,19 +128,25 @@ jobs:
           MPP_HARNESS_SCENARIOS: session-basic
           MPP_HARNESS_CLIENTS: python-session
           MPP_HARNESS_SERVERS: python
-        run: pnpm exec vitest run test/e2e.test.ts
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: python
-        run: pnpm exec vitest run test/e2e.test.ts
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 8
       - name: Focused Rust-to-Python harness
         working-directory: harness
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: python
-        run: pnpm exec vitest run test/e2e.test.ts
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 5
       - name: Focused python-x402 -> rust/python x402 servers
         working-directory: harness
         env:
@@ -140,7 +156,9 @@ jobs:
           MPP_HARNESS_SERVERS: rust-x402,python
           X402_HARNESS_CLIENTS: python-x402
           X402_HARNESS_SERVERS: rust-x402,python
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
 
   ruby:
     name: "Harness: Ruby PayKit server (dual protocol)"
@@ -162,7 +180,13 @@ jobs:
           MPP_HARNESS_INTENTS: charge,x402-exact
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000
+        # The ruby dual-protocol server is exercised via the "ruby" title filter
+        # (the matrix also enables the typescript / x402 servers this leg does not
+        # build). assert-run-count pins the ruby-server pair count so a rename of
+        # the pair title silently running zero ruby tests fails loud.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 17
 
   lua:
     name: "Harness: Lua focused matrix"
@@ -200,14 +224,18 @@ jobs:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: lua
           MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays lua server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
       - name: Rust-to-Lua focused matrix
         working-directory: harness
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: lua
           MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays lua server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
       - name: Run PayKit harness smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
@@ -216,7 +244,12 @@ jobs:
           MPP_HARNESS_INTENTS: charge,x402-exact
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "lua" --testTimeout 180000
+        # The lua dual-protocol server is exercised via the "lua" title filter
+        # (the matrix also enables the typescript / x402 servers this leg does not
+        # build); assert-run-count pins the lua-server pair count.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "lua" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 10
 
   php:
     name: "Harness: PHP"
@@ -233,14 +266,18 @@ jobs:
         run: composer install --no-interaction --no-progress
       - name: Run PHP server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: php
           MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
       - name: Run Rust client PHP server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: php
@@ -253,7 +290,12 @@ jobs:
           MPP_HARNESS_INTENTS: charge,x402-exact
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000
+        # The php server is exercised via the "php server" title filter (the
+        # matrix also enables the typescript / x402 servers this leg does not
+        # build); assert-run-count pins the php-server pair count.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 10
 
   swift:
     name: "Harness: Swift client to TypeScript + Rust servers"
@@ -281,13 +323,17 @@ jobs:
         env:
           MPP_HARNESS_CLIENTS: swift
           MPP_HARNESS_SERVERS: typescript
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays typescript server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
       - name: Run Swift client harness smoke against Rust server
         working-directory: harness
         env:
           MPP_HARNESS_CLIENTS: swift
           MPP_HARNESS_SERVERS: rust
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays rust server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 5
 
   swift-x402:
     name: "Harness: Swift x402 client to Rust x402 server"
@@ -314,7 +360,12 @@ jobs:
           MPP_HARNESS_SCENARIOS: x402-exact-basic
           X402_HARNESS_CLIENTS: swift-x402
           X402_HARNESS_SERVERS: rust-x402
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000
+        # The x402-exact matrix also enables the default php / go x402 servers
+        # this leg does not build, so the swift-x402 -> rust-x402 pair is selected
+        # by title; assert-run-count pins that single pair so a rename fails loud.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
 
   kotlin:
     name: "Harness: Kotlin client to TypeScript server"
@@ -343,7 +394,9 @@ jobs:
         run: gradle installDist --no-daemon
       - name: Run Kotlin client harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: kotlin
           MPP_HARNESS_SERVERS: typescript
@@ -373,7 +426,12 @@ jobs:
           MPP_HARNESS_INTENTS: x402-exact
           X402_HARNESS_CLIENTS: kotlin-x402
           X402_HARNESS_SERVERS: rust-x402
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000
+        # As with swift-x402: the x402-exact matrix also enables the default php /
+        # go x402 servers this leg does not build, so the kotlin-x402 -> rust-x402
+        # pair is selected by title; assert-run-count pins that single pair.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
 
   # Real on-chain settlement gate: forks mainnet (surfpool 1.4) and executes the
   # deployed payment-channels program, so a green run proves settlement actually
