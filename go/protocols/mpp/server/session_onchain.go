@@ -19,13 +19,93 @@ import (
 	"fmt"
 	"strings"
 
+	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
+
+// boundChannel holds the authoritative channel facts read from the on-chain
+// payment-channels Channel account.
+type boundChannel struct {
+	Deposit          uint64
+	Payer            string
+	AuthorizedSigner string
+	Payee            string
+	Mint             string
+}
+
+// fetchAndBindChannelAccount reads the on-chain payment-channels Channel account
+// and binds every economically-relevant field to it. Confirming that a
+// transaction signature succeeded proves nothing about the channel's deposit or
+// identity; the account state is authoritative. Mirrors the Rust process_open /
+// Python fetch_and_bind_channel_account paths and the x402 upto fetchChannel
+// bind. Rejects an account that is missing, owned by a different program, not
+// open, or mismatches the challenge (mint / payee / authorizedSigner).
+func fetchAndBindChannelAccount(
+	ctx context.Context,
+	rpcClient solanatx.RPCClient,
+	channelID solana.PublicKey,
+	expectedMint string,
+	expectedPayee string,
+	expectedAuthorizedSigner string,
+	programID *solana.PublicKey,
+) (boundChannel, error) {
+	program := paymentchannels.ProgramPubkey()
+	if programID != nil {
+		program = *programID
+	}
+	info, err := rpcClient.GetAccountInfoWithOpts(ctx, channelID, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	})
+	if err != nil {
+		return boundChannel{}, fmt.Errorf("channel %s account fetch failed: %w", channelID, err)
+	}
+	if info == nil || info.Value == nil || info.Value.Data == nil {
+		return boundChannel{}, fmt.Errorf("channel %s account not found on-chain", channelID)
+	}
+	if !info.Value.Owner.Equals(program) {
+		return boundChannel{}, fmt.Errorf(
+			"channel %s is not owned by the payment-channels program %s", channelID, program)
+	}
+	data := info.Value.Data.GetBinary()
+	if len(data) == 0 {
+		return boundChannel{}, fmt.Errorf("channel %s account data is empty", channelID)
+	}
+	channel := new(pcgen.Channel)
+	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
+		return boundChannel{}, fmt.Errorf("channel %s decode failed: %w", channelID, err)
+	}
+	if channel.Status != uint8(pcgen.ChannelStatus_Open) {
+		return boundChannel{}, fmt.Errorf(
+			"channel %s is not open on-chain (status %d)", channelID, channel.Status)
+	}
+	if channel.Mint.String() != expectedMint {
+		return boundChannel{}, fmt.Errorf(
+			"on-chain channel mint %s != expected mint %s", channel.Mint, expectedMint)
+	}
+	if channel.Payee.String() != expectedPayee {
+		return boundChannel{}, fmt.Errorf(
+			"on-chain channel payee %s != expected recipient %s", channel.Payee, expectedPayee)
+	}
+	if expectedAuthorizedSigner != "" && channel.AuthorizedSigner.String() != expectedAuthorizedSigner {
+		return boundChannel{}, fmt.Errorf(
+			"on-chain channel authorizedSigner %s != expected %s", channel.AuthorizedSigner, expectedAuthorizedSigner)
+	}
+	return boundChannel{
+		Deposit:          channel.Deposit,
+		Payer:            channel.Payer.String(),
+		AuthorizedSigner: channel.AuthorizedSigner.String(),
+		Payee:            channel.Payee.String(),
+		Mint:             channel.Mint.String(),
+	}, nil
+}
 
 // openInstructionDiscriminator is the payment-channel open instruction
 // discriminator (single-byte Anchor-numeric form, not the 8-byte sha256

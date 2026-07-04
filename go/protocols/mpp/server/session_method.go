@@ -25,6 +25,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
@@ -526,9 +527,13 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		}
 	case mode == intents.SessionModePush:
 		// No transaction in the payload: the client asserts a previously
-		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting; without one the channelId/deposit
-		// fields are trusted as-is.
+		// broadcast open. Confirming that some signature succeeded proves
+		// nothing about the channel, so with an RPC client the open signature is
+		// confirmed and the authoritative on-chain Channel account is read to
+		// bind the deposit / payer / channel identity — persisting the ON-CHAIN
+		// deposit, never the client's claim. Without an RPC client the fields
+		// are unverifiable; fail closed off localnet, matching the Rust/Python
+		// process_open bare-push path.
 		channelID = *payload.ChannelID
 		var err error
 		deposit, err = payload.DepositAmount()
@@ -539,6 +544,23 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
 				return "", err
 			}
+			channelPDA, err := solana.PublicKeyFromBase58(channelID)
+			if err != nil {
+				return "", fmt.Errorf("invalid channelId %q: %w", channelID, err)
+			}
+			bound, err := fetchAndBindChannelAccount(
+				ctx, s.rpc, channelPDA,
+				paycore.ResolveMint(s.currency, s.network),
+				s.recipient, payload.AuthorizedSigner, s.core.config.ProgramID,
+			)
+			if err != nil {
+				return "", err
+			}
+			deposit = bound.Deposit
+			channelPayer = bound.Payer
+		} else if s.network != "localnet" {
+			return "", fmt.Errorf(
+				"payment-channel push open requires an rpc client to bind the on-chain channel off localnet")
 		}
 	default:
 		// Pull mode without a channel transaction: trust the
@@ -654,9 +676,38 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 		return "", fmt.Errorf("channel %s close is pending; no further top-ups accepted", payload.ChannelID)
 	}
 	if s.rpc != nil {
+		// Confirming the signature succeeded proves nothing about the deposit —
+		// any confirmed signature would otherwise raise the channel to the
+		// client-asserted newDeposit. Confirm the signature, then read the
+		// authoritative on-chain Channel account and require its deposit to have
+		// actually reached newDeposit (not merely that a top_up instruction with
+		// the right delta was submitted, which a racing top-up could also
+		// satisfy). Mirrors the open bind and the Rust/Python process_topup.
 		if err := confirmTransactionSignature(ctx, s.rpc, payload.Signature, "topUp"); err != nil {
 			return "", err
 		}
+		channelPDA, err := solana.PublicKeyFromBase58(payload.ChannelID)
+		if err != nil {
+			return "", fmt.Errorf("invalid channelId %q: %w", payload.ChannelID, err)
+		}
+		bound, err := fetchAndBindChannelAccount(
+			ctx, s.rpc, channelPDA,
+			paycore.ResolveMint(s.currency, s.network),
+			s.recipient, existing.AuthorizedSigner, s.core.config.ProgramID,
+		)
+		if err != nil {
+			return "", err
+		}
+		if bound.Deposit != newDeposit {
+			return "", fmt.Errorf(
+				"on-chain channel deposit %d != asserted newDeposit %d", bound.Deposit, newDeposit)
+		}
+	} else if s.network != "localnet" {
+		// No RPC configured: the raised deposit cannot be bound to on-chain
+		// state. Fail closed on any real network; only localnet (unit/dev) may
+		// skip the bind, matching the open path and the Rust/Python process_topup.
+		return "", fmt.Errorf(
+			"payment-channel top-up requires an rpc client to bind the on-chain channel off localnet")
 	}
 	if _, err := s.core.ProcessTopUp(ctx, payload); err != nil {
 		return "", err

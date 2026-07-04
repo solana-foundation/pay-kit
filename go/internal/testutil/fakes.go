@@ -34,6 +34,7 @@ type FakeRPC struct {
 
 	Blockhash  solana.Hash
 	MintOwners map[string]solana.PublicKey
+	Accounts   map[string]*rpc.Account
 	Statuses   map[string]*rpc.SignatureStatusesResult
 	BySig      map[string]*solana.Transaction
 
@@ -51,17 +52,34 @@ func NewFakeRPC() *FakeRPC {
 	return &FakeRPC{
 		Blockhash:  blockhash,
 		MintOwners: map[string]solana.PublicKey{},
+		Accounts:   map[string]*rpc.Account{},
 		Statuses:   map[string]*rpc.SignatureStatusesResult{},
 		BySig:      map[string]*solana.Transaction{},
 	}
 }
 
-// GetAccountInfoWithOpts looks up the canned mint owner registered for
-// account; returns rpc.ErrNotFound when the account is unknown so the
-// SDK exercises the same not-found branch as a live RPC.
+// SetAccount registers a full account (owner + raw data) so callers can serve
+// decodable program accounts (e.g. a payment-channels Channel) for the
+// account-state binding paths, not just the owner-only mint lookups.
+func (f *FakeRPC) SetAccount(account solana.PublicKey, owner solana.PublicKey, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Accounts[account.String()] = &rpc.Account{
+		Owner: owner,
+		Data:  rpc.DataBytesOrJSONFromBytes(data),
+	}
+}
+
+// GetAccountInfoWithOpts serves a full account registered via SetAccount first
+// (owner + data), then falls back to the canned mint owner registered for the
+// account; returns rpc.ErrNotFound when the account is unknown so the SDK
+// exercises the same not-found branch as a live RPC.
 func (f *FakeRPC) GetAccountInfoWithOpts(_ context.Context, account solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if acct, ok := f.Accounts[account.String()]; ok {
+		return &rpc.GetAccountInfoResult{Value: acct}, nil
+	}
 	owner, ok := f.MintOwners[account.String()]
 	if !ok {
 		return nil, rpc.ErrNotFound
