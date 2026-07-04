@@ -225,23 +225,19 @@ class ExactVerifier:
         destination = ExactVerifier._account_at(account_keys, ix, 2)
         authority = ExactVerifier._account_at(account_keys, ix, 3)
 
-        # Rule 5: authority guard (no managed signer as authority/source/account).
+        # Rule 5: fee-payer/managed-signer fund-mover guard. A managed signer
+        # (the operator's fee payer) must never be the transfer authority, nor
+        # the funding source: not as its raw key, and not as its own
+        # associated token account for this mint. This is the complete rule -
+        # an appended instruction that merely references the fee-payer (e.g. a
+        # Lighthouse guard) is NOT a fund move and is accepted, matching the
+        # Rust reference and the Go/Ruby/PHP/Lua verifiers.
         for managed in managed_signers:
-            if managed in (authority, source):
+            if managed in (authority, source) or source == derive_ata(managed, mint, program):
                 raise InvalidProofError(
                     "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
                     code="invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
                 )
-        for idx in accounts:
-            key = account_keys[idx] if 0 <= idx < len(account_keys) else None
-            if key is None:
-                continue
-            for managed in managed_signers:
-                if managed == key:
-                    raise InvalidProofError(
-                        "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
-                        code="invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
-                    )
 
         # Rule 6: mint match (offer carries the resolved on-chain mint on `asset`).
         expected_mint = ExactVerifier._b58_field(requirement, "asset")

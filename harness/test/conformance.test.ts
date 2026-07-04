@@ -263,6 +263,22 @@ function assertEnvelopeShape(
 
 const vectors = loadVectors();
 
+// Every canonical x402 exact reject code the verify-x402-transaction vectors
+// must exercise. If a rule ships without a binding vector, the fund-safety
+// guard can silently drift across the six hand-rolled SDK verifiers; this
+// list forces at least one cross-SDK vector per reject family.
+const REQUIRED_X402_EXACT_REJECT_CODES = [
+  "invalid_exact_svm_payload_mint_mismatch",
+  "invalid_exact_svm_payload_amount_mismatch",
+  "invalid_exact_svm_payload_recipient_mismatch",
+  "invalid_exact_svm_payload_no_transfer_instruction",
+  "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+  "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+  "invalid_exact_svm_payload_memo_count",
+  "invalid_exact_svm_payload_memo_mismatch",
+  "invalid_exact_svm_payload_unknown_fourth_instruction",
+] as const;
+
 describe("cross-SDK conformance vectors", () => {
   it("loaded at least the seeded vector classes", () => {
     expect(vectors.length).toBeGreaterThanOrEqual(10);
@@ -272,8 +288,72 @@ describe("cross-SDK conformance vectors", () => {
     expect(modes.has("canonical-bytes")).toBe(true);
   });
 
+  it("x402-exact reject vectors cover every canonical reject code", () => {
+    const exactVectors = vectors.filter(
+      (v) => v.mode === "verify-x402-transaction",
+    );
+    // Both the drain vector (fee-payer-as-source) and at least one accept
+    // vector (the Lighthouse-guard uniform-verdict case) must be present.
+    expect(
+      exactVectors.some((v) => v.id.includes("fee-payer-as-source")),
+      "missing the fee-payer-as-source drain vector",
+    ).toBe(true);
+    expect(
+      exactVectors.some(
+        (v) => v.expect.outcome === "accept" && v.id.includes("lighthouse"),
+      ),
+      "missing the Lighthouse-guard-referencing-fee-payer accept vector",
+    ).toBe(true);
+    const covered = new Set(
+      exactVectors
+        .filter((v) => v.expect.outcome === "reject")
+        .map((v) => v.expect.x402ExactRejectCode),
+    );
+    for (const code of REQUIRED_X402_EXACT_REJECT_CODES) {
+      expect(covered.has(code), `no x402-exact reject vector for ${code}`).toBe(
+        true,
+      );
+    }
+  });
+
   for (const { language, command, cwd: runnerCwd, intents } of RUNNERS) {
     describe(`${language} reference runner`, () => {
+      // The six SDKs that ship a server-side exact fund-safety verifier MUST
+      // execute the verify-x402-transaction vectors. Guard against a silent
+      // skip: if one of these runners returns unsupported-mode for EVERY exact
+      // vector, its per-vector assertions all skip and the fund-safety binding
+      // is not exercised for that SDK at all. This test fails loudly in that
+      // case. Client-only SDKs (e.g. swift) have no server verifier and are
+      // excluded — they legitimately report unsupported-mode.
+      const EXACT_VERIFIER_LANGUAGES = new Set([
+        "typescript",
+        "go",
+        "python",
+        "ruby",
+        "php",
+        "lua",
+      ]);
+      const exactVectors = vectors.filter(
+        (v) => v.mode === "verify-x402-transaction",
+      );
+      if (EXACT_VERIFIER_LANGUAGES.has(language) && exactVectors.length > 0) {
+        it("executes a nonzero number of exact fund-safety vectors", async () => {
+          let executed = 0;
+          for (const vector of exactVectors) {
+            const result = await runVector(command, vector, runnerCwd);
+            const skipped =
+              (result.outcome as string) === "unsupported-mode" ||
+              (result.outcome === "reject" &&
+                (result.error ?? "").startsWith("unsupported-mode"));
+            if (!skipped) executed += 1;
+          }
+          expect(
+            executed,
+            `${language} skipped every verify-x402-transaction vector — the exact fund-safety verifier is not wired into its runner`,
+          ).toBeGreaterThan(0);
+        }, 60_000);
+      }
+
       for (const vector of vectors) {
         it(`${vector.id} (${vector.mode}) -> ${vector.expect.outcome}`, async (ctx) => {
           // Skip vectors for an intent this runner does not declare. Lets a new
@@ -323,6 +403,16 @@ describe("cross-SDK conformance vectors", () => {
                 result.rejectCode,
                 `expected reject category ${vector.expect.rejectCode} but runner emitted ${result.rejectCode ?? "(none)"}: ${result.error ?? ""}`,
               ).toBe(vector.expect.rejectCode);
+            }
+            // verify-x402-transaction: assert the EXACT canonical reject
+            // string (byte-identical to the Rust spine) so a fund-safety
+            // divergence between the six hand-rolled exact verifiers turns
+            // this vector red instead of passing on outcome alone.
+            if (vector.expect.x402ExactRejectCode !== undefined) {
+              expect(
+                result.x402ExactRejectCode,
+                `expected exact reject code ${vector.expect.x402ExactRejectCode} but runner emitted ${result.x402ExactRejectCode ?? "(none)"}: ${result.error ?? ""}`,
+              ).toBe(vector.expect.x402ExactRejectCode);
             }
             return;
           }

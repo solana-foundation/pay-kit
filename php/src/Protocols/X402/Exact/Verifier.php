@@ -204,25 +204,18 @@ final class Verifier
         $destination = self::accountAt($accountKeys, $ix, 2);
         $authority   = self::accountAt($accountKeys, $ix, 3);
 
-        // Rule 5: authority guard.
+        // Rule 5: fee-payer/managed-signer fund-mover guard. A managed signer
+        // (the operator's fee payer) must never be the transfer authority, nor
+        // the funding source: not as its raw key, and not as its own
+        // associated token account for this mint. This is the complete rule -
+        // an appended instruction that merely references the fee-payer (e.g. a
+        // Lighthouse guard) is NOT a fund move and is accepted, matching the
+        // Rust reference and the Go/Python/Ruby/Lua verifiers.
         foreach ($managedSigners as $managed) {
-            if ($managed === $authority || $managed === $source) {
+            if ($managed === $authority || $managed === $source || $source === self::managedSourceAta($managed, $mint, $program)) {
                 throw new InvalidProofException(
                     'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
                 );
-            }
-        }
-        foreach ($ix->accountKeyIndexes as $idx) {
-            $key = $accountKeys[$idx] ?? null;
-            if ($key === null) {
-                continue;
-            }
-            foreach ($managedSigners as $managed) {
-                if ($managed === $key) {
-                    throw new InvalidProofException(
-                        'invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts',
-                    );
-                }
             }
         }
 
@@ -287,6 +280,22 @@ final class Verifier
     private static function programOf(array $accountKeys, object $ix): string
     {
         return $accountKeys[$ix->programIdIndex] ?? '';
+    }
+
+    /**
+     * Derive a managed signer's own associated token account for the mint, or
+     * return null when the signer is not a parseable pubkey. A managed signer
+     * that cannot be parsed can never equal a valid on-chain source ATA, so
+     * an unparseable value is treated as "no match" rather than surfacing as
+     * an unrelated argument error.
+     */
+    private static function managedSourceAta(string $managed, string $mint, string $program): ?string
+    {
+        try {
+            return Mints::deriveAta($managed, $mint, $program);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**

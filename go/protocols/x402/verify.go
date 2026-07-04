@@ -182,6 +182,10 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 		return VerifyFail("invalid_exact_svm_payload_no_transfer_instruction",
 			"ix[2] is not a transferChecked")
 	}
+	source, err := keyForIndex(ix.Accounts[0], keys)
+	if err != nil {
+		return err
+	}
 	mint, err := keyForIndex(ix.Accounts[1], keys)
 	if err != nil {
 		return err
@@ -195,10 +199,20 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 		return err
 	}
 	// The fee-payer (operator) must not be the one moving the customer's
-	// funds — that would let a malicious server drain the operator.
-	if authority.Equals(req.FeePayer) {
+	// funds: neither as the transfer authority nor as the funding source.
+	// The source guard covers both the fee-payer's raw key and its own
+	// associated token account for this mint, so a malicious server cannot
+	// drain the operator by naming its ATA as the transfer source even when
+	// a different key signs as authority. Cross-SDK canonical rule (matches
+	// the Rust reference and the Python/PHP/Ruby/Lua verifiers).
+	if authority.Equals(req.FeePayer) || source.Equals(req.FeePayer) {
 		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
-			"transfer authority is the fee-payer")
+			"fee-payer is the transfer authority or funds source")
+	}
+	feePayerATA, err := solanatx.FindAssociatedTokenAddressWithProgram(req.FeePayer, mint, prog)
+	if err == nil && source.Equals(feePayerATA) {
+		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+			"fee-payer is the transfer authority or funds source")
 	}
 	if !mint.Equals(req.Mint) {
 		return VerifyFail("invalid_exact_svm_payload_mint_mismatch",

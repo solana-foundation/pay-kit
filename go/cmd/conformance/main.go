@@ -137,6 +137,26 @@ type VectorInput struct {
 	// X402ServerRequiresPaymentIdentifier makes verify reject envelopes
 	// whose echoed extensions carry no valid payment-identifier id.
 	X402ServerRequiresPaymentIdentifier bool `json:"x402ServerRequiresPaymentIdentifier"`
+
+	// verify-x402-transaction inputs (the exact fund-safety verifier).
+	// X402ExactRequirement is the offer the SDK's real 11-rule exact verifier
+	// checks Transaction against; nil for other modes.
+	X402ExactRequirement *X402ExactRequirement `json:"x402ExactRequirement"`
+	// X402ExactManagedSigners lists the server-managed pubkeys (base58) that
+	// must never be the transfer authority or funding source.
+	X402ExactManagedSigners []string `json:"x402ExactManagedSigners"`
+}
+
+// X402ExactRequirement mirrors schema.ts X402ExactRequirement: the offer the
+// exact fund-safety verifier checks the wire transaction against.
+type X402ExactRequirement struct {
+	Asset  string `json:"asset"`
+	PayTo  string `json:"payTo"`
+	Amount string `json:"amount"`
+	Extra  struct {
+		TokenProgram string `json:"tokenProgram"`
+		Memo         string `json:"memo"`
+	} `json:"extra"`
 }
 
 // ChargeRequest is the charge-intent request carried in a vector input.
@@ -341,6 +361,10 @@ type RunnerResult struct {
 	// classifyReject; empty when the message is unclassified so the
 	// harness can surface it instead of silently passing.
 	RejectCode string `json:"rejectCode,omitempty"`
+	// X402ExactRejectCode is the exact canonical invalid_exact_svm_payload_*
+	// string the real exact verifier emitted on a verify-x402-transaction
+	// reject; empty otherwise. Asserted verbatim across every SDK.
+	X402ExactRejectCode string `json:"x402ExactRejectCode,omitempty"`
 }
 
 // rejectPattern pairs a compiled regex with the normalized RejectCode it

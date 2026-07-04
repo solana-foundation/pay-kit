@@ -462,31 +462,28 @@ class X402ServerExactTest < Minitest::Test
     assert_empty sent
   end
 
-  def test_settlement_rejects_fee_payer_in_any_instruction_account_before_sending
-    sent = []
-    state = build_state(sender: ->(_state, transaction) {
-      sent << transaction
-      "unit-settlement"
-    })
-    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
-      add_fee_payer_to_memo_accounts(transaction)
+  # Uniform-verdict regression (cross-SDK): a Lighthouse guard that merely
+  # references the fee payer as a read-only account is NOT a fund move and
+  # must be ACCEPTED, matching the Rust reference and the Go/Python/PHP/Lua
+  # verifiers. The old over-broad instruction-account sweep rejected this
+  # benign reference, diverging from the other five SDKs; the canonical rule
+  # guards only the transfer authority and funding source.
+  def test_settlement_accepts_lighthouse_guard_referencing_fee_payer
+    state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
+    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+      append_lighthouse_guard_referencing_fee_payer(transaction)
     end
 
-    error = assert_raises(RuntimeError) do
-      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
-    end
-
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
-    assert_empty sent
+    assert_equal "unit-settlement", PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
   end
 
   # Attack regression: fee-payer ATA drain via extra SPL TransferChecked.
   # A malicious client appends a TransferChecked in the optional-instruction
-  # slot that names the fee payer as an additional account (e.g. authority).
-  # The instruction-list sweep runs before the optional-program allowlist,
-  # so the canonical reject token is the fee-payer-in-instruction-accounts
-  # reason — proving the sweep (not the program-allowlist fallback) is the
-  # gate that closes this drain.
+  # slot. Only Memo and Lighthouse are permitted in the optional slots, so
+  # the SPL token program in slot ix[4] is rejected by the optional-program
+  # allowlist — the canonical gate that closes this drain now that the
+  # over-broad fee-payer-in-any-instruction sweep is gone (the sweep also
+  # rejected benign fee-payer references the other five SDKs accept).
   def test_settlement_rejects_extra_token_transfer_naming_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -501,14 +498,15 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
     assert_empty sent
   end
 
   # Attack regression: fee-payer SOL drain via SystemProgram::Transfer.
   # The classic "facilitator drain" shape — instead of an SPL transfer,
-  # the attacker appends a native lamport transfer whose source is the
-  # fee payer. The instruction-list sweep is the responsible gate.
+  # the attacker appends a native lamport transfer whose source is the fee
+  # payer. The System program is not in the optional-instruction allowlist
+  # (Memo / Lighthouse only), so the allowlist rejects it in slot ix[4].
   def test_settlement_rejects_extra_system_transfer_from_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -523,29 +521,7 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
-    assert_empty sent
-  end
-
-  # Attack regression: fee-payer pubkey appears at instruction-account
-  # position 1 (not the carve-out slot 0) of an extra memo instruction.
-  # Mirrors the "SLOT attack" shape: fee payer named at a non-payer slot.
-  # The sweep must reject regardless of position.
-  def test_settlement_rejects_fee_payer_at_instruction_slot_one
-    sent = []
-    state = build_state(sender: ->(_state, transaction) {
-      sent << transaction
-      "unit-settlement"
-    })
-    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
-      append_memo_with_fee_payer_at_slot_one(transaction)
-    end
-
-    error = assert_raises(RuntimeError) do
-      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
-    end
-
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
     assert_empty sent
   end
 
@@ -1452,14 +1428,6 @@ class X402ServerExactTest < Minitest::Test
     transaction
   end
 
-  def add_fee_payer_to_memo_accounts(transaction)
-    offset = transaction.bytesize - 1 - 32
-
-    transaction.setbyte(offset - 2, 1)
-    transaction.insert(offset - 1, [0].pack("C"))
-    transaction
-  end
-
   def append_optional_instruction(transaction, program)
     message_offset = 1 + (2 * 64)
     account_count_offset = message_offset + 4
@@ -1477,6 +1445,34 @@ class X402ServerExactTest < Minitest::Test
 
     transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
     transaction.insert(transaction.bytesize - 1, [account_count - 1, 0, 0].pack("C*"))
+    transaction
+  end
+
+  # Append a trailing Lighthouse guard whose accounts vector references the
+  # fee payer (account index 0) as a read-only account. Lighthouse is an
+  # allowed optional program, and referencing the fee payer here is a state
+  # assertion, not a fund move: the canonical rule accepts it.
+  def append_lighthouse_guard_referencing_fee_payer(transaction)
+    message_offset = 1 + (2 * 64)
+    account_count_offset = message_offset + 4
+    account_count = transaction.getbyte(account_count_offset)
+    account_keys_offset = account_count_offset + 1
+    blockhash_offset = account_keys_offset + (account_count * 32)
+    lighthouse = PayKit::Protocols::X402::Protocol::Schemes::Exact.base58_decode(
+      PayKit::Protocols::X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM
+    )
+
+    unless transaction.byteslice(account_keys_offset, account_count * 32).include?(lighthouse)
+      transaction.setbyte(account_count_offset, account_count + 1)
+      transaction.insert(blockhash_offset, lighthouse)
+      account_count += 1
+    end
+    lighthouse_index = account_count - 1
+
+    instruction_count_offset = account_keys_offset + (account_count * 32) + 32
+    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
+    # [program_index, num_accounts=1, account_index=0 (fee payer), data_len=0].
+    transaction.insert(transaction.bytesize - 1, [lighthouse_index, 1, 0, 0].pack("C*"))
     transaction
   end
 
@@ -1571,29 +1567,6 @@ class X402ServerExactTest < Minitest::Test
       12,                   # short_vec(data_len)
       2, 0, 0, 0,           # discriminator: Transfer
       1, 0, 0, 0, 0, 0, 0, 0 # lamports = 1
-    ].pack("C*")
-    transaction.insert(transaction.bytesize - 1, instruction)
-    transaction
-  end
-
-  # Append a memo-program instruction whose accounts vector names the fee
-  # payer at position 1. The sweep must reject before settlement,
-  # regardless of which slot the fee payer appears in.
-  def append_memo_with_fee_payer_at_slot_one(transaction)
-    message_offset = 1 + (2 * 64)
-    account_count_offset = message_offset + 4
-    account_count = transaction.getbyte(account_count_offset)
-    account_keys_offset = account_count_offset + 1
-    instruction_count_offset = account_keys_offset + (account_count * 32) + 32
-
-    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
-    # Memo program index is 7 in build_transaction's account_keys layout.
-    # Accounts: [memo_program=7, fee_payer=0] — fee payer at position 1.
-    instruction = [
-      7,        # program_index (memo)
-      2,        # short_vec(account_count)
-      7, 0,     # accounts: filler, fee_payer
-      0         # short_vec(data_len) — empty
     ].pack("C*")
     transaction.insert(transaction.bytesize - 1, instruction)
     transaction

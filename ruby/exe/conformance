@@ -567,8 +567,41 @@ def x402_reject_result(id, message)
   result
 end
 
+# verify-x402-transaction: drive the real Ruby 11-rule exact fund-safety
+# verifier over the base64 versioned transaction. On reject the canonical
+# invalid_exact_svm_payload_* string is surfaced verbatim as
+# x402ExactRejectCode so the cross-SDK vectors bind the exact code.
+def run_x402_exact_verify(vector)
+  input = vector["input"] || {}
+  transaction_b64 = input["transaction"]
+  raise "verify-x402-transaction vector missing input.transaction" if transaction_b64.to_s.empty?
+
+  requirement = input["x402ExactRequirement"]
+  raise "verify-x402-transaction vector missing input.x402ExactRequirement" unless requirement.is_a?(Hash)
+
+  # The verifier reads account keys as raw 32-byte pubkeys, so the managed
+  # signers must be decoded from base58 to raw bytes too.
+  managed_signers = Array(input["x402ExactManagedSigners"]).map do |key|
+    PayKit::Protocols::X402::Protocol::Schemes::Exact.base58_decode(key)
+  end
+  transaction = Base64.decode64(transaction_b64)
+
+  begin
+    PayKit::Protocols::X402::Protocol::Schemes::Exact::Verifier.verify(
+      transaction, requirement, managed_signers: managed_signers
+    )
+  rescue => error
+    return {"id" => vector["id"], "outcome" => "reject",
+            "error" => error.message, "x402ExactRejectCode" => error.message}
+  end
+
+  {"id" => vector["id"], "outcome" => "accept"}
+end
+
 def run_x402_vector(vector)
   input = vector["input"] || {}
+
+  return run_x402_exact_verify(vector) if vector["mode"] == "verify-x402-transaction"
 
   if vector["mode"] == "build-transaction"
     # Client-only build path: a server-only SDK has no x402 client builder, so

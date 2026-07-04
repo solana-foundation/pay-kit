@@ -378,12 +378,26 @@ fn verify_transfer_instruction(
         return invalid("invalid_exact_svm_payload_no_transfer_instruction");
     }
 
+    let source = key_for_account_index(instruction.accounts[0], account_keys)?;
     let mint = key_for_account_index(instruction.accounts[1], account_keys)?;
     let destination = key_for_account_index(instruction.accounts[2], account_keys)?;
     let authority = key_for_account_index(instruction.accounts[3], account_keys)?;
 
-    if managed_signers.iter().any(|managed| managed == authority) {
-        return invalid("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds");
+    // A managed signer (the operator's fee payer) must never be the one
+    // moving the customer's funds: not as the transfer authority, and not as
+    // the funding source. The source guard covers both the raw managed key
+    // and its own associated token account for this mint, so a malicious
+    // server cannot drain the operator by naming its ATA as the transfer
+    // source even when a different key signs as authority. Cross-SDK
+    // canonical rule shared with the Go and Python/PHP/Ruby/Lua verifiers.
+    for managed in managed_signers {
+        if managed == authority || managed == source {
+            return invalid("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds");
+        }
+        let managed_source_ata = get_associated_token_address(managed, mint, program);
+        if source == &managed_source_ata {
+            return invalid("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds");
+        }
     }
 
     let expected_mint = resolve_expected_mint(requirements);
@@ -1149,6 +1163,52 @@ mod tests {
     }
 
     #[test]
+    fn verify_exact_transaction_rejects_managed_fee_payer_as_transfer_source() {
+        // The transfer authority is a legitimate customer key (so the
+        // authority guard passes), but the transfer SOURCE is the managed
+        // fee-payer's own associated token account — draining the operator.
+        // The source-account guard must reject this. Cross-SDK canonical
+        // rule shared with Go and the Python/PHP/Ruby/Lua verifiers.
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        // Source ATA belongs to the fee-payer; a different key signs as
+        // authority so the authority-only guard does not catch it.
+        let source = get_associated_token_address(&fee_payer, &mint, &token_program);
+        let destination = get_associated_token_address(
+            &Pubkey::from_str(&requirements.recipient).unwrap(),
+            &mint,
+            &token_program,
+        );
+        let mut data = vec![12u8];
+        data.extend_from_slice(&1000u64.to_le_bytes());
+        data.push(requirements.decimals.unwrap_or(6));
+        let transfer = Instruction {
+            program_id: token_program,
+            accounts: vec![
+                AccountMeta::new(source, false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new(destination, false),
+                AccountMeta::new_readonly(authority, true),
+            ],
+            data,
+        };
+        let tx = Transaction::new_unsigned(solana_message::Message::new_with_blockhash(
+            &[compute_limit_ix(), compute_price_ix(1), transfer],
+            Some(&fee_payer),
+            &Hash::new_from_array([9u8; 32]),
+        ));
+        let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(ref reason) if reason == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
     fn verify_exact_transaction_rejects_mint_mismatch() {
         let requirements = requirements("1000");
         let fee_payer = Pubkey::new_unique();
@@ -1581,5 +1641,91 @@ mod tests {
         let sig = Signature::default().to_string();
         let err = fetch_transaction(&rpc, &sig).unwrap_err();
         assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    // Cross-SDK reject-vector binding. This Rust reference consumes the same
+    // harness/vectors/x402-exact-reject.json file every other SDK's
+    // conformance runner drives, so the fund-safety reject codes cannot drift
+    // between the six hand-rolled exact verifiers without turning a test red.
+    #[test]
+    fn exact_reject_vectors_bind_the_canonical_codes() {
+        use base64::Engine as _;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../harness/vectors/x402-exact-reject.json"
+        );
+        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let vectors: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let vectors = vectors.as_array().expect("vector file is a JSON array");
+        assert!(!vectors.is_empty(), "no vectors loaded");
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut asserted = 0usize;
+        for vector in vectors {
+            let id = vector["id"].as_str().unwrap_or("(no id)");
+            let input = &vector["input"];
+            let bytes = b64
+                .decode(
+                    input["transaction"]
+                        .as_str()
+                        .expect("transaction is a string"),
+                )
+                .unwrap_or_else(|e| panic!("{id}: base64 decode: {e}"));
+            let tx: VersionedTransaction = bincode::deserialize(&bytes)
+                .unwrap_or_else(|e| panic!("{id}: bincode decode: {e}"));
+
+            let requirement = &input["x402ExactRequirement"];
+            let extra = requirement.get("extra");
+            let token_program = extra
+                .and_then(|e| e.get("tokenProgram"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let requirements = PaymentRequirements {
+                network: SOLANA_DEVNET.to_string(),
+                cluster: None,
+                recipient: requirement["payTo"].as_str().unwrap().to_string(),
+                amount: requirement["amount"].as_str().unwrap().to_string(),
+                currency: requirement["asset"].as_str().unwrap().to_string(),
+                decimals: Some(6),
+                token_program,
+                resource: "/resource".to_string(),
+                description: None,
+                max_age: None,
+                recent_blockhash: None,
+                fee_payer: None,
+                fee_payer_key: None,
+                extra: extra.cloned(),
+                accepted: None,
+                resource_info: None,
+            };
+
+            let managed_signers: Vec<Pubkey> = input["x402ExactManagedSigners"]
+                .as_array()
+                .expect("managed signers array")
+                .iter()
+                .map(|v| Pubkey::from_str(v.as_str().unwrap()).unwrap())
+                .collect();
+
+            let result = verify_exact_versioned_transaction(&tx, &requirements, &managed_signers);
+            let expect = &vector["expect"];
+            match expect["outcome"].as_str().unwrap() {
+                "accept" => {
+                    result.unwrap_or_else(|e| panic!("{id}: expected accept, got {e:?}"));
+                }
+                "reject" => {
+                    let want = expect["x402ExactRejectCode"].as_str().unwrap();
+                    match result {
+                        Err(Error::Other(reason)) => {
+                            assert_eq!(reason, want, "{id}: reject code mismatch")
+                        }
+                        other => panic!("{id}: expected reject {want}, got {other:?}"),
+                    }
+                }
+                other => panic!("{id}: unknown outcome {other}"),
+            }
+            asserted += 1;
+        }
+        assert_eq!(asserted, vectors.len(), "not every vector was asserted");
     }
 }

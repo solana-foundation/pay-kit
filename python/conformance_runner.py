@@ -42,6 +42,7 @@ from solana_pay_kit._paycore.solana import (
     is_native_sol,
     resolve_mint,
 )
+from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.mpp.client.charge import build_charge_transaction
 from solana_pay_kit.protocols.mpp.core import json as wire_json
 from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
@@ -62,6 +63,7 @@ from solana_pay_kit.protocols.x402.exact.verify import (
     EXACT_SCHEME,
     X402_VERSION_V1,
     X402_VERSION_V2,
+    ExactVerifier,
 )
 from solana_pay_kit.signer import LocalSigner
 
@@ -576,6 +578,25 @@ def _x402_verify(vector: dict[str, Any]) -> dict[str, Any]:
     return _decode_envelope_shape(header)
 
 
+def _x402_verify_exact(vector: dict[str, Any]) -> None:
+    """Drive the real Python 11-rule exact fund-safety verifier.
+
+    Decodes payload.transaction (base64 versioned tx) and runs
+    ``ExactVerifier.verify`` over it against the vector's requirement. On
+    reject it raises ``InvalidProofError`` whose ``.code`` is the canonical
+    ``invalid_exact_svm_payload_*`` string the cross-SDK vectors bind verbatim.
+    """
+    inp = vector.get("input") or {}
+    transaction = inp.get("transaction")
+    if not transaction:
+        raise ValueError("verify-x402-transaction vector missing input.transaction")
+    requirement = inp.get("x402ExactRequirement")
+    if not isinstance(requirement, dict):
+        raise ValueError("verify-x402-transaction vector missing input.x402ExactRequirement")
+    managed = inp.get("x402ExactManagedSigners") or []
+    ExactVerifier.verify(transaction, requirement, list(managed))
+
+
 def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     vector_id = vector.get("id", "")
     mode = vector.get("mode")
@@ -591,6 +612,18 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     if mode == "verify-transaction":
         shape = _x402_verify(vector)
         return {"id": vector_id, "outcome": "accept", "x402EnvelopeShape": shape}
+
+    if mode == "verify-x402-transaction":
+        try:
+            _x402_verify_exact(vector)
+        except InvalidProofError as exc:
+            return {
+                "id": vector_id,
+                "outcome": "reject",
+                "error": str(exc),
+                "x402ExactRejectCode": exc.code,
+            }
+        return {"id": vector_id, "outcome": "accept"}
 
     # Any other mode for the x402 intent has no Python equivalent.
     raise ValueError(f"unsupported-mode: {mode}")

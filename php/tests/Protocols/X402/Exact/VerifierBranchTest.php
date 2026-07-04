@@ -344,17 +344,36 @@ final class VerifierBranchTest extends TestCase
         Verifier::verify($tx, $req, $managed);
     }
 
-    public function testManagedSignerInInstructionAccountsRejected(): void
+    public function testManagedSignerAsSourceAtaRejected(): void
     {
-        // A managed signer that is neither authority nor source but appears
-        // in the transfer's account list (as the mint slot) trips the
-        // fee_payer_in_instruction_accounts branch.
+        // The transfer authority is a legitimate customer key, but the source
+        // ATA is the managed signer's OWN associated token account for the
+        // mint. The canonical fund-mover guard must reject this drain even
+        // though the managed signer is neither the raw source nor authority.
+        $managed = Keypair::generate()->getPublicKey()->toBase58();
+        $managedAta = Mints::deriveAta($managed, self::USDC_MINT, self::TOKEN_PROGRAM);
+        [$tx, $req, $signers] = $this->build([
+            'source'  => $managedAta,
+            'managed' => [$managed],
+        ]);
+        $this->expectReject('fee_payer_transferring_funds');
+        Verifier::verify($tx, $req, $signers);
+    }
+
+    public function testManagedSignerAsMintIsAccepted(): void
+    {
+        // A managed signer that is neither the transfer authority nor the
+        // funding source, but merely appears elsewhere in the transfer's
+        // account list (here as the mint slot), is NOT a fund move. The
+        // canonical rule accepts it, matching the Rust reference and the
+        // Go/Python/Ruby/Lua verifiers (the old over-broad instruction-
+        // account sweep rejected this benign reference).
         $managedMint = self::USDC_MINT;
         [$tx, $req, $managed] = $this->build([
             'managed' => [$managedMint],
         ]);
-        $this->expectReject('fee_payer_in_instruction_accounts');
         Verifier::verify($tx, $req, $managed);
+        $this->addToAssertionCount(1);
     }
 
     // ── rule 6: mint match ──────────────────────────────────────────────────
