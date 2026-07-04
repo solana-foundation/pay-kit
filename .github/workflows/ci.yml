@@ -46,6 +46,15 @@ jobs:
       - run: pnpm --filter @solana/mpp build
       - run: pnpm lint
       - run: pnpm format:check
+      # Repo-hygiene guards for two audit-class regressions no other gate
+      # catches: audit finding IDs left in shipped source, and dependency
+      # overrides stranded in package.json's pnpm field (ignored by pnpm v10).
+      - name: Repo hygiene guards
+        working-directory: .
+        run: bash scripts/check-repo-hygiene.sh
+      - name: Repo hygiene guard self-test
+        working-directory: .
+        run: bash scripts/check-repo-hygiene_test.sh
 
   typecheck:
     name: Typecheck
