@@ -12,9 +12,12 @@
 //! v1: fixed per-request price; explicit operator-driven settlement (no
 //! automatic cron / forced-close watchdog yet).
 
+use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::Mutex as AsyncMutex;
 
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
@@ -132,6 +135,29 @@ pub struct X402BatchSettlement {
     config: BatchConfig,
     operator: Pubkey,
     store: Arc<dyn ChannelStore>,
+    /// Per-channel serialization gates. A voucher acceptance must decide `serve`
+    /// on the watermark delta it actually *commits*, not on a watermark read
+    /// before the commit. Two concurrent vouchers on one channel would otherwise
+    /// each read the same stale watermark, both compute a `>= price` delta from
+    /// it, and both be served while only the larger cumulative is committed —
+    /// under-paying for one served request. Holding this per-channel gate across
+    /// the read → price-gate → accept span serializes those requests so the read
+    /// is the in-lock prior watermark and the committed delta is authoritative.
+    voucher_gates: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    /// Test-only seam: fires before the per-channel gate is acquired, so a test
+    /// can deterministically interleave a second voucher's acceptance behind the
+    /// first voucher's commit and prove the gate closes the under-pay race. When
+    /// a call takes the hook it signals `entered` (the test now knows this call
+    /// reached the seam) and then parks on `release` until the test drops it.
+    #[cfg(test)]
+    pre_gate_hook: Arc<Mutex<Option<PreGateHook>>>,
+}
+
+/// Test-only seam payload for [`X402BatchSettlement::pre_gate_hook`].
+#[cfg(test)]
+struct PreGateHook {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: Arc<AsyncMutex<()>>,
 }
 
 impl X402BatchSettlement {
@@ -157,7 +183,19 @@ impl X402BatchSettlement {
             config,
             operator,
             store,
+            voucher_gates: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            pre_gate_hook: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Fetch (or create) the per-channel serialization gate for `channel_id`.
+    fn voucher_gate(&self, channel_id: &str) -> Arc<AsyncMutex<()>> {
+        let mut gates = self.voucher_gates.lock().unwrap_or_else(|e| e.into_inner());
+        gates
+            .entry(channel_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     /// Operator/facilitator pubkey (base58).
@@ -507,6 +545,31 @@ impl X402BatchSettlement {
         voucher: BatchVoucher,
         per_request: u64,
     ) -> Result<BatchOutcome, Error> {
+        // Test-only seam: let a test park this call before the per-channel gate,
+        // so it can drive a second voucher's acceptance behind the first
+        // voucher's commit and prove the gate closes the under-pay race.
+        #[cfg(test)]
+        {
+            let hook = self
+                .pre_gate_hook
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                let _ = hook.entered.send(());
+                let _ = hook.release.lock().await;
+            }
+        }
+
+        // Serialize acceptances on this channel so the watermark that gates the
+        // price and the paid serve is the in-lock prior watermark this voucher
+        // commits against. Without this, two concurrent vouchers could both read
+        // the same stale watermark before either commits, both pass the price
+        // gate, and both be served while only the larger cumulative is committed
+        // — under-paying for one served request.
+        let gate = self.voucher_gate(channel_id);
+        let _held = gate.lock().await;
+
         let prev = self
             .store
             .get_channel(channel_id)
@@ -518,7 +581,8 @@ impl X402BatchSettlement {
         // Checked before `accept` so an underpriced voucher — or an idempotent
         // replay of the latest voucher (delta 0), which would otherwise serve
         // the route again for free — is rejected without advancing the
-        // watermark.
+        // watermark. `prev` is the in-lock prior watermark (the gate is held), so
+        // a concurrent voucher cannot make this delta stale.
         if voucher.cumulative()?.saturating_sub(prev) < per_request {
             return Err(Error::Other(format!(
                 "voucher charge {} is below the required {per_request}",
@@ -526,12 +590,21 @@ impl X402BatchSettlement {
             )));
         }
         let acceptance = self.accept(channel_id, &voucher).await?;
-        let charged = acceptance.charged;
-        // An idempotent replay (charged == 0) is NOT a fresh paid serve: the
-        // route was already paid for on the original voucher. The price check
-        // above rejects replays whenever `per_request > 0`; this guards the
+        // Gate `serve` on the delta this voucher actually committed against the
+        // in-lock prior watermark — NOT on `acceptance.charged`, which is derived
+        // from a pre-lock snapshot and overstates the delta when a concurrent
+        // voucher advanced the watermark between the snapshot and the commit.
+        // Because the per-channel gate is held across the read and the accept,
+        // `prev` is the authoritative prior watermark, so this delta is the true
+        // committed increment.
+        let committed_delta = acceptance.cumulative.saturating_sub(prev);
+        let charged = committed_delta;
+        // A fresh paid serve requires committing at least one request's price and
+        // not being an idempotent replay. An idempotent replay (`replay == true`,
+        // delta 0) is NOT a fresh paid serve: the route was already paid for on
+        // the original voucher. The `!replay` clause also guards the
         // `per_request == 0` edge so a replay can never re-serve for free.
-        let serve = !acceptance.replay;
+        let serve = !acceptance.replay && committed_delta >= per_request;
         let deposit = self
             .store
             .get_channel(channel_id)
@@ -1110,6 +1183,166 @@ mod tests {
             100,
             "replay must not advance the watermark"
         );
+    }
+
+    // ── Concurrency: the paid serve must be gated on the in-lock committed delta ─
+    //
+    // Two vouchers on one channel (cumulative 100 and 150, priced at 100, from a
+    // zero watermark) commit a combined delta of 150 — one-and-a-half requests'
+    // worth. Only one may be served. The bug: `process_voucher` decided `serve`
+    // from a watermark read *before* the commit, so both vouchers read the same
+    // stale `0`, both computed a `>= price` delta, and both were served while only
+    // 150 total was committed — the second request was served for 50.
+
+    // Deterministic regression guard. The test-only seam forces the second
+    // voucher (cumulative 150) to reach its acceptance *after* the first
+    // voucher (cumulative 100) has already committed. Before the fix the second
+    // voucher was served (it decided `serve` on a stale pre-commit read of 0, so
+    // 150 - 0 = 150 >= 100); after the fix `serve` is gated on the committed
+    // delta against the in-lock prior watermark (150 - 100 = 50 < 100), so it is
+    // not served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_voucher_not_served_when_committed_delta_below_price() {
+        let owner = memory_signer(7);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+
+        let store = Arc::new(MemoryChannelStore::new());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+        let h = handler(store.clone());
+
+        // Arm the seam: the request that takes it signals `entered` and then
+        // parks on `release` until the test drops its guard.
+        let release = Arc::new(AsyncMutex::new(()));
+        let release_guard = release.clone().lock_owned().await;
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        *h.pre_gate_hook.lock().unwrap() = Some(PreGateHook {
+            entered: entered_tx,
+            release: release.clone(),
+        });
+
+        // Spawn the second voucher (cumulative 150). It consumes the seam,
+        // signals, and parks before its per-channel gate.
+        let voucher_b = sign_voucher(&owner, &channel, 150, FAR_FUTURE)
+            .await
+            .unwrap();
+        let hb = h.clone();
+        let cb = channel_b58.clone();
+        let task_b =
+            tokio::spawn(async move { hb.process_voucher(&cb, voucher_b, 100).await });
+
+        // Wait until B has reached the seam (so B, not A, holds it). Now A cannot
+        // consume the seam and runs straight through to commit cumulative 100.
+        entered_rx.await.unwrap();
+        let voucher_a = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+        let outcome_a = h
+            .process_voucher(&channel_b58, voucher_a, 100)
+            .await
+            .unwrap();
+        assert!(outcome_a.serve, "the first voucher pays a full request");
+
+        // Release B; it now evaluates against the in-lock prior watermark of 100.
+        // Its committed delta (150 - 100 = 50) is below the price, so it is NOT a
+        // paid serve. Before the fix it read the stale watermark of 0 (150 - 0 =
+        // 150) and was served — a second request served for 50.
+        drop(release_guard);
+        let result_b = task_b.await.unwrap();
+        match result_b {
+            // Rejected: the in-lock price gate refuses the under-priced increment.
+            Err(e) => assert!(
+                e.to_string().contains("below the required"),
+                "expected an under-priced rejection, got: {e}"
+            ),
+            // Accepted-but-not-served is also acceptable, provided it is not a
+            // paid serve.
+            Ok(outcome) => assert!(
+                !outcome.serve,
+                "a voucher whose committed delta (50) is below the price (100) must not be served"
+            ),
+        }
+
+        // Exactly one request was served: only voucher A advanced the watermark;
+        // B did not (its increment was refused).
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            100,
+            "the under-priced second voucher must not advance the watermark"
+        );
+    }
+
+    // Stochastic guard: race two concurrent vouchers (cumulative 100 and 150,
+    // priced at 100) from a zero watermark, many times, over a multi-thread
+    // runtime. Whatever the scheduling, at most one may be served, and any served
+    // voucher must have committed a delta of at least the price. This catches a
+    // regression that the deterministic seam's fixed ordering would miss.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_vouchers_serve_at_most_one_paid_request() {
+        for iter in 0..64u8 {
+            let owner = memory_signer(8);
+            let channel = Pubkey::new_unique();
+            let channel_b58 = pc::pubkey_string(&channel);
+
+            let store = Arc::new(MemoryChannelStore::new());
+            store
+                .put_channel(
+                    &channel_b58,
+                    seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+                )
+                .await
+                .unwrap();
+            let h = handler(store.clone());
+
+            let v100 = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+                .await
+                .unwrap();
+            let v150 = sign_voucher(&owner, &channel, 150, FAR_FUTURE)
+                .await
+                .unwrap();
+
+            let (h1, c1) = (h.clone(), channel_b58.clone());
+            let (h2, c2) = (h.clone(), channel_b58.clone());
+            let t1 = tokio::spawn(async move { h1.process_voucher(&c1, v100, 100).await });
+            let t2 = tokio::spawn(async move { h2.process_voucher(&c2, v150, 100).await });
+            let (r1, r2) = (t1.await.unwrap(), t2.await.unwrap());
+
+            // Count served requests; every served request must have committed at
+            // least the price. A served request reports its committed delta as
+            // `charged_amount`.
+            let mut served = 0;
+            for outcome in [r1, r2].into_iter().flatten() {
+                if outcome.serve {
+                    served += 1;
+                    let charged: u64 = outcome
+                        .response
+                        .charged_amount
+                        .as_deref()
+                        .unwrap_or("0")
+                        .parse()
+                        .unwrap();
+                    assert!(
+                        charged >= 100,
+                        "iter {iter}: a served voucher committed only {charged} (< price 100)"
+                    );
+                }
+            }
+            assert!(
+                served <= 1,
+                "iter {iter}: {served} requests served for a combined 150 committed (price 100)"
+            );
+        }
     }
 
     // A refund with no voucher carries no proof of ownership and must be
