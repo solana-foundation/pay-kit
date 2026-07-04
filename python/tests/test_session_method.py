@@ -302,6 +302,34 @@ def test_new_session_requires_store_off_localnet(monkeypatch: pytest.MonkeyPatch
     assert session._network == "devnet"
 
 
+def test_new_session_accepts_caip2_localnet_slug_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The config exposes the caip2-flavored network value ("solana_localnet");
+    passing it (as examples/playground_api do via config().network.value) must be
+    normalized to the bare "localnet" slug so the shared-store guard treats it as
+    localnet — not as a non-localnet network that wrongly demands a shared store."""
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            secret_key=SESSION_METHOD_SECRET,
+            network="solana_localnet",
+        )
+    )
+    assert session._network == "localnet"
+
+    # The caip2 non-localnet forms still require a store off localnet.
+    with pytest.raises(PaymentError, match="shared channel store is required"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                network="solana_devnet",
+            )
+        )
+
+
 # ── new_session defaults (TestNewSessionDefaults) ──
 
 

@@ -44,6 +44,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
+from solana_pay_kit._paycore.network import Network
 from solana_pay_kit._paycore.solana import MAX_SPLITS, resolve_mint
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
@@ -205,6 +206,20 @@ class SessionGateResult:
     headers: dict[str, str]
     # body is None on success, else the 402 problem document.
     body: dict[str, Any] | None = None
+
+
+def _bare_network(network: str) -> str:
+    """Normalize a network slug to its bare MPP form (mainnet/devnet/localnet).
+
+    Accepts both the bare slug and the caip2-flavored ``Network`` enum value
+    (e.g. ``"solana_localnet"`` from ``config().network.value``). Without this,
+    the localnet guards check ``!= "localnet"`` and would treat a caller passing
+    ``"solana_localnet"`` as a non-localnet network — wrongly requiring a shared
+    store and failing closed on what is actually localnet."""
+    try:
+        return Network(network).mints_label()
+    except ValueError:
+        return network
 
 
 def _parse_session_u64(value: str, name: str) -> int:
@@ -949,7 +964,12 @@ def new_session(options: SessionOptions) -> Session:
 
     currency = options.currency or "USDC"
     decimals = options.decimals or 6
-    network = options.network or "mainnet"
+    # Normalize to the bare MPP slug (mainnet/devnet/localnet). Callers may pass
+    # either the bare form or the caip2-flavored Network enum value (e.g. the
+    # config's "solana_localnet"); the downstream localnet guards and mint
+    # resolution all key on the bare slug, so a client passing "solana_localnet"
+    # must not be treated as a non-localnet network.
+    network = _bare_network(options.network or "mainnet")
     realm = options.realm or detect_realm()
 
     open_tx_submitter = options.open_tx_submitter
