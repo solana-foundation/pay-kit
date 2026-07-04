@@ -24,7 +24,7 @@ import {
     validateNetwork,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import { assertLegacyOrV0Message, coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
@@ -298,6 +298,11 @@ function extractRecentBlockhash(clientTxBase64: string): string | null {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
         const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes);
+        // Only read the lifetime blockhash from a legacy/v0 message shape. A
+        // v1+ message is rejected downstream in verifyChargeTransaction; fail
+        // open here (return null) so the network/blockhash sanity check is
+        // simply skipped rather than reading a field off an unexpected shape.
+        assertLegacyOrV0Message((message as { version: number | 'legacy' }).version, 'extractRecentBlockhash');
         return message.lifetimeToken;
     } catch {
         return null;
@@ -318,6 +323,7 @@ type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
     instructions: readonly CompiledInstruction[];
     staticAccounts: readonly string[];
+    version: number | 'legacy';
 };
 
 type CompiledInstruction = {
@@ -346,6 +352,12 @@ export async function verifyChargeTransaction(clientTxBase64: string, challenge:
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
+
+    // Reject any versioned message beyond legacy/v0 before touching
+    // `.instructions` / `.addressTableLookups`. A v1 message decodes to a shape
+    // carrying neither field, so the ALT guard below would be silently skipped
+    // and the instruction loop would crash with a TypeError on hostile input.
+    assertLegacyOrV0Message(message.version, 'Charge transaction');
 
     if (message.addressTableLookups?.length) {
         throw new Error('v0 transactions with address lookup tables are not supported');

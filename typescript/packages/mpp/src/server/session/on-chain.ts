@@ -46,8 +46,9 @@ import { getSettleAndFinalizeInstruction } from '../../generated/payment-channel
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
+import { ChannelStatus } from '../../generated/payment-channels/types/channelStatus.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
-import { coSignBase64Transaction } from '../../utils/transactions.js';
+import { assertLegacyOrV0Message, coSignBase64Transaction } from '../../utils/transactions.js';
 
 /**
  * Concrete instruction shape returned by every builder in this module:
@@ -493,7 +494,14 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             programAddressIndex: number;
         }[];
         staticAccounts: readonly string[];
+        version: number | 'legacy';
     };
+
+    // Reject any versioned message beyond legacy/v0 before touching
+    // `.instructions` / `.addressTableLookups`. A v1 message decodes to a shape
+    // carrying neither, so the ALT guard below would be silently skipped and
+    // the instruction loop would crash with a TypeError on hostile input.
+    assertLegacyOrV0Message(message.version, 'verifyOpenTx');
 
     // Reject address-lookup tables. The operator co-signs the open as fee
     // payer, and every account this verifier inspects (payer, rentPayer,
@@ -742,7 +750,12 @@ export async function verifyTopUpTx(args: VerifyTopUpTxArgs): Promise<void> {
             programAddressIndex: number;
         }[];
         staticAccounts: readonly string[];
+        version: number | 'legacy';
     };
+
+    // Same version guard as verifyOpenTx: reject a v1+ message before the ALT
+    // guard and instruction loop, which both assume the legacy/v0 field shape.
+    assertLegacyOrV0Message(message.version, 'verifyTopUpTx');
 
     // Same ALT guard as verifyOpenTx: every account this verifier inspects
     // must be static, or a client could smuggle a different account past
@@ -890,6 +903,19 @@ export async function verifyChannelAccountState(args: {
         throw new Error('verifyChannelAccountState: unsupported getAccountInfo encoding (expected base64)');
     }
     const channel = getChannelDecoder().decode(getBase64Codec().encode(dataBase64));
+
+    // The channel must still be open. A finalized/closing channel that happens
+    // to match the other pinned fields must not be trusted as live session
+    // state. Mirrors Go (session_onchain.go), Python (upto.py), and Rust
+    // (upto.rs), which all enforce status == open after decoding the account.
+    // The generated decoder types `status` as a raw u8, so compare against the
+    // enum's numeric value rather than the enum member itself.
+    const openStatus: number = ChannelStatus.Open;
+    if (channel.status !== openStatus) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain channel ${args.channelId} status ${channel.status} != open (${openStatus})`,
+        );
+    }
 
     if (channel.payee !== expected.payee) {
         throw new Error(`verifyChannelAccountState: on-chain payee ${channel.payee} != expected ${expected.payee}`);

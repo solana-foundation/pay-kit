@@ -10,7 +10,10 @@ import {
 import { Method, Receipt, Store } from 'mppx';
 
 import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    COMPUTE_BUDGET_PROGRAM,
     DEFAULT_RPC_URLS,
+    MEMO_PROGRAM,
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
@@ -19,7 +22,7 @@ import {
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import { assertLegacyOrV0Message, coSignBase64Transaction } from '../utils/transactions.js';
 
 /**
  * Creates a Solana `subscription` method for usage on the server.
@@ -318,6 +321,7 @@ type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
     instructions: readonly CompiledInstruction[];
     staticAccounts: readonly string[];
+    version: number | 'legacy';
 };
 
 type CompiledInstruction = {
@@ -327,13 +331,20 @@ type CompiledInstruction = {
 };
 
 function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
+    let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
-        return getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
+        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
+    // Reject any versioned message beyond legacy/v0 before touching
+    // `.instructions` / `.addressTableLookups`. A v1 message decodes to a shape
+    // that carries neither field, so the ALT guard would be silently skipped
+    // and the instruction loop would crash with a TypeError on hostile input.
+    assertLegacyOrV0Message(message.version, 'Activation transaction');
+    return message;
 }
 
 function extractSubscriberFromTransaction(clientTxBase64: string, challenge: ChallengeRequest): string {
@@ -372,18 +383,53 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
     let subscribeIndex = -1;
     let transferIndex = -1;
 
+    // Strict allowlist of the programs a legitimate activation transaction may
+    // invoke. Anything else is REJECTED outright — never skipped. The fee-payer
+    // co-sign that follows authorizes every instruction in this message that
+    // names the server key as a required signer; if we merely scanned for the
+    // subscribe/transfer pair and ignored the rest, a client could append e.g.
+    // a System or SPL transfer draining the sponsored fee-payer wallet and the
+    // server would blindly co-sign it. Mirrors the Rust `validate_activation_scope`.
     for (const [index, ix] of message.instructions.entries()) {
         const program = message.staticAccounts[ix.programAddressIndex];
-        if (program !== programId) continue;
-        if (ix.data.length === 0) continue;
-        if (ix.data[0] === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
-            if (sawSubscribe) throw new Error('Multiple subscribe instructions found');
-            sawSubscribe = true;
-            subscribeIndex = index;
-        } else if (ix.data[0] === SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR) {
-            if (sawTransferSubscription) throw new Error('Multiple transfer_subscription instructions found');
-            sawTransferSubscription = true;
-            transferIndex = index;
+        if (program === undefined) {
+            throw new Error('Activation transaction instruction references an out-of-range program id index');
+        }
+
+        if (program === programId) {
+            if (ix.data.length === 0) {
+                throw new Error('Activation transaction subscriptions-program instruction has empty data');
+            }
+            const disc = ix.data[0];
+            if (disc === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
+                if (sawSubscribe) throw new Error('Multiple subscribe instructions found');
+                sawSubscribe = true;
+                subscribeIndex = index;
+            } else if (disc === SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR) {
+                if (sawTransferSubscription) throw new Error('Multiple transfer_subscription instructions found');
+                sawTransferSubscription = true;
+                transferIndex = index;
+            } else {
+                throw new Error(
+                    `Activation transaction contains a disallowed subscriptions-program instruction (discriminator ${disc}); only subscribe and transfer_subscription are allowed`,
+                );
+            }
+        } else if (program === COMPUTE_BUDGET_PROGRAM || program === MEMO_PROGRAM) {
+            // Compute-budget (price/limit) and the optional external-id memo
+            // carry no fee-payer fund/authority risk, so they are allowed.
+            continue;
+        } else if (program === ASSOCIATED_TOKEN_PROGRAM) {
+            // Only idempotent ATA creation (discriminator 1) is permitted — the
+            // same restriction the charge allowlist enforces. Create (0) or any
+            // other ATA-program instruction is rejected.
+            if (ix.data.length !== 1 || ix.data[0] !== 1) {
+                throw new Error('Activation transaction may only use idempotent ATA creation');
+            }
+            continue;
+        } else {
+            throw new Error(
+                `Activation transaction invokes a disallowed program ${program}; the fee payer will not co-sign a transaction outside the subscription activation allowlist`,
+            );
         }
     }
 
