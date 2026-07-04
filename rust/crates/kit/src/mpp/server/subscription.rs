@@ -168,9 +168,7 @@ pub struct SubscriptionServer {
     program_id: String,
     challenge_binding_secret: String,
     realm: String,
-    #[allow(dead_code)]
     store: Arc<dyn Store>,
-    #[allow(dead_code)]
     rpc_url: String,
 }
 
@@ -465,6 +463,39 @@ impl SubscriptionServer {
                         .await?;
                 }
 
+                // Replay guard. The activation signature is the transaction's
+                // own first signature — the fee payer's (index 0) once the
+                // server co-signs, or the subscriber's otherwise — and it is
+                // exactly what `sendTransaction` echoes back. Reject a duplicate
+                // credential up front, before any RPC broadcast or receipt
+                // re-issuance, once the first activation has been recorded. The
+                // key mirrors the TypeScript port
+                // (`solana-subscription:consumed:<sig>`) so a shared store
+                // rejects the replay across language runtimes. Broadcast itself
+                // is idempotent on-chain; the marker only prevents re-issuing a
+                // receipt for an already-settled activation.
+                let activation_sig =
+                    tx.signatures
+                        .first()
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| {
+                            VerificationError::invalid_payload(
+                                "Activation transaction has no signature",
+                            )
+                        })?;
+                let consumed_key = format!("solana-subscription:consumed:{activation_sig}");
+                if self
+                    .store
+                    .get(&consumed_key)
+                    .await
+                    .map_err(|e| VerificationError::network_error(e.to_string()))?
+                    .is_some()
+                {
+                    return Err(VerificationError::signature_consumed(
+                        "Activation signature already consumed",
+                    ));
+                }
+
                 // Idempotent broadcast: if the delegation PDA already exists
                 // (a previous activation landed on-chain but the receipt
                 // round-trip failed), skip the broadcast — the on-chain
@@ -492,6 +523,16 @@ impl SubscriptionServer {
                 } else {
                     Some(self.broadcast_and_confirm(&tx).await?.to_string())
                 };
+
+                // Record the consumed marker after a successful broadcast /
+                // receipt fetch, matching the TypeScript port's ordering — the
+                // funds path is protected by the idempotent broadcast, so the
+                // marker exists solely to reject receipt re-issuance on replay.
+                self.store
+                    .put(&consumed_key, serde_json::json!(true))
+                    .await
+                    .map_err(|e| VerificationError::network_error(e.to_string()))?;
+
                 (subscriber, sig)
             }
             "signature" => {
@@ -3278,5 +3319,235 @@ mod tests {
         // A pre-epoch (negative) timestamp exercises the `z < 0` era branch.
         // 1969-12-31T00:00:00Z = -86400
         assert_eq!(format_rfc3339_seconds(-86_400), "1969-12-31T00:00:00Z");
+    }
+
+    // ── Activation replay marker ────────────────────────────────────────
+    //
+    // A duplicate activation credential must be rejected up front — before
+    // any RPC broadcast or receipt re-issuance — once the first activation
+    // has landed. The marker is keyed by the activation signature with the
+    // same key shape the TypeScript port writes
+    // (`solana-subscription:consumed:<sig>`), so a shared store rejects the
+    // replay across the two language runtimes.
+
+    /// Per-method request counters for the stateful mock below, so a test
+    /// can assert that a rejected replay performs zero RPC work.
+    #[derive(Default)]
+    struct RpcCounters {
+        get_account: usize,
+        send: usize,
+        get_signatures: usize,
+    }
+
+    /// Spawn a stateful, counting JSON-RPC mock for the activation happy
+    /// path. `getAccountInfo` returns account-not-found on its first call
+    /// (so `verify_credential` sees the delegation does not yet exist and
+    /// broadcasts) and the encoded delegation on every later call (so the
+    /// post-broadcast terms fetch succeeds). `sendTransaction` echoes the
+    /// submitted transaction's own first signature — matching what a real
+    /// node returns — and every method bumps a shared counter.
+    fn spawn_counting_activation_rpc(
+        account_data: Vec<u8>,
+        owner: Pubkey,
+    ) -> (String, Arc<std::sync::Mutex<RpcCounters>>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let data_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &account_data);
+        let owner_str = owner.to_string();
+        let account_len = account_data.len();
+        let counters = Arc::new(std::sync::Mutex::new(RpcCounters::default()));
+        let thread_counters = counters.clone();
+        std::thread::spawn(move || {
+            for _ in 0..64 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let body_start = buf[..n]
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .map(|p| p + 4)
+                    .unwrap_or(0);
+                let req: serde_json::Value =
+                    serde_json::from_slice(&buf[body_start..n]).unwrap_or(serde_json::Value::Null);
+                let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                let params = req
+                    .get("params")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+
+                let result = {
+                    let mut c = thread_counters.lock().unwrap();
+                    match method {
+                        "getLatestBlockhash" => serde_json::json!({
+                            "context": {"slot": 1},
+                            "value": {"blockhash": "11111111111111111111111111111111", "lastValidBlockHeight": 1000},
+                        }),
+                        "getAccountInfo" => {
+                            c.get_account += 1;
+                            if c.get_account == 1 {
+                                // First fetch: idempotency probe — not found.
+                                serde_json::json!({"context": {"slot": 1}, "value": serde_json::Value::Null})
+                            } else {
+                                serde_json::json!({
+                                    "context": {"slot": 1},
+                                    "value": {
+                                        "data": [data_b64, "base64"],
+                                        "executable": false,
+                                        "lamports": 1_000_000u64,
+                                        "owner": owner_str,
+                                        "rentEpoch": 0,
+                                        "space": account_len,
+                                    },
+                                })
+                            }
+                        }
+                        "sendTransaction" => {
+                            c.send += 1;
+                            let sig = params
+                                .get(0)
+                                .and_then(|p| p.as_str())
+                                .and_then(|encoded| {
+                                    let bytes = base64::Engine::decode(
+                                        &base64::engine::general_purpose::STANDARD,
+                                        encoded,
+                                    )
+                                    .ok()?;
+                                    let tx: solana_transaction::versioned::VersionedTransaction =
+                                        bincode::deserialize(&bytes).ok()?;
+                                    Some(tx.signatures.first()?.to_string())
+                                })
+                                .unwrap_or_default();
+                            serde_json::Value::String(sig)
+                        }
+                        "getSignatureStatuses" => serde_json::json!({
+                            "context": {"slot": 1},
+                            "value": [{
+                                "slot": 1,
+                                "confirmations": serde_json::Value::Null,
+                                "status": {"Ok": serde_json::Value::Null},
+                                "err": serde_json::Value::Null,
+                                "confirmationStatus": "finalized",
+                            }],
+                        }),
+                        "getSignaturesForAddress" => {
+                            c.get_signatures += 1;
+                            serde_json::json!([])
+                        }
+                        _ => serde_json::Value::Null,
+                    }
+                };
+
+                let body =
+                    serde_json::json!({"jsonrpc": "2.0", "result": result, "id": id}).to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        (url, counters)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_rejects_replayed_activation_and_writes_ts_keyed_marker() {
+        // Drive one activation through the full verify path against the
+        // stateful counting mock: it broadcasts, confirms, fetches the
+        // delegation, and issues a receipt. The replay store must then carry
+        // `solana-subscription:consumed:<sig>` so a second, identical
+        // credential is rejected before any further broadcast/receipt work.
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let mut cfg = make_config();
+        cfg.store = Some(store.clone());
+        let plan_pda = parse_pubkey(&cfg.plan_id, "plan").unwrap();
+        let program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "prog").unwrap();
+        let subscriber = Pubkey::new_unique();
+        let account = encode_delegation_account(
+            subscriber.to_bytes(),
+            plan_pda.to_bytes(),
+            720,
+            720,
+            720,
+            1_700_000_000,
+        );
+        let (url, counters) = spawn_counting_activation_rpc(account, program);
+        cfg.rpc_url = Some(url);
+        let server = SubscriptionServer::new(cfg).expect("server");
+
+        // Build a client-signed activation tx with a distinctive first
+        // signature so the marker key is deterministic and easy to assert.
+        let mut tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        tx.signatures[0] = Signature::from([7u8; 64]);
+        let expected_sig = tx.signatures[0].to_string();
+        let expected_key = format!("solana-subscription:consumed:{expected_sig}");
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let challenge = server.subscription_challenge("720").expect("challenge");
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+
+        // First activation: succeeds, broadcasts exactly once.
+        server
+            .verify_credential(&credential)
+            .await
+            .expect("first activation succeeds");
+        {
+            let c = counters.lock().unwrap();
+            assert_eq!(c.send, 1, "first activation broadcasts exactly once");
+        }
+
+        // The consumed marker must be written under the TS-compatible key so
+        // a shared cross-language store rejects the replay.
+        assert_eq!(
+            store.get(&expected_key).await.unwrap(),
+            Some(serde_json::json!(true)),
+            "activation marker must be keyed as solana-subscription:consumed:<sig>",
+        );
+
+        let send_before_replay = counters.lock().unwrap().send;
+        let get_account_before_replay = counters.lock().unwrap().get_account;
+
+        // Second, identical credential: rejected up front as a replay.
+        let err = server
+            .verify_credential(&credential)
+            .await
+            .expect_err("replayed activation must be rejected");
+        assert_eq!(
+            err.code,
+            Some("signature-consumed"),
+            "replay must surface a signature-consumed error, got: {err:?}",
+        );
+
+        // The replay performed no further RPC work: no second broadcast and
+        // no additional account fetch / receipt re-issuance.
+        let c = counters.lock().unwrap();
+        assert_eq!(
+            c.send, send_before_replay,
+            "replay must not broadcast a second transaction",
+        );
+        assert_eq!(
+            c.get_account, get_account_before_replay,
+            "replay must be rejected before any RPC account fetch",
+        );
     }
 }
