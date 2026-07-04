@@ -30,6 +30,37 @@ const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
 
 /**
+ * `errorReason` values from a `@x402/svm` exact `settle()` that prove the
+ * transaction was never broadcast, so the payload reservation can be released
+ * for an honest retry. These are the scheme's settle-time verification-class
+ * reasons: `settle()` re-verifies first and returns one of them *before* it
+ * signs, sends, or confirms any transaction (see `@x402/svm` exact facilitator
+ * `settle` -> `_verify`). Every other failure — notably `transaction_failed`
+ * (the catch-all that subsumes a confirmation-poll timeout on a tx that may
+ * have landed) and `duplicate_settlement` (a settlement already occurred or is
+ * in flight) — must KEEP the reservation, mirroring the MPP charge invariant of
+ * releasing only on a definitive not-landed status (Charge.ts, release only on
+ * `TransactionNotLandedError`). Any unknown/dynamic reason defaults to KEEP so
+ * a landed-but-unconfirmed transfer cannot be re-served on another replica.
+ */
+const RELEASE_SAFE_SETTLE_REASONS: ReadonlySet<string> = new Set([
+    'verification_failed',
+    'unsupported_scheme',
+    'network_mismatch',
+    'fee_payer_not_managed_by_facilitator',
+    'invalid_exact_svm_payload_missing_fee_payer',
+    'invalid_exact_svm_payload_transaction_could_not_be_decoded',
+    'invalid_exact_svm_payload_transaction_instructions_length',
+    'invalid_exact_svm_payload_no_transfer_instruction',
+    'invalid_exact_svm_payload_mint_mismatch',
+    'invalid_exact_svm_payload_recipient_mismatch',
+    'invalid_exact_svm_payload_amount_mismatch',
+    'invalid_exact_svm_payload_memo_count',
+    'invalid_exact_svm_payload_memo_mismatch',
+    'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
+]);
+
+/**
  * The x402 `exact` protocol adapter: wraps `@x402/svm`'s exact scheme behind
  * the PayKit {@link ProtocolAdapter} contract, settling SPL transfers through
  * an in-process `@x402/core` facilitator that the configured operator signs
@@ -203,23 +234,34 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
 
             // Consume the payload before settling: a concurrent duplicate is
             // rejected here, and a settled payload stays consumed for the
-            // advertised completion window. Only a FAILED settle releases the
-            // key (the payment did not happen, a retry must be able to proceed).
+            // advertised completion window (MAX_TIMEOUT_SECONDS, the reservation
+            // TTL). Releasing the key on a settle failure is fail-closed: it is
+            // done ONLY when the transaction provably never broadcast, so a tx
+            // that landed but timed out during confirmation stays reserved and
+            // cannot be re-served on another replica. This mirrors the MPP
+            // charge invariant of releasing only on a definitive not-landed
+            // status (Charge.ts, release only on `TransactionNotLandedError`).
             const key = payloadKey(header, payload);
             if (!(await claimPayload(key))) {
                 throw new InvalidProofError('x402_payment_replayed', 'payment payload already used or in flight');
             }
 
-            let settlement;
-            try {
-                settlement = await facilitator.settle(payload, requirements);
-            } catch (error) {
-                await releasePayload(key);
-                throw error;
-            }
+            // A thrown settle can happen after the tx was broadcast (e.g. a
+            // transport error while polling for confirmation), so the tx may
+            // have landed. The reservation is intentionally NOT released on a
+            // throw — it is let propagate so the key stays claimed; the ledger
+            // owns dedup and the reservation expires with the payment's
+            // blockhash.
+            const settlement = await facilitator.settle(payload, requirements);
             if (!settlement.success) {
-                await releasePayload(key);
-                throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
+                const reason = settlement.errorReason ?? 'settlement_failed';
+                // Release only on a provably pre-broadcast, verification-class
+                // failure; keep for everything else (landed-but-unconfirmed,
+                // duplicate settlement, or any unknown reason — fail closed).
+                if (RELEASE_SAFE_SETTLE_REASONS.has(reason)) {
+                    await releasePayload(key);
+                }
+                throw new InvalidProofError(reason, settlement.errorMessage);
             }
 
             return {

@@ -303,14 +303,16 @@ describe('createX402ExactAdapter', () => {
         });
     });
 
-    it('releases the payload key when settlement fails so a retry can proceed', async () => {
+    it('releases the payload key on a pre-broadcast settle failure so a retry can proceed', async () => {
+        // A verification-class errorReason proves the transaction never
+        // broadcast, so the reservation is released for an honest retry.
         facilitatorControl.settle = () =>
-            Promise.resolve({ errorMessage: 'rpc down', errorReason: 'settlement_failed', success: false });
+            Promise.resolve({ errorMessage: 're-verify failed', errorReason: 'verification_failed', success: false });
         const { adapter } = await setup();
         const gate = await gateFor();
 
         await expect(adapter.verifyAndSettle(gate, paidRequest('RETRY_CRED'))).rejects.toMatchObject({
-            code: 'settlement_failed',
+            code: 'verification_failed',
         });
 
         facilitatorControl.settle = () =>
@@ -319,7 +321,50 @@ describe('createX402ExactAdapter', () => {
         expect(retried.transaction).toBe('TxSig');
     });
 
-    it('releases the payload key when settlement throws', async () => {
+    it('keeps the payload key on a landed-but-unconfirmed settle failure (transaction_failed)', async () => {
+        // `@x402/svm` collapses a confirmation-poll timeout on a tx that may
+        // have landed into {success:false, errorReason:'transaction_failed'}.
+        // Releasing the reservation here would let another replica re-serve the
+        // same landed payment, so the key must stay claimed.
+        facilitatorControl.settle = () =>
+            Promise.resolve({ errorMessage: 'confirm timeout', errorReason: 'transaction_failed', success: false });
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('LANDED_CRED'))).rejects.toMatchObject({
+            code: 'transaction_failed',
+        });
+
+        // A second attempt with the same payload is rejected as a replay: the
+        // reservation was NOT released, so the landed tx cannot be re-served
+        // even if the next call would have settled successfully.
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        await expect(adapter.verifyAndSettle(gate, paidRequest('LANDED_CRED'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
+    });
+
+    it('keeps the payload key on an unknown settle failure reason (fail closed)', async () => {
+        // Any reason outside the enumerated release-safe set defaults to KEEP.
+        facilitatorControl.settle = () => Promise.resolve({ errorReason: 'some_new_unmapped_reason', success: false });
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('UNKNOWN_CRED'))).rejects.toMatchObject({
+            code: 'some_new_unmapped_reason',
+        });
+
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        await expect(adapter.verifyAndSettle(gate, paidRequest('UNKNOWN_CRED'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
+    });
+
+    it('keeps the payload key when settlement throws after a possible broadcast', async () => {
+        // A thrown settle can happen while polling for confirmation of a tx that
+        // already broadcast, so the reservation is kept (the ledger owns dedup).
         facilitatorControl.settle = () => Promise.reject(new Error('facilitator crashed'));
         const { adapter } = await setup();
         const gate = await gateFor();
@@ -328,8 +373,9 @@ describe('createX402ExactAdapter', () => {
 
         facilitatorControl.settle = () =>
             Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
-        const retried = await adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'));
-        expect(retried.transaction).toBe('TxSig');
+        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
     });
 
     it('lets distinct payloads settle independently', async () => {
@@ -448,15 +494,15 @@ describe('createX402ExactAdapter', () => {
         expect(settleCalls).toBe(1);
     });
 
-    it('releases the reserving-store key when settlement fails', async () => {
+    it('releases the reserving-store key on a pre-broadcast settle failure', async () => {
         facilitatorControl.settle = () =>
-            Promise.resolve({ errorMessage: 'rpc down', errorReason: 'settlement_failed', success: false });
+            Promise.resolve({ errorMessage: 're-verify failed', errorReason: 'verification_failed', success: false });
         const reserving = reservingStore();
         const { adapter } = await setupWithStore(reserving.store);
         const gate = await gateFor();
 
         await expect(adapter.verifyAndSettle(gate, paidRequest('REL_CRED'))).rejects.toMatchObject({
-            code: 'settlement_failed',
+            code: 'verification_failed',
         });
         expect(reserving.calls.deletes).toHaveLength(1);
 
@@ -465,5 +511,30 @@ describe('createX402ExactAdapter', () => {
             Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
         const retried = await adapter.verifyAndSettle(gate, paidRequest('REL_CRED'));
         expect(retried.transaction).toBe('TxSig');
+    });
+
+    it('keeps the reserving-store key on a landed-but-unconfirmed settle failure', async () => {
+        // The cross-process invariant: a `transaction_failed` (confirm-timeout)
+        // must not delete the shared reservation, so a second replica reading
+        // the same store still rejects the payload as a replay.
+        facilitatorControl.settle = () =>
+            Promise.resolve({ errorMessage: 'confirm timeout', errorReason: 'transaction_failed', success: false });
+        const reserving = reservingStore();
+        const { adapter } = await setupWithStore(reserving.store);
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('KEEP_CRED'))).rejects.toMatchObject({
+            code: 'transaction_failed',
+        });
+        expect(reserving.calls.deletes).toHaveLength(0);
+
+        // A second replica sharing the store still rejects the payload: the
+        // reservation was never released.
+        const { adapter: replica } = await setupWithStore(reserving.store);
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        await expect(replica.verifyAndSettle(gate, paidRequest('KEEP_CRED'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
     });
 });
