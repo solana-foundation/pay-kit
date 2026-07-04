@@ -116,6 +116,14 @@ jobs:
         # the harness Python SDK matches every other SDK gate's frozen install.
         run: uv sync --frozen --extra dev
       - uses: ./.github/actions/setup-harness-leg
+      # IO-cap regression tests for the Python harness HTTP server
+      # (harness/python-server/server.py): headers past the per-header / count /
+      # total caps return 431 and an oversized declared body returns 413, before
+      # any protocol handling. Run through the frozen uv env from python/ so the
+      # spawned server imports solana_pay_kit; reverting the caps flips this red.
+      - name: Run Python harness server IO-cap tests
+        working-directory: python
+        run: uv run pytest ../harness/python-server/test_harness_adapter.py
       - name: Run Python cross-SDK conformance vectors
         working-directory: harness
         env:

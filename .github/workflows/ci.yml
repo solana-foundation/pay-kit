@@ -55,6 +55,13 @@ jobs:
       - name: Repo hygiene guard self-test
         working-directory: .
         run: bash scripts/check-repo-hygiene_test.sh
+      # Exercise the publish-workflow least-privilege / release-gating guard on
+      # every PR, not only on a publish dispatch: the guard's "real workflows
+      # pass, reverted fixtures fail" proof otherwise ran only on a developer's
+      # machine.
+      - name: Publish workflow guard self-test
+        working-directory: .
+        run: bash scripts/check-publish-workflow-guards_test.sh
 
   typecheck:
     name: Typecheck
@@ -529,33 +536,66 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server"
           cargo-cache-key: ts
+      # Always-on TypeScript conformance leg: the TS reference verifier in
+      # harness/src/conformance/x402.ts is the oracle every other SDK's exact
+      # verifier is pinned against, but no other workflow allowlists typescript,
+      # so its x402 exact-reject fund-safety vectors never executed in CI. Run
+      # them here on every push/PR so a drift or revert in the reference verifier
+      # ships red.
+      - name: Run TypeScript cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Guard self-tests for the harness release-gate false-green killers
+      # (assert-run-count run-count assertion, the on-chain gate, and the
+      # passWithNoTests config). No other workflow runs the bare harness suite,
+      # so a regression in the machinery that turns a zero-assertion run RED
+      # would otherwise ship undetected.
+      - name: Run harness gate self-tests
+        working-directory: harness
+        run: pnpm exec vitest run test/harness-gates.test.ts
+      # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
+      # --testNamePattern matched every one of these pairs, so it was redundant).
+      # assert-run-count pins the executed pair count so a title rename or a
+      # selector typo that runs fewer/zero payment tests fails loud.
       - name: Run Rust client harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 11
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: rust
       - name: Run Rust end-to-end harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 5
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: rust
       - name: Run Ruby server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 14
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: ruby
       - name: Run Rust client to Ruby server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: ruby

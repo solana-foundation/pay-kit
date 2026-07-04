@@ -10,6 +10,10 @@ go/coverage.out
 luacov.stats.out
 luacov.report.out
 
+# Vitest JSON report written by the harness release-gate legs (assert-run-count
+# reads it, then it is disposable). Local reruns of a CI leg leave it untracked.
+harness/vitest-report.json
+
 # Generated HTML payment link assets (built from html/)
 # Rust/Go/Lua gen files are committed (needed for cargo publish / go get).
 # TypeScript gen file is gitignored (npm publishes dist/).

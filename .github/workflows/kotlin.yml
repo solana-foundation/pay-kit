@@ -61,9 +61,14 @@ jobs:
       - name: Pre-warm Gradle for the Kotlin harness client
         working-directory: harness/kotlin-client
         run: gradle installDist --no-daemon
+      # Selection is by the MPP_HARNESS_* env selectors alone; assert-run-count
+      # pins the executed pair count so a title rename or selector typo that runs
+      # zero payment tests fails loud instead of exiting green on a skip.
       - name: Run Kotlin client harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: kotlin
           MPP_HARNESS_SERVERS: typescript
@@ -105,4 +110,9 @@ jobs:
           MPP_HARNESS_INTENTS: x402-exact
           X402_HARNESS_CLIENTS: kotlin-x402
           X402_HARNESS_SERVERS: rust-x402
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000
+        # As with swift-x402: the x402-exact matrix also enables the default php /
+        # go x402 servers this leg does not build, so the kotlin-x402 -> rust-x402
+        # pair is selected by title; assert-run-count pins that single pair.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
