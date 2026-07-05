@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strconv"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -498,13 +499,7 @@ func buildOpenPaymentChannelTx(
 // ensureClientVoucherPull rejects challenges that do not advertise pull mode
 // with the clientVoucher strategy, the only combination these openers serve.
 func ensureClientVoucherPull(request intents.SessionRequest) error {
-	pull := false
-	for _, mode := range request.Modes {
-		if mode == intents.SessionModePull {
-			pull = true
-			break
-		}
-	}
+	pull := slices.Contains(request.Modes, intents.SessionModePull)
 	if !pull {
 		return fmt.Errorf("session challenge does not advertise pull mode")
 	}

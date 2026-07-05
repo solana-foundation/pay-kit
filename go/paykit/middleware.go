@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -180,9 +182,7 @@ func appendChallenge(gate *Gate, adapter Adapter, accepts *[]AcceptsEntry, heade
 		return
 	}
 	*accepts = append(*accepts, entry)
-	for k, v := range challengeHeaders {
-		headers[k] = v
-	}
+	maps.Copy(headers, challengeHeaders)
 }
 
 // DefaultErrorHandler renders the canonical 402 response: every
@@ -220,12 +220,7 @@ func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func containsProtocol(list []Protocol, want Protocol) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, want)
 }
 
 // settlementWriter merges the adapter's settlement headers into the

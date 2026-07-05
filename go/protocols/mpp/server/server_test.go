@@ -163,7 +163,7 @@ func TestVerifyCredentialSignatureConcurrentReplayRejected(t *testing.T) {
 	var consumed int64
 	errs := make([]error, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()

@@ -21,10 +21,14 @@ import (
 var errTxNotFound = errors.New("transaction not found")
 
 // boolp is a small helper for *bool challenge fields.
-func boolp(b bool) *bool { return &b }
+//
+//go:fix inline
+func boolp(b bool) *bool { return new(b) }
 
 // u8p is a small helper for *uint8 challenge fields.
-func u8p(v uint8) *uint8 { return &v }
+//
+//go:fix inline
+func u8p(v uint8) *uint8 { return new(v) }
 
 // buildSPLTransferWithAuthority builds a transferChecked whose authority,
 // source ATA, and decimals byte can each be controlled, so the fee-payer
@@ -54,7 +58,7 @@ func TestSPLRejectsFeePayerAsAuthority(t *testing.T) {
 	transfer := buildSPLTransferWithAuthority(t, feePayer.PublicKey(), source, recipient, mint, 1000, 6)
 	tx := newTestTransaction(t, feePayer, transfer)
 
-	details := paycore.MethodDetails{FeePayer: boolp(true), FeePayerKey: feePayer.PublicKey().String(), Decimals: u8p(6)}
+	details := paycore.MethodDetails{FeePayer: new(true), FeePayerKey: feePayer.PublicKey().String(), Decimals: new(uint8(6))}
 	err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", details)
 	if err == nil || !strings.Contains(err.Error(), "fee payer cannot authorize") {
 		t.Fatalf("expected fee-payer-authority rejection, got %v", err)
@@ -73,7 +77,7 @@ func TestSPLRejectsFeePayerATAAsSource(t *testing.T) {
 	transfer := buildSPLTransferWithAuthority(t, authority, feePayerATA, recipient, mint, 1000, 6)
 	tx := newTestTransaction(t, feePayer, transfer)
 
-	details := paycore.MethodDetails{FeePayer: boolp(true), FeePayerKey: feePayer.PublicKey().String(), Decimals: u8p(6)}
+	details := paycore.MethodDetails{FeePayer: new(true), FeePayerKey: feePayer.PublicKey().String(), Decimals: new(uint8(6))}
 	err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", details)
 	if err == nil || !strings.Contains(err.Error(), "fee payer token account cannot fund") {
 		t.Fatalf("expected fee-payer-source rejection, got %v", err)
@@ -93,7 +97,7 @@ func TestSPLRejectsDecimalsByteMismatch(t *testing.T) {
 	transfer := buildSPLTransferWithAuthority(t, payer.PublicKey(), source, recipient, mint, 1000, 9)
 	tx := newTestTransaction(t, payer, transfer)
 
-	details := paycore.MethodDetails{Decimals: u8p(6)}
+	details := paycore.MethodDetails{Decimals: new(uint8(6))}
 	err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", details)
 	if err == nil || !strings.Contains(err.Error(), "no matching token transfer") {
 		t.Fatalf("expected decimals-mismatch rejection, got %v", err)
@@ -110,7 +114,7 @@ func TestSPLAcceptsMatchingDecimalsByte(t *testing.T) {
 	transfer := buildSPLTransferWithAuthority(t, payer.PublicKey(), source, recipient, mint, 1000, 6)
 	tx := newTestTransaction(t, payer, transfer)
 
-	details := paycore.MethodDetails{Decimals: u8p(6)}
+	details := paycore.MethodDetails{Decimals: new(uint8(6))}
 	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", details); err != nil {
 		t.Fatalf("expected matching-decimals transfer to pass, got %v", err)
 	}
@@ -128,7 +132,7 @@ func TestSOLRejectsFeePayerAsSource(t *testing.T) {
 	}
 	tx := newTestTransaction(t, feePayer, transfer)
 
-	details := paycore.MethodDetails{FeePayer: boolp(true), FeePayerKey: feePayer.PublicKey().String()}
+	details := paycore.MethodDetails{FeePayer: new(true), FeePayerKey: feePayer.PublicKey().String()}
 	verr := verifyTransfersAgainstChallenge(tx, 1000, "sol", recipient, "", details)
 	if verr == nil || !strings.Contains(verr.Error(), "fee payer cannot fund the SOL") {
 		t.Fatalf("expected SOL fee-payer-source rejection, got %v", verr)
@@ -149,9 +153,9 @@ func TestVerifyRejectsATARequiredWithSymbolCurrency(t *testing.T) {
 
 	details := paycore.MethodDetails{
 		Network:  "mainnet-beta",
-		Decimals: u8p(6),
+		Decimals: new(uint8(6)),
 		Splits: []paycore.Split{
-			{Recipient: splitRecipient.String(), Amount: "1", AtaCreationRequired: boolp(true)},
+			{Recipient: splitRecipient.String(), Amount: "1", AtaCreationRequired: new(true)},
 		},
 	}
 	// Currency is the symbol "USDC", not the mint address: must reject.
@@ -166,7 +170,7 @@ func TestVerifyRejectsATARequiredWithSymbolCurrency(t *testing.T) {
 func TestChargeRejectsATARequiredOnSOL(t *testing.T) {
 	m := &Mpp{currency: "SOL", network: "mainnet-beta"}
 	err := m.validateChargeOptions(ChargeOptions{
-		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: boolp(true)}},
+		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: new(true)}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "SPL token currency") {
 		t.Fatalf("expected SOL ataCreationRequired rejection, got %v", err)
@@ -178,7 +182,7 @@ func TestChargeRejectsATARequiredOnSOL(t *testing.T) {
 func TestChargeRejectsATARequiredOnSymbolCurrency(t *testing.T) {
 	m := &Mpp{currency: "USDC", network: "mainnet-beta"}
 	err := m.validateChargeOptions(ChargeOptions{
-		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: boolp(true)}},
+		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: new(true)}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "SPL token mint address") {
 		t.Fatalf("expected symbol ataCreationRequired rejection, got %v", err)
@@ -190,7 +194,7 @@ func TestChargeRejectsATARequiredOnSymbolCurrency(t *testing.T) {
 func TestChargeAcceptsATARequiredOnMintCurrency(t *testing.T) {
 	m := &Mpp{currency: paycore.USDCMainnetMint, network: "mainnet-beta"}
 	err := m.validateChargeOptions(ChargeOptions{
-		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: boolp(true)}},
+		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: new(true)}},
 	})
 	if err != nil {
 		t.Fatalf("expected mint-address ataCreationRequired to pass, got %v", err)
@@ -211,7 +215,7 @@ func errCode(t *testing.T, err error) core.ErrorCode {
 func TestChargeATARejectionCode(t *testing.T) {
 	m := &Mpp{currency: "SOL", network: "mainnet-beta"}
 	err := m.validateChargeOptions(ChargeOptions{
-		Splits: []paycore.Split{{Recipient: "x", Amount: "1", AtaCreationRequired: boolp(true)}},
+		Splits: []paycore.Split{{Recipient: "x", Amount: "1", AtaCreationRequired: new(true)}},
 	})
 	if code := errCode(t, err); code != core.ErrCodeInvalidPayload {
 		t.Fatalf("code = %q, want %q", code, core.ErrCodeInvalidPayload)

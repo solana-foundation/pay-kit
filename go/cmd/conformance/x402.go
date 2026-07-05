@@ -31,13 +31,13 @@ import (
 
 // X402Offer mirrors schema.ts X402Offer.
 type X402Offer struct {
-	Scheme            string                 `json:"scheme"`
-	Network           string                 `json:"network"`
-	Amount            string                 `json:"amount"`
-	Asset             string                 `json:"asset"`
-	PayTo             string                 `json:"payTo"`
-	MaxTimeoutSeconds *int                   `json:"maxTimeoutSeconds"`
-	Extra             map[string]interface{} `json:"extra"`
+	Scheme            string         `json:"scheme"`
+	Network           string         `json:"network"`
+	Amount            string         `json:"amount"`
+	Asset             string         `json:"asset"`
+	PayTo             string         `json:"payTo"`
+	MaxTimeoutSeconds *int           `json:"maxTimeoutSeconds"`
+	Extra             map[string]any `json:"extra"`
 }
 
 // X402EnvelopeShape mirrors schema.ts X402EnvelopeShape: the decoded

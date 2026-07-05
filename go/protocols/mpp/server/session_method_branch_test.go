@@ -597,7 +597,7 @@ func TestVerifyOpenTxMalformedInstructions(t *testing.T) {
 
 	// Short instruction data.
 	accounts := make([]*solana.AccountMeta, 0, 8)
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		accounts = append(accounts, wallet())
 	}
 	shortData, shortExpected := buildRawOpenPayload(t, accounts, []byte{openInstructionDiscriminator, 1, 2, 3})

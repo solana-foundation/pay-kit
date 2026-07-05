@@ -150,7 +150,7 @@ func TestNewSessionValidation(t *testing.T) {
 	}
 
 	manySplits := base()
-	for i := 0; i < 9; i++ {
+	for range 9 {
 		manySplits.Splits = append(manySplits.Splits, Split{Recipient: solana.NewWallet().PublicKey(), BPS: 1})
 	}
 	if _, err := NewSession(manySplits); err == nil || !strings.Contains(err.Error(), "splits cannot exceed") {

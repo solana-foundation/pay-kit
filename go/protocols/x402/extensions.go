@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"regexp"
 	"sort"
 )
@@ -65,9 +66,7 @@ type PaymentExtensions struct {
 // flatten. Go has no native serde flatten, so the two are merged by hand.
 func (p PaymentExtensions) MarshalJSON() ([]byte, error) {
 	out := make(map[string]json.RawMessage, len(p.Other)+1)
-	for k, v := range p.Other {
-		out[k] = v
-	}
+	maps.Copy(out, p.Other)
 	if p.PaymentIdentifier != nil {
 		raw, err := json.Marshal(p.PaymentIdentifier)
 		if err != nil {

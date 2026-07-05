@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -53,10 +54,7 @@ func (c *Charge) MaxBaseUnits() uint64 { return c.maxBaseUnits }
 func (c *Charge) Charge(baseUnits uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.amount = baseUnits
-	if c.amount > c.maxBaseUnits {
-		c.amount = c.maxBaseUnits
-	}
+	c.amount = min(baseUnits, c.maxBaseUnits)
 	c.set = true
 }
 
@@ -285,9 +283,7 @@ func (c *Client) writeUsage402(w http.ResponseWriter, r *http.Request, gate *Gat
 		slog.Error("paykit: building usage 402 challenge headers failed",
 			"gate", gate.Name, "err", err)
 	} else {
-		for k, v := range h {
-			headers[k] = v
-		}
+		maps.Copy(headers, h)
 	}
 	var perr *PaymentError
 	if len(perrOpt) > 0 && perrOpt[0] != nil {
@@ -364,9 +360,7 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 		if w.payment.SettlementHeaders == nil {
 			w.payment.SettlementHeaders = map[string]string{}
 		}
-		for k, v := range result.Headers {
-			w.payment.SettlementHeaders[k] = v
-		}
+		maps.Copy(w.payment.SettlementHeaders, result.Headers)
 	}
 }
 

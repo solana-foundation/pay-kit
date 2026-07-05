@@ -121,7 +121,7 @@ func TestVerifyExactTransactionRejectsTooManyInstructions(t *testing.T) {
 		makeComputeBudgetIx(3, []byte{0, 0, 0, 0, 0, 0, 0, 0}),
 		makeTransferCheckedIx(src, mint, dest, authority, 1, solana.TokenProgramID),
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		ixs = append(ixs, solana.NewInstruction(solana.SystemProgramID, nil, nil))
 	}
 	tx := buildValidTx(t, ixs, feePayer)

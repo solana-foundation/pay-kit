@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -113,12 +114,7 @@ func registerDocs(mux *http.ServeMux, a *app) {
 
 // isDocLang reports whether lang is a known docs language.
 func isDocLang(lang string) bool {
-	for _, known := range docLangs {
-		if lang == known {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(docLangs, lang)
 }
 
 // buildDocsTree walks the language docs directory: folders first, then

@@ -213,14 +213,8 @@ func registerX402(mux *http.ServeMux, a *app) error {
 }
 
 func summarizeUsage(bodyLen int, maxBaseUnits uint64) (uint64, uint64) {
-	tokens := uint64(bodyLen / 4)
-	if tokens < 1 {
-		tokens = 1
-	}
-	billedBaseUnits := tokens * summarizePricePerTokenUnits
-	if billedBaseUnits > maxBaseUnits {
-		billedBaseUnits = maxBaseUnits
-	}
+	tokens := max(uint64(bodyLen/4), 1)
+	billedBaseUnits := min(tokens*summarizePricePerTokenUnits, maxBaseUnits)
 	return billedBaseUnits, tokens
 }
 

@@ -26,6 +26,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"time"
 
@@ -221,12 +222,7 @@ func (s *SessionServer) supportsMode(mode intents.SessionMode) bool {
 	if len(s.config.Modes) == 0 {
 		return mode == intents.SessionModePush
 	}
-	for _, supported := range s.config.Modes {
-		if supported == mode {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.config.Modes, mode)
 }
 
 // ProcessOpen processes an open action and persists the channel state.

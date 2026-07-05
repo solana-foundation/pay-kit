@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,12 +29,7 @@ func memoTexts(t *testing.T, tx *solana.Transaction) []string {
 }
 
 func hasMemoText(texts []string, want string) bool {
-	for _, text := range texts {
-		if text == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(texts, want)
 }
 
 func TestBuildChargeTransactionSOLPull(t *testing.T) {

@@ -13,9 +13,11 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-func u64ptr(v uint64) *uint64 { return &v }
+//go:fix inline
+func u64ptr(v uint64) *uint64 { return new(v) }
 
-func strptr(v string) *string { return &v }
+//go:fix inline
+func strptr(v string) *string { return new(v) }
 
 func testSessionRequest(operator, recipient solana.PublicKey) intents.SessionRequest {
 	network := "localnet"
@@ -50,7 +52,7 @@ func TestDerivePaymentChannelOpenUsesChallengeDefaultsAndSplits(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
 	authorizedSigner := testutil.NewPrivateKey().PublicKey()
 	open, err := DerivePaymentChannelOpen(request, payer, authorizedSigner, PaymentChannelOpenOptions{
-		Salt: u64ptr(42),
+		Salt: new(uint64(42)),
 	})
 	if err != nil {
 		t.Fatalf("DerivePaymentChannelOpen: %v", err)
@@ -121,11 +123,11 @@ func TestDerivePaymentChannelOpenHonorsExplicitOptions(t *testing.T) {
 		testutil.NewPrivateKey().PublicKey(),
 		testutil.NewPrivateKey().PublicKey(),
 		PaymentChannelOpenOptions{
-			Deposit:      u64ptr(55),
+			Deposit:      new(uint64(55)),
 			GracePeriod:  &gracePeriod,
 			ProgramID:    &programID,
 			Recipients:   []paymentchannels.Distribution{{Recipient: splitRecipient, Bps: 25}},
-			Salt:         u64ptr(7),
+			Salt:         new(uint64(7)),
 			TokenProgram: &tokenProgram,
 		},
 	)
@@ -160,7 +162,7 @@ func TestDerivePaymentChannelOpenResolvesToken2022FromCurrency(t *testing.T) {
 		request,
 		testutil.NewPrivateKey().PublicKey(),
 		testutil.NewPrivateKey().PublicKey(),
-		PaymentChannelOpenOptions{Salt: u64ptr(1)},
+		PaymentChannelOpenOptions{Salt: new(uint64(1))},
 	)
 	if err != nil {
 		t.Fatalf("DerivePaymentChannelOpen: %v", err)
@@ -210,7 +212,7 @@ func TestDerivePaymentChannelOpenRejectsInvalidChallengeValues(t *testing.T) {
 		{"native SOL", func(r *intents.SessionRequest) { r.Currency = "SOL" }, "SPL token"},
 		{"bad cap", func(r *intents.SessionRequest) { r.Cap = "not-a-number" }, "session cap"},
 		{"bad recipient", func(r *intents.SessionRequest) { r.Recipient = "not-a-pubkey" }, "recipient"},
-		{"bad programId", func(r *intents.SessionRequest) { r.ProgramID = strptr("not-a-program") }, "programId"},
+		{"bad programId", func(r *intents.SessionRequest) { r.ProgramID = new("not-a-program") }, "programId"},
 		{"bad split", func(r *intents.SessionRequest) {
 			r.Splits = []intents.SessionSplit{{Recipient: "not-a-pubkey", BPS: 10}}
 		}, "split recipient"},
@@ -240,14 +242,14 @@ func TestBuildOpenPaymentChannelTransactionPartiallySignsForOperatorBroadcast(t 
 		Signer:           payerSigner,
 		AuthorizedSigner: authorizedSigner,
 		RecentBlockhash:  blockhash.String(),
-		Options:          PaymentChannelOpenOptions{Salt: u64ptr(99)},
+		Options:          PaymentChannelOpenOptions{Salt: new(uint64(99))},
 	})
 	if err != nil {
 		t.Fatalf("BuildOpenPaymentChannelTransaction: %v", err)
 	}
 
 	expected, err := DerivePaymentChannelOpen(request, payerSigner.PublicKey(), authorizedSigner, PaymentChannelOpenOptions{
-		Salt: u64ptr(99),
+		Salt: new(uint64(99)),
 	})
 	if err != nil {
 		t.Fatalf("DerivePaymentChannelOpen: %v", err)
@@ -291,7 +293,7 @@ func TestBuildOpenPaymentChannelTransactionUsesOperatorFeePayerAndChallengeBlock
 	recipient := testutil.NewPrivateKey().PublicKey()
 	request := testSessionRequest(operator, recipient)
 	challengeBlockhash := solana.HashFromBytes(testutil.NewPrivateKey().PublicKey().Bytes())
-	request.RecentBlockhash = strptr(challengeBlockhash.String())
+	request.RecentBlockhash = new(challengeBlockhash.String())
 	payerSigner := testutil.NewPrivateKey()
 
 	// FeePayer explicitly set to the operator must succeed (gasless: the server
@@ -301,7 +303,7 @@ func TestBuildOpenPaymentChannelTransactionUsesOperatorFeePayerAndChallengeBlock
 		Signer:           payerSigner,
 		AuthorizedSigner: testutil.NewPrivateKey().PublicKey(),
 		FeePayer:         &operator,
-		Options:          PaymentChannelOpenOptions{Salt: u64ptr(123)},
+		Options:          PaymentChannelOpenOptions{Salt: new(uint64(123))},
 	})
 	if err != nil {
 		t.Fatalf("BuildOpenPaymentChannelTransaction: %v", err)
@@ -321,14 +323,14 @@ func TestBuildOpenPaymentChannelTransactionRejectsNonOperatorFeePayer(t *testing
 	recipient := testutil.NewPrivateKey().PublicKey()
 	request := testSessionRequest(operator, recipient)
 	challengeBlockhash := solana.HashFromBytes(testutil.NewPrivateKey().PublicKey().Bytes())
-	request.RecentBlockhash = strptr(challengeBlockhash.String())
+	request.RecentBlockhash = new(challengeBlockhash.String())
 
 	_, err := BuildOpenPaymentChannelTransaction(BuildOpenPaymentChannelTransactionParams{
 		Request:          request,
 		Signer:           testutil.NewPrivateKey(),
 		AuthorizedSigner: testutil.NewPrivateKey().PublicKey(),
 		FeePayer:         &nonOperatorFeePayer,
-		Options:          PaymentChannelOpenOptions{Salt: u64ptr(123)},
+		Options:          PaymentChannelOpenOptions{Salt: new(uint64(123))},
 	})
 	if err == nil || !strings.Contains(err.Error(), "FeePayer must equal the challenge operator") {
 		t.Fatalf("error = %v, want non-operator fee payer rejection", err)
@@ -344,7 +346,7 @@ func TestBuildOpenPaymentChannelTransactionRequiresABlockhash(t *testing.T) {
 		Request:          request,
 		Signer:           testutil.NewPrivateKey(),
 		AuthorizedSigner: testutil.NewPrivateKey().PublicKey(),
-		Options:          PaymentChannelOpenOptions{Salt: u64ptr(1)},
+		Options:          PaymentChannelOpenOptions{Salt: new(uint64(1))},
 	})
 	if err == nil || !strings.Contains(err.Error(), "recent blockhash") {
 		t.Fatalf("error = %v, want recent blockhash requirement", err)
@@ -361,7 +363,7 @@ func TestCreatePaymentChannelSessionOpenerBuildsPullClientVoucherAction(t *testi
 
 	opened, err := CreatePaymentChannelSessionOpener(
 		request, payerSigner, sessionSigner, blockhash.String(),
-		PaymentChannelSessionOpenOptions{Open: PaymentChannelOpenOptions{Salt: u64ptr(11)}},
+		PaymentChannelSessionOpenOptions{Open: PaymentChannelOpenOptions{Salt: new(uint64(11))}},
 	)
 	if err != nil {
 		t.Fatalf("CreatePaymentChannelSessionOpener: %v", err)
@@ -412,9 +414,9 @@ func TestCreatePaymentChannelSessionOpenerAppliesSessionOptions(t *testing.T) {
 	opened, err := CreatePaymentChannelSessionOpener(
 		request, testutil.NewPrivateKey(), testutil.NewPrivateKey(), blockhash.String(),
 		PaymentChannelSessionOpenOptions{
-			Open:       PaymentChannelOpenOptions{Salt: u64ptr(19)},
-			Signature:  strptr("operator-will-fill"),
-			Cumulative: u64ptr(20),
+			Open:       PaymentChannelOpenOptions{Salt: new(uint64(19))},
+			Signature:  new("operator-will-fill"),
+			Cumulative: new(uint64(20)),
 			ExpiresAt:  &expiresAt,
 		},
 	)
@@ -444,7 +446,7 @@ func TestCreateServerOpenedSessionOpenerUsesOperatorPayerWithoutTransaction(t *t
 
 	opened, err := CreateServerOpenedPaymentChannelSessionOpener(
 		request, sessionSigner,
-		ServerOpenedPaymentChannelSessionOpenOptions{Open: PaymentChannelOpenOptions{Salt: u64ptr(13)}},
+		ServerOpenedPaymentChannelSessionOpenOptions{Open: PaymentChannelOpenOptions{Salt: new(uint64(13))}},
 	)
 	if err != nil {
 		t.Fatalf("CreateServerOpenedPaymentChannelSessionOpener: %v", err)

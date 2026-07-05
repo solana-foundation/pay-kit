@@ -362,7 +362,7 @@ func convertUnitsToUSD(amount string, decimals int) string {
 
 func pow10(n int) int {
 	out := 1
-	for i := 0; i < n; i++ {
+	for range n {
 		out *= 10
 	}
 	return out

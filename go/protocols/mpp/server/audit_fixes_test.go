@@ -148,7 +148,7 @@ func TestChargeRejectsPrimaryRecipientSplitWithATACreation(t *testing.T) {
 	}
 	_, err = m.ChargeWithOptions(context.Background(), "1.00", ChargeOptions{
 		Splits: []paycore.Split{
-			{Recipient: cfg.Recipient, Amount: "1", AtaCreationRequired: boolp(true)},
+			{Recipient: cfg.Recipient, Amount: "1", AtaCreationRequired: new(true)},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "primary recipient") {

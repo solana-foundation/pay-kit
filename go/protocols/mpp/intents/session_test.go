@@ -9,8 +9,11 @@ import (
 	"github.com/mr-tron/base58"
 )
 
-func ptrStr(s string) *string { return &s }
-func ptrU8(v uint8) *uint8    { return &v }
+//go:fix inline
+func ptrStr(s string) *string { return new(s) }
+
+//go:fix inline
+func ptrU8(v uint8) *uint8 { return new(v) }
 
 // ── SessionMode / strategy / status serde ──
 
@@ -105,10 +108,10 @@ func TestSessionRequestRoundtrip(t *testing.T) {
 		Cap:         "10000000",
 		Currency:    "USDC",
 		Decimals:    &decimals,
-		Network:     ptrStr("mainnet"),
+		Network:     new("mainnet"),
 		Operator:    "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		Recipient:   "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-		Description: ptrStr("API session"),
+		Description: new("API session"),
 		Modes:       []SessionMode{SessionModePush},
 	}
 	data, err := json.Marshal(req)
@@ -207,8 +210,8 @@ func TestSessionRequestWithSplits(t *testing.T) {
 		Operator:   "op",
 		Recipient:  "rec",
 		Splits:     []SessionSplit{{Recipient: "s1", BPS: 100}, {Recipient: "s2", BPS: 200}},
-		ProgramID:  ptrStr("prog123"),
-		ExternalID: ptrStr("ref-1"),
+		ProgramID:  new("prog123"),
+		ExternalID: new("ref-1"),
 	}
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -233,11 +236,11 @@ func TestSessionRequestWithMinVoucherDelta(t *testing.T) {
 	req := SessionRequest{
 		Cap:             "10000000",
 		Currency:        "USDC",
-		Decimals:        ptrU8(6),
-		Network:         ptrStr("mainnet"),
+		Decimals:        new(uint8(6)),
+		Network:         new("mainnet"),
 		Operator:        "op",
 		Recipient:       "rec",
-		MinVoucherDelta: ptrStr("500"),
+		MinVoucherDelta: new("500"),
 	}
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -256,7 +259,7 @@ func TestSessionRequestWithMinVoucherDelta(t *testing.T) {
 }
 
 func TestSessionRequestRecentBlockhashRoundtrip(t *testing.T) {
-	req := SessionRequest{Cap: "1", Currency: "USDC", Operator: "op", Recipient: "rec", RecentBlockhash: ptrStr("bh1")}
+	req := SessionRequest{Cap: "1", Currency: "USDC", Operator: "op", Recipient: "rec", RecentBlockhash: new("bh1")}
 	data, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -588,7 +591,7 @@ func TestMeteringAmountParsersAndUsageRoundtrip(t *testing.T) {
 		Currency:   "USDC",
 		Sequence:   1,
 		ExpiresAt:  DefaultSessionExpiresAt,
-		Proof:      ptrStr("proof"),
+		Proof:      new("proof"),
 	}
 	if _, err := directive.AmountBaseUnits(); err == nil {
 		t.Fatal("expected invalid metering amount error")
@@ -625,7 +628,7 @@ func TestMeteringDirectiveAndEnvelopeRoundtrip(t *testing.T) {
 		Currency:   "USDC",
 		Sequence:   7,
 		ExpiresAt:  4_102_444_800,
-		CommitURL:  ptrStr("https://example.test/commit"),
+		CommitURL:  new("https://example.test/commit"),
 	}
 	v, err := directive.AmountBaseUnits()
 	if err != nil || v != 125 {

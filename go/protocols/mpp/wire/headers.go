@@ -216,7 +216,7 @@ func FormatReceipt(receipt Receipt) (string, error) {
 
 // ExtractPaymentScheme returns the Payment scheme section when present.
 func ExtractPaymentScheme(header string) (string, bool) {
-	for _, part := range strings.Split(header, ",") {
+	for part := range strings.SplitSeq(header, ",") {
 		part = strings.TrimSpace(part)
 		if strings.HasPrefix(strings.ToLower(part), strings.ToLower(PaymentScheme)+" ") {
 			return part, true

@@ -96,7 +96,7 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) (map[string]string, error)
 		return nil, err
 	}
 	accepts := []paykit.AcceptsEntry{entry}
-	envelope := map[string]interface{}{
+	envelope := map[string]any{
 		"x402Version": proto.X402Version,
 		"resource":    map[string]string{"type": "http", "url": gate.Desc},
 		"accepts":     accepts,
