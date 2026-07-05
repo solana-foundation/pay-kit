@@ -335,9 +335,24 @@ async function settleActivation(
             // legitimate retry. The delegation/terms checks that follow in
             // verify() release it too; only a produced receipt keeps the claim.
             try {
-                await simulateTransaction(rpcUrl, txToSend);
-                const broadcastSignature = await broadcastTransaction(rpcUrl, txToSend);
-                await waitForConfirmation(rpcUrl, broadcastSignature);
+                const subscriptionPda = await deriveSubscriptionPda({
+                    planPda: address(challenge.methodDetails.planId),
+                    programId: address(challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM),
+                    subscriber: address(subscriber),
+                });
+                const delegationAlreadyExists = (await fetchSubscriptionDelegation(rpcUrl, subscriptionPda)) !== null;
+
+                // Idempotent recovery: the activation tx may have landed even if
+                // confirmation polling or the receipt round-trip failed. Retrying
+                // the same transaction would now make the on-chain subscribe ix
+                // abort with AlreadySubscribed, so skip rebroadcast when the
+                // delegation PDA already exists and let the verify() terms check
+                // below issue the receipt from the landed state.
+                if (!delegationAlreadyExists) {
+                    await simulateTransaction(rpcUrl, txToSend);
+                    const broadcastSignature = await broadcastTransaction(rpcUrl, txToSend);
+                    await waitForConfirmation(rpcUrl, broadcastSignature);
+                }
             } catch (err) {
                 await store.delete(consumedKey);
                 throw err;

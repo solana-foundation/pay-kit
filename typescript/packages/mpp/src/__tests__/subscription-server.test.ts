@@ -590,9 +590,9 @@ describe('subscription().verify() (push mode)', () => {
                     return rpcSuccess({
                         value: {
                             data: [accountB64, 'base64'],
-                            owner: SUBSCRIPTIONS_PROGRAM,
-                            lamports: 0,
                             executable: false,
+                            lamports: 0,
+                            owner: SUBSCRIPTIONS_PROGRAM,
                             rentEpoch: 0,
                         },
                     });
@@ -1256,6 +1256,7 @@ describe('subscription().verify() activation replay guard (atomic)', () => {
         // First attempt: confirmation reports a definitive on-chain failure.
         // Second attempt: the transaction confirms cleanly and terms match.
         let attempt = 0;
+        let accountInfoCalls = 0;
         globalThis.fetch = async (_input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             switch (body.method) {
@@ -1271,6 +1272,8 @@ describe('subscription().verify() activation replay guard (atomic)', () => {
                     }
                     return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
                 case 'getAccountInfo':
+                    accountInfoCalls += 1;
+                    if (accountInfoCalls <= 2) return rpcSuccess({ value: null });
                     return rpcSuccess({
                         value: {
                             data: [accountB64, 'base64'],
@@ -1314,5 +1317,75 @@ describe('subscription().verify() activation replay guard (atomic)', () => {
             request: {} as never,
         });
         expect((receipt as { status: string }).status).toBe('success');
+    });
+
+    test('a retry skips broadcast when the delegation already exists after a landed activation', async () => {
+        const { transaction, subscriberAddress } = await buildActivationTransactionBase64();
+        const accountB64 = delegationAccountB64(subscriberAddress);
+        const txSignature = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
+
+        let accountInfoCalls = 0;
+        let simulateCalls = 0;
+        let sendCalls = 0;
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string };
+            switch (body.method) {
+                case 'getAccountInfo': {
+                    accountInfoCalls += 1;
+                    if (accountInfoCalls <= 2) {
+                        return rpcSuccess({ value: null });
+                    }
+                    return rpcSuccess({
+                        value: {
+                            data: [accountB64, 'base64'],
+                            executable: false,
+                            lamports: 0,
+                            owner: SUBSCRIPTIONS_PROGRAM,
+                            rentEpoch: 0,
+                        },
+                    });
+                }
+                case 'simulateTransaction':
+                    simulateCalls += 1;
+                    if (simulateCalls > 1) {
+                        return rpcSuccess({ value: { err: { InstructionError: [0, { Custom: 0x205 }] }, logs: [] } });
+                    }
+                    return rpcSuccess({ value: { err: null, logs: [] } });
+                case 'sendTransaction':
+                    sendCalls += 1;
+                    return rpcSuccess(txSignature);
+                case 'getSignatureStatuses':
+                    return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+                default:
+                    return rpcSuccess({});
+            }
+        };
+
+        const store = Store.memory();
+        const method = subscription({
+            decimals: 6,
+            mint: MINT,
+            network: 'devnet',
+            periodCount: 30,
+            periodUnit: 'day',
+            planId: PLAN_ID,
+            puller: PULLER,
+            recipient: RECIPIENT,
+            rpcUrl: 'https://mock-rpc',
+            store,
+            tokenProgram: TOKEN_PROGRAM,
+        });
+
+        await expect(
+            method.verify!({ credential: activationCredential(transaction) as never, request: {} as never }),
+        ).rejects.toThrow(/SubscriptionDelegation account not found/);
+
+        const receipt = await method.verify!({
+            credential: activationCredential(transaction) as never,
+            request: {} as never,
+        });
+        expect((receipt as { status: string }).status).toBe('success');
+        expect(simulateCalls).toBe(1);
+        expect(sendCalls).toBe(1);
     });
 });
