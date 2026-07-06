@@ -2,9 +2,31 @@ import {
     type Base64EncodedWireTransaction,
     getBase64Codec,
     getBase64EncodedWireTransaction,
+    getCompiledTransactionMessageDecoder,
     getTransactionDecoder,
     type TransactionPartialSigner,
 } from '@solana/kit';
+
+/**
+ * Reject any compiled-message version beyond legacy / v0. A v1 (or later)
+ * message decodes to a shape that carries neither `.instructions` nor
+ * `.addressTableLookups`, so verifiers that read those fields would silently
+ * skip the address-lookup-table guard and then crash with a `TypeError` on
+ * hostile input. Callers invoke this immediately after
+ * `getCompiledTransactionMessageDecoder().decode()` and before touching any
+ * instruction/ALT field, turning that class of input into a clean typed error.
+ *
+ * `context` is prefixed onto the message so the caller (activation, charge,
+ * open/top-up) is identifiable in logs.
+ */
+export function assertLegacyOrV0Message(version: number | 'legacy', context: string): void {
+    if (version === 'legacy' || version === 0) {
+        return;
+    }
+    throw new Error(
+        `${context}: unsupported transaction message version ${version} — only legacy and v0 messages are accepted`,
+    );
+}
 
 /**
  * Decode a base64 wire transaction, co-sign it with a TransactionPartialSigner,
@@ -24,6 +46,21 @@ export async function coSignBase64Transaction(
     // The signer must already be listed in the transaction's signatures map.
     if (decoded.signatures[signer.address] === undefined) {
         throw new Error(`Signer ${signer.address} is not an expected signer for this transaction`);
+    }
+
+    // Pin the signer to the fee-payer slot (account index 0). This helper only
+    // ever co-signs as the sponsored fee payer; signing wherever the key
+    // happens to appear would let a client place the server key at a non-zero
+    // signer index — as the authority/source of an attacker-inserted
+    // instruction — and still collect the server's signature, draining the
+    // fee-payer wallet. Mirrors the Rust `co_sign_as_fee_payer` index-0 pin.
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        staticAccounts: readonly string[];
+        version: number | 'legacy';
+    };
+    assertLegacyOrV0Message(message.version, 'Co-sign transaction');
+    if (message.staticAccounts[0] !== signer.address) {
+        throw new Error(`Signer ${signer.address} must be the transaction fee payer (account index 0) to be co-signed`);
     }
 
     // Use the TransactionPartialSigner interface to sign.

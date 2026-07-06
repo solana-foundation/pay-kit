@@ -1,2 +1,11 @@
 packages:
   - app
+
+# Dependency overrides. pnpm v10 reads them from THIS file only (it no longer
+# reads package.json's `pnpm` field), so the vendored-tarball pins have to live
+# here to actually take effect. `@x402/core` and `@x402/svm` are forced to the
+# vendored, audited tarballs so a transitive range cannot resolve the npm
+# release.
+overrides:
+  '@x402/core': 'file:../typescript/.x402-vendor/x402-core-2.16.0.tgz'
+  '@x402/svm': 'file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz'

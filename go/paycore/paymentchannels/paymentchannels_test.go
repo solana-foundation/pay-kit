@@ -20,6 +20,19 @@ func pk(b byte) solana.PublicKey {
 	return out
 }
 
+// Golden associated-token-account base58 addresses for the fixed openParams()
+// inputs (payer pk(1), mint pk(3), channel PDA for pk(1)/pk(2)/pk(3)/pk(4)/salt
+// 99 under the production program id, SPL Token program). These are captured
+// once from a known-good build so the account-order assertions do NOT re-derive
+// them through the same helper under test: a byte drift in the shipped
+// derivation must surface as a mismatch against these frozen vectors rather than
+// silently tracking the code. The top-up test reuses the same channel PDA and
+// mint, so its ATAs match.
+const (
+	goldenPayerToken   = "HwD4QpS4bsutLbWZWhbmFUZfkXC5Au1DbkzYEzjDgps8"
+	goldenChannelToken = "CYPVBt8manx1RHzaU335oi6qPCMmwNE1QLSqFzuje1EK"
+)
+
 func TestProgramIDIsProduction(t *testing.T) {
 	if ProgramID != "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX" {
 		t.Fatalf("unexpected program id: %s", ProgramID)
@@ -324,14 +337,9 @@ func TestBuildOpenInstructionProgramIDAndAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("channel pda: %v", err)
 	}
-	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
-	if err != nil {
-		t.Fatalf("payer ata: %v", err)
-	}
-	channelToken, _, err := solana.FindAssociatedTokenAddressWithProgram(channel, params.Mint, params.TokenProgram)
-	if err != nil {
-		t.Fatalf("channel ata: %v", err)
-	}
+	// Golden vectors, not a re-derivation through the helper under test.
+	payerToken := solana.MustPublicKeyFromBase58(goldenPayerToken)
+	channelToken := solana.MustPublicKeyFromBase58(goldenChannelToken)
 	eventAuthority, _, err := FindEventAuthorityPDA()
 	if err != nil {
 		t.Fatalf("event-authority pda: %v", err)
@@ -456,14 +464,10 @@ func TestBuildTopUpInstructionProgramIDAndAccounts(t *testing.T) {
 		t.Fatalf("expected 6 accounts, got %d", len(metas))
 	}
 
-	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
-	if err != nil {
-		t.Fatalf("payer ata: %v", err)
-	}
-	channelToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Channel, params.Mint, params.TokenProgram)
-	if err != nil {
-		t.Fatalf("channel ata: %v", err)
-	}
+	// Golden vectors: this top-up's channel PDA and mint match the open case
+	// above, so its ATAs equal the same frozen base58 addresses.
+	payerToken := solana.MustPublicKeyFromBase58(goldenPayerToken)
+	channelToken := solana.MustPublicKeyFromBase58(goldenChannelToken)
 
 	want := []solana.PublicKey{
 		params.Payer,

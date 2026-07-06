@@ -462,31 +462,28 @@ class X402ServerExactTest < Minitest::Test
     assert_empty sent
   end
 
-  def test_settlement_rejects_fee_payer_in_any_instruction_account_before_sending
-    sent = []
-    state = build_state(sender: ->(_state, transaction) {
-      sent << transaction
-      "unit-settlement"
-    })
-    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
-      add_fee_payer_to_memo_accounts(transaction)
+  # Uniform-verdict regression (cross-SDK): a Lighthouse guard that merely
+  # references the fee payer as a read-only account is NOT a fund move and
+  # must be ACCEPTED, matching the Rust reference and the Go/Python/PHP/Lua
+  # verifiers. The old over-broad instruction-account sweep rejected this
+  # benign reference, diverging from the other five SDKs; the canonical rule
+  # guards only the transfer authority and funding source.
+  def test_settlement_accepts_lighthouse_guard_referencing_fee_payer
+    state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
+    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+      append_lighthouse_guard_referencing_fee_payer(transaction)
     end
 
-    error = assert_raises(RuntimeError) do
-      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
-    end
-
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
-    assert_empty sent
+    assert_equal "unit-settlement", PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
   end
 
   # Attack regression: fee-payer ATA drain via extra SPL TransferChecked.
   # A malicious client appends a TransferChecked in the optional-instruction
-  # slot that names the fee payer as an additional account (e.g. authority).
-  # The instruction-list sweep runs before the optional-program allowlist,
-  # so the canonical reject token is the fee-payer-in-instruction-accounts
-  # reason — proving the sweep (not the program-allowlist fallback) is the
-  # gate that closes this drain.
+  # slot. Only Memo and Lighthouse are permitted in the optional slots, so
+  # the SPL token program in slot ix[4] is rejected by the optional-program
+  # allowlist — the canonical gate that closes this drain now that the
+  # over-broad fee-payer-in-any-instruction sweep is gone (the sweep also
+  # rejected benign fee-payer references the other five SDKs accept).
   def test_settlement_rejects_extra_token_transfer_naming_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -501,14 +498,15 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
     assert_empty sent
   end
 
   # Attack regression: fee-payer SOL drain via SystemProgram::Transfer.
   # The classic "facilitator drain" shape — instead of an SPL transfer,
-  # the attacker appends a native lamport transfer whose source is the
-  # fee payer. The instruction-list sweep is the responsible gate.
+  # the attacker appends a native lamport transfer whose source is the fee
+  # payer. The System program is not in the optional-instruction allowlist
+  # (Memo / Lighthouse only), so the allowlist rejects it in slot ix[4].
   def test_settlement_rejects_extra_system_transfer_from_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -523,29 +521,7 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
-    assert_empty sent
-  end
-
-  # Attack regression: fee-payer pubkey appears at instruction-account
-  # position 1 (not the carve-out slot 0) of an extra memo instruction.
-  # Mirrors the "SLOT attack" shape: fee payer named at a non-payer slot.
-  # The sweep must reject regardless of position.
-  def test_settlement_rejects_fee_payer_at_instruction_slot_one
-    sent = []
-    state = build_state(sender: ->(_state, transaction) {
-      sent << transaction
-      "unit-settlement"
-    })
-    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
-      append_memo_with_fee_payer_at_slot_one(transaction)
-    end
-
-    error = assert_raises(RuntimeError) do
-      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
-    end
-
-    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
     assert_empty sent
   end
 
@@ -779,7 +755,7 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "signature_consumed", error.message
   end
 
-  def test_settlement_orders_broadcast_then_confirm_then_put_if_absent
+  def test_settlement_orders_broadcast_then_put_if_absent_then_confirm
     order = []
     cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
     tracking_cache = Class.new do
@@ -791,6 +767,11 @@ class X402ServerExactTest < Minitest::Test
       def put_if_absent(key, **kwargs)
         @order << [:put_if_absent, key]
         @inner.put_if_absent(key, **kwargs)
+      end
+
+      def delete(key, **kwargs)
+        @order << [:delete, key]
+        @inner.delete(key, **kwargs)
       end
 
       def duplicate?(key, **kwargs)
@@ -812,10 +793,13 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "sig-ordering",
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
 
+    # The replay signature is reserved immediately after a successful
+    # broadcast and BEFORE confirmation is awaited, so the whole
+    # confirmation-poll window is protected against a concurrent duplicate.
     assert_equal [
       [:broadcast],
-      [:confirm, "sig-ordering"],
-      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"]
+      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"],
+      [:confirm, "sig-ordering"]
     ], order
   end
 
@@ -848,7 +832,11 @@ class X402ServerExactTest < Minitest::Test
     assert retried
   end
 
-  def test_settlement_does_not_record_signature_when_confirmation_fails
+  def test_settlement_keeps_signature_reserved_on_confirmation_timeout
+    # A broadcast that succeeds but times out awaiting confirmation may still
+    # have landed. The signature is reserved BEFORE confirmation, so the marker
+    # survives the timeout and any retry with the same credential is rejected
+    # as a replay rather than re-broadcasting a possibly-live transaction.
     cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
     state = build_state(
       sender: ->(_state, _transaction) { "unconfirmed-sig" },
@@ -861,11 +849,210 @@ class X402ServerExactTest < Minitest::Test
     end
     assert_match(/timed out awaiting confirmation/, error.message)
 
-    # Confirmation failed → put_if_absent never ran → the signature is not in
-    # the replay store. The retry is allowed to broadcast again, and Solana's
-    # own per-signature uniqueness inside the blockhash window prevents a
-    # double-pay if the original eventually confirms.
-    refute cache.duplicate?("x402-svm-exact:consumed:unconfirmed-sig")
+    # The marker is still present after a confirmation timeout.
+    assert cache.duplicate?("x402-svm-exact:consumed:unconfirmed-sig"),
+      "confirmation timeout must keep the reservation (the tx may have landed)"
+
+    # A retry that resolves to the same signature is rejected as a replay.
+    retried = false
+    state = build_state(
+      sender: ->(_state, _transaction) {
+        retried = true
+        "unconfirmed-sig"
+      },
+      signature_confirmer: ->(_state, signature) { signature },
+      settlement_cache: cache
+    )
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+    assert_equal "signature_consumed", error.message
+    assert retried, "the retry broadcasts, resolves the same signature, then trips the reservation"
+  end
+
+  def test_settlement_reserves_signature_before_confirmation_completes
+    # The reservation is written the instant broadcast returns a signature —
+    # BEFORE confirmation is awaited. A confirmer that blocks (as it does while
+    # polling getSignatureStatuses) leaves the reservation in place, so a
+    # concurrent second settle of the same signature is rejected as a replay
+    # even though the first settle has not finished confirming.
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    key = "x402-svm-exact:consumed:pending-sig"
+    observed_reserved = nil
+    state = build_state(
+      sender: ->(_state, _transaction) { "pending-sig" },
+      signature_confirmer: ->(_state, signature) {
+        # Mid-confirmation: the signature is already reserved, so a duplicate
+        # settle arriving now cannot proceed.
+        observed_reserved = cache.duplicate?(key)
+        signature
+      },
+      settlement_cache: cache
+    )
+
+    assert_equal "pending-sig",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+
+    assert_equal true, observed_reserved,
+      "the signature must be reserved before confirmation is awaited"
+  end
+
+  def test_settlement_releases_signature_on_definitively_never_landed
+    # A confirmer that determines the transaction definitively never landed
+    # (blockhash expired / dropped, surfaced as TransactionNotFound) releases
+    # the reservation so a corrected resubmission is free to broadcast again.
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { "dropped-sig" },
+      signature_confirmer: ->(_state, signature) {
+        raise PayKit::Protocols::X402::Error::TransactionNotFound.new(
+          "transaction #{signature} never landed"
+        )
+      },
+      settlement_cache: cache
+    )
+
+    assert_raises(PayKit::Protocols::X402::Error::TransactionNotFound) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+
+    # Definitively-never-landed released the reservation.
+    refute cache.duplicate?("x402-svm-exact:consumed:dropped-sig"),
+      "a definitively never-landed outcome must release the reservation"
+
+    # The corrected resubmission (a fresh signature) settles cleanly.
+    retried = false
+    state = build_state(
+      sender: ->(_state, _transaction) {
+        retried = true
+        "corrected-sig"
+      },
+      signature_confirmer: ->(_state, signature) { signature },
+      settlement_cache: cache
+    )
+    assert_equal "corrected-sig",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    assert retried
+  end
+
+  # The DEFAULT confirmer (not an injected test lambda) must be able to prove a
+  # transaction never landed and release the reservation. Broadcast is accepted,
+  # the confirmation poll is exhausted, then the definitive check runs:
+  # getSignatureStatuses(searchTransactionHistory: true) reports the signature
+  # absent AND getBlockHeight is past the credential's lastValidBlockHeight, so
+  # the blockhash is provably expired. The default await_confirmation raises
+  # Error::TransactionNotFound, the settlement cache entry is deleted, and a
+  # resubmission of a corrected credential is accepted. Mirrors the Rust
+  # PullSettlementOutcome::NotLanded contract and the Go never-landed release.
+  def test_default_confirmer_releases_reservation_when_provably_never_landed
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "never-landed-sig" },
+      settlement_cache: cache
+    )
+    payment_header = build_payment_header(state)
+
+    # RPC transport: the signature is never found (poll + definitive check),
+    # and the chain has advanced past lastValidBlockHeight -> blockhash expired.
+    router = rpc_router(
+      "getSignatureStatuses" => {"result" => {"value" => [nil]}},
+      "getBlockHeight" => {"result" => 1001}
+    )
+
+    error = with_stubbed_rpc(router) do
+      no_op_sleep do
+        assert_raises(PayKit::Protocols::X402::Error::TransactionNotFound) do
+          PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+        end
+      end
+    end
+    assert_match(/never-landed-sig/, error.message)
+
+    # The reservation was released.
+    refute cache.duplicate?("x402-svm-exact:consumed:never-landed-sig"),
+      "a provably never-landed default-confirmer outcome must release the reservation"
+
+    # A resubmission of the same credential is now free to broadcast again
+    # (fresh signature) and settles cleanly under an injected happy confirmer.
+    retried = false
+    resubmit_state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) {
+        retried = true
+        "corrected-sig"
+      },
+      settlement_cache: cache,
+      signature_confirmer: ->(_state, signature) { signature }
+    )
+    assert_equal "corrected-sig",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(resubmit_state, build_payment_header(resubmit_state))
+    assert retried
+  end
+
+  # Companion: with the DEFAULT confirmer, when the signature is absent but the
+  # blockhash is still valid (chain height has NOT passed lastValidBlockHeight),
+  # the outcome is indeterminate — the tx may still land — so the plain timeout
+  # RuntimeError propagates and the reservation is KEPT. A resubmission is
+  # rejected as a replay.
+  def test_default_confirmer_keeps_reservation_when_blockhash_still_valid
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "pending-sig" },
+      settlement_cache: cache
+    )
+    payment_header = build_payment_header(state)
+
+    router = rpc_router(
+      "getSignatureStatuses" => {"result" => {"value" => [nil]}},
+      # Chain height is still at/under lastValidBlockHeight -> not expired.
+      "getBlockHeight" => {"result" => 1000}
+    )
+
+    error = with_stubbed_rpc(router) do
+      no_op_sleep do
+        assert_raises(RuntimeError) do
+          PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+        end
+      end
+    end
+    refute_instance_of PayKit::Protocols::X402::Error::TransactionNotFound, error
+    assert_match(/timed out awaiting confirmation/, error.message)
+
+    # The reservation is kept (the tx may still land within the blockhash window).
+    assert cache.duplicate?("x402-svm-exact:consumed:pending-sig"),
+      "an indeterminate (still-valid blockhash) outcome must keep the reservation"
+  end
+
+  # Companion: with the DEFAULT confirmer, when the signature is absent and the
+  # definitive block-height RPC itself errors, we cannot prove non-landing, so
+  # the reservation is KEPT (fail-closed) and the plain timeout error surfaces.
+  def test_default_confirmer_keeps_reservation_when_definitive_check_rpc_errors
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "rpc-flaky-sig" },
+      settlement_cache: cache
+    )
+    payment_header = build_payment_header(state)
+
+    router = rpc_router(
+      "getSignatureStatuses" => {"result" => {"value" => [nil]}},
+      "getBlockHeight" => {"error" => {"code" => -32000, "message" => "node behind"}}
+    )
+
+    error = with_stubbed_rpc(router) do
+      no_op_sleep do
+        assert_raises(RuntimeError) do
+          PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+        end
+      end
+    end
+    refute_instance_of PayKit::Protocols::X402::Error::TransactionNotFound, error
+
+    assert cache.duplicate?("x402-svm-exact:consumed:rpc-flaky-sig"),
+      "a failed definitive check must keep the reservation (fail-closed)"
   end
 
   def test_settlement_consumed_key_namespace_is_scheme_scoped
@@ -1284,6 +1471,74 @@ class X402ServerExactTest < Minitest::Test
     PayKit::Protocols::X402::Server::Exact::Config.new(**kwargs)
   end
 
+  # State whose challenge embeds a real recentBlockhash AND its
+  # lastValidBlockHeight, so a fixture-built credential echoes both under
+  # accepted.extra. Exercises the DEFAULT confirmer's provably-never-landed
+  # release path end-to-end (the credential's echoed lastValidBlockHeight is the
+  # height the definitive getBlockHeight check compares against).
+  def build_state_with_block_context(
+    last_valid_block_height:,
+    sender:,
+    settlement_cache:,
+    signature_confirmer: nil
+  )
+    kwargs = {
+      rpc_url: "http://127.0.0.1:8899",
+      network: NETWORK,
+      mint: ASSET,
+      pay_to: PAY_TO,
+      facilitator_secret_key: JSON.generate(secret(65)),
+      amount: "$0.001",
+      transaction_sender: sender,
+      account_checker: ->(_state, _account) { true },
+      settlement_cache: settlement_cache,
+      recent_blockhash_provider: -> { {"blockhash" => BLOCKHASH, "lastValidBlockHeight" => last_valid_block_height} }
+    }
+    # Only override the confirmer when explicitly given; otherwise the DEFAULT
+    # confirmer (Exact.await_confirmation) is exercised, which is the point.
+    kwargs[:signature_confirmer] = signature_confirmer unless signature_confirmer.nil?
+    PayKit::Protocols::X402::Server::Exact::Config.new(**kwargs)
+  end
+
+  # Build a Net::HTTP.start stub that routes canned JSON-RPC responses by the
+  # request's `method` field, so a single test can answer getSignatureStatuses
+  # and getBlockHeight differently.
+  def rpc_router(responses)
+    ->(request) {
+      method = JSON.parse(request.body).fetch("method")
+      body = responses.fetch(method) { raise "unexpected RPC method in test: #{method}" }
+      response = Object.new
+      base_is_a = response.method(:is_a?)
+      response.define_singleton_method(:is_a?) { |klass| klass == Net::HTTPSuccess || base_is_a.call(klass) }
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { JSON.generate(body) }
+      response
+    }
+  end
+
+  def with_stubbed_rpc(router)
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) { |request| router.call(request) }
+    singleton = class << Net::HTTP; self; end
+    original_start = Net::HTTP.method(:start)
+    singleton.define_method(:start, ->(_hostname, _port, _options, &block) { block.call(fake_http) })
+    yield
+  ensure
+    singleton.define_method(:start, original_start)
+  end
+
+  # Make the default confirmer's inter-poll sleep a no-op so the 40-attempt poll
+  # loop does not stall the test before the definitive check runs.
+  def no_op_sleep
+    exact = PayKit::Protocols::X402::Server::Exact
+    singleton = class << exact; self; end
+    original_sleep = exact.method(:sleep)
+    singleton.define_method(:sleep) { |*_args| 0 }
+    yield
+  ensure
+    singleton.define_method(:sleep, original_sleep)
+  end
+
   def build_payment_header(state, resource: nil, extensions: nil)
     X402ExactClientFixture.build_exact_payment_signature(
       requirement: PayKit::Protocols::X402::Server::Exact.exact_requirement(state, resource: resource),
@@ -1361,14 +1616,6 @@ class X402ServerExactTest < Minitest::Test
     transaction
   end
 
-  def add_fee_payer_to_memo_accounts(transaction)
-    offset = transaction.bytesize - 1 - 32
-
-    transaction.setbyte(offset - 2, 1)
-    transaction.insert(offset - 1, [0].pack("C"))
-    transaction
-  end
-
   def append_optional_instruction(transaction, program)
     message_offset = 1 + (2 * 64)
     account_count_offset = message_offset + 4
@@ -1386,6 +1633,34 @@ class X402ServerExactTest < Minitest::Test
 
     transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
     transaction.insert(transaction.bytesize - 1, [account_count - 1, 0, 0].pack("C*"))
+    transaction
+  end
+
+  # Append a trailing Lighthouse guard whose accounts vector references the
+  # fee payer (account index 0) as a read-only account. Lighthouse is an
+  # allowed optional program, and referencing the fee payer here is a state
+  # assertion, not a fund move: the canonical rule accepts it.
+  def append_lighthouse_guard_referencing_fee_payer(transaction)
+    message_offset = 1 + (2 * 64)
+    account_count_offset = message_offset + 4
+    account_count = transaction.getbyte(account_count_offset)
+    account_keys_offset = account_count_offset + 1
+    blockhash_offset = account_keys_offset + (account_count * 32)
+    lighthouse = PayKit::Protocols::X402::Protocol::Schemes::Exact.base58_decode(
+      PayKit::Protocols::X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM
+    )
+
+    unless transaction.byteslice(account_keys_offset, account_count * 32).include?(lighthouse)
+      transaction.setbyte(account_count_offset, account_count + 1)
+      transaction.insert(blockhash_offset, lighthouse)
+      account_count += 1
+    end
+    lighthouse_index = account_count - 1
+
+    instruction_count_offset = account_keys_offset + (account_count * 32) + 32
+    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
+    # [program_index, num_accounts=1, account_index=0 (fee payer), data_len=0].
+    transaction.insert(transaction.bytesize - 1, [lighthouse_index, 1, 0, 0].pack("C*"))
     transaction
   end
 
@@ -1480,29 +1755,6 @@ class X402ServerExactTest < Minitest::Test
       12,                   # short_vec(data_len)
       2, 0, 0, 0,           # discriminator: Transfer
       1, 0, 0, 0, 0, 0, 0, 0 # lamports = 1
-    ].pack("C*")
-    transaction.insert(transaction.bytesize - 1, instruction)
-    transaction
-  end
-
-  # Append a memo-program instruction whose accounts vector names the fee
-  # payer at position 1. The sweep must reject before settlement,
-  # regardless of which slot the fee payer appears in.
-  def append_memo_with_fee_payer_at_slot_one(transaction)
-    message_offset = 1 + (2 * 64)
-    account_count_offset = message_offset + 4
-    account_count = transaction.getbyte(account_count_offset)
-    account_keys_offset = account_count_offset + 1
-    instruction_count_offset = account_keys_offset + (account_count * 32) + 32
-
-    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
-    # Memo program index is 7 in build_transaction's account_keys layout.
-    # Accounts: [memo_program=7, fee_payer=0] — fee payer at position 1.
-    instruction = [
-      7,        # program_index (memo)
-      2,        # short_vec(account_count)
-      7, 0,     # accounts: filler, fee_payer
-      0         # short_vec(data_len) — empty
     ].pack("C*")
     transaction.insert(transaction.bytesize - 1, instruction)
     transaction

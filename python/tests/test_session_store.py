@@ -178,6 +178,166 @@ async def test_delete_and_mark_finalized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_evicts_idle_locks() -> None:
+    """Idle per-channel lock entries are evicted rather than retained for the
+    store's lifetime.
+
+    Runs sequential and concurrent update_channel cycles across many distinct
+    channel ids; once all updates settle with no waiter remaining, the internal
+    lock map must be empty.
+    """
+    store = MemoryChannelStore()
+
+    sequential_ids = 200
+    for i in range(sequential_ids):
+        cid = f"seq-{i}"
+        await store.update_channel(cid, lambda _current, _cid=cid: _test_channel_state(_cid, 1))
+
+    concurrent_ids = 100
+    per_id = 8
+
+    def increment(current: ChannelState | None, cid: str) -> ChannelState:
+        if current is None:
+            return _test_channel_state(cid, 1)
+        current.cumulative += 1
+        return current
+
+    async def burst(cid: str) -> None:
+        await store.update_channel(cid, lambda current, _cid=cid: increment(current, _cid))
+
+    tasks = [burst(f"con-{i}") for i in range(concurrent_ids) for _ in range(per_id)]
+    await asyncio.gather(*tasks)
+
+    assert len(store._locks) == 0
+
+    all_channels = await store.list_channels(None)
+    assert len(all_channels) == sequential_ids + concurrent_ids
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_updates_serialized() -> None:
+    """Eviction must never let two updates for one channel run unserialized.
+
+    Races many concurrent increments for a single channel; the per-channel lock
+    makes the read-modify-write atomic, so the final cumulative equals the
+    number of increments, and the lock map is empty once the burst settles.
+    """
+    store = MemoryChannelStore()
+    await store.update_channel("c1", lambda _current: _test_channel_state("c1", 0))
+
+    workers = 64
+
+    def increment(current: ChannelState | None) -> ChannelState:
+        assert current is not None
+        current.cumulative += 1
+        return current
+
+    async def run() -> None:
+        await store.update_channel("c1", increment)
+
+    await asyncio.gather(*(run() for _ in range(workers)))
+
+    stored = await store.get_channel("c1")
+    assert stored is not None
+    assert stored.cumulative == workers
+
+    assert len(store._locks) == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_does_not_pin_lock_entry() -> None:
+    """A task cancelled while queued on a contended channel lock must not leak
+    its refcount.
+
+    Task A holds the per-channel lock for channel X. Task B calls
+    ``_acquire_channel_lock`` for X: it bumps the refcount under ``_mu`` and then
+    blocks awaiting the held lock. B is cancelled while queued. Once A releases,
+    no holder or waiter remains, so the lock-entry map must no longer contain X.
+    Without cancellation safety the cancelled waiter's ref is never decremented,
+    ``refs`` can never return to 0, and the entry is pinned forever.
+    """
+    store = MemoryChannelStore()
+
+    # Task A takes and holds the lock for X.
+    entry_a = await store._acquire_channel_lock("X")
+
+    b_queued = asyncio.Event()
+
+    async def waiter() -> None:
+        # Fence: signal just before we enter the (blocking) acquire so the
+        # canceller knows B has bumped refs and is about to queue on the lock.
+        b_queued.set()
+        await store._acquire_channel_lock("X")
+
+    task_b = asyncio.create_task(waiter())
+    await b_queued.wait()
+    # Let B run until it is parked inside `await entry.lock.acquire()`; the
+    # entry now has refs == 2 (A holds, B queued).
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert store._locks["X"].refs == 2
+
+    # Cancel B while it is queued on the contended lock.
+    task_b.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task_b
+
+    # A releases; with no holder or waiter left the entry must be evicted.
+    await store._release_channel_lock("X", entry_a)
+
+    assert "X" not in store._locks
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_release_does_not_orphan_entry() -> None:
+    """Cancellation on the release path's ``_mu`` re-acquisition must not orphan
+    the lock entry.
+
+    ``_release_channel_lock`` releases the per-channel lock and then re-acquires
+    ``_mu`` to decrement the refcount and evict the entry. If a task is cancelled
+    while suspended on that ``_mu`` re-acquisition, the decrement/eviction must
+    still complete — otherwise the entry is pinned with a stale refcount forever.
+    """
+    store = MemoryChannelStore()
+
+    entry = await store._acquire_channel_lock("X")
+    assert store._locks["X"].refs == 1
+
+    # Hold _mu from a helper so the release task suspends on `async with _mu`
+    # inside _release_channel_lock, right after it has released the channel lock.
+    mu_held = asyncio.Event()
+    let_go = asyncio.Event()
+
+    async def hold_mu() -> None:
+        async with store._mu:
+            mu_held.set()
+            await let_go.wait()
+
+    holder = asyncio.create_task(hold_mu())
+    await mu_held.wait()
+
+    release_task = asyncio.create_task(store._release_channel_lock("X", entry))
+    # Let the release task run until it is parked on the contended `_mu`.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # Cancel while it is suspended acquiring `_mu`.
+    release_task.cancel()
+    # Now let the _mu holder finish so the shielded bookkeeping can proceed.
+    let_go.set()
+    await holder
+
+    # The release task observes the cancellation, but the bookkeeping must have
+    # completed regardless: no holder or waiter remains, so X is evicted.
+    with pytest.raises(asyncio.CancelledError):
+        await release_task
+
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert "X" not in store._locks
+
+
+@pytest.mark.asyncio
 async def test_returns_clones() -> None:
     """Mirrors TestMemoryChannelStoreReturnsClones.
 

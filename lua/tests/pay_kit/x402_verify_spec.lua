@@ -584,6 +584,66 @@ helper.test('rule 9: ATA-create optional instruction rejected', function()
                      tostring(err):find('unknown', 1, true) ~= nil, tostring(err))
 end)
 
+helper.test('rule 5: fee-payer ATA as transfer source rejected', function()
+  -- The transfer authority is a legitimate customer key, but the source ATA
+  -- is the facilitator's OWN token account for the mint -- draining the
+  -- operator. The source-account guard must reject even though the authority
+  -- is a distinct key.
+  local facilitator = base58.encode(string.rep('\1', 32))
+  local authority   = base58.encode(string.rep('\2', 32))
+  local mint        = base58.encode(string.rep('\4', 32))
+  local pay_to      = base58.encode(string.rep('\5', 32))
+  local destination = ata.derive(pay_to, mint, TOKEN_PROGRAM)
+  local fee_payer_source = ata.derive(facilitator, mint, TOKEN_PROGRAM)
+  local keys = standard_keys(facilitator, fee_payer_source, mint, destination, authority)
+  local raw = assemble(keys, 8, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(7, {}, '/paid'),
+  })
+  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok, 'expected verify to REJECT a facilitator-owned source ATA')
+  helper.assert_true(tostring(err):find('fee_payer', 1, true) ~= nil, tostring(err))
+end)
+
+helper.test('rule 5: Lighthouse guard referencing the fee payer accepted', function()
+  -- A Lighthouse guard whose accounts reference the facilitator (index 0) is
+  -- a state assertion, not a fund move, and MUST be accepted -- the canonical
+  -- rule guards only the transfer authority and funding source. This is the
+  -- M-6 uniform-verdict case.
+  local facilitator = base58.encode(string.rep('\1', 32))
+  local authority   = base58.encode(string.rep('\2', 32))
+  local source      = base58.encode(string.rep('\3', 32))
+  local mint        = base58.encode(string.rep('\4', 32))
+  local pay_to      = base58.encode(string.rep('\5', 32))
+  local destination = ata.derive(pay_to, mint, TOKEN_PROGRAM)
+  -- 9-key layout: standard 8 keys + Lighthouse program at index 8.
+  local keys = table.concat({
+    base58.decode(facilitator),
+    base58.decode(source),
+    base58.decode(mint),
+    base58.decode(destination),
+    base58.decode(authority),
+    base58.decode(COMPUTE_BUDGET),
+    base58.decode(TOKEN_PROGRAM),
+    base58.decode(MEMO_PROGRAM),
+    base58.decode(LIGHTHOUSE_PROGRAM),  -- index 8
+  })
+  -- Slots: compute-limit, compute-price, transfer, Lighthouse(fee-payer), memo.
+  local raw = assemble(keys, 9, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(8, {0}, string.char(0)),  -- Lighthouse guard referencing fee payer
+    build_ix(7, {}, '/paid'),
+  })
+  local ok = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(ok, 'expected verify to ACCEPT a Lighthouse guard referencing the fee payer')
+end)
+
 helper.test('verify_client_signatures rejects when no client signatures remain', function()
   local facilitator, authority, source, mint, _pay_to, destination = setup_actors()
   local keys = standard_keys(facilitator, source, mint, destination, authority)

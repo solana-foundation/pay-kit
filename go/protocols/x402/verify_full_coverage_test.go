@@ -185,6 +185,34 @@ func TestVerifyExactTransactionRejectsTransferAuthorityIsFeePayer(t *testing.T) 
 	}
 }
 
+func TestVerifyExactTransactionRejectsFeePayerAsTransferSource(t *testing.T) {
+	// The transfer authority is a legitimate customer key (so the
+	// authority guard passes), but the transfer SOURCE is the fee-payer's
+	// own associated token account — draining the operator's funds. The
+	// source-account guard must reject this even though the authority is
+	// not the fee-payer. Cross-SDK parity: Python/PHP/Ruby/Lua already
+	// guard the source; Rust and Go must too.
+	feePayer := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	payTo := solana.NewWallet().PublicKey()
+	authority := solana.NewWallet().PublicKey()
+	dest := sourceATA(t, payTo, mint)
+	src := sourceATA(t, feePayer, mint) // the fee-payer's own ATA
+	tx := buildValidTx(t, []solana.Instruction{
+		makeComputeBudgetIx(2, []byte{200, 0, 0, 0}),
+		makeComputeBudgetIx(3, []byte{0, 0, 0, 0, 0, 0, 0, 0}),
+		makeTransferCheckedIx(src, mint, dest, authority, 1000, solana.TokenProgramID),
+	}, feePayer)
+	err := VerifyExactTransaction(tx, validTransferReq(feePayer, mint, payTo, 1000))
+	if err == nil {
+		t.Fatal("expected error for fee payer as transfer source")
+	}
+	ve, ok := err.(*VerifyError)
+	if !ok || ve.Code != "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds" {
+		t.Fatalf("expected fee_payer_transferring_funds code, got %v", err)
+	}
+}
+
 func TestVerifyExactTransactionRejectsMintMismatch(t *testing.T) {
 	feePayer := solana.NewWallet().PublicKey()
 	mint := solana.NewWallet().PublicKey()

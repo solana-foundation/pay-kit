@@ -11,8 +11,8 @@ jobs:
     name: PHP tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: "8.3"
           coverage: pcov
@@ -35,7 +35,7 @@ jobs:
           composer run test:coverage
       - name: Upload PHP coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: php-coverage
           path: php/build/coverage/clover.xml
@@ -45,8 +45,8 @@ jobs:
     needs: test-php
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: "8.3"
       - uses: ./.github/actions/setup-harness
@@ -56,16 +56,33 @@ jobs:
       - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
+      # Cross-SDK conformance vectors for PHP: the PHP exact verifier must execute
+      # the x402 exact-reject fund-safety vectors, mirroring the python leg. The
+      # conformance runner (harness/runners/php.json) launches
+      # `php conformance/runner.php` from php/ against the composer autoloader
+      # installed above.
+      - name: Run PHP cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: php
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Selection is by the MPP_HARNESS_* env selectors (client, server, and the
+      # scenario allowlist) alone; assert-run-count pins the executed pair count
+      # so a title rename or selector typo that runs zero payment tests fails loud.
       - name: Run PHP server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: php
           MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
       - name: Run Rust client PHP server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: php
@@ -83,4 +100,9 @@ jobs:
           MPP_HARNESS_INTENTS: charge,x402-exact
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000
+        # The php server is exercised via the "php server" title filter (the
+        # matrix also enables the typescript / x402 servers this leg does not
+        # build); assert-run-count pins the php-server pair count.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 10

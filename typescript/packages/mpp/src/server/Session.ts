@@ -23,13 +23,18 @@ import type {
 import { normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
+    fetchTransactionBase64,
+    isGetAccountInfoRpc,
+    isGetTransactionRpc,
     type MultiDelegateSubmitRpc,
     PAYMENT_CHANNELS_PROGRAM_ID,
     submitInitMultiDelegateTxIfMissing,
     submitOpenTx,
     submitSettleAndDistribute,
     type SubmitSettleAndDistributeResult,
+    verifyChannelAccountState,
     verifyOpenTx,
+    verifyTopUpTx,
 } from './session/on-chain.js';
 import {
     type ChannelState,
@@ -110,6 +115,7 @@ export function session(parameters: session.Parameters) {
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
         settlementWindowSeconds,
+        trustedClientOpen,
     } = parameters;
 
     if (cap <= 0n) {
@@ -262,6 +268,7 @@ export function session(parameters: session.Parameters) {
                         recipient,
                         rpc,
                         store,
+                        trustedClientOpen,
                     });
                 case 'voucher':
                     return await handleVoucher({
@@ -288,9 +295,13 @@ export function session(parameters: session.Parameters) {
                         challengeId: cred.challenge.id,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
+                        mint: resolvedMint,
                         payload: cred.payload,
+                        programId: resolvedProgramId,
+                        recipient,
                         rpc,
                         store,
+                        tokenProgram,
                     });
                 case 'close':
                     return await handleClose({
@@ -410,6 +421,8 @@ interface HandleOpenArgs {
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
+    /** Explicit opt-in: accept bare push-open assertions with no rpc. */
+    readonly trustedClientOpen: boolean | undefined;
 }
 
 async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
@@ -428,10 +441,25 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     // Channel payer (the deposit funder / distribute refund destination),
     // captured from the verified open when a transaction is present.
     let channelPayer: string | undefined;
+    // True once the open has been bound to an on-chain payment-channels
+    // Channel (transaction or bare-push-with-rpc paths) — pure-pull opens
+    // back a delegation PDA, not a Channel account, so they stay false.
+    let boundOnChain = false;
 
     if (mode === 'push' && !payload.transaction && !payload.channelId) {
         throw new Error('open payload missing transaction or channelId');
     }
+
+    const expected = {
+        authorizedSigner: payload.authorizedSigner,
+        currency: args.currency,
+        maxCap: args.cap,
+        mint: args.mint,
+        network: args.network,
+        operator: args.operator,
+        programId: args.programId.toString(),
+        recipient: args.recipient,
+    };
 
     if (payload.transaction) {
         // Payment-channel-backed open. This covers push sessions and
@@ -439,17 +467,6 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         // payment channel (the `createPaymentChannelSessionOpener` flow):
         // both attach the pre-signed open transaction for verification —
         // and, with `openTxSubmitter: 'server'`, server-side broadcast.
-        const expected = {
-            authorizedSigner: payload.authorizedSigner,
-            currency: args.currency,
-            maxCap: args.cap,
-            mint: args.mint,
-            network: args.network,
-            operator: args.operator,
-            programId: args.programId.toString(),
-            recipient: args.recipient,
-        };
-
         if (args.openTxSubmitter === 'server') {
             if (!args.rpc) throw new Error('openTxSubmitter=server requires an rpc client');
             // Decode (no RPC) first so an idempotent replay of an
@@ -473,6 +490,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 channelPayer = submitted.payer;
                 signature = submitted.signature as unknown as string;
             }
+            boundOnChain = true;
         } else {
             const verified = await verifyOpenTx({
                 expected,
@@ -483,21 +501,43 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             deposit = verified.deposit;
             channelPayer = verified.payer;
             signature = payload.signature;
+            boundOnChain = true;
         }
     } else if (mode === 'push') {
         // No transaction in payload: the client asserts a previously
-        // broadcast open. When an RPC client is configured the open
-        // signature is confirmed on-chain before persisting (mirrors
-        // Rust `process_open`); without one the channelId/deposit
-        // fields are trusted as-is, matching Rust with `rpc_url`
-        // unset. The generated payment-channels client has no Channel
-        // account decoder yet, so the on-chain channel fields
-        // (payee/mint/authorizedSigner/deposit) are not re-checked.
+        // broadcast open. When an RPC client is configured, the open
+        // transaction is fetched by the asserted signature and run
+        // through the full verifyOpenTx binding — a live signature alone
+        // proves nothing about the asserted channelId/deposit. Without
+        // an RPC the fields would be trusted as-is, so that mode
+        // requires the explicit `trustedClientOpen` opt-in.
         channelId = expectString(payload.channelId, 'channelId');
         deposit = parseU64String(expectString(payload.deposit, 'deposit'), 'deposit');
         signature = payload.signature;
         if (args.rpc) {
-            await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, expectString(signature, 'signature'), 'open');
+            const sig = expectString(signature, 'signature');
+            await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, sig, 'open');
+            if (!isGetTransactionRpc(args.rpc)) {
+                throw new Error(
+                    'open: configured rpc does not expose getTransaction — cannot bind the open signature to a transaction',
+                );
+            }
+            const transaction = await fetchTransactionBase64(args.rpc, sig, 'open');
+            // verifyOpenTx re-checks payload.channelId against the tx's
+            // channel PDA and payload.signature against the tx's own
+            // fee-payer signature, so an unrelated (but successful)
+            // signature or a foreign channel id cannot pass.
+            const verified = await verifyOpenTx({ expected, openPayload: { ...payload, transaction } });
+            if (verified.deposit !== deposit) {
+                throw new Error(`open: asserted deposit ${deposit} != transaction deposit ${verified.deposit}`);
+            }
+            channelId = verified.channelId;
+            channelPayer = verified.payer;
+            boundOnChain = true;
+        } else if (!args.trustedClientOpen) {
+            throw new Error(
+                'open: bare push open (no transaction bytes) requires an rpc for verification; set trustedClientOpen to accept client-asserted channels without one',
+            );
         }
     } else {
         // pull mode: trust the channelId/tokenAccount + approvedAmount.
@@ -528,6 +568,27 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
 
     if (deposit === 0n) throw new Error('deposit must be greater than zero');
     if (deposit > args.cap) throw new Error(`deposit ${deposit} exceeds cap ${args.cap}`);
+
+    // Defense-in-depth: after binding the open INSTRUCTION, also bind the
+    // resulting on-chain Channel ACCOUNT — decode it and assert
+    // payee/mint/authorizedSigner/deposit match, and that it is owned by
+    // the payment-channels program. Runs only for payment-channel-backed
+    // opens (boundOnChain) when the rpc can fetch accounts; a delegation
+    // PDA (pure pull) has no Channel account to decode.
+    if (boundOnChain && isGetAccountInfoRpc(args.rpc)) {
+        await verifyChannelAccountState({
+            channelId,
+            expected: {
+                authorizedSigner: payload.authorizedSigner,
+                deposit,
+                mint: args.mint,
+                payee: args.recipient,
+                payer: channelPayer,
+                programId: args.programId.toString(),
+            },
+            rpc: args.rpc,
+        });
+    }
 
     const newState: ChannelState = {
         authorizedSigner: payload.authorizedSigner,
@@ -675,14 +736,18 @@ interface HandleTopUpArgs {
     readonly challengeId: string | undefined;
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
+    readonly mint: string;
     readonly payload: {
         readonly action: 'topUp';
         readonly channelId: string;
         readonly newDeposit: string;
         readonly signature: string;
     };
+    readonly programId: Address;
+    readonly recipient: string;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
+    readonly tokenProgram: string;
 }
 
 async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
@@ -698,11 +763,60 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     if (existing.closeRequestedAt !== undefined) {
         throw new Error('Channel close is pending — no further top-ups accepted');
     }
+    if (newDeposit <= existing.deposit) {
+        throw new Error(`newDeposit ${newDeposit} must exceed current deposit ${existing.deposit}`);
+    }
 
-    // Confirm the top-up transaction on-chain before raising the deposit
-    // (parity with the open-signature verification).
+    // Confirm the top-up transaction on-chain AND bind it to this channel
+    // before raising the deposit. The topUp payload carries only a
+    // signature — no transaction bytes — so the liveness check alone would
+    // accept any successful signature; the fetched transaction must contain
+    // a top_up instruction for this channel with the exact deposit delta.
+    // Without an rpc the payload is trusted as-is (trusted-client mode,
+    // matching open verification with rpc unset).
     if (args.rpc) {
         await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, args.payload.signature, 'topUp');
+        if (!isGetTransactionRpc(args.rpc)) {
+            throw new Error(
+                'topUp: configured rpc does not expose getTransaction — cannot bind the top-up signature to a transaction',
+            );
+        }
+        await verifyTopUpTx({
+            expected: {
+                amountDelta: newDeposit - existing.deposit,
+                channelId: args.payload.channelId,
+                mint: args.mint,
+                payer: existing.operator,
+                programId: args.programId.toString(),
+                tokenProgram: args.tokenProgram,
+            },
+            rpc: args.rpc,
+            signature: args.payload.signature,
+        });
+        // Bind the resulting on-chain Channel ACCOUNT too — its decoded
+        // `deposit` must have actually reached `newDeposit`, not just contain a
+        // top_up instruction with the right delta (which a racing top-up could
+        // also satisfy). This is the authoritative check, so it is required
+        // rather than optional: an rpc that cannot fetch accounts must reject
+        // the deposit raise the same way a getTransaction-incapable rpc does,
+        // never silently degrade to the delta-only path.
+        if (!isGetAccountInfoRpc(args.rpc)) {
+            throw new Error(
+                'topUp: configured rpc does not expose getAccountInfo — cannot bind the raised deposit to the on-chain Channel account',
+            );
+        }
+        await verifyChannelAccountState({
+            channelId: args.payload.channelId,
+            expected: {
+                authorizedSigner: existing.authorizedSigner,
+                deposit: newDeposit,
+                mint: args.mint,
+                payee: args.recipient,
+                payer: existing.operator,
+                programId: args.programId.toString(),
+            },
+            rpc: args.rpc,
+        });
     }
 
     const result = await args.store.updateChannel(args.payload.channelId, current => {
@@ -1272,5 +1386,15 @@ export declare namespace session {
         readonly store?: SessionStore;
         /** SPL token program (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from currency/network. */
         readonly tokenProgram?: string;
+        /**
+         * Explicit opt-in to accept bare push-open assertions — payloads
+         * carrying only `channelId`/`deposit`/`signature`, no transaction
+         * bytes — when no `rpc` is configured. Without an rpc the server
+         * cannot verify that the asserted channel exists, targets this
+         * recipient, or holds the claimed deposit, so it is trusting the
+         * client outright. Enable only for trusted first-party clients.
+         * Defaults to false: a bare push open with no rpc is rejected.
+         */
+        readonly trustedClientOpen?: boolean;
     }
 }

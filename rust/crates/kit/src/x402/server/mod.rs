@@ -2,6 +2,18 @@ pub mod batch_settlement;
 pub mod exact;
 pub mod upto;
 
+/// In-process Solana JSON-RPC mock for exercising the settlement broadcast /
+/// confirm / account-fetch paths in unit tests (test builds only).
+#[cfg(test)]
+pub(crate) mod mock_rpc;
+
+/// Maximum accepted `PAYMENT-SIGNATURE` header length, in bytes. Mirrors the
+/// MPP header parsers' `MAX_TOKEN_LEN` (16 KiB) so a hostile client cannot drive
+/// unbounded base64 + JSON decode work with an oversized credential header. The
+/// `exact` / `upto` / `batch_settlement` header parsers all gate on this before
+/// any base64 / JSON work.
+pub(crate) const MAX_PAYMENT_SIGNATURE_HEADER_LEN: usize = 16 * 1024;
+
 /// A single currency the `exact` / `upto` server backends are willing to accept.
 ///
 /// Replaces the awkward singular `currency` + `decimals` + `token_program` plus

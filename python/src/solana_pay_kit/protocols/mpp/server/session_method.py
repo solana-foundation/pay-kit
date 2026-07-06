@@ -44,7 +44,8 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
-from solana_pay_kit._paycore.solana import MAX_SPLITS
+from solana_pay_kit._paycore.network import Network
+from solana_pay_kit._paycore.solana import MAX_SPLITS, resolve_mint
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
     PAYMENT_RECEIPT_HEADER,
@@ -71,6 +72,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
     confirm_transaction_signature,
     cosign_and_broadcast_open,
+    fetch_and_bind_channel_account,
     settle_and_finalize_channel,
     verify_open_tx,
 )
@@ -204,6 +206,20 @@ class SessionGateResult:
     headers: dict[str, str]
     # body is None on success, else the 402 problem document.
     body: dict[str, Any] | None = None
+
+
+def _bare_network(network: str) -> str:
+    """Normalize a network slug to its bare MPP form (mainnet/devnet/localnet).
+
+    Accepts both the bare slug and the caip2-flavored ``Network`` enum value
+    (e.g. ``"solana_localnet"`` from ``config().network.value``). Without this,
+    the localnet guards check ``!= "localnet"`` and would treat a caller passing
+    ``"solana_localnet"`` as a non-localnet network — wrongly requiring a shared
+    store and failing closed on what is actually localnet."""
+    try:
+        return Network(network).mints_label()
+    except ValueError:
+        return network
 
 
 def _parse_session_u64(value: str, name: str) -> int:
@@ -489,6 +505,21 @@ class Session:
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
         )
 
+    def _expected_mint(self) -> str:
+        """Resolve the SPL mint the session settles in from its challenge
+        currency / network, for binding a push open to the on-chain channel.
+
+        Raises when the currency does not resolve to an SPL mint (native SOL or
+        an unknown symbol), since a payment channel must be denominated in a
+        token."""
+        mint = resolve_mint(self._currency, self._network)
+        if not mint:
+            raise PaymentError(
+                f"payment-channel sessions require an SPL token, got currency {self._currency!r}",
+                code="invalid-config",
+            )
+        return mint
+
     async def _handle_open(self, payload: OpenPayload) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
@@ -593,18 +624,40 @@ class Session:
             if not payload.payer:
                 payload.payer = verified.payer
             payload.deposit = str(verified.deposit)
-        elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
-            raise PaymentError(
-                "push open requires payer or transaction when settle-at-close is configured",
-                code="invalid-payload",
-            )
         elif mode == "push" and self._rpc is not None:
+            # No transaction attached, but a channelId + confirmation signature.
+            # SECURITY: confirming that *some* signature succeeded proves
+            # nothing about the channel, so the client-supplied deposit / payer /
+            # authorizedSigner MUST NOT be trusted. Confirm the open signature,
+            # then read the authoritative on-chain Channel account and bind the
+            # persisted state to it — persisting the ON-CHAIN deposit, never the
+            # client's claim. Mirrors the Rust process_open fetch-and-bind path.
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
-        # else: no transaction is attached. Reachable by a pull open (the channel
-        # id / token account and deposit are trusted as provided, mirroring the TS
-        # `else` branch) or by a push open with a channel id and no RPC (trusted
-        # as previously broadcast). The server-broadcast path is skipped even when
-        # openTxSubmitter=server is configured.
+            bound = await fetch_and_bind_channel_account(
+                self._rpc,
+                payload.session_id(),
+                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+                max_cap=self._core.config.max_cap,
+                expected_authorized_signer=payload.authorized_signer,
+                expected_payee=self._recipient,
+                expected_mint=self._expected_mint(),
+            )
+            payload.deposit = str(bound.deposit)
+            payload.payer = bound.payer
+        elif mode == "push":
+            # No transaction and no RPC: the channel cannot be bound to on-chain
+            # state, so the deposit and channel identity are unverifiable. Fail
+            # closed on any real network; only localnet (unit/dev) may skip the
+            # bind. Mirrors the Rust process_open `None => ...` arm.
+            if self._network != "localnet":
+                raise PaymentError(
+                    "payment-channel push open requires an rpc client to bind the on-chain channel off localnet",
+                    code="invalid-config",
+                )
+        # else: a pull open with no transaction — the channel id / token account
+        # and deposit are trusted as provided, mirroring the TS `else` branch.
+        # The server-broadcast path is skipped even when openTxSubmitter=server
+        # is configured.
 
         try:
             state = await self._core.process_open(payload)
@@ -637,9 +690,13 @@ class Session:
         return f"{receipt.session_id}:{receipt.delivery_id}:{receipt.cumulative}"
 
     async def _handle_top_up(self, payload: TopUpPayload) -> str:
-        """Raise a channel's deposit after optional on-chain confirmation of the
-        top-up signature. The receipt reference is the top-up transaction
-        signature."""
+        """Raise a channel's deposit. The on-chain confirm-and-bind (the on-chain
+        Channel account's deposit must equal the asserted newDeposit, fail-closed
+        off localnet) runs in the core process_top_up via the installed
+        verify_top_up_tx seam, so this dispatcher is a thin caller: it applies
+        the method-level cap clamp and the cheap store pre-checks (fast-fail
+        before the network round-trip inside the core bind) and delegates. The
+        receipt reference is the top-up transaction signature."""
         try:
             new_deposit = _parse_session_u64(payload.new_deposit, "newDeposit")
         except ValueError as exc:
@@ -647,7 +704,9 @@ class Session:
         if new_deposit > self._cap:
             raise PaymentError(f"newDeposit {new_deposit} exceeds cap {self._cap}", code="invalid-payload")
 
-        # Cheap store pre-checks before touching the network.
+        # Cheap store pre-checks before the core bind touches the network. The
+        # authoritative checks (and the on-chain deposit bind) run inside
+        # process_top_up; these only fast-fail an obviously doomed top-up.
         existing = await self._core.store().get_channel(payload.channel_id)
         if existing is None:
             raise PaymentError(f"channel {payload.channel_id} not found", code="invalid-payload")
@@ -658,10 +717,14 @@ class Session:
                 f"channel {payload.channel_id} close is pending; no further top-ups accepted",
                 code="invalid-payload",
             )
-        if self._rpc is not None:
-            await confirm_transaction_signature(self._rpc, payload.signature, "topUp")
         try:
             await self._core.process_top_up(payload)
+        except PaymentError:
+            # Propagate the seam's structured code unchanged: an operator
+            # misconfiguration surfaced by the on-chain bind (e.g. no RPC client
+            # off localnet, coded invalid-config) is a server fault and must not
+            # be flattened into the client-fault invalid-payload below.
+            raise
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         self._touch(payload.channel_id)
@@ -881,7 +944,12 @@ def new_session(options: SessionOptions) -> Session:
 
     currency = options.currency or "USDC"
     decimals = options.decimals or 6
-    network = options.network or "mainnet"
+    # Normalize to the bare MPP slug (mainnet/devnet/localnet). Callers may pass
+    # either the bare form or the caip2-flavored Network enum value (e.g. the
+    # config's "solana_localnet"); the downstream localnet guards and mint
+    # resolution all key on the bare slug, so a client passing "solana_localnet"
+    # must not be treated as a non-localnet network.
+    network = _bare_network(options.network or "mainnet")
     realm = options.realm or detect_realm()
 
     open_tx_submitter = options.open_tx_submitter
@@ -901,6 +969,23 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
+    # Shared-store replay guard: the default in-memory channel store is
+    # process-local, so a second replica or a restart drops the voucher watermark
+    # and would accept a replayed voucher. Off localnet, require an explicit shared
+    # store unless the operator opts into single-process scope (mirrors the
+    # charge/pay-kit replay-store guard and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE).
+    if options.store is None and network != "localnet":
+        import os
+
+        if os.environ.get("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE") != "1":
+            raise PaymentError(
+                "a shared channel store is required outside localnet: the default in-memory store "
+                "is process-local, so a second replica or a restart would drop the voucher watermark "
+                "and accept a replayed voucher. Provide options.store, or set "
+                "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 to acknowledge single-process scope.",
+                code="invalid-config",
+            )
+
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(
@@ -916,11 +1001,16 @@ def new_session(options: SessionOptions) -> Session:
         modes=options.modes,
         pull_voucher_strategy=options.pull_voucher_strategy,
     )
-    # The method layer performs the optional on-chain liveness confirm inline in
-    # its open / topUp handlers, leaving the core SessionConfig verifier seams
-    # unset and confirming in the method, so the core is left to trust payload
-    # claims; the seam stays available for hosts that drive the lower-level
-    # SessionServer directly.
+    # Install the top-up bind seam in-core: process_top_up confirms the
+    # signature and binds the raised deposit to the on-chain Channel account
+    # through it, so the deposit bind is not a parallel abstraction living only
+    # in the HTTP dispatcher. Off localnet without an RPC client the seam fails
+    # closed. The open seam stays unset here (the method layer confirms opens
+    # inline), remaining available for hosts that drive the SessionServer
+    # directly.
+    from solana_pay_kit.protocols.mpp.server.session_onchain import new_top_up_tx_verifier
+
+    config.verify_top_up_tx = new_top_up_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(
         core=core,

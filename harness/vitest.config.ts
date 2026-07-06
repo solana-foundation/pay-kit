@@ -16,5 +16,9 @@ export default defineConfig({
     hookTimeout: 130_000,
     fileParallelism: false,
     maxWorkers: 1,
+    // A leg that filters to zero tests (e.g. a stale selector) must go RED, not
+    // green. The workflow legs pair this with scripts/assert-run-count.mjs to
+    // pin the number of settlement pair-tests each leg actually executes.
+    passWithNoTests: false,
   },
 });

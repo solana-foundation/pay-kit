@@ -7,7 +7,7 @@
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
 import { Store } from 'mppx/server';
-import { getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
+import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { getTransferSolInstruction } from '@solana-program/system';
 import { findAssociatedTokenPda, getTransferCheckedInstruction } from '@solana-program/token';
 import {
@@ -30,7 +30,12 @@ import {
     type Blockhash,
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
-import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
+import {
+    type ChallengeRequest,
+    charge,
+    interpretPostTimeoutStatus,
+    verifyChargeTransaction,
+} from '../server/Charge.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,
@@ -1728,6 +1733,153 @@ test('pull: accepts valid native SOL transfer', async () => {
     expect(receipt.reference).toBe(SIGNATURE);
 });
 
+// ── Replay prevention (type="transaction") ──
+// Regression for the pull-path sibling of the #211 push-mode TOCTOU: the
+// broadcast path reserved a signature but never checked it, so the same signed
+// transaction could be re-verified (one payment, N accesses).
+
+test('pull: rejects an already-consumed transaction (sequential replay)', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+
+    // First submission settles.
+    const receipt = await method.verify({
+        credential: transactionCredential(tx, { amount: '1000000' }),
+        request: {} as any,
+    });
+    expect(receipt.status).toBe('success');
+
+    // Re-submitting the same signed transaction is rejected as a replay, even
+    // though the on-chain tx still looks valid — one payment, one access.
+    await expect(
+        method.verify({
+            credential: transactionCredential(tx, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/already consumed/);
+});
+
+test('pull: concurrent requests with the same transaction settle at most once', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    // Delay the confirmation RPC so all N verifies clear the pre-lock consumed
+    // check and contend for the per-signature lock: the exact pull-mode TOCTOU
+    // window. With per-signature serialization exactly one settles; the rest are
+    // rejected as already-consumed.
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const rpcMethod = JSON.parse(init?.body as string).method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            await new Promise(r => setTimeout(r, 20));
+            return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+        }
+        if (rpcMethod === 'getTransaction') return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    }) as typeof fetch;
+
+    // Build the signed transaction once so every request carries the same
+    // fee-payer signature (the replay key).
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const verifyOnce = () =>
+        method.verify({ credential: transactionCredential(tx, { amount: '1000000' }), request: {} as any });
+
+    const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
+    const settled = results.filter(r => r.status === 'fulfilled');
+    const rejectedConsumed = results.filter(
+        r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
+    );
+
+    expect(settled).toHaveLength(1);
+    expect(rejectedConsumed).toHaveLength(7);
+});
+
+// ── Lamports precision ──
+// jsonParsed returns SOL `lamports` as a JS number. Above the safe-integer range
+// the value is already lossy, so the verifier must fail closed rather than match
+// a lossy `String(number)` against the expected amount.
+
+test('signature: rejects a SOL transfer whose lamports exceed the safe-integer range', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    // 2^53: not a safe integer, so it cannot be trusted as an exact base-unit
+    // amount. String(2^53) === expected would have matched under the old code.
+    const UNSAFE = 9_007_199_254_740_992;
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                { program: 'system', parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: UNSAFE } } },
+            ]),
+        );
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: String(UNSAFE) }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/No system transfer/);
+});
+
+// ── Policy parity: pre-broadcast (pull) vs on-chain (push) (L5) ──
+// The pull path (verifyChargeTransaction, pre-broadcast) and the push path
+// (verifyInstructions, on-chain) are two encodings of the same charge policy
+// over two different transaction representations. They can drift. Pin their
+// agreement: the same tampered payment must be rejected by BOTH.
+
+test('pull and push charge paths reject the same tampered payments', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const rejectsBoth = async (destination: string, paidLamports: number, claimedAmount: string) => {
+        // Pull path: the server would broadcast, so verifyChargeTransaction runs
+        // first and must reject before any broadcast.
+        mockServerBroadcastFetch(solTransferTx(destination, paidLamports));
+        await expect(
+            method.verify({
+                credential: transactionCredential(await buildSolPaymentTxBase64(destination, paidLamports), {
+                    amount: claimedAmount,
+                }),
+                request: {} as any,
+            }),
+        ).rejects.toThrow();
+
+        // Push path: the same tampered transfer, verified on-chain.
+        globalThis.fetch = async () => rpcSuccess(solTransferTx(destination, paidLamports));
+        await expect(
+            method.verify({
+                credential: signatureCredential(SIGNATURE, { amount: claimedAmount }),
+                request: {} as any,
+            }),
+        ).rejects.toThrow();
+    };
+
+    // Underpayment: pay less than the challenge amount.
+    await rejectsBoth(RECIPIENT, 500_000, '1000000');
+    // Wrong recipient: pay a different destination than the challenge recipient.
+    await rejectsBoth(PLATFORM, 1_000_000, '1000000');
+});
+
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
     const method = charge({
         recipient: RECIPIENT,
@@ -3271,3 +3423,1448 @@ test('#3 interpretPostTimeoutStatus: rpc error returns timeout with detail', () 
     const outcome = interpretPostTimeoutStatus(null, 'connection refused');
     expect(outcome).toEqual({ detail: 'connection refused', kind: 'timeout' });
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// Added branch coverage
+//
+// The tests below target the remaining uncovered branches in
+// server/Charge.ts: the HTML formatAmount paths, boot-time parameter
+// guards, the pre-broadcast (pull) instruction allowlist and ATA/compute
+// guards, the on-chain (push) parsed-instruction allowlist, and the RPC
+// confirmation/timeout helpers. They add no new production behavior.
+// ══════════════════════════════════════════════════════════════════════
+
+// ── Low-level raw-instruction transaction builder ──
+//
+// Lets a test place arbitrary program instructions (with raw data bytes)
+// into a wire transaction so the pre-broadcast decoder exercises the exact
+// guard being tested. `feePayerKey` sets an unsigned fee payer (used by the
+// fee-sponsored branches); otherwise the first signer is the fee payer.
+
+async function buildRawTx(instructions: Instruction[], options: { feePayerKey?: string } = {}): Promise<string> {
+    const signer = await generateKeyPairSigner();
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg =>
+            options.feePayerKey
+                ? setTransactionMessageFeePayer(address(options.feePayerKey), msg)
+                : setTransactionMessageFeePayerSigner(signer, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+function rawInstruction(programAddress: string, data: Uint8Array, accounts: Instruction['accounts'] = []): Instruction {
+    return { accounts, data, programAddress: address(programAddress) };
+}
+
+function solTransferInstruction(source: { address: Address }, destination: string, amount: bigint): Instruction {
+    return getTransferSolInstruction({ source: source as never, destination: address(destination), amount });
+}
+
+// ── HTML formatAmount paths (lines 132-142, 1082-1090) ──
+
+test('html: formatAmount renders SOL amounts with the SOL suffix', () => {
+    const method = charge({ recipient: RECIPIENT, html: true, network: 'devnet', store });
+    // 1_500_000_000 lamports @ 9 decimals = 1.50 SOL (truncated to 2 places).
+    expect(method.html!.formatAmount({ amount: '1500000000', currency: 'sol' })).toBe('1.50 SOL');
+});
+
+test('html: formatAmount renders whole SOL amounts without a fractional part', () => {
+    const method = charge({ recipient: RECIPIENT, html: true, network: 'devnet', store });
+    expect(method.html!.formatAmount({ amount: '2000000000', currency: 'sol' })).toBe('2 SOL');
+});
+
+test('html: formatAmount renders known stablecoin symbols with a dollar sign', () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: 'USDC',
+        decimals: 6,
+        html: true,
+        network: 'devnet',
+        store,
+    });
+    // 1_230_000 base units @ 6 decimals = $1.23.
+    expect(method.html!.formatAmount({ amount: '1230000', currency: 'USDC' })).toBe('$1.23');
+});
+
+test('html: formatAmount renders an unknown mint currency with a truncated ticker', () => {
+    // A valid pubkey that is not one of the known stablecoin mints, so the
+    // formatter falls through to the truncated-ticker branch.
+    const UNKNOWN_MINT = 'Bh32GwqXdocc1uqKbzqRuwUSYpWZXdLTR69HpoL1M2zo';
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: UNKNOWN_MINT,
+        decimals: 6,
+        html: true,
+        network: 'devnet',
+        store,
+    });
+    const display = method.html!.formatAmount({ amount: '1000000', currency: UNKNOWN_MINT });
+    // Unknown (non-stablecoin) mint: whole number + first 6 chars of the mint.
+    expect(display).toBe(`1 ${UNKNOWN_MINT.slice(0, 6)}`);
+});
+
+test('html: formatAmount defaults SOL decimals when the config omits them', () => {
+    // No `decimals` configured and currency defaults to sol: the formatter must
+    // fall back to 9 decimals for the sol branch.
+    const method = charge({ recipient: RECIPIENT, html: true, network: 'devnet', store });
+    expect(method.html!.formatAmount({ amount: '500000000', currency: 'sol' })).toBe('0.50 SOL');
+});
+
+test('html: is undefined when the html option is not enabled', () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', store });
+    expect(method.html).toBeUndefined();
+});
+
+// ── Boot-time parameter guards ──
+
+test('charge() rejects a signer that is not a TransactionPartialSigner (line 93-94)', () => {
+    expect(() =>
+        charge({
+            recipient: RECIPIENT,
+            network: 'devnet',
+            store,
+            // A plain object with an address but no signTransactions().
+            signer: { address: address(RECIPIENT) } as never,
+        }),
+    ).toThrow(/signer must implement signTransactions/);
+});
+
+test('charge() rejects an unparseable split amount at issuance (line 259)', () => {
+    expect(() =>
+        charge({
+            recipient: RECIPIENT,
+            network: 'devnet',
+            store,
+            splits: [{ recipient: PLATFORM, amount: 'not-a-number' }],
+        }),
+    ).toThrow(/Invalid split amount/);
+});
+
+test('charge() rejects split amounts that overflow u64 at issuance (line 266-267)', () => {
+    const U64_MAX = (1n << 64n) - 1n;
+    expect(() =>
+        charge({
+            recipient: RECIPIENT,
+            network: 'devnet',
+            store,
+            splits: [
+                { recipient: PLATFORM, amount: U64_MAX.toString() },
+                { recipient: PLATFORM, amount: '1' },
+            ],
+        }),
+    ).toThrow(/overflow u64/);
+});
+
+// ── resolvePayloadType (lines 280-281) ──
+
+test('verify: rejects a credential with an unknown payload type', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    await expect(
+        method.verify({
+            credential: {
+                payload: { type: 'bogus' },
+                challenge: {
+                    request: {
+                        amount: '1',
+                        currency: 'sol',
+                        recipient: RECIPIENT,
+                        methodDetails: { network: 'devnet' },
+                    },
+                },
+            } as any,
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Missing or invalid payload type/);
+});
+
+test('verify: rejects type="signature" with fee sponsorship (line 205-206)', async () => {
+    const signer = await generateKeyPairSigner();
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        store,
+    });
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                feePayer: true,
+                feePayerKey: signer.address,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/type="signature" credentials cannot be used with fee sponsorship/);
+});
+
+// ── verifyChargeTransaction top-level guards ──
+
+test('verifyChargeTransaction: rejects an undecodable transaction (line 346)', async () => {
+    await expect(
+        verifyChargeTransaction('not-valid-base64-transaction!!!', {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Invalid transaction/);
+});
+
+test('verifyChargeTransaction: rejects more than 8 splits in the challenge (line 354-355)', async () => {
+    const splits = Array.from({ length: 9 }, () => ({ recipient: PLATFORM, amount: '1' }));
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1_000_000);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', splits },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Too many splits/);
+});
+
+test('verifyChargeTransaction: rejects when splits consume the whole amount (line 361-362)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '1000000' }];
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1_000_000);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', splits },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/primary recipient must receive a positive amount/);
+});
+
+test('verifyChargeTransaction: rejects native SOL with ataCreationRequired splits (line 367-368)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 950_000, {
+        splits: [{ recipient: PLATFORM, amount: '50000' }],
+    });
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', splits },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/ataCreationRequired requires an SPL token charge/);
+});
+
+test('verifyChargeTransaction: rejects an SPL charge with an unresolvable mint (line 397-398)', async () => {
+    // An empty-string currency resolves to no mint but is not "sol", so the
+    // SPL branch runs and hits the missing-mint guard.
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1_000_000);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: '',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/SPL charge is missing a mint address/);
+});
+
+test('verifyChargeTransaction: rejects ataCreationRequired when currency is a stablecoin symbol (line 404)', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const tx = await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+        feePayerKey: signer.address,
+        splits,
+    });
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'USDC', // symbol, not the mint address
+            methodDetails: { network: 'devnet', decimals: 6, feePayer: true, feePayerKey: signer.address, splits },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/ataCreationRequired requires currency to be an SPL token mint address/);
+});
+
+// ── expectedFeePayer (lines 448-449, 453-454) ──
+
+test('verifyChargeTransaction: rejects feePayer=true without feePayerKey (line 448-449)', async () => {
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1_000_000);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', feePayer: true },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/feePayer=true requires feePayerKey/);
+});
+
+test('verifyChargeTransaction: rejects a fee payer that does not match feePayerKey (line 453-454)', async () => {
+    const otherFeePayer = await generateKeyPairSigner();
+    // Tx fee payer is a random signer, but the challenge claims a different key.
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1_000_000);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', feePayer: true, feePayerKey: otherFeePayer.address },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Transaction fee payer must be/);
+});
+
+// ── verifySolTransferPreBroadcast fee-payer guard (line 494-495) ──
+
+test('verifyChargeTransaction: rejects the fee payer funding the SOL transfer (line 494-495)', async () => {
+    const signer = await generateKeyPairSigner();
+    // The fee payer signer is also the source of the SOL payment transfer.
+    const tx = await buildRawTx([solTransferInstruction(signer, RECIPIENT, 1_000_000n)], {
+        feePayerKey: signer.address,
+    });
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', feePayer: true, feePayerKey: signer.address },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Fee payer cannot fund the SOL payment transfer/);
+});
+
+// ── verifySplTransferPreBroadcast fee-payer guards (lines 532-533, 540-541) ──
+
+test('verifyChargeTransaction: rejects the fee payer authorizing the SPL transfer (line 532-533)', async () => {
+    // Fee payer signs and is the transfer authority: build a tx where the fee
+    // payer is both the transaction fee payer and the SPL transfer authority.
+    const feePayer = await generateKeyPairSigner();
+    const [feePayerAta] = await findAssociatedTokenPda({
+        owner: feePayer.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const transferIx = getTransferCheckedInstruction(
+        {
+            source: feePayerAta,
+            mint: address(USDC_MINT),
+            destination: recipientAta,
+            authority: feePayer,
+            amount: 1_000_000n,
+            decimals: 6,
+        },
+        { programAddress: address(TOKEN_PROGRAM) },
+    );
+    const tx = await buildRawTx([transferIx], { feePayerKey: feePayer.address });
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: USDC_MINT,
+            methodDetails: {
+                network: 'devnet',
+                decimals: 6,
+                feePayer: true,
+                feePayerKey: feePayer.address,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Fee payer cannot authorize the SPL payment transfer/);
+});
+
+test('verifyChargeTransaction: rejects the fee payer token account funding the SPL transfer (line 540-541)', async () => {
+    // A distinct authority signs the transfer, but the source ATA belongs to
+    // the fee payer, so the fee-payer-funds guard must fire.
+    const feePayer = await generateKeyPairSigner();
+    const authority = await generateKeyPairSigner();
+    const [feePayerAta] = await findAssociatedTokenPda({
+        owner: feePayer.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const transferIx = getTransferCheckedInstruction(
+        {
+            source: feePayerAta,
+            mint: address(USDC_MINT),
+            destination: recipientAta,
+            authority,
+            amount: 1_000_000n,
+            decimals: 6,
+        },
+        { programAddress: address(TOKEN_PROGRAM) },
+    );
+    const tx = await buildRawTx([transferIx], { feePayerKey: feePayer.address });
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: USDC_MINT,
+            methodDetails: {
+                network: 'devnet',
+                decimals: 6,
+                feePayer: true,
+                feePayerKey: feePayer.address,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Fee payer token account cannot fund the SPL payment transfer/);
+});
+
+test('verifyChargeTransaction: rejects an SPL transfer with the wrong decimals (line 522)', async () => {
+    // Transfer encodes decimals=9, but the challenge expects 6.
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const source = await generateKeyPairSigner();
+    const [sourceAta] = await findAssociatedTokenPda({
+        owner: source.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const transferIx = getTransferCheckedInstruction(
+        {
+            source: sourceAta,
+            mint: address(USDC_MINT),
+            destination: recipientAta,
+            authority: source,
+            amount: 1_000_000n,
+            decimals: 9,
+        },
+        { programAddress: address(TOKEN_PROGRAM) },
+    );
+    const tx = await buildRawTx([transferIx]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: USDC_MINT,
+            methodDetails: { network: 'devnet', decimals: 6, tokenProgram: TOKEN_PROGRAM },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/No matching SPL transferChecked/);
+});
+
+// ── validateInstructionAllowlist unexpected-program branches ──
+
+test('verifyChargeTransaction: rejects an unexpected extra System transfer (line 591-592)', async () => {
+    const attacker = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const signer = await generateKeyPairSigner();
+    const tx = await buildRawTx([
+        solTransferInstruction(signer, RECIPIENT, 1_000_000n),
+        solTransferInstruction(signer, attacker, 1n),
+    ]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Unexpected System Program instruction/);
+});
+
+test('verifyChargeTransaction: rejects an unexpected Token Program instruction (line 596-597)', async () => {
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const source = await generateKeyPairSigner();
+    const [sourceAta] = await findAssociatedTokenPda({
+        owner: source.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const attacker = await generateKeyPairSigner();
+    const [attackerAta] = await findAssociatedTokenPda({
+        owner: attacker.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const transferIx = (destination: Address, amount: bigint) =>
+        getTransferCheckedInstruction(
+            {
+                source: sourceAta,
+                mint: address(USDC_MINT),
+                destination,
+                authority: source,
+                amount,
+                decimals: 6,
+            },
+            { programAddress: address(TOKEN_PROGRAM) },
+        );
+    const tx = await buildRawTx([transferIx(recipientAta, 1_000_000n), transferIx(attackerAta, 1n)]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: USDC_MINT,
+            methodDetails: { network: 'devnet', decimals: 6, tokenProgram: TOKEN_PROGRAM },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Unexpected Token Program instruction/);
+});
+
+test('verifyChargeTransaction: rejects an unexpected unknown program instruction (line 613)', async () => {
+    // A stray instruction to a program that is not on the allowlist.
+    const STRAY_PROGRAM = 'Stake11111111111111111111111111111111111111';
+    const signer = await generateKeyPairSigner();
+    const tx = await buildRawTx([
+        solTransferInstruction(signer, RECIPIENT, 1_000_000n),
+        rawInstruction(STRAY_PROGRAM, new Uint8Array([0])),
+    ]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Unexpected program instruction in payment transaction/);
+});
+
+// ── validateComputeBudgetInstruction (lines 624-649) ──
+
+test('verifyChargeTransaction: accepts a compute unit limit under the maximum', async () => {
+    const signer = await generateKeyPairSigner();
+    const tx = await buildRawTx([
+        getSetComputeUnitLimitInstruction({ units: 100_000 }),
+        solTransferInstruction(signer, RECIPIENT, 1_000_000n),
+    ]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).resolves.toBeUndefined();
+});
+
+test('verifyChargeTransaction: rejects a compute unit limit above the maximum (line 630-631)', async () => {
+    const signer = await generateKeyPairSigner();
+    const tx = await buildRawTx([
+        getSetComputeUnitLimitInstruction({ units: 300_000 }),
+        solTransferInstruction(signer, RECIPIENT, 1_000_000n),
+    ]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Compute unit limit 300000 exceeds maximum/);
+});
+
+test('verifyChargeTransaction: rejects a compute budget instruction that carries accounts (line 624-625)', async () => {
+    // SetComputeUnitLimit data with a stray account reference.
+    const signer = await generateKeyPairSigner();
+    const badComputeIx = rawInstruction(
+        'ComputeBudget111111111111111111111111111111',
+        new Uint8Array([2, 0x40, 0x0d, 0x03, 0x00]), // opcode 2, units 200000
+        [{ address: signer.address, role: AccountRole.READONLY }],
+    );
+    const tx = await buildRawTx([badComputeIx, solTransferInstruction(signer, RECIPIENT, 1_000_000n)]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Compute budget instruction must not have accounts/);
+});
+
+test('verifyChargeTransaction: rejects an unsupported compute budget instruction (line 649)', async () => {
+    // Opcode 0 (RequestUnits, deprecated) is not one of the two supported ops.
+    const signer = await generateKeyPairSigner();
+    const badComputeIx = rawInstruction('ComputeBudget111111111111111111111111111111', new Uint8Array([0, 0, 0, 0, 0]));
+    const tx = await buildRawTx([badComputeIx, solTransferInstruction(signer, RECIPIENT, 1_000_000n)]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Unsupported compute budget instruction/);
+});
+
+// ── validateCreateAtaIdempotentInstruction (pre-broadcast, lines 660-706) ──
+
+async function buildFeeSponsoredSplTxWithAtaData(
+    ataData: Uint8Array,
+    options: {
+        ataAccountCount?: number;
+        mintOverride?: string;
+        payerOverride?: string;
+        systemProgramOverride?: string;
+        tokenProgramForAta?: string;
+        wrongAtaAddress?: boolean;
+    } = {},
+): Promise<{ feePayer: { address: Address }; tx: string }> {
+    const feePayer = await generateKeyPairSigner();
+    const authority = await generateKeyPairSigner();
+    const [authorityAta] = await findAssociatedTokenPda({
+        owner: authority.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const transferIx = (destination: Address, amount: bigint) =>
+        getTransferCheckedInstruction(
+            {
+                source: authorityAta,
+                mint: address(USDC_MINT),
+                destination,
+                authority,
+                amount,
+                decimals: 6,
+            },
+            { programAddress: address(TOKEN_PROGRAM) },
+        );
+
+    const ataTokenProgram = options.tokenProgramForAta ?? TOKEN_PROGRAM;
+    const fullAccounts = [
+        { address: address(options.payerOverride ?? feePayer.address), role: AccountRole.WRITABLE_SIGNER },
+        {
+            address: options.wrongAtaAddress ? address(recipientAta) : address(platformAta),
+            role: AccountRole.WRITABLE,
+        },
+        { address: address(PLATFORM), role: AccountRole.READONLY },
+        { address: address(options.mintOverride ?? USDC_MINT), role: AccountRole.READONLY },
+        { address: address(options.systemProgramOverride ?? SYSTEM_PROGRAM), role: AccountRole.READONLY },
+        { address: address(ataTokenProgram), role: AccountRole.READONLY },
+    ];
+    const accounts = fullAccounts.slice(0, options.ataAccountCount ?? 6);
+    const ataIx = rawInstruction(ASSOCIATED_TOKEN_PROGRAM, ataData, accounts);
+
+    const tx = await buildRawTx([transferIx(recipientAta, 950_000n), ataIx, transferIx(platformAta, 50_000n)], {
+        feePayerKey: feePayer.address,
+    });
+    return { feePayer, tx };
+}
+
+function feeSponsoredAtaChallenge(feePayerKey: string): ChallengeRequest {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    return {
+        amount: '1000000',
+        currency: USDC_MINT,
+        methodDetails: {
+            network: 'devnet',
+            decimals: 6,
+            feePayer: true,
+            feePayerKey,
+            tokenProgram: TOKEN_PROGRAM,
+            splits,
+        },
+        recipient: RECIPIENT,
+    };
+}
+
+test('verifyChargeTransaction: rejects a non-idempotent ATA creation (line 663-664)', async () => {
+    // ATA data opcode 0 = Create (non-idempotent), only 1 (createIdempotent) allowed.
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([0]));
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /Only idempotent ATA creation is allowed/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation with the wrong account count (line 666-667)', async () => {
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), { ataAccountCount: 5 });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /Unexpected ATA creation account layout/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation whose payer is not the fee payer (line 677-678)', async () => {
+    const wrongPayer = await generateKeyPairSigner();
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), {
+        payerOverride: wrongPayer.address,
+    });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /ATA payer must match the transaction fee payer/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation with a mismatched mint (line 680-681)', async () => {
+    const WRONG_MINT = 'So11111111111111111111111111111111111111112';
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), { mintOverride: WRONG_MINT });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /ATA creation mint does not match the charge currency/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation not referencing the System Program (line 683-684)', async () => {
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), {
+        systemProgramOverride: 'Stake11111111111111111111111111111111111111',
+    });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /ATA creation must reference the System Program/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation with an unsupported token program (line 686-687)', async () => {
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), {
+        tokenProgramForAta: 'Stake11111111111111111111111111111111111111',
+    });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /ATA creation uses an unsupported token program/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation token program that differs from methodDetails (line 689-690)', async () => {
+    // A valid-but-different token program (Token-2022) vs the expected TOKEN_PROGRAM.
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), {
+        tokenProgramForAta: TOKEN_2022_PROGRAM,
+    });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /ATA creation token program does not match methodDetails.tokenProgram/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation whose address is wrong for owner/mint (line 698-699)', async () => {
+    const { feePayer, tx } = await buildFeeSponsoredSplTxWithAtaData(new Uint8Array([1]), { wrongAtaAddress: true });
+    await expect(verifyChargeTransaction(tx, feeSponsoredAtaChallenge(feePayer.address))).rejects.toThrow(
+        /ATA creation address does not match/,
+    );
+});
+
+test('verifyChargeTransaction: rejects an ATA creation on a native SOL charge (line 660-661)', async () => {
+    // A bare createIdempotent ATA instruction on a SOL charge: no mint expected.
+    const signer = await generateKeyPairSigner();
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const ataIx = rawInstruction(ASSOCIATED_TOKEN_PROGRAM, new Uint8Array([1]), [
+        { address: signer.address, role: AccountRole.WRITABLE_SIGNER },
+        { address: address(platformAta), role: AccountRole.WRITABLE },
+        { address: address(PLATFORM), role: AccountRole.READONLY },
+        { address: address(USDC_MINT), role: AccountRole.READONLY },
+        { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
+        { address: address(TOKEN_PROGRAM), role: AccountRole.READONLY },
+    ]);
+    const tx = await buildRawTx([solTransferInstruction(signer, RECIPIENT, 1_000_000n), ataIx]);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/ATA creation is not allowed for native SOL payments/);
+});
+
+// ── extractRecentBlockhash null path via a mainnet/devnet mismatch is
+//    already exercised; add a direct decode-failure case through the pull
+//    verify path (network check is skipped when the blockhash cannot be read).
+
+test('pull: an undecodable transaction is rejected by verifyChargeTransaction', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    await expect(
+        method.verify({
+            credential: transactionCredential('###not-base64###', { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Invalid transaction/);
+});
+
+// ── verifyInstructions (push/on-chain) guards ──
+
+test('signature: rejects ataCreationRequired with a stablecoin-symbol currency on-chain (line 947-948)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(txWithInstructions([]));
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: 'USDC', // symbol resolves to a mint that differs from currency
+                decimals: 6,
+                splits,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ataCreationRequired requires currency to be an SPL token mint address/);
+});
+
+test('signature: rejects ataCreationRequired split on a native SOL charge on-chain (line 987-988)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () => rpcSuccess(txWithInstructions([]));
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', splits }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ataCreationRequired requires an SPL token charge/);
+});
+
+// ── validateParsedInstructionAllowlist / validateParsedAtaCreationInstruction ──
+
+test('signature: rejects an unexpected extra parsed System transfer (line 1201-1202)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    const attacker = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                {
+                    program: 'system',
+                    parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: 1000000 } },
+                },
+                { program: 'system', parsed: { type: 'transfer', info: { destination: attacker, lamports: 1 } } },
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Unexpected System Program instruction/);
+});
+
+test('signature: rejects an unexpected unknown parsed program (line 1216)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                {
+                    program: 'system',
+                    parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: 1000000 } },
+                },
+                { programId: 'Stake11111111111111111111111111111111111111', parsed: { type: 'noop', info: {} } },
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Unexpected program instruction in payment transaction/);
+});
+
+test('signature: parsedProgramId resolves the compute-budget program alias and skips it (line 1229)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                { program: 'compute-budget', parsed: { type: 'setComputeUnitLimit', info: { units: 200000 } } },
+                {
+                    program: 'system',
+                    parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: 1000000 } },
+                },
+            ]),
+        );
+    const receipt = await method.verify({
+        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+        request: {} as any,
+    });
+    expect(receipt.status).toBe('success');
+});
+
+test('signature: rejects a parsed ATA creation that is not idempotent (line 1247-1248)', async () => {
+    // Client-paid split so PLATFORM is an allowed ATA owner; the ATA instruction
+    // uses the non-idempotent "create" type, which must be rejected.
+    const splits = [{ recipient: PLATFORM, amount: '50000' }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        splits,
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(recipientAta, USDC_MINT, '950000'),
+                splTransferIx(platformAta, USDC_MINT, '50000'),
+                {
+                    program: 'spl-associated-token-account',
+                    programId: ASSOCIATED_TOKEN_PROGRAM,
+                    // type "create" (not createIdempotent).
+                    parsed: {
+                        type: 'create',
+                        info: {
+                            account: platformAta,
+                            mint: USDC_MINT,
+                            source: RECIPIENT,
+                            systemProgram: SYSTEM_PROGRAM,
+                            tokenProgram: TOKEN_PROGRAM,
+                            wallet: PLATFORM,
+                        },
+                    },
+                },
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                splits,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Only idempotent ATA creation is allowed/);
+});
+
+test('signature: rejects a parsed ATA creation missing required fields (line 1258-1259)', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(recipientAta, USDC_MINT, '1000000'),
+                {
+                    program: 'spl-associated-token-account',
+                    programId: ASSOCIATED_TOKEN_PROGRAM,
+                    parsed: {
+                        type: 'createIdempotent',
+                        // Missing owner/wallet field.
+                        info: { account: 'x', mint: USDC_MINT, source: RECIPIENT, tokenProgram: TOKEN_PROGRAM },
+                    },
+                },
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', currency: USDC_MINT, decimals: 6 }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation parsed instruction is missing required fields/);
+});
+
+test('pull: rejects a parsed ATA payer that is not the fee payer on-chain (line 1261-1262)', async () => {
+    // Pull mode (fee-sponsored): the pre-broadcast tx is valid, but the parsed
+    // on-chain transaction returned by getTransaction declares a different ATA
+    // payer, so the on-chain (parsed) allowlist must reject it independently.
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        splits,
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    // On-chain parsed tx: ATA payer is RECIPIENT, not the fee-payer signer.
+    mockServerBroadcastFetch(
+        txWithInstructions([
+            splTransferIx(recipientAta, USDC_MINT, '950000'),
+            ataCreateIx({ account: platformAta, mint: USDC_MINT, owner: PLATFORM, payer: RECIPIENT }),
+            splTransferIx(platformAta, USDC_MINT, '50000'),
+        ]),
+    );
+    await expect(
+        method.verify({
+            credential: transactionCredential(
+                await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+                    feePayerKey: signer.address,
+                    splits,
+                }),
+                {
+                    amount: '1000000',
+                    currency: USDC_MINT,
+                    decimals: 6,
+                    feePayer: true,
+                    feePayerKey: signer.address,
+                    splits,
+                },
+            ),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA payer must match the transaction fee payer/);
+});
+
+test('signature: rejects a parsed ATA creation with a mismatched mint (line 1264-1265)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        splits,
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const WRONG_MINT = 'So11111111111111111111111111111111111111112';
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(recipientAta, USDC_MINT, '950000'),
+                ataCreateIx({ account: platformAta, mint: WRONG_MINT, owner: PLATFORM, payer: RECIPIENT }),
+                splTransferIx(platformAta, USDC_MINT, '50000'),
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                splits,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation mint does not match the charge currency/);
+});
+
+test('signature: rejects a parsed ATA creation with an unsupported token program (line 1267-1268)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        splits,
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(recipientAta, USDC_MINT, '950000'),
+                ataCreateIx({
+                    account: platformAta,
+                    mint: USDC_MINT,
+                    owner: PLATFORM,
+                    payer: RECIPIENT,
+                    tokenProgram: 'Stake11111111111111111111111111111111111111',
+                }),
+                splTransferIx(platformAta, USDC_MINT, '50000'),
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                splits,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation uses an unsupported token program/);
+});
+
+test('signature: rejects a parsed ATA creation token program that differs from methodDetails (line 1270-1271)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        splits,
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(recipientAta, USDC_MINT, '950000'),
+                // valid Token-2022 program, but methodDetails.tokenProgram is TOKEN_PROGRAM.
+                ataCreateIx({
+                    account: platformAta,
+                    mint: USDC_MINT,
+                    owner: PLATFORM,
+                    payer: RECIPIENT,
+                    tokenProgram: TOKEN_2022_PROGRAM,
+                }),
+                splTransferIx(platformAta, USDC_MINT, '50000'),
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                tokenProgram: TOKEN_PROGRAM,
+                splits,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation token program does not match methodDetails.tokenProgram/);
+});
+
+test('signature: rejects a parsed ATA creation with a wrong ATA address (line 1279-1280)', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        splits,
+        store,
+    });
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(recipientAta, USDC_MINT, '950000'),
+                // The declared ATA account is wrong for owner PLATFORM.
+                ataCreateIx({ account: recipientAta, mint: USDC_MINT, owner: PLATFORM, payer: RECIPIENT }),
+                splTransferIx(platformAta, USDC_MINT, '50000'),
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                splits,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation address does not match/);
+});
+
+test('signature: rejects a parsed ATA creation on a native SOL charge (line 1244-1245)', async () => {
+    // A createIdempotent ATA instruction on a SOL charge, where no mint is expected.
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                {
+                    program: 'system',
+                    parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: 1000000 } },
+                },
+                ataCreateIx({ account: 'x', mint: USDC_MINT, owner: PLATFORM, payer: RECIPIENT }),
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation is not allowed for native SOL payments/);
+});
+
+// ── verifyMemoInstructions byte-limit guards (lines 1101-1102, 1128-1129) ──
+
+test('signature: rejects an on-chain memo above the 566-byte limit (line 1128-1129)', async () => {
+    const bigMemo = 'x'.repeat(600);
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                {
+                    program: 'system',
+                    parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: 1000000 } },
+                },
+            ]),
+        );
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', externalId: bigMemo }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/memo cannot exceed 566 bytes/);
+});
+
+test('verifyChargeTransaction: rejects a pre-broadcast memo above the 566-byte limit (line 1101-1102)', async () => {
+    const bigMemo = 'y'.repeat(600);
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1_000_000);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            externalId: bigMemo,
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/memo cannot exceed 566 bytes/);
+});
+
+// ── simulateTransaction failure logging path (lines 1397-1401) ──
+
+test('pull: rejects when simulateTransaction reports an on-chain error', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const rpcMethod = JSON.parse(init?.body as string).method;
+        if (rpcMethod === 'simulateTransaction') {
+            return rpcSuccess({ value: { err: { InstructionError: [0, 'Custom'] }, logs: ['Program log: boom'] } });
+        }
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Transaction simulation failed/);
+});
+
+// ── broadcastTransaction missing-signature guard (line 1421) ──
+
+test('pull: rejects when sendTransaction returns no signature', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const rpcMethod = JSON.parse(init?.body as string).method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(undefined);
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/No signature returned from sendTransaction/);
+});
+
+// ── waitForConfirmation failure/timeout branches (lines 1473-1529) ──
+
+test('pull: rejects when getSignatureStatuses reports a failed transaction (line 1474-1475)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const rpcMethod = JSON.parse(init?.body as string).method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            return rpcSuccess({
+                value: [{ confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Custom'] } }],
+            });
+        }
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Transaction failed:/);
+});
+
+test('pull: recovers via post-timeout status check when the tx landed cleanly (line 1489-1493)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    let sawSearchHistory = false;
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string);
+        const rpcMethod = body.method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            const searchHistory = body.params?.[1]?.searchTransactionHistory === true;
+            if (searchHistory) {
+                sawSearchHistory = true;
+                // Definitive post-timeout check: landed cleanly.
+                return rpcSuccess({ value: [{ err: null }] });
+            }
+            // Poll loop: never confirmed, forcing the timeout path.
+            return rpcSuccess({ value: [null] });
+        }
+        if (rpcMethod === 'getTransaction') return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    const receipt = await method.verify({
+        credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), { amount: '1000000' }),
+        request: {} as any,
+    });
+    expect(receipt.status).toBe('success');
+    expect(sawSearchHistory).toBe(true);
+}, 40_000);
+
+test('pull: rejects when the post-timeout status shows the tx landed but failed (line 1494-1495)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string);
+        const rpcMethod = body.method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            const searchHistory = body.params?.[1]?.searchTransactionHistory === true;
+            if (searchHistory) return rpcSuccess({ value: [{ err: { InstructionError: [0, 'Custom'] } }] });
+            return rpcSuccess({ value: [null] });
+        }
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/landed on-chain but failed/);
+}, 40_000);
+
+test('pull: reports a timeout with detail when the recovery RPC itself errors (line 1497-1500, 1524-1525)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string);
+        const rpcMethod = body.method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            const searchHistory = body.params?.[1]?.searchTransactionHistory === true;
+            if (searchHistory) return rpcError('history node down');
+            return rpcSuccess({ value: [null] });
+        }
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/status recovery failed: history node down/);
+}, 40_000);
+
+test('pull: releases the reservation and reports timeout when the tx definitively never landed (line 1504, 1509-1510)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string);
+        const rpcMethod = body.method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            // Both the poll and the definitive recovery report "not found".
+            return rpcSuccess({ value: [null] });
+        }
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Transaction confirmation timeout/);
+}, 40_000);
+
+test('pull: fetchPostTimeoutStatus treats a thrown recovery fetch as a timeout with detail (line 1529)', async () => {
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store });
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string);
+        const rpcMethod = body.method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            const searchHistory = body.params?.[1]?.searchTransactionHistory === true;
+            if (searchHistory) throw new Error('network unreachable');
+            return rpcSuccess({ value: [null] });
+        }
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    };
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1_000_000), {
+                amount: '1000000',
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/status recovery failed: network unreachable/);
+}, 40_000);

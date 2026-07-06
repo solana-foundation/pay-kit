@@ -6,7 +6,9 @@ Ports ``go/protocols/mpp/server/session_voucher_test.go``. The check sequence
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
@@ -512,3 +514,80 @@ def test_verify_voucher_for_channel_lower_cumulative_rejected() -> None:
     result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
     assert result.status == VoucherVerifyStatus.REJECTED
     assert result.reason == VoucherRejectReason.CUMULATIVE_NOT_MONOTONIC
+
+
+# -- M-7: reject-reason wire tags are byte-identical across SDKs ---------------
+#
+# The reject reason is a documented stable wire contract. The shared vector
+# (harness/vectors/session-voucher/session-voucher-reject.json) pins the exact
+# string for every reject tag; this SDK's emitted tag must match byte-for-byte.
+
+_REJECT_VECTOR_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "harness"
+    / "vectors"
+    / "session-voucher"
+    / "session-voucher-reject.json"
+)
+
+
+def _load_reject_vectors() -> list[dict[str, str]]:
+    with _REJECT_VECTOR_PATH.open(encoding="utf-8") as handle:
+        vectors = json.load(handle)
+    assert vectors, "reject vector is empty"
+    return vectors
+
+
+def test_voucher_reject_tags_match_vector() -> None:
+    """Every Python reject enum value matches the shared cross-SDK vector."""
+    # The canonical tag -> emitted Python reason value. This mapping is the
+    # wire contract the vector fixes.
+    emitted = {
+        "below-min-delta": VoucherRejectReason.BELOW_MIN_DELTA.value,
+        "channel-close-pending": VoucherRejectReason.CHANNEL_CLOSE_PENDING.value,
+        "channel-finalized": VoucherRejectReason.CHANNEL_FINALIZED.value,
+        "cumulative-not-monotonic": VoucherRejectReason.CUMULATIVE_NOT_MONOTONIC.value,
+        "exceeds-deposit": VoucherRejectReason.EXCEEDS_DEPOSIT.value,
+        "expired": VoucherRejectReason.EXPIRED.value,
+        "expires-within-settlement-window": VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT.value,
+        "invalid-cumulative": VoucherRejectReason.INVALID_CUMULATIVE.value,
+        "invalid-signature": VoucherRejectReason.INVALID_SIGNATURE.value,
+    }
+
+    vectors = _load_reject_vectors()
+    assert len(vectors) == len(emitted), (
+        f"vector has {len(vectors)} tags, Python maps {len(emitted)}"
+    )
+    for vector in vectors:
+        tag = vector["tag"]
+        assert tag in emitted, f"vector tag {tag!r} has no Python mapping"
+        assert emitted[tag] == vector["reason"], (
+            f"tag {tag!r}: Python emits {emitted[tag]!r}, vector pins {vector['reason']!r}"
+        )
+
+
+def test_voucher_settlement_window_tag_is_canonical() -> None:
+    """The EMITTED settlement-window reject reason (not just the declared enum)
+    equals the canonical string in the shared vector."""
+    want = next(
+        v["reason"]
+        for v in _load_reject_vectors()
+        if v["tag"] == "expires-within-settlement-window"
+    )
+
+    signer = _TestVoucherSigner(1)
+    # now=1000, window=900 -> need expires_at >= 1900; 1500 is in the future but
+    # does not outlast the window, so this hits the settlement-window path.
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_500)
+    state = _voucher_test_state(signer.address())
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
+    )
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason is not None
+    assert result.reason.value == want, (
+        f"emitted reason {result.reason.value!r}, want canonical {want!r}"
+    )

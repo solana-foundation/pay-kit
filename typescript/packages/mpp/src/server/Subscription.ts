@@ -3,23 +3,31 @@ import {
     createSolanaRpc,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
+    getSignatureFromTransaction,
     getTransactionDecoder,
     isTransactionPartialSigner,
     type TransactionPartialSigner,
 } from '@solana/kit';
+import { findAssociatedTokenPda } from '@solana-program/token';
 import { Method, Receipt, Store } from 'mppx';
 
 import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    COMPUTE_BUDGET_PROGRAM,
     DEFAULT_RPC_URLS,
+    MEMO_PROGRAM,
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
+    SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import { assertLegacyOrV0Message, coSignBase64Transaction } from '../utils/transactions.js';
+import { withKeyLock } from './keyLock.js';
+import { claimConsumed } from './replayReserve.js';
 
 /**
  * Creates a Solana `subscription` method for usage on the server.
@@ -159,75 +167,101 @@ export function subscription(parameters: subscription.Parameters) {
                 throw new Error('type="signature" credentials cannot be used with fee sponsorship (feePayer: true)');
             }
 
-            const subscriberAddress = await settleActivation(cred, challenge, rpcUrl, store, signer, payloadType);
-
-            const subscriptionPda = await deriveSubscriptionPda({
-                planPda: address(challenge.methodDetails.planId),
-                programId: address(challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM),
-                subscriber: address(subscriberAddress),
-            });
-
-            const expectedPeriodHours = mapSubscriptionPeriodToHours(
-                challenge.periodUnit,
-                Number(challenge.periodCount),
+            // `settleActivation` atomically claims the activation signature's
+            // replay marker before broadcasting and hands the claimed key back.
+            // We now own that reservation: every fallible step below (PDA fetch,
+            // terms checks) must release it on error so a transient failure does
+            // not permanently brick a legitimate retry, matching the Rust port's
+            // release-on-error window. The claim is disarmed (kept) only once a
+            // receipt is produced on the happy path, so a genuine replay of the
+            // same activation signature stays rejected.
+            const { consumedKey, subscriber: subscriberAddress } = await settleActivation(
+                cred,
+                challenge,
+                rpcUrl,
+                store,
+                signer,
+                payloadType,
             );
 
-            const delegation = await fetchSubscriptionDelegation(rpcUrl, subscriptionPda);
-            if (!delegation) {
-                throw new Error('SubscriptionDelegation account not found after activation');
-            }
+            try {
+                const subscriptionPda = await deriveSubscriptionPda({
+                    planPda: address(challenge.methodDetails.planId),
+                    programId: address(challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM),
+                    subscriber: address(subscriberAddress),
+                });
 
-            if (delegation.planPda !== challenge.methodDetails.planId) {
-                throw new Error(
-                    `SubscriptionDelegation plan mismatch: expected ${challenge.methodDetails.planId}, got ${delegation.planPda}`,
+                const expectedPeriodHours = mapSubscriptionPeriodToHours(
+                    challenge.periodUnit,
+                    Number(challenge.periodCount),
                 );
+
+                const delegation = await fetchSubscriptionDelegation(rpcUrl, subscriptionPda);
+                if (!delegation) {
+                    throw new Error('SubscriptionDelegation account not found after activation');
+                }
+
+                if (delegation.planPda !== challenge.methodDetails.planId) {
+                    throw new Error(
+                        `SubscriptionDelegation plan mismatch: expected ${challenge.methodDetails.planId}, got ${delegation.planPda}`,
+                    );
+                }
+                if (delegation.mint !== challenge.methodDetails.mint) {
+                    throw new Error(
+                        `SubscriptionDelegation mint mismatch: expected ${challenge.methodDetails.mint}, got ${delegation.mint}`,
+                    );
+                }
+                if (delegation.amountPerPeriod !== challenge.amount) {
+                    throw new Error(
+                        `SubscriptionDelegation amount mismatch: expected ${challenge.amount}, got ${delegation.amountPerPeriod}`,
+                    );
+                }
+                if (delegation.periodHours !== expectedPeriodHours) {
+                    throw new Error(
+                        `SubscriptionDelegation period mismatch: expected ${expectedPeriodHours}h, got ${delegation.periodHours}h`,
+                    );
+                }
+                if (delegation.amountPulledInPeriod !== challenge.amount) {
+                    throw new Error('Activation transaction did not execute the first-period charge');
+                }
+
+                const periodLengthSeconds = expectedPeriodHours * 3600;
+                const periodStartTs = delegation.currentPeriodStartTs;
+                const periodEndTs = periodStartTs + periodLengthSeconds;
+
+                const subscriptionId = base64UrlEncodeNoPadding(decodeBase58(subscriptionPda.toString()));
+
+                return Receipt.from({
+                    method: 'solana',
+                    ...(cred.challenge.id ? { challengeId: cred.challenge.id } : {}),
+                    ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+                    // Subscription-specific receipt extensions live alongside the
+                    // Receipt's standard fields. The mppx framework treats unknown
+                    // fields as opaque metadata.
+                    // @ts-expect-error subscription extensions are not in the base Receipt type
+                    expiresAt: challenge.subscriptionExpires,
+
+                    periodEndTs: new Date(periodEndTs * 1000).toISOString(),
+
+                    periodIndex: '0',
+
+                    periodStartTs: new Date(periodStartTs * 1000).toISOString(),
+                    planId: challenge.methodDetails.planId,
+                    reference: subscriptionPda.toString(),
+                    status: 'success',
+                    subscriptionId,
+                    timestamp: new Date().toISOString(),
+                });
+            } catch (err) {
+                // A post-settlement failure (PDA fetch, on-chain terms mismatch)
+                // means no receipt was issued, so release the reservation the
+                // successful claim took — otherwise a transient RPC error or a
+                // lagging on-chain read would permanently reject a legitimate
+                // retry of the same activation. Best-effort: a failed delete
+                // cannot make the original error any worse.
+                await store.delete(consumedKey);
+                throw err;
             }
-            if (delegation.mint !== challenge.methodDetails.mint) {
-                throw new Error(
-                    `SubscriptionDelegation mint mismatch: expected ${challenge.methodDetails.mint}, got ${delegation.mint}`,
-                );
-            }
-            if (delegation.amountPerPeriod !== challenge.amount) {
-                throw new Error(
-                    `SubscriptionDelegation amount mismatch: expected ${challenge.amount}, got ${delegation.amountPerPeriod}`,
-                );
-            }
-            if (delegation.periodHours !== expectedPeriodHours) {
-                throw new Error(
-                    `SubscriptionDelegation period mismatch: expected ${expectedPeriodHours}h, got ${delegation.periodHours}h`,
-                );
-            }
-            if (delegation.amountPulledInPeriod !== challenge.amount) {
-                throw new Error('Activation transaction did not execute the first-period charge');
-            }
-
-            const periodLengthSeconds = expectedPeriodHours * 3600;
-            const periodStartTs = delegation.currentPeriodStartTs;
-            const periodEndTs = periodStartTs + periodLengthSeconds;
-
-            const subscriptionId = base64UrlEncodeNoPadding(decodeBase58(subscriptionPda.toString()));
-
-            return Receipt.from({
-                method: 'solana',
-                ...(cred.challenge.id ? { challengeId: cred.challenge.id } : {}),
-                ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-                // Subscription-specific receipt extensions live alongside the
-                // Receipt's standard fields. The mppx framework treats unknown
-                // fields as opaque metadata.
-                // @ts-expect-error subscription extensions are not in the base Receipt type
-                expiresAt: challenge.subscriptionExpires,
-
-                periodEndTs: new Date(periodEndTs * 1000).toISOString(),
-
-                periodIndex: '0',
-
-                periodStartTs: new Date(periodStartTs * 1000).toISOString(),
-                planId: challenge.methodDetails.planId,
-                reference: subscriptionPda.toString(),
-                status: 'success',
-                subscriptionId,
-                timestamp: new Date().toISOString(),
-            });
         },
     });
 
@@ -255,7 +289,7 @@ async function settleActivation(
     store: Store.Store,
     signer: TransactionPartialSigner | undefined,
     payloadType: 'signature' | 'transaction',
-): Promise<string> {
+): Promise<{ consumedKey: string; subscriber: string }> {
     if (payloadType === 'transaction') {
         const { transaction: clientTxBase64 } = credential.payload;
         if (!clientTxBase64) {
@@ -263,19 +297,69 @@ async function settleActivation(
         }
 
         const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
-        validateActivationInstructions(clientTxBase64, challenge);
+        await validateActivationInstructions(clientTxBase64, challenge);
 
         let txToSend = clientTxBase64;
         if (signer) {
             txToSend = await coSignBase64Transaction(signer, clientTxBase64);
         }
 
-        await simulateTransaction(rpcUrl, txToSend);
-        const signature = await broadcastTransaction(rpcUrl, txToSend);
-        await waitForConfirmation(rpcUrl, signature);
+        // The activation signature is the transaction's own first signature and
+        // is exactly what `sendTransaction` echoes back, so it is a stable
+        // replay key known before broadcast.
+        const signature = signatureFromWireTransaction(txToSend);
+        const consumedKey = `solana-subscription:consumed:${signature}`;
 
-        await store.put(`solana-subscription:consumed:${signature}`, true);
-        return subscriber;
+        // Claim the marker ATOMICALLY and UPFRONT, before any broadcast. The
+        // check-and-mark must run atomically per signature: `mppx`'s base Store
+        // has no atomic put-if-absent, so without serialization two concurrent
+        // identical activations both pass the check and both broadcast + issue a
+        // server-signed receipt (Solana dedups the identical tx on-chain, but
+        // two receipts are issued). `withKeyLock` serializes claims for this
+        // signature in-process; `claimConsumed` is an atomic put-if-absent when
+        // the Store supports it (cross-process safe across replicas), else a
+        // plain get/put made race-free by the surrounding lock. A false result
+        // means the signature was already claimed — reject the replay. Mirrors
+        // the Rust port's `put_if_absent` claim and the charge verifier.
+        //
+        // Scope: single Node process. Multi-process/replica deployments sharing
+        // one Store must supply a reserving store. See SECURITY.md.
+        return await withKeyLock(consumedKey, async () => {
+            if (!(await claimConsumed(store, consumedKey))) {
+                throw new Error('Activation signature already consumed');
+            }
+
+            // From here we own the reservation: every failure path before a
+            // receipt is produced must release the marker so a transient failure
+            // (broadcast/confirmation error) does not permanently brick a
+            // legitimate retry. The delegation/terms checks that follow in
+            // verify() release it too; only a produced receipt keeps the claim.
+            try {
+                const subscriptionPda = await deriveSubscriptionPda({
+                    planPda: address(challenge.methodDetails.planId),
+                    programId: address(challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM),
+                    subscriber: address(subscriber),
+                });
+                const delegationAlreadyExists = (await fetchSubscriptionDelegation(rpcUrl, subscriptionPda)) !== null;
+
+                // Idempotent recovery: the activation tx may have landed even if
+                // confirmation polling or the receipt round-trip failed. Retrying
+                // the same transaction would now make the on-chain subscribe ix
+                // abort with AlreadySubscribed, so skip rebroadcast when the
+                // delegation PDA already exists and let the verify() terms check
+                // below issue the receipt from the landed state.
+                if (!delegationAlreadyExists) {
+                    await simulateTransaction(rpcUrl, txToSend);
+                    const broadcastSignature = await broadcastTransaction(rpcUrl, txToSend);
+                    await waitForConfirmation(rpcUrl, broadcastSignature);
+                }
+            } catch (err) {
+                await store.delete(consumedKey);
+                throw err;
+            }
+
+            return { consumedKey, subscriber };
+        });
     }
 
     // ── Push mode (type="signature") ──
@@ -284,25 +368,52 @@ async function settleActivation(
         throw new Error('Missing signature in credential payload');
     }
     const consumedKey = `solana-subscription:consumed:${signature}`;
-    if (await store.get(consumedKey)) {
-        throw new Error('Activation signature already consumed');
-    }
 
-    const tx = await fetchTransactionRaw(rpcUrl, signature);
-    if (!tx) throw new Error('Transaction not found or not yet confirmed');
-    if (tx.meta?.err) throw new Error('Transaction failed on-chain');
+    // Serialize the claim for this signature so the atomic upfront claim below
+    // is race-safe even on the in-memory default store (no atomic reserve).
+    return await withKeyLock(consumedKey, async () => {
+        // Claim the marker ATOMICALLY and UPFRONT. `claimConsumed` returns false
+        // when the signature was already claimed by a prior (or concurrent)
+        // activation — reject the replay. A non-atomic get-then-put would let two
+        // concurrent identical activations both pass and both issue a receipt.
+        if (!(await claimConsumed(store, consumedKey))) {
+            throw new Error('Activation signature already consumed');
+        }
 
-    // The subscriber is the first signer that is not the fee payer (when
-    // fee sponsorship is in play) or simply the fee payer otherwise.
-    const accountKeys = tx.transaction.message.accountKeys ?? [];
-    if (accountKeys.length === 0) {
-        throw new Error('Transaction has no account keys');
-    }
-    const firstAccount = typeof accountKeys[0] === 'string' ? accountKeys[0] : accountKeys[0].pubkey;
-    const subscriber = firstAccount;
+        // We own the reservation now; release it on every failure path before a
+        // receipt is produced (here and in the verify() terms checks) so a
+        // transient failure does not permanently brick a legitimate retry.
+        try {
+            const tx = await fetchTransactionRaw(rpcUrl, signature);
+            if (!tx) throw new Error('Transaction not found or not yet confirmed');
+            if (tx.meta?.err) throw new Error('Transaction failed on-chain');
 
-    await store.put(consumedKey, true);
-    return subscriber;
+            // The subscriber is the first signer that is not the fee payer (when
+            // fee sponsorship is in play) or simply the fee payer otherwise.
+            const accountKeys = tx.transaction.message.accountKeys ?? [];
+            if (accountKeys.length === 0) {
+                throw new Error('Transaction has no account keys');
+            }
+            const firstAccount = typeof accountKeys[0] === 'string' ? accountKeys[0] : accountKeys[0].pubkey;
+            const subscriber = firstAccount;
+
+            return { consumedKey, subscriber };
+        } catch (err) {
+            await store.delete(consumedKey);
+            throw err;
+        }
+    });
+}
+
+/**
+ * The first (fee-payer) signature of a signed base64 wire transaction,
+ * base58-encoded. This equals the value `sendTransaction` returns, so it is a
+ * stable replay key known before broadcast — letting the activation guard claim
+ * the consumed marker atomically up front rather than after confirmation.
+ */
+function signatureFromWireTransaction(wireTxBase64: string): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(wireTxBase64));
+    return getSignatureFromTransaction(tx);
 }
 
 // ── Transaction parsing (lightweight, pre-broadcast) ──
@@ -318,6 +429,7 @@ type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
     instructions: readonly CompiledInstruction[];
     staticAccounts: readonly string[];
+    version: number | 'legacy';
 };
 
 type CompiledInstruction = {
@@ -326,14 +438,30 @@ type CompiledInstruction = {
     programAddressIndex: number;
 };
 
+/** Resolve a static account address by index, throwing on an out-of-range index. */
+function accountAddress(message: CompiledMessage, index: number, label: string): string {
+    const value = message.staticAccounts[index];
+    if (value === undefined) {
+        throw new Error(`Invalid ${label} index`);
+    }
+    return value;
+}
+
 function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
+    let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
-        return getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
+        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
+    // Reject any versioned message beyond legacy/v0 before touching
+    // `.instructions` / `.addressTableLookups`. A v1 message decodes to a shape
+    // that carries neither field, so the ALT guard would be silently skipped
+    // and the instruction loop would crash with a TypeError on hostile input.
+    assertLegacyOrV0Message(message.version, 'Activation transaction');
+    return message;
 }
 
 function extractSubscriberFromTransaction(clientTxBase64: string, challenge: ChallengeRequest): string {
@@ -358,7 +486,7 @@ function extractSubscriberFromTransaction(clientTxBase64: string, challenge: Cha
     return firstAccount;
 }
 
-function validateActivationInstructions(clientTxBase64: string, challenge: ChallengeRequest): void {
+async function validateActivationInstructions(clientTxBase64: string, challenge: ChallengeRequest): Promise<void> {
     const message = decodeCompiledMessage(clientTxBase64);
 
     if (message.addressTableLookups?.length) {
@@ -367,23 +495,71 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
 
     const programId = challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM;
 
+    // The set of owners an ATA created in this activation may fund an account
+    // for: the subscriber themselves, the plan recipient, or the server puller.
+    // Re-derive the subscriber from the same transaction the caller settles.
+    const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
+    const allowedAtaOwners = new Set<string>([subscriber]);
+    if (challenge.recipient) allowedAtaOwners.add(challenge.recipient);
+    if (challenge.methodDetails.puller) allowedAtaOwners.add(challenge.methodDetails.puller);
+    // The funding account (charged the ATA rent) must be the transaction fee
+    // payer at static-account index 0 — the slot the server co-signs as.
+    const expectedAtaPayer = message.staticAccounts[0];
+
     let sawSubscribe = false;
     let sawTransferSubscription = false;
     let subscribeIndex = -1;
     let transferIndex = -1;
 
+    // Strict allowlist of the programs a legitimate activation transaction may
+    // invoke. Anything else is REJECTED outright — never skipped. The fee-payer
+    // co-sign that follows authorizes every instruction in this message that
+    // names the server key as a required signer; if we merely scanned for the
+    // subscribe/transfer pair and ignored the rest, a client could append e.g.
+    // a System or SPL transfer draining the sponsored fee-payer wallet and the
+    // server would blindly co-sign it. Mirrors the Rust `validate_activation_scope`.
     for (const [index, ix] of message.instructions.entries()) {
         const program = message.staticAccounts[ix.programAddressIndex];
-        if (program !== programId) continue;
-        if (ix.data.length === 0) continue;
-        if (ix.data[0] === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
-            if (sawSubscribe) throw new Error('Multiple subscribe instructions found');
-            sawSubscribe = true;
-            subscribeIndex = index;
-        } else if (ix.data[0] === SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR) {
-            if (sawTransferSubscription) throw new Error('Multiple transfer_subscription instructions found');
-            sawTransferSubscription = true;
-            transferIndex = index;
+        if (program === undefined) {
+            throw new Error('Activation transaction instruction references an out-of-range program id index');
+        }
+
+        if (program === programId) {
+            if (ix.data.length === 0) {
+                throw new Error('Activation transaction subscriptions-program instruction has empty data');
+            }
+            const disc = ix.data[0];
+            if (disc === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
+                if (sawSubscribe) throw new Error('Multiple subscribe instructions found');
+                sawSubscribe = true;
+                subscribeIndex = index;
+            } else if (disc === SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR) {
+                if (sawTransferSubscription) throw new Error('Multiple transfer_subscription instructions found');
+                sawTransferSubscription = true;
+                transferIndex = index;
+            } else {
+                throw new Error(
+                    `Activation transaction contains a disallowed subscriptions-program instruction (discriminator ${disc}); only subscribe and transfer_subscription are allowed`,
+                );
+            }
+        } else if (program === COMPUTE_BUDGET_PROGRAM || program === MEMO_PROGRAM) {
+            // Compute-budget (price/limit) and the optional external-id memo
+            // carry no fee-payer fund/authority risk, so they are allowed.
+            continue;
+        } else if (program === ASSOCIATED_TOKEN_PROGRAM) {
+            // An ATA `CreateIdempotent` names the funding account (charged the
+            // account's rent) as a required signer, so a blind co-sign would let
+            // a client make the sponsored fee payer fund an arbitrary ATA.
+            // Validate the instruction the same way the charge verifier does —
+            // idempotent discriminator, canonical 6-account layout, funding ==
+            // fee payer, mint == plan mint, owner authorized, token program ==
+            // the configured one, and the ATA address re-derives.
+            await validateActivationAtaInstruction(message, ix, challenge, allowedAtaOwners, expectedAtaPayer);
+            continue;
+        } else {
+            throw new Error(
+                `Activation transaction invokes a disallowed program ${program}; the fee payer will not co-sign a transaction outside the subscription activation allowlist`,
+            );
         }
     }
 
@@ -392,6 +568,65 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
         throw new Error('Activation transaction is missing transfer_subscription instruction');
     if (transferIndex < subscribeIndex) {
         throw new Error('subscribe must precede transfer_subscription in activation transaction');
+    }
+}
+
+/**
+ * Validate an Associated-Token-Account `CreateIdempotent` instruction in an
+ * activation transaction before the fee payer co-signs it. Mirrors the charge
+ * verifier's `validateCreateAtaIdempotentInstruction`: require the idempotent
+ * discriminator with the canonical 6-account layout, and assert that the
+ * funding account is the transaction fee payer, the mint is the plan mint, the
+ * token program is the configured one, the owner is one the challenge
+ * authorizes, and that the ATA address re-derives from `(owner, mint, token)`.
+ */
+async function validateActivationAtaInstruction(
+    message: CompiledMessage,
+    ix: CompiledInstruction,
+    challenge: ChallengeRequest,
+    allowedAtaOwners: Set<string>,
+    expectedPayer: string | undefined,
+): Promise<void> {
+    if (ix.data.length !== 1 || ix.data[0] !== 1) {
+        throw new Error('Activation transaction may only use idempotent ATA creation');
+    }
+    if (ix.accountIndices.length !== 6) {
+        throw new Error('Unexpected ATA creation account layout in activation transaction');
+    }
+
+    const payer = accountAddress(message, ix.accountIndices[0], 'ATA payer');
+    const ata = accountAddress(message, ix.accountIndices[1], 'ATA address');
+    const owner = accountAddress(message, ix.accountIndices[2], 'ATA owner');
+    const mint = accountAddress(message, ix.accountIndices[3], 'ATA mint');
+    const systemProgram = accountAddress(message, ix.accountIndices[4], 'ATA system program');
+    const tokenProgram = accountAddress(message, ix.accountIndices[5], 'ATA token program');
+
+    if (expectedPayer === undefined || payer !== expectedPayer) {
+        throw new Error('ATA payer must be the transaction fee payer in activation transaction');
+    }
+    if (mint !== challenge.methodDetails.mint) {
+        throw new Error('ATA creation mint does not match the plan mint');
+    }
+    if (!allowedAtaOwners.has(owner)) {
+        throw new Error('ATA creation owner is not authorized by the challenge');
+    }
+    if (systemProgram !== SYSTEM_PROGRAM) {
+        throw new Error('ATA creation must reference the System Program');
+    }
+    if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error('ATA creation uses an unsupported token program');
+    }
+    if (challenge.methodDetails.tokenProgram && tokenProgram !== challenge.methodDetails.tokenProgram) {
+        throw new Error('ATA creation token program does not match the configured token program');
+    }
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        mint: address(mint),
+        owner: address(owner),
+        tokenProgram: address(tokenProgram),
+    });
+    if (ata !== expectedAta) {
+        throw new Error('ATA creation address does not match owner/mint/token program');
     }
 }
 

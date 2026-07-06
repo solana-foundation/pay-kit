@@ -2,6 +2,7 @@
   "name": "@pay-kit/codegen",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.14.0",
   "description": "Codama codegen tooling for pay-kit. Pulls IDL files from upstream Solana programs and generates per-language clients into the appropriate SDK trees.",
   "scripts": {
     "subscriptions:rust": "tsx ./generate-subscriptions-client.ts",

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\X402\Exact;
 
+use Brick\Math\BigInteger;
 use PayKit\Exception\InvalidProofException;
 use PayKit\PayCore\Solana\Mints;
 use SolanaPhpSdk\Keypair\PublicKey;
@@ -56,7 +57,7 @@ final class Verifier
      * @param array<string,mixed>  $requirement   The x402 accepts[] entry.
      * @param list<string>         $managedSigners Server-managed pubkeys (typically the facilitator).
      *
-     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:int}
+     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:string}
      */
     public static function verify(
         string $transactionBase64,
@@ -164,7 +165,7 @@ final class Verifier
             );
         }
         $micro = self::readU64Le($data, 1);
-        if ($micro > self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
+        if ($micro->isGreaterThan(self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) {
             throw new InvalidProofException(
                 'invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high',
             );
@@ -176,7 +177,7 @@ final class Verifier
      * @param list<string> $accountKeys
      * @param array<string,mixed> $requirement
      * @param list<string> $managedSigners
-     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:int}
+     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:string}
      */
     private static function verifyTransfer(
         object $ix,
@@ -203,25 +204,18 @@ final class Verifier
         $destination = self::accountAt($accountKeys, $ix, 2);
         $authority   = self::accountAt($accountKeys, $ix, 3);
 
-        // Rule 5: authority guard.
+        // Rule 5: fee-payer/managed-signer fund-mover guard. A managed signer
+        // (the operator's fee payer) must never be the transfer authority, nor
+        // the funding source: not as its raw key, and not as its own
+        // associated token account for this mint. This is the complete rule -
+        // an appended instruction that merely references the fee-payer (e.g. a
+        // Lighthouse guard) is NOT a fund move and is accepted, matching the
+        // Rust reference and the Go/Python/Ruby/Lua verifiers.
         foreach ($managedSigners as $managed) {
-            if ($managed === $authority || $managed === $source) {
+            if ($managed === $authority || $managed === $source || $source === self::managedSourceAta($managed, $mint, $program)) {
                 throw new InvalidProofException(
                     'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
                 );
-            }
-        }
-        foreach ($ix->accountKeyIndexes as $idx) {
-            $key = $accountKeys[$idx] ?? null;
-            if ($key === null) {
-                continue;
-            }
-            foreach ($managedSigners as $managed) {
-                if ($managed === $key) {
-                    throw new InvalidProofException(
-                        'invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts',
-                    );
-                }
             }
         }
 
@@ -241,7 +235,7 @@ final class Verifier
         // Rule 8: amount match.
         $amount = self::readU64Le($data, 1);
         $expectedAmount = self::amountField($requirement);
-        if ($amount !== $expectedAmount) {
+        if (!$amount->isEqualTo($expectedAmount)) {
             throw new InvalidProofException('invalid_exact_svm_payload_amount_mismatch');
         }
 
@@ -251,7 +245,7 @@ final class Verifier
             'mint'        => $mint,
             'destination' => $destination,
             'authority'   => $authority,
-            'amount'      => $amount,
+            'amount'      => (string) $amount,
         ];
     }
 
@@ -286,6 +280,22 @@ final class Verifier
     private static function programOf(array $accountKeys, object $ix): string
     {
         return $accountKeys[$ix->programIdIndex] ?? '';
+    }
+
+    /**
+     * Derive a managed signer's own associated token account for the mint, or
+     * return null when the signer is not a parseable pubkey. A managed signer
+     * that cannot be parsed can never equal a valid on-chain source ATA, so
+     * an unparseable value is treated as "no match" rather than surfacing as
+     * an unrelated argument error.
+     */
+    private static function managedSourceAta(string $managed, string $mint, string $program): ?string
+    {
+        try {
+            return Mints::deriveAta($managed, $mint, $program);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**
@@ -326,24 +336,56 @@ final class Verifier
         return is_string($v) ? $v : null;
     }
 
-    /**
-     * @param array<string,mixed> $requirement
-     */
-    private static function amountField(array $requirement): int
+    /** Maximum unsigned u64, the wire upper bound for base-unit amounts. */
+    private static function u64Max(): BigInteger
     {
-        $v = $requirement['amount'] ?? $requirement['maxAmountRequired'] ?? null;
-        if (!is_string($v) && !is_int($v)) {
-            throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
-        }
-        return (int) $v;
+        return BigInteger::of('18446744073709551615');
     }
 
-    private static function readU64Le(string $data, int $offset): int
+    /**
+     * Parses the requirement amount into an exact unsigned u64. Wire
+     * amounts are u64, but PHP's native int is signed 64-bit: `(int)` on a
+     * decimal string above PHP_INT_MAX saturates, so a high-bit amount
+     * would never compare equal to (or, worse, could be made to collide
+     * with) the transferred amount. Anything that is not a canonical
+     * non-negative integer within the u64 range fails closed.
+     *
+     * @param array<string,mixed> $requirement
+     */
+    private static function amountField(array $requirement): BigInteger
+    {
+        $v = $requirement['amount'] ?? $requirement['maxAmountRequired'] ?? null;
+        if (is_int($v)) {
+            if ($v < 0) {
+                throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
+            }
+            return BigInteger::of($v);
+        }
+        if (!is_string($v) || preg_match('/^[0-9]+$/', $v) !== 1) {
+            throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
+        }
+        $normalized = ltrim($v, '0');
+        $amount = BigInteger::of($normalized === '' ? '0' : $normalized);
+        if ($amount->isGreaterThan(self::u64Max())) {
+            throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
+        }
+        return $amount;
+    }
+
+    /**
+     * Reads a little-endian u64 as an exact unsigned value. `unpack('P')`
+     * yields a signed PHP int, so values in [2^63, 2^64) come back
+     * negative; rebuild from two unsigned 32-bit halves instead.
+     */
+    private static function readU64Le(string $data, int $offset): BigInteger
     {
         if (strlen($data) < $offset + 8) {
             throw new InvalidProofException('invalid_exact_svm_payload_no_transfer_instruction');
         }
-        $b = unpack('P', substr($data, $offset, 8));
-        return $b === false ? 0 : (int) $b[1];
+        $parts = unpack('Vlo/Vhi', substr($data, $offset, 8));
+        if ($parts === false) {
+            throw new InvalidProofException('invalid_exact_svm_payload_no_transfer_instruction');
+        }
+        return BigInteger::of($parts['hi'])->shiftedLeft(32)->plus($parts['lo']);
     }
 }

@@ -17,10 +17,21 @@ use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
+use PayKit\Store\MemoryStore;
 use PHPUnit\Framework\TestCase;
 
 final class AdapterTest extends TestCase
 {
+    /**
+     * Off localnet the adapter now fails closed without a replay store, so
+     * existing off-localnet tests inject an explicit in-memory store the same
+     * way the TS reference tests pass `Store.memory()` in their OFFNET helper.
+     */
+    private function makeAdapter(Config $config): Adapter
+    {
+        return new Adapter($config, new MemoryStore());
+    }
+
     private function makeConfig(): Config
     {
         return new Config(
@@ -38,7 +49,7 @@ final class AdapterTest extends TestCase
     public function testAcceptsEntryShape(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $entry = $adapter->acceptsEntry($gate, $req);
@@ -52,7 +63,7 @@ final class AdapterTest extends TestCase
     public function testAcceptsEntryIncludesSplitsForFeeBearingGate(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $platform = Signer::generate()->pubkey();
         $gate = new Gate(
             amount: Price::usd('10.00'),
@@ -74,7 +85,7 @@ final class AdapterTest extends TestCase
         // share as amount - sum(splits), so the merchant was undercharged the
         // fee. The expected (and issued) charge request must use gate->total().
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $platform = Signer::generate()->pubkey();
         $gate = new Gate(
             amount: Price::usd('10.00'),
@@ -98,7 +109,7 @@ final class AdapterTest extends TestCase
     {
         // fee-within gates keep total == base, so the total switch is a no-op.
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $platform = Signer::generate()->pubkey();
         $gate = new Gate(
             amount: Price::usd('10.00'),
@@ -115,7 +126,7 @@ final class AdapterTest extends TestCase
     public function testChallengeHeadersHaveWwwAuthenticate(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $headers = $adapter->challengeHeaders($gate, $req);
@@ -126,7 +137,7 @@ final class AdapterTest extends TestCase
     public function testVerifyAndSettleWithoutAuthorizationRaises(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $this->expectException(\PayKit\Exception\InvalidProofException::class);
@@ -152,7 +163,7 @@ final class AdapterTest extends TestCase
     public function testAdapterPathIssuesValidChallengeForOnRouteRequest(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
 
         // The on-route request built by the adapter must pass the (now-active)
@@ -168,7 +179,7 @@ final class AdapterTest extends TestCase
     public function testAdapterPathRejectsMismatchedCurrencyAtIssuance(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $charges = $this->serverFor($adapter, $gate);
 
@@ -185,7 +196,7 @@ final class AdapterTest extends TestCase
     public function testAdapterPathRejectsMismatchedRecipientAtIssuance(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $charges = $this->serverFor($adapter, $gate);
 
@@ -202,7 +213,7 @@ final class AdapterTest extends TestCase
     public function testAdapterPathRejectsMismatchedNetworkAtIssuance(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $charges = $this->serverFor($adapter, $gate);
 
@@ -237,7 +248,7 @@ final class AdapterTest extends TestCase
         // issued challenge as an RFC 3339 expires. Previously the adapter
         // issued challenges with no expiry, so they never expired.
         $cfg = $this->makeConfigWithExpiresIn(120);
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
 
@@ -261,7 +272,7 @@ final class AdapterTest extends TestCase
         // The wired expiry must actually drive isExpired(): a challenge
         // issued with a short TTL is expired once that window elapses.
         $cfg = $this->makeConfigWithExpiresIn(1);
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
 
@@ -277,7 +288,7 @@ final class AdapterTest extends TestCase
         // expiresIn = 0 is the documented dev-only opt-out: the challenge
         // is issued with no expires and never expires.
         $cfg = $this->makeConfigWithExpiresIn(0);
-        $adapter = new Adapter($cfg);
+        $adapter = $this->makeAdapter($cfg);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
 
@@ -287,5 +298,98 @@ final class AdapterTest extends TestCase
         $this->assertSame('', $challenge->expires, 'expiresIn=0 must issue an empty (never-expires) challenge');
         $farFuture = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->add(new \DateInterval('P3650D'));
         $this->assertFalse($challenge->isExpired($farFuture));
+    }
+
+    private function makeConfigForNetwork(Network $network): Config
+    {
+        return new Config(
+            network: $network,
+            operator: new Operator(
+                recipient: Signer::generate()->pubkey(),
+                signer:    Signer::generate(),
+                feePayer:  true,
+            ),
+            preflight: false,
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
+        );
+    }
+
+    /**
+     * H3: the in-memory replay store is process-local, so off localnet it is a
+     * replay hole (a restart or a second replica accepts a replayed payment).
+     * The adapter must fail closed when no store is provided off localnet and
+     * the single-process opt-out is not set. Mirrors the TS `resolveReplayStore`
+     * guard.
+     */
+    public function testDefaultReplayStoreFailsClosedOffLocalnet(): void
+    {
+        $previous = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        try {
+            $cfg = $this->makeConfigForNetwork(Network::SolanaDevnet);
+            $this->expectException(\PayKit\Exception\ConfigurationException::class);
+            $this->expectExceptionMessage('shared replay store is required outside localnet');
+            new Adapter($cfg);
+        } finally {
+            if ($previous === false) {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+            } else {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=' . $previous);
+            }
+        }
+    }
+
+    public function testDefaultReplayStoreAllowedOnLocalnet(): void
+    {
+        $previous = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        try {
+            // Localnet is single-process dev, so the in-memory default is fine
+            // and construction must not throw.
+            $cfg = $this->makeConfigForNetwork(Network::SolanaLocalnet);
+            $adapter = new Adapter($cfg);
+            $this->assertInstanceOf(Adapter::class, $adapter);
+        } finally {
+            if ($previous === false) {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+            } else {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=' . $previous);
+            }
+        }
+    }
+
+    public function testDefaultReplayStoreOptOutAllowsInMemoryOffLocalnet(): void
+    {
+        $previous = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $cfg = $this->makeConfigForNetwork(Network::SolanaDevnet);
+            $adapter = new Adapter($cfg);
+            $this->assertInstanceOf(Adapter::class, $adapter);
+        } finally {
+            if ($previous === false) {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+            } else {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=' . $previous);
+            }
+        }
+    }
+
+    public function testExplicitReplayStoreAcceptedOffLocalnet(): void
+    {
+        $previous = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        try {
+            // An explicitly injected store satisfies the guard with no opt-out.
+            $cfg = $this->makeConfigForNetwork(Network::SolanaDevnet);
+            $adapter = new Adapter($cfg, new MemoryStore());
+            $this->assertInstanceOf(Adapter::class, $adapter);
+        } finally {
+            if ($previous === false) {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+            } else {
+                putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=' . $previous);
+            }
+        }
     }
 }

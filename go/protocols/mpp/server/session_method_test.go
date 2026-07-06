@@ -18,14 +18,17 @@ import (
 	"testing"
 	"time"
 
+	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
 const sessionMethodSecret = "session-method-secret"
@@ -103,11 +106,49 @@ func openSessionChannel(t *testing.T, session *Session, channelID string, deposi
 	// without it the settle path now refuses rather than refunding the merchant.
 	payer := solana.NewWallet().PublicKey().String()
 	payload.Payer = &payer
+	// The bare push open now binds to the on-chain Channel account when an RPC
+	// is configured. Seed a matching account so setup opens succeed. Match an
+	// interface, not the concrete type, so RPC wrappers embedding *FakeRPC
+	// (e.g. failingBlockhashRPC) are seeded too.
+	if setter, ok := session.rpc.(channelAccountSetter); ok {
+		seedChannelAccountVia(t, setter, session, channelID, deposit, authorizedSigner, payer)
+	}
 	receipt, err := verifySessionAction(t, session, intents.NewOpenAction(payload))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	return receipt
+}
+
+// channelAccountSetter is satisfied by *testutil.FakeRPC and any wrapper that
+// embeds it, so the account-seeding path works for wrapped RPCs too.
+type channelAccountSetter interface {
+	SetAccount(account solana.PublicKey, owner solana.PublicKey, data []byte)
+}
+
+// seedChannelAccountVia registers a well-formed, open on-chain Channel account
+// for channelID on the RPC so the account-state binding (open/top-up) reads
+// authoritative state matching the challenge.
+func seedChannelAccountVia(t *testing.T, setter channelAccountSetter, session *Session, channelID string, deposit uint64, authorizedSigner, payer string) {
+	t.Helper()
+	channelPubkey := solana.MustPublicKeyFromBase58(channelID)
+	mint := paycore.ResolveMint(session.currency, session.network)
+	acct := &pcgen.Channel{
+		Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
+		Status:           uint8(pcgen.ChannelStatus_Open),
+		Deposit:          deposit,
+		GracePeriod:      900,
+		Payer:            solana.MustPublicKeyFromBase58(payer),
+		Payee:            solana.MustPublicKeyFromBase58(session.recipient),
+		AuthorizedSigner: solana.MustPublicKeyFromBase58(authorizedSigner),
+		Mint:             solana.MustPublicKeyFromBase58(mint),
+		RentPayer:        solana.MustPublicKeyFromBase58(session.recipient),
+	}
+	buf := new(bytes.Buffer)
+	if err := acct.MarshalWithEncoder(bin.NewBorshEncoder(buf)); err != nil {
+		t.Fatalf("encode channel account: %v", err)
+	}
+	setter.SetAccount(channelPubkey, paymentchannels.ProgramPubkey(), buf.Bytes())
 }
 
 func mustGetChannel(t *testing.T, session *Session, channelID string) *ChannelState {
@@ -730,6 +771,8 @@ func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	channelID := solana.NewWallet().PublicKey().String()
 	openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
 
+	// The on-chain top-up has landed: the channel account now reflects 5_000.
+	seedChannelAccountVia(t, fake, session, channelID, 5_000, signer.Address(), solana.NewWallet().PublicKey().String())
 	receipt, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
 		ChannelID: channelID, NewDeposit: "5000", Signature: topupSig,
 	}))
@@ -750,6 +793,168 @@ func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	}
 	if mustGetChannel(t, session, channelID).Deposit != 5_000 {
 		t.Fatal("deposit raised despite unknown signature")
+	}
+}
+
+func TestSessionTopUpRejectsOnChainDepositMismatch(t *testing.T) {
+	fake := testutil.NewFakeRPC()
+	openSig := confirmedSignature(0x21)
+	topupSig := confirmedSignature(0x22)
+	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
+
+	// The signature confirms, but the on-chain channel only reached 3_000 —
+	// the client asserts 5_000 (a racing/partial top-up). The bind must reject.
+	seedChannelAccountVia(t, fake, session, channelID, 3_000, signer.Address(), solana.NewWallet().PublicKey().String())
+	_, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "5000", Signature: topupSig,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "!= asserted newDeposit 5000") {
+		t.Fatalf("deposit-mismatch top-up error = %v", err)
+	}
+	if mustGetChannel(t, session, channelID).Deposit != 1_000 {
+		t.Fatal("deposit raised despite on-chain mismatch")
+	}
+}
+
+func TestSessionTopUpRejectsOnChainMintMismatch(t *testing.T) {
+	fake := testutil.NewFakeRPC()
+	openSig := confirmedSignature(0x31)
+	topupSig := confirmedSignature(0x32)
+	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
+
+	// On-chain deposit matches, but the channel's mint is a different token.
+	wrongMint := solana.NewWallet().PublicKey().String()
+	acct := &pcgen.Channel{
+		Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
+		Status:           uint8(pcgen.ChannelStatus_Open),
+		Deposit:          5_000,
+		GracePeriod:      900,
+		Payer:            solana.NewWallet().PublicKey(),
+		Payee:            solana.MustPublicKeyFromBase58(session.recipient),
+		AuthorizedSigner: solana.MustPublicKeyFromBase58(signer.Address()),
+		Mint:             solana.MustPublicKeyFromBase58(wrongMint),
+		RentPayer:        solana.MustPublicKeyFromBase58(session.recipient),
+	}
+	buf := new(bytes.Buffer)
+	if err := acct.MarshalWithEncoder(bin.NewBorshEncoder(buf)); err != nil {
+		t.Fatalf("encode channel: %v", err)
+	}
+	fake.SetAccount(solana.MustPublicKeyFromBase58(channelID), paymentchannels.ProgramPubkey(), buf.Bytes())
+
+	_, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "5000", Signature: topupSig,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "mint") {
+		t.Fatalf("mint-mismatch top-up error = %v", err)
+	}
+}
+
+func TestFetchAndBindChannelAccountErrorBranches(t *testing.T) {
+	ctx := context.Background()
+	channelID := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey().String()
+	payee := solana.NewWallet().PublicKey().String()
+	authorizedSigner := solana.NewWallet().PublicKey().String()
+
+	encode := func(c *pcgen.Channel) []byte {
+		buf := new(bytes.Buffer)
+		if err := c.MarshalWithEncoder(bin.NewBorshEncoder(buf)); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return buf.Bytes()
+	}
+	validChannel := func() *pcgen.Channel {
+		return &pcgen.Channel{
+			Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
+			Status:           uint8(pcgen.ChannelStatus_Open),
+			Deposit:          1_000,
+			GracePeriod:      900,
+			Payer:            solana.NewWallet().PublicKey(),
+			Payee:            solana.MustPublicKeyFromBase58(payee),
+			AuthorizedSigner: solana.MustPublicKeyFromBase58(authorizedSigner),
+			Mint:             solana.MustPublicKeyFromBase58(mint),
+			RentPayer:        solana.MustPublicKeyFromBase58(payee),
+		}
+	}
+
+	cases := []struct {
+		name  string
+		setup func(*testutil.FakeRPC)
+		want  string
+	}{
+		{"account not found", func(*testutil.FakeRPC) {}, "not found"},
+		{"wrong owner", func(f *testutil.FakeRPC) {
+			f.SetAccount(channelID, solana.NewWallet().PublicKey(), encode(validChannel()))
+		}, "not owned by the payment-channels program"},
+		{"empty data", func(f *testutil.FakeRPC) {
+			f.SetAccount(channelID, paymentchannels.ProgramPubkey(), []byte{})
+		}, "account data is empty"},
+		{"undecodable data", func(f *testutil.FakeRPC) {
+			f.SetAccount(channelID, paymentchannels.ProgramPubkey(), []byte{0x01, 0x02})
+		}, "decode failed"},
+		{"status not open", func(f *testutil.FakeRPC) {
+			c := validChannel()
+			c.Status = 2
+			f.SetAccount(channelID, paymentchannels.ProgramPubkey(), encode(c))
+		}, "not open on-chain"},
+		{"mint mismatch", func(f *testutil.FakeRPC) {
+			c := validChannel()
+			c.Mint = solana.NewWallet().PublicKey()
+			f.SetAccount(channelID, paymentchannels.ProgramPubkey(), encode(c))
+		}, "mint"},
+		{"payee mismatch", func(f *testutil.FakeRPC) {
+			c := validChannel()
+			c.Payee = solana.NewWallet().PublicKey()
+			f.SetAccount(channelID, paymentchannels.ProgramPubkey(), encode(c))
+		}, "payee"},
+		{"authorizedSigner mismatch", func(f *testutil.FakeRPC) {
+			c := validChannel()
+			c.AuthorizedSigner = solana.NewWallet().PublicKey()
+			f.SetAccount(channelID, paymentchannels.ProgramPubkey(), encode(c))
+		}, "authorizedSigner"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := testutil.NewFakeRPC()
+			tc.setup(fake)
+			_, err := fetchAndBindChannelAccount(ctx, fake, channelID, mint, payee, authorizedSigner, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+
+	// Happy path returns the bound facts.
+	fake := testutil.NewFakeRPC()
+	fake.SetAccount(channelID, paymentchannels.ProgramPubkey(), encode(validChannel()))
+	bound, err := fetchAndBindChannelAccount(ctx, fake, channelID, mint, payee, authorizedSigner, nil)
+	if err != nil {
+		t.Fatalf("valid bind: %v", err)
+	}
+	if bound.Deposit != 1_000 || bound.Mint != mint || bound.Payee != payee {
+		t.Fatalf("bound = %+v", bound)
+	}
+}
+
+func TestSessionTopUpNoRPCOffLocalnetFailsClosed(t *testing.T) {
+	store := NewMemoryChannelStore()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.Network = "devnet"
+		o.Store = store
+	})
+	channelID := solana.NewWallet().PublicKey().String()
+	seedChannel(t, store, ChannelState{ChannelID: channelID, AuthorizedSigner: "s", Deposit: 1_000})
+	_, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "5000", Signature: "topup-sig",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "requires an rpc client") {
+		t.Fatalf("off-localnet no-rpc top-up error = %v", err)
 	}
 }
 
@@ -1368,8 +1573,12 @@ func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
 	}
 	calls := fake.calls()
 	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	// The bare push open binds to the on-chain Channel account; seed one so the
+	// verify path completes with 200 instead of failing the bind.
+	seedChannelAccountVia(t, fake, session, channelID, 1_000, signer.Address(), solana.NewWallet().PublicKey().String())
 	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
-		intents.OpenPayloadPush(solana.NewWallet().PublicKey().String(), "1000", signer.Address(), confirmedSignature(0x88))))
+		intents.OpenPayloadPush(channelID, "1000", signer.Address(), confirmedSignature(0x88))))
 	if err != nil {
 		t.Fatalf("NewPaymentCredential: %v", err)
 	}

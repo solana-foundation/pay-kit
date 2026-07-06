@@ -20,7 +20,12 @@ import type { PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
-import { errorMessage, x402PaymentHeader } from './x402-shared.js';
+import {
+    assertPaymentHeaderWithinCap,
+    ChallengeBlockhashCache,
+    errorMessage,
+    x402PaymentHeader,
+} from './x402-shared.js';
 
 /** Settlement-response header mirrored by the x402 SDK family. */
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
@@ -100,6 +105,8 @@ export class X402Upto {
     readonly #facilitatorFee: number;
     readonly #rpcUrl: string;
     readonly #stablecoins: readonly string[];
+    /** Short-TTL, single-flight challenge-blockhash cache shared with the exact adapter. */
+    readonly #blockhashCache = new ChallengeBlockhashCache();
 
     constructor(config: PayKitConfig) {
         this.#network = caip2(config.network) as Network;
@@ -144,6 +151,8 @@ export class X402Upto {
     async verifyOpen(request: Request, maxPrice: Price): Promise<UptoVerified> {
         const header = x402PaymentHeader(request);
         if (!header) throw new InvalidProofError('missing_x402_payment_header');
+        // Reject an over-cap header before any base64 / JSON decode work.
+        assertPaymentHeaderWithinCap(header);
 
         let payload: PaymentPayload;
         try {
@@ -262,19 +271,16 @@ export class X402Upto {
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
         const base = this.#requirements(maxPrice);
-        try {
-            const { value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
-            return {
-                ...base,
-                extra: {
-                    ...base.extra,
-                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                    recentBlockhash: value.blockhash,
-                },
-            };
-        } catch {
-            return base;
-        }
+        const cached = await this.#blockhashCache.recentBlockhash(this.#rpcUrl);
+        if (cached === undefined) return base;
+        return {
+            ...base,
+            extra: {
+                ...base.extra,
+                lastValidBlockHeight: cached.lastValidBlockHeight,
+                recentBlockhash: cached.blockhash,
+            },
+        };
     }
 }
 

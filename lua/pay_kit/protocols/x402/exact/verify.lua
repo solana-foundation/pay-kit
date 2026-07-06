@@ -159,18 +159,19 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
   local destination = account_at(account_keys, ix, 2)
   local authority   = account_at(account_keys, ix, 3)
 
-  -- Rule 5: authority guard.
+  -- Rule 5: fee-payer/managed-signer fund-mover guard. A managed signer
+  -- (the operator's fee payer) must never be the transfer authority, nor the
+  -- funding source: not as its raw key, and not as its own associated token
+  -- account for this mint. This is the complete rule -- an appended
+  -- instruction that merely references the fee-payer (e.g. a Lighthouse
+  -- guard) is NOT a fund move and is accepted, matching the Rust reference
+  -- and the Go/Python/PHP/Ruby verifiers.
   for i = 1, #managed_signers do
-    if managed_signers[i] == authority or managed_signers[i] == source then
+    local managed = managed_signers[i]
+    if managed == authority
+        or managed == source
+        or source == ata.derive(managed, mint, program) then
       error('invalid_exact_svm_payload_transaction_fee_payer_transferring_funds')
-    end
-  end
-  for j = 1, #ix.accounts do
-    local key = account_keys[ix.accounts[j] + 1]
-    for i = 1, #managed_signers do
-      if managed_signers[i] == key then
-        error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts')
-      end
     end
   end
 

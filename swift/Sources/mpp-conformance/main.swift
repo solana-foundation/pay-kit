@@ -797,17 +797,21 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
             case "build-transaction":
                 let shape = try buildX402Envelope(vector)
                 return RunnerResult(id: vector.id, outcome: "accept", x402EnvelopeShape: shape)
-            case "verify-transaction":
+            case "verify-transaction", "verify-x402-transaction":
+                // swift is a client-only SDK with no server verifier, so both
+                // the envelope verify and the exact fund-safety verify ops are
+                // unsupported. The "unsupported-mode" sentinel tells the driver
+                // to SKIP the vector for swift rather than fail it.
                 return RunnerResult(
                     id: vector.id,
                     outcome: "reject",
-                    error: "unsupported-mode: swift is a client-only SDK and does not implement x402 verify-transaction"
+                    error: "unsupported-mode: swift is a client-only SDK and does not implement x402 \(vector.mode)"
                 )
             default:
                 return RunnerResult(
                     id: vector.id,
                     outcome: "reject",
-                    error: "unsupported mode \(vector.mode) for x402-exact"
+                    error: "unsupported-mode: swift does not support x402 mode \(vector.mode)"
                 )
             }
         }

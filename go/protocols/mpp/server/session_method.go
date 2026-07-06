@@ -25,6 +25,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
@@ -233,6 +234,11 @@ func NewSession(options SessionOptions) (*Session, error) {
 		Modes:               options.Modes,
 		PullVoucherStrategy: options.PullVoucherStrategy,
 	}
+	// Install the top-up bind seam in-core: ProcessTopUp confirms the signature
+	// and binds the raised deposit to the on-chain Channel account through it,
+	// so the deposit bind is not a parallel abstraction living only in the HTTP
+	// dispatcher. Off localnet without an RPC client the seam fails closed.
+	config.VerifyTopUpTx = NewTopUpTxVerifier(config, options.RPC)
 	session := &Session{
 		core:            NewSessionServer(config, store),
 		secretKey:       options.SecretKey,
@@ -526,9 +532,13 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		}
 	case mode == intents.SessionModePush:
 		// No transaction in the payload: the client asserts a previously
-		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting; without one the channelId/deposit
-		// fields are trusted as-is.
+		// broadcast open. Confirming that some signature succeeded proves
+		// nothing about the channel, so with an RPC client the open signature is
+		// confirmed and the authoritative on-chain Channel account is read to
+		// bind the deposit / payer / channel identity — persisting the ON-CHAIN
+		// deposit, never the client's claim. Without an RPC client the fields
+		// are unverifiable; fail closed off localnet, matching the Rust/Python
+		// process_open bare-push path.
 		channelID = *payload.ChannelID
 		var err error
 		deposit, err = payload.DepositAmount()
@@ -539,6 +549,23 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
 				return "", err
 			}
+			channelPDA, err := solana.PublicKeyFromBase58(channelID)
+			if err != nil {
+				return "", fmt.Errorf("invalid channelId %q: %w", channelID, err)
+			}
+			bound, err := fetchAndBindChannelAccount(
+				ctx, s.rpc, channelPDA,
+				paycore.ResolveMint(s.currency, s.network),
+				s.recipient, payload.AuthorizedSigner, s.core.config.ProgramID,
+			)
+			if err != nil {
+				return "", err
+			}
+			deposit = bound.Deposit
+			channelPayer = bound.Payer
+		} else if s.network != "localnet" {
+			return "", fmt.Errorf(
+				"payment-channel push open requires an rpc client to bind the on-chain channel off localnet")
 		}
 	default:
 		// Pull mode without a channel transaction: trust the
@@ -627,9 +654,13 @@ func (s *Session) handleCommit(ctx context.Context, payload *intents.CommitPaylo
 	return fmt.Sprintf("%s:%s:%s", receipt.SessionID, receipt.DeliveryID, receipt.Cumulative), nil
 }
 
-// handleTopUp raises a channel's deposit after optional on-chain
-// confirmation of the top-up signature. The receipt reference is the top-up
-// transaction signature.
+// handleTopUp raises a channel's deposit. The on-chain confirm-and-bind (the
+// on-chain Channel account's deposit must equal the asserted newDeposit, fail-
+// closed off localnet) runs in the core ProcessTopUp via the installed
+// VerifyTopUpTx seam, so this dispatcher is a thin caller: it applies the
+// method-level cap clamp and the cheap store pre-checks (fast-fail before the
+// network round-trip inside the core bind) and delegates. The receipt
+// reference is the top-up transaction signature.
 func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
 	newDeposit, err := parseSessionU64(payload.NewDeposit, "newDeposit")
 	if err != nil {
@@ -639,7 +670,9 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, s.cap)
 	}
 
-	// Cheap store pre-checks before touching the network.
+	// Cheap store pre-checks before the core bind touches the network. The
+	// authoritative checks (and the on-chain deposit bind) run inside
+	// ProcessTopUp; these only fast-fail an obviously doomed top-up.
 	existing, err := s.core.store.GetChannel(ctx, payload.ChannelID)
 	if err != nil {
 		return "", err
@@ -653,11 +686,7 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 	if existing.CloseRequestedAt != nil {
 		return "", fmt.Errorf("channel %s close is pending; no further top-ups accepted", payload.ChannelID)
 	}
-	if s.rpc != nil {
-		if err := confirmTransactionSignature(ctx, s.rpc, payload.Signature, "topUp"); err != nil {
-			return "", err
-		}
-	}
+
 	if _, err := s.core.ProcessTopUp(ctx, payload); err != nil {
 		return "", err
 	}

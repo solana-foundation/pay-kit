@@ -111,8 +111,10 @@ type SessionConfig struct {
 	// mode) before ProcessOpen persists channel state. See SessionTxVerifier.
 	VerifyOpenTx SessionTxVerifier[intents.OpenPayload]
 
-	// VerifyTopUpTx, when set, confirms the top-up transaction on-chain
-	// before ProcessTopUp raises the deposit. See SessionTxVerifier.
+	// VerifyTopUpTx, when set, confirms the top-up transaction on-chain and
+	// binds the raised deposit to the on-chain Channel account (the deposit
+	// must equal the asserted newDeposit) before ProcessTopUp persists it.
+	// Install via NewTopUpTxVerifier. See SessionTxVerifier.
 	VerifyTopUpTx SessionTxVerifier[intents.TopUpPayload]
 }
 
@@ -449,14 +451,24 @@ func (s *SessionServer) VerifyVoucherDetailed(ctx context.Context, payload *inte
 // The new deposit must exceed the current deposit and must not exceed the
 // configured max cap. Top-ups are rejected once the channel is finalized or a
 // close has been requested.
+//
+// The on-chain deposit bind runs here, in-core: when the VerifyTopUpTx seam is
+// installed (via NewTopUpTxVerifier) it confirms the signature and requires the
+// on-chain Channel account's deposit to equal the asserted newDeposit before
+// the write lands, matching the Rust process_topup contract and fail-closed off
+// localnet. When the seam is nil the raw newDeposit is trusted as provided;
+// that mode is suitable only for localnet or callers that verify transactions
+// out of band.
 func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUpPayload) (ChannelState, error) {
 	newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
 	if err != nil {
 		return ChannelState{}, fmt.Errorf("invalid newDeposit: %s", payload.NewDeposit)
 	}
 
-	// On-chain verification seam (same shape as ProcessOpen). A top-up never
-	// establishes the channel payer, so the returned payer is ignored.
+	// On-chain verification and binding seam (same shape as ProcessOpen). The
+	// seam confirms the signature and binds the raised deposit to the on-chain
+	// Channel account. A top-up never establishes the channel payer, so the
+	// returned payer is ignored.
 	if s.config.VerifyTopUpTx != nil {
 		if _, err := s.config.VerifyTopUpTx(ctx, payload); err != nil {
 			return ChannelState{}, fmt.Errorf("top-up tx verification failed: %w", err)

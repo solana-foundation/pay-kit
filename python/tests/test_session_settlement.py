@@ -54,6 +54,9 @@ class _SettleRpc:
         self.sent.append(raw_tx)
         return _Resp(_SENT_SIGNATURE)
 
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        raise NotImplementedError  # the settle path binds no on-chain channel account
+
 
 def _session(rpc: _SettleRpc, operator: Keypair):
     return new_session(

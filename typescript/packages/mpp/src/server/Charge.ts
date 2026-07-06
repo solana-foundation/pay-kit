@@ -2,6 +2,7 @@ import {
     address,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
+    getSignatureFromTransaction,
     getTransactionDecoder,
     isTransactionPartialSigner,
     type TransactionPartialSigner,
@@ -23,10 +24,11 @@ import {
     validateNetwork,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import { assertLegacyOrV0Message, coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
+import { claimConsumed } from './replayReserve.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -134,8 +136,7 @@ export function charge(parameters: charge.Parameters) {
                   content: PAYMENT_UI_JS as string,
                   formatAmount: (request: { amount: string; currency: string }) => {
                       const dec = decimals ?? (request.currency.toLowerCase() === 'sol' ? 9 : 6);
-                      const raw = Number(request.amount) / 10 ** dec;
-                      const display = raw % 1 === 0 ? raw.toString() : raw.toFixed(Math.min(dec, 2));
+                      const display = formatBaseUnitsForDisplay(request.amount, dec);
                       if (request.currency.toLowerCase() === 'sol') return `${display} SOL`;
                       const sym = stablecoinSymbolForCurrency(request.currency);
                       if (sym) return `$${display}`;
@@ -297,6 +298,11 @@ function extractRecentBlockhash(clientTxBase64: string): string | null {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
         const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes);
+        // Only read the lifetime blockhash from a legacy/v0 message shape. A
+        // v1+ message is rejected downstream in verifyChargeTransaction; fail
+        // open here (return null) so the network/blockhash sanity check is
+        // simply skipped rather than reading a field off an unexpected shape.
+        assertLegacyOrV0Message((message as { version: number | 'legacy' }).version, 'extractRecentBlockhash');
         return message.lifetimeToken;
     } catch {
         return null;
@@ -317,6 +323,7 @@ type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
     instructions: readonly CompiledInstruction[];
     staticAccounts: readonly string[];
+    version: number | 'legacy';
 };
 
 type CompiledInstruction = {
@@ -345,6 +352,12 @@ export async function verifyChargeTransaction(clientTxBase64: string, challenge:
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
+
+    // Reject any versioned message beyond legacy/v0 before touching
+    // `.instructions` / `.addressTableLookups`. A v1 message decodes to a shape
+    // carrying neither field, so the ALT guard below would be silently skipped
+    // and the instruction loop would crash with a TypeError on hostile input.
+    assertLegacyOrV0Message(message.version, 'Charge transaction');
 
     if (message.addressTableLookups?.length) {
         throw new Error('v0 transactions with address lookup tables are not supported');
@@ -769,35 +782,98 @@ async function verifyTransaction(
         txToSend = await coSignBase64Transaction(signer, clientTxBase64);
     }
 
-    // Simulate before broadcast to catch failures without wasting fees.
-    await simulateTransaction(rpcUrl, txToSend);
+    // The fee-payer signature is the on-chain transaction id and is fully
+    // determined once the transaction is signed, before broadcast. Use it as the
+    // replay key so pull mode (type="transaction") shares the same consumed-
+    // signature namespace as the push path (verifySignature). Without this, two
+    // concurrent requests carrying the same signed transaction both broadcast
+    // (Solana dedups the identical signature on-chain, so one transfer occurs),
+    // both verify, and both settle — the same TOCTOU that #211 closed for push
+    // mode, plus a cross-mode bypass of the consumed marker. The consumed-check,
+    // broadcast, reserve, and verify run atomically per signature in `withKeyLock`.
+    //
+    // Scope: single Node process. Multi-process/replica deployments sharing one
+    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
+    const signature = signatureFromWireTransaction(txToSend);
+    const consumedKey = `solana-charge:consumed:${signature}`;
 
-    // Broadcast the (now fully-signed) transaction.
-    const signature = await broadcastTransaction(rpcUrl, txToSend);
+    // Cheap read outside the lock rejects obvious replays without queueing.
+    if (await store.get(consumedKey)) {
+        throw new Error('Transaction signature already consumed');
+    }
 
-    // Audit #3: reserve the signature BETWEEN broadcast and confirmation polling.
-    // If we only marked it consumed after confirmation+verify (as before), a tx
-    // that landed during a confirmation-poll timeout could be lost — the user
-    // pays but the signature is never recorded, so a retry re-broadcasts (double
-    // charge) or replays. Reserving here closes the replay window; the
-    // post-timeout status recovery below rescues the false-negative case.
-    await store.put(`solana-charge:consumed:${signature}`, true);
+    return await withKeyLock(consumedKey, async () => {
+        // Re-check inside the lock: a concurrent request in this process may have
+        // consumed the signature since the read above.
+        if (await store.get(consumedKey)) {
+            throw new Error('Transaction signature already consumed');
+        }
 
-    // Wait for on-chain confirmation (with a definitive post-timeout status check).
-    await waitForConfirmation(rpcUrl, signature);
+        // Simulate before broadcast to catch failures without wasting fees.
+        await simulateTransaction(rpcUrl, txToSend);
 
-    // Verify the confirmed transaction matches the challenge.
-    await verifyOnChain(rpcUrl, signature, challenge, recipient);
+        // Broadcast the (now fully-signed) transaction.
+        const broadcastSignature = await broadcastTransaction(rpcUrl, txToSend);
 
-    return Receipt.from({
-        method: 'solana',
-        ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-        reference: signature,
-        ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-        status: 'success',
-        timestamp: new Date().toISOString(),
+        // Audit #3: reserve the signature BETWEEN broadcast and confirmation
+        // polling. A tx that lands during a confirmation-poll timeout must not be
+        // re-broadcast (double charge) or replayed, so reserve before polling.
+        // `claimConsumed` is an atomic put-if-absent when the Store supports it
+        // (cross-process safe across replicas), else a plain put guarded by the
+        // lock; a false result means another process claimed the same signature
+        // post-broadcast, so reject rather than settle twice (Solana dedups the
+        // identical signature on-chain, so at most one transfer occurred).
+        if (!(await claimConsumed(store, consumedKey))) {
+            throw new Error('Transaction signature already consumed');
+        }
+
+        try {
+            // Wait for on-chain confirmation (with a definitive post-timeout check).
+            await waitForConfirmation(rpcUrl, broadcastSignature);
+
+            // Verify the confirmed transaction matches the challenge.
+            await verifyOnChain(rpcUrl, broadcastSignature, challenge, recipient);
+        } catch (err) {
+            // Release the reservation ONLY when the transaction definitively never
+            // landed, so an honest retry of the same still-valid transaction is not
+            // permanently bricked (audit L1). A landed-but-failed tx, a confirmed
+            // tx that fails challenge verification, or an inconclusive status
+            // recovery all keep the reservation to avoid a double-charge/replay
+            // window.
+            if (err instanceof TransactionNotLandedError) {
+                await store.delete(consumedKey);
+            }
+            throw err;
+        }
+
+        return Receipt.from({
+            method: 'solana',
+            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
+            reference: broadcastSignature,
+            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+            status: 'success',
+            timestamp: new Date().toISOString(),
+        });
     });
 }
+
+/**
+ * The fee-payer signature of a signed base64 wire transaction, base58-encoded.
+ * This equals the value `sendTransaction` returns, so it is a stable replay key
+ * known before broadcast.
+ */
+function signatureFromWireTransaction(wireTxBase64: string): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(wireTxBase64));
+    return getSignatureFromTransaction(tx);
+}
+
+/**
+ * Thrown by `waitForConfirmation` when a broadcast transaction definitively did
+ * not land (a `searchTransactionHistory` status check returned null). Distinct
+ * from a landed-but-failed tx or an inconclusive recovery, so the pull-mode
+ * verifier can release its replay reservation for exactly this case (audit L1).
+ */
+class TransactionNotLandedError extends Error {}
 
 // ── Push mode (type="signature") ──
 
@@ -816,26 +892,23 @@ async function verifySignature(
     const consumedKey = `solana-charge:consumed:${signature}`;
 
     // Replay prevention. The consumed-check, on-chain verify, and consumed-mark
-    // must run atomically per signature: `mppx`'s Store has no atomic
+    // must run atomically per signature: `mppx`'s base Store has no atomic
     // put-if-absent, so without serialization two concurrent requests carrying
     // the same confirmed signature both pass the check, both verify the same
     // real transaction, and both settle (one payment, two accesses). A cheap
     // read outside the lock rejects obvious replays without queueing; the
     // authoritative check-and-mark runs inside `withKeyLock`.
     //
-    // Scope: single Node process. Multi-process/replica deployments sharing one
-    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
+    // Cross-process: withKeyLock only serializes within one Node process. When
+    // the Store implements the atomic reserve capability (see replayReserve),
+    // `claimConsumed` closes the marker with a put-if-absent that is also safe
+    // across replicas; otherwise it degrades to get/put guarded by the lock.
+    // Multi-replica deployments MUST supply a reserving store. See SECURITY.md.
     if (await store.get(consumedKey)) {
         throw new Error('Transaction signature already consumed');
     }
 
     return await withKeyLock(consumedKey, async () => {
-        // Re-check inside the lock: a concurrent request in this process may
-        // have consumed the signature since the read above.
-        if (await store.get(consumedKey)) {
-            throw new Error('Transaction signature already consumed');
-        }
-
         // Fetch and verify the transaction on-chain.
         const tx = await fetchTransaction(rpcUrl, signature);
         if (!tx) throw new Error('Transaction not found or not yet confirmed');
@@ -844,9 +917,13 @@ async function verifySignature(
         const instructions = tx.transaction.message.instructions;
         await verifyInstructions(instructions, challenge, recipient);
 
-        // Mark consumed only after a successful verify, so a failed verify never
-        // burns a legitimately-retryable signature.
-        await store.put(consumedKey, true);
+        // Atomically claim the signature only after a successful verify, so a
+        // failed verify never burns a legitimately-retryable signature. A
+        // false result means another process claimed it during our verify —
+        // reject rather than settle a second time.
+        if (!(await claimConsumed(store, consumedKey))) {
+            throw new Error('Transaction signature already consumed');
+        }
 
         return Receipt.from({
             method: 'solana',
@@ -986,17 +1063,52 @@ function verifySolTransfer(
     expectedAmount: string,
     matchedInstructionIndexes: Set<number>,
 ) {
+    const expected = BigInt(expectedAmount);
     for (const [index, ix] of instructions.entries()) {
         if (matchedInstructionIndexes.has(index)) continue;
         if (typeof ix.parsed !== 'object' || ix.parsed?.type !== 'transfer' || ix.program !== 'system') continue;
         const info = ix.parsed.info as { destination?: string; lamports?: number | string };
-        if (info.destination === recipientAddress && String(info.lamports) === expectedAmount) {
+        // Compare in base units as bigint. jsonParsed returns `lamports` as a JS
+        // number, which is imprecise above 2^53 (~9007 SOL): `String(number)`
+        // would then yield a wrong decimal and mismatch a genuinely-correct large
+        // transfer (the SPL path is safe because the RPC returns amounts as
+        // strings). Reject a numeric lamports that is not an exact integer rather
+        // than trust a lossy value.
+        if (info.destination === recipientAddress && exactLamports(info.lamports) === expected) {
             matchedInstructionIndexes.add(index);
             return;
         }
     }
 
     throw new Error(`No system transfer instruction found for recipient ${recipientAddress}`);
+}
+
+/**
+ * Parse a jsonParsed `lamports` value (string or number) to an exact bigint, or
+ * `null` if it is a number that has already lost precision (not a safe integer).
+ */
+function exactLamports(lamports: number | string | undefined): bigint | null {
+    if (typeof lamports === 'string') return BigInt(lamports);
+    if (typeof lamports === 'number' && Number.isSafeInteger(lamports)) return BigInt(lamports);
+    return null;
+}
+
+/**
+ * Format a base-unit amount string for the interactive payment page. Uses bigint
+ * so amounts above 2^53 are not lossy the way `Number(amount) / 10 ** dec` is.
+ * Display only (settlement uses the exact string amount); the fractional part is
+ * shown to at most two digits, truncated rather than rounded so it never
+ * overstates.
+ */
+function formatBaseUnitsForDisplay(amount: string, dec: number): string {
+    const value = BigInt(amount);
+    const base = 10n ** BigInt(dec);
+    const whole = (value / base).toString();
+    const frac = value % base;
+    const places = Math.min(dec, 2);
+    if (frac === 0n || places === 0) return whole;
+    const fracDigits = frac.toString().padStart(dec, '0').slice(0, places);
+    return `${whole}.${fracDigits}`;
 }
 
 function verifyMemoInstructionsPreBroadcast(
@@ -1403,11 +1515,14 @@ async function waitForConfirmation(rpcUrl: string, signature: string, timeoutMs 
         case 'failed':
             throw new Error(`Transaction landed on-chain but failed: ${outcome.detail}`);
         case 'timeout':
-            throw new Error(
-                outcome.detail
-                    ? `Transaction confirmation timeout (status recovery failed: ${outcome.detail})`
-                    : 'Transaction confirmation timeout',
-            );
+            if (outcome.detail) {
+                // Recovery RPC itself failed — inconclusive, so the caller must
+                // NOT release the reservation (the tx may still have landed).
+                throw new Error(`Transaction confirmation timeout (status recovery failed: ${outcome.detail})`);
+            }
+            // Definitively not on-chain: the caller may release its replay
+            // reservation so the same still-valid transaction can be retried (L1).
+            throw new TransactionNotLandedError('Transaction confirmation timeout');
     }
 }
 

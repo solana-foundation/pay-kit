@@ -1,4 +1,5 @@
-import { createSolanaRpc } from '@solana/kit';
+import { getBase58Decoder, getBase64Codec, getTransactionDecoder } from '@solana/kit';
+import { isReservingStore } from '@solana/mpp/server';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -17,7 +18,12 @@ import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2 } from '../protocol.js';
-import { errorMessage, x402PaymentHeader } from './x402-shared.js';
+import {
+    assertPaymentHeaderWithinCap,
+    ChallengeBlockhashCache,
+    errorMessage,
+    x402PaymentHeader,
+} from './x402-shared.js';
 
 /** x402 v2 protocol version advertised in the challenge envelope. */
 const X402_VERSION = 2;
@@ -27,6 +33,42 @@ const MAX_TIMEOUT_SECONDS = 300;
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 /** 402 challenge header read by x402 clients (alongside the JSON body). */
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
+
+/**
+ * `errorReason` values from a `@x402/svm` exact `settle()` that prove the
+ * transaction was never broadcast, so the payload reservation can be released
+ * for an honest retry. These are the scheme's settle-time verification-class
+ * reasons: `settle()` re-verifies first and returns one of them *before* it
+ * signs, sends, or confirms any transaction (see `@x402/svm` exact facilitator
+ * `settle` -> `_verify`). Every other failure — notably `transaction_failed`
+ * (the catch-all that subsumes a confirmation-poll timeout on a tx that may
+ * have landed) and `duplicate_settlement` (a settlement already occurred or is
+ * in flight) — must KEEP the reservation, mirroring the MPP charge invariant of
+ * releasing only on a definitive not-landed status (Charge.ts, release only on
+ * `TransactionNotLandedError`). Any unknown/dynamic reason defaults to KEEP so
+ * a landed-but-unconfirmed transfer cannot be re-served on another replica.
+ *
+ * These strings are the `errorReason` values emitted by `@x402/svm` 2.16.0 (the
+ * vendored `.x402-vendor/x402-svm-2.16.0.tgz`). If that dependency is upgraded,
+ * re-derive this set against the new package: a renamed or consolidated reason
+ * would otherwise silently flip a payload between the release and KEEP paths.
+ */
+const RELEASE_SAFE_SETTLE_REASONS: ReadonlySet<string> = new Set([
+    'verification_failed',
+    'unsupported_scheme',
+    'network_mismatch',
+    'fee_payer_not_managed_by_facilitator',
+    'invalid_exact_svm_payload_missing_fee_payer',
+    'invalid_exact_svm_payload_transaction_could_not_be_decoded',
+    'invalid_exact_svm_payload_transaction_instructions_length',
+    'invalid_exact_svm_payload_no_transfer_instruction',
+    'invalid_exact_svm_payload_mint_mismatch',
+    'invalid_exact_svm_payload_recipient_mismatch',
+    'invalid_exact_svm_payload_amount_mismatch',
+    'invalid_exact_svm_payload_memo_count',
+    'invalid_exact_svm_payload_memo_mismatch',
+    'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
+]);
 
 /**
  * The x402 `exact` protocol adapter: wraps `@x402/svm`'s exact scheme behind
@@ -40,6 +82,11 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = caip2(config.network) as Network;
     const operator = config.operator.signer.pubkey;
 
+    // Short-TTL, single-flight challenge-blockhash cache (shared helper): an
+    // unauthenticated 402 burst collapses to at most one getLatestBlockhash RPC
+    // per TTL instead of one per challenge.
+    const blockhashCache = new ChallengeBlockhashCache();
+
     // In-process facilitator: the operator both fee-pays and signs settlement.
     const facilitator = new x402Facilitator().register(
         network,
@@ -47,6 +94,78 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
         ),
     );
+
+    // In-flight/consumed dedup for exact payloads, mirroring the Rust x402
+    // exact signature-consume store and the `inFlightUptoChannels` guard on the
+    // upto path: without it, a duplicate X-PAYMENT payload racing (or trailing)
+    // the original settles the resource twice for one payment before the ledger
+    // can dedupe the broadcast. Keyed by the payload transaction's client
+    // signature(s) — the fee-payer signature slot is zeroed until the
+    // facilitator countersigns, so raw header bytes are malleable while the
+    // client signature is not.
+    //
+    // When the configured replay store implements the atomic reserve capability
+    // (put-if-absent, e.g. Redis SET NX EX), the claim is cross-process safe:
+    // two replicas sharing the store cannot both settle the same payload. The
+    // reservation is given a MAX_TIMEOUT_SECONDS TTL — past that window the
+    // payment's blockhash has expired and a rebroadcast is rejected on-chain
+    // anyway. Without a reserving store the guard degrades to a process-local
+    // Map with the same TTL (single-process scope; see SECURITY.md).
+    const reserveStore =
+        config.replayStore !== undefined && isReservingStore(config.replayStore) ? config.replayStore : undefined;
+    const consumedPayloads = new Map<string, number>();
+    const CONSUMED_PREFIX = 'x402-svm-exact:consumed:';
+
+    function pruneConsumed(now: number): void {
+        // Insertion order is timestamp order (keys are only ever added), so
+        // stop at the first still-fresh entry.
+        for (const [key, at] of consumedPayloads) {
+            if (now - at <= MAX_TIMEOUT_SECONDS * 1000) break;
+            consumedPayloads.delete(key);
+        }
+    }
+
+    /**
+     * Atomically claim `key` as consumed. Returns true when newly claimed,
+     * false when a live duplicate already holds it. Uses the reserving store
+     * (cross-process) when available, else the process-local Map.
+     */
+    async function claimPayload(key: string): Promise<boolean> {
+        if (reserveStore) {
+            return await reserveStore.reserve(`${CONSUMED_PREFIX}${key}`, true, MAX_TIMEOUT_SECONDS);
+        }
+        const now = Date.now();
+        pruneConsumed(now);
+        if (consumedPayloads.has(key)) return false;
+        consumedPayloads.set(key, now);
+        return true;
+    }
+
+    /** Release a claim so a failed settle can be retried. */
+    async function releasePayload(key: string): Promise<void> {
+        if (reserveStore) {
+            await reserveStore.delete(`${CONSUMED_PREFIX}${key}`);
+            return;
+        }
+        consumedPayloads.delete(key);
+    }
+
+    function payloadKey(header: string, payload: PaymentPayload): string {
+        const txBase64 = (payload.payload as { transaction?: unknown } | undefined)?.transaction;
+        if (typeof txBase64 !== 'string' || txBase64 === '') return `header:${header}`;
+        try {
+            const decoded = getTransactionDecoder().decode(getBase64Codec().encode(txBase64));
+            const signatures = Object.values(decoded.signatures as Readonly<Record<string, Uint8Array | null>>)
+                .filter((sig): sig is Uint8Array => sig !== null && sig.some(byte => byte !== 0))
+                .map(sig => getBase58Decoder().decode(sig))
+                .sort();
+            if (signatures.length > 0) return `sig:${signatures.join(':')}`;
+        } catch {
+            // Undecodable transaction bytes: fall through to the raw-bytes
+            // key; facilitator.verify() is the authority on acceptability.
+        }
+        return `tx:${txBase64}`;
+    }
 
     function mintFor(gate: Gate): string {
         const coin = resolveCoin(gate.amount, config.stablecoins);
@@ -74,19 +193,16 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
      */
     async function challengeRequirements(gate: Gate): Promise<PaymentRequirements> {
         const base = requirementsFor(gate);
-        try {
-            const { value } = await createSolanaRpc(config.rpcUrl).getLatestBlockhash().send();
-            return {
-                ...base,
-                extra: {
-                    ...base.extra,
-                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                    recentBlockhash: value.blockhash,
-                },
-            };
-        } catch {
-            return base;
-        }
+        const cached = await blockhashCache.recentBlockhash(config.rpcUrl);
+        if (cached === undefined) return base;
+        return {
+            ...base,
+            extra: {
+                ...base.extra,
+                lastValidBlockHeight: cached.lastValidBlockHeight,
+                recentBlockhash: cached.blockhash,
+            },
+        };
     }
 
     return {
@@ -114,6 +230,8 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
         async verifyAndSettle(gate: Gate, request: Request): Promise<Payment> {
             const header = x402PaymentHeader(request);
             if (!header) throw new InvalidProofError('missing_x402_payment_header');
+            // Reject an over-cap header before any base64 / JSON decode work.
+            assertPaymentHeaderWithinCap(header);
 
             let payload: PaymentPayload;
             try {
@@ -128,9 +246,49 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
                 throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
             }
 
-            const settlement = await facilitator.settle(payload, requirements);
+            // Consume the payload before settling: a concurrent duplicate is
+            // rejected here, and a settled payload stays consumed for the
+            // advertised completion window (MAX_TIMEOUT_SECONDS, the reservation
+            // TTL). Releasing the key on a settle failure is fail-closed: it is
+            // done ONLY when the transaction provably never broadcast, so a tx
+            // that landed but timed out during confirmation stays reserved and
+            // cannot be re-served on another replica. This mirrors the MPP
+            // charge invariant of releasing only on a definitive not-landed
+            // status (Charge.ts, release only on `TransactionNotLandedError`).
+            const key = payloadKey(header, payload);
+            if (!(await claimPayload(key))) {
+                throw new InvalidProofError('x402_payment_replayed', 'payment payload already used or in flight');
+            }
+
+            // A THROW out of settle is provably pre-broadcast: the `@x402/svm`
+            // exact scheme's `settle()` internally try/catches every step from
+            // cosign through send + confirm and reports them as a structured
+            // {success:false, errorReason:'transaction_failed'} — it does not
+            // throw once a broadcast is possible. So an exception escapes only
+            // from the pre-broadcast phase (re-verify, transaction decode, cosign
+            // signer error), where the tx never reached the chain. Release the
+            // reservation so an honest retry can reclaim the key, then surface a
+            // canonical error. Mirrors Go's cleanupConsumed on a cosign/build
+            // failure before SendTransaction.
+            let settlement: Awaited<ReturnType<typeof facilitator.settle>>;
+            try {
+                settlement = await facilitator.settle(payload, requirements);
+            } catch (error) {
+                await releasePayload(key);
+                throw new InvalidProofError('settlement_failed', errorMessage(error));
+            }
             if (!settlement.success) {
-                throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
+                const reason = settlement.errorReason ?? 'settlement_failed';
+                // Release only on a provably pre-broadcast, verification-class
+                // failure; keep for everything else (landed-but-unconfirmed,
+                // duplicate settlement, or any unknown reason — fail closed).
+                // Note `transaction_failed` is the scheme's catch-all that
+                // subsumes a post-broadcast confirmation timeout, so it is NOT
+                // release-safe: a landed-but-unconfirmed tx must stay reserved.
+                if (RELEASE_SAFE_SETTLE_REASONS.has(reason)) {
+                    await releasePayload(key);
+                }
+                throw new InvalidProofError(reason, settlement.errorMessage);
             }
 
             return {

@@ -179,7 +179,17 @@ export const clientImplementations: ImplementationDefinition[] = [
     // `X402_HARNESS_CLIENTS=python-x402` (the focused python-x402 CI job sets
     // this). Carries a real signed Solana transaction, so it settles end-to-end
     // against the rust/ts/python x402 servers (see test/x402-exact.e2e.test.ts).
-    command: ["python3", "python-x402-client/main.py"],
+    // Run through the SDK's frozen uv env (like `python-session`) so runtime
+    // deps such as httpx resolve; a bare `python3` only sees python/src on the
+    // path and would fail importing httpx.
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-x402-client/main.py",
+    ],
     enabled: isEnabled("python-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
     reportsAs: "python",
@@ -254,7 +264,17 @@ export const clientImplementations: ImplementationDefinition[] = [
     // partially-signed channel open + PAYMENT-SIGNATURE -> retry). Inserts
     // python/src on sys.path like harness/python-server/server.py. Opt in via
     // `X402_HARNESS_CLIENTS=python-x402-upto`.
-    command: ["python3", "python-x402-upto-client/main.py"],
+    // Run through the SDK's frozen uv env (like `python-session`) so runtime
+    // deps such as httpx resolve; a bare `python3` only sees python/src on the
+    // path and would fail importing httpx.
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-x402-upto-client/main.py",
+    ],
     enabled: isEnabled("python-x402-upto", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-upto"],
     reportsAs: "python",

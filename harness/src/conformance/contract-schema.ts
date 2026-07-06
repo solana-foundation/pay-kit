@@ -117,6 +117,7 @@ export const runnerResultSchema = {
     exactBytes: exactBytesSchema,
     error: { type: "string" },
     rejectCode: rejectCodeSchema,
+    x402ExactRejectCode: { type: "string" },
   },
 } as const;
 
@@ -133,7 +134,12 @@ export const conformanceVectorSchema = {
     id: { type: "string" },
     intent: { enum: ["charge", "x402-exact", "session"] },
     mode: {
-      enum: ["build-transaction", "verify-transaction", "canonical-bytes"],
+      enum: [
+        "build-transaction",
+        "verify-transaction",
+        "canonical-bytes",
+        "verify-x402-transaction",
+      ],
     },
     description: { type: "string" },
     input: { type: "object" },
@@ -143,6 +149,7 @@ export const conformanceVectorSchema = {
       properties: {
         outcome: { enum: ["accept", "reject"] },
         rejectCode: rejectCodeSchema,
+        x402ExactRejectCode: { type: "string" },
       },
     },
   },

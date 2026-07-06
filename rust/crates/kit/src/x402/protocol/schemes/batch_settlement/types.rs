@@ -338,4 +338,102 @@ mod tests {
             .contains("\"type\":\"refund\""));
         assert_eq!(voucher.cumulative().unwrap(), 20000);
     }
+
+    #[test]
+    fn amount_rejects_non_numeric() {
+        let mut req = requirements();
+        req.amount = "not-a-number".to_string();
+        let err = req.amount().unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason.contains("invalid batch amount: not-a-number"))
+        );
+    }
+
+    #[test]
+    fn cumulative_rejects_non_numeric() {
+        let voucher = BatchVoucher {
+            channel_id: "Chan11111111111111111111111111111111111111".to_string(),
+            cumulative_amount: "bogus".to_string(),
+            expires_at: 4_102_444_800,
+            signer: "Signer1111111111111111111111111111111111111".to_string(),
+            signature: "sig".to_string(),
+        };
+        let err = voucher.cumulative().unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason.contains("invalid cumulativeAmount: bogus"))
+        );
+    }
+
+    #[test]
+    fn to_accepted_value_serializes_requirement() {
+        let value = requirements().to_accepted_value().unwrap();
+        assert_eq!(value["scheme"], "batch-settlement");
+        assert_eq!(value["amount"], "10000");
+        assert_eq!(value["extra"]["gracePeriodSeconds"], 900);
+    }
+
+    #[test]
+    fn scheme_defaults_when_absent() {
+        // `scheme` is omitted so serde falls back to `batch_scheme()`.
+        let json = serde_json::json!({
+            "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            "amount": "10000",
+            "asset": "USDC",
+            "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "maxTimeoutSeconds": 3600,
+            "extra": {
+                "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+                "gracePeriodSeconds": 900,
+                "feePayer": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+            }
+        });
+        let req: BatchRequirements = serde_json::from_value(json).unwrap();
+        assert_eq!(req.scheme, BATCH_SETTLEMENT_SCHEME);
+    }
+
+    #[test]
+    fn payload_channel_id_by_variant() {
+        let voucher = BatchVoucher {
+            channel_id: "Chan11111111111111111111111111111111111111".to_string(),
+            cumulative_amount: "1".to_string(),
+            expires_at: 4_102_444_800,
+            signer: "Signer1111111111111111111111111111111111111".to_string(),
+            signature: "sig".to_string(),
+        };
+
+        let deposit = BatchPayload::Deposit {
+            channel_config: BatchChannelConfig {
+                payer: "Payer".to_string(),
+                payee: "Payee".to_string(),
+                mint: "USDC".to_string(),
+                authorized_signer: "Payer".to_string(),
+                salt: "1".to_string(),
+                deposit_amount: "100".to_string(),
+                grace_period_seconds: 900,
+                distribution_splits: vec![],
+            },
+            transaction: "tx".to_string(),
+            voucher: Some(voucher.clone()),
+        };
+        // Deposit derives its channel id from channel_config, so none is carried.
+        assert_eq!(deposit.channel_id(), None);
+
+        let voucher_payload = BatchPayload::Voucher {
+            channel_id: "Chan11111111111111111111111111111111111111".to_string(),
+            voucher: voucher.clone(),
+        };
+        assert_eq!(
+            voucher_payload.channel_id(),
+            Some("Chan11111111111111111111111111111111111111")
+        );
+
+        let refund = BatchPayload::Refund {
+            channel_id: "Chan22222222222222222222222222222222222222".to_string(),
+            voucher: Some(voucher),
+        };
+        assert_eq!(
+            refund.channel_id(),
+            Some("Chan22222222222222222222222222222222222222")
+        );
+    }
 }

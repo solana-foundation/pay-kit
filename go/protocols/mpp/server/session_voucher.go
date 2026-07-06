@@ -75,10 +75,18 @@ const (
 	// VoucherRejectExpired: the voucher expiry is not in the future.
 	VoucherRejectExpired VoucherRejectReason = "expired"
 
-	// VoucherRejectExpiryTooSoon: the voucher expiry is in the future but does
-	// not outlast the settlement window, so the async settle transaction could
-	// be rejected on-chain after the server has already served.
-	VoucherRejectExpiryTooSoon VoucherRejectReason = "expiry-too-soon"
+	// VoucherRejectExpiresWithinSettlementWindow: the voucher expiry is in the
+	// future but does not outlast the settlement window, so the async settle
+	// transaction could be rejected on-chain after the server has already
+	// served. The tag string is stable across the language SDKs.
+	VoucherRejectExpiresWithinSettlementWindow VoucherRejectReason = "expires-within-settlement-window"
+
+	// VoucherRejectExpiryTooSoon is a deprecated alias for
+	// VoucherRejectExpiresWithinSettlementWindow, kept so existing references
+	// keep compiling. Prefer the canonical name.
+	//
+	// Deprecated: use VoucherRejectExpiresWithinSettlementWindow.
+	VoucherRejectExpiryTooSoon VoucherRejectReason = VoucherRejectExpiresWithinSettlementWindow
 
 	// VoucherRejectInvalidCumulative: the cumulative does not parse as a u64.
 	VoucherRejectInvalidCumulative VoucherRejectReason = "invalid-cumulative"
@@ -246,7 +254,7 @@ func voucherExpiryRejection(expiresAt, now, settlementWindowSeconds int64) *Vouc
 		return &rejection
 	}
 	if settlementWindowSeconds > 0 && expiresAt < now+settlementWindowSeconds {
-		rejection := voucherReject(VoucherRejectExpiryTooSoon,
+		rejection := voucherReject(VoucherRejectExpiresWithinSettlementWindow,
 			fmt.Sprintf("voucher expiry %d does not outlast the settlement window (now %d + %d)",
 				expiresAt, now, settlementWindowSeconds))
 		return &rejection

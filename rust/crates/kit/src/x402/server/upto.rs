@@ -44,6 +44,11 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION
 /// `ChannelStatus::Open` discriminant in the generated client.
 const CHANNEL_STATUS_OPEN: u8 = 0;
 
+/// Maximum accepted `PAYMENT-SIGNATURE` header length, in bytes. Mirrors the
+/// MPP header parsers' `MAX_TOKEN_LEN` (16 KiB) so a hostile client cannot drive
+/// unbounded base64 + JSON decode work with an oversized credential header.
+const MAX_PAYMENT_SIGNATURE_HEADER_LEN: usize = 16 * 1024;
+
 /// `Open` instruction discriminator in the generated payment-channels client
 /// (`crate::generated::payment_channels::generated::instructions::OPEN_DISCRIMINATOR`).
 const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
@@ -441,6 +446,14 @@ impl X402Upto {
 
     /// Decode a `PAYMENT-SIGNATURE` header into an `upto` envelope.
     pub fn parse_payment_signature(&self, header: &str) -> Result<UptoSignatureEnvelope, Error> {
+        // Cap the header before any base64 / JSON work, matching the MPP
+        // parsers' 16 KiB `MAX_TOKEN_LEN`. Without it, an oversized credential
+        // header drives proportionally larger decode + parse work.
+        if header.len() > MAX_PAYMENT_SIGNATURE_HEADER_LEN {
+            return Err(Error::InvalidPaymentRequired(format!(
+                "PAYMENT-SIGNATURE header exceeds maximum length of {MAX_PAYMENT_SIGNATURE_HEADER_LEN} bytes"
+            )));
+        }
         let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, header)
             .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
         let envelope: UptoSignatureEnvelope = serde_json::from_slice(&decoded)
@@ -1592,6 +1605,61 @@ mod tests {
         );
     }
 
+    // ── PAYMENT-SIGNATURE header size cap ───────────────────────────────────
+
+    #[test]
+    fn parse_payment_signature_rejects_oversized_header() {
+        // A PAYMENT-SIGNATURE header larger than the 16 KiB cap must be
+        // rejected before the base64 decode + serde_json parse. The envelope
+        // below is otherwise well-formed (its `accepted.scheme` is the upto
+        // scheme), so without the size gate it decodes and parses fine — the
+        // oversize is the ONLY reason it must be rejected.
+        let engine = multi_currency_engine(&["USDC"]);
+        let big_nonce = "1".repeat(24 * 1024);
+        let envelope = serde_json::json!({
+            "x402Version": X402_VERSION_V2,
+            "accepted": { "scheme": UPTO_SCHEME },
+            "payload": {
+                "from": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "maxAmount": "1000000",
+                "expiresAt": 0,
+                "validAfter": 0,
+                "nonce": big_nonce,
+                "channelId": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "deposit": "1000000",
+                "authorizedSigner": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+            }
+        });
+        let header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        );
+        assert!(header.len() > 16 * 1024, "header should exceed the cap");
+        let err = engine
+            .parse_payment_signature(&header)
+            .expect_err("oversized header must be rejected");
+        assert!(
+            err.to_string().contains("exceeds maximum length"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_payment_signature_accepts_at_max_header_size() {
+        // A header of exactly 16 KiB must pass the size gate. Its contents are
+        // not valid base64 JSON, so it still fails — but with a decode/parse
+        // error, NOT the size error. This pins the boundary at exactly the cap.
+        let engine = multi_currency_engine(&["USDC"]);
+        let at_max = "A".repeat(16 * 1024);
+        let err = engine
+            .parse_payment_signature(&at_max)
+            .expect_err("invalid payload still errors");
+        assert!(
+            !err.to_string().contains("exceeds maximum length"),
+            "size gate must not fire at exactly the cap: {err:?}"
+        );
+    }
+
     // ── Bug 1 (settle `InvalidChannelPayee`, 0x6) — facilitator payee model ──
     //
     // `settle_and_finalize` requires its `merchant [signer]` account to equal
@@ -1699,5 +1767,523 @@ mod tests {
             "payTo is the beneficiary, not the facilitator"
         );
         assert_eq!(req.extra.facilitator_fee, 0, "no fee configured");
+    }
+
+    // ── verify_open / settle_actual (broadcast + on-chain bind) ─────────────
+    //
+    // These exercise the RPC-touching `upto` paths against the in-process
+    // Solana JSON-RPC mock: the challenge's blockhash fetch, the open broadcast +
+    // channel read-back bind (with each mismatch branch), and the inline settle.
+
+    use crate::generated::payment_channels::generated::accounts::Channel;
+    use crate::generated::payment_channels::generated::types::SettlementWatermarks;
+    use crate::x402::client::upto::build_upto_header;
+    use crate::x402::server::mock_rpc::MockRpc;
+    use ed25519_dalek::SigningKey as DalekSigningKey;
+    use solana_keychain::memory::MemorySigner;
+
+    const UPTO_FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01
+
+    fn upto_memory_signer(seed: u8) -> MemorySigner {
+        let sk = DalekSigningKey::from_bytes(&[seed; 32]);
+        MemorySigner::from_bytes(&sk.to_keypair_bytes()).unwrap()
+    }
+
+    fn program_id_b58() -> String {
+        pc::pubkey_string(&pc::default_program_id())
+    }
+
+    /// A handler whose RPC points at `rpc_url`, with the given operator signer
+    /// (which co-signs the open and signs the settle) and payout config.
+    fn upto_handler_with_rpc(
+        rpc_url: String,
+        operator_signer: Arc<dyn SolanaSigner>,
+        payout: UptoPayout,
+    ) -> X402Upto {
+        X402Upto::new(UptoConfig {
+            payout,
+            currencies: vec![CurrencyConfig {
+                currency: "USDC".to_string(),
+                decimals: 6,
+                token_program: None,
+            }],
+            cluster: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            resource: "/usage".to_string(),
+            description: None,
+            max_timeout_seconds: 300,
+            program_id: None,
+            operator_signer,
+        })
+        .unwrap()
+    }
+
+    /// Borsh-serialized on-chain `Channel` account. Every bind-relevant field is
+    /// a parameter so a test can flip one to hit a specific mismatch branch.
+    #[allow(clippy::too_many_arguments)]
+    fn upto_channel_bytes(
+        status: u8,
+        deposit: u64,
+        payer: &Pubkey,
+        payee: &Pubkey,
+        authorized_signer: &Pubkey,
+        rent_payer: &Pubkey,
+        mint: &Pubkey,
+        distribution_hash: [u8; 32],
+    ) -> Vec<u8> {
+        let channel = Channel {
+            discriminator: 0,
+            version: 1,
+            bump: 255,
+            status,
+            salt: 7,
+            deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash,
+            payer: pc::to_address(payer),
+            payee: pc::to_address(payee),
+            authorized_signer: pc::to_address(authorized_signer),
+            mint: pc::to_address(mint),
+            rent_payer: pc::to_address(rent_payer),
+        };
+        borsh::to_vec(&channel).unwrap()
+    }
+
+    /// End-to-end `upto` open fixture: a mock RPC, a client-built credential
+    /// header, and the derived channel/operator/payer keys.
+    struct UptoFixture {
+        mock: MockRpc,
+        handler: X402Upto,
+        header: String,
+        channel_id: Pubkey,
+        operator: Pubkey,
+        payer: Pubkey,
+        mint: Pubkey,
+        max_amount: String,
+    }
+
+    async fn upto_fixture(payout: UptoPayout) -> UptoFixture {
+        let mock = MockRpc::start();
+        let operator_signer = upto_memory_signer(50);
+        let operator = operator_signer.pubkey();
+        let payer_signer = upto_memory_signer(51);
+        let handler = upto_handler_with_rpc(mock.url(), Arc::new(operator_signer), payout);
+
+        let max_amount = "1.00".to_string();
+        let mut requirements = handler.upto_requirements(&max_amount).unwrap();
+        requirements.extra.recent_blockhash = Some("11111111111111111111111111111111".to_string());
+        let header = build_upto_header(&payer_signer, &requirements, UPTO_FAR_FUTURE, "nonce-1")
+            .await
+            .unwrap();
+        // Re-derive the channel PDA the client used from the credential.
+        let envelope = handler.parse_payment_signature(&header).unwrap();
+        let channel_id = Pubkey::from_str(&envelope.payload.channel_id).unwrap();
+        let mint = handler.mint_for(handler.primary_currency()).unwrap();
+
+        UptoFixture {
+            mock,
+            handler,
+            header,
+            channel_id,
+            operator,
+            payer: payer_signer.pubkey(),
+            mint,
+            max_amount,
+        }
+    }
+
+    /// Bind an on-chain channel account matching the fixture's expectations
+    /// (operator-payee model, empty distribution, deposit == max).
+    fn upto_bind_matching_channel(f: &UptoFixture, distribution: &[pc::Distribution]) {
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000, // deposit == max (1.00 @ 6dp)
+                &f.payer,
+                &f.operator, // payee == operator
+                &f.operator, // authorized_signer == operator
+                &f.operator, // rent_payer == operator
+                &f.mint,
+                pc::distribution_hash(distribution),
+            ),
+            &program_id_b58(),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upto_challenge_fetches_blockhash() {
+        let mock = MockRpc::start();
+        let handler = upto_handler_with_rpc(
+            mock.url(),
+            Arc::new(upto_memory_signer(52)),
+            UptoPayout::OperatorKeepsAll,
+        );
+        let envelope = handler.upto("1.00").unwrap();
+        assert_eq!(envelope.accepts.len(), 1);
+        assert_eq!(
+            envelope.accepts[0].extra.recent_blockhash.as_deref(),
+            Some("11111111111111111111111111111111")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn upto_challenge_surfaces_blockhash_error() {
+        let mock = MockRpc::start();
+        mock.fail_blockhash("node unhealthy");
+        let handler = upto_handler_with_rpc(
+            mock.url(),
+            Arc::new(upto_memory_signer(53)),
+            UptoPayout::OperatorKeepsAll,
+        );
+        let err = handler.upto("1.00").unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_binds_confirmed_channel() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        upto_bind_matching_channel(&f, &[]);
+        let open = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap();
+        assert_eq!(open.channel_id, f.channel_id);
+        assert_eq!(open.payer, f.payer);
+        assert_eq!(open.deposit, 1_000_000);
+        assert_eq!(open.max_amount, 1_000_000);
+        assert_eq!(open.payee, f.operator);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_channel_not_open() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                2, // not Open
+                1_000_000,
+                &f.payer,
+                &f.operator,
+                &f.operator,
+                &f.operator,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not open"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_mint_mismatch() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                &f.payer,
+                &f.operator,
+                &f.operator,
+                &f.operator,
+                &Pubkey::new_unique(), // wrong mint
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MintMismatch { .. }), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_payee_mismatch() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                &f.payer,
+                &Pubkey::new_unique(), // wrong payee
+                &f.operator,
+                &f.operator,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::RecipientMismatch { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_distribution_hash_mismatch() {
+        // Operator-keeps-all expects an empty distribution; bind a non-empty one.
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        upto_bind_matching_channel(
+            &f,
+            &[pc::Distribution {
+                recipient: Pubkey::new_unique(),
+                bps: 10_000,
+            }],
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("distribution does not match"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_authorized_signer_mismatch() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                &f.payer,
+                &f.operator,
+                &Pubkey::new_unique(), // wrong authorized_signer
+                &f.operator,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("authorized_signer is not the operator"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_rent_payer_mismatch() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                &f.payer,
+                &f.operator,
+                &f.operator,
+                &Pubkey::new_unique(), // wrong rent_payer
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("rent_payer is not the operator"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_deposit_not_equal_to_max() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                999_999, // deposit != max (1_000_000)
+                &f.payer,
+                &f.operator,
+                &f.operator,
+                &f.operator,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("authorized maximum"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_payer_mismatch() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            upto_channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                &Pubkey::new_unique(), // wrong payer
+                &f.operator,
+                &f.operator,
+                &f.operator,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("does not match payload.from"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_surfaces_broadcast_error() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.fail_send("preflight failed");
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_surfaces_channel_fetch_error() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        f.mock.fail_account("account fetch unavailable");
+        let err = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_actual_broadcasts_settlement() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        upto_bind_matching_channel(&f, &[]);
+        let open = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap();
+        // Settle a metered amount below the ceiling.
+        let response = f.handler.settle_actual(&open, 250_000).await.unwrap();
+        assert!(response.success);
+        assert_eq!(response.amount, "250000");
+        assert!(!response.transaction.is_empty());
+        assert_eq!(
+            response.payer.as_deref(),
+            Some(pc::pubkey_string(&f.payer).as_str())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_actual_zero_amount_finalizes_without_voucher() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        upto_bind_matching_channel(&f, &[]);
+        let open = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap();
+        // actual == 0 → settle_and_finalize with no voucher (full refund path).
+        let response = f.handler.settle_actual(&open, 0).await.unwrap();
+        assert!(response.success);
+        assert_eq!(response.amount, "0");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_actual_rejects_amount_above_ceiling() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        upto_bind_matching_channel(&f, &[]);
+        let open = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap();
+        // actual > max ceiling → rejected before broadcast.
+        let err = f.handler.settle_actual(&open, 2_000_000).await.unwrap_err();
+        assert!(!format!("{err:?}").is_empty());
+        // Confirm it's an error (ceiling breach), not a broadcast.
+        assert!(f.handler.settle_actual(&open, 2_000_000).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_actual_surfaces_broadcast_error() {
+        let f = upto_fixture(UptoPayout::OperatorKeepsAll).await;
+        upto_bind_matching_channel(&f, &[]);
+        let open = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap();
+        // Now make the settle broadcast fail.
+        f.mock.fail_send("settle preflight failed");
+        let err = f.handler.settle_actual(&open, 250_000).await.unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_with_beneficiary_binds_distribution_split() {
+        // Beneficiary payout: the open must commit to a `10000 - fee` split.
+        let beneficiary = Pubkey::new_unique();
+        let payout = UptoPayout::Beneficiary {
+            address: pc::pubkey_string(&beneficiary),
+            operator_fee_bps: 250,
+        };
+        let f = upto_fixture(payout).await;
+        let distribution = vec![pc::Distribution {
+            recipient: beneficiary,
+            bps: 10_000 - 250,
+        }];
+        upto_bind_matching_channel(&f, &distribution);
+        let open = f
+            .handler
+            .verify_open(&f.header, &f.max_amount)
+            .await
+            .unwrap();
+        assert_eq!(open.distribution, distribution);
+        // And settle distributes to that beneficiary split.
+        let response = f.handler.settle_actual(&open, 100_000).await.unwrap();
+        assert!(response.success);
     }
 }

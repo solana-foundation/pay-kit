@@ -3301,8 +3301,7 @@ mod tests {
         // Tx landed on-chain but the runtime rejected it. This is a real
         // transaction failure, not a timeout — surface the on-chain error.
         let err = interpret_post_timeout_status(Ok(Some(Err("InsufficientFundsForFee".into()))))
-            .err()
-            .expect("on-chain failure should be reported");
+            .expect_err("on-chain failure should be reported");
         let msg = format!("{err}");
         assert!(
             msg.contains("landed on-chain but failed"),
@@ -3318,9 +3317,8 @@ mod tests {
     fn interpret_post_timeout_status_not_found_returns_timeout() {
         // Final check confirms the tx is genuinely not on-chain — keep the
         // timeout error.
-        let err = interpret_post_timeout_status(Ok(None))
-            .err()
-            .expect("not-found should still error");
+        let err =
+            interpret_post_timeout_status(Ok(None)).expect_err("not-found should still error");
         let msg = format!("{err}");
         assert!(
             msg.contains("not confirmed within timeout"),
@@ -3336,8 +3334,7 @@ mod tests {
         // can't tell whether the tx landed, so we keep the timeout error
         // but include the RPC failure in the message for ops.
         let err = interpret_post_timeout_status(Err("connection refused".into()))
-            .err()
-            .expect("rpc failure should error");
+            .expect_err("rpc failure should error");
         let msg = format!("{err}");
         assert!(
             msg.contains("not confirmed within timeout"),
@@ -5101,8 +5098,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("per-call fee_payer without signer should be rejected");
+            .expect_err("per-call fee_payer without signer should be rejected");
         assert!(
             err.to_string().contains("no fee_payer_signer"),
             "got: {err}"
@@ -5283,8 +5279,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("invalid split recipient should be rejected");
+            .expect_err("invalid split recipient should be rejected");
         assert!(
             format!("{err}").contains("invalid recipient pubkey"),
             "got: {err}"
@@ -5302,8 +5297,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("zero split amount should be rejected");
+            .expect_err("zero split amount should be rejected");
         assert!(format!("{err}").contains("greater than zero"), "got: {err}");
     }
 
@@ -5319,8 +5313,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("duplicate split recipient should be rejected");
+            .expect_err("duplicate split recipient should be rejected");
         assert!(
             format!("{err}").contains("duplicate recipient"),
             "got: {err}"
@@ -5341,8 +5334,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("too many splits should be rejected");
+            .expect_err("too many splits should be rejected");
         assert!(matches!(err, Error::TooManySplits));
     }
 
@@ -5368,8 +5360,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("should reject primary recipient with ataCreationRequired");
+            .expect_err("should reject primary recipient with ataCreationRequired");
         let msg = err.to_string();
         assert!(
             msg.contains("top-level recipient"),
@@ -6137,7 +6128,7 @@ mod tests {
             .verify_credential_with_expected(&cred, &expected)
             .await
             .unwrap_err();
-        let msg = format!("{}", err.message);
+        let msg = err.message.to_string();
         assert!(
             !msg.contains("recentBlockhash mismatch") && !msg.contains("recent_blockhash mismatch"),
             "comparison should not reject on blockhash, got: {err:?}"
@@ -8140,5 +8131,1136 @@ mod tests {
         let details = request.method_details.unwrap();
         assert_eq!(details["network"], "devnet");
         assert_eq!(details["decimals"], 6);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Coverage extension: pure-function error branches, VerificationError
+    //  variants, and RPC-path settlement via the in-process JSON-RPC mock.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    use crate::x402::server::mock_rpc::MockRpc;
+
+    // ── Signed VersionedTransaction helpers for the pull-mode RPC path ──
+
+    /// A deterministic ed25519 keypair usable as a transaction signer.
+    fn test_keypair(seed: u8) -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn keypair_pubkey(kp: &ed25519_dalek::SigningKey) -> Pubkey {
+        Pubkey::new_from_array(kp.verifying_key().to_bytes())
+    }
+
+    /// Build a signed legacy `VersionedTransaction` from `instructions`, paid
+    /// for and signed by `payer`. The mock echoes `signatures[0]`, so the
+    /// signature just needs to be self-consistent (it is — we sign the real
+    /// message bytes).
+    fn signed_versioned_tx(
+        instructions: &[Instruction],
+        payer: &ed25519_dalek::SigningKey,
+        blockhash: Hash,
+    ) -> VersionedTransaction {
+        use ed25519_dalek::Signer as _;
+        let payer_pk = keypair_pubkey(payer);
+        let mut message = Message::new_with_blockhash(instructions, Some(&payer_pk), &blockhash);
+        message.recent_blockhash = blockhash;
+        let versioned = VersionedMessage::Legacy(message);
+        let msg_bytes = versioned.serialize();
+        let sig = payer.sign(&msg_bytes);
+        VersionedTransaction {
+            signatures: vec![Signature::from(sig.to_bytes())],
+            message: versioned,
+        }
+    }
+
+    fn tx_to_b64(tx: &VersionedTransaction) -> String {
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            bincode::serialize(tx).unwrap(),
+        )
+    }
+
+    /// The mock hands out this blockhash from `getLatestBlockhash`; it is also
+    /// a valid non-Surfpool blockhash for `check_network_blockhash`.
+    fn mock_blockhash() -> Hash {
+        Hash::from_str("11111111111111111111111111111111").unwrap()
+    }
+
+    fn mpp_with_rpc(url: String) -> Mpp {
+        Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            rpc_url: Some(url),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    // ── Pull-mode settlement: happy path via the mock ──
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pull_mode_sol_happy_path_settles() {
+        let mock = MockRpc::start();
+        let mpp = mpp_with_rpc(mock.url());
+
+        let payer = test_keypair(11);
+        let amount = 500_000u64;
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let tx = signed_versioned_tx(
+            &[system_transfer_ix(
+                &keypair_pubkey(&payer),
+                &recipient,
+                amount,
+            )],
+            &payer,
+            mock_blockhash(),
+        );
+
+        let request = charge_request(amount, "SOL", &recipient);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "transaction", "transaction": tx_to_b64(&tx) }),
+        );
+
+        let receipt = mpp.verify(&cred, &request).await.expect("settlement ok");
+        assert_eq!(receipt.method.as_str(), METHOD_NAME);
+        assert_eq!(receipt.reference, tx.signatures[0].to_string());
+    }
+
+    // ── Pull-mode: broadcast RPC error (single failure, cheap) ──
+    //
+    // Uses `fail_send` so the last attempt returns a transport error. This
+    // sleeps `SIMULATION_RETRY_DELAY_MS` between attempts, so we keep it to a
+    // single test.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pull_mode_broadcast_rpc_error_surfaces_network_error() {
+        let mock = MockRpc::start();
+        mock.fail_send("node unreachable");
+        let mpp = mpp_with_rpc(mock.url());
+
+        let payer = test_keypair(12);
+        let amount = 500_000u64;
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let tx = signed_versioned_tx(
+            &[system_transfer_ix(
+                &keypair_pubkey(&payer),
+                &recipient,
+                amount,
+            )],
+            &payer,
+            mock_blockhash(),
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "transaction", "transaction": tx_to_b64(&tx) }),
+        );
+
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert_eq!(err.code, Some("verification-failed"));
+        assert!(err.retryable, "network errors are retryable: {err:?}");
+        assert!(err.message.contains("Broadcast RPC error"), "got: {err:?}");
+    }
+
+    // ── Pull-mode: invalid base64 / invalid tx bytes in the credential ──
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pull_mode_invalid_base64_transaction_rejected() {
+        let mock = MockRpc::start();
+        let mpp = mpp_with_rpc(mock.url());
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let request = charge_request(500_000, "SOL", &recipient);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "transaction", "transaction": "not base64!!!" }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            err.message.contains("Invalid base64 transaction"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pull_mode_undecodable_transaction_rejected() {
+        let mock = MockRpc::start();
+        let mpp = mpp_with_rpc(mock.url());
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let request = charge_request(500_000, "SOL", &recipient);
+        // Valid base64 but not a bincode VersionedTransaction.
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "transaction", "transaction": "AAAA" }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(err.message.contains("Invalid transaction"), "got: {err:?}");
+    }
+
+    // ── Pull-mode: pre-broadcast verification rejects wrong amount before RPC ──
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pull_mode_rejects_wrong_amount_before_broadcast() {
+        let mock = MockRpc::start();
+        let mpp = mpp_with_rpc(mock.url());
+        let payer = test_keypair(13);
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        // Transaction pays 1 lamport but the charge is for 500_000.
+        let tx = signed_versioned_tx(
+            &[system_transfer_ix(&keypair_pubkey(&payer), &recipient, 1)],
+            &payer,
+            mock_blockhash(),
+        );
+        let request = charge_request(500_000, "SOL", &recipient);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "transaction", "transaction": tx_to_b64(&tx) }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            err.message.contains("No matching SOL transfer"),
+            "got: {err:?}"
+        );
+    }
+
+    // ── consume_signature replay-reject arm ──
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn consume_signature_rejects_replay() {
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            store: Some(Arc::new(MemoryStore::new())),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        // First reservation succeeds.
+        mpp.consume_signature("sig-replay-1").await.unwrap();
+        // Second reservation of the same signature is rejected.
+        let err = mpp.consume_signature("sig-replay-1").await.unwrap_err();
+        assert_eq!(err.code, Some("signature-consumed"));
+        assert!(err.message.contains("already consumed"), "got: {err:?}");
+    }
+
+    // ═══ Push-mode settlement via the mock's getTransaction ═══
+
+    /// Build a JSON-parsed `EncodedConfirmedTransactionWithStatusMeta` result
+    /// value for `getTransaction`, carrying `instructions` (each a full
+    /// `ParsedInstruction`-shaped object) and an optional on-chain error.
+    fn parsed_tx_result(
+        signature: &str,
+        instructions: Vec<serde_json::Value>,
+        err: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let status = match &err {
+            Some(e) => serde_json::json!({ "Err": e }),
+            None => serde_json::json!({ "Ok": null }),
+        };
+        serde_json::json!({
+            "slot": 1u64,
+            "blockTime": 0i64,
+            "transaction": {
+                "signatures": [signature],
+                "message": {
+                    "accountKeys": [],
+                    "recentBlockhash": "11111111111111111111111111111111",
+                    "instructions": instructions,
+                }
+            },
+            "meta": {
+                "err": err,
+                "status": status,
+                "fee": 5000u64,
+                "preBalances": [],
+                "postBalances": [],
+                "innerInstructions": [],
+                "logMessages": [],
+                "preTokenBalances": [],
+                "postTokenBalances": [],
+                "rewards": [],
+                "loadedAddresses": {"writable": [], "readonly": []},
+                "computeUnitsConsumed": 0u64,
+            }
+        })
+    }
+
+    fn parsed_sol_transfer_ix(source: &str, dest: &str, lamports: u64) -> serde_json::Value {
+        serde_json::json!({
+            "program": "system",
+            "programId": programs::SYSTEM_PROGRAM,
+            "parsed": {
+                "type": "transfer",
+                "info": { "source": source, "destination": dest, "lamports": lamports }
+            }
+        })
+    }
+
+    fn push_mpp_sol() -> Mpp {
+        // accept_push_mode on; SOL currency avoids RPC at construction.
+        // rpc_url is patched by the caller to the mock.
+        Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_sol_happy_path_settles() {
+        let mock = MockRpc::start();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let amount = 500_000u64;
+        let result = parsed_tx_result(
+            signature,
+            vec![parsed_sol_transfer_ix(
+                &Pubkey::new_unique().to_string(),
+                &recipient.to_string(),
+                amount,
+            )],
+            None,
+        );
+        mock.set_transaction(signature, result);
+
+        let request = charge_request(amount, "SOL", &recipient);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let receipt = mpp.verify(&cred, &request).await.expect("push settle ok");
+        assert_eq!(receipt.reference, signature);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_transaction_not_found() {
+        let mock = MockRpc::start();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let request = charge_request(500_000, "SOL", &recipient);
+        // No set_transaction ⇒ mock returns null ⇒ not-found.
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            err.message.contains("not found") || err.message.contains("not yet confirmed"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_invalid_signature_string_rejected() {
+        let mpp = push_mpp_sol();
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let request = charge_request(500_000, "SOL", &recipient);
+        // Not a valid base58 signature ⇒ rejected before any RPC.
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": "not-a-valid-signature" }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(err.message.contains("Invalid signature"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_on_chain_error_surfaces_transaction_failed() {
+        let mock = MockRpc::start();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .unwrap();
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let result = parsed_tx_result(
+            signature,
+            vec![parsed_sol_transfer_ix(
+                &Pubkey::new_unique().to_string(),
+                &recipient.to_string(),
+                500_000,
+            )],
+            Some(serde_json::json!("AccountInUse")),
+        );
+        mock.set_transaction(signature, result);
+        let request = charge_request(500_000, "SOL", &recipient);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(err.message.contains("Transaction failed"), "got: {err:?}");
+    }
+
+    // ── Push-mode SPL: exercise the parsed SPL transfer / ATA / memo helpers ──
+
+    fn usdc_devnet() -> &'static str {
+        crate::mpp::protocol::solana::mints::USDC_DEVNET
+    }
+
+    fn push_mpp_usdc(url: String) -> Mpp {
+        Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            rpc_url: Some(url),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn parsed_spl_transfer_ix(
+        program_id: &str,
+        source: &str,
+        destination: &str,
+        authority: &str,
+        mint: &str,
+        amount: u64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "program": "spl-token",
+            "programId": program_id,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "source": source,
+                    "destination": destination,
+                    "authority": authority,
+                    "mint": mint,
+                    "tokenAmount": { "amount": amount.to_string(), "decimals": 6 },
+                }
+            }
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_spl_happy_path_with_memo_settles() {
+        let mock = MockRpc::start();
+        let mpp = push_mpp_usdc(mock.url());
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let mint = usdc_devnet();
+        let tp = programs::TOKEN_PROGRAM;
+        let recipient_ata = derive_ata(
+            &recipient,
+            &Pubkey::from_str(mint).unwrap(),
+            &token_program_id(),
+        );
+        let mut request = charge_request(500_000, mint, &recipient);
+        request.external_id = Some("order-42".to_string());
+        request.method_details = Some(serde_json::json!({
+            "network": "devnet",
+            "decimals": 6,
+            "tokenProgram": tp,
+        }));
+
+        let result = parsed_tx_result(
+            signature,
+            vec![
+                parsed_spl_transfer_ix(
+                    tp,
+                    &Pubkey::new_unique().to_string(),
+                    &recipient_ata.to_string(),
+                    &Pubkey::new_unique().to_string(),
+                    mint,
+                    500_000,
+                ),
+                parsed_memo_ix("order-42"),
+            ],
+            None,
+        );
+        mock.set_transaction(signature, result);
+
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let receipt = mpp.verify(&cred, &request).await.expect("spl push ok");
+        assert_eq!(receipt.reference, signature);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_spl_missing_memo_rejected() {
+        let mock = MockRpc::start();
+        let mpp = push_mpp_usdc(mock.url());
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let mint = usdc_devnet();
+        let tp = programs::TOKEN_PROGRAM;
+        let recipient_ata = derive_ata(
+            &recipient,
+            &Pubkey::from_str(mint).unwrap(),
+            &token_program_id(),
+        );
+        let mut request = charge_request(500_000, mint, &recipient);
+        request.external_id = Some("order-99".to_string());
+        request.method_details = Some(serde_json::json!({
+            "network": "devnet", "decimals": 6, "tokenProgram": tp,
+        }));
+        // Transfer present, but no memo instruction for the required externalId.
+        let result = parsed_tx_result(
+            signature,
+            vec![parsed_spl_transfer_ix(
+                tp,
+                &Pubkey::new_unique().to_string(),
+                &recipient_ata.to_string(),
+                &Pubkey::new_unique().to_string(),
+                mint,
+                500_000,
+            )],
+            None,
+        );
+        mock.set_transaction(signature, result);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(err.message.contains("No memo instruction"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_spl_disallowed_program_rejected() {
+        let mock = MockRpc::start();
+        let mpp = push_mpp_usdc(mock.url());
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let mint = usdc_devnet();
+        let tp = programs::TOKEN_PROGRAM;
+        let recipient_ata = derive_ata(
+            &recipient,
+            &Pubkey::from_str(mint).unwrap(),
+            &token_program_id(),
+        );
+        let request = charge_request(500_000, mint, &recipient);
+        // A valid transfer PLUS an instruction from an unexpected program.
+        // Shaped as a partially-decoded instruction so it deserializes into
+        // `UiInstruction` while carrying a `programId` outside the allowlist.
+        let alien = serde_json::json!({
+            "programId": Pubkey::new_unique().to_string(),
+            "accounts": [],
+            "data": "",
+            "stackHeight": serde_json::Value::Null,
+        });
+        let result = parsed_tx_result(
+            signature,
+            vec![
+                parsed_spl_transfer_ix(
+                    tp,
+                    &Pubkey::new_unique().to_string(),
+                    &recipient_ata.to_string(),
+                    &Pubkey::new_unique().to_string(),
+                    mint,
+                    500_000,
+                ),
+                alien,
+            ],
+            None,
+        );
+        mock.set_transaction(signature, result);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            err.message.contains("Unexpected program instruction"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_mode_spl_wrong_ata_owner_rejected() {
+        let mock = MockRpc::start();
+        let mpp = push_mpp_usdc(mock.url());
+        let signature = "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC";
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let mint = usdc_devnet();
+        let tp = programs::TOKEN_PROGRAM;
+        // Destination ATA belongs to a DIFFERENT owner.
+        let wrong_ata = derive_ata(
+            &Pubkey::new_unique(),
+            &Pubkey::from_str(mint).unwrap(),
+            &token_program_id(),
+        );
+        let request = charge_request(500_000, mint, &recipient);
+        let result = parsed_tx_result(
+            signature,
+            vec![parsed_spl_transfer_ix(
+                tp,
+                &Pubkey::new_unique().to_string(),
+                &wrong_ata.to_string(),
+                &Pubkey::new_unique().to_string(),
+                mint,
+                500_000,
+            )],
+            None,
+        );
+        mock.set_transaction(signature, result);
+        let cred = build_credential(
+            &mpp,
+            &request,
+            serde_json::json!({ "type": "signature", "signature": signature }),
+        );
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            err.message.contains("No matching SPL transferChecked"),
+            "got: {err:?}"
+        );
+    }
+
+    // ── Mpp::new: arbitrary-mint token-program resolution via RPC ──
+
+    /// Build a serialized SPL mint account body (82 bytes is the classic Mint
+    /// layout size; the resolver only inspects the account *owner*, so the data
+    /// bytes are arbitrary). Returns the data bytes.
+    fn dummy_mint_data() -> Vec<u8> {
+        vec![0u8; 82]
+    }
+
+    #[test]
+    fn new_resolves_token_program_for_arbitrary_mint_via_rpc() {
+        // A non-symbol, non-SOL currency ⇒ Mpp::new fetches the mint account
+        // and reads its owner. The mock returns an account owned by the legacy
+        // Token Program, so resolution succeeds and caches TOKEN_PROGRAM.
+        let mock = MockRpc::start();
+        let mint = Pubkey::new_unique().to_string();
+        mock.set_account(&mint, dummy_mint_data(), programs::TOKEN_PROGRAM);
+
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: mint,
+            decimals: 6,
+            network: "devnet".to_string(),
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .expect("arbitrary mint resolves");
+        assert_eq!(mpp.token_program, Some(programs::TOKEN_PROGRAM));
+    }
+
+    #[test]
+    fn new_resolves_token_2022_program_for_arbitrary_mint_via_rpc() {
+        let mock = MockRpc::start();
+        let mint = Pubkey::new_unique().to_string();
+        mock.set_account(&mint, dummy_mint_data(), programs::TOKEN_2022_PROGRAM);
+
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: mint,
+            decimals: 6,
+            network: "devnet".to_string(),
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .expect("token-2022 mint resolves");
+        assert_eq!(mpp.token_program, Some(programs::TOKEN_2022_PROGRAM));
+    }
+
+    #[test]
+    fn new_rejects_mint_owned_by_unsupported_program() {
+        // Mint account exists but is owned by neither Token nor Token-2022.
+        let mock = MockRpc::start();
+        let mint = Pubkey::new_unique().to_string();
+        mock.set_account(&mint, dummy_mint_data(), programs::SYSTEM_PROGRAM);
+
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: mint,
+            decimals: 6,
+            network: "devnet".to_string(),
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .err()
+        .expect("should fail");
+        assert!(
+            err.to_string().contains("unsupported program"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn new_rejects_mint_account_not_found() {
+        // No account registered ⇒ getAccountInfo returns null ⇒ not found.
+        let mock = MockRpc::start();
+        let mint = Pubkey::new_unique().to_string();
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            currency: mint,
+            decimals: 6,
+            network: "devnet".to_string(),
+            rpc_url: Some(mock.url()),
+            ..Default::default()
+        })
+        .err()
+        .expect("should fail");
+        assert!(
+            err.to_string().contains("Mint account not found"),
+            "got: {err}"
+        );
+    }
+
+    // ── verify_payment_for_amount: full parse → rebuild → verify path ──
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_payment_for_amount_rejects_unparseable_authorization() {
+        let mpp = test_mpp();
+        let err = mpp
+            .verify_payment_for_amount("this is not a payment header", "0.10")
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("Failed to parse Authorization"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_payment_for_amount_happy_pull_path() {
+        // Exercises the parse → rebuild-expected → verify chain end to end via
+        // a real Authorization header, settling through the mock.
+        let mock = MockRpc::start();
+        let mpp = mpp_with_rpc(mock.url());
+
+        let payer = test_keypair(21);
+        let amount = 1_000_000u64;
+        let recipient = Pubkey::from_str(TEST_RECIPIENT).unwrap();
+        let tx = signed_versioned_tx(
+            &[system_transfer_ix(
+                &keypair_pubkey(&payer),
+                &recipient,
+                amount,
+            )],
+            &payer,
+            mock_blockhash(),
+        );
+
+        // Build a challenge for "0.001" SOL (= 1_000_000 lamports at 9 decimals)
+        // and a matching credential, then serialize it to an Authorization header.
+        let challenge = mpp.charge("0.001").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({ "type": "transaction", "transaction": tx_to_b64(&tx) }),
+        };
+        let header = crate::mpp::protocol::core::headers::format_authorization(&cred).unwrap();
+
+        let receipt = mpp
+            .verify_payment_for_amount(&header, "0.001")
+            .await
+            .expect("payment settles");
+        assert_eq!(receipt.reference, tx.signatures[0].to_string());
+    }
+
+    // ── validate_charge_options: SPL-currency ATA-creation gates ──
+
+    fn ata_split(recipient: &str, amount: &str) -> crate::mpp::protocol::solana::Split {
+        crate::mpp::protocol::solana::Split {
+            recipient: recipient.to_string(),
+            amount: amount.to_string(),
+            ata_creation_required: Some(true),
+            label: None,
+            memo: None,
+        }
+    }
+
+    #[test]
+    fn charge_options_ata_creation_rejected_on_sol_currency() {
+        let mpp = test_mpp_sol();
+        let split = ata_split(&Pubkey::new_unique().to_string(), "1");
+        let err = mpp
+            .charge_with_options(
+                "1.0",
+                ChargeOptions {
+                    splits: vec![split],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("SPL token currency"), "got: {err}");
+    }
+
+    #[test]
+    fn charge_options_ata_creation_rejected_when_currency_is_symbol_not_mint() {
+        // USDC (symbol) resolves to a mint but the currency string itself is not
+        // a mint address ⇒ the "must be an SPL token mint address" gate fires.
+        let mpp = test_mpp(); // currency "USDC"
+        let split = ata_split(&Pubkey::new_unique().to_string(), "1");
+        let err = mpp
+            .charge_with_options(
+                "1.0",
+                ChargeOptions {
+                    splits: vec![split],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("SPL token mint address"),
+            "got: {err}"
+        );
+    }
+
+    // ── expected_fee_payer / expected_token_program error branches ──
+
+    #[test]
+    fn expected_fee_payer_requires_fee_payer_key() {
+        let sender = Pubkey::new_unique();
+        let tx = VersionedTransaction::from(dummy_tx(
+            vec![system_transfer_ix(&sender, &Pubkey::new_unique(), 1)],
+            &sender,
+        ));
+        let md = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: None,
+            ..Default::default()
+        };
+        let err = expected_fee_payer(&tx, &md).unwrap_err();
+        assert!(err.message.contains("requires feePayerKey"), "got: {err:?}");
+    }
+
+    #[test]
+    fn expected_fee_payer_rejects_mismatched_tx_fee_payer() {
+        // fee_payer_key names an account that is NOT the transaction's fee payer.
+        let sender = Pubkey::new_unique();
+        let tx = VersionedTransaction::from(dummy_tx(
+            vec![system_transfer_ix(&sender, &Pubkey::new_unique(), 1)],
+            &sender,
+        ));
+        let md = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
+            ..Default::default()
+        };
+        let err = expected_fee_payer(&tx, &md).unwrap_err();
+        assert!(err.message.contains("fee payer must be"), "got: {err:?}");
+    }
+
+    #[test]
+    fn expected_token_program_rejects_unsupported_program() {
+        let md = MethodDetails {
+            token_program: Some(Pubkey::new_unique().to_string()),
+            ..Default::default()
+        };
+        let err = expected_token_program(&md).unwrap_err();
+        assert!(
+            err.message.contains("Unsupported token program"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn expected_token_program_none_when_absent() {
+        assert!(expected_token_program(&MethodDetails::default())
+            .unwrap()
+            .is_none());
+    }
+
+    // ── validate_compute_budget_instruction error branches ──
+
+    #[test]
+    fn compute_budget_with_accounts_rejected() {
+        // A ComputeBudget instruction that references accounts is malformed.
+        let ix = CompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![1],
+            data: {
+                let mut d = vec![2u8];
+                d.extend_from_slice(&1000u32.to_le_bytes());
+                d
+            },
+        };
+        let err = validate_compute_budget_instruction(&ix, false).unwrap_err();
+        assert!(
+            err.message.contains("must not have accounts"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn compute_budget_unit_limit_over_cap_rejected() {
+        let mut d = vec![2u8];
+        d.extend_from_slice(&(MAX_COMPUTE_UNIT_LIMIT + 1).to_le_bytes());
+        let ix = CompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![],
+            data: d,
+        };
+        let err = validate_compute_budget_instruction(&ix, false).unwrap_err();
+        assert!(err.message.contains("exceeds maximum"), "got: {err:?}");
+    }
+
+    #[test]
+    fn compute_budget_unknown_opcode_rejected() {
+        // A ComputeBudget opcode other than SetUnitLimit/SetUnitPrice.
+        let ix = CompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![],
+            data: vec![1, 0, 0, 0, 0], // RequestHeapFrame-ish, not decodable
+        };
+        let err = validate_compute_budget_instruction(&ix, false).unwrap_err();
+        assert!(
+            err.message.contains("Unsupported compute budget"),
+            "got: {err:?}"
+        );
+    }
+
+    // ── validate_create_ata_idempotent_instruction error branches ──
+
+    #[test]
+    fn create_ata_rejected_for_native_sol() {
+        // expected_mint is None ⇒ ATA creation is not allowed for SOL.
+        let ix = CompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![0, 1, 2, 3, 4, 5],
+            data: vec![1],
+        };
+        let keys = vec![Pubkey::new_unique(); 6];
+        let err = validate_create_ata_idempotent_instruction(
+            &ix,
+            &keys,
+            None,
+            &HashSet::new(),
+            None,
+            &keys[0],
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("not allowed for native SOL"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn create_ata_rejects_non_idempotent_data() {
+        let mint = Pubkey::new_unique();
+        let ix = CompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![0, 1, 2, 3, 4, 5],
+            data: vec![0], // Create (not idempotent) instead of [1]
+        };
+        let keys = vec![Pubkey::new_unique(); 6];
+        let err = validate_create_ata_idempotent_instruction(
+            &ix,
+            &keys,
+            Some(&mint),
+            &HashSet::new(),
+            None,
+            &keys[0],
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("Only idempotent ATA creation"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn create_ata_rejects_wrong_account_layout() {
+        let mint = Pubkey::new_unique();
+        let ix = CompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![0, 1, 2], // fewer than 6 accounts
+            data: vec![1],
+        };
+        let keys = vec![Pubkey::new_unique(); 6];
+        let err = validate_create_ata_idempotent_instruction(
+            &ix,
+            &keys,
+            Some(&mint),
+            &HashSet::new(),
+            None,
+            &keys[0],
+        )
+        .unwrap_err();
+        assert!(
+            err.message
+                .contains("Unexpected ATA creation account layout"),
+            "got: {err:?}"
+        );
+    }
+
+    // ── VerificationError variants + Problem Details ──
+
+    #[test]
+    fn verification_error_variant_metadata() {
+        let cases = [
+            (
+                VerificationError::expired("x"),
+                Some("payment-expired"),
+                false,
+            ),
+            (
+                VerificationError::invalid_amount("x"),
+                Some("verification-failed"),
+                false,
+            ),
+            (
+                VerificationError::invalid_recipient("x"),
+                Some("verification-failed"),
+                false,
+            ),
+            (
+                VerificationError::transaction_failed("x"),
+                Some("verification-failed"),
+                false,
+            ),
+            (
+                VerificationError::not_found("x"),
+                Some("verification-failed"),
+                false,
+            ),
+            (
+                VerificationError::network_error("x"),
+                Some("verification-failed"),
+                true,
+            ),
+            (
+                VerificationError::credential_mismatch("x"),
+                Some("malformed-credential"),
+                false,
+            ),
+            (
+                VerificationError::invalid_payload("x"),
+                Some("malformed-credential"),
+                false,
+            ),
+            (
+                VerificationError::wrong_network("x"),
+                Some("wrong-network"),
+                false,
+            ),
+            (
+                VerificationError::signature_consumed("x"),
+                Some("signature-consumed"),
+                false,
+            ),
+            (
+                VerificationError::too_many_splits("x"),
+                Some("verification-failed"),
+                false,
+            ),
+        ];
+        for (err, code, retryable) in cases {
+            assert_eq!(err.code, code, "code for {err:?}");
+            assert_eq!(err.retryable, retryable, "retryable for {err:?}");
+            assert_eq!(err.status, 402);
+        }
+    }
+
+    #[test]
+    fn verification_error_to_problem_json_shape() {
+        let err = VerificationError::signature_consumed("already spent");
+        let problem = err.to_problem_json();
+        assert_eq!(problem["status"], 402);
+        assert_eq!(problem["detail"], "already spent");
+        assert_eq!(problem["code"], "signature-consumed");
+        assert_eq!(problem["title"], "Signature Already Consumed");
+        assert_eq!(
+            problem["type"],
+            "tag:paymentauth.org,2024:signature-consumed"
+        );
+
+        // The base `new` constructor carries no code ⇒ `code` is omitted.
+        let plain = VerificationError::new("boom").to_problem_json();
+        assert!(plain.get("code").is_none(), "unexpected code: {plain}");
+        assert_eq!(plain["title"], "Payment Verification Error");
+    }
+
+    // ── diagnose_balances: best-effort, never panics ──
+
+    #[test]
+    fn diagnose_balances_best_effort_never_panics() {
+        // Against a dead endpoint the token-balance lookup errors, driving the
+        // "token account not found" hint branch, while the fee-payer SOL lookup
+        // also errors (no SOL line). The property under test: it returns a
+        // best-effort string and never panics.
+        let rpc = RpcClient::new("http://127.0.0.1:1".to_string());
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let tx = VersionedTransaction::from(dummy_tx(
+            vec![spl_transfer_checked_ix(
+                &Pubkey::new_unique(),
+                &Pubkey::from_str(usdc_devnet()).unwrap(),
+                &Pubkey::new_unique(),
+                &sender,
+                500_000,
+                6,
+            )],
+            &sender,
+        ));
+        let request = charge_request(500_000, usdc_devnet(), &recipient);
+        let md = MethodDetails {
+            network: Some("devnet".to_string()),
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            fee_payer_key: Some(Pubkey::new_unique().to_string()),
+            ..Default::default()
+        };
+        // Best-effort: the token-account-not-found hint is produced (the
+        // token-balance RPC errored); the important invariant is no panic and
+        // a well-formed prefix when non-empty.
+        let out = diagnose_balances(&rpc, &tx, &request, &md);
+        if !out.is_empty() {
+            assert!(out.starts_with(" | "), "malformed diagnostic: {out}");
+        }
     }
 }

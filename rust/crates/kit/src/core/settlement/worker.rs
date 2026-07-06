@@ -626,4 +626,406 @@ mod tests {
             "expected 3+3+1 channels per tx (2 ix each)"
         );
     }
+
+    // ────────────────────────── extra coverage ──────────────────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A "big" instruction whose account list is large enough that two units
+    /// cannot share a single 1232-byte legacy transaction. Forces `regroup` to
+    /// split on the byte-overflow boundary even when the count cap is generous.
+    fn big_unit_instructions(seed: u64) -> Vec<Instruction> {
+        let program = Pubkey::new_from_array([3u8; 32]);
+        // ~20 unique accounts (32 bytes each) per unit → two units overflow.
+        let accounts: Vec<AccountMeta> = (0..20u64)
+            .map(|j| {
+                let mut b = [4u8; 32];
+                b[0..8].copy_from_slice(&seed.to_le_bytes());
+                b[8..16].copy_from_slice(&j.to_le_bytes());
+                AccountMeta::new(Pubkey::new_from_array(b), false)
+            })
+            .collect();
+        vec![Instruction::new_with_bytes(program, &[0u8; 8], accounts)]
+    }
+
+    /// Broadcaster whose `confirm` is observable: it records how many times it
+    /// was polled and yields a caller-chosen sequence of outcomes so the
+    /// detached confirm loop's Failed / Pending / Err arms can be driven.
+    struct ScriptedBroadcaster {
+        outcomes: Mutex<std::collections::VecDeque<Result<ConfirmOutcome, String>>>,
+        /// Once the deque empties, keep returning this.
+        default: Result<ConfirmOutcome, String>,
+        confirm_calls: Arc<AtomicUsize>,
+        notify: Arc<tokio::sync::Notify>,
+    }
+
+    impl ScriptedBroadcaster {
+        fn new(
+            script: Vec<Result<ConfirmOutcome, String>>,
+            default: Result<ConfirmOutcome, String>,
+        ) -> (Arc<Self>, Arc<AtomicUsize>, Arc<tokio::sync::Notify>) {
+            let confirm_calls = Arc::new(AtomicUsize::new(0));
+            let notify = Arc::new(tokio::sync::Notify::new());
+            let bc = Arc::new(Self {
+                outcomes: Mutex::new(script.into_iter().collect()),
+                default,
+                confirm_calls: confirm_calls.clone(),
+                notify: notify.clone(),
+            });
+            (bc, confirm_calls, notify)
+        }
+    }
+
+    #[async_trait]
+    impl Broadcaster for ScriptedBroadcaster {
+        async fn latest_blockhash(&self) -> Result<Hash, String> {
+            Ok(Hash::new_from_array([9u8; 32]))
+        }
+        async fn send(&self, _tx: &Transaction) -> Result<String, String> {
+            Ok("scriptedsig".to_string())
+        }
+        async fn confirm(&self, _sig: &str) -> Result<ConfirmOutcome, String> {
+            self.confirm_calls.fetch_add(1, Ordering::SeqCst);
+            let next = self.outcomes.lock().unwrap().pop_front();
+            self.notify.notify_one();
+            next.unwrap_or_else(|| self.default.clone())
+        }
+    }
+
+    fn scripted_handle(bc: Arc<ScriptedBroadcaster>, confirm_attempts: u32) -> SettlementHandle {
+        let mut cfg = SettlementConfig::new(
+            Pubkey::new_from_array([0xAA; 32]),
+            Arc::new(TestSigner(Pubkey::new_from_array([0xAA; 32]))),
+        );
+        cfg.max_channels_per_tx = 1;
+        cfg.linger = Duration::from_millis(5);
+        cfg.confirm_attempts = confirm_attempts;
+        spawn(cfg, bc)
+    }
+
+    /// Poll a shared counter up to `max` short intervals until it reaches
+    /// `want`. Lets a detached `tokio::spawn` run without a fixed long sleep.
+    async fn wait_for(counter: &Arc<AtomicUsize>, want: usize, max_iters: usize) -> bool {
+        for _ in 0..max_iters {
+            if counter.load(Ordering::SeqCst) >= want {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        counter.load(Ordering::SeqCst) >= want
+    }
+
+    /// Broadcaster whose `send` always fails — drives `settle_group`'s `Err`
+    /// arm (warn log + error reply). `confirm` is never reached (no signature).
+    struct SendFailBroadcaster;
+    #[async_trait]
+    impl Broadcaster for SendFailBroadcaster {
+        async fn latest_blockhash(&self) -> Result<Hash, String> {
+            Ok(Hash::new_from_array([9u8; 32]))
+        }
+        async fn send(&self, _tx: &Transaction) -> Result<String, String> {
+            Err("broadcast rejected".to_string())
+        }
+        async fn confirm(&self, _sig: &str) -> Result<ConfirmOutcome, String> {
+            Ok(ConfirmOutcome::Confirmed)
+        }
+    }
+
+    /// A failing broadcast drives the `Err(e)` arm of the settle-result match:
+    /// the group logs a warning and every submitter gets an `Err` reply. No
+    /// confirm loop is spawned (there is no signature to poll).
+    #[tokio::test]
+    async fn settle_group_send_error_replies_err() {
+        let mut cfg = SettlementConfig::new(
+            Pubkey::new_from_array([0xAA; 32]),
+            Arc::new(TestSigner(Pubkey::new_from_array([0xAA; 32]))),
+        );
+        cfg.max_channels_per_tx = 1;
+        cfg.linger = Duration::from_millis(5);
+        let h = spawn(cfg, Arc::new(SendFailBroadcaster));
+        let r = h.settle("c0", unit_instructions(0)).await;
+        assert_eq!(r.unwrap_err(), "broadcast rejected");
+    }
+
+    /// Dropping the LAST handle while a unit is pending closes the channel and
+    /// hits the `None => drain` arm: the worker flushes what's pending, then
+    /// breaks. We keep the reply's oneshot alive by holding the spawned settle
+    /// task and awaiting it after we drop our own handle clone.
+    #[tokio::test]
+    async fn drop_handle_drains_pending() {
+        // Long linger + high cap so neither the timer nor the size trigger
+        // fires before the channel closes: the drain arm is the only path.
+        let (h, bc) = handle(100, 60_000);
+        // Submit one unit, then drop EVERY sender so the channel closes with a
+        // unit still pending. `settle` borrows `&self` across its reply await
+        // (keeping a sender alive), so we send manually and hold only the reply
+        // receiver — then drop the handle before awaiting it.
+        let (reply, rx) = oneshot::channel();
+        let unit = SettlementUnit {
+            channel_id: "cx".to_string(),
+            instructions: unit_instructions(1),
+            parent: tracing::Span::current(),
+            reply,
+        };
+        h.tx.send(unit).await.expect("send unit");
+        // Let the worker receive it (deadline armed, far from due).
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(h); // last sender → channel closes → `None => drain` arm fires.
+        let r = rx.await.expect("reply delivered by drain flush");
+        assert!(r.is_ok(), "drain flush should reply Ok");
+        assert_eq!(
+            bc.sent.lock().unwrap().clone(),
+            vec![1],
+            "drain should flush the single pending channel"
+        );
+    }
+
+    /// Dropping the handle with NOTHING pending closes the channel and takes the
+    /// drain arm's empty-pending path (no flush, just break). No tx is sent.
+    #[tokio::test]
+    async fn drop_handle_no_pending_stops_cleanly() {
+        let (h, bc) = handle(100, 60_000);
+        drop(h); // channel closes immediately, pending is empty → break, no flush.
+                 // Give the worker task a moment to observe the close and exit.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            bc.sent.lock().unwrap().is_empty(),
+            "no pending units ⇒ nothing broadcast"
+        );
+    }
+
+    /// A single flush carrying more units than a tx can hold (by BYTES) makes
+    /// `regroup` split on the overflow boundary (the `out.push` arm). Uses a
+    /// high count cap so the actor's size trigger never seals early — the whole
+    /// batch reaches one flush, and regroup does the splitting.
+    #[tokio::test]
+    async fn regroup_splits_on_byte_overflow() {
+        let (h, bc) = handle(100, 40); // cap 100 → timer flush carries both units
+        let mut tasks = Vec::new();
+        for i in 0..2u64 {
+            let h = h.clone();
+            tasks.push(tokio::spawn(async move {
+                h.settle(format!("big{i}"), big_unit_instructions(i)).await
+            }));
+        }
+        let mut sigs = Vec::new();
+        for t in tasks {
+            sigs.push(t.await.unwrap().expect("settle ok"));
+        }
+        // Two units that cannot co-reside ⇒ regroup yields two groups ⇒ two txs.
+        sigs.sort();
+        sigs.dedup();
+        assert_eq!(sigs.len(), 2, "byte overflow should split into two txs");
+        assert_eq!(
+            bc.sent.lock().unwrap().len(),
+            2,
+            "two separate transactions broadcast"
+        );
+    }
+
+    /// A minimal `tracing::Subscriber` that assigns real, non-empty span ids so
+    /// `Span::current().id()` is `Some(..)`. The no-op default subscriber hands
+    /// out no ids, so without this the `follows_from` arm would be skipped. We
+    /// avoid pulling in `tracing-subscriber` (gated behind the `otel` feature).
+    struct IdSubscriber {
+        next: AtomicUsize,
+    }
+    impl tracing::Subscriber for IdSubscriber {
+        fn enabled(&self, _md: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            // Ids must be non-zero.
+            let n = self.next.fetch_add(1, Ordering::SeqCst) as u64 + 1;
+            tracing::span::Id::from_u64(n)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, _event: &tracing::Event<'_>) {}
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// A real (non-empty) parent span id drives the `follows_from` arm. The
+    /// submitter's `Span::current()` becomes the unit's `parent`; when it has an
+    /// id, `settle_group` links the flush span to it. We construct the unit
+    /// directly so the captured `parent` provably carries a real id (a span
+    /// created under a subscriber that assigns ids), then feed it to the worker.
+    #[tokio::test]
+    async fn follows_from_real_parent_span() {
+        let subscriber = IdSubscriber {
+            next: AtomicUsize::new(0),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (h, bc) = handle(10, 30);
+        let parent = tracing::info_span!("voucher_close");
+        assert!(parent.id().is_some(), "subscriber must assign a real id");
+
+        let (reply, rx) = oneshot::channel();
+        let unit = SettlementUnit {
+            channel_id: "c0".to_string(),
+            instructions: unit_instructions(0),
+            parent, // carries a real, non-empty span id
+            reply,
+        };
+        h.tx.send(unit).await.expect("send unit");
+        let r = rx.await.expect("reply");
+        assert!(r.is_ok());
+        assert_eq!(bc.sent.lock().unwrap().clone(), vec![1]);
+    }
+
+    /// Confirm loop hits the `Failed` arm and stops immediately (no sleep).
+    #[tokio::test]
+    async fn confirm_loop_failed_arm() {
+        let (bc, calls, _n) = ScriptedBroadcaster::new(
+            vec![Ok(ConfirmOutcome::Failed("boom".into()))],
+            Ok(ConfirmOutcome::Confirmed),
+        );
+        let h = scripted_handle(bc, 5);
+        let r = h.settle("c0", unit_instructions(0)).await;
+        assert!(r.is_ok());
+        assert!(
+            wait_for(&calls, 1, 50).await,
+            "confirm should be polled once"
+        );
+        // Give the detached task a beat; it must NOT poll again after Failed.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "Failed stops the loop");
+    }
+
+    /// Confirm loop hits the `Err` (transient) arm, then confirms on the next
+    /// poll. Exercises the `Err(e) => { debug; sleep }` branch.
+    #[tokio::test]
+    async fn confirm_loop_transient_error_then_confirmed() {
+        let (bc, calls, _n) = ScriptedBroadcaster::new(
+            vec![Err("rpc down".into()), Ok(ConfirmOutcome::Confirmed)],
+            Ok(ConfirmOutcome::Confirmed),
+        );
+        let h = scripted_handle(bc, 5);
+        let r = h.settle("c0", unit_instructions(0)).await;
+        assert!(r.is_ok());
+        // Two polls: the Err (400ms sleep) then the Confirmed return.
+        assert!(
+            wait_for(&calls, 2, 80).await,
+            "confirm should be polled twice (err → confirmed)"
+        );
+    }
+
+    /// Confirm loop stays `Pending` for the whole (tiny) attempt window, then
+    /// hits the "not confirmed in window" arm. `confirm_attempts = 1` keeps it
+    /// to a single 400ms sleep.
+    #[tokio::test]
+    async fn confirm_loop_pending_exhausts_window() {
+        let (bc, calls, _n) = ScriptedBroadcaster::new(
+            vec![Ok(ConfirmOutcome::Pending)],
+            Ok(ConfirmOutcome::Pending),
+        );
+        let h = scripted_handle(bc, 1); // single attempt → one poll, one sleep, then give up
+        let r = h.settle("c0", unit_instructions(0)).await;
+        assert!(r.is_ok());
+        assert!(
+            wait_for(&calls, 1, 60).await,
+            "confirm should be polled once before the window closes"
+        );
+        // The single Pending attempt sleeps 400ms, then the loop falls through
+        // to the "not confirmed in window" arm. Wait past that sleep so the
+        // detached task actually runs the final arm (covering it) before the
+        // test ends, and confirm it did NOT poll a second time.
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "single attempt only");
+    }
+
+    // ─────────────────── RpcBroadcaster over the mock RPC ───────────────────
+
+    use crate::x402::server::mock_rpc::MockRpc;
+    use solana_keychain::memory::MemorySigner;
+
+    /// Build a real single-signer, single-signature legacy transaction. The
+    /// mock echoes the tx's own first signature and the real client checks that
+    /// echo, so the signature must actually be present and serialize cleanly.
+    async fn signed_tx() -> Transaction {
+        // Deterministic keypair from a fixed seed.
+        let seed = [7u8; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(&sk.to_bytes());
+        keypair[32..].copy_from_slice(&sk.verifying_key().to_bytes());
+        let signer = MemorySigner::from_bytes(&keypair).expect("signer");
+        let payer = signer.pubkey();
+        let ix = Instruction::new_with_bytes(
+            Pubkey::new_from_array([5u8; 32]),
+            &[0u8; 4],
+            vec![AccountMeta::new(payer, true)],
+        );
+        let blockhash = Hash::new_from_array([1u8; 32]);
+        let message = Message::new_with_blockhash(&[ix], Some(&payer), &blockhash);
+        let mut tx = Transaction::new_unsigned(message);
+        signer.sign_transaction(&mut tx).await.expect("sign");
+        tx
+    }
+
+    /// Happy path over the mock: `latest_blockhash`, `send`, and `confirm`
+    /// (finalized-ok ⇒ Confirmed) against the in-process JSON-RPC mock.
+    #[tokio::test]
+    async fn rpc_broadcaster_blockhash_send_confirm() {
+        let mock = MockRpc::start();
+        let bc = RpcBroadcaster::new(mock.url());
+
+        // The mock hands out the all-ones base58 blockhash, which decodes to
+        // the all-zeros hash; the point is that the call round-trips cleanly.
+        let _bh = bc.latest_blockhash().await.expect("blockhash ok");
+
+        let tx = signed_tx().await;
+        let sig = bc.send(&tx).await.expect("send ok");
+        // Mock echoes the tx's own first signature.
+        assert_eq!(sig, tx.signatures[0].to_string());
+
+        let outcome = bc.confirm(&sig).await.expect("confirm ok");
+        assert!(
+            matches!(outcome, ConfirmOutcome::Confirmed),
+            "finalized-ok ⇒ Confirmed, got {outcome:?}"
+        );
+    }
+
+    // NOTE: `RpcBroadcaster::confirm` returning `ConfirmOutcome::Failed` (the
+    // `err: Some(..)` arm) is not reachable through the std-only mock: the
+    // mock's `fail_confirmation` response encodes the failed status with an
+    // `InstructionError` whose `Custom` is a bare string (unit) where this
+    // client's `TransactionError` expects a newtype, so the whole
+    // `getSignatureStatuses` response fails to deserialize (parse error, not a
+    // Failed outcome). The `Failed` outcome IS exercised at the confirm-loop
+    // level by `confirm_loop_failed_arm`. Driving `RpcBroadcaster`'s own Failed
+    // arm would need a live validator or a mock change (out of scope here).
+
+    /// A malformed signature string never reaches the RPC — it fails to parse
+    /// and returns the `"bad signature"` error arm.
+    #[tokio::test]
+    async fn rpc_broadcaster_confirm_bad_signature() {
+        let mock = MockRpc::start();
+        let bc = RpcBroadcaster::new(mock.url());
+        let err = bc.confirm("not-a-valid-signature").await.unwrap_err();
+        assert_eq!(err, "bad signature");
+    }
+
+    /// `latest_blockhash` surfaces an RPC error (the mock's blockhash-fail arm).
+    #[tokio::test]
+    async fn rpc_broadcaster_blockhash_error() {
+        let mock = MockRpc::start();
+        mock.fail_blockhash("blockhash unavailable");
+        let bc = RpcBroadcaster::new(mock.url());
+        let err = bc.latest_blockhash().await.unwrap_err();
+        assert!(!err.is_empty(), "blockhash error should surface: {err}");
+    }
+
+    /// `send` surfaces an RPC error (the mock's send-fail arm).
+    #[tokio::test]
+    async fn rpc_broadcaster_send_error() {
+        let mock = MockRpc::start();
+        mock.fail_send("node is behind");
+        let bc = RpcBroadcaster::new(mock.url());
+        let tx = signed_tx().await;
+        let err = bc.send(&tx).await.unwrap_err();
+        assert!(!err.is_empty(), "send error should surface: {err}");
+    }
 }

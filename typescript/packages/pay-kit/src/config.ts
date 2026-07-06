@@ -1,5 +1,5 @@
 import { DEFAULT_RPC_URLS } from '@solana/mpp';
-import type { Store } from 'mppx';
+import { Store } from 'mppx';
 
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
 import { type Stablecoin, STABLECOINS } from './price.js';
@@ -110,6 +110,37 @@ function resolveChallengeBindingSecret(network: Network, provided: string | unde
 }
 
 /**
+ * Resolve the replay-protection store, always returning a single shared instance
+ * so every charge handler built from this config dedups against the same marker
+ * set (the default previously left this undefined, so each cached handler got
+ * its own in-memory store and replayed payments slipped through).
+ *
+ * Off localnet the in-memory store is unsafe: it is process-local, so a second
+ * replica or a restart would accept a replayed signature. Require a shared,
+ * persistent store (ideally one with an atomic reserve, e.g. Redis `SET NX`)
+ * unless the operator explicitly opts into single-process scope.
+ */
+function resolveReplayStore(network: Network, provided: Store.Store | undefined): Store.Store {
+    if (provided) return provided;
+    const allowInMemory = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE === '1';
+    if (network !== 'solana_localnet' && !allowInMemory) {
+        throw new ConfigurationError(
+            'replayStore is required outside localnet. The default in-memory store is process-local, so ' +
+                'a second replica or a restart would accept a replayed payment. Pass a shared, persistent ' +
+                'store to configure() (ideally one with an atomic reserve, e.g. Redis SET NX), or set ' +
+                'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 to acknowledge single-process replay scope.',
+        );
+    }
+    if (network !== 'solana_localnet') {
+        console.warn(
+            '[pay-kit] Using an in-memory replay store off localnet (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1). ' +
+                'Replay protection is process-local and does not survive restarts or span replicas.',
+        );
+    }
+    return Store.memory();
+}
+
+/**
  * Builds and validates the boot configuration. Everything downstream
  * (pricing, adapters, the dispatcher) derives its defaults from this object.
  *
@@ -181,6 +212,15 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
 
+    // Replay protection is meaningful for every paid protocol: an x402-only
+    // server needs the same fail-closed store as MPP charge, otherwise it would
+    // silently fall back to a process-local map and accept replayed payments off
+    // localnet. Resolve for both x402 and mpp (in practice, any accepted protocol).
+    const replayStore =
+        accept.includes('mpp') || accept.includes('x402')
+            ? resolveReplayStore(network, params.replayStore)
+            : params.replayStore;
+
     return Object.freeze({
         accept: Object.freeze([...accept]),
         mpp: Object.freeze({
@@ -192,7 +232,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         network,
         operator: Object.freeze(operator),
         preflight: params.preflight ?? true,
-        replayStore: params.replayStore,
+        replayStore,
         rpcUrl: params.rpcUrl ?? DEFAULT_RPC_URLS[toSolanaNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet,
         stablecoins: Object.freeze([...stablecoins]),
         x402: Object.freeze({

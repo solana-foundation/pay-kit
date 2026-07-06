@@ -27,8 +27,13 @@ module PayKit::Protocols::X402
     #   11-rule `Protocol::Schemes::Exact::Verifier`.
     # - Apply the facilitator signature and broadcast.
     # - Enforce L8 settlement order:
-    #     broadcast -> confirm (getSignatureStatuses) -> put_if_absent
-    #   keyed on `x402-svm-exact:consumed:<base58_signature>`.
+    #     broadcast -> put_if_absent -> confirm (getSignatureStatuses)
+    #   keyed on `x402-svm-exact:consumed:<base58_signature>`. The
+    #   signature is reserved the instant broadcast returns and BEFORE
+    #   confirmation is awaited, so the whole confirmation-poll window is
+    #   closed to a concurrent duplicate. The marker is kept on a
+    #   confirmation timeout (the tx may have landed) and released only on
+    #   a definitively-never-landed outcome.
     # - Emit canonical `PAYMENT-RESPONSE` on success.
     class Exact
       # Aliases for readability inside the class body.
@@ -84,6 +89,15 @@ module PayKit::Protocols::X402
             @entries[key] = now
             true
           end
+        end
+
+        # Release a reservation taken by `put_if_absent`. Used only on a
+        # definitively-never-landed settlement outcome so a corrected
+        # resubmission is free to broadcast again. A confirmation timeout
+        # deliberately does NOT release — the transaction may still have
+        # landed, so the marker stays to block a double-serve.
+        def delete(key)
+          @mutex.synchronize { @entries.delete(key) }
         end
 
         # Back-compat probe kept for tests asserting TTL eviction
@@ -168,12 +182,54 @@ module PayKit::Protocols::X402
         # extension point (`rust/crates/x402/src/protocol/schemes/
         # exact/types.rs:279-283`).
         def latest_blockhash
-          provider = @recent_blockhash_provider || method(:fetch_recent_blockhash)
-          provider.call
+          recent_blockhash_hint&.fetch(:blockhash, nil)
         end
 
+        # The normalized `{ blockhash:, last_valid_block_height: }` hint for the
+        # challenge, or `nil` when the provider yields nothing. Fetched from the
+        # provider exactly once per call so `exact_requirement` can embed both
+        # `recentBlockhash` and its paired `lastValidBlockHeight` without invoking
+        # the (RPC-backed) provider twice. The height is threaded into the
+        # challenge's `accepted.extra` so a compliant client echoes it back in the
+        # credential; the settlement path then has a definitive expiry height to
+        # compare `getBlockHeight` against when deciding whether a never-confirmed
+        # transaction provably never landed.
+        def recent_blockhash_hint
+          provider = @recent_blockhash_provider || method(:fetch_recent_blockhash)
+          normalize_blockhash_context(provider.call)
+        end
+
+        # Normalize the provider result into `{ blockhash:, last_valid_block_height: }`
+        # (symbol keys) or `nil`. Accepts the legacy bare-string form (no height)
+        # and the context-hash form with either camelCase (`lastValidBlockHeight`)
+        # or snake_case keys.
+        def normalize_blockhash_context(raw)
+          case raw
+          when nil
+            nil
+          when String
+            raw.empty? ? nil : {blockhash: raw, last_valid_block_height: nil}
+          when Hash
+            blockhash = raw["blockhash"] || raw[:blockhash]
+            return nil if blockhash.nil? || blockhash.to_s.empty?
+
+            height = raw["lastValidBlockHeight"] || raw[:lastValidBlockHeight] ||
+              raw["last_valid_block_height"] || raw[:last_valid_block_height]
+            {blockhash: blockhash, last_valid_block_height: height.nil? ? nil : Integer(height)}
+          end
+        end
+        private :normalize_blockhash_context
+
         def fetch_recent_blockhash
-          ::PayCore::Solana::Rpc.new(@rpc_url).latest_blockhash
+          value = ::PayCore::Solana::Rpc.new(@rpc_url)
+            .call("getLatestBlockhash", [{"commitment" => "confirmed"}])
+            &.fetch("value", nil)
+          return nil unless value.is_a?(Hash)
+
+          {
+            "blockhash" => value["blockhash"],
+            "lastValidBlockHeight" => value["lastValidBlockHeight"]
+          }
         rescue ::PayCore::Solana::Rpc::RpcError
           nil
         end
@@ -248,8 +304,20 @@ module PayKit::Protocols::X402
           # local validators (Surfpool / surfnet) that present as devnet
           # on the wire but expose a different ledger. `nil` is dropped
           # so the client falls back to its own `getLatestBlockhash`.
-          if (blockhash = config.latest_blockhash)
-            extra["recentBlockhash"] = blockhash
+          #
+          # When the provider also surfaces the paired `lastValidBlockHeight`,
+          # advertise it so a compliant client echoes it back in the credential
+          # (`accepted.extra.lastValidBlockHeight`). The settlement path uses
+          # that height as the definitive expiry watermark: a transaction that
+          # never confirmed AND whose blockhash height has passed is provably
+          # never-landed, so its reservation can be safely released. Mirrors the
+          # Rust spine `embed_recent_blockhash` (server/exact.rs) which threads
+          # the same hint through `accepted.extra`.
+          if (hint = config.recent_blockhash_hint)
+            extra["recentBlockhash"] = hint.fetch(:blockhash)
+            if (last_valid_block_height = hint.fetch(:last_valid_block_height, nil))
+              extra["lastValidBlockHeight"] = last_valid_block_height.to_s
+            end
           end
           {
             "scheme" => Constants::EXACT_SCHEME,
@@ -415,7 +483,7 @@ module PayKit::Protocols::X402
           requirement
         end
 
-        # ---- L8 settlement: verify + broadcast + confirm + record ----
+        # ---- L8 settlement: verify + broadcast + reserve + confirm ----
         #
         # Order MUST be:
         #   (1) decode envelope
@@ -423,11 +491,26 @@ module PayKit::Protocols::X402
         #   (3) verify client signatures
         #   (4) apply facilitator signature
         #   (5) broadcast
-        #   (6) confirm via getSignatureStatuses poll
-        #   (7) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
+        #   (6) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
+        #       immediately, keyed on the resolved fee-payer signature; an
+        #       already-present key is a replay and is rejected here.
+        #   (7) confirm via getSignatureStatuses poll
         #
-        # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
-        # at `rust/crates/x402/src/bin/harness_server.rs:316-324`.
+        # The reservation is taken BEFORE confirmation so the whole
+        # confirmation-poll window is closed to a concurrent duplicate.
+        # On a confirmation timeout the marker is kept (the tx may have
+        # landed); it is released only on a definitively-never-landed
+        # outcome, surfaced by the confirmer as `Error::TransactionNotFound`.
+        # The DEFAULT confirmer (`await_confirmation`) proves this itself: after
+        # the poll exhausts, it re-checks getSignatureStatuses with
+        # searchTransactionHistory and compares getBlockHeight against the
+        # credential's echoed `lastValidBlockHeight`; only when the signature is
+        # absent AND the blockhash has expired does it raise
+        # `Error::TransactionNotFound`. Every ambiguous outcome (status present,
+        # height unknown, height not yet passed, or an RPC error) keeps the
+        # plain timeout error and the reservation. Mirrors the MPP charge order
+        # and the sibling Rust (`PullSettlementOutcome::NotLanded`) and Go exact
+        # ports.
         # Pick the settlement-response header for a credential by its wire
         # version: a v1 `X-PAYMENT` credential gets the legacy
         # `X-PAYMENT-RESPONSE` receipt header, a v2 credential gets
@@ -479,17 +562,74 @@ module PayKit::Protocols::X402
             fee_payer_secret_key: config.fee_payer_secret_key
           )
 
-          # L8 settlement order. There is no release-on-failure path;
-          # the durable replay primitive is Solana's per-signature
-          # uniqueness inside the blockhash window.
+          # L8 settlement order: broadcast -> reserve -> confirm. The
+          # reservation is taken the instant broadcast returns a signature
+          # and BEFORE confirmation is awaited, so the confirmation-poll
+          # window cannot be double-served by a concurrent duplicate. An
+          # already-present key means the signature was already consumed
+          # (a replay) and is rejected.
           signature = config.transaction_sender.call(config, signed_transaction)
-          config.signature_confirmer.call(config, signature)
+          consumed_key = signature_consumed_key(signature)
 
-          unless config.settlement_cache.put_if_absent(signature_consumed_key(signature))
+          unless config.settlement_cache.put_if_absent(consumed_key)
             raise ::PayKit::Protocols::X402::Error::SignatureConsumed::TOKEN
           end
 
+          # The transaction's expiry watermark, echoed by a compliant client in
+          # `accepted.extra.lastValidBlockHeight` (the server advertised it on
+          # the challenge). Threaded to the default confirmer so it can run the
+          # definitive `getBlockHeight` expiry check. `nil` when the credential
+          # carries no height — the confirmer then cannot prove non-landing and
+          # keeps the reservation (fail-closed).
+          last_valid_block_height = credential_last_valid_block_height(decoded)
+
+          begin
+            invoke_signature_confirmer(config, signature, last_valid_block_height)
+          rescue ::PayKit::Protocols::X402::Error::TransactionNotFound
+            # Definitively never landed: the signature is provably absent from
+            # the node's recent history AND the blockhash has expired (chain
+            # height passed `lastValidBlockHeight`). Release the reservation so a
+            # corrected resubmission can broadcast again. Any OTHER confirmation
+            # failure (a poll timeout where the tx may still land, or an
+            # indeterminate RPC error) propagates with the marker intact:
+            # releasing it would open a double-serve window. With the default
+            # confirmer this release path is now reachable in production, not
+            # only for injected test confirmers.
+            config.settlement_cache.delete(consumed_key)
+            raise
+          end
+
           signature
+        end
+
+        # Read the credential's echoed expiry height. Returns an Integer or
+        # `nil`. A missing / non-integer value yields `nil` so an ambiguous
+        # credential can never coerce a release.
+        def credential_last_valid_block_height(decoded)
+          extra = decoded.is_a?(Hash) ? decoded.dig("accepted", "extra") : nil
+          return nil unless extra.is_a?(Hash)
+
+          raw = extra["lastValidBlockHeight"]
+          return nil if raw.nil?
+
+          Integer(raw)
+        rescue ArgumentError, TypeError
+          nil
+        end
+
+        # Invoke the injected confirmer while preserving its 2-arg public
+        # contract. The default confirmer (`await_confirmation`) accepts a
+        # `last_valid_block_height:` keyword for the definitive expiry check;
+        # injected confirmers that do not declare it are still called with
+        # exactly `(config, signature)`.
+        def invoke_signature_confirmer(config, signature, last_valid_block_height)
+          confirmer = config.signature_confirmer
+          if confirmer.respond_to?(:parameters) &&
+              confirmer.parameters.any? { |type, name| (type == :key || type == :keyreq) && name == :last_valid_block_height }
+            confirmer.call(config, signature, last_valid_block_height: last_valid_block_height)
+          else
+            confirmer.call(config, signature)
+          end
         end
 
         def verify_token_accounts_exist!(config, transfer)
@@ -539,7 +679,8 @@ module PayKit::Protocols::X402
         end
 
         def await_confirmation(config, signature, attempts: DEFAULT_CONFIRMATION_ATTEMPTS,
-          delay_seconds: DEFAULT_CONFIRMATION_DELAY_SECONDS, sleeper: method(:sleep))
+          delay_seconds: DEFAULT_CONFIRMATION_DELAY_SECONDS, sleeper: method(:sleep),
+          last_valid_block_height: nil)
           attempts.times do
             statuses = fetch_signature_statuses(config, [signature])
             status = statuses.first
@@ -550,10 +691,52 @@ module PayKit::Protocols::X402
             end
             sleeper.call(delay_seconds)
           end
+
+          # The confirmation poll timed out. Before surfacing an indeterminate
+          # timeout (which keeps the reservation), run ONE definitive check to
+          # see whether the transaction provably never landed. Only two
+          # conditions together prove non-landing:
+          #   (a) getSignatureStatuses with searchTransactionHistory: true still
+          #       reports the signature absent (not merely lagging the finalized
+          #       tip), AND
+          #   (b) getBlockHeight has passed the transaction's
+          #       `lastValidBlockHeight`, so the blockhash is expired and the
+          #       transaction can never land now.
+          # In that case raise `Error::TransactionNotFound` so the caller
+          # releases the reservation. EVERY other outcome — status present,
+          # height unknown, height not yet passed, or any RPC error — is
+          # ambiguous and keeps the plain timeout error (fail-closed).
+          if definitively_never_landed?(config, signature, last_valid_block_height)
+            raise ::PayKit::Protocols::X402::Error::TransactionNotFound,
+              "transaction #{signature} never landed: signature absent and blockhash expired"
+          end
+
           raise "timed out awaiting confirmation for #{signature}"
         end
 
-        def fetch_signature_statuses(config, signatures)
+        # Definitive post-timeout non-landing proof. Fail-closed: any absent
+        # height, still-valid blockhash, present status, or RPC error returns
+        # false so the reservation is kept.
+        def definitively_never_landed?(config, signature, last_valid_block_height)
+          return false if last_valid_block_height.nil?
+
+          statuses = fetch_signature_statuses(config, [signature], search_transaction_history: true)
+          # A present status means the transaction landed (or is landing) — not
+          # provably absent, so keep the reservation.
+          return false if statuses.first.is_a?(Hash)
+
+          block_height = fetch_block_height(config)
+          return false if block_height.nil?
+
+          block_height > last_valid_block_height
+        rescue
+          # A failure inside the definitive check (RPC/transport error, malformed
+          # response) means we cannot prove non-landing, so keep the reservation
+          # (fail-closed) rather than releasing on an ambiguous outcome.
+          false
+        end
+
+        def fetch_signature_statuses(config, signatures, search_transaction_history: false)
           uri = URI(config.rpc_url)
           request = Net::HTTP::Post.new(uri)
           request["content-type"] = "application/json"
@@ -561,7 +744,7 @@ module PayKit::Protocols::X402
             jsonrpc: "2.0",
             id: 1,
             method: "getSignatureStatuses",
-            params: [signatures, {searchTransactionHistory: false}]
+            params: [signatures, {searchTransactionHistory: search_transaction_history}]
           )
           response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") do |http|
             http.request(request)
@@ -573,6 +756,31 @@ module PayKit::Protocols::X402
 
           result = payload["result"]
           (result.is_a?(Hash) ? result["value"] : nil) || []
+        end
+
+        # Current confirmed block height via getBlockHeight. Used only by the
+        # definitive post-timeout expiry check; raises on transport/RPC error so
+        # the caller keeps the reservation (fail-closed).
+        def fetch_block_height(config)
+          uri = URI(config.rpc_url)
+          request = Net::HTTP::Post.new(uri)
+          request["content-type"] = "application/json"
+          request.body = JSON.generate(
+            jsonrpc: "2.0",
+            id: 1,
+            method: "getBlockHeight",
+            params: [{commitment: "confirmed"}]
+          )
+          response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") do |http|
+            http.request(request)
+          end
+          raise "getBlockHeight HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+          payload = JSON.parse(response.body)
+          raise "getBlockHeight RPC error: #{rpc_error_message(payload["error"])}" if payload["error"]
+
+          result = payload["result"]
+          result.is_a?(Integer) ? result : nil
         end
 
         def account_exists?(config, account)

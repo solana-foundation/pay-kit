@@ -29,6 +29,7 @@ from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402 import ExactVerifier, X402Adapter
 from solana_pay_kit.protocols.x402.exact.verify import (
     COMPUTE_BUDGET_PROGRAM,
+    LIGHTHOUSE_PROGRAM,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
 )
@@ -388,6 +389,46 @@ def test_reject_fee_payer_as_authority():
     with pytest.raises(InvalidProofError) as e:
         ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
     assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+
+def test_reject_fee_payer_as_source_ata():
+    # The transfer authority is a legitimate customer key, but the source ATA
+    # is the managed fee-payer's OWN associated token account for the mint --
+    # draining the operator. The source-account guard must reject this even
+    # though the authority is not the fee-payer.
+    fee_payer, authority, pay_to, _src, dest = _scenario()
+    src_fp = derive_ata(str(fee_payer.pubkey()), MINT, TOKEN_PROGRAM)
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src_fp, mint=MINT, destination=dest, authority=authority.pubkey()),
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+
+def test_accepts_lighthouse_guard_referencing_fee_payer():
+    # A Lighthouse guard whose accounts merely reference the managed fee payer
+    # is NOT a fund move and MUST be accepted -- the canonical rule guards only
+    # the transfer authority and funding source. This is the M-6 uniform-verdict
+    # case the old Ruby blanket sweep diverged on.
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    lighthouse = Instruction(
+        Pubkey.from_string(LIGHTHOUSE_PROGRAM),
+        b"\x00",
+        [AccountMeta(fee_payer.pubkey(), True, False)],
+    )
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+        lighthouse,
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    out = ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert out["authority"] == str(authority.pubkey())
 
 
 # -- rule 6: mint mismatch ---------------------------------------------------

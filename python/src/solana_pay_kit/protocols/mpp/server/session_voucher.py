@@ -72,8 +72,8 @@ class VoucherRejectReason(StrEnum):
 
     #: The non-zero voucher expiry is in the future but does not outlast the
     #: settlement window, so it could expire on-chain before the asynchronous
-    #: close settlement lands.
-    EXPIRES_BEFORE_SETTLEMENT = "expires-before-settlement"
+    #: close settlement lands. The tag string is stable across the language SDKs.
+    EXPIRES_BEFORE_SETTLEMENT = "expires-within-settlement-window"
 
     #: The cumulative does not parse as a u64.
     INVALID_CUMULATIVE = "invalid-cumulative"

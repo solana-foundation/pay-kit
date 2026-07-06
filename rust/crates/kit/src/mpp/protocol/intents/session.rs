@@ -182,6 +182,10 @@ pub struct SessionSplit {
 /// The action submitted by the client in an Authorization header.
 ///
 /// Serialized as a tagged object with `"action": "open" | "voucher" | "topup" | "close"`.
+// `Open(OpenPayload)` dwarfs the other variants, but actions are decoded
+// transiently per request — never stored in bulk — so the size skew costs
+// nothing, while boxing the payload would break the public enum shape.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
 pub enum SessionAction {
@@ -1072,9 +1076,7 @@ mod tests {
         let back: OpenPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(back.salt, Some(salt));
 
-        let legacy_json = format!(
-            r#"{{"mode":"push","channelId":"chan1","deposit":"1000000","payer":"payer1","payee":"payee1","mint":"mint1","salt":42,"gracePeriod":900,"authorizedSigner":"signer1","signature":"txsig"}}"#
-        );
+        let legacy_json = r#"{"mode":"push","channelId":"chan1","deposit":"1000000","payer":"payer1","payee":"payee1","mint":"mint1","salt":42,"gracePeriod":900,"authorizedSigner":"signer1","signature":"txsig"}"#.to_string();
         let legacy: OpenPayload = serde_json::from_str(&legacy_json).unwrap();
         assert_eq!(legacy.salt, Some(42));
     }

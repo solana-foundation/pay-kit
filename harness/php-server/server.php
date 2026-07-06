@@ -140,7 +140,14 @@ if ($x402Active) {
         mpp:         new MppConfig(challengeBindingSecret: 'unused-x402'),
         preflight:   false,
     ));
-    $adapter = new X402Adapter($client->config);
+    // The X402 adapter fails closed off localnet unless it is handed a shared
+    // replay store (the default in-memory store is process-local). The harness
+    // runs the x402 matrix on a non-localnet CAIP-2 network, so inject a
+    // process-scoped FileStore here, mirroring the MPP charge path below.
+    $adapter = new X402Adapter(
+        $client->config,
+        replayStore: new FileStore(sys_get_temp_dir() . '/x402-php-harness-replay-' . getmypid()),
+    );
     $gate = new Gate(amount: Price::usd(format_decimal_amount($amountUnits)));
 } else {
     // MPP mode: build the lower-level ChargeServer + SolanaChargeHandler

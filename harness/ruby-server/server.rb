@@ -163,25 +163,66 @@ end
 
 # --- HTTP loop ----------------------------------------------------------
 
+# Input caps. The hand-rolled server must not read unbounded input: a
+# request whose headers exceed the cap is rejected with 431 before any
+# handler runs, and a declared body past the cap is rejected with 413
+# before it is read. These mirror the Python harness server so both reject
+# the same hostile inputs identically. The 16 KiB per-header cap matches
+# the MPP token cap (`MAX_TOKEN_LENGTH`); every legitimate harness header --
+# a base64 Solana transaction is ~1.6 KiB -- fits comfortably under it.
+MAX_HEADER_VALUE_BYTES = 16 * 1024
+MAX_TOTAL_HEADER_BYTES = 64 * 1024
+MAX_HEADER_COUNT = 100
+MAX_BODY_BYTES = 1024 * 1024
+
 def read_request(conn)
-  request_line = conn.gets
+  # Bound each read at the total-header cap so no single line can be read
+  # unbounded; the request line and every header line share that ceiling.
+  read_limit = MAX_TOTAL_HEADER_BYTES + 2
+  request_line = conn.gets("\n", read_limit)
   return nil if request_line.nil? || request_line.strip.empty?
+  # A line that hit the read bound without a terminator is over the cap.
+  return {reject: 431} if request_line.bytesize >= read_limit && !request_line.end_with?("\n")
 
   method, raw_path, = request_line.strip.split(/\s+/, 3)
   headers = {}
-  while (line = conn.gets)
-    line = line.delete_suffix("\r\n")
+  header_count = 0
+  total_header_bytes = 0
+  while (line = conn.gets("\n", read_limit))
+    return {reject: 431} if line.bytesize >= read_limit && !line.end_with?("\n")
+
+    line = line.delete_suffix("\r\n").delete_suffix("\n")
     break if line.empty?
+
+    header_count += 1
+    total_header_bytes += line.bytesize
+    return {reject: 431} if header_count > MAX_HEADER_COUNT
+    return {reject: 431} if total_header_bytes > MAX_TOTAL_HEADER_BYTES
 
     name, value = line.split(":", 2)
     next if value.nil?
-    headers[name.downcase] = value.strip
+    value = value.strip
+    # Cap the header *value* (mirrors the Python server's per-value check).
+    return {reject: 431} if value.bytesize > MAX_HEADER_VALUE_BYTES
+    headers[name.downcase] = value
   end
+
+  # Clamp the declared body before any read allocates it.
+  declared = headers["content-length"].to_i
+  return {reject: 413} if declared.negative? || declared > MAX_BODY_BYTES
+
   {method: method, path: raw_path, headers: headers}
 end
 
 def write_response(conn, status, headers, body)
-  reason = {200 => "OK", 402 => "Payment Required", 404 => "Not Found", 500 => "Server Error"}.fetch(status, "Server Error")
+  reason = {
+    200 => "OK",
+    402 => "Payment Required",
+    404 => "Not Found",
+    413 => "Payload Too Large",
+    431 => "Request Header Fields Too Large",
+    500 => "Server Error"
+  }.fetch(status, "Server Error")
   payload = body.is_a?(String) ? body : JSON.generate(body)
   merged = {"connection" => "close", "content-length" => payload.bytesize.to_s}.merge(headers)
   conn.write("HTTP/1.1 #{status} #{reason}\r\n")
@@ -290,6 +331,13 @@ loop do
   begin
     req = read_request(conn)
     if req.nil?
+      conn.close
+      next
+    end
+
+    if req[:reject]
+      # Oversized headers (431) or body (413): reject before any handling.
+      write_response(conn, req[:reject], {"content-type" => "application/json"}, {"error" => "request_too_large"})
       conn.close
       next
     end

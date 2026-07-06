@@ -38,6 +38,7 @@ import socket
 import sys
 import threading
 import urllib.request
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -382,8 +383,59 @@ class _Adapter:
 class HarnessHandler(BaseHTTPRequestHandler):
     server_version = "python-harness/1.0"
 
+    # Input caps. The hand-rolled server must not read unbounded input: a
+    # request whose headers exceed the cap is rejected with 431 before any
+    # protocol handling, and a body past the cap is rejected with 413 before
+    # the declared Content-Length is allocated/read. These mirror the Ruby
+    # harness server so both reject the same hostile inputs identically. The
+    # 16 KiB per-header cap matches the MPP token cap (``MAX_TOKEN_LENGTH``);
+    # every legitimate harness header -- a base64 Solana transaction is
+    # ~1.6 KiB -- fits comfortably under it.
+    MAX_HEADER_VALUE_BYTES = 16 * 1024
+    MAX_TOTAL_HEADER_BYTES = 64 * 1024
+    MAX_HEADER_COUNT = 100
+    MAX_BODY_BYTES = 1024 * 1024
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
+
+    def parse_request(self) -> bool:  # noqa: D401
+        # Enforce the header caps after the base parser populates
+        # ``self.headers`` but before any handler runs. On overflow the base
+        # ``send_error`` writes the 431 response and we refuse the request.
+        if not super().parse_request():
+            return False
+        headers = self.headers
+        if len(headers) > self.MAX_HEADER_COUNT:
+            self.send_error(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, "Too many headers")
+            return False
+        total = 0
+        for name, value in headers.items():
+            value_len = len(value.encode("latin-1", "replace"))
+            if value_len > self.MAX_HEADER_VALUE_BYTES:
+                self.send_error(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, "Header value too large")
+                return False
+            total += len(name.encode("latin-1", "replace")) + value_len
+            if total > self.MAX_TOTAL_HEADER_BYTES:
+                self.send_error(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, "Headers too large")
+                return False
+        return True
+
+    def _read_capped_body(self) -> bytes | None:
+        """Read the request body, clamped to ``MAX_BODY_BYTES``.
+
+        Rejects (with 413) and returns ``None`` when the declared
+        Content-Length exceeds the cap, so the server never allocates or
+        streams an oversized body. Returns the body bytes otherwise.
+        """
+        try:
+            declared = int(self.headers.get("content-length", "0") or "0")
+        except ValueError:
+            declared = 0
+        if declared < 0 or declared > self.MAX_BODY_BYTES:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
+            return None
+        return self.rfile.read(declared)
 
     @property
     def adapter(self) -> _Adapter:
@@ -438,7 +490,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
             if self.path == adapter.resource_path:
                 self._handle_session(adapter)
                 return
-            raw = self.rfile.read(int(self.headers.get("content-length", "0") or "0"))
+            raw = self._read_capped_body()
+            if raw is None:
+                return
             if self.path == "/__402/session/deliveries":
                 response = asyncio.run(adapter.session_routes.deliveries("POST", raw or b"{}"))
                 self._send_json(response.status, response.body)

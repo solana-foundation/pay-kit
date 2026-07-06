@@ -132,14 +132,23 @@ export function createMemorySessionStore(): SessionStore {
         // Swallow the previous result so one failed update doesn't poison
         // the chain for later updates on the same channel.
         const next = previous.then(work, work);
-        locks.set(
-            channelId,
-            next.catch(() => undefined),
-        );
+        // The next waiter chains on a tail that never rejects, so one failure
+        // does not poison the queue for the same channel.
+        const tail = next.catch(() => undefined);
+        locks.set(channelId, tail);
+        // Evict the entry once this task settles, but only if it is still the
+        // tail (no later `updateChannel` has chained onto the same id). This
+        // keeps the map bounded by the number of concurrently active channels
+        // rather than every id ever seen, without unserializing queued ops.
+        void tail.then(() => {
+            if (locks.get(channelId) === tail) {
+                locks.delete(channelId);
+            }
+        });
         return next;
     }
 
-    return {
+    const store: SessionStore = {
         deleteChannel(channelId) {
             data.delete(channelId);
             return Promise.resolve();
@@ -187,4 +196,14 @@ export function createMemorySessionStore(): SessionStore {
             });
         },
     };
+
+    // Test-only probe on the internal per-channel lock map size. Attached as a
+    // non-enumerable own property so it is invisible on the `SessionStore`
+    // surface consumers see, and only reachable by tests that opt in via a
+    // cast. Used to assert that idle lock entries are evicted.
+    Object.defineProperty(store, '_lockMapSize', {
+        enumerable: false,
+        value: (): number => locks.size,
+    });
+    return store;
 }

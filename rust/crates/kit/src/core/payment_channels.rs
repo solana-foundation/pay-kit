@@ -647,6 +647,250 @@ mod tests {
         assert_eq!(&bytes[40..48], &1234i64.to_le_bytes());
     }
 
+    /// Golden account layout for the settle family, pinned off-chain so a codama
+    /// regeneration or a hand edit that reorders accounts, flips a signer/writable
+    /// flag, or changes a discriminator fails here without needing a live program.
+    /// This is the cheap guard for the #202 class (settle_and_finalize is
+    /// merchant-first BY DESIGN: the merchant account must equal the channel
+    /// payee). Flags: (is_signer, is_writable).
+    #[test]
+    fn settle_family_account_layout_golden() {
+        let program_id = default_program_id();
+        let sig = [7u8; 64];
+        let meta = |m: &AccountMeta| (m.pubkey, m.is_signer, m.is_writable);
+
+        // settle: [channel(w), instructions_sysvar(ro)], discriminator 2. The
+        // ed25519 precompile is emitted first so the program can read the voucher.
+        let settle =
+            build_settle_instructions(&pk(1), &pk(2), &sig, 1_000, 999, &program_id).unwrap();
+        assert_eq!(settle.len(), 2, "settle = [ed25519 verify, settle]");
+        let s = settle.last().unwrap();
+        assert_eq!(s.program_id, to_address(&program_id));
+        assert_eq!(
+            s.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(1)), false, true), // channel, writable
+                (to_address(&instructions_sysvar_id()), false, false), // instructions sysvar, ro
+            ],
+        );
+        assert_eq!(s.data.first(), Some(&2u8), "settle discriminator");
+
+        // settle_and_finalize: [merchant(signer, ro), channel(w), instructions_sysvar(ro)],
+        // discriminator 4 + has_voucher=1. Merchant-first is intentional.
+        let saf = build_settle_and_finalize_instructions(
+            &pk(3),
+            &pk(1),
+            &pk(2),
+            Some(&sig),
+            1_000,
+            999,
+            &program_id,
+        )
+        .unwrap();
+        assert_eq!(
+            saf.len(),
+            2,
+            "settle_and_finalize = [ed25519 verify, settle_and_finalize]"
+        );
+        let f = saf.last().unwrap();
+        assert_eq!(f.program_id, to_address(&program_id));
+        assert_eq!(
+            f.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(3)), true, false), // merchant, signer, readonly
+                (to_address(&pk(1)), false, true), // channel, writable
+                (to_address(&instructions_sysvar_id()), false, false), // instructions sysvar, ro
+            ],
+        );
+        assert_eq!(
+            f.data,
+            vec![4u8, 1u8],
+            "settle_and_finalize discriminator + has_voucher"
+        );
+
+        // request_close: [payer(signer), channel(w)], discriminator 5.
+        let rc = build_request_close_instruction(&pk(5), &pk(1), &program_id);
+        assert_eq!(rc.program_id, to_address(&program_id));
+        assert_eq!(rc.accounts[0].pubkey, to_address(&pk(5)));
+        assert!(rc.accounts[0].is_signer, "request_close payer is a signer");
+        assert_eq!(rc.accounts[1].pubkey, to_address(&pk(1)));
+        assert!(
+            rc.accounts[1].is_writable,
+            "request_close channel is writable"
+        );
+
+        // finalize: [channel(w)], discriminator 6.
+        let fin = build_finalize_instruction(&pk(1), &program_id);
+        assert_eq!(fin.accounts.len(), 1);
+        assert_eq!(fin.accounts[0].pubkey, to_address(&pk(1)));
+        assert!(fin.accounts[0].is_writable, "finalize channel is writable");
+    }
+
+    /// Golden discriminator table for EVERY payment-channels instruction —
+    /// including the two the kit has no builder for (withdraw_payer,
+    /// emit_event) — pinned as literals so a codama regeneration that
+    /// renumbers the program's instruction set fails here rather than on
+    /// a live cluster.
+    #[test]
+    fn instruction_discriminators_golden() {
+        use crate::generated::payment_channels::generated::instructions as gen_ix;
+        assert_eq!(gen_ix::OPEN_DISCRIMINATOR, 1);
+        assert_eq!(gen_ix::SETTLE_DISCRIMINATOR, 2);
+        assert_eq!(gen_ix::TOP_UP_DISCRIMINATOR, 3);
+        assert_eq!(gen_ix::SETTLE_AND_FINALIZE_DISCRIMINATOR, 4);
+        assert_eq!(gen_ix::REQUEST_CLOSE_DISCRIMINATOR, 5);
+        assert_eq!(gen_ix::FINALIZE_DISCRIMINATOR, 6);
+        assert_eq!(gen_ix::DISTRIBUTE_DISCRIMINATOR, 7);
+        assert_eq!(gen_ix::WITHDRAW_PAYER_DISCRIMINATOR, 8);
+        assert_eq!(gen_ix::EMIT_EVENT_DISCRIMINATOR, 228);
+    }
+
+    /// Golden account layout + data layout for `open`, completing the
+    /// per-instruction coverage the settle-family golden started. The
+    /// rentPayer at slot 1 and the channel PDA at slot 5 are the slots the
+    /// cross-SDK open verifiers key on — a reorder here silently defeats
+    /// every one of them. Flags: (is_signer, is_writable).
+    #[test]
+    fn open_account_and_data_layout_golden() {
+        let program_id = default_program_id();
+        let params = OpenChannelParams {
+            payer: pk(1),
+            rent_payer: pk(2),
+            payee: pk(3),
+            mint: pk(4),
+            authorized_signer: pk(5),
+            salt: 7,
+            deposit: 1_000_000,
+            grace_period: 900,
+            recipients: vec![Distribution {
+                recipient: pk(6),
+                bps: 250,
+            }],
+            token_program: pk(7),
+            program_id,
+        };
+        let addresses = derive_channel_addresses(&params);
+        let ix = build_open_instruction(&params);
+        let meta = |m: &AccountMeta| (m.pubkey, m.is_signer, m.is_writable);
+
+        assert_eq!(ix.program_id, to_address(&program_id));
+        assert_eq!(
+            ix.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(1)), true, true),   // 0 payer, signer, writable
+                (to_address(&pk(2)), true, true),   // 1 rentPayer, signer, writable
+                (to_address(&pk(3)), false, false), // 2 payee, ro
+                (to_address(&pk(4)), false, false), // 3 mint, ro
+                (to_address(&pk(5)), false, false), // 4 authorizedSigner, ro
+                (to_address(&addresses.channel), false, true), // 5 channel PDA, writable
+                (to_address(&addresses.payer_token_account), false, true), // 6
+                (to_address(&addresses.channel_token_account), false, true), // 7
+                (to_address(&pk(7)), false, false), // 8 tokenProgram, ro
+                (to_address(&system_program_id()), false, false), // 9 system program, ro
+                (to_address(&rent_sysvar_id()), false, false), // 10 rent sysvar, ro
+                (to_address(&associated_token_program_id()), false, false), // 11 ATA program, ro
+                (to_address(&addresses.event_authority), false, false), // 12 event authority, ro
+                (to_address(&program_id), false, false), // 13 self program, ro
+            ],
+        );
+
+        // data = [disc=1][salt u64][deposit u64][grace u32][count u32][(pk ‖ bps u16) x count]
+        assert_eq!(ix.data.len(), 1 + 8 + 8 + 4 + 4 + 34);
+        assert_eq!(ix.data[0], 1, "open discriminator");
+        assert_eq!(&ix.data[1..9], &7u64.to_le_bytes());
+        assert_eq!(&ix.data[9..17], &1_000_000u64.to_le_bytes());
+        assert_eq!(&ix.data[17..21], &900u32.to_le_bytes());
+        assert_eq!(&ix.data[21..25], &1u32.to_le_bytes());
+        assert_eq!(&ix.data[25..57], pk(6).as_ref());
+        assert_eq!(&ix.data[57..59], &250u16.to_le_bytes());
+    }
+
+    /// Golden account + data layout for `top_up`. The channel at slot 1,
+    /// mint at slot 4, token program at slot 5, and the amount at data
+    /// bytes 1..9 are exactly what the TS `verifyTopUpTx` binder checks —
+    /// this pin keeps that verifier and the wire format in lockstep.
+    #[test]
+    fn top_up_account_and_data_layout_golden() {
+        let program_id = default_program_id();
+        let ix = build_top_up_instruction(&pk(1), &pk(2), &pk(3), 42_000, &pk(4), &program_id);
+        let meta = |m: &AccountMeta| (m.pubkey, m.is_signer, m.is_writable);
+        let (payer_ata, _) = find_associated_token_address(&pk(1), &pk(3), &pk(4));
+        let (channel_ata, _) = find_associated_token_address(&pk(2), &pk(3), &pk(4));
+
+        assert_eq!(ix.program_id, to_address(&program_id));
+        assert_eq!(
+            ix.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(1)), true, true),        // 0 payer, signer, writable
+                (to_address(&pk(2)), false, true),       // 1 channel, writable
+                (to_address(&payer_ata), false, true),   // 2 payer token account
+                (to_address(&channel_ata), false, true), // 3 channel token account
+                (to_address(&pk(3)), false, false),      // 4 mint, ro
+                (to_address(&pk(4)), false, false),      // 5 token program, ro
+            ],
+        );
+        assert_eq!(ix.data.len(), 1 + 8);
+        assert_eq!(ix.data[0], 3, "top_up discriminator");
+        assert_eq!(&ix.data[1..9], &42_000u64.to_le_bytes());
+    }
+
+    /// Golden account + data layout for `distribute`: 11 fixed accounts
+    /// followed by one writable recipient ATA per split, discriminator 7.
+    #[test]
+    fn distribute_account_and_data_layout_golden() {
+        let program_id = default_program_id();
+        let recipients = vec![Distribution {
+            recipient: pk(9),
+            bps: 1_000,
+        }];
+        let ix = build_distribute_instruction(
+            &pk(1), // channel
+            &pk(2), // payer
+            &pk(3), // rent payer
+            &pk(4), // payee
+            &pk(5), // treasury
+            &pk(6), // mint
+            &recipients,
+            &pk(7), // token program
+            &program_id,
+        );
+        let meta = |m: &AccountMeta| (m.pubkey, m.is_signer, m.is_writable);
+        let ata = |owner: &Pubkey| {
+            let (account, _) = find_associated_token_address(owner, &pk(6), &pk(7));
+            to_address(&account)
+        };
+
+        assert_eq!(ix.program_id, to_address(&program_id));
+        assert_eq!(
+            ix.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(1)), false, true),  // 0 channel, writable
+                (to_address(&pk(2)), false, true),  // 1 payer, writable
+                (to_address(&pk(3)), false, true),  // 2 rentPayer, writable
+                (ata(&pk(1)), false, true),         // 3 channel token account
+                (ata(&pk(2)), false, true),         // 4 payer token account
+                (ata(&pk(4)), false, true),         // 5 payee token account
+                (ata(&pk(5)), false, true),         // 6 treasury token account
+                (to_address(&pk(6)), false, false), // 7 mint, ro
+                (to_address(&pk(7)), false, false), // 8 token program, ro
+                (
+                    to_address(&find_event_authority_pda(&program_id).0),
+                    false,
+                    false,
+                ), // 9 event authority, ro
+                (to_address(&program_id), false, false), // 10 self program, ro
+                (ata(&pk(9)), false, true),         // 11.. recipient ATA, writable
+            ],
+        );
+
+        // data = [disc=7][count u32][(pk ‖ bps u16) x count]
+        assert_eq!(ix.data.len(), 1 + 4 + 34);
+        assert_eq!(ix.data[0], 7, "distribute discriminator");
+        assert_eq!(&ix.data[1..5], &1u32.to_le_bytes());
+        assert_eq!(&ix.data[5..37], pk(9).as_ref());
+        assert_eq!(&ix.data[37..39], &1_000u16.to_le_bytes());
+    }
+
     #[test]
     fn channel_pda_is_stable() {
         let program_id = default_program_id();

@@ -765,6 +765,37 @@ function run_x402_vector(array $vector): array
     $mode = Json::optionalString($vector['mode'] ?? null, 'mode');
     $input = is_array($vector['input'] ?? null) ? Json::object($vector['input'], 'input') : [];
 
+    // verify-x402-transaction: drive the real PHP 11-rule exact fund-safety
+    // verifier over the base64 versioned transaction. On reject the canonical
+    // invalid_exact_svm_payload_* string is surfaced verbatim as
+    // x402ExactRejectCode so the cross-SDK vectors bind the exact code.
+    if ($mode === 'verify-x402-transaction') {
+        $transaction = Json::optionalString($input['transaction'] ?? null, 'transaction');
+        if ($transaction === '') {
+            throw new InvalidArgumentException('verify-x402-transaction vector missing input.transaction');
+        }
+        if (!is_array($input['x402ExactRequirement'] ?? null)) {
+            throw new InvalidArgumentException('verify-x402-transaction vector missing input.x402ExactRequirement');
+        }
+        $requirement = Json::object($input['x402ExactRequirement'], 'x402ExactRequirement');
+        /** @var list<string> $managed */
+        $managed = [];
+        foreach (($input['x402ExactManagedSigners'] ?? []) as $key) {
+            $managed[] = (string) $key;
+        }
+        try {
+            \PayKit\Protocols\X402\Exact\Verifier::verify($transaction, $requirement, $managed);
+        } catch (\PayKit\Exception\InvalidProofException $error) {
+            return [
+                'id' => $id,
+                'outcome' => 'reject',
+                'error' => $error->getMessage(),
+                'x402ExactRejectCode' => $error->getMessage(),
+            ];
+        }
+        return ['id' => $id, 'outcome' => 'accept'];
+    }
+
     if ($mode === 'build-transaction') {
         // PHP ships no client-side x402 envelope builder; build vectors are
         // out of scope for a server-only SDK.

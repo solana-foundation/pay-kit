@@ -22,6 +22,7 @@ import json
 import os
 import struct
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -81,6 +82,14 @@ _CHANNEL_STATUS_OPEN = 0
 # Default authorization window (Go DefaultMaxTimeoutSeconds).
 _DEFAULT_MAX_TIMEOUT_SECONDS = 6 * 50  # 300
 
+# How long a challenge blockhash is reused before refetching. The unauthenticated
+# 402 challenge stamps ``extra.recentBlockhash`` per request (the FastAPI shim
+# builds the body and header, so twice), amplifying an unauthenticated burst
+# straight into the RPC quota. Caching collapses it to <=1 provider call per TTL
+# and folds the shim's double fetch into one. Kept well under the ~60s blockhash
+# validity so the stamped value stays fresh enough to build the channel-open.
+_CHALLENGE_BLOCKHASH_TTL_SECONDS = 5.0
+
 # The empty-recipient distribution hash baked into the program (no splits).
 _EMPTY_DISTRIBUTION_HASH = [
     223, 63, 97, 152, 4, 169, 47, 219, 64, 87, 25, 45, 196, 61, 215, 72,
@@ -134,6 +143,7 @@ class X402Upto:
         *,
         channel_program: str | None = None,
         recent_blockhash_provider: Callable[[], str | None] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """Build an engine bound to ``config``; raise for delegated mode."""
         if config.x402.is_delegated():
@@ -148,6 +158,18 @@ class X402Upto:
             channel_program or os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or PAYMENT_CHANNELS_PROGRAM_ID
         )
         self._recent_blockhash_provider = recent_blockhash_provider
+        # Injectable monotonic clock (seconds) so the challenge-blockhash TTL is
+        # testable without sleeps; defaults to time.monotonic.
+        self._clock = clock or time.monotonic
+        # Short-TTL challenge-blockhash cache with single-flight, so a burst of
+        # unauthenticated challenges (and the FastAPI shim's body+header double
+        # build) collapses to <=1 provider call per TTL. The lock guards the
+        # cache slot; the leader clears ``_blockhash_fetching`` + signals waiters.
+        self._blockhash_lock = threading.Lock()
+        self._blockhash_ready = threading.Condition(self._blockhash_lock)
+        self._blockhash_value: str | None = None
+        self._blockhash_fetched_at: float | None = None
+        self._blockhash_fetching = False
         # Per-channel in-flight reservation (verify_open -> settle_actual), guarded
         # so it is safe even under a threaded server (Go uses a mutex here too);
         # do not rely on set() atomicity for the check-then-add.
@@ -220,8 +242,6 @@ class X402Upto:
         """Validate the credential, broadcast + confirm the channel ``open``, and
         bind the on-chain channel state. Reserves the channel until settlement.
         """
-        import time
-
         signer = self._signer()
         operator = signer.pubkey()
 
@@ -431,13 +451,50 @@ class X402Upto:
             self._in_flight.add(channel_id)
 
     def _fetch_recent_blockhash(self) -> str | None:
+        """Return a challenge blockhash from a short-TTL, single-flight cache.
+
+        A burst of unauthenticated challenges (and the FastAPI shim building the
+        body + header) collapses to at most one provider call per TTL: the first
+        caller past the TTL fetches while the rest wait on the condition and then
+        read the freshly cached value. Provider failures are non-fatal (return
+        ``None``) and are not cached, so the next challenge retries.
+        """
         if self._recent_blockhash_provider is None:
             return None
+        with self._blockhash_lock:
+            while True:
+                if (
+                    self._blockhash_value is not None
+                    and self._blockhash_fetched_at is not None
+                    and self._clock() - self._blockhash_fetched_at < _CHALLENGE_BLOCKHASH_TTL_SECONDS
+                ):
+                    return self._blockhash_value
+                if self._blockhash_fetching:
+                    # Another caller is fetching; wait for it and re-check.
+                    self._blockhash_ready.wait(timeout=_CHALLENGE_BLOCKHASH_TTL_SECONDS)
+                    continue
+                # Become the leader for this fetch.
+                self._blockhash_fetching = True
+                break
+        value: str | None = None
         try:
-            value = self._recent_blockhash_provider()
+            result = self._recent_blockhash_provider()
+            value = result if isinstance(result, str) and result != "" else None
         except Exception:  # noqa: BLE001 - provider failures are non-fatal at challenge time
-            return None
-        return value if isinstance(value, str) and value != "" else None
+            value = None
+        finally:
+            # Always clear the single-flight flag and wake waiters, even if a
+            # BaseException (SystemExit, worker/gevent timeout, KeyboardInterrupt)
+            # escapes the provider - otherwise the flag stays set and every later
+            # challenge blocks on the condition forever. The BaseException still
+            # propagates out of this finally after the flag is reset.
+            with self._blockhash_lock:
+                if value is not None:
+                    self._blockhash_value = value
+                    self._blockhash_fetched_at = self._clock()
+                self._blockhash_fetching = False
+                self._blockhash_ready.notify_all()
+        return value
 
     def _distribution(self, requirements: UptoRequirements) -> list[Distribution]:
         operator = Pubkey.from_string(self._signer().pubkey())

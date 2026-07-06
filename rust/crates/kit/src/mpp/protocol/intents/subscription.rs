@@ -477,6 +477,114 @@ mod tests {
     }
 
     #[test]
+    fn validate_accepts_complete_details() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            ..Default::default()
+        };
+        assert!(md.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_fee_payer_with_key() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            fee_payer: true,
+            fee_payer_key: Some("fpk".into()),
+            ..Default::default()
+        };
+        assert!(md.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_each_missing_required_field() {
+        // Base is fully valid; blank out one field at a time.
+        let base = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            ..Default::default()
+        };
+
+        let mut no_plan = base.clone();
+        no_plan.plan_id = String::new();
+        assert!(no_plan
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("planId"));
+
+        let mut no_mint = base.clone();
+        no_mint.mint = String::new();
+        assert!(no_mint.validate().unwrap_err().to_string().contains("mint"));
+
+        let mut no_tp = base.clone();
+        no_tp.token_program = String::new();
+        assert!(no_tp
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("tokenProgram"));
+
+        let mut no_puller = base.clone();
+        no_puller.puller = String::new();
+        assert!(no_puller
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("puller"));
+    }
+
+    #[test]
+    fn validate_rejects_fee_payer_without_key() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            fee_payer: true,
+            fee_payer_key: None,
+            ..Default::default()
+        };
+        assert!(md
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("feePayerKey"));
+    }
+
+    #[test]
+    fn period_hours_rejects_above_program_bound() {
+        // week*52 = 8736 hours (in range), but the mapping caps counts; drive
+        // the explicit `hours > 8760` guard in `period_hours` by constructing a
+        // request whose mapped hours exceed the bound is impossible via the
+        // unit mapping alone (day maxes at 8760, week at 8736). Exercise the
+        // exact-bound acceptance and the mapping-level rejection instead, which
+        // together fence the `> 8760` branch.
+        let at_bound = SubscriptionRequest {
+            period_unit: SubscriptionPeriodUnit::Week,
+            period_count: "52".into(),
+            ..Default::default()
+        };
+        assert_eq!(at_bound.period_hours().unwrap(), 8736);
+
+        // A count past the unit ceiling is rejected before the bound check.
+        let over = SubscriptionRequest {
+            period_unit: SubscriptionPeriodUnit::Week,
+            period_count: "53".into(),
+            ..Default::default()
+        };
+        assert!(over.period_hours().is_err());
+    }
+
+    #[test]
     fn receipt_extensions_serialize() {
         let ext = SubscriptionReceiptExtensions {
             subscription_id: "BXQGmO5VwTrl5RfFr6Y8XQZ4nPj9QqMOiKkRn3pZ4ZE".into(),

@@ -186,8 +186,20 @@ pub fn parse_upto_accepts(
 mod tests {
     use super::*;
     use crate::x402::protocol::schemes::upto::UptoExtra;
+    use solana_keychain::memory::MemorySigner;
 
     const OPERATOR: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+    const EXPIRES_AT: i64 = 4_102_444_800;
+
+    /// A real in-memory ed25519 signer that can sign the channel `open` tx.
+    /// Built from a fixed seed so tests stay deterministic.
+    fn signer() -> MemorySigner {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(sk.as_bytes());
+        keypair[32..].copy_from_slice(&sk.verifying_key().to_bytes());
+        MemorySigner::from_bytes(&keypair).expect("valid keypair")
+    }
 
     fn requirements() -> UptoRequirements {
         UptoRequirements {
@@ -260,5 +272,195 @@ mod tests {
     #[test]
     fn parse_challenge_returns_none_without_upto_offer() {
         assert!(parse_upto_challenge(&[], None).is_none());
+    }
+
+    #[tokio::test]
+    async fn build_payload_happy_path_with_split() {
+        // payTo != facilitator, so a distribution split is derived.
+        let s = signer();
+        let payload = build_upto_payload(&s, &requirements(), EXPIRES_AT, "nonce-1")
+            .await
+            .unwrap();
+        assert_eq!(payload.from, pc::pubkey_string(&s.pubkey()));
+        assert_eq!(payload.max_amount, "1000000");
+        assert_eq!(payload.deposit, "1000000");
+        assert_eq!(payload.expires_at, EXPIRES_AT);
+        assert_eq!(payload.valid_after, 0);
+        assert_eq!(payload.nonce, "nonce-1");
+        assert_eq!(payload.authorized_signer, OPERATOR);
+        assert!(payload.open_transaction.is_some());
+        assert!(!payload.channel_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_payload_facilitator_is_beneficiary_no_split() {
+        // payTo == facilitator: the beneficiary keeps 100%, no split branch.
+        let s = signer();
+        let mut req = requirements();
+        req.pay_to = OPERATOR.to_string();
+        req.extra.facilitator_fee = 250;
+        let payload = build_upto_payload(&s, &req, EXPIRES_AT, "n").await.unwrap();
+        assert_eq!(payload.authorized_signer, OPERATOR);
+    }
+
+    #[tokio::test]
+    async fn build_payload_honors_valid_after_and_explicit_programs() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.valid_after = Some(1_700_000_000);
+        req.extra.channel_program =
+            Some("CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX".to_string());
+        req.extra.token_program = Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_string());
+        let payload = build_upto_payload(&s, &req, EXPIRES_AT, "n").await.unwrap();
+        assert_eq!(payload.valid_after, 1_700_000_000);
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_wrong_asset_transfer_method() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.asset_transfer_method = "something-else".to_string();
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("asset transfer method")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_amount() {
+        let s = signer();
+        let mut req = requirements();
+        req.amount = "xyz".to_string();
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("invalid upto amount")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_asset_mint() {
+        let s = signer();
+        let mut req = requirements();
+        req.asset = "not-a-mint!".to_string();
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("invalid asset mint")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_facilitator_address() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.facilitator_address = "bad".to_string();
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason.contains("invalid facilitatorAddress"))
+        );
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_pay_to() {
+        let s = signer();
+        let mut req = requirements();
+        req.pay_to = "@@@".to_string();
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("invalid payTo")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_fee_over_100_percent() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.facilitator_fee = 10_001;
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason.contains("facilitatorFee exceeds 100%"))
+        );
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_channel_program() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.channel_program = Some("bad".to_string());
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("invalid programId")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_token_program() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.token_program = Some("bad".to_string());
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("invalid tokenProgram")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_missing_blockhash() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.recent_blockhash = None;
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("recentBlockhash")));
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_blockhash() {
+        let s = signer();
+        let mut req = requirements();
+        req.extra.recent_blockhash = Some("not-a-hash".to_string());
+        let err = build_upto_payload(&s, &req, EXPIRES_AT, "n")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("invalid recentBlockhash")));
+    }
+
+    #[tokio::test]
+    async fn build_upto_header_round_trips() {
+        let s = signer();
+        let header = build_upto_header(&s, &requirements(), EXPIRES_AT, "n")
+            .await
+            .unwrap();
+        let bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &header).unwrap();
+        let envelope: UptoSignatureEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.x402_version, X402_VERSION_V2);
+        assert_eq!(envelope.payload.nonce, "n");
+    }
+
+    #[test]
+    fn parse_accepts_reads_body_and_filters_scheme() {
+        let mut non_upto = requirements();
+        non_upto.scheme = "exact".to_string();
+        let envelope = UptoRequiredEnvelope {
+            x402_version: X402_VERSION_V2,
+            resource: None,
+            accepts: vec![non_upto, requirements()],
+            error: None,
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+        // Body fallback path (no header present).
+        let accepts = parse_upto_accepts(&[], Some(&json));
+        assert_eq!(accepts.len(), 1);
+        assert_eq!(accepts[0].scheme, UPTO_SCHEME);
+    }
+
+    #[test]
+    fn parse_accepts_empty_on_garbage() {
+        assert!(parse_upto_accepts(&[], Some("not json")).is_empty());
     }
 }

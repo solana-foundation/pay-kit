@@ -88,6 +88,9 @@ class _FakeRpc:
     async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
         raise NotImplementedError  # not exercised by the open/top-up verifier tests
 
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        raise NotImplementedError  # the open-tx verifier tests do not read on-chain channel accounts
+
 
 def _kp(seed: int) -> Keypair:
     return Keypair.from_seed(bytes([seed] * 32))
@@ -547,35 +550,114 @@ async def test_new_open_tx_verifier_without_transaction_confirms_signature() -> 
 
 # -- new_top_up_tx_verifier ---------------------------------------------------
 
-
-def test_new_top_up_tx_verifier_none_rpc_disables_the_seam() -> None:
-    """Mirrors TestNewTopUpTxVerifierNilRPCDisablesTheSeam."""
-    assert new_top_up_tx_verifier(None) is None
+USDC_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+TOPUP_RECIPIENT = str(_kp(30).pubkey())
 
 
-async def test_new_top_up_tx_verifier_confirms_signature() -> None:
-    """Mirrors TestNewTopUpTxVerifierConfirmsSignature."""
-    signature = _kp(20).sign_message(b"top-up")
-    verifier = new_top_up_tx_verifier(_FakeRpc())
+@dataclass
+class _TopUpConfig:
+    """Lightweight stand-in for the SessionConfig subset new_top_up_tx_verifier
+    reads: the challenge currency / network / recipient and the optional program
+    id override."""
+
+    currency: str = "USDC"
+    network: str = "mainnet"
+    recipient: str = TOPUP_RECIPIENT
+    program_id: Pubkey | str | None = None
+
+
+class _TopUpFakeRpc:
+    """RPC double serving get_signature_statuses (any signature not seeded is
+    confirmed) and get_account_info (channel accounts seeded via seed_channel)."""
+
+    def __init__(self) -> None:
+        self.statuses: dict[str, dict | None] = {}
+        self.accounts: dict[str, tuple[bytes, str] | None] = {}
+
+    def seed_channel(self, channel_id: str, *, deposit: int, authorized_signer: str) -> None:
+        from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
+        from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+        body = Channel.layout.build(
+            {
+                "version": 1,
+                "bump": 255,
+                "status": 0,
+                "salt": 0,
+                "deposit": deposit,
+                "settlement": {"settled": 0, "payoutWatermark": 0},
+                "closureStartedAt": 0,
+                "payerWithdrawnAt": 0,
+                "gracePeriod": 900,
+                "distributionHash": [0] * 32,
+                "payer": _kp(31).pubkey(),
+                "payee": Pubkey.from_string(TOPUP_RECIPIENT),
+                "authorizedSigner": Pubkey.from_string(authorized_signer),
+                "mint": Pubkey.from_string(USDC_MAINNET),
+                "rentPayer": Pubkey.from_string(TOPUP_RECIPIENT),
+            }
+        )
+        self.accounts[channel_id] = (bytes([7]) + bytes(body), PAYMENT_CHANNELS_PROGRAM_ID)
+
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        return self.accounts.get(address)
+
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        return [self.statuses.get(sig, {"err": None, "confirmationStatus": "confirmed"}) for sig in signatures]
+
+    async def get_latest_blockhash(self, commitment: str = "confirmed"):  # noqa: ANN201 (RPC seam stub)
+        raise NotImplementedError  # the top-up bind path never broadcasts, only reads state
+
+    async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
+        raise NotImplementedError  # the top-up bind path never broadcasts, only reads state
+
+
+def test_new_top_up_tx_verifier_none_rpc_disables_the_seam_on_localnet() -> None:
+    """Mirrors TestNewTopUpTxVerifierNilRPCDisablesTheSeamOnLocalnet."""
+    assert new_top_up_tx_verifier(_TopUpConfig(network="localnet"), None) is None
+
+
+async def test_new_top_up_tx_verifier_none_rpc_off_localnet_fails_closed() -> None:
+    """Mirrors TestNewTopUpTxVerifierNilRPCOffLocalnetFailsClosed."""
+    verifier = new_top_up_tx_verifier(_TopUpConfig(network="mainnet"), None)
     assert verifier is not None
-    payload = TopUpPayload(channel_id="chan", new_deposit="2000000", signature=str(signature))
-    await verifier(payload)
+    with pytest.raises(PaymentError, match="requires an rpc client"):
+        await verifier(TopUpPayload(channel_id="chan", new_deposit="2000000", signature="sig"))
+
+
+async def test_new_top_up_tx_verifier_binds_deposit() -> None:
+    """Mirrors TestNewTopUpTxVerifierBindsDeposit."""
+    signer = _kp(20)
+    channel_id = str(_kp(32).pubkey())
+    signature = str(Signature.from_bytes(bytes([0x5A] * 64)))
+    fake = _TopUpFakeRpc()
+    fake.seed_channel(channel_id, deposit=2_000_000, authorized_signer=str(signer.pubkey()))
+
+    verifier = new_top_up_tx_verifier(_TopUpConfig(), fake)
+    assert verifier is not None
+    await verifier(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature=signature))
+
+    with pytest.raises(PaymentError, match="!= asserted newDeposit 9000000"):
+        await verifier(TopUpPayload(channel_id=channel_id, new_deposit="9000000", signature=signature))
 
 
 async def test_new_top_up_tx_verifier_surfaces_failure_and_not_found() -> None:
     """Mirrors TestNewTopUpTxVerifierSurfacesFailureAndNotFound."""
-    signature = str(_kp(21).sign_message(b"top-up"))
-    fake_rpc = _FakeRpc()
-    fake_rpc.statuses[signature] = {"err": "InstructionError"}
-    verifier = new_top_up_tx_verifier(fake_rpc)
+    signer = _kp(21)
+    channel_id = str(_kp(33).pubkey())
+    signature = str(Signature.from_bytes(bytes([0x6B] * 64)))
+    fake = _TopUpFakeRpc()
+    fake.seed_channel(channel_id, deposit=2_000_000, authorized_signer=str(signer.pubkey()))
+    fake.statuses[signature] = {"err": "InstructionError"}
+    verifier = new_top_up_tx_verifier(_TopUpConfig(), fake)
     assert verifier is not None
-    payload = TopUpPayload(channel_id="chan", new_deposit="2000000", signature=signature)
-    with pytest.raises(PaymentError, match="top-up"):
+    payload = TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature=signature)
+    with pytest.raises(PaymentError, match="topUp"):
         await verifier(payload)
 
-    fake_rpc.statuses[signature] = None
+    fake.statuses[signature] = None
     with pytest.raises(PaymentError, match="not found"):
         await verifier(payload)
 
-    with pytest.raises(PaymentError, match="invalid top-up tx signature"):
-        await verifier(TopUpPayload(channel_id="", new_deposit="", signature="not-base58!"))
+    with pytest.raises(PaymentError, match="invalid topUp tx signature"):
+        await verifier(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="not-base58!"))

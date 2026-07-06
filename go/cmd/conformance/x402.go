@@ -3,8 +3,13 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 
+	solana "github.com/gagliardetto/solana-go"
+
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -99,9 +104,76 @@ func runX402(vector Vector) RunnerResult {
 			return rejected(vector.ID, err)
 		}
 		return RunnerResult{ID: vector.ID, Outcome: "accept", X402EnvelopeShape: shape}
+	case "verify-x402-transaction":
+		return verifyX402ExactTransaction(vector)
 	default:
 		return rejected(vector.ID, fmt.Errorf("unsupported x402 mode %q", vector.Mode))
 	}
+}
+
+// verifyX402ExactTransaction decodes the base64 versioned transaction and runs
+// the real Go exact fund-safety verifier (protocols/x402.VerifyExactTransaction)
+// over it, surfacing the canonical invalid_exact_svm_payload_* reject string
+// verbatim as X402ExactRejectCode so the cross-SDK vectors bind the exact code.
+func verifyX402ExactTransaction(vector Vector) RunnerResult {
+	in := vector.Input
+	if in.Transaction == "" {
+		return rejected(vector.ID, fmt.Errorf("verify-x402-transaction vector missing input.transaction"))
+	}
+	if in.X402ExactRequirement == nil {
+		return rejected(vector.ID, fmt.Errorf("verify-x402-transaction vector missing input.x402ExactRequirement"))
+	}
+	tx, err := solanatx.DecodeTransactionBase64(in.Transaction)
+	if err != nil {
+		return rejected(vector.ID, err)
+	}
+	req := in.X402ExactRequirement
+	mint, err := solana.PublicKeyFromBase58(req.Asset)
+	if err != nil {
+		return rejected(vector.ID, fmt.Errorf("invalid asset: %w", err))
+	}
+	payTo, err := solana.PublicKeyFromBase58(req.PayTo)
+	if err != nil {
+		return rejected(vector.ID, fmt.Errorf("invalid payTo: %w", err))
+	}
+	tokenProgram := solana.TokenProgramID
+	if req.Extra.TokenProgram != "" {
+		tokenProgram, err = solana.PublicKeyFromBase58(req.Extra.TokenProgram)
+		if err != nil {
+			return rejected(vector.ID, fmt.Errorf("invalid tokenProgram: %w", err))
+		}
+	}
+	amount, err := strconv.ParseUint(req.Amount, 10, 64)
+	if err != nil {
+		return rejected(vector.ID, fmt.Errorf("invalid amount: %w", err))
+	}
+	// The Go verifier takes a single fee payer; the vectors use one managed
+	// signer (the facilitator fee payer), which is exactly this field.
+	var feePayer solana.PublicKey
+	if len(in.X402ExactManagedSigners) > 0 {
+		feePayer, err = solana.PublicKeyFromBase58(in.X402ExactManagedSigners[0])
+		if err != nil {
+			return rejected(vector.ID, fmt.Errorf("invalid managed signer: %w", err))
+		}
+	}
+
+	verr := x402.VerifyExactTransaction(tx, x402.TransferRequirements{
+		PayTo:        payTo,
+		Mint:         mint,
+		TokenProgram: tokenProgram,
+		Amount:       amount,
+		FeePayer:     feePayer,
+		ExpectedMemo: req.Extra.Memo,
+	})
+	if verr == nil {
+		return RunnerResult{ID: vector.ID, Outcome: "accept"}
+	}
+	result := RunnerResult{ID: vector.ID, Outcome: "reject", Error: verr.Error()}
+	var ve *x402.VerifyError
+	if errors.As(verr, &ve) {
+		result.X402ExactRejectCode = ve.Code
+	}
+	return result
 }
 
 // offerToAcceptsEntry round-trips the vector offer through the production
