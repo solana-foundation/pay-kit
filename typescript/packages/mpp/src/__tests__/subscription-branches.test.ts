@@ -352,6 +352,7 @@ describe('settleActivation edge branches', () => {
         const signer = await generateKeyPairSigner();
         const { transaction, subscriberAddress } = await buildFeePayerActivationTx(signer);
         let sentTx: string | undefined;
+        let accountInfoCalls = 0;
         globalThis.fetch = async (_input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string; params?: unknown[] };
             switch (body.method) {
@@ -363,6 +364,8 @@ describe('settleActivation edge branches', () => {
                 case 'getSignatureStatuses':
                     return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
                 case 'getAccountInfo':
+                    accountInfoCalls += 1;
+                    if (accountInfoCalls === 1) return rpcSuccess({ value: null });
                     return rpcSuccess({
                         value: {
                             data: [buildDelegationAccount(subscriberAddress), 'base64'],
