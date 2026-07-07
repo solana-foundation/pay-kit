@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units, validate_max_amount
+from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units, validate_max_amount
 
 
 class TestParseUnits:

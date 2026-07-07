@@ -1,10 +1,8 @@
 package main
 
-// Charge-gated endpoints: stock data, weather, a marketplace purchase with
-// multi-recipient splits (all gated through the paykit umbrella client), and
-// the fortune payment link served straight from the protocol-layer MPP
-// server with the HTML challenge page enabled. The 402 challenge fires
-// before any upstream fetch.
+// Charge-gated endpoints: TS-reference playground routes, stock data,
+// weather, a marketplace purchase with multi-recipient splits, and the
+// fortune payment link. The 402 challenge fires before any upstream fetch.
 
 import (
 	"fmt"
@@ -109,7 +107,7 @@ func displayUSD(p paykit.Price) string {
 
 // registerCharges mounts every charge-gated endpoint plus the free
 // marketplace catalog.
-func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
+func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client, dualClient *paykit.Client) error {
 	platform := a.recipient
 
 	// logged surfaces the settlement signature once a gated handler runs.
@@ -131,6 +129,38 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 			}, nil
 		}
 	}
+
+	// TS-reference fixed charge: clean path, dual-protocol challenge.
+	mux.Handle("GET /api/v1/quote/{symbol}",
+		dualClient.RequireFunc(staticGate("0.01", "quote", func(r *http.Request) string {
+			return "Stock quote: " + r.PathValue("symbol")
+		}))(logged(func(w http.ResponseWriter, r *http.Request) {
+			symbol := strings.ToUpper(r.PathValue("symbol"))
+			via := ""
+			if payment, ok := paykit.PaymentFrom(r.Context()); ok {
+				via = string(payment.Protocol)
+			}
+			price := 100
+			if symbol != "" {
+				price += int(symbol[0]) % 50
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"price":  price,
+				"symbol": symbol,
+				"via":    via,
+			})
+		})))
+
+	mux.Handle("GET /api/v1/joke",
+		client.Require(paykit.Gate{
+			Amount: paykit.MustParseUSD("0.01"),
+			Name:   "joke",
+			Desc:   "A programmer joke",
+		})(logged(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{
+				"joke": jokes[rand.Intn(len(jokes))],
+			})
+		})))
 
 	// Stocks, backed by the same Yahoo Finance endpoints (and response
 	// shapes) as the yahoo-finance2 package the TypeScript server uses.
@@ -246,10 +276,20 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 			})
 		}))))
 
-	// Fortune: a charge payment link with the interactive HTML challenge
-	// page. Stays on the protocol layer directly (server.Mpp with HTML
-	// enabled) because the paykit dispatcher renders the cross-SDK JSON
-	// challenge body; dropping down a layer is the intended escape hatch.
+	fortuneJSON := dualClient.Require(paykit.Gate{
+		Amount: paykit.MustParseUSD("0.01"),
+		Name:   "fortune",
+		Desc:   "A fortune cookie",
+	})(logged(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"fortune": fortunes[rand.Intn(len(fortunes))],
+		})
+	}))
+
+	// Fortune's API surface follows the TypeScript server (dual x402 exact
+	// or MPP charge). Browser payment-link requests still drop to the
+	// protocol-layer MPP server so the HTML challenge and service worker flow
+	// remain available for the payment-link E2E.
 	fortuneMpp, err := server.New(server.Config{
 		Recipient:      a.recipient,
 		Currency:       paycore.USDCMainnetMint,
@@ -278,7 +318,11 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 		if server.IsServiceWorkerRequest(r) {
 			w.Header().Set("Service-Worker-Allowed", "/")
 		}
-		fortuneHandler.ServeHTTP(w, r)
+		if server.IsServiceWorkerRequest(r) || server.AcceptsHTML(r) {
+			fortuneHandler.ServeHTTP(w, r)
+			return
+		}
+		fortuneJSON.ServeHTTP(w, r)
 	})
 
 	return nil

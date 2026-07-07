@@ -22,7 +22,9 @@ use crate::mpp::{
     parse_www_authenticate_all, resolve_stablecoin_mint, ChargeRequest, PaymentChallenge,
 };
 use crate::x402::client::exact::parse_x402_accepts;
+use crate::x402::client::upto::parse_upto_accepts;
 use crate::x402::exact::{cluster_for_caip2_network, PaymentRequirements};
+use crate::x402::upto::UptoRequirements;
 
 /// A token the caller is willing to spend, with the balance currently available.
 ///
@@ -61,15 +63,24 @@ pub enum OrderingStrategy {
 #[derive(Debug, Clone)]
 pub enum SelectedPayment {
     /// Settle via an MPP charge challenge.
-    Mpp {
+    MppCharge {
         challenge: Box<PaymentChallenge>,
         mint: String,
         network: String,
         amount: u64,
     },
-    /// Settle via an x402 payment requirement.
-    X402 {
+    /// Settle via an x402 `exact` payment requirement.
+    X402Exact {
         requirement: Box<PaymentRequirements>,
+        mint: String,
+        network: String,
+        amount: u64,
+    },
+    /// Settle via an x402 `upto` payment requirement: authorize the ceiling
+    /// `amount`, the operator settles the actual (≤ ceiling, refunded down on
+    /// failure). `amount` is the authorized maximum.
+    X402Upto {
+        requirement: Box<UptoRequirements>,
         mint: String,
         network: String,
         amount: u64,
@@ -77,18 +88,21 @@ pub enum SelectedPayment {
 }
 
 impl SelectedPayment {
-    /// `"mpp"` or `"x402"` — which protocol the winning option uses.
+    /// `"mpp"`, `"x402"`, or `"x402-upto"` — which scheme the winner uses.
     pub fn protocol(&self) -> &'static str {
         match self {
-            Self::Mpp { .. } => "mpp",
-            Self::X402 { .. } => "x402",
+            Self::MppCharge { .. } => "mpp",
+            Self::X402Exact { .. } => "x402",
+            Self::X402Upto { .. } => "x402-upto",
         }
     }
 
     /// Resolved mint of the selected option.
     pub fn mint(&self) -> &str {
         match self {
-            Self::Mpp { mint, .. } | Self::X402 { mint, .. } => mint,
+            Self::MppCharge { mint, .. }
+            | Self::X402Exact { mint, .. }
+            | Self::X402Upto { mint, .. } => mint,
         }
     }
 }
@@ -173,22 +187,28 @@ struct Candidate {
 }
 
 enum Source {
-    Mpp(Box<PaymentChallenge>),
-    X402(Box<PaymentRequirements>),
+    MppCharge(Box<PaymentChallenge>),
+    X402Exact(Box<PaymentRequirements>),
+    X402Upto(Box<UptoRequirements>),
 }
 
 impl Source {
     fn protocol(&self) -> &'static str {
         match self {
-            Self::Mpp(_) => "mpp",
-            Self::X402(_) => "x402",
+            Self::MppCharge(_) => "mpp",
+            Self::X402Exact(_) => "x402",
+            Self::X402Upto(_) => "x402-upto",
         }
     }
-    /// MPP sorts before x402 on ties — it's the native one-shot Solana path.
+    /// Stable tie-break order when two options cost the same: native MPP
+    /// one-shot first, then x402 `upto` (ceiling with refund-down), then x402
+    /// `exact`. Cost (`CheapestPayable`) and balance (`HighestBalance`) are the
+    /// primary keys; this only decides exact ties.
     fn rank(&self) -> u8 {
         match self {
-            Self::Mpp(_) => 0,
-            Self::X402(_) => 1,
+            Self::MppCharge(_) => 0,
+            Self::X402Upto(_) => 1,
+            Self::X402Exact(_) => 2,
         }
     }
 }
@@ -232,6 +252,24 @@ pub fn select_payment_parsed(
     funded: &[AcceptableToken],
     order: &OrderingStrategy,
 ) -> Result<SelectedPayment, SelectError> {
+    select_payment_parsed_all(mpp_challenges, x402_accepts, &[], funded, order)
+}
+
+/// Like [`select_payment_parsed`], but also considers x402 `upto` offers.
+///
+/// `upto_accepts` are the parsed `upto` requirements from the same 402. An
+/// `upto` option is fundable when the wallet holds at least its authorized
+/// ceiling (`amount`); the operator later settles the actual (≤ ceiling) and
+/// refunds the rest, so the ceiling is the right amount to gate on. Ranking is
+/// identical to [`select_payment_parsed`] — cost/balance first, then the stable
+/// scheme tie-break in [`Source::rank`].
+pub fn select_payment_parsed_all(
+    mpp_challenges: &[PaymentChallenge],
+    x402_accepts: &[PaymentRequirements],
+    upto_accepts: &[UptoRequirements],
+    funded: &[AcceptableToken],
+    order: &OrderingStrategy,
+) -> Result<SelectedPayment, SelectError> {
     let mut candidates = Vec::new();
     for challenge in mpp_challenges {
         if let Some(c) = mpp_candidate(challenge, candidates.len()) {
@@ -240,6 +278,11 @@ pub fn select_payment_parsed(
     }
     for requirement in x402_accepts {
         if let Some(c) = x402_candidate(requirement, candidates.len()) {
+            candidates.push(c);
+        }
+    }
+    for requirement in upto_accepts {
+        if let Some(c) = x402_upto_candidate(requirement, candidates.len()) {
             candidates.push(c);
         }
     }
@@ -338,13 +381,19 @@ fn priority_index(c: &Candidate, prio: &[String]) -> usize {
 impl Candidate {
     fn to_selected(&self) -> SelectedPayment {
         match &self.source {
-            Source::Mpp(challenge) => SelectedPayment::Mpp {
+            Source::MppCharge(challenge) => SelectedPayment::MppCharge {
                 challenge: challenge.clone(),
                 mint: self.mint.clone(),
                 network: self.network.clone(),
                 amount: self.amount,
             },
-            Source::X402(requirement) => SelectedPayment::X402 {
+            Source::X402Exact(requirement) => SelectedPayment::X402Exact {
+                requirement: requirement.clone(),
+                mint: self.mint.clone(),
+                network: self.network.clone(),
+                amount: self.amount,
+            },
+            Source::X402Upto(requirement) => SelectedPayment::X402Upto {
                 requirement: requirement.clone(),
                 mint: self.mint.clone(),
                 network: self.network.clone(),
@@ -386,6 +435,15 @@ fn collect_candidates(headers: &[(String, String)], body: Option<&str>) -> Vec<C
         }
     }
 
+    // x402 `upto` offers (a ceiling the operator settles down from). Parsed
+    // separately because an upto envelope is a distinct shape from `exact`;
+    // every advertised `upto` currency is a candidate.
+    for requirement in parse_upto_accepts(headers, body) {
+        if let Some(c) = x402_upto_candidate(&requirement, out.len()) {
+            out.push(c);
+        }
+    }
+
     out
 }
 
@@ -413,7 +471,7 @@ fn mpp_candidate(challenge: &PaymentChallenge, order: usize) -> Option<Candidate
         network,
         amount,
         decimals: details.decimals.unwrap_or(6),
-        source: Source::Mpp(Box::new(challenge.clone())),
+        source: Source::MppCharge(Box::new(challenge.clone())),
         order,
     })
 }
@@ -444,7 +502,33 @@ fn x402_candidate(requirement: &PaymentRequirements, order: usize) -> Option<Can
         network,
         amount,
         decimals: requirement.decimals.unwrap_or(6),
-        source: Source::X402(Box::new(requirement.clone())),
+        source: Source::X402Exact(Box::new(requirement.clone())),
+        order,
+    })
+}
+
+/// Normalize one x402 `upto` requirement to a [`Candidate`]. The authorized
+/// ceiling (`amount`) is what fundability gates on — the operator settles the
+/// actual (≤ ceiling) later and refunds the rest. Returns `None` for
+/// SOL-denominated, unparseable, or non-Solana requirements.
+fn x402_upto_candidate(requirement: &UptoRequirements, order: usize) -> Option<Candidate> {
+    if requirement.asset.eq_ignore_ascii_case("SOL") {
+        return None;
+    }
+    // upto carries only the CAIP-2 `network` (no separate human `cluster`).
+    let cluster = cluster_for_caip2_network(&requirement.network)?;
+    let network = normalize_network(cluster);
+    let mint = resolve_mint(&requirement.asset, &network)?;
+    let amount = requirement.amount.parse::<u64>().ok()?;
+    Some(Candidate {
+        currency: requirement.asset.clone(),
+        mint,
+        network,
+        amount,
+        // upto no longer advertises decimals; our stablecoins are all 6-decimal,
+        // and decimals only affects cost-normalized ranking among them.
+        decimals: 6,
+        source: Source::X402Upto(Box::new(requirement.clone())),
         order,
     })
 }
@@ -684,5 +768,86 @@ mod tests {
             .expect("CAIP-2 devnet offer should be fundable with devnet USDC");
         assert_eq!(selected.protocol(), "x402");
         assert_eq!(selected.mint(), mints::USDC_DEVNET);
+    }
+
+    /// An x402 `upto` `PAYMENT-REQUIRED` body advertising one `accepts` entry.
+    fn upto_body(currency: &str, ceiling: u64) -> String {
+        serde_json::json!({
+            "x402Version": 2,
+            "accepts": [{
+                "scheme": "upto",
+                // CAIP-2 mainnet (SOLANA_MAINNET genesis hash).
+                "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "amount": ceiling.to_string(),
+                "asset": currency,
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+                "extra": { "assetTransferMethod": "payment-channel", "facilitatorAddress": RECIPIENT },
+            }],
+        })
+        .to_string()
+    }
+
+    // The router must treat x402 `upto` as a first-class, fundable option — a
+    // 402 that only offers upto in a token the wallet holds should select it.
+    #[test]
+    fn upto_is_selectable_when_funded() {
+        let body = upto_body("USDC", 1000);
+        let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
+
+        let selected = select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
+            .expect("upto offer should be fundable with USDC");
+        assert_eq!(selected.protocol(), "x402-upto");
+        assert_eq!(selected.mint(), mints::USDC_MAINNET);
+    }
+
+    // Cost-aware routing across all three schemes: a cheaper upto ceiling beats
+    // a pricier MPP charge in the same token.
+    #[test]
+    fn cheapest_prefers_upto_when_lower() {
+        let headers = vec![mpp_charge("USDC", 5000)];
+        let body = upto_body("USDC", 1000);
+        let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
+
+        let selected = select_payment(
+            &headers,
+            Some(&body),
+            &funded,
+            &OrderingStrategy::CheapestPayable,
+        )
+        .expect("a fundable option exists");
+        assert_eq!(selected.protocol(), "x402-upto");
+        assert_eq!(selected.mint(), mints::USDC_MAINNET);
+    }
+
+    /// An x402 `upto` body advertising two currencies, so selection must look
+    /// past the first `accepts` entry.
+    fn upto_body_multi(c1: &str, c2: &str, ceiling: u64) -> String {
+        let entry = |asset: &str| {
+            serde_json::json!({
+                "scheme": "upto",
+                "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "amount": ceiling.to_string(),
+                "asset": asset,
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+                "extra": { "assetTransferMethod": "payment-channel", "facilitatorAddress": RECIPIENT },
+            })
+        };
+        serde_json::json!({ "x402Version": 2, "accepts": [entry(c1), entry(c2)] }).to_string()
+    }
+
+    // Regression for the single-currency-upto bug: when upto is advertised in
+    // [USDC, USDG] and the wallet holds only USDG, the router must consider the
+    // *second* upto accept — not just the first (USDC).
+    #[test]
+    fn upto_considers_all_advertised_currencies() {
+        let body = upto_body_multi("USDC", "USDG", 1000);
+        let funded = vec![token(mints::USDG_MAINNET, 1_000_000)];
+
+        let selected = select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
+            .expect("the USDG upto accept should be fundable");
+        assert_eq!(selected.protocol(), "x402-upto");
+        assert_eq!(selected.mint(), mints::USDG_MAINNET);
     }
 }

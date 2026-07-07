@@ -44,7 +44,7 @@ const LANG_META: LangMeta[] = [
     id: 'typescript',
     name: 'TypeScript',
     framework: 'Express',
-    install: 'npm install @solana/mpp',
+    install: 'npm install @solana/pay-kit',
     href: `${REPO}/typescript/README.md`,
   },
   {
@@ -118,26 +118,17 @@ const CURATED: Record<string, CuratedDoc> = {
     server: true,
     client: true,
     snippet: `import express from 'express'
-import { Mppx, solana } from '@solana/mpp/server'
+import { createPayKit, usd } from '@solana/pay-kit'
 
-const mppx = Mppx.create({
-  methods: [solana.charge({
-    recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
-    currency: 'USDC',
-    network: 'localnet',
-  })],
+const pay = await createPayKit({
+  network: 'localnet',
+  pricing: { paid: { amount: usd('0.10'), description: 'Premium report' } },
 })
 
 const app = express()
-app.get('/paid', async (req, res) => {
-  const result = await mppx.charge({ amount: '1000', currency: 'USDC' })(
-    new Request(\`http://localhost\${req.url}\`, { headers: req.headers as any }),
-  )
-  if (result.status === 402) {
-    const c = result.challenge as Response
-    res.writeHead(c.status, Object.fromEntries(c.headers))
-    res.end(await c.text()); return
-  }
+
+// pay.express(gate) settles the 402 (MPP or x402) before the handler runs.
+app.get('/paid', pay.express('paid'), (_req, res) => {
   res.json({ ok: true })
 })
 app.listen(4567)`,
@@ -145,22 +136,29 @@ app.listen(4567)`,
   rust: {
     server: true,
     client: true,
-    snippet: `use axum::{routing::get, Router};
-use solana_pay_kit::server::{ChargeBuilder, MppxLayer};
+    snippet: `use axum::Router;
+use solana_pay_kit::{paid_get, PayKit, PayKitConfig, Payment};
 
-let layer = MppxLayer::new()
-    .charge(ChargeBuilder::new()
-        .recipient("CXhrFZ...".parse()?)
-        .currency("USDC")
-        .network("localnet"));
+async fn report(payment: Payment) -> String {
+    format!("premium content (paid {} via {})", payment.amount, payment.protocol)
+}
 
-let app = Router::new()
-    .route("/paid", get(|| async { "premium content" }))
-    .layer(layer);
+#[tokio::main]
+async fn main() {
+    let pay = PayKit::new(PayKitConfig {
+        recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+        network: "localnet".to_string(),
+        rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
+        ..Default::default()
+    })
+    .expect("valid config");
 
-axum::Server::bind(&"0.0.0.0:4567".parse()?)
-    .serve(app.into_make_service())
-    .await?;`,
+    // paid_get(handler, price, &pay) gates the route over MPP or x402.
+    let app = Router::new().route("/paid", paid_get(report, "0.10", &pay));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:4567").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}`,
   },
   go: {
     server: true,
@@ -170,15 +168,17 @@ axum::Server::bind(&"0.0.0.0:4567".parse()?)
 import (
     "fmt"
     "net/http"
+    _ "github.com/solana-foundation/pay-kit/go/paycore/signer"
     "github.com/solana-foundation/pay-kit/go/paykit"
-    _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-    _ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+    _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+    _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 )
 
 func main() {
     client, _ := paykit.New(paykit.Config{
         Network: paykit.SolanaLocalnet,
         Accept:  []paykit.Protocol{paykit.X402, paykit.MPP},
+        MPP:     paykit.MPPConfig{ChallengeBindingSecret: []byte("local-dev-secret")},
     })
     gate := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 
@@ -195,11 +195,11 @@ func main() {
     client: true,
     snippet: `# app.py
 from flask import Flask, jsonify
-import pay_kit
-from pay_kit import usd
-from pay_kit.flask import require_payment
+import solana_pay_kit
+from solana_pay_kit import usd
+from solana_pay_kit.flask import require_payment
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 app = Flask(__name__)
 
 @app.get("/report")

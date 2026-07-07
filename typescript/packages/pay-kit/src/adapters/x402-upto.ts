@@ -15,10 +15,12 @@ import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements } fr
 import { getStablecoinTokenProgram, resolveStablecoinMint } from '@x402/svm';
 import { UptoSvmScheme as UptoSvmFacilitator } from '@x402/svm/upto/facilitator';
 
+import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
+import { errorMessage, x402PaymentHeader } from './x402-shared.js';
 
 /** Settlement-response header mirrored by the x402 SDK family. */
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
@@ -26,6 +28,8 @@ const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
+const UPTO_ASSET_TRANSFER_METHOD = 'payment-channel';
+const BASIS_POINTS_DENOMINATOR = 10_000;
 
 /**
  * Usage meter handed to a usage-gated handler. The handler reports the actual
@@ -93,6 +97,7 @@ export class X402Upto {
     readonly #operator: string;
     readonly #operatorSigner: PayKitConfig['operator']['signer'];
     readonly #recipient: string;
+    readonly #facilitatorFee: number;
     readonly #rpcUrl: string;
     readonly #stablecoins: readonly string[];
 
@@ -101,6 +106,7 @@ export class X402Upto {
         this.#operator = config.operator.signer.pubkey;
         this.#operatorSigner = config.operator.signer;
         this.#recipient = config.operator.recipient;
+        this.#facilitatorFee = config.x402.facilitatorFee;
         this.#rpcUrl = config.rpcUrl;
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
@@ -111,7 +117,7 @@ export class X402Upto {
 
     /** Whether `request` carries an x402 payment credential. */
     detect(request: Request): boolean {
-        return this.#paymentHeader(request) !== undefined;
+        return x402PaymentHeader(request) !== undefined;
     }
 
     /** The 402 challenge headers for a route capped at `maxPrice`. */
@@ -136,7 +142,7 @@ export class X402Upto {
      * @throws {InvalidProofError} when the authorization fails verification.
      */
     async verifyOpen(request: Request, maxPrice: Price): Promise<UptoVerified> {
-        const header = this.#paymentHeader(request);
+        const header = x402PaymentHeader(request);
         if (!header) throw new InvalidProofError('missing_x402_payment_header');
 
         let payload: PaymentPayload;
@@ -186,12 +192,12 @@ export class X402Upto {
                 channelId: payload.channelId,
                 mint: verified.requirements.asset,
                 network: verified.requirements.network,
-                payee: verified.requirements.payTo,
+                payee: this.#operator,
                 payer: payload.from,
                 rentPayer: this.#operator,
                 rpc: submitRpc,
                 signer: this.#operatorSigner.signer,
-                splits: [],
+                splits: this.#recipientSplits(verified.requirements.payTo),
                 tokenProgram: tokenProgramFor(verified.requirements),
                 voucher: signed ? { authorizedSigner: this.#operator, signed } : undefined,
             });
@@ -225,21 +231,28 @@ export class X402Upto {
     }
 
     #requirements(maxPrice: Price): PaymentRequirements {
-        const coin = maxPrice.primaryCoin() ?? this.#stablecoins[0] ?? 'USDC';
-        const mint = resolveStablecoinMint(coin, this.#network);
-        if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${this.#network}.`);
+        const coin = resolveCoin(maxPrice, this.#stablecoins);
+        const mint = requireMint(coin, resolveStablecoinMint(coin, this.#network), this.#network);
         return {
             amount: maxPrice.baseUnits().toString(),
             asset: mint,
-            // Spec field names (scheme_upto_svm.md §4.1): `facilitator` (not the
-            // old non-spec `facilitatorAddress`) + the required `profiles`, so a
-            // Rust/other-SDK upto client can act on this challenge.
-            extra: { facilitator: this.#operator, feePayer: this.#operator, profiles: ['payment-channel'] },
+            extra: {
+                assetTransferMethod: UPTO_ASSET_TRANSFER_METHOD,
+                facilitatorAddress: this.#operator,
+                facilitatorFee: this.#facilitatorFee,
+                feePayer: this.#operator,
+            },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network: this.#network,
             payTo: this.#recipient,
             scheme: 'upto',
         };
+    }
+
+    #recipientSplits(recipient: string): readonly { readonly bps: number; readonly recipient: string }[] {
+        return this.#operator === recipient
+            ? []
+            : [{ bps: BASIS_POINTS_DENOMINATOR - this.#facilitatorFee, recipient }];
     }
 
     /**
@@ -262,10 +275,6 @@ export class X402Upto {
         } catch {
             return base;
         }
-    }
-
-    #paymentHeader(request: Request): string | undefined {
-        return request.headers.get('x-payment') ?? request.headers.get('payment-signature') ?? undefined;
     }
 }
 
@@ -292,8 +301,4 @@ function tokenProgramFor(requirements: PaymentRequirements): string {
     const fromExtra = requirements.extra?.tokenProgram;
     if (typeof fromExtra === 'string') return fromExtra;
     return getStablecoinTokenProgram(requirements.asset, requirements.network);
-}
-
-function errorMessage(error: unknown): string | undefined {
-    return error instanceof Error ? error.message : undefined;
 }

@@ -337,7 +337,6 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		Scheme:      proto.UptoScheme,
 		Network:     "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 		Payload: proto.UptoPayload{
-			Profile:          proto.ProfilePaymentChannel,
 			From:             payerKey.PublicKey().String(),
 			MaxAmount:        "1000000",
 			ExpiresAt:        time.Now().Add(time.Hour).Unix(),

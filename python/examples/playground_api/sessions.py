@@ -1,15 +1,15 @@
 # examples/playground_api/sessions.py
 """One metered-session route for the playground (FastAPI).
 
-pay_kit ships the session gate as ``RequireSession`` (the session counterpart of
+solana_pay_kit ships the session gate as ``RequireSession`` (the session counterpart of
 the charge/x402 ``RequirePayment`` shim); sessions themselves live in
-``pay_kit.protocols.mpp.server`` as framework-agnostic primitives
+``solana_pay_kit.protocols.mpp.server`` as framework-agnostic primitives
 (:func:`new_session`, :func:`session_routes`, :meth:`Session.handle`). So the
 402 gate is one ``Depends(RequireSession(...))`` line: verify an
 ``Authorization`` credential, or answer 402 with a ``WWW-Authenticate``
 challenge.
 
-Boot config comes from ``pay_kit.config()`` (the same resolved operator,
+Boot config comes from ``solana_pay_kit.config()`` (the same resolved operator,
 recipient, and challenge-binding secret the charge routes use), not hand-rolled
 env wiring.
 """
@@ -23,11 +23,11 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-import pay_kit
-from pay_kit._paycore.rpc import SolanaRpc
-from pay_kit._paycore.solana import resolve_mint, stablecoin_decimals
-from pay_kit.fastapi import RequireSession
-from pay_kit.protocols.mpp.server import (
+import solana_pay_kit
+from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit._paycore.solana import resolve_mint, stablecoin_decimals
+from solana_pay_kit.fastapi import RequireSession
+from solana_pay_kit.protocols.mpp.server import (
     SessionChallengeOptions,
     SessionOptions,
     new_session,
@@ -36,13 +36,13 @@ from pay_kit.protocols.mpp.server import (
 
 router = APIRouter()
 
-# One session method, built from the shared pay_kit config. cap is the 1.00 USDC
+# One session method, built from the shared solana_pay_kit config. cap is the 1.00 USDC
 # ceiling the server offers in a challenge; pull mode + clientVoucher is the
 # metered-billing flavour. The operator signer + RPC + server-side open submitter
 # make the channel settle on-chain (so the receipt poll returns a real signature),
 # and close_delay arms the idle-close watchdog that settles after the last
 # delivery — mirroring the TypeScript playground's session config.
-_cfg = pay_kit.config()
+_cfg = solana_pay_kit.config()
 session = new_session(
     SessionOptions(
         operator=_cfg.operator.signer.pubkey(),

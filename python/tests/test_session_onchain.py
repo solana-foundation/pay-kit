@@ -26,16 +26,16 @@ from solders.transaction import (  # type: ignore[import-untyped]
     VersionedTransaction,
 )
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.solana import TOKEN_PROGRAM
-from pay_kit.protocols.mpp._paymentchannels import (
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     OpenChannelParams,
     build_open_instruction,
     find_channel_pda,
 )
-from pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
-from pay_kit.protocols.mpp.server.session_onchain import (
+from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
     is_placeholder_signature,
     new_open_tx_verifier,

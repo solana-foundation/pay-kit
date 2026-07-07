@@ -34,7 +34,7 @@ async fn main() {
     // MPP_SECRET_KEY to a >= 32-byte secret (`openssl rand -base64 32`).
     let pay = PayKit::new(PayKitConfig {
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
-        network: "devnet".to_string(),
+        network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
         challenge_binding_secret: Some(
             std::env::var("MPP_SECRET_KEY")

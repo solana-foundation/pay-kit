@@ -133,7 +133,11 @@ func newApp(a *app) (http.Handler, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("charges paykit client: %w", err)
 	}
-	if err := registerCharges(mux, a, chargesClient); err != nil {
+	dualChargeClient, err := newDualChargeClient(a)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dual charge paykit client: %w", err)
+	}
+	if err := registerCharges(mux, a, chargesClient, dualChargeClient); err != nil {
 		return nil, nil, fmt.Errorf("charges module: %w", err)
 	}
 
@@ -157,6 +161,26 @@ func newApp(a *app) (http.Handler, func(), error) {
 // newChargesClient builds the paykit client gating the charge endpoints.
 // MPP is the only accepted protocol.
 func newChargesClient(a *app) (*paykit.Client, error) {
+	return newPaymentClient(a, []paykit.Protocol{paykit.MPP}, "")
+}
+
+// newDualChargeClient builds the TS-reference style fixed-price client.
+// The client advertises x402 exact and MPP charge, letting the browser pick.
+func newDualChargeClient(a *app) (*paykit.Client, error) {
+	return newPaymentClient(a, []paykit.Protocol{paykit.X402, paykit.MPP}, "exact")
+}
+
+// newX402ExactClient builds the x402 exact client used by legacy routes.
+func newX402ExactClient(a *app) (*paykit.Client, error) {
+	return newPaymentClient(a, []paykit.Protocol{paykit.X402}, "exact")
+}
+
+// newX402UsageClient builds the x402 upto client used by usage routes.
+func newX402UsageClient(a *app) (*paykit.Client, error) {
+	return newPaymentClient(a, []paykit.Protocol{paykit.X402}, "upto")
+}
+
+func newPaymentClient(a *app, accept []paykit.Protocol, x402Scheme string) (*paykit.Client, error) {
 	network, err := paykit.ParseNetwork(a.network)
 	if err != nil {
 		return nil, err
@@ -168,7 +192,7 @@ func newChargesClient(a *app) (*paykit.Client, error) {
 	return paykit.New(paykit.Config{
 		Network: network,
 		RPCURL:  a.rpcURL,
-		Accept:  []paykit.Protocol{paykit.MPP},
+		Accept:  accept,
 		Operator: paykit.Operator{
 			Recipient: paykit.Address(a.recipient),
 			Signer:    operatorSigner,
@@ -177,6 +201,9 @@ func newChargesClient(a *app) (*paykit.Client, error) {
 		MPP: paykit.MPPConfig{
 			Realm:                  "PayKit Playground",
 			ChallengeBindingSecret: []byte(a.secretKey),
+		},
+		X402: paykit.X402Config{
+			Scheme: x402Scheme,
 		},
 	})
 }
@@ -284,53 +311,57 @@ type endpointInfo struct {
 
 // buildEndpointList builds the /api/v1/config endpoint catalog. The
 // subscription entry is omitted because the Go SDK has no subscription
-// server method (see README.md); the stocks-search / stocks-history /
-// weather / fortune / x402 routes stay live server-side but are not
+// server method (see README.md); the legacy stocks-search / stocks-history /
+// weather / marketplace / x402 routes stay live server-side but are not
 // advertised in the nav.
 func buildEndpointList() []endpointInfo {
 	return []endpointInfo{
 		{
-			ID:          "stocks-quote",
+			ID:          "quote",
 			Primitive:   "charge",
 			Method:      "GET",
-			Path:        "/api/v1/stocks/quote/:symbol",
+			Path:        "/api/v1/quote/:symbol",
 			Title:       "Stock quote",
-			Description: "Real-time price for a single ticker.",
+			Description: "Dual x402 exact or MPP charge.",
 			Cost:        "0.01 USDC",
-			Params:      []endpointParam{{Name: "symbol", Default: "AAPL"}},
+			Params:      []endpointParam{{Name: "symbol", Default: "SPCX"}},
 		},
 		{
-			ID:          "marketplace-buy",
+			ID:          "fortune",
 			Primitive:   "charge",
 			Method:      "GET",
-			Path:        "/api/v1/marketplace/buy/:productId",
-			Title:       "Marketplace purchase",
-			Description: "Multi-recipient split (seller + platform + referral).",
-			Cost:        "varies",
-			Params: []endpointParam{
-				{Name: "productId", Default: "sol-hoodie"},
-				{Name: "referrer", Default: ""},
-			},
+			Path:        "/api/v1/fortune",
+			Title:       "Fortune cookie",
+			Description: "Dual x402 exact or MPP charge, with HTML payment link support.",
+			Cost:        "0.01 USDC",
+		},
+		{
+			ID:          "joke",
+			Primitive:   "charge",
+			Method:      "GET",
+			Path:        "/api/v1/joke",
+			Title:       "A programmer joke",
+			Description: "MPP charge.",
+			Cost:        "0.01 USDC",
+		},
+		{
+			ID:          "summarize",
+			Primitive:   "x402",
+			Method:      "POST",
+			Path:        "/api/v1/summarize",
+			Title:       "Summarize text, billed per token",
+			Description: "x402 upto usage.",
+			Cost:        "up to 0.10 USDC",
 		},
 		{
 			ID:          "sessions-stream",
 			Primitive:   "session",
 			Method:      "GET",
-			Path:        "/sessions/stream",
-			Title:       "Metered stream",
+			Path:        "/api/v1/stream",
+			Title:       "Metered token stream",
 			Description: "Pay-per-chunk SSE delivery via session vouchers.",
 			Cost:        "0.0001 USDC / chunk",
 			UnitPrice:   "100",
-		},
-		{
-			ID:          "sessions-compute",
-			Primitive:   "session",
-			Method:      "POST",
-			Path:        "/sessions/compute",
-			Title:       "Pay-per-call compute",
-			Description: "Voucher-billed inference; cap 0.50 USDC per session.",
-			Cost:        "0.005 USDC / call",
-			UnitPrice:   "5000",
 		},
 	}
 }
@@ -342,7 +373,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 		header := w.Header()
 		header.Set("Access-Control-Allow-Origin", "*")
 		header.Set("Access-Control-Expose-Headers",
-			"www-authenticate, payment-receipt, x-payment-required, x-payment-response")
+			"www-authenticate, payment-required, payment-response, payment-receipt, "+
+				"x-payment-required, x-payment-response, x-payment-settlement-signature")
 		if r.Method == http.MethodOptions {
 			header.Set("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE")
 			if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {

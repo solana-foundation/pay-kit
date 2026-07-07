@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pay_kit._paycore.solana import (
+from solana_pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
     SYSTEM_PROGRAM,
@@ -82,7 +82,7 @@ class TestResolveMint:
         # L1 lock invariant: ``mainnet-beta`` must not appear as a direct key
         # inside KNOWN_MINTS. Drift here would make a Ruby-mainnet credential
         # resolve to a different mint than its Python-mainnet-beta echo.
-        from pay_kit._paycore.solana import KNOWN_MINTS
+        from solana_pay_kit._paycore.solana import KNOWN_MINTS
 
         for symbol, networks in KNOWN_MINTS.items():
             assert "mainnet-beta" not in networks, (
@@ -224,20 +224,20 @@ class TestValidateNetwork:
     """Audit #37: boot-time network allowlist."""
 
     def test_accepts_canonical_networks(self):
-        from pay_kit._paycore.solana import validate_network
+        from solana_pay_kit._paycore.solana import validate_network
 
         for net in ("mainnet", "devnet", "localnet"):
             validate_network(net)  # must not raise
 
     def test_accepts_mainnet_beta_alias(self):
-        from pay_kit._paycore.solana import validate_network
+        from solana_pay_kit._paycore.solana import validate_network
 
         validate_network("mainnet-beta")
 
     def test_rejects_unknown_network(self):
         import pytest
 
-        from pay_kit._paycore.solana import validate_network
+        from solana_pay_kit._paycore.solana import validate_network
 
         with pytest.raises(ValueError, match="unknown network"):
             validate_network("testnet")
@@ -245,7 +245,7 @@ class TestValidateNetwork:
     def test_rejects_empty_network(self):
         import pytest
 
-        from pay_kit._paycore.solana import validate_network
+        from solana_pay_kit._paycore.solana import validate_network
 
         with pytest.raises(ValueError, match="network is required"):
             validate_network("")
@@ -255,19 +255,19 @@ class TestDeriveDefaultRealm:
     """Audit #15: per-recipient derived default realm."""
 
     def test_shape(self):
-        from pay_kit._paycore.solana import derive_default_realm
+        from solana_pay_kit._paycore.solana import derive_default_realm
 
         realm = derive_default_realm("11111111111111111111111111111112")
         assert realm.startswith("App Id - #")
 
     def test_deterministic(self):
-        from pay_kit._paycore.solana import derive_default_realm
+        from solana_pay_kit._paycore.solana import derive_default_realm
 
         r = "11111111111111111111111111111112"
         assert derive_default_realm(r) == derive_default_realm(r)
 
     def test_differs_across_recipients(self):
-        from pay_kit._paycore.solana import derive_default_realm
+        from solana_pay_kit._paycore.solana import derive_default_realm
 
         a = derive_default_realm("11111111111111111111111111111112")
         b = derive_default_realm("9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ")
@@ -287,19 +287,19 @@ class TestValidateSplits:
         )
 
     def test_accepts_valid_set(self):
-        from pay_kit._paycore.solana import validate_splits
+        from solana_pay_kit._paycore.solana import validate_splits
 
         validate_splits([self._split(), self._split()])
 
     def test_accepts_empty(self):
-        from pay_kit._paycore.solana import validate_splits
+        from solana_pay_kit._paycore.solana import validate_splits
 
         validate_splits([])
 
     def test_rejects_count_above_max(self):
         import pytest
 
-        from pay_kit._paycore.solana import MAX_SPLITS, validate_splits
+        from solana_pay_kit._paycore.solana import MAX_SPLITS, validate_splits
 
         with pytest.raises(ValueError, match="too many splits"):
             validate_splits([self._split() for _ in range(MAX_SPLITS + 1)])
@@ -307,7 +307,7 @@ class TestValidateSplits:
     def test_rejects_invalid_recipient(self):
         import pytest
 
-        from pay_kit._paycore.solana import validate_splits
+        from solana_pay_kit._paycore.solana import validate_splits
 
         with pytest.raises(ValueError, match="not a valid pubkey"):
             validate_splits([self._split(recipient="not-a-pubkey-xxx")])
@@ -315,7 +315,7 @@ class TestValidateSplits:
     def test_rejects_unparseable_amount(self):
         import pytest
 
-        from pay_kit._paycore.solana import validate_splits
+        from solana_pay_kit._paycore.solana import validate_splits
 
         with pytest.raises(ValueError, match="not a valid integer"):
             validate_splits([self._split(amount="abc")])
@@ -323,7 +323,7 @@ class TestValidateSplits:
     def test_rejects_zero_amount(self):
         import pytest
 
-        from pay_kit._paycore.solana import validate_splits
+        from solana_pay_kit._paycore.solana import validate_splits
 
         with pytest.raises(ValueError, match="must be positive"):
             validate_splits([self._split(amount="0")])
@@ -332,7 +332,7 @@ class TestValidateSplits:
         import pytest
         from solders.pubkey import Pubkey
 
-        from pay_kit._paycore.solana import validate_splits
+        from solana_pay_kit._paycore.solana import validate_splits
 
         r = str(Pubkey.new_unique())
         with pytest.raises(ValueError, match="duplicate split recipient"):
@@ -343,24 +343,24 @@ class TestResolveServerTokenProgram:
     """Audit #28: boot-time token-program resolution."""
 
     def test_sol_returns_none(self):
-        from pay_kit._paycore.solana import resolve_server_token_program
+        from solana_pay_kit._paycore.solana import resolve_server_token_program
 
         assert resolve_server_token_program("SOL", "mainnet", None) is None
 
     def test_known_stablecoin_classic_token(self):
-        from pay_kit._paycore.solana import resolve_server_token_program
+        from solana_pay_kit._paycore.solana import resolve_server_token_program
 
         assert resolve_server_token_program("USDC", "mainnet", None) == TOKEN_PROGRAM
 
     def test_known_stablecoin_token_2022(self):
-        from pay_kit._paycore.solana import resolve_server_token_program
+        from solana_pay_kit._paycore.solana import resolve_server_token_program
 
         assert resolve_server_token_program("PYUSD", "mainnet", None) == TOKEN_2022_PROGRAM
 
     def test_rejects_unparseable_currency(self):
         import pytest
 
-        from pay_kit._paycore.solana import resolve_server_token_program
+        from solana_pay_kit._paycore.solana import resolve_server_token_program
 
         with pytest.raises(ValueError, match="neither a known stablecoin"):
             resolve_server_token_program("not-a-symbol-or-mint", "mainnet", None)
@@ -369,7 +369,7 @@ class TestResolveServerTokenProgram:
         import pytest
         from solders.pubkey import Pubkey
 
-        from pay_kit._paycore.solana import resolve_server_token_program
+        from solana_pay_kit._paycore.solana import resolve_server_token_program
 
         mint = str(Pubkey.new_unique())
         with pytest.raises(ValueError, match="no rpc_url configured"):

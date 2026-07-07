@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from pay_kit.protocols.mpp.server.session_store import (
+from solana_pay_kit.protocols.mpp.server.session_store import (
     ChannelState,
     CommittedDelivery,
     ListChannelsFilter,

@@ -57,26 +57,44 @@ func buildOpenAPIDoc(a *app) openAPIDoc {
 			"version": "1.0.0",
 		},
 		Paths: map[string]map[string]openAPIOperation{
-			"/api/v1/stocks/quote/{symbol}": {
-				"get": pricedOperation("Stock quote", openAPIOffer{
-					Amount:      "10000",
-					Description: "0.01 USDC",
-					Intent:      "charge",
-					Method:      "mpp",
-					Scheme:      "charge",
-				}, a),
-			},
-			"/api/v1/stocks/history/{symbol}": {
-				"get": pricedOperation("Stock history", openAPIOffer{
-					Amount:      "50000",
-					Description: "0.05 USDC",
-					Intent:      "charge",
-					Method:      "mpp",
-					Scheme:      "charge",
+			"/api/v1/quote/{symbol}": {
+				"get": pricedOperationMany("Stock quote", []openAPIOffer{
+					{
+						Amount:      "10000",
+						Description: "0.01 USDC",
+						Intent:      "charge",
+						Method:      "x402",
+						Scheme:      "exact",
+					},
+					{
+						Amount:      "10000",
+						Description: "0.01 USDC",
+						Intent:      "charge",
+						Method:      "mpp",
+						Scheme:      "charge",
+					},
 				}, a),
 			},
 			"/api/v1/fortune": {
-				"get": pricedOperation("Fortune cookie", openAPIOffer{
+				"get": pricedOperationMany("Fortune cookie", []openAPIOffer{
+					{
+						Amount:      "10000",
+						Description: "0.01 USDC",
+						Intent:      "charge",
+						Method:      "x402",
+						Scheme:      "exact",
+					},
+					{
+						Amount:      "10000",
+						Description: "0.01 USDC",
+						Intent:      "charge",
+						Method:      "mpp",
+						Scheme:      "charge",
+					},
+				}, a),
+			},
+			"/api/v1/joke": {
+				"get": pricedOperation("A programmer joke", openAPIOffer{
 					Amount:      "10000",
 					Description: "0.01 USDC",
 					Intent:      "charge",
@@ -84,8 +102,17 @@ func buildOpenAPIDoc(a *app) openAPIDoc {
 					Scheme:      "charge",
 				}, a),
 			},
-			"/sessions/stream": {
-				"get": pricedOperation("Metered stream", openAPIOffer{
+			"/api/v1/summarize": {
+				"post": pricedOperation("Summarize text, billed per token", openAPIOffer{
+					Amount:      "100000",
+					Description: "up to 0.10 USDC",
+					Intent:      "charge",
+					Method:      "x402",
+					Scheme:      "upto",
+				}, a),
+			},
+			"/api/v1/stream": {
+				"get": pricedOperation("Metered token stream", openAPIOffer{
 					Amount:      "1000000",
 					Description: "up to 1.00 USDC",
 					Intent:      "session",
@@ -94,48 +121,29 @@ func buildOpenAPIDoc(a *app) openAPIDoc {
 					UnitPrice:   "100",
 				}, a),
 			},
-			"/sessions/compute": {
-				"post": pricedOperation("Pay-per-call compute", openAPIOffer{
-					Amount:      "500000",
-					Description: "up to 0.50 USDC",
-					Intent:      "session",
-					Method:      "mpp",
-					Scheme:      "session",
-					UnitPrice:   "5000",
-				}, a),
-			},
-			"/x402/joke": {
-				"get": pricedOperation("x402 joke", openAPIOffer{
-					Amount:      "1000",
-					Description: "0.001 USDC",
-					Intent:      "charge",
-					Method:      "x402",
-					Scheme:      "exact",
-				}, a),
-			},
-			"/x402/fact": {
-				"get": pricedOperation("x402 fact", openAPIOffer{
-					Amount:      "1000",
-					Description: "0.001 USDC",
-					Intent:      "charge",
-					Method:      "x402",
-					Scheme:      "exact",
-				}, a),
-			},
-			"/x402/usage": {
-				"get": pricedOperation("Usage-metered endpoint", openAPIOffer{
-					Amount:      "1000000",
-					Description: "up to 1.00 USDC",
-					Intent:      "charge",
-					Method:      "x402",
-					Scheme:      "upto",
-				}, a),
-			},
 		},
 	}
 }
 
 func pricedOperation(summary string, offer openAPIOffer, a *app) openAPIOperation {
+	return pricedOperationMany(summary, []openAPIOffer{offer}, a)
+}
+
+func pricedOperationMany(summary string, offers []openAPIOffer, a *app) openAPIOperation {
+	for i := range offers {
+		offers[i] = withPaymentContext(offers[i], a)
+	}
+	return openAPIOperation{
+		Responses: map[string]openAPIResponse{
+			"200": {Description: "Successful response"},
+			"402": {Description: "Payment Required"},
+		},
+		Summary:      summary,
+		XPaymentInfo: openAPIPaymentInfo{Offers: offers},
+	}
+}
+
+func withPaymentContext(offer openAPIOffer, a *app) openAPIOffer {
 	offer.Currency = "USDC"
 	offer.FeePayer = a.feePayer.PublicKey().String()
 	offer.Network = a.network
@@ -143,12 +151,5 @@ func pricedOperation(summary string, offer openAPIOffer, a *app) openAPIOperatio
 		offer.Network = network.CAIP2()
 	}
 	offer.PayTo = a.recipient
-	return openAPIOperation{
-		Responses: map[string]openAPIResponse{
-			"200": {Description: "Successful response"},
-			"402": {Description: "Payment Required"},
-		},
-		Summary:      summary,
-		XPaymentInfo: openAPIPaymentInfo{Offers: []openAPIOffer{offer}},
-	}
+	return offer
 }

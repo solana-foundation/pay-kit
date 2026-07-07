@@ -18,7 +18,7 @@ import pytest
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
-from pay_kit import (
+from solana_pay_kit import (
     LocalSigner,
     MemoryStore,
     Operator,
@@ -27,11 +27,11 @@ from pay_kit import (
     Stablecoin,
     configure,
 )
-from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
-from pay_kit.config import reset
-from pay_kit.gate import Gate
-from pay_kit.protocols.x402 import X402Adapter
-from pay_kit.protocols.x402.client.exact import (
+from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit.config import reset
+from solana_pay_kit.gate import Gate
+from solana_pay_kit.protocols.x402 import X402Adapter
+from solana_pay_kit.protocols.x402.client.exact import (
     ChallengeSelection,
     PaymentTransport,
     X402Client,
@@ -39,9 +39,9 @@ from pay_kit.protocols.x402.client.exact import (
     build_payment_header,
     parse_x402_challenge,
 )
-from pay_kit.protocols.x402.exact.types import X402AcceptsEntry
-from pay_kit.protocols.x402.exact.verify import ExactVerifier
-from pay_kit.signer import Signer
+from solana_pay_kit.protocols.x402.exact.types import X402AcceptsEntry
+from solana_pay_kit.protocols.x402.exact.verify import ExactVerifier
+from solana_pay_kit.signer import Signer
 
 # A Surfpool-style blockhash: any valid base58 hash works for offline tests.
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
@@ -337,7 +337,7 @@ async def test_build_payment_appends_random_memo_when_offer_has_none():
     one Memo instruction holding a >=16-byte hex nonce, so two otherwise
     identical payments are distinct on-chain.
     """
-    from pay_kit.protocols.x402.exact.verify import MEMO_PROGRAM
+    from solana_pay_kit.protocols.x402.exact.verify import MEMO_PROGRAM
 
     signer = Signer.generate()
     offer = _offer()
@@ -358,7 +358,7 @@ async def test_build_payment_appends_random_memo_when_offer_has_none():
 @pytest.mark.asyncio
 async def test_build_payment_memo_nonce_is_injectable():
     """The nonce source is injectable so golden-vector tests stay deterministic."""
-    from pay_kit.protocols.x402.exact.verify import MEMO_PROGRAM
+    from solana_pay_kit.protocols.x402.exact.verify import MEMO_PROGRAM
 
     signer = Signer.generate()
     offer = _offer()
@@ -702,7 +702,7 @@ class _FakeRpc:
 
 
 def _server_adapter_and_gate(monkeypatch):
-    import pay_kit.protocols.x402 as xmod
+    import solana_pay_kit.protocols.x402 as xmod
 
     op = Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey()))
     cfg = configure(
@@ -798,7 +798,7 @@ async def test_transport_sends_x_payment_header_for_v1_challenge(monkeypatch):
     # A v1 challenge (x402Version:1 body) must make the transport emit the legacy
     # X-PAYMENT credential, not v2 PAYMENT-SIGNATURE. Regression for the gap where
     # the transport always built the v2 producer regardless of declared version.
-    import pay_kit.protocols.x402.client.exact.transport as tmod
+    import solana_pay_kit.protocols.x402.client.exact.transport as tmod
 
     async def fake_v1(*_a, **_k):
         return "V1-CRED"

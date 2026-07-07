@@ -176,13 +176,16 @@ func TestPlaygroundEndpoints(t *testing.T) {
 		for _, e := range config.Endpoints {
 			ids[e.ID] = e
 		}
-		for _, want := range []string{"stocks-quote", "marketplace-buy", "sessions-stream", "sessions-compute"} {
+		for _, want := range []string{"quote", "fortune", "joke", "summarize", "sessions-stream"} {
 			if _, ok := ids[want]; !ok {
 				t.Fatalf("catalog missing %q: %s", want, body)
 			}
 		}
-		if ids["sessions-stream"].UnitPrice != "100" || ids["sessions-compute"].UnitPrice != "5000" {
-			t.Fatalf("unit prices = %q / %q", ids["sessions-stream"].UnitPrice, ids["sessions-compute"].UnitPrice)
+		if ids["sessions-stream"].Path != "/api/v1/stream" || ids["sessions-stream"].UnitPrice != "100" {
+			t.Fatalf("stream catalog = %+v", ids["sessions-stream"])
+		}
+		if ids["quote"].Path != "/api/v1/quote/:symbol" || ids["summarize"].Primitive != "x402" {
+			t.Fatalf("catalog = %+v / %+v", ids["quote"], ids["summarize"])
 		}
 		if _, ok := ids["premium-feed"]; ok {
 			t.Fatal("catalog must omit the subscription entry (no Go subscription method)")
@@ -199,36 +202,55 @@ func TestPlaygroundEndpoints(t *testing.T) {
 		if doc.OpenAPI != "3.1.0" {
 			t.Fatalf("openapi = %q", doc.OpenAPI)
 		}
-		quote := doc.Paths["/api/v1/stocks/quote/{symbol}"]["get"]
-		if quote.Summary != "Stock quote" || len(quote.XPaymentInfo.Offers) != 1 {
+		quote := doc.Paths["/api/v1/quote/{symbol}"]["get"]
+		if quote.Summary != "Stock quote" || len(quote.XPaymentInfo.Offers) != 2 {
 			t.Fatalf("quote operation = %+v", quote)
 		}
 		if quote.Responses["200"].Description == "" || quote.Responses["402"].Description == "" {
 			t.Fatalf("quote responses = %+v", quote.Responses)
 		}
-		offer := quote.XPaymentInfo.Offers[0]
-		if offer.Method != "mpp" || offer.Intent != "charge" ||
-			offer.PayTo != a.recipient || offer.Network != paykit.SolanaLocalnet.CAIP2() ||
-			offer.FeePayer != a.feePayer.PublicKey().String() {
-			t.Fatalf("quote offer = %+v", offer)
+		quoteMethods := map[string]openAPIOffer{}
+		for _, offer := range quote.XPaymentInfo.Offers {
+			quoteMethods[offer.Method] = offer
 		}
-		fortune := doc.Paths["/api/v1/fortune"]["get"].XPaymentInfo.Offers[0]
-		if fortune.Amount != "10000" || fortune.Scheme != "charge" {
-			t.Fatalf("fortune offer = %+v", fortune)
+		for _, method := range []string{"x402", "mpp"} {
+			offer, ok := quoteMethods[method]
+			if !ok || offer.Intent != "charge" ||
+				offer.PayTo != a.recipient || offer.Network != paykit.SolanaLocalnet.CAIP2() ||
+				offer.FeePayer != a.feePayer.PublicKey().String() {
+				t.Fatalf("quote %s offer = %+v", method, offer)
+			}
 		}
-		stream := doc.Paths["/sessions/stream"]["get"].XPaymentInfo.Offers[0]
+		if quoteMethods["x402"].Scheme != "exact" || quoteMethods["mpp"].Scheme != "charge" {
+			t.Fatalf("quote offers = %+v", quote.XPaymentInfo.Offers)
+		}
+		fortuneMethods := map[string]openAPIOffer{}
+		for _, offer := range doc.Paths["/api/v1/fortune"]["get"].XPaymentInfo.Offers {
+			fortuneMethods[offer.Method] = offer
+		}
+		if fortuneMethods["x402"].Scheme != "exact" || fortuneMethods["x402"].Amount != "10000" ||
+			fortuneMethods["mpp"].Scheme != "charge" || fortuneMethods["mpp"].Amount != "10000" {
+			t.Fatalf("fortune offers = %+v", doc.Paths["/api/v1/fortune"]["get"].XPaymentInfo.Offers)
+		}
+		joke := doc.Paths["/api/v1/joke"]["get"].XPaymentInfo.Offers[0]
+		if joke.Amount != "10000" || joke.Method != "mpp" || joke.Scheme != "charge" {
+			t.Fatalf("joke offer = %+v", joke)
+		}
+		stream := doc.Paths["/api/v1/stream"]["get"].XPaymentInfo.Offers[0]
 		if stream.Intent != "session" || stream.UnitPrice != "100" {
 			t.Fatalf("stream offer = %+v", stream)
 		}
-		usage := doc.Paths["/x402/usage"]["get"].XPaymentInfo.Offers[0]
-		if usage.Method != "x402" || usage.Intent != "charge" || usage.Scheme != "upto" {
-			t.Fatalf("usage offer = %+v", usage)
+		summarize := doc.Paths["/api/v1/summarize"]["post"].XPaymentInfo.Offers[0]
+		if summarize.Method != "x402" || summarize.Intent != "charge" ||
+			summarize.Scheme != "upto" || summarize.Amount != "100000" {
+			t.Fatalf("summarize offer = %+v", summarize)
 		}
 	})
 
 	t.Run("charge endpoints issue MPP challenges", func(t *testing.T) {
 		for _, path := range []string{
 			"/api/v1/stocks/quote/AAPL",
+			"/api/v1/joke",
 			"/api/v1/stocks/search?q=apple",
 			"/api/v1/stocks/history/AAPL",
 			"/api/v1/weather/tokyo",
@@ -255,6 +277,30 @@ func TestPlaygroundEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("fixed TS-reference endpoints issue dual protocol challenges", func(t *testing.T) {
+		for _, path := range []string{"/api/v1/quote/SPCX", "/api/v1/fortune"} {
+			response, body := doRequest(t, http.MethodGet, base+path, "", nil)
+			if response.StatusCode != http.StatusPaymentRequired {
+				t.Fatalf("%s status = %d: %s", path, response.StatusCode, body)
+			}
+			var challenge struct {
+				Error   string `json:"error"`
+				Accepts []struct {
+					Protocol string `json:"protocol"`
+					Scheme   string `json:"scheme"`
+				} `json:"accepts"`
+			}
+			decodeBody(t, body, &challenge)
+			seen := map[string]string{}
+			for _, accept := range challenge.Accepts {
+				seen[accept.Protocol] = accept.Scheme
+			}
+			if challenge.Error != "payment_required" || seen["x402"] != "exact" || seen["mpp"] != "charge" {
+				t.Fatalf("%s challenge = %s", path, body)
+			}
+		}
+	})
+
 	t.Run("pre-gate validation runs before payment", func(t *testing.T) {
 		for path, wantStatus := range map[string]int{
 			"/api/v1/weather/atlantis":          http.StatusNotFound,
@@ -266,6 +312,17 @@ func TestPlaygroundEndpoints(t *testing.T) {
 			if response.StatusCode != wantStatus {
 				t.Fatalf("%s status = %d, want %d: %s", path, response.StatusCode, wantStatus, body)
 			}
+		}
+	})
+
+	t.Run("summarize body validation runs before payment", func(t *testing.T) {
+		response, body := doRequest(t, http.MethodPost, base+"/api/v1/summarize",
+			strings.Repeat("x", summarizeMaxBodyBytes+1), nil)
+		if response.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(body, "body-too-large") {
+			t.Fatalf("status = %d body = %s", response.StatusCode, body)
+		}
+		if response.Header.Get("Payment-Required") != "" || response.Header.Get("WWW-Authenticate") != "" {
+			t.Fatalf("body validation should run before payment headers: %+v", response.Header)
 		}
 	})
 
@@ -308,17 +365,21 @@ func TestPlaygroundEndpoints(t *testing.T) {
 	})
 
 	t.Run("sessions issue session challenges", func(t *testing.T) {
-		for method, path := range map[string]string{
-			http.MethodGet:  "/sessions/stream",
-			http.MethodPost: "/sessions/compute",
+		for _, route := range []struct {
+			method string
+			path   string
+		}{
+			{method: http.MethodGet, path: "/sessions/stream"},
+			{method: http.MethodGet, path: "/api/v1/stream"},
+			{method: http.MethodPost, path: "/sessions/compute"},
 		} {
-			response, body := doRequest(t, method, base+path, "", nil)
+			response, body := doRequest(t, route.method, base+route.path, "", nil)
 			if response.StatusCode != http.StatusPaymentRequired {
-				t.Fatalf("%s %s status = %d: %s", method, path, response.StatusCode, body)
+				t.Fatalf("%s %s status = %d: %s", route.method, route.path, response.StatusCode, body)
 			}
 			wwwAuth := response.Header.Get("WWW-Authenticate")
 			if !strings.Contains(wwwAuth, "intent=\"session\"") {
-				t.Fatalf("%s WWW-Authenticate = %q", path, wwwAuth)
+				t.Fatalf("%s WWW-Authenticate = %q", route.path, wwwAuth)
 			}
 		}
 	})
@@ -412,6 +473,32 @@ func TestPlaygroundEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("x402 usage routes issue upto challenges", func(t *testing.T) {
+		for method, path := range map[string]string{
+			http.MethodPost: "/api/v1/summarize",
+			http.MethodGet:  "/x402/usage",
+		} {
+			response, body := doRequest(t, method, base+path, "hello world", nil)
+			if response.StatusCode != http.StatusPaymentRequired {
+				t.Fatalf("%s %s status = %d: %s", method, path, response.StatusCode, body)
+			}
+			var challenge struct {
+				Error   string `json:"error"`
+				Accepts []struct {
+					Protocol string `json:"protocol"`
+					Scheme   string `json:"scheme"`
+				} `json:"accepts"`
+			}
+			decodeBody(t, body, &challenge)
+			if challenge.Error != "payment_required" ||
+				len(challenge.Accepts) != 1 ||
+				challenge.Accepts[0].Protocol != "x402" ||
+				challenge.Accepts[0].Scheme != "upto" {
+				t.Fatalf("%s %s challenge = %s", method, path, body)
+			}
+		}
+	})
+
 	t.Run("docs", func(t *testing.T) {
 		response, body := doRequest(t, http.MethodGet, base+"/api/v1/docs", "", nil)
 		if response.StatusCode != http.StatusOK || !strings.Contains(body, `"go":false`) {
@@ -440,7 +527,15 @@ func TestPlaygroundEndpoints(t *testing.T) {
 	t.Run("CORS exposes the payment headers", func(t *testing.T) {
 		response, _ := doRequest(t, http.MethodGet, base+"/api/v1/health", "", nil)
 		exposed := response.Header.Get("Access-Control-Expose-Headers")
-		for _, header := range []string{"www-authenticate", "payment-receipt", "x-payment-required", "x-payment-response"} {
+		for _, header := range []string{
+			"www-authenticate",
+			"payment-required",
+			"payment-response",
+			"payment-receipt",
+			"x-payment-required",
+			"x-payment-response",
+			"x-payment-settlement-signature",
+		} {
 			if !strings.Contains(exposed, header) {
 				t.Fatalf("expose headers = %q missing %q", exposed, header)
 			}
@@ -468,4 +563,16 @@ func TestPlaygroundEndpoints(t *testing.T) {
 			t.Fatalf("status = %d body = %s", response.StatusCode, body)
 		}
 	})
+}
+
+func TestSummarizeUsageClampsBilling(t *testing.T) {
+	billed, tokens := summarizeUsage(4, 100_000)
+	if billed != 100 || tokens != 1 {
+		t.Fatalf("small usage = %d/%d, want 100/1", billed, tokens)
+	}
+
+	billed, tokens = summarizeUsage(10_000_000, 100_000)
+	if billed != 100_000 || tokens <= 1 {
+		t.Fatalf("large usage = %d/%d, want clamped billed units", billed, tokens)
+	}
 }

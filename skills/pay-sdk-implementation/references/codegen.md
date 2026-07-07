@@ -25,7 +25,7 @@ skills/pay-sdk-implementation/codegen/
 idl/                                # vendored upstream IDLs (repo root)
 └── subscriptions.json              # pinned via `subscriptions_ref` in justfile
 
-rust/crates/programs/subscriptions/
+rust/crates/kit/src/generated/subscriptions/
 ├── Cargo.toml                      # hand-authored — workspace member
 └── src/
     ├── lib.rs                      # `pub mod generated; pub use generated::*;`
@@ -36,7 +36,7 @@ rust/crates/programs/subscriptions/
 The split is intentional: the vendored IDL goes at the repository root
 (`idl/`) so all language renderers see the same canonical input;
 language-specific clients sit alongside the SDKs that consume them
-(`rust/crates/programs/subscriptions/`, eventually
+(`rust/crates/kit/src/generated/subscriptions/`, eventually
 `typescript/packages/subscriptions-client/`, etc.).
 
 ## Pinning the upstream IDL
@@ -59,11 +59,11 @@ whatever `main` happens to be the day someone runs the recipe.
 |---------|--------------|
 | `just codegen-install` | `pnpm install` inside the codegen dir. Idempotent. |
 | `just subscriptions-pull-idl` | Fetches `idl/subscriptions.json` at the pinned `subscriptions_ref`. |
-| `just subscriptions-generate-rs` | Runs Codama with `@codama/renderers-rust`, then `cargo fmt -p subscriptions-client`. |
+| `just subscriptions-generate-rs` | Runs Codama with `@codama/renderers-rust`, then `cargo fmt -p solana-pay-kit`. |
 | `just subscriptions-sync` | Both of the above. Use this on a clean checkout. |
 
 `subscriptions-generate-rs` is idempotent: it wipes
-`rust/crates/programs/subscriptions/src/generated/` before
+`rust/crates/kit/src/generated/subscriptions/generated/` before
 re-rendering, so a removed instruction in the upstream IDL disappears
 on the next run.
 

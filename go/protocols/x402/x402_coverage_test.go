@@ -9,6 +9,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 )
 
 func TestRawAcceptedAndClearRaw(t *testing.T) {
@@ -165,6 +166,26 @@ func TestEmptyDistributionHash(t *testing.T) {
 	}
 	if !bytes.Equal(h, expected) {
 		t.Fatalf("empty distribution hash = %x, want %x", h, expected)
+	}
+}
+
+func TestDistributionHashMatchesProgramGolden(t *testing.T) {
+	recipients := []paymentchannels.Distribution{
+		{Recipient: solana.PublicKeyFromBytes(bytes.Repeat([]byte{1}, 32)), Bps: 7_500},
+		{Recipient: solana.PublicKeyFromBytes(bytes.Repeat([]byte{2}, 32)), Bps: 2_500},
+	}
+
+	// Golden vector shared with Rust's payment-channel test and the on-chain
+	// program preimage: SHA-256(count=2 u32 LE || pk(1) || 7500 u16 LE ||
+	// pk(2) || 2500 u16 LE).
+	expected := [32]byte{
+		0x54, 0xc8, 0x97, 0x55, 0x87, 0x75, 0x0e, 0x88,
+		0x21, 0xe9, 0x3f, 0x5d, 0x4a, 0xf6, 0x07, 0xd2,
+		0x0d, 0x55, 0xa5, 0x8b, 0xa1, 0xb9, 0xa4, 0xb4,
+		0x9f, 0x72, 0xa5, 0x42, 0xed, 0x87, 0x4a, 0x3f,
+	}
+	if got := distributionHash(recipients); got != expected {
+		t.Fatalf("distribution hash = %x, want %x", got, expected)
 	}
 }
 

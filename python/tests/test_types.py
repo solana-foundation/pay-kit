@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.types import PaymentChallenge, Receipt
+from solana_pay_kit.protocols.mpp.core.base64url import encode_json
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, Receipt
 
 
 class TestPaymentChallenge:

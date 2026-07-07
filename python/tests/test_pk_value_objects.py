@@ -1,4 +1,4 @@
-"""Price / Fee / Gate value-object coverage for pay_kit.
+"""Price / Fee / Gate value-object coverage for solana_pay_kit.
 
 Covers the Decimal-only money contract (float + bool rejection, format
 parsing), settlement preference resolution, the gate total/payout math, the
@@ -13,15 +13,15 @@ from decimal import Decimal
 
 import pytest
 
-from pay_kit import Gate, Price, Protocol, Stablecoin, gate
-from pay_kit._paycore.currency import Currency
-from pay_kit.errors import (
+from solana_pay_kit import Gate, Price, Protocol, Stablecoin, gate
+from solana_pay_kit._paycore.currency import Currency
+from solana_pay_kit.errors import (
     ConfigurationError,
     MixedCurrenciesError,
     ProtocolIncompatibleError,
 )
-from pay_kit.fee import Fee
-from pay_kit.gate import DynamicGate
+from solana_pay_kit.fee import Fee
+from solana_pay_kit.gate import DynamicGate
 
 PAY_TO = "ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq"
 FEE_A = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ"

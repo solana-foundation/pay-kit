@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.types import PaymentChallenge
-from pay_kit.protocols.mpp.server.payment_page import (
+from solana_pay_kit.protocols.mpp.core.base64url import encode_json
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+from solana_pay_kit.protocols.mpp.server.payment_page import (
     SERVICE_WORKER_PARAM,
     accepts_html,
     challenge_to_html,

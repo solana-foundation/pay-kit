@@ -1,11 +1,11 @@
 # examples/simple-server/server.py
-"""Gate one HTTP endpoint with the unified pay_kit surface, no framework.
+"""Gate one HTTP endpoint with the unified solana_pay_kit surface, no framework.
 
-This is the smallest possible pay_kit server: the Python standard-library
+This is the smallest possible solana_pay_kit server: the Python standard-library
 ``http.server`` plus the framework-agnostic ``PayCore`` umbrella core. One
 gated route, sensible defaults, both protocols (x402 and MPP) accepted.
 
-Zero-config: ``pay_kit.configure()`` boots against solana_localnet (the
+Zero-config: ``solana_pay_kit.configure()`` boots against solana_localnet (the
 hosted Surfpool sandbox) with the shipped demo signer as the recipient, so
 the example runs without any wallet setup.
 
@@ -26,20 +26,20 @@ import asyncio
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import pay_kit
-from pay_kit import Gate, PayCore, usd
-from pay_kit.errors import InvalidProofError, PaymentRequiredError
+import solana_pay_kit
+from solana_pay_kit import Gate, PayCore, usd
+from solana_pay_kit.errors import InvalidProofError, PaymentRequiredError
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 
-_core = PayCore.for_config(pay_kit.config())
+_core = PayCore.for_config(solana_pay_kit.config())
 
 report_gate = Gate.build(
     name="report",
     amount=usd("0.10"),
     description="Premium report",
-    default_pay_to=pay_kit.config().effective_recipient(),
-    accept_default=pay_kit.config().accept,
+    default_pay_to=solana_pay_kit.config().effective_recipient(),
+    accept_default=solana_pay_kit.config().accept,
 )
 
 

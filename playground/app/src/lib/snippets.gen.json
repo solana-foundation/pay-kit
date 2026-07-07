@@ -15,5 +15,26 @@
     "x402": {
       "client": "const signer = await createKeyPairSignerFromBytes(getBase58Encoder().encode(SECRET))\nconst client = await createPayKitClient({ signer, rpcUrl: 'http://localhost:8899' })\n\n// Force the x402 rail (omit the 3rd arg to let pay-kit pick MPP or x402).\nconst res = await client.fetch('${URL}', undefined, 'x402')\nconsole.log(await res.json())"
     }
+  },
+  "rust": {
+    "charge": {
+      "client": "// 1. Parse the MPP charge challenge from the 402 `WWW-Authenticate` header.\nlet challenge = parse_challenge(www_authenticate)?;\n\n// 2. Sign a payment credential and replay the request with it.\nlet authorization = build_credential_header(signer, rpc, &challenge).await?;\nlet res = reqwest::Client::new()\n    .get(\"${URL}\")\n    .header(\"Authorization\", authorization)\n    .send()\n    .await?;\nprintln!(\"{}\", res.text().await?);",
+      "server": "let pay = PayKit::new(PayKitConfig {\n    recipient: \"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\".to_string(),\n    network: \"localnet\".to_string(),\n    rpc_url: Some(\"https://402.surfnet.dev:8899\".to_string()),\n    ..Default::default()\n})\n.expect(\"valid config\");\n\n// `paid_get(handler, price, &pay)` settles the 402 (MPP or x402, the\n// client's choice) before the handler runs.\nlet app = Router::new().route(\"${PATH}\", paid_get(quote, \"0.01\", &pay));"
+    }
+  },
+  "go": {
+    "charge": {
+      "client": "// The returned *http.Client settles a 402 transparently on any call.\nhttpClient := x402client.NewClient(signer, rpc)\n\nresp, err := httpClient.Get(\"${URL}\")\nif err != nil {\n\tpanic(err)\n}\ndefer resp.Body.Close()\n\nbody, _ := io.ReadAll(resp.Body)\nfmt.Println(string(body))",
+      "server": "client, err := paykit.New(paykit.Config{\n\tNetwork: paykit.SolanaLocalnet,\n\tAccept:  []paykit.Protocol{paykit.X402, paykit.MPP},\n\tMPP: paykit.MPPConfig{\n\t\tRealm:                  \"MyApp\",\n\t\tChallengeBindingSecret: []byte(\"local-dev-secret\"),\n\t},\n})\nif err != nil {\n\tpanic(err)\n}\n\ngate := paykit.Gate{Amount: paykit.MustParseUSD(\"0.01\"), Desc: \"Stock quote\"}\n\n// client.Require(gate) is func(http.Handler) http.Handler — it settles the\n// 402 (MPP or x402, the client's choice) before your handler runs.\nmux := http.NewServeMux()\nmux.Handle(\"${PATH}\", client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\tpmt, _ := paykit.PaymentFrom(r.Context())\n\tfmt.Fprintf(w, `{\"ok\":true,\"paid_via\":%q}`, pmt.Protocol)\n})))"
+    }
+  },
+  "python": {
+    "charge": {
+      "client": "# x402_async_client returns an httpx.AsyncClient that turns any 402 into a\n# signed PAYMENT-SIGNATURE payment and replays the request — transparently.\nasync with x402_async_client(signer, rpc) as http:\n    resp = await http.get(\"${URL}\")\n    print(resp.status_code, resp.headers.get(\"payment-response\"))",
+      "server": "solana_pay_kit.configure(network=\"solana_localnet\")\n\ngate = Gate.build(\n    name=\"quote\",\n    amount=usd(\"0.01\"),\n    description=\"Stock quote\",\n    default_pay_to=solana_pay_kit.config().effective_recipient(),\n    accept_default=solana_pay_kit.config().accept,\n)\n\napp = Flask(__name__)\n\n\n# @require_payment settles the 402 (MPP or x402, the client's choice) before\n# the view runs; the verified proof is readable via solana_pay_kit.flask.payment().\n@app.get(\"${PATH}\")\n@require_payment(gate)\ndef quote():\n    return jsonify(ok=True, protocol=payment().protocol.value)\n\n"
+    },
+    "session": {
+      "server": "# One session method, built from the shared config. `cap` is the ceiling the\n# server offers; on-chain settle-at-close needs the operator signer + RPC.\nsession = new_session(\n    SessionOptions(\n        operator=cfg.operator.signer.pubkey(),\n        recipient=cfg.effective_recipient(),\n        cap=1_000_000,  # 1.00 USDC ceiling\n        currency=resolve_mint(\"USDC\", \"mainnet\"),\n        decimals=stablecoin_decimals(\"USDC\"),\n        network=cfg.network.value,\n        secret_key=cfg.mpp.challenge_binding_secret or \"\",\n        signer=cfg.operator.signer,\n        rpc=SolanaRpc(cfg.effective_rpc_url()),\n        open_tx_submitter=\"server\",\n        close_delay=2.0,  # idle-close watchdog\n    )\n)\nchallenge = SessionChallengeOptions(cap=\"1000000\", description=\"Metered token stream\")\n\n# RequireSession is the 402 gate: verify a credential/voucher or answer with a\n# fresh challenge — the session counterpart of RequirePayment.\ngate = Depends(RequireSession(session, challenge))\n\n\n@router.get(\"${PATH}\")\nasync def stream(_=gate) -> StreamingResponse:\n    ...  # stream metered deliveries, billed per chunk against the voucher\n\n\n# Mount the reserve/commit metering side channel built by session_routes.\nroutes = session_routes(session.core())\n\n\n@router.post(\"/__402/session/deliveries\")\nasync def deliveries(request: Request) -> JSONResponse:\n    r = await routes.deliveries(request.method, await request.body() or b\"{}\")\n    return JSONResponse(r.body, status_code=r.status)"
+    }
   }
 }

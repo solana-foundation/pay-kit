@@ -11,20 +11,20 @@ from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.transaction import Transaction
 
-from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
-from pay_kit._paycore.solana import (
+from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
     MethodDetails,
     Split,
 )
-from pay_kit.protocols.mpp.client.charge import (
+from solana_pay_kit.protocols.mpp.client.charge import (
     build_charge_transaction,
     build_credential_header,
 )
-from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.headers import parse_authorization
-from pay_kit.protocols.mpp.core.types import PaymentChallenge
+from solana_pay_kit.protocols.mpp.core.base64url import encode_json
+from solana_pay_kit.protocols.mpp.core.headers import parse_authorization
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 BLOCKHASH = "11111111111111111111111111111111"
 
@@ -290,7 +290,7 @@ async def test_build_charge_transaction_resolves_token_program_via_rpc_owner():
     # Rust resolve_token_program fetches the mint account owner via RPC when
     # methodDetails.tokenProgram is absent (charge.rs:450-454). An unknown mint
     # owned by Token-2022 must build with the Token-2022 program.
-    from pay_kit._paycore.solana import TOKEN_2022_PROGRAM
+    from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM
 
     class _Owner:
         owner = TOKEN_2022_PROGRAM
@@ -512,7 +512,7 @@ async def test_client_expected_network_guard():
 
 async def test_client_refuses_unknown_token_2022_without_opt_in():
     # Audit #26: unknown Token-2022 mint requires opt-in.
-    from pay_kit._paycore.solana import TOKEN_2022_PROGRAM
+    from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM
 
     signer = Keypair()
     unknown_mint = str(Keypair().pubkey())
@@ -534,7 +534,7 @@ async def test_client_refuses_unknown_token_2022_without_opt_in():
 
 async def test_client_allows_unknown_vanilla_token_mint():
     # Audit #26: vanilla Token program has no hooks -> first-class, no opt-in.
-    from pay_kit._paycore.solana import TOKEN_PROGRAM
+    from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 
     signer = Keypair()
     unknown_mint = str(Keypair().pubkey())
@@ -556,7 +556,7 @@ async def test_client_allows_unknown_vanilla_token_mint():
 
 async def test_client_requires_decimals_for_spl():
     # Audit #42: SPL charge must carry decimals (no silent default to 6).
-    from pay_kit._paycore.solana import TOKEN_PROGRAM
+    from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 
     signer = Keypair()
     with pytest.raises(ValueError, match="decimals is required"):

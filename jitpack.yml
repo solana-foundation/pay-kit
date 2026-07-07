@@ -1,0 +1,17 @@
+# JitPack build config for the Kotlin SDK.
+#
+# pay-kit is a polyglot monorepo; the Kotlin library lives under kotlin/
+# (not the repo root), so JitPack cannot auto-detect the Gradle build. This
+# file points JitPack at the kotlin/ subproject and publishes the artifact to
+# the local Maven repo, which JitPack then harvests and serves.
+#
+# The Kotlin library targets JVM 17 (jvmToolchain(17) in kotlin/build.gradle.kts),
+# so JitPack must build on a JDK >= 17.
+jdk:
+  - openjdk17
+
+# The kotlin/ module has no Gradle wrapper checked in, so we invoke JitPack's
+# provided `gradle` directly. $VERSION is the tag JitPack is building; passing
+# it as -Pversion makes the published artifact carry the tag version.
+install:
+  - cd kotlin && gradle -Pversion=$VERSION publishToMavenLocal

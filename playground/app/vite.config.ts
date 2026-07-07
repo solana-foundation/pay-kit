@@ -27,8 +27,8 @@ export default defineConfig({
     proxy: {
       '/openapi.json': target,
       '/api': target, // priced routes (/api/v1/*) + meta (health, faucet, docs)
-      '/sessions': target, // session receipt poll
-      '/__402': target, // session delivery side-channel
+      '^/x402/': target, // legacy x402 demo API routes kept for compatibility
+      '/__402': target, // session side-channels: delivery reserve + settle-receipt poll
     },
   },
 })

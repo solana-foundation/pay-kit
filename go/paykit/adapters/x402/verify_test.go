@@ -339,7 +339,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 				{ProgramIDIndex: 6, Accounts: []uint16{1, 2, 3, 4}, Data: transferData},
 			},
 		},
-		Signatures: []solana.Signature{{}},
+		Signatures: []solana.Signature{{}, solana.MustSignatureFromBase58(sampleClientSig)},
 	}
 	wire, err := tx.MarshalBinary()
 	if err != nil {
@@ -430,6 +430,26 @@ func TestVerifyAndSettleReplayRejected(t *testing.T) {
 	}
 }
 
+func TestTransactionReplayKeySkipsSponsoredFeePayerSlot(t *testing.T) {
+	clientSig := solana.MustSignatureFromBase58(sampleClientSig)
+	tx := &solana.Transaction{Signatures: []solana.Signature{{}, clientSig}}
+	key, err := transactionReplayKey(tx)
+	if err != nil {
+		t.Fatalf("transactionReplayKey: %v", err)
+	}
+	if key != sampleClientSig {
+		t.Fatalf("replay key = %s, want %s", key, sampleClientSig)
+	}
+}
+
+func TestTransactionReplayKeyRejectsUnsignedTransaction(t *testing.T) {
+	tx := &solana.Transaction{Signatures: []solana.Signature{{}}}
+	_, err := transactionReplayKey(tx)
+	if err == nil {
+		t.Fatal("expected unsigned transaction to be rejected")
+	}
+}
+
 func TestVerifyAndSettleRejectsTransactionThatDoesNotPayGate(t *testing.T) {
 	// Operator recipient != fixture payTo, so the destination ATA
 	// mismatch is caught BEFORE any broadcast.
@@ -461,6 +481,7 @@ func TestVerifyAndSettleRejectsTransactionThatDoesNotPayGate(t *testing.T) {
 }
 
 const sampleSig = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW"
+const sampleClientSig = "3APVUYY2Qcq9WwPSciQ1xicshQcsXJWhgD1x5YEMNnNnKtpaAJtRhDVMWcvePosamk3JfSKpBM8qt5ZkAQgRNSzo"
 
 func TestRecentBlockhashUsesProviderThenRPC(t *testing.T) {
 	// Provider wins when set.

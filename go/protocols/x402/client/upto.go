@@ -31,13 +31,8 @@ func randomSalt() (uint64, error) {
 	return n.Uint64(), nil
 }
 
-func profileSupported(requirements *x402.UptoRequirements) bool {
-	for _, p := range requirements.Extra.Profiles {
-		if p == x402.ProfilePaymentChannel {
-			return true
-		}
-	}
-	return false
+func assetTransferMethodSupported(requirements *x402.UptoRequirements) bool {
+	return requirements.Extra.AssetTransferMethod == x402.UptoAssetTransferMethod
 }
 
 func resolveChannelProgram(channelProgramStr string) (solana.PublicKey, error) {
@@ -58,14 +53,14 @@ func BuildUptoPayload(
 	expiresAt int64,
 	nonce string,
 ) (*x402.UptoPayload, error) {
-	if !profileSupported(requirements) {
-		return nil, errors.New("x402 client: requirement does not advertise the payment-channel profile")
+	if !assetTransferMethodSupported(requirements) {
+		return nil, errors.New("x402 client: requirement does not use the payment-channel asset transfer method")
 	}
 	max, err := strconv.ParseUint(requirements.Amount, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid upto amount %q: %w", requirements.Amount, err)
 	}
-	payee, err := solana.PublicKeyFromBase58(requirements.PayTo)
+	beneficiary, err := solana.PublicKeyFromBase58(requirements.PayTo)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid payTo %q: %w", requirements.PayTo, err)
 	}
@@ -73,9 +68,19 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid asset mint %q: %w", requirements.Asset, err)
 	}
-	operator, err := solana.PublicKeyFromBase58(requirements.Extra.FeePayer)
+	operator, err := solana.PublicKeyFromBase58(requirements.Extra.FacilitatorAddress)
 	if err != nil {
-		return nil, fmt.Errorf("x402 client: invalid feePayer %q: %w", requirements.Extra.FeePayer, err)
+		return nil, fmt.Errorf("x402 client: invalid facilitatorAddress %q: %w", requirements.Extra.FacilitatorAddress, err)
+	}
+	recipients := []paymentchannels.Distribution(nil)
+	if !beneficiary.Equals(operator) {
+		if requirements.Extra.FacilitatorFee > 10_000 {
+			return nil, errors.New("x402 client: facilitatorFee exceeds 100%")
+		}
+		recipients = []paymentchannels.Distribution{{
+			Recipient: beneficiary,
+			Bps:       10_000 - requirements.Extra.FacilitatorFee,
+		}}
 	}
 	programID, err := resolveChannelProgram(requirements.Extra.ChannelProgram)
 	if err != nil {
@@ -104,19 +109,20 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, err
 	}
-	channel, _, err := paymentchannels.FindChannelPDAForProgram(signer.PublicKey(), payee, mint, operator, salt, programID)
+	channel, _, err := paymentchannels.FindChannelPDAForProgram(signer.PublicKey(), operator, mint, operator, salt, programID)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: find channel PDA: %w", err)
 	}
 	openIx, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            signer.PublicKey(),
 		RentPayer:        operator,
-		Payee:            payee,
+		Payee:            operator,
 		Mint:             mint,
 		AuthorizedSigner: operator,
 		Salt:             salt,
 		Deposit:          max,
 		GracePeriod:      defaultGracePeriodSeconds,
+		Recipients:       recipients,
 		TokenProgram:     tokenProgram,
 		ProgramID:        programID,
 	})
@@ -144,7 +150,6 @@ func BuildUptoPayload(
 		validAfter = *requirements.Extra.ValidAfter
 	}
 	return &x402.UptoPayload{
-		Profile:          x402.ProfilePaymentChannel,
 		From:             signer.PublicKey().String(),
 		MaxAmount:        strconv.FormatUint(max, 10),
 		ExpiresAt:        expiresAt,
@@ -164,8 +169,6 @@ func EncodeUptoHeader(requirements *x402.UptoRequirements, payload *x402.UptoPay
 	}
 	envelope := x402.UptoSignatureEnvelope{
 		X402Version: x402Version,
-		Scheme:      x402.UptoScheme,
-		Network:     requirements.Network,
 		Accepted:    accepted,
 		Payload:     *payload,
 	}

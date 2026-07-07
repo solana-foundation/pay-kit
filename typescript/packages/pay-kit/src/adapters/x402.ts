@@ -11,11 +11,13 @@ import { ExactSvmScheme as ExactSvmFacilitator } from '@x402/svm/exact/facilitat
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
+import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2 } from '../protocol.js';
+import { errorMessage, x402PaymentHeader } from './x402-shared.js';
 
 /** x402 v2 protocol version advertised in the challenge envelope. */
 const X402_VERSION = 2;
@@ -47,10 +49,8 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     );
 
     function mintFor(gate: Gate): string {
-        const coin = gate.amount.primaryCoin() ?? config.stablecoins[0] ?? 'USDC';
-        const mint = resolveStablecoinMint(coin, network);
-        if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${config.network}.`);
-        return mint;
+        const coin = resolveCoin(gate.amount, config.stablecoins);
+        return requireMint(coin, resolveStablecoinMint(coin, network), config.network);
     }
 
     /** The route's pinned requirements — the credential is bound to this exact amount. */
@@ -64,10 +64,6 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             payTo: gate.payTo,
             scheme: 'exact',
         };
-    }
-
-    function paymentHeader(request: Request): string | undefined {
-        return request.headers.get('x-payment') ?? request.headers.get('payment-signature') ?? undefined;
     }
 
     /**
@@ -109,14 +105,14 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
         },
 
         detect(request: Request): boolean {
-            return paymentHeader(request) !== undefined;
+            return x402PaymentHeader(request) !== undefined;
         },
 
         protocol: 'x402',
         scheme: 'exact',
 
         async verifyAndSettle(gate: Gate, request: Request): Promise<Payment> {
-            const header = paymentHeader(request);
+            const header = x402PaymentHeader(request);
             if (!header) throw new InvalidProofError('missing_x402_payment_header');
 
             let payload: PaymentPayload;
@@ -148,8 +144,4 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             };
         },
     };
-}
-
-function errorMessage(error: unknown): string | undefined {
-    return error instanceof Error ? error.message : undefined;
 }

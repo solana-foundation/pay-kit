@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit.protocols.mpp.core.base64url import encode, encode_json
-from pay_kit.protocols.mpp.core.headers import (
+from solana_pay_kit.protocols.mpp.core.base64url import encode, encode_json
+from solana_pay_kit.protocols.mpp.core.headers import (
     ParseError,
     format_authorization,
     format_receipt,
@@ -15,7 +15,7 @@ from pay_kit.protocols.mpp.core.headers import (
     parse_www_authenticate,
     parse_www_authenticate_all,
 )
-from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
+from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
 
 
 class TestWWWAuthenticate:
@@ -72,7 +72,7 @@ class TestWWWAuthenticate:
 
     def test_rejects_oversized_request_param(self):
         # Audit #9: request param must be capped before decode/JSON-parse.
-        from pay_kit.protocols.mpp.core.headers import MAX_TOKEN_LEN
+        from solana_pay_kit.protocols.mpp.core.headers import MAX_TOKEN_LEN
 
         big = "A" * (MAX_TOKEN_LEN + 1)
         header = f'Payment id="x", realm="api", method="solana", intent="charge", request="{big}"'
@@ -80,7 +80,7 @@ class TestWWWAuthenticate:
             parse_www_authenticate(header)
 
     def test_accepts_request_param_at_max_size(self):
-        from pay_kit.protocols.mpp.core.headers import MAX_TOKEN_LEN
+        from solana_pay_kit.protocols.mpp.core.headers import MAX_TOKEN_LEN
 
         body = encode_json({"amount": "1", "currency": "USDC"})
         # Pad to exactly MAX_TOKEN_LEN with base64url-safe chars; still valid b64

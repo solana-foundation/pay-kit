@@ -20,15 +20,15 @@ from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
-from pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
-from pay_kit.protocols.mpp._paymentchannels import (
+from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
+from solana_pay_kit.protocols.mpp._paymentchannels import (
     ED25519_PROGRAM_ID,
     PROGRAM_ID,
     Distribution,
     build_ed25519_verify_instruction,
     find_channel_pda,
 )
-from pay_kit.protocols.mpp.client.payment_channels import (
+from solana_pay_kit.protocols.mpp.client.payment_channels import (
     DEFAULT_GRACE_PERIOD_SECONDS,
     PENDING_SERVER_SIGNATURE,
     PaymentChannelOpenOptions,
@@ -41,7 +41,7 @@ from pay_kit.protocols.mpp.client.payment_channels import (
     generate_authorized_signer,
     unique_salt,
 )
-from pay_kit.protocols.mpp.intents.session import SessionRequest, SessionSplit
+from solana_pay_kit.protocols.mpp.intents.session import SessionRequest, SessionSplit
 
 _USDC_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 _PYUSD_MAINNET = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"

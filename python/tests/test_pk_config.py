@@ -6,7 +6,7 @@ deprecation shims (``pay_to`` / ``facilitator`` / ``facilitator_secret_key`` /
 (caveat #2), the localnet->mainnet mint fallback (caveat #1), and BOTH preflight
 opt-out knobs (caveat #7): ``configure(preflight=False)`` and
 ``PAY_KIT_DISABLE_PREFLIGHT=1``, each asserted against a stubbed
-``pay_kit.preflight.run`` so no live RPC runs.
+``solana_pay_kit.preflight.run`` so no live RPC runs.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import warnings
 
 import pytest
 
-import pay_kit.preflight as preflight_mod
-from pay_kit import (
+import solana_pay_kit.preflight as preflight_mod
+from solana_pay_kit import (
     Config,
     MppConfig,
     Network,
@@ -28,11 +28,11 @@ from pay_kit import (
     configure,
     configure_from,
 )
-from pay_kit._paycore import mints
-from pay_kit.config import config as get_config
-from pay_kit.config import reset
-from pay_kit.errors import ConfigurationError, DemoSignerOnMainnetError
-from pay_kit.signer import DEMO_PUBKEY
+from solana_pay_kit._paycore import mints
+from solana_pay_kit.config import config as get_config
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import ConfigurationError, DemoSignerOnMainnetError
+from solana_pay_kit.signer import DEMO_PUBKEY
 
 
 @pytest.fixture(autouse=True)
@@ -179,7 +179,7 @@ def test_x402_demo_signer_on_mainnet_allowed_when_x402_not_accepted():
 
 def test_public_mainnet_rpc_warns(caplog):
     op = Operator(signer=Signer.generate(), recipient="R1111111111111111111111111111111111111111")
-    with caplog.at_level("WARNING", logger="pay_kit"):
+    with caplog.at_level("WARNING", logger="solana_pay_kit"):
         configure(network="solana_mainnet", operator=op)  # no rpc_url -> public default
     assert any("public Solana RPC" in r.message for r in caplog.records)
 

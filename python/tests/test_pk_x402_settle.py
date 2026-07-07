@@ -21,9 +21,9 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-import pay_kit.protocols.x402 as xmod
-from pay_kit import Gate as GateCls
-from pay_kit import (
+import solana_pay_kit.protocols.x402 as xmod
+from solana_pay_kit import Gate as GateCls
+from solana_pay_kit import (
     LocalSigner,
     MemoryStore,
     Operator,
@@ -32,17 +32,17 @@ from pay_kit import (
     Stablecoin,
     configure,
 )
-from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
-from pay_kit.config import reset
-from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402 import (
+from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.protocols.x402 import (
     X402_VERSION,
     X402Adapter,
     _co_sign,
     _is_loopback_rpc,
     _request_path,
 )
-from pay_kit.protocols.x402.exact.verify import (
+from solana_pay_kit.protocols.x402.exact.verify import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
 )
@@ -55,7 +55,7 @@ TP = token_program_for("USDC", "mainnet")
 
 
 class _FakeRpc:
-    """Stub matching pay_kit.protocols.mpp.SolanaRpc's async send/close surface."""
+    """Stub matching solana_pay_kit.protocols.mpp.SolanaRpc's async send/close surface."""
 
     def __init__(
         self,
@@ -221,7 +221,7 @@ async def test_success_path_awaits_confirmation_before_returning(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_confirmation_timeout_raises_and_does_not_return_success(monkeypatch):
-    from pay_kit._paycore.errors import PaymentError
+    from solana_pay_kit._paycore.errors import PaymentError
 
     store = MemoryStore()
     adapter, gate, op_kp = _adapter(
@@ -241,7 +241,7 @@ async def test_confirmation_timeout_raises_and_does_not_return_success(monkeypat
 
 @pytest.mark.asyncio
 async def test_confirmation_onchain_failure_rolls_back_reservation(monkeypatch):
-    from pay_kit._paycore.errors import PaymentError
+    from solana_pay_kit._paycore.errors import PaymentError
 
     store = MemoryStore()
     adapter, gate, op_kp = _adapter(
@@ -281,7 +281,7 @@ def test_x402_sub_microunit_price_rejected():
     # Regression: usd("0.0000009") truncated to "0" via int(amount * 1e6),
     # which would have the verifier accept a zero-amount transfer. It must now
     # raise instead of producing "0".
-    from pay_kit.errors import ConfigurationError
+    from solana_pay_kit.errors import ConfigurationError
 
     adapter, gate = _x402_adapter_for_price(Price.usd("0.0000009", Stablecoin.USDC))
     with pytest.raises(ConfigurationError, match="precision"):

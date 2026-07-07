@@ -3,7 +3,7 @@
 Honors the same stdin/stdout contract as the TypeScript reference runner
 (harness/src/conformance/ts-runner.ts) and the Go runner
 (go/cmd/conformance/main.go): read one conformance vector as JSON on stdin,
-drive the real Python pay_kit SDK (the MPP client build, the server
+drive the real Python solana_pay_kit SDK (the MPP client build, the server
 RPC-free pre-broadcast verify, and the wire canonical-JSON / base64url
 encoders) for the requested mode, and emit one RunnerResult line as JSON on
 stdout.
@@ -31,7 +31,7 @@ import json
 import sys
 from typing import Any
 
-from pay_kit._paycore.solana import (
+from solana_pay_kit._paycore.solana import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
     SYSTEM_PROGRAM,
@@ -42,28 +42,28 @@ from pay_kit._paycore.solana import (
     is_native_sol,
     resolve_mint,
 )
-from pay_kit.protocols.mpp.client.charge import build_charge_transaction
-from pay_kit.protocols.mpp.core import json as wire_json
-from pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest
-from pay_kit.protocols.mpp.intents.session import VoucherData
-from pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
-from pay_kit.protocols.x402.client.exact.payment import (
+from solana_pay_kit.protocols.mpp.client.charge import build_charge_transaction
+from solana_pay_kit.protocols.mpp.core import json as wire_json
+from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
+from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
+from solana_pay_kit.protocols.mpp.intents.session import VoucherData
+from solana_pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
+from solana_pay_kit.protocols.x402.client.exact.payment import (
     _caip2_for_selection,
     build_payment_header,
     build_payment_header_legacy,
 )
-from pay_kit.protocols.x402.exact.extensions import (
+from solana_pay_kit.protocols.x402.exact.extensions import (
     PAYMENT_IDENTIFIER_KEY,
     verify_payment_identifier,
 )
-from pay_kit.protocols.x402.exact.legacy import caip2_for_network
-from pay_kit.protocols.x402.exact.verify import (
+from solana_pay_kit.protocols.x402.exact.legacy import caip2_for_network
+from solana_pay_kit.protocols.x402.exact.verify import (
     EXACT_SCHEME,
     X402_VERSION_V1,
     X402_VERSION_V2,
 )
-from pay_kit.signer import LocalSigner
+from solana_pay_kit.signer import LocalSigner
 
 DEFAULT_NETWORK = "mainnet"
 DEFAULT_SPL_DECIMALS = 6
@@ -153,7 +153,7 @@ def _flatten_request(
     )
     splits = md.get("splits")
     if splits:
-        from pay_kit._paycore.solana import Split
+        from solana_pay_kit._paycore.solana import Split
 
         details.splits = [Split.from_dict(s) for s in splits]
 
@@ -399,9 +399,9 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
 # top-level scheme/network vs v2 accepted, payloadHasTransaction), never the
 # signed Solana transaction inside payload.transaction. This mirrors the
 # rust spine and the TS reference oracle (harness/src/conformance/x402.ts):
-#   - build v2 -> pay_kit build_payment_header    (PAYMENT-SIGNATURE)
+#   - build v2 -> solana_pay_kit build_payment_header    (PAYMENT-SIGNATURE)
 #   - verify   -> the envelope-level version dispatch + network gate + the
-#                 v2 accepted-vs-route field comparison from the pay_kit
+#                 v2 accepted-vs-route field comparison from the solana_pay_kit
 #                 X402Adapter.verify_and_settle pre-broadcast surface.
 
 
@@ -460,7 +460,7 @@ def _decode_envelope_shape(header_b64: str) -> dict[str, Any]:
 
 
 async def _x402_build_header(vector: dict[str, Any]) -> str:
-    """Drive the real pay_kit x402 client to build a payment header.
+    """Drive the real solana_pay_kit x402 client to build a payment header.
 
     The offer is the vector's ``x402Offer``. An ephemeral signer + pinned
     blockhash + pinned memo nonce keep the build deterministic and RPC-free;
@@ -506,7 +506,7 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
 def _x402_verify(vector: dict[str, Any]) -> dict[str, Any]:
     """Drive the envelope-level x402 server verify against the route.
 
-    Mirrors the pre-broadcast surface of pay_kit X402Adapter.verify_and_settle
+    Mirrors the pre-broadcast surface of solana_pay_kit X402Adapter.verify_and_settle
     and the rust spine ``parse_payment_signature`` + ``verify_envelope_payload``:
     version dispatch, the network gate (v1 legacy slug / v2 accepted.network),
     and the v2 accepted-vs-route field comparison. The signed-transaction

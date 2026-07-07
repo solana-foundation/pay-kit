@@ -91,7 +91,7 @@ jobs:
           cache-dependency-path: go/go.sum
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_client solana-x402:harness_client,harness_upto_client,harness_upto_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: go
       - name: Checkout payment channels program
         uses: actions/checkout@v5

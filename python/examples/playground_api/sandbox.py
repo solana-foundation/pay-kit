@@ -18,8 +18,16 @@ import json
 import urllib.request
 from typing import Any
 
-from pay_kit._paycore.mints import SYSTEM_PROGRAM, TOKEN_PROGRAM
-from pay_kit._paycore.solana import resolve_mint
+# Imported at module scope (not lazily inside register_faucet) so FastAPI can
+# resolve the `request: Request` annotation: with `from __future__ import
+# annotations` the hint is a string FastAPI evaluates against module globals, so
+# a function-local import would leave it unresolved and `request` would be
+# mistaken for a required query parameter.
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+from solana_pay_kit._paycore.mints import SYSTEM_PROGRAM, TOKEN_PROGRAM
+from solana_pay_kit._paycore.solana import resolve_mint
 
 # The sandbox clones mainnet state, so it funds the *mainnet* USDC mint
 # regardless of the configured network tag (mirrors sandbox.ts).
@@ -88,8 +96,6 @@ def fund_usdc(rpc_url: str, *addresses: str) -> None:
 
 def register_faucet(app: Any, rpc_url: str) -> None:
     """Mount a USDC faucet (no SOL needed): airdrop sandbox USDC to an address."""
-    from fastapi import Request
-    from fastapi.responses import JSONResponse
 
     @app.get("/api/v1/faucet/status")
     async def faucet_status() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]

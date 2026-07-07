@@ -4,12 +4,12 @@
  *
  * Mirrors generate-subscriptions-client.ts — both scripts vendor the IDL
  * at `<repo-root>/idl/<program>.json` and render a Rust client into
- * `rust/crates/programs/<program>/src/generated/`. See
+ * `rust/crates/kit/src/generated/<program>/generated/`. See
  * `../references/codegen.md` for the broader rationale and for how to
  * add a third language renderer.
  *
  * Output:
- *   rust/crates/programs/payment-channels/src/generated/   (rendered by Codama)
+ *   rust/crates/kit/src/generated/payment_channels/generated/   (rendered by Codama)
  */
 import type { AnchorIdl } from '@codama/nodes-from-anchor';
 import { renderVisitor as renderRustVisitor } from '@codama/renderers-rust';
@@ -24,7 +24,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
 const idlPath = path.join(repoRoot, 'idl', 'payment-channels.json');
-const rustClientDir = path.join(repoRoot, 'rust', 'crates', 'programs', 'payment-channels');
+// The payment-channels client is inlined into the single publishable crate at
+// rust/crates/kit/src/generated/payment_channels/generated/.
+const rustClientDir = path.join(repoRoot, 'rust', 'crates', 'kit', 'src', 'generated', 'payment_channels');
 
 if (!fs.existsSync(idlPath)) {
     console.error(`[codegen] IDL not found at ${idlPath}`);
@@ -36,14 +38,14 @@ const idl = JSON.parse(fs.readFileSync(idlPath, 'utf-8')) as AnchorIdl;
 const codama = createFromJson(JSON.stringify(idl));
 
 console.log(`[codegen] Rendering Rust client from ${path.relative(repoRoot, idlPath)}`);
-console.log(`[codegen]   → ${path.relative(repoRoot, rustClientDir)}/src/generated/`);
+console.log(`[codegen]   → ${path.relative(repoRoot, rustClientDir)}/generated/`);
 
 void codama.accept(
     renderRustVisitor(rustClientDir, {
         anchorTraits: false,
         deleteFolderBeforeRendering: true,
         formatCode: true,
-        generatedFolder: 'src/generated',
+        generatedFolder: 'generated',
     }),
 );
 
