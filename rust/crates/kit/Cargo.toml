@@ -41,9 +41,8 @@ confidential = [
     "dep:solana-signer",
 ]
 # Single confidential-settlement worker run-loop (tokio actor) + the orphan
-# sweeper. Needs the server (tokio) + confidential settlement primitives, plus
-# solana-rpc-client-api for the getProgramAccounts scan.
-worker = ["confidential", "server", "dep:solana-rpc-client-api"]
+# sweeper. Needs the server (tokio) + confidential settlement primitives.
+worker = ["confidential", "server"]
 # Settlement test/demo harness (open real channels, fund, drive + observe).
 testkit = ["dep:reqwest"]
 # Generated program-client account fetch helpers (RPC). Off by default — the
@@ -85,9 +84,11 @@ solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-commitment-config = { version = "3.0", default-features = false }
 solana-rpc-client = { version = "4", default-features = false }
-# Program-account scan (memcmp by gateway authority) for the confidential
-# orphan sweeper. Optional; pulled in only by the `worker` feature.
-solana-rpc-client-api = { version = "4", default-features = false, optional = true }
+# Request/response types for raw RPC calls: the confidential orphan sweeper's
+# getProgramAccounts scan, and the challenge builders' getLatestBlockhash
+# (whose response context carries the slot embedded as `recentSlot`). Always
+# on — it is already a transitive dep of solana-rpc-client.
+solana-rpc-client-api = { version = "4", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
 solana-transaction = { version = "3", default-features = false }
@@ -140,10 +141,9 @@ borsh = { version = "1.0", features = ["derive"] }
 url = "2"
 getrandom = "0.3"
 
-# Crypto (HMAC challenge IDs + distribution hash + voucher verification)
+# Crypto (HMAC challenge IDs + SHA-256 distribution hash + voucher verification)
 hmac = "0.12"
 sha2 = "0.10"
-blake3 = "1"
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
 
 # Time (expiration, timestamps)

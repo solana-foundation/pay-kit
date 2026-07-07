@@ -24,7 +24,10 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 ///
 /// `expires_at` is the voucher/authorization deadline (Unix seconds); `nonce`
 /// uniquely identifies this authorization. The requirement MUST carry
-/// `extra.recentBlockhash` (the operator provides it in the 402 challenge).
+/// `extra.recentBlockhash` AND `extra.recentSlot` (the operator provides both
+/// in the 402 challenge): the slot feeds the program's `openSlot`, a
+/// channel-PDA seed the program only accepts within a recent window, and it
+/// comes from the challenge — never from a client-side RPC fetch.
 pub async fn build_upto_payload(
     payer_signer: &dyn SolanaSigner,
     requirements: &UptoRequirements,
@@ -79,15 +82,23 @@ pub async fn build_upto_payload(
         .ok_or_else(|| Error::Other("requirement missing extra.recentBlockhash".to_string()))?;
     let blockhash = Hash::from_str(recent_blockhash)
         .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
+    let open_slot: u64 = requirements
+        .extra
+        .recent_slot
+        .as_deref()
+        .ok_or_else(|| Error::Other("requirement missing extra.recentSlot".to_string()))?
+        .parse()
+        .map_err(|e| Error::Other(format!("invalid recentSlot: {e}")))?;
 
     let salt = pc::random_salt();
     // operator is both the voucher signer (authorized_signer) and the fee payer.
     let open = pc::build_open_payment_channel_tx(
         payer_signer,
-        &operator, // channel payee/merchant == authorized_signer == fee_payer
+        &operator, // channel payee == authorized_signer == fee_payer
         &mint,
         &operator,
         salt,
+        open_slot,
         max,
         pc::DEFAULT_GRACE_PERIOD_SECONDS,
         recipients,
@@ -205,6 +216,7 @@ mod tests {
                 channel_program: None,
                 recent_blockhash: Some(Hash::default().to_string()),
                 last_valid_block_height: None,
+                recent_slot: Some("314".to_string()),
                 valid_after: None,
             },
         }

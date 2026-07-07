@@ -14,5 +14,6 @@ pub struct OpenArgs {
     pub salt: u64,
     pub deposit: u64,
     pub grace_period: u32,
+    pub open_slot: u64,
     pub recipients: Vec<DistributionEntry>,
 }

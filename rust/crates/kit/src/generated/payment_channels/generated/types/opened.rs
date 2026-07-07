@@ -12,4 +12,5 @@ use solana_address::Address;
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Opened {
     pub channel: Address,
+    pub open_slot: u64,
 }

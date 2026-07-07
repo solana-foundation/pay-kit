@@ -11,8 +11,8 @@
 //!    — server calls [`SessionServer::verify_voucher`] to validate and advance
 //!    the settled watermark atomically.
 //! 4. At session end the client (or server) triggers close. The server calls
-//!    [`SessionServer::finalize_params`] to get the parameters needed to
-//!    submit on-chain finalize + distribute transactions.
+//!    [`SessionServer::seal_params`] to get the parameters needed to
+//!    submit on-chain seal + distribute transactions.
 //!
 //! # Note on on-chain verification
 //!
@@ -159,9 +159,9 @@ impl Default for SessionConfig {
 
 // ── Parameters returned to the caller for on-chain settlement ──
 
-/// Parameters needed to submit a finalize + distribute transaction pair.
+/// Parameters needed to submit a seal + distribute transaction pair.
 #[derive(Debug, Clone)]
-pub struct FinalizeParams {
+pub struct SealParams {
     /// On-chain channel address.
     pub channel_id: Pubkey,
 
@@ -196,9 +196,9 @@ pub struct FinalizeParams {
     pub distribution_hash: [u8; 32],
 }
 
-impl FinalizeParams {
-    /// Build the on-chain settle+finalize instructions for this channel, signed
-    /// by `operator` (fee-payer + merchant authority). Shared by the settlement
+impl SealParams {
+    /// Build the on-chain settle+seal instructions for this channel, signed
+    /// by `operator` (fee-payer + payee authority). Shared by the settlement
     /// worker and on-chain tests so the close path is constructed one way. A
     /// voucher signature is included only when value was actually settled.
     pub fn settle_instructions(
@@ -207,7 +207,7 @@ impl FinalizeParams {
     ) -> Result<Vec<solana_instruction::Instruction>> {
         let authorized_signer = self
             .authorized_signer
-            .ok_or_else(|| Error::Other("finalize missing authorized_signer".to_string()))?;
+            .ok_or_else(|| Error::Other("seal missing authorized_signer".to_string()))?;
         let (signature, expires_at): (Option<[u8; 64]>, i64) =
             match (&self.voucher_signature, self.settled) {
                 (Some(b58), settled) if settled > 0 => {
@@ -228,7 +228,7 @@ impl FinalizeParams {
                 }
                 _ => (None, 0),
             };
-        payment_channels::build_settle_and_finalize_instructions(
+        payment_channels::build_settle_and_seal_instructions(
             operator,
             &self.channel_id,
             &authorized_signer,
@@ -296,6 +296,15 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Build the `SessionRequest` to embed in a 402 challenge.
     ///
     /// `cap` is the maximum this session will allow; clamped to `config.max_cap`.
+    ///
+    /// When `config.rpc_url` is set (and the `server` feature is enabled), the
+    /// current slot is pre-fetched and advertised as `recentSlot` (analogous to
+    /// `recentBlockhash`) — the slot clients MUST use as the program's
+    /// `openSlot` for PDA derivation and `open` (the program only accepts a
+    /// recent slot, and clients never fetch their own). Best-effort, mirroring
+    /// the subscription challenge's blockhash pre-fetch: if the RPC is down the
+    /// challenge still goes out and the client surfaces a clear "challenge
+    /// missing recentSlot" error at open time.
     pub fn build_challenge_request(&self, cap: u64) -> SessionRequest {
         let effective_cap = cap.min(self.config.max_cap);
         SessionRequest {
@@ -337,7 +346,27 @@ impl<S: ChannelStore> SessionServer<S> {
                 None
             },
             recent_blockhash: None,
+            recent_slot: self.challenge_recent_slot(),
         }
+    }
+
+    /// Best-effort pre-fetch of the current slot for the challenge's
+    /// `recentSlot` (see [`Self::build_challenge_request`]). `None` when no
+    /// `rpc_url` is configured, when the fetch fails, or without the `server`
+    /// feature.
+    fn challenge_recent_slot(&self) -> Option<u64> {
+        #[cfg(feature = "server")]
+        if let Some(ref rpc_url) = self.config.rpc_url {
+            use solana_rpc_client::rpc_client::RpcClient;
+            return RpcClient::new(rpc_url.clone())
+                .get_slot()
+                .map_err(|e| {
+                    tracing::warn!(%e, "recentSlot pre-fetch failed; challenge omits it");
+                    e
+                })
+                .ok();
+        }
+        None
     }
 
     /// Build and validate payment-channel open parameters from an `open` payload.
@@ -359,6 +388,12 @@ impl<S: ChannelStore> SessionServer<S> {
         let grace_period = payload
             .grace_period
             .ok_or_else(|| Error::Other("payment-channel open missing gracePeriod".to_string()))?;
+        // The payload's recentSlot is the program's openSlot — a channel-PDA
+        // seed since the epoch-addressed program update — so the server cannot
+        // re-derive (and thus verify) the channel address without it.
+        let open_slot = payload
+            .recent_slot
+            .ok_or_else(|| Error::Other("payment-channel open missing recentSlot".to_string()))?;
         let deposit = payload.deposit_amount()?;
         let token_program = parse_pubkey_field(
             default_token_program_for_currency(
@@ -407,6 +442,7 @@ impl<S: ChannelStore> SessionServer<S> {
             mint,
             authorized_signer,
             salt,
+            open_slot,
             deposit,
             grace_period,
             recipients,
@@ -447,7 +483,7 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Replayed opens are idempotent: when a channel already exists for the
     /// session id with the same authorized signer, the existing state is
     /// returned unchanged — the voucher watermark is never reset. Opens for an
-    /// existing channel are rejected when the channel is finalized or when the
+    /// existing channel are rejected when the channel is sealed or when the
     /// payload's authorized signer differs from the stored one.
     pub async fn process_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
         let supports_mode = if self.config.modes.is_empty() {
@@ -500,10 +536,15 @@ impl<S: ChannelStore> SessionServer<S> {
             authorized_signer: payload.authorized_signer.clone(),
             deposit,
             cumulative: 0,
-            finalized: false,
+            sealed: false,
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            // Persisted so the channel PDA can be re-derived and the reclaim
+            // gate evaluated later (the payload's `recentSlot` is the
+            // program's openSlot). `None` for opens that don't carry it
+            // (pull/legacy payloads).
+            open_slot: payload.recent_slot,
             operator: payload.owner.clone().or_else(|| payload.payer.clone()),
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
@@ -521,9 +562,9 @@ impl<S: ChannelStore> SessionServer<S> {
                 session_id,
                 Box::new(move |state_opt| match state_opt {
                     Some(existing) => {
-                        if existing.finalized {
+                        if existing.sealed {
                             return Err(StoreError::Internal(format!(
-                                "Channel {session_id_owned} is already finalized"
+                                "Channel {session_id_owned} is already sealed"
                             )));
                         }
                         if existing.authorized_signer != authorized_signer {
@@ -590,7 +631,7 @@ impl<S: ChannelStore> SessionServer<S> {
     ///
     /// The new deposit must be greater than the current deposit and must not
     /// exceed the configured max cap. Top-ups are rejected once the channel is
-    /// finalized or a close has been requested.
+    /// sealed or a close has been requested.
     ///
     /// When `config.rpc_url` is set, confirms the top-up transaction is
     /// finalized on-chain before raising the deposit — rejects the top-up if
@@ -621,9 +662,9 @@ impl<S: ChannelStore> SessionServer<S> {
                 Box::new(move |state_opt| {
                     let state = state_opt
                         .ok_or_else(|| StoreError::Internal(format!("Channel {cid} not found")))?;
-                    if state.finalized {
+                    if state.sealed {
                         return Err(StoreError::Internal(
-                            "Channel is already finalized".to_string(),
+                            "Channel is already sealed".to_string(),
                         ));
                     }
                     if state.close_requested_at.is_some() {
@@ -682,9 +723,9 @@ impl<S: ChannelStore> SessionServer<S> {
                         let mut state = state_opt.ok_or_else(|| {
                             StoreError::Internal(format!("Channel {session_id} not found"))
                         })?;
-                        if state.finalized {
+                        if state.sealed {
                             return Err(StoreError::Internal(
-                                "Channel is already finalized".to_string(),
+                                "Channel is already sealed".to_string(),
                             ));
                         }
                         if state.close_requested_at.is_some() {
@@ -839,9 +880,9 @@ impl<S: ChannelStore> SessionServer<S> {
                         let mut state = state_opt.ok_or_else(|| {
                             StoreError::Internal(format!("Channel {channel_id} not found"))
                         })?;
-                        if state.finalized {
+                        if state.sealed {
                             return Err(StoreError::Internal(
-                                "Channel is already finalized".to_string(),
+                                "Channel is already sealed".to_string(),
                             ));
                         }
                         if state.close_requested_at.is_some() {
@@ -930,7 +971,7 @@ impl<S: ChannelStore> SessionServer<S> {
 
     /// Process a `close` action: atomically set close-pending, accept a final
     /// voucher if provided, and return the parameters needed for on-chain settlement.
-    pub async fn process_close(&self, payload: &ClosePayload) -> Result<FinalizeParams> {
+    pub async fn process_close(&self, payload: &ClosePayload) -> Result<SealParams> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -945,9 +986,9 @@ impl<S: ChannelStore> SessionServer<S> {
                     let state = state_opt.ok_or_else(|| {
                         StoreError::Internal("Channel not found".to_string())
                     })?;
-                    if state.finalized {
+                    if state.sealed {
                         return Err(StoreError::Internal(
-                            "Channel is already finalized".to_string(),
+                            "Channel is already sealed".to_string(),
                         ));
                     }
                     if state.close_requested_at.is_some() {
@@ -1018,11 +1059,11 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?;
 
-        self.finalize_params(&payload.channel_id).await
+        self.seal_params(&payload.channel_id).await
     }
 
-    /// Return finalize parameters for a channel ready for on-chain settlement.
-    pub async fn finalize_params(&self, channel_id: &str) -> Result<FinalizeParams> {
+    /// Return seal parameters for a channel ready for on-chain settlement.
+    pub async fn seal_params(&self, channel_id: &str) -> Result<SealParams> {
         let state = self
             .store
             .get_channel(channel_id)
@@ -1055,7 +1096,7 @@ impl<S: ChannelStore> SessionServer<S> {
 
         let distribution_hash = payment_channels::distribution_hash(&splits_with_pubkeys);
 
-        Ok(FinalizeParams {
+        Ok(SealParams {
             channel_id: channel_pubkey,
             authorized_signer,
             payer,
@@ -1070,12 +1111,9 @@ impl<S: ChannelStore> SessionServer<S> {
         })
     }
 
-    /// Mark a channel as finalized (call after the on-chain finalize tx confirms).
-    pub async fn mark_finalized(&self, channel_id: &str) -> Result<()> {
-        self.store
-            .mark_finalized(channel_id)
-            .await
-            .map_err(store_err)
+    /// Mark a channel as sealed (call after the on-chain seal tx confirms).
+    pub async fn mark_sealed(&self, channel_id: &str) -> Result<()> {
+        self.store.mark_sealed(channel_id).await.map_err(store_err)
     }
 }
 
@@ -1334,7 +1372,7 @@ mod tests {
             .unwrap();
         assert_eq!(state.deposit, 1_000_000);
         assert_eq!(state.cumulative, 0);
-        assert!(!state.finalized);
+        assert!(!state.sealed);
         assert_eq!(state.authorized_signer, "signer1");
     }
 
@@ -1368,6 +1406,7 @@ mod tests {
             "mint".to_string(),
             1,
             900,
+            314,
             "signer1".to_string(),
             "pending".to_string(),
         );
@@ -1395,6 +1434,7 @@ mod tests {
             "mint".to_string(),
             1,
             900,
+            314,
             "signer1".to_string(),
             "pending".to_string(),
         );
@@ -1435,6 +1475,7 @@ mod tests {
             mint,
             authorized_signer,
             salt: 77,
+            open_slot: 4_242,
             deposit: 1_000_000,
             grace_period: 900,
             recipients: vec![payment_channels::Distribution {
@@ -1454,6 +1495,7 @@ mod tests {
             mints::USDC_MAINNET.to_string(),
             expected.salt,
             expected.grace_period,
+            expected.open_slot,
             payment_channels::pubkey_string(&authorized_signer),
             "pending".to_string(),
         );
@@ -1504,6 +1546,22 @@ mod tests {
             .payment_channel_open_params(&missing_grace_period)
             .unwrap_err();
         assert!(err.to_string().contains("missing gracePeriod"));
+
+        let mut missing_recent_slot = payload.clone();
+        missing_recent_slot.recent_slot = None;
+        let err = server
+            .payment_channel_open_params(&missing_recent_slot)
+            .unwrap_err();
+        assert!(err.to_string().contains("missing recentSlot"));
+
+        // A different recentSlot derives a different (per-incarnation) PDA, so
+        // the payload's channelId no longer matches.
+        let mut wrong_recent_slot = payload.clone();
+        wrong_recent_slot.recent_slot = Some(expected.open_slot + 1);
+        let err = server
+            .payment_channel_open_params(&wrong_recent_slot)
+            .unwrap_err();
+        assert!(err.to_string().contains("channelId does not match"));
 
         let mut invalid_authorized_signer = payload.clone();
         invalid_authorized_signer.authorized_signer = "not-a-pubkey".to_string();
@@ -1578,6 +1636,7 @@ mod tests {
             mint,
             authorized_signer,
             salt: 88,
+            open_slot: 4_243,
             deposit: 1_000_000,
             grace_period: 901,
             recipients: vec![],
@@ -1594,6 +1653,7 @@ mod tests {
             mints::PYUSD_DEVNET.to_string(),
             expected.salt,
             expected.grace_period,
+            expected.open_slot,
             payment_channels::pubkey_string(&authorized_signer),
             "pending".to_string(),
         );
@@ -1674,16 +1734,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_open_on_finalized_channel_rejected() {
+    async fn process_open_on_sealed_channel_rejected() {
         let server = make_server();
         let payload = open_payload("chan1", 1_000_000, "signer1");
         server.process_open(&payload).await.unwrap();
-        server.mark_finalized("chan1").await.unwrap();
+        server.mark_sealed("chan1").await.unwrap();
 
         let err = server.process_open(&payload).await.unwrap_err();
         assert!(
-            err.to_string().contains("finalized"),
-            "Expected finalized error, got: {err}"
+            err.to_string().contains("sealed"),
+            "Expected sealed error, got: {err}"
         );
     }
 
@@ -2102,13 +2162,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verify_voucher_on_finalized_channel_rejected() {
+    async fn verify_voucher_on_sealed_channel_rejected() {
         let server = make_server();
         server
             .process_open(&open_payload("chan1", 1_000_000, "signer1"))
             .await
             .unwrap();
-        server.mark_finalized("chan1").await.unwrap();
+        server.mark_sealed("chan1").await.unwrap();
 
         let voucher = SignedVoucher {
             data: VoucherData {
@@ -2121,7 +2181,7 @@ mod tests {
         };
         let err = server.verify_voucher(&VoucherPayload { voucher }).await;
         assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("finalized"));
+        assert!(err.unwrap_err().to_string().contains("sealed"));
     }
 
     // ── process_topup ─────────────────────────────────────────────────────────
@@ -2247,14 +2307,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_topup_finalized_rejected() {
+    async fn process_topup_sealed_rejected() {
         let server = make_server();
         let chan = "chan1";
         server
             .process_open(&open_payload(chan, 1_000_000, "s"))
             .await
             .unwrap();
-        server.mark_finalized(chan).await.unwrap();
+        server.mark_sealed(chan).await.unwrap();
 
         let err = server
             .process_topup(&TopUpPayload {
@@ -2265,8 +2325,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("finalized"),
-            "Expected finalized error, got: {err}"
+            err.to_string().contains("sealed"),
+            "Expected sealed error, got: {err}"
         );
     }
 
@@ -2332,10 +2392,10 @@ mod tests {
         assert!(err.is_err());
     }
 
-    // ── finalize_params ───────────────────────────────────────────────────────
+    // ── seal_params ───────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn finalize_params_correct() {
+    async fn seal_params_correct() {
         let server = make_server();
         let channel = Pubkey::new_unique();
         let chan_str = bs58::encode(channel.as_ref()).into_string();
@@ -2344,7 +2404,7 @@ mod tests {
             .await
             .unwrap();
 
-        let params = server.finalize_params(&chan_str).await.unwrap();
+        let params = server.seal_params(&chan_str).await.unwrap();
         assert_eq!(params.channel_id, channel);
         assert_eq!(params.settled, 0);
         assert_eq!(
@@ -2359,33 +2419,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_params_unknown_channel_rejected() {
+    async fn seal_params_unknown_channel_rejected() {
         let server = make_server();
         let err = server
-            .finalize_params(&bs58::encode(Pubkey::new_unique().as_ref()).into_string())
+            .seal_params(&bs58::encode(Pubkey::new_unique().as_ref()).into_string())
             .await;
         assert!(err.is_err());
     }
 
-    // ── mark_finalized ────────────────────────────────────────────────────────
+    // ── mark_sealed ───────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn mark_finalized_sets_flag() {
+    async fn mark_sealed_sets_flag() {
         let server = make_server();
         server
             .process_open(&open_payload("chan1", 1_000_000, "s"))
             .await
             .unwrap();
-        server.mark_finalized("chan1").await.unwrap();
+        server.mark_sealed("chan1").await.unwrap();
 
         let state = server.store.get_channel("chan1").await.unwrap().unwrap();
-        assert!(state.finalized);
+        assert!(state.sealed);
     }
 
     #[tokio::test]
-    async fn mark_finalized_unknown_channel_errors() {
+    async fn mark_sealed_unknown_channel_errors() {
         let server = make_server();
-        assert!(server.mark_finalized("ghost").await.is_err());
+        assert!(server.mark_sealed("ghost").await.is_err());
     }
 
     // ── distribution_hash ─────────────────────────────────────────────────────
@@ -2474,10 +2534,11 @@ mod tests {
                     authorized_signer: "signer1".to_string(),
                     deposit: 5_000_000,
                     cumulative: 1_000_000,
-                    finalized: false,
+                    sealed: false,
                     highest_voucher_signature: Some("replay_sig".to_string()),
                     highest_voucher_expires_at: None,
                     close_requested_at: None,
+                    open_slot: None,
                     operator: None,
                     next_delivery_sequence: 0,
                     pending_deliveries: vec![],

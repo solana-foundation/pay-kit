@@ -60,11 +60,18 @@ async fn open_channels(url: &str, count: u64) -> (Arc<MemorySigner>, Pubkey, Vec
     testkit::fund_sol(url, &payer, 5_000_000_000).await;
     testkit::fund_token(url, &payer, USDC, DEPOSIT * count * 4, TOKEN_PROGRAM).await;
 
+    // openSlot is a channel-PDA seed and must be the current slot (the program
+    // rejects values outside its window).
+    let open_slot = RpcClient::new(url.to_string())
+        .get_slot()
+        .await
+        .expect("current slot");
+
     let mut channels = Vec::new();
     let mut opens = Vec::new();
     for salt in 0..count {
         // Delegated/upto model: operator is the payee + authorized_signer (the
-        // `merchant` in settle_and_finalize must equal the channel's payee).
+        // `payee` signer in settle_and_seal must equal the channel's payee).
         // testkit::open_one fee-pays + signs with `payer`, so rentPayer (a
         // signer) is pinned to `payer` here.
         let params = pc::OpenChannelParams {
@@ -74,6 +81,7 @@ async fn open_channels(url: &str, count: u64) -> (Arc<MemorySigner>, Pubkey, Vec
             mint: usdc,
             authorized_signer: operator,
             salt,
+            open_slot,
             deposit: DEPOSIT,
             grace_period: 3_600,
             recipients: vec![],
@@ -108,7 +116,7 @@ async fn build_units(
     for (i, channel) in channels.iter().enumerate() {
         let msg = pc::voucher_message_bytes(channel, VOUCHER, expires_at).unwrap();
         let sig: [u8; 64] = operator_signer.sign_message(&msg).await.unwrap().into();
-        let ixs = pc::build_settle_and_finalize_instructions(
+        let ixs = pc::build_settle_and_seal_instructions(
             operator,
             channel,
             operator,
@@ -187,6 +195,7 @@ async fn distribution_hash_matches_on_chain_commitment() {
 
     // In this single-signer test harness the fee payer / submitter is `payer`
     // itself (see testkit::open_one), so rentPayer is pinned to `payer`.
+    let open_slot = rpc.get_slot().await.expect("current slot");
     let params = pc::OpenChannelParams {
         payer,
         rent_payer: payer,
@@ -194,6 +203,7 @@ async fn distribution_hash_matches_on_chain_commitment() {
         mint: usdc,
         authorized_signer: operator,
         salt: 0,
+        open_slot,
         deposit: DEPOSIT,
         grace_period: 3_600,
         recipients: recipients.clone(),
@@ -240,7 +250,7 @@ async fn expired_voucher_is_rejected_on_chain() {
     let expires_at = now() - 3_600; // already expired
     let msg = pc::voucher_message_bytes(&channel, VOUCHER, expires_at).unwrap();
     let sig: [u8; 64] = operator_signer.sign_message(&msg).await.unwrap().into();
-    let ixs = pc::build_settle_and_finalize_instructions(
+    let ixs = pc::build_settle_and_seal_instructions(
         &operator,
         &channel,
         &operator,
@@ -260,7 +270,7 @@ async fn expired_voucher_is_rejected_on_chain() {
         "expected VoucherExpired (0xe9), got: {err}"
     );
 
-    // The channel must stay unsettled: status Open (0), not Finalized (1).
+    // The channel must stay unsettled: status Open (0), not Sealed (1).
     let acct = rpc.get_account(&channel).await.expect("channel present");
     assert_eq!(
         acct.data[3], 0,
@@ -270,7 +280,7 @@ async fn expired_voucher_is_rejected_on_chain() {
 }
 
 /// Authoritative proof: open 4 real channels, settle through the worker, assert
-/// they batch into 2 txs and every channel finalizes on-chain.
+/// they batch into 2 txs and every channel seals on-chain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn channels_settle_on_chain_in_batches() {
     const CHANNELS: u64 = 4; // ⌈4/3⌉ = 2 settle transactions ⇒ proves batching
@@ -295,8 +305,8 @@ async fn channels_settle_on_chain_in_batches() {
     for sig in by_tx.keys() {
         confirm(&rpc, sig).await;
     }
-    // Each channel is now Finalized. Channel layout: discriminator(0),
-    // version(1), bump(2), status(3); ChannelStatus::Finalized == 1.
+    // Each channel is now Sealed. Channel layout: discriminator(0),
+    // version(1), bump(2), status(3); ChannelStatus::Sealed == 1.
     for channel in &channels {
         let acct = rpc
             .get_account(channel)
@@ -305,7 +315,7 @@ async fn channels_settle_on_chain_in_batches() {
         assert!(acct.data.len() > 3, "channel {channel} data too short");
         assert_eq!(
             acct.data[3], 1,
-            "channel {channel} status should be Finalized (1)"
+            "channel {channel} status should be Sealed (1)"
         );
     }
     eprintln!(
