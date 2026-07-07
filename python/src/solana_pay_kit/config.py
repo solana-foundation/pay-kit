@@ -207,17 +207,33 @@ class PayConfig(pydantic.BaseModel):
             return (value,)
         return tuple(value)  # type: ignore[arg-type]
 
+    def build_config(self, *, preserve_global: bool = False) -> Config:
+        """Build a PayKit config without storing it as the global singleton."""
+        base = _config if preserve_global else None
+        signer = Signer.env(self.signer_env) if self.signer_env else None
+        operator = (
+            base.operator
+            if base is not None and self.recipient is None and signer is None
+            else Operator(recipient=self.recipient, signer=signer)
+        )
+        kwargs: dict[str, Any] = {
+            "network": self.network,
+            "accept": self.protocols,
+            "stablecoins": self.stablecoins,
+            "rpc_url": self.rpc_url,
+            "operator": operator,
+            "preflight": self.preflight,
+        }
+        if base is not None:
+            kwargs["mpp"] = base.mpp
+            kwargs["x402"] = base.x402
+        return _build_config(**kwargs)
+
     def configure(self) -> Config:
         """Configure solana-pay-kit using this app-level Pay config."""
-        signer = Signer.env(self.signer_env) if self.signer_env else None
-        return configure(
-            network=self.network,
-            accept=self.protocols,
-            stablecoins=self.stablecoins,
-            rpc_url=self.rpc_url,
-            operator=Operator(recipient=self.recipient, signer=signer),
-            preflight=self.preflight,
-        )
+        global _config
+        _config = self.build_config()
+        return _config
 
     def gate_ref(self) -> Price:
         """Return the default flat-price gate for this Pay config."""
@@ -264,8 +280,8 @@ def _apply_pay_config_env(
         values["preflight"] = _parse_bool_env(f"{env_prefix}PREFLIGHT", preflight)
 
     no_preflight = environ.get(f"{env_prefix}NO_PREFLIGHT")
-    if no_preflight is not None and _parse_bool_env(f"{env_prefix}NO_PREFLIGHT", no_preflight):
-        values["preflight"] = False
+    if no_preflight is not None:
+        values["preflight"] = not _parse_bool_env(f"{env_prefix}NO_PREFLIGHT", no_preflight)
 
 
 def _parse_bool_env(name: str, value: str) -> bool:

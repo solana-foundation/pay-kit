@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 import solana_pay_kit._middleware as mw
-from solana_pay_kit import MppConfig, Payment, Price, Protocol, Stablecoin, configure
+from solana_pay_kit import Config, MppConfig, Network, Payment, Price, Protocol, Stablecoin, X402Config, configure
+from solana_pay_kit.config import config as get_config
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import PaymentRequiredError
 
@@ -225,3 +226,52 @@ def test_install_paywall_accepts_app_config_mapping(monkeypatch: pytest.MonkeyPa
 
     assert resp.status_code == 402
     assert calls == ["/tagged"]
+
+
+def test_install_paywall_preserves_global_config_subconfigs(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_configs: list[Config] = []
+
+    async def fake_process(
+        self: mw.PayCore,
+        gate_ref: object,
+        pricing: object,
+        request: Request,
+    ) -> Payment:
+        seen_configs.append(self.config)
+        raise _payment_required()
+
+    monkeypatch.setattr(mw.PayCore, "process", fake_process)
+    base = configure(
+        network=Network.SOLANA_DEVNET,
+        preflight=False,
+        accept=(Protocol.MPP,),
+        mpp=MppConfig(challenge_binding_secret=SECRET),
+        x402=X402Config(facilitator_url="https://facilitator.example"),
+    )
+    app = FastAPI()
+    pk_fastapi.install_paywall(
+        app,
+        {
+            "enabled": True,
+            "network": "solana_localnet",
+            "price_usd": "0.10",
+            "protocols": ["mpp"],
+            "stablecoins": ["USDC"],
+            "preflight": False,
+            "signer_env": None,
+        },
+        paid_tags=("paid",),
+        cors_origins=None,
+    )
+
+    @app.get("/tagged", tags=["paid"])
+    async def tagged() -> dict[str, bool]:
+        return {"ok": True}
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/tagged")
+
+    assert resp.status_code == 402
+    assert get_config() is base
+    assert seen_configs[0].network is Network.SOLANA_LOCALNET
+    assert seen_configs[0].mpp.challenge_binding_secret == SECRET
+    assert seen_configs[0].x402.facilitator_url == "https://facilitator.example"

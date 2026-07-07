@@ -383,10 +383,7 @@ def install_paywall_from_config(
         if verified.settlement_headers:
             setattr(request.state, _SETTLEMENT_STATE_ATTR, dict(verified.settlement_headers))
 
-        response = await call_next(request)
-        for name, value in verified.settlement_headers.items():
-            response.headers[name] = value
-        return response
+        return await call_next(request)
 
 
 def install_paywall(
@@ -414,7 +411,7 @@ def install_paywall(
         app,
         PaywallConfig(
             gate_ref=pay_config.gate_ref(),
-            config=pay_config.configure(),
+            config=pay_config.build_config(preserve_global=True),
             default_policy=default_policy,
             paid_tags=paid_tags,
             public_tags=public_tags,

@@ -166,6 +166,16 @@ def test_pay_config_from_sources_rejects_invalid_bool_env():
         )
 
 
+def test_pay_config_no_preflight_false_reenables_preflight():
+    pay = PayConfig.from_sources(
+        {"preflight": False},
+        env_prefix="EXO_PAY_",
+        environ={"EXO_PAY_NO_PREFLIGHT": "false"},
+    )
+
+    assert pay.preflight is True
+
+
 # -- rpc_url defaults (caveat #2) --------------------------------------------
 
 
