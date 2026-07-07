@@ -14,7 +14,7 @@ struct SessionClientExtraTests {
         SessionRequest(
             cap: "1000000", currency: "USDC", decimals: 6, network: "localnet",
             operator: operatorAddress, recipient: recipient ?? self.recipient,
-            modes: [.pull], pullVoucherStrategy: .clientVoucher
+            modes: [.pull], pullVoucherStrategy: .clientVoucher, recentSlot: 4321
         )
     }
 
@@ -43,9 +43,14 @@ struct SessionClientExtraTests {
             cap: "5", currency: "USDC", decimals: 6, network: "devnet", operator: operatorAddress,
             recipient: recipient, splits: [SessionSplit(recipient: recipient, bps: 10)],
             programId: PaymentChannels.programId.base58, externalId: "ext-1", minVoucherDelta: "2",
-            modes: [.pull, .push], pullVoucherStrategy: .clientVoucher, recentBlockhash: blockhash
+            modes: [.pull, .push], pullVoucherStrategy: .clientVoucher, recentBlockhash: blockhash,
+            recentSlot: 4321
         )
-        let decoded = try JSONDecoder().decode(SessionRequest.self, from: try JSONEncoder().encode(req))
+        let encoded = try JSONEncoder().encode(req)
+        // recentSlot serializes as a decimal string, like salt on OpenPayload.
+        let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["recentSlot"] as? String == "4321")
+        let decoded = try JSONDecoder().decode(SessionRequest.self, from: encoded)
         #expect(decoded == req)
     }
 
@@ -84,7 +89,8 @@ struct SessionClientExtraTests {
             )
         )
         let opener = try await PaymentChannelSession.open(
-            request: request(), payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash, options: options
+            request: request(), payerSigner: payer, sessionSigner: sessionSigner,
+            recentBlockhash: blockhash, options: options
         )
         #expect(opener.open.deposit == 55)
         #expect(opener.open.gracePeriod == 12)
@@ -98,7 +104,8 @@ struct SessionClientExtraTests {
         let (payer, sessionSigner) = try signers()
         await #expect(throws: PayKitError.self) {
             _ = try await PaymentChannelSession.open(
-                request: request(recipient: "not base58 !!!"), payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash
+                request: request(recipient: "not base58 !!!"), payerSigner: payer, sessionSigner: sessionSigner,
+                recentBlockhash: blockhash
             )
         }
         await #expect(throws: (any Error).self) {

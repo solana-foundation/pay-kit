@@ -11,6 +11,8 @@ private enum UptoFixture {
     static let blockhash = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
     static let network = SolanaNetwork.devnet
     static let amount = "1000000"
+    static let recentSlot = "1000"
+    static let recentSlotValue: UInt64 = 1000
 
     /// Deterministic 32-byte seed signer.
     static func signer() throws -> MemorySigner {
@@ -24,6 +26,7 @@ private enum UptoFixture {
         recentBlockhash: String? = blockhash,
         tokenProgram: String? = nil,
         channelProgram: String? = nil,
+        recentSlot: String? = recentSlot,
         validAfter: Int? = nil
     ) -> X402UptoExtra {
         X402UptoExtra(
@@ -34,6 +37,7 @@ private enum UptoFixture {
             channelProgram: channelProgram,
             recentBlockhash: recentBlockhash,
             lastValidBlockHeight: nil,
+            recentSlot: recentSlot,
             validAfter: validAfter
         )
     }
@@ -63,6 +67,7 @@ private struct DecodedOpen {
     let salt: UInt64
     let deposit: UInt64
     let gracePeriod: UInt32
+    let openSlot: UInt64
     let recipientBps: [UInt16]
     let signatureCount: Int
     /// True when the signer slot at the payer's account index carries a
@@ -131,13 +136,14 @@ private enum LegacyTxDecoder {
             openData = data.subdata(in: (data.startIndex + off)..<(data.startIndex + off + dataLen))
             off += dataLen
         }
-        // open data: disc(1) salt(8) deposit(8) gracePeriod(4) count(4) [pk(32) bps(2)]*
+        // open data: disc(1) salt(8) deposit(8) gracePeriod(4) openSlot(8) count(4) [pk(32) bps(2)]*
         let salt = le64(openData, 1)
         let deposit = le64(openData, 9)
         let gracePeriod = le32(openData, 17)
-        let count = Int(le32(openData, 21))
+        let openSlot = le64(openData, 21)
+        let count = Int(le32(openData, 29))
         var bps: [UInt16] = []
-        var p = 25
+        var p = 33
         for _ in 0..<count {
             p += 32
             bps.append(le16(openData, p)); p += 2
@@ -149,6 +155,7 @@ private enum LegacyTxDecoder {
             salt: salt,
             deposit: deposit,
             gracePeriod: gracePeriod,
+            openSlot: openSlot,
             recipientBps: bps,
             signatureCount: numRequired,
             payerSlotSigned: payerSig.contains { $0 != 0 },
@@ -200,6 +207,30 @@ struct X402UptoBuildErrorTests {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements(
             extra: UptoFixture.extra(facilitatorFee: 10_001)
+        )
+        await #expect(throws: (any Error).self) {
+            _ = try await buildUptoPayload(signer: signer, requirements: req, expiresAt: 1000)
+        }
+    }
+
+    @Test
+    func rejectsMissingRecentSlot() async throws {
+        // recentSlot carries the channel-PDA openSlot seed; with neither an
+        // explicit parameter nor extra.recentSlot the open cannot be derived.
+        let signer = try UptoFixture.signer()
+        let req = UptoFixture.requirements(
+            extra: UptoFixture.extra(recentSlot: nil)
+        )
+        await #expect(throws: (any Error).self) {
+            _ = try await buildUptoPayload(signer: signer, requirements: req, expiresAt: 1000)
+        }
+    }
+
+    @Test
+    func rejectsMalformedExtraRecentSlot() async throws {
+        let signer = try UptoFixture.signer()
+        let req = UptoFixture.requirements(
+            extra: UptoFixture.extra(recentSlot: "not-a-slot")
         )
         await #expect(throws: (any Error).self) {
             _ = try await buildUptoPayload(signer: signer, requirements: req, expiresAt: 1000)
@@ -258,9 +289,33 @@ struct X402UptoBuildTests {
         let mint = try Pubkey(base58: UptoFixture.mint)
         let expected = try PaymentChannels.findChannelPda(
             payer: payer, payee: op, mint: mint, authorizedSigner: op,
-            salt: salt, programId: PaymentChannels.programId
+            salt: salt, openSlot: UptoFixture.recentSlotValue, programId: PaymentChannels.programId
         )
         #expect(payload.channelId == expected.base58)
+    }
+
+    @Test
+    func explicitOpenSlotOverridesExtraRecentSlot() async throws {
+        // An explicit openSlot override wins over the server-prefetched
+        // extra.recentSlot, and lands in both the PDA and the open data.
+        let signer = try UptoFixture.signer()
+        let req = UptoFixture.requirements()
+        let salt: UInt64 = 11
+        let payload = try await buildUptoPayload(
+            signer: signer, requirements: req, expiresAt: 1000, salt: salt, openSlot: 2222
+        )
+        let payer = try Pubkey(bytes: signer.publicKey)
+        let op = try Pubkey(base58: UptoFixture.operatorAddr)
+        let mint = try Pubkey(base58: UptoFixture.mint)
+        let expected = try PaymentChannels.findChannelPda(
+            payer: payer, payee: op, mint: mint, authorizedSigner: op,
+            salt: salt, openSlot: 2222, programId: PaymentChannels.programId
+        )
+        #expect(payload.channelId == expected.base58)
+        let decoded = try LegacyTxDecoder.decode(
+            base64: try #require(payload.openTransaction), payer: payer
+        )
+        #expect(decoded.openSlot == 2222)
     }
 
     @Test
@@ -278,6 +333,8 @@ struct X402UptoBuildTests {
         #expect(decoded.salt == 99)
         #expect(decoded.deposit == 1_000_000)
         #expect(decoded.gracePeriod == 900)
+        // extra.recentSlot rides into openArgs as openSlot, after gracePeriod.
+        #expect(decoded.openSlot == UptoFixture.recentSlotValue)
     }
 
     @Test
@@ -757,7 +814,8 @@ struct X402UptoTransportTests {
             "extra": {
               "assetTransferMethod": "payment-channel",
               "facilitatorAddress": "\(UptoFixture.operatorAddr)",
-              "recentBlockhash": "\(UptoFixture.blockhash)"
+              "recentBlockhash": "\(UptoFixture.blockhash)",
+              "recentSlot": "\(UptoFixture.recentSlot)"
             }
           }]
         }

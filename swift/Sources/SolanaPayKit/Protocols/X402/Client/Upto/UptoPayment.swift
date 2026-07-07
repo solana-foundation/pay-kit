@@ -64,13 +64,17 @@ let X402UptoDefaultGracePeriodSeconds: UInt32 = PaymentChannels.defaultGracePeri
 ///     (tests). Ignored when `nonce` is supplied.
 ///   - salt: Optional fixed channel salt (tests). When `nil`, a random `u64`
 ///     salt is drawn, independent of `nonce`.
+///   - openSlot: Optional override for the channel-PDA slot seed (tests).
+///     When `nil`, the challenge's server-prefetched `extra.recentSlot` is
+///     used; the build fails when neither is available.
 public func buildUptoPayload(
     signer: any SolanaSigner,
     requirements: X402UptoRequirements,
     expiresAt: Int,
     nonce: String? = nil,
     nonceGenerator: (() -> Data)? = nil,
-    salt: UInt64? = nil
+    salt: UInt64? = nil,
+    openSlot: UInt64? = nil
 ) async throws -> X402UptoPayload {
     let extra = requirements.extra
     guard extra.assetTransferMethod == X402UptoAssetTransferMethod else {
@@ -126,6 +130,20 @@ public func buildUptoPayload(
         )
     }
 
+    // The program's openSlot seeds the channel PDA: an explicit caller
+    // override wins over the challenge's server-prefetched extra.recentSlot.
+    let resolvedOpenSlot: UInt64
+    if let openSlot {
+        resolvedOpenSlot = openSlot
+    } else if let value = extra.recentSlot, !value.isEmpty {
+        guard let parsed = UInt64(value) else {
+            throw PayKitError.invalidTransaction("x402 client: invalid extra.recentSlot \(value)")
+        }
+        resolvedOpenSlot = parsed
+    } else {
+        throw PayKitError.missingField("x402 client: requirement missing extra.recentSlot")
+    }
+
     // The channel salt is an independent random u64, not the payload nonce.
     let channelSalt = salt ?? PaymentChannels.uniqueSalt()
     let open = try await PaymentChannels.buildOpenTransaction(
@@ -136,6 +154,7 @@ public func buildUptoPayload(
         salt: channelSalt,
         deposit: max,
         gracePeriod: X402UptoDefaultGracePeriodSeconds,
+        openSlot: resolvedOpenSlot,
         recipients: recipients,
         tokenProgram: tokenProgram,
         programId: programId,
@@ -186,7 +205,8 @@ public func buildUptoHeader(
     expiresAt: Int,
     nonce: String? = nil,
     nonceGenerator: (() -> Data)? = nil,
-    salt: UInt64? = nil
+    salt: UInt64? = nil,
+    openSlot: UInt64? = nil
 ) async throws -> String {
     let payload = try await buildUptoPayload(
         signer: signer,
@@ -194,7 +214,8 @@ public func buildUptoHeader(
         expiresAt: expiresAt,
         nonce: nonce,
         nonceGenerator: nonceGenerator,
-        salt: salt
+        salt: salt,
+        openSlot: openSlot
     )
     return try encodeUptoHeader(requirements: requirements, payload: payload)
 }

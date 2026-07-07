@@ -144,6 +144,7 @@ public final class ActiveSession {
         mint: String,
         salt: UInt64,
         gracePeriod: UInt32,
+        openSlot: UInt64,
         signature: String
     ) -> SessionAction {
         .open(OpenPayload.paymentChannel(
@@ -155,6 +156,7 @@ public final class ActiveSession {
             mint: mint,
             salt: salt,
             gracePeriod: gracePeriod,
+            recentSlot: openSlot,
             authorizedSigner: authorizedSigner(),
             signature: signature
         ))
@@ -198,7 +200,9 @@ public final class ActiveSession {
 /// broadcasting the open transaction.
 public let pendingServerSignature = String(repeating: "1", count: 64)
 
-/// Derived channel parameters for an open.
+/// Derived channel parameters for an open. `openSlot` is part of the channel
+/// PDA seeds, so persisted channel state must keep it to re-derive the address
+/// (and for the permissionless `reclaim` after distribution).
 public struct PaymentChannelOpen: Sendable {
     public let channelId: Pubkey
     public let payer: Pubkey
@@ -208,6 +212,7 @@ public struct PaymentChannelOpen: Sendable {
     public let salt: UInt64
     public let deposit: UInt64
     public let gracePeriod: UInt32
+    public let openSlot: UInt64
     public let recipients: [PaymentChannels.Distribution]
     public let tokenProgram: Pubkey
     public let programId: Pubkey
@@ -222,6 +227,8 @@ public struct PaymentChannelOpen: Sendable {
             mint: mint.base58,
             salt: salt,
             gracePeriod: gracePeriod,
+            // The program's openSlot crosses HTTP as recentSlot.
+            recentSlot: openSlot,
             authorizedSigner: authorizedSigner.base58,
             signature: signature
         )
@@ -283,20 +290,29 @@ public struct PaymentChannelSessionOpen {
 public enum PaymentChannelSession {
     /// Build a pull + clientVoucher payment-channel session open. The payer
     /// partial-signs the open transaction; the operator (fee payer) co-signs and
-    /// broadcasts. `recentBlockhash` is base58. Mirrors
+    /// broadcasts. `recentBlockhash` is base58. The channel-PDA `openSlot` seed
+    /// comes from the challenge (`request.recentSlot`, server-prefetched like
+    /// the blockhash); an explicit `openSlot` argument overrides it, and the
+    /// open fails when neither is present. Mirrors
     /// `create_payment_channel_session_opener`.
     public static func open(
         request: SessionRequest,
         payerSigner: SolanaSigner,
         sessionSigner: SolanaSigner,
         recentBlockhash: String,
+        openSlot: UInt64? = nil,
         options: PaymentChannelSessionOpenOptions = .init()
     ) async throws -> PaymentChannelSessionOpen {
         try ensureClientVoucherPull(request)
+        guard let openSlot = openSlot ?? request.recentSlot else {
+            throw PayKitError.missingField("session challenge did not provide recentSlot")
+        }
         let authorizedSigner = try Pubkey(bytes: sessionSigner.publicKey)
         let feePayer = try Pubkey(base58: request.operator)
         let payer = try Pubkey(bytes: payerSigner.publicKey)
-        let open = try deriveOpen(request: request, payer: payer, authorizedSigner: authorizedSigner, options: options.open)
+        let open = try deriveOpen(
+            request: request, payer: payer, authorizedSigner: authorizedSigner, openSlot: openSlot, options: options.open
+        )
 
         let blockhash = try Base58.decode(recentBlockhash)
         guard blockhash.count == 32 else {
@@ -310,6 +326,7 @@ public enum PaymentChannelSession {
             salt: open.salt,
             deposit: open.deposit,
             gracePeriod: open.gracePeriod,
+            openSlot: open.openSlot,
             recipients: open.recipients,
             tokenProgram: open.tokenProgram,
             programId: open.programId,
@@ -341,6 +358,7 @@ public enum PaymentChannelSession {
         request: SessionRequest,
         payer: Pubkey,
         authorizedSigner: Pubkey,
+        openSlot: UInt64,
         options: PaymentChannelOpenOptions
     ) throws -> PaymentChannelOpen {
         guard let mintString = Mints.resolveChargeMint(currency: request.currency, network: request.network) else {
@@ -390,7 +408,8 @@ public enum PaymentChannelSession {
         }
         let salt = options.salt ?? PaymentChannels.uniqueSalt()
         let channelId = try PaymentChannels.findChannelPda(
-            payer: payer, payee: payee, mint: mint, authorizedSigner: authorizedSigner, salt: salt, programId: programId
+            payer: payer, payee: payee, mint: mint, authorizedSigner: authorizedSigner, salt: salt,
+            openSlot: openSlot, programId: programId
         )
         return PaymentChannelOpen(
             channelId: channelId,
@@ -401,6 +420,7 @@ public enum PaymentChannelSession {
             salt: salt,
             deposit: deposit,
             gracePeriod: gracePeriod,
+            openSlot: openSlot,
             recipients: recipients,
             tokenProgram: tokenProgram,
             programId: programId

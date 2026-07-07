@@ -59,7 +59,7 @@ private struct VectorInput: Decodable {
     // `value` is an arbitrary JSON document Codable cannot model directly.
     let encodeBase64Url: EncodeBase64URL?
     let challengeId: ChallengeID?
-    // session canonical-bytes: the 48-byte Ed25519 voucher preimage.
+    // session canonical-bytes: the 50-byte Ed25519 voucher preimage.
     let voucherPreimage: VoucherPreimage?
     // x402-exact build inputs.
     let x402Version: Int?
@@ -109,7 +109,8 @@ private struct EncodeBase64URL: Decodable {
 }
 
 // session voucher preimage input (mirror schema.ts voucherPreimage):
-// channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64.
+// magic(0x56 0x01) || channelId(32, base58) || cumulativeAmount LE u64 ||
+// expiresAt LE i64.
 private struct VoucherPreimage: Decodable {
     let channelId: String
     let cumulativeAmount: String
