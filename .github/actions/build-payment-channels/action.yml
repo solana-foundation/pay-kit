@@ -11,7 +11,7 @@ inputs:
   ref:
     description: payment-channels commit to build.
     required: false
-    default: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
+    default: 0c07d5751c8972abf6a219570a3f39a72f46f879
   program-id:
     description: Program id the checkout must declare (guards a ref bump).
     required: false
