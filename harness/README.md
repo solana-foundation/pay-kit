@@ -262,6 +262,11 @@ Filter the matrix with env vars:
 ```bash
 MPP_HARNESS_CLIENTS=typescript,rust MPP_HARNESS_SERVERS=rust pnpm test
 MPP_HARNESS_INTENTS=charge MPP_HARNESS_SCENARIOS=charge-basic,charge-split-ata pnpm test
+pnpm exec vitest run test/unpaid-challenge-smoke.test.ts
+MPP_HARNESS_INTENTS=x402-exact \
+  MPP_HARNESS_SCENARIOS=x402-exact-cross-route-replay,x402-exact-cross-server-portability,x402-exact-idempotent-resubmit \
+  X402_HARNESS_CLIENTS=ts-x402 X402_HARNESS_SERVERS=ts-x402 \
+  pnpm exec vitest run test/e2e.test.ts
 X402_HARNESS_MATRIX=1 pnpm test x402-exact.e2e.test.ts
 X402_HARNESS_CROSS_SERVER=1 pnpm test cross-server-scenarios.test.ts
 SURFPOOL_DATASOURCE_RPC_URL=<mainnet-rpc> pnpm test:onchain

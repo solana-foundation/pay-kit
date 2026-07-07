@@ -48,6 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: ./.github/actions/setup-harness-leg
+      - name: Run unpaid challenge smokes
+        working-directory: harness
+        run: pnpm exec vitest run test/unpaid-challenge-smoke.test.ts
       - name: Run Rust client harness smoke
         working-directory: harness
         # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
@@ -68,6 +71,16 @@ jobs:
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: rust
+      - name: Run structural x402 exact bug-class smoke
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: x402-exact
+          MPP_HARNESS_SCENARIOS: x402-exact-cross-route-replay,x402-exact-cross-server-portability,x402-exact-idempotent-resubmit
+          X402_HARNESS_CLIENTS: ts-x402
+          X402_HARNESS_SERVERS: ts-x402
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 3
 
   go:
     name: "Harness: Go (mpp charge + x402 exact)"
