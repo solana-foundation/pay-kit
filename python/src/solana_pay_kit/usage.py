@@ -12,7 +12,7 @@ conformance harness server:
 * :func:`finalize_usage` - the settlement policy. It honours the protocol
   (``settle_actual`` settles any ``actual ≤ max``, including 0) but applies the
   PayKit **fail-closed** policy at the app layer: a missing or zero charge still
-  settles 0 on-chain (channel finalize + full refund) yet withholds the protected
+  settles 0 on-chain (channel seal + full refund) yet withholds the protected
   body (HTTP 402). Mirrors Go ``paykit/usage.go`` (``settleZeroAndFailClosed``).
 
 The engine-layer zero behaviour (settle 0 → success, full refund) lives in
@@ -33,6 +33,7 @@ __all__ = [
     "finalize_usage",
     "charge_from",
     "fetch_recent_blockhash",
+    "fetch_recent_blockhash_and_slot",
     "CHARGE_ATTR",
 ]
 
@@ -105,7 +106,7 @@ async def finalize_usage(engine: Any, verified: Any, charge: Charge) -> UsageOut
 
     On a positive charge: settle the metered amount and return ``ok=True`` with
     the settlement receipt headers. On a missing or zero charge: still settle 0
-    on-chain (the channel finalizes and the full deposit is refunded) but return
+    on-chain (the channel is sealed and the full deposit is refunded) but return
     ``ok=False`` (HTTP 402) so the protected body is withheld - the developer
     must meter a positive amount to serve. ``settle_actual`` releases the
     channel reservation in either branch.
@@ -151,15 +152,19 @@ def charge_from(request: Any) -> Charge | None:
     return None
 
 
-def fetch_recent_blockhash(rpc_url: str) -> str | None:
-    """Fetch a recent blockhash over a blocking JSON-RPC call (no asyncio).
+def fetch_recent_blockhash_and_slot(rpc_url: str) -> tuple[str | None, int | None]:
+    """Fetch ``(recent blockhash, current slot)`` in one blocking JSON-RPC call.
 
-    The ``upto`` challenge stamps ``extra.recentBlockhash`` so the client can
-    build the channel-open without an extra RPC round-trip. The engine reads it
+    The ``upto`` challenge stamps ``extra.recentBlockhash`` (so the client can
+    build the channel-open without an extra RPC round-trip) and
+    ``extra.recentSlot`` (the channel ``openSlot``, a channel PDA seed the
+    client never fetches itself). The ``getLatestBlockhash`` response envelope
+    already carries the current slot in its context, so both come from the
+    same call instead of a separate ``getSlot``. The engine reads them
     synchronously from ``accepts_entry``, so this must stay blocking; the
-    framework shims wire it as the engine's ``recent_blockhash_provider``.
-    Returns ``None`` on any RPC/transport failure so the challenge degrades to
-    "no pre-fetched blockhash" rather than failing the request.
+    framework shims wire it as the engine's ``recent_state_provider``. Returns
+    ``(None, None)`` on any RPC/transport failure so the challenge degrades to
+    "no pre-fetched blockhash/slot" rather than failing the request.
     """
     import json
     import urllib.request
@@ -176,7 +181,27 @@ def fetch_recent_blockhash(rpc_url: str) -> str | None:
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             payload = json.loads(response.read())
-        blockhash = payload["result"]["value"]["blockhash"]
+        result = payload["result"]
+        blockhash = result["value"]["blockhash"]
     except Exception:
-        return None
-    return blockhash if isinstance(blockhash, str) and blockhash else None
+        return None, None
+    if not isinstance(blockhash, str) or not blockhash:
+        blockhash = None
+    slot: object = None
+    if isinstance(result, dict):
+        context = cast("dict[str, object]", result).get("context")
+        if isinstance(context, dict):
+            slot = cast("dict[str, object]", context).get("slot")
+    if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+        slot = None
+    return blockhash, slot
+
+
+def fetch_recent_blockhash(rpc_url: str) -> str | None:
+    """Fetch a recent blockhash over a blocking JSON-RPC call (no asyncio).
+
+    Blockhash-only convenience over :func:`fetch_recent_blockhash_and_slot`;
+    returns ``None`` on any RPC/transport failure.
+    """
+    blockhash, _slot = fetch_recent_blockhash_and_slot(rpc_url)
+    return blockhash

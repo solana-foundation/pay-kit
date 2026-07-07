@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from solders.pubkey import Pubkey as SolPubkey
 
 class VoucherArgsJSON(typing.TypedDict):
+    magic: list[int]
     channelId: str
     cumulativeAmount: int
     expiresAt: int
@@ -20,11 +21,13 @@ class VoucherArgsJSON(typing.TypedDict):
 @dataclass
 class VoucherArgs:
     layout: typing.ClassVar = borsh.CStruct(
+        "magic" /borsh.U8[2],
         "channelId" /BorshPubkey,
         "cumulativeAmount" /borsh.U64,
         "expiresAt" /borsh.I64,
         )
     #fields
+    magic: list[int]
     channelId: SolPubkey
     cumulativeAmount: int
     expiresAt: int
@@ -32,6 +35,7 @@ class VoucherArgs:
     @classmethod
     def from_decoded(cls, obj: Container) -> "VoucherArgs":
         return cls(
+        magic=obj["magic"],
         channelId=obj["channelId"],
         cumulativeAmount=obj["cumulativeAmount"],
         expiresAt=obj["expiresAt"],
@@ -39,6 +43,7 @@ class VoucherArgs:
 
     def to_encodable(self) -> dict[str, typing.Any]:
         return {
+                "magic": self.magic,
                 "channelId": self.channelId,
                 "cumulativeAmount": self.cumulativeAmount,
                 "expiresAt": self.expiresAt,
@@ -46,6 +51,7 @@ class VoucherArgs:
 
     def to_json(self) -> VoucherArgsJSON:
         return {
+                "magic": self.magic,
                 "channelId": str(self.channelId),
                 "cumulativeAmount": self.cumulativeAmount,
                 "expiresAt": self.expiresAt,
@@ -54,6 +60,7 @@ class VoucherArgs:
     @classmethod
     def from_json(cls, obj: VoucherArgsJSON) -> "VoucherArgs":
         return cls(
+                magic=obj["magic"],
                 channelId=SolPubkey.from_string(obj["channelId"]),
                 cumulativeAmount=obj["cumulativeAmount"],
                 expiresAt=obj["expiresAt"],

@@ -71,9 +71,7 @@ def verify_upto_payload(
     the settlement voucher).
     """
     if requirements["extra"].get("assetTransferMethod") != UPTO_ASSET_TRANSFER_METHOD:
-        raise InvalidProofError(
-            f"assetTransferMethod must be {UPTO_ASSET_TRANSFER_METHOD}", code="payment_invalid"
-        )
+        raise InvalidProofError(f"assetTransferMethod must be {UPTO_ASSET_TRANSFER_METHOD}", code="payment_invalid")
 
     max_amount = parse_base_units(requirements["amount"], "amount")
     signed_max = parse_base_units(payload.get("maxAmount", ""), "maxAmount")

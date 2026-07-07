@@ -41,7 +41,7 @@ from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore, payment
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
-from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash, finalize_usage
+from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
 
 if TYPE_CHECKING:
     from solana_pay_kit.config import Config
@@ -84,12 +84,13 @@ def _upto_engine(config: Config) -> X402Upto:
         return cached
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
-    # Pre-fetch ``extra.recentBlockhash`` from the configured RPC so the client
-    # can build the channel-open without an extra round-trip (parity with the
-    # harness server; the helper degrades to None on any RPC failure).
+    # Pre-fetch ``extra.recentBlockhash`` and ``extra.recentSlot`` (one
+    # getLatestBlockhash call) from the configured RPC so the client can build
+    # the channel-open without an extra round-trip (parity with the harness
+    # server; the helper degrades to None on any RPC failure).
     engine = X402Upto(
         config,
-        recent_blockhash_provider=lambda: fetch_recent_blockhash(config.effective_rpc_url()),
+        recent_state_provider=lambda: fetch_recent_blockhash_and_slot(config.effective_rpc_url()),
     )
     _UPTO_CACHE[config] = engine
     return engine
@@ -178,7 +179,7 @@ def RequireUsage(  # noqa: N802 - factory reads as a dependency constructor
     pending settlement that the usage middleware finalizes after the handler
     returns. The handler MUST call ``charge.charge(actual_base_units)`` with a
     positive amount before returning, else the response is withheld (fail-closed)
-    and the channel is finalized with a full refund. Requires :func:`install`
+    and the channel is sealed with a full refund. Requires :func:`install`
     (or :func:`install_exception_handler`) so the settlement middleware runs.
     """
 
@@ -333,7 +334,7 @@ def install_exception_handler(app: Any) -> None:
         try:
             response = await call_next(request)
         except BaseException:
-            # The channel is open on-chain; settle 0 (finalize + full refund) so
+            # The channel is open on-chain; settle 0 (seal + full refund) so
             # an abandoned request never leaves the deposit locked.
             pending = getattr(request.state, _USAGE_STATE_ATTR, None)
             if pending is not None:

@@ -39,6 +39,7 @@ from solana_pay_kit.protocols.x402.upto import VerifiedUptoOpen, X402Upto
 from solana_pay_kit.protocols.x402.upto.types import UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT, UptoRequirements
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
+RECENT_SLOT = 4242
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +93,7 @@ def _engine(monkeypatch) -> tuple[X402Upto, Config, dict[str, tuple[bytes, str] 
         operator=op,
         rpc_url="http://127.0.0.1:8899",
     )
-    eng = X402Upto(cfg, recent_blockhash_provider=lambda: BH)
+    eng = X402Upto(cfg, recent_state_provider=lambda: (BH, RECENT_SLOT))
     holder: dict[str, tuple[bytes, str] | None] = {"account": None}
     monkeypatch.setattr(upto_mod, "SolanaRpc", lambda *_a, **_k: _FakeRpc(holder))
     return eng, cfg, holder
@@ -157,6 +158,7 @@ def _fake_channel(
             "authorizedSigner": Pubkey.from_string(operator),
             "mint": Pubkey.from_string(mint),
             "rentPayer": Pubkey.from_string(operator),
+            "openSlot": RECENT_SLOT,
         }
     )
     return bytes([7]) + bytes(body), upto_mod.PAYMENT_CHANNELS_PROGRAM_ID
@@ -181,6 +183,8 @@ def test_accepts_entry_shape(monkeypatch) -> None:
     assert req["extra"]["assetTransferMethod"] == "payment-channel"
     assert req["extra"]["facilitatorAddress"] == _op_pubkey(cfg)
     assert req["extra"].get("recentBlockhash") == BH
+    # recentSlot is stamped as a u64-as-string next to the blockhash.
+    assert req["extra"].get("recentSlot") == str(RECENT_SLOT)
 
 
 def test_challenge_and_detect(monkeypatch) -> None:

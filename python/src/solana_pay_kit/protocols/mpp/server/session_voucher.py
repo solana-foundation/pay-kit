@@ -8,12 +8,12 @@ store, re-checking inside the atomic mutator.
 The check sequence (order and operators) is normative and must be applied in
 exactly this order::
 
-    parse u64 -> finalized -> close pending -> idempotent replay (same
+    parse u64 -> sealed -> close pending -> idempotent replay (same
     cumulative AND same signature, signature re-verified) -> cumulative >
     watermark strictly -> cumulative <= deposit -> delta >= min_voucher_delta ->
     Ed25519 verify against the stored authorized_signer -> expiry.
 
-Expiry follows the on-chain program's ``settle_and_finalize`` rule
+Expiry follows the on-chain program's ``settle_and_seal`` rule
 (``payment_channels`` ``helpers/voucher.rs``): the program rejects a voucher
 only when ``expires_at != 0 && now >= expires_at``, so ``expires_at == 0`` means
 **never-expires** and is always accepted. Off-chain acceptance mirrors that, with
@@ -58,8 +58,8 @@ class VoucherRejectReason(StrEnum):
     #: A close was already requested.
     CHANNEL_CLOSE_PENDING = "channel-close-pending"
 
-    #: The channel is already finalized.
-    CHANNEL_FINALIZED = "channel-finalized"
+    #: The channel is already sealed.
+    CHANNEL_SEALED = "channel-sealed"
 
     #: The cumulative does not strictly exceed the watermark.
     CUMULATIVE_NOT_MONOTONIC = "cumulative-not-monotonic"
@@ -104,8 +104,8 @@ class ChannelState:
     #: watermark).
     cumulative: int = 0
 
-    #: True once the channel has been finalized on-chain.
-    finalized: bool = False
+    #: True once the channel has been sealed on-chain.
+    sealed: bool = False
 
     #: The signature of the highest accepted voucher (base58). Stored for
     #: idempotent replay detection.
@@ -199,11 +199,11 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
             f"invalid cumulative in voucher: {signed.data.cumulative}",
         )
 
-    # 2. Channel must not be finalized.
-    if state.finalized:
+    # 2. Channel must not be sealed.
+    if state.sealed:
         return _voucher_reject(
-            VoucherRejectReason.CHANNEL_FINALIZED,
-            f"channel {state.channel_id} is already finalized",
+            VoucherRejectReason.CHANNEL_SEALED,
+            f"channel {state.channel_id} is already sealed",
         )
 
     # 3. Channel must not be in close-pending.
@@ -252,7 +252,7 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
             f"voucher delta {delta} is below minimum {args.min_voucher_delta}",
         )
 
-    # 8. Verify the Ed25519 signature over the 48-byte canonical payload.
+    # 8. Verify the Ed25519 signature over the 50-byte canonical payload.
     err = _verify_voucher_signature_bytes(signed, state.authorized_signer)
     if err is not None:
         return _voucher_reject(VoucherRejectReason.INVALID_SIGNATURE, err)
@@ -333,7 +333,7 @@ def _parse_u64(raw: str) -> int:
 
 
 def _verify_voucher_signature_bytes(signed: SignedVoucher, authorized_signer: str) -> str | None:
-    """Check the voucher's Ed25519 signature over the canonical 48-byte voucher
+    """Check the voucher's Ed25519 signature over the canonical 50-byte voucher
     payload against the authorized signer (both base58). The expiry check is not
     included; callers order it explicitly.
 

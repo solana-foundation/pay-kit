@@ -73,9 +73,7 @@ class PaymentTransport(httpx.AsyncBaseTransport):
         except Exception:  # noqa: BLE001 - a non-decodable body just means "header only"
             body = None
 
-        requirement, version = parse_x402_challenge_with_version(
-            dict(response.headers), body, self._selection
-        )
+        requirement, version = parse_x402_challenge_with_version(dict(response.headers), body, self._selection)
         if requirement is None:
             return response
 

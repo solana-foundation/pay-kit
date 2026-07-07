@@ -62,6 +62,7 @@ def _requirements(operator: str, payee: str, *, amount: int = MAX) -> UptoRequir
             "tokenProgram": TOKEN_PROGRAM,
             "facilitatorAddress": operator,
             "recentBlockhash": BH,
+            "recentSlot": "4242",
         },
     }
 

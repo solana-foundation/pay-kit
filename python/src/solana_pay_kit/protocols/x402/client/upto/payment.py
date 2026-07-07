@@ -50,6 +50,30 @@ __all__ = [
 #: the Go client's defaultGracePeriodSeconds.
 _DEFAULT_GRACE_PERIOD_SECONDS = 900
 
+_U64_MAX = (1 << 64) - 1
+
+
+def _parse_recent_slot(raw: Any) -> int:
+    """Parse the server-provided ``extra.recentSlot`` (decimal string or number).
+
+    The slot is emitted as a u64-as-string (matching the session challenge
+    convention) but a plain JSON number is accepted too. Missing, negative, or
+    out-of-range values raise ``ValueError``.
+    """
+    if raw is None or raw == "":
+        raise ValueError("x402 client: requirement missing extra.recentSlot")
+    if isinstance(raw, bool):
+        raise ValueError(f"x402 client: invalid extra.recentSlot {raw!r}")
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str) and raw.isascii() and raw.isdigit():
+        value = int(raw, 10)
+    else:
+        raise ValueError(f"x402 client: invalid extra.recentSlot {raw!r}")
+    if not 0 <= value <= _U64_MAX:
+        raise ValueError(f"x402 client: extra.recentSlot {value} does not fit in u64")
+    return value
+
 
 def parse_upto_challenge(headers: Mapping[str, str], body: str | None = None) -> UptoRequirements | None:
     """Extract the ``upto`` requirement from a 402 challenge.
@@ -120,10 +144,14 @@ def build_upto_payload(
     if not blockhash_str:
         raise ValueError("x402 client: requirement missing extra.recentBlockhash")
     blockhash = Hash.from_string(blockhash_str)
+    # The channel openSlot is server-provided as the challenge recentSlot
+    # (like recentBlockhash); the client never fetches the slot itself. It is
+    # a channel PDA seed and an openArgs field, so the requirement must carry it.
+    open_slot = _parse_recent_slot(extra.get("recentSlot"))
 
     payer = Pubkey.from_string(signer.pubkey())
     salt = secrets.randbits(64)
-    channel, _ = find_channel_pda(payer, operator, mint, operator, salt, program_id)
+    channel, _ = find_channel_pda(payer, operator, mint, operator, salt, open_slot, program_id)
     open_ix = build_open_instruction(
         OpenChannelParams(
             payer=payer,
@@ -134,6 +162,7 @@ def build_upto_payload(
             salt=salt,
             deposit=max_amount,
             grace_period=_DEFAULT_GRACE_PERIOD_SECONDS,
+            open_slot=open_slot,
             recipients=recipients,
             token_program=token_program,
             program_id=program_id,
