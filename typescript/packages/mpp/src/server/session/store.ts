@@ -56,19 +56,25 @@ export interface ChannelState {
     readonly cumulative: bigint;
     /** Total deposit / approved amount locked for this session (base units). */
     readonly deposit: bigint;
-    /** True once the channel has been finalized on-chain. */
-    readonly finalized: boolean;
     /** Expiry timestamp from the highest accepted voucher. */
     readonly highestVoucherExpiresAt?: bigint | undefined;
     /** Signature of the highest accepted voucher (base58). For idempotent replay. */
     readonly highestVoucherSignature?: string | undefined;
     /** Next server-side metered delivery sequence. */
     readonly nextDeliverySequence: bigint;
+    /**
+     * Slot the channel was opened at (a channel PDA seed). Needed to
+     * re-derive the PDA and to gate reclaim (`slot > openSlot + 1500`).
+     * `undefined` for pull sessions and bare push opens that never carried it.
+     */
+    readonly openSlot?: bigint | undefined;
     /** Pull-mode only: client wallet pubkey (base58). `undefined` for push. */
     readonly operator?: string | undefined;
     /** Deliveries reserved but not yet committed. */
     readonly pendingDeliveries: readonly PendingDelivery[];
-    /** On-chain settle_and_finalize transaction signature (base58), once submitted. */
+    /** True once the channel has been sealed on-chain. */
+    readonly sealed: boolean;
+    /** On-chain settle_and_seal transaction signature (base58), once submitted. */
     readonly settledSignature?: string | undefined;
 }
 
@@ -78,8 +84,8 @@ export interface ChannelState {
 export interface ListChannelsFilter {
     /** Only include channels that have an in-flight `closeRequestedAt`. */
     readonly closePending?: boolean | undefined;
-    /** Only include channels matching this finalized state. */
-    readonly finalized?: boolean | undefined;
+    /** Only include channels matching this sealed state. */
+    readonly sealed?: boolean | undefined;
 }
 
 /**
@@ -106,10 +112,10 @@ export interface SessionStore {
     /** Snapshot list. Filter is applied after read. */
     listChannels(filter?: ListChannelsFilter): Promise<readonly ChannelState[]>;
     /**
-     * Convenience: flip `finalized` to true. Throws if the channel is
+     * Convenience: flip `sealed` to true. Throws if the channel is
      * not found, matching the Rust behavior.
      */
-    markFinalized(channelId: string): Promise<ChannelState>;
+    markSealed(channelId: string): Promise<ChannelState>;
     /** Atomically read-modify-write a channel's state. */
     updateChannel(channelId: string, mutator: ChannelMutator): Promise<ChannelState>;
 }
@@ -154,7 +160,7 @@ export function createMemorySessionStore(): SessionStore {
             if (!filter) return Promise.resolve(all);
             return Promise.resolve(
                 all.filter(state => {
-                    if (filter.finalized !== undefined && state.finalized !== filter.finalized) {
+                    if (filter.sealed !== undefined && state.sealed !== filter.sealed) {
                         return false;
                     }
                     if (filter.closePending !== undefined) {
@@ -166,13 +172,13 @@ export function createMemorySessionStore(): SessionStore {
             );
         },
 
-        async markFinalized(channelId) {
+        async markSealed(channelId) {
             return await withLock(channelId, () => {
                 const current = data.get(channelId);
                 if (!current) {
                     throw new Error(`Channel ${channelId} not found`);
                 }
-                const next: ChannelState = { ...current, finalized: true };
+                const next: ChannelState = { ...current, sealed: true };
                 data.set(channelId, next);
                 return Promise.resolve(next);
             });

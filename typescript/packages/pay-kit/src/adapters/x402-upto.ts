@@ -162,7 +162,7 @@ export class X402Upto {
 
     /**
      * Settle the metered amount (`actualBaseUnits`, clamped to the ceiling) against
-     * a verified open: operator voucher, settle-and-finalize, refund the remainder.
+     * a verified open: operator voucher, settle-and-seal, refund the remainder.
      *
      * @throws {InvalidProofError} when settlement fails.
      */
@@ -256,20 +256,24 @@ export class X402Upto {
     }
 
     /**
-     * The challenge requirements with a server-fetched recent blockhash in
-     * `extra` - so the client can sign the channel-open without its own RPC
-     * round-trip (mirroring MPP). Falls back to the bare requirements on error.
+     * The challenge requirements with a server-fetched recent blockhash and
+     * current slot (`recentSlot`) in `extra` - so the client can sign the
+     * channel-open without its own RPC round-trip (mirroring MPP). The slot
+     * comes from the same blockhash response's context and becomes the
+     * channel `openSlot` PDA seed, which clients must take from the
+     * challenge. Falls back to the bare requirements on error.
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
         const base = this.#requirements(maxPrice);
         try {
-            const { value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
+            const { context, value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
             return {
                 ...base,
                 extra: {
                     ...base.extra,
                     lastValidBlockHeight: value.lastValidBlockHeight.toString(),
                     recentBlockhash: value.blockhash,
+                    recentSlot: context.slot.toString(),
                 },
             };
         } catch {

@@ -234,6 +234,8 @@ export const session = Method.from({
 
                     /** Client wallet funding the push-mode channel. */
                     payer: z.optional(z.string()),
+                    /** Slot the push-mode open was built against (the channel `openSlot` PDA seed). */
+                    recentSlot: z.optional(z.union([z.string(), z.number()])),
                     /** PDA salt used for the payment-channel address. */
                     salt: z.optional(z.union([z.string(), z.number()])),
                     /** On-chain transaction signature proving the open. */
@@ -292,6 +294,8 @@ export const session = Method.from({
             pullVoucherStrategy: z.optional(sessionPullVoucherStrategy),
             /** Server-provided recent blockhash. */
             recentBlockhash: z.optional(z.string()),
+            /** Server-provided current slot used as the channel `openSlot` PDA seed. */
+            recentSlot: z.optional(z.union([z.string(), z.number()])),
             /** Primary recipient for channel proceeds. */
             recipient: z.string(),
             /** Optional basis-point splits distributed at close. */

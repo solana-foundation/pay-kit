@@ -8,10 +8,11 @@
 
 export * from './distribute.js';
 export * from './emitEvent.js';
-export * from './finalize.js';
 export * from './open.js';
+export * from './reclaim.js';
 export * from './requestClose.js';
+export * from './seal.js';
 export * from './settle.js';
-export * from './settleAndFinalize.js';
+export * from './settleAndSeal.js';
 export * from './topUp.js';
 export * from './withdrawPayer.js';

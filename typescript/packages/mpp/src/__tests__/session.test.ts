@@ -61,10 +61,11 @@ describe('voucherMessageBytes', () => {
             expiresAt: '42',
         });
 
-        expect(bytes.byteLength).toBe(48);
-        expect(bytes.slice(0, 32)).toEqual(getBase58Encoder().encode(channel.address));
-        expect(new DataView(bytes.buffer, bytes.byteOffset + 32, 8).getBigUint64(0, true)).toBe(513n);
-        expect(new DataView(bytes.buffer, bytes.byteOffset + 40, 8).getBigInt64(0, true)).toBe(42n);
+        expect(bytes.byteLength).toBe(50);
+        expect(bytes.slice(0, 2)).toEqual(new Uint8Array([0x56, 0x01]));
+        expect(bytes.slice(2, 34)).toEqual(getBase58Encoder().encode(channel.address));
+        expect(new DataView(bytes.buffer, bytes.byteOffset + 34, 8).getBigUint64(0, true)).toBe(513n);
+        expect(new DataView(bytes.buffer, bytes.byteOffset + 42, 8).getBigInt64(0, true)).toBe(42n);
     });
 
     test('accepts the Rust cumulative alias and validates integer inputs', async () => {
@@ -75,7 +76,7 @@ describe('voucherMessageBytes', () => {
                 cumulative: 7n,
                 expiresAt: DEFAULT_SESSION_EXPIRES_AT,
             }),
-        ).toHaveLength(48);
+        ).toHaveLength(50);
 
         expect(() =>
             voucherMessageBytes({
@@ -157,6 +158,7 @@ describe('ActiveSession', () => {
                 deposit: 9_000,
                 gracePeriod: 60,
                 mint: 'mint',
+                openSlot: 314_159,
                 payer: 'payer',
                 payee: 'payee',
                 salt: 42,
@@ -168,6 +170,7 @@ describe('ActiveSession', () => {
             gracePeriod: 60,
             mint: 'mint',
             mode: 'push',
+            recentSlot: '314159',
             payer: 'payer',
             payee: 'payee',
             salt: '42',
@@ -321,6 +324,7 @@ describe('session client method', () => {
                     deposit: 100,
                     gracePeriod: 60,
                     mint: 'mint',
+                    openSlot: 777,
                     payee: 'payee',
                     payer: 'payer',
                     salt: (1n << 64n) - 7n,
@@ -330,6 +334,7 @@ describe('session client method', () => {
         ).payload;
         expect(detailedOpen).toMatchObject({
             action: 'open',
+            recentSlot: '777',
             salt: '18446744073709551609',
         });
 

@@ -16,17 +16,21 @@ import { PYUSD, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC } from '../constants.js'
 /**
  * Golden buffer captured from the hand-encoded `getOpenInstructionData`
  * helper that previously lived in `client/PaymentChannels.ts` (pre-Codama
- * refactor). Byte-equivalence guarantees the Codama TS client encodes the
- * `open` instruction the same way for fixed inputs.
+ * refactor), extended with the epoch-addressed `openSlot` u64 the program
+ * now expects between `gracePeriod` and `recipients`. Byte-equivalence
+ * guarantees the Codama TS client encodes the `open` instruction the same
+ * way for fixed inputs.
  *
  * Inputs (all bigints/decimals are exact):
  *   salt         = 42
  *   deposit      = 1_000_000
  *   gracePeriod  = 900
+ *   openSlot     = 9_042 (challenge `recentSlot`)
  *   recipients   = [{ recipient: HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD, bps: 250 }]
  */
 const GOLDEN_DATA_HEX =
-    '012a0000000000000040420f00000000008403000001000000f3df6c4f444efb2d860ce6dae0b568b6dadee3c402fc33edab10836490385896fa00';
+    '012a0000000000000040420f0000000000840300005223000000000000' +
+    '01000000f3df6c4f444efb2d860ce6dae0b568b6dadee3c402fc33edab10836490385896fa00';
 
 const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as Blockhash;
 function makeSeed(byte: number): Uint8Array {
@@ -61,6 +65,7 @@ test('open instruction bytes match the pre-Codama golden buffer', async () => {
         operator: operator.address,
         pullVoucherStrategy: 'clientVoucher',
         recentBlockhash: BLOCKHASH,
+        recentSlot: '9042',
         recipient: payee.address,
         splits: [{ bps: 250, recipient: address('HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD') }],
     };
@@ -101,6 +106,7 @@ test('a PYUSD challenge derives Token-2022 accounts by default', async () => {
         operator: operator.address,
         pullVoucherStrategy: 'clientVoucher',
         recentBlockhash: BLOCKHASH,
+        recentSlot: '9042',
         recipient: payee.address,
     };
 
