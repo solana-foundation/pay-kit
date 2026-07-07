@@ -2,9 +2,20 @@ package com.solana.paykit.protocols.x402.upto
 
 import com.solana.paykit.paycore.SolanaNetwork
 import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.nullable
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * x402 ``upto`` wire shapes (payment-channel asset transfer method).
@@ -21,6 +32,33 @@ const val UPTO_SCHEME: String = "upto"
 
 /** Payment-channel asset transfer method (the only SVM ``upto`` backend). */
 const val UPTO_ASSET_TRANSFER_METHOD: String = "payment-channel"
+
+/**
+ * Serializes a nullable u64 slot as a decimal string; reads string or number
+ * (mirrors the session wire's salt/recentSlot adapter).
+ */
+object SlotStringSerializer : KSerializer<ULong?> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("RecentSlot", PrimitiveKind.STRING).nullable
+
+    override fun serialize(encoder: Encoder, value: ULong?) {
+        if (value == null) encoder.encodeNull() else encoder.encodeString(value.toString())
+    }
+
+    override fun deserialize(decoder: Decoder): ULong? {
+        val input = decoder as? JsonDecoder
+            ?: return decoder.decodeString().toULongOrNull()
+                ?: throw SerializationException("invalid u64 slot")
+        return when (val element = input.decodeJsonElement()) {
+            is JsonNull -> null
+            is JsonPrimitive ->
+                // Read the raw content as ULong for both the string and number
+                // forms so a full-range u64 slot survives the round trip.
+                element.content.toULongOrNull() ?: throw SerializationException("invalid u64 slot")
+            else -> throw SerializationException("invalid u64 slot")
+        }
+    }
+}
 
 /** The ``extra`` object on an ``upto`` requirement. */
 @Serializable
@@ -39,6 +77,12 @@ data class UptoExtra(
     val recentBlockhash: String? = null,
     /** Last block height at which ``recentBlockhash`` is valid (decimal string). */
     val lastValidBlockHeight: String? = null,
+    /**
+     * Server-prefetched current slot for the channel ``open`` (decimal string;
+     * reads string or number). The program's ``open_slot`` channel PDA seed,
+     * only accepted within the 1500-slot open window.
+     */
+    @Serializable(with = SlotStringSerializer::class) val recentSlot: ULong? = null,
     /** Earliest activation time (Unix seconds). */
     val validAfter: Long? = null,
 )
