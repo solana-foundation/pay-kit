@@ -132,7 +132,7 @@ async function pollSessionReceipt(channelId: string, timeoutMs = 10_000): Promis
         `/__402/payment-channels/receipt/${encodeURIComponent(channelId)}`,
       )
       if (res.ok) {
-        const body = (await res.json()) as { settledSignature: string | null; finalized: boolean }
+        const body = (await res.json()) as { settledSignature: string | null; sealed: boolean }
         if (body.settledSignature) return body.settledSignature
       }
     } catch {

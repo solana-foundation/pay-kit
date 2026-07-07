@@ -1096,10 +1096,13 @@ function expectPaymentChannelSettlement(
     );
     expect(verify.data[0], "Ed25519 signature count").toBe(1);
     expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
-    expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
-    expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
-      primaryDelta(scenario),
-    );
+    expect(readU16Le(verify.data, 12), "voucher message length").toBe(50);
+    expect(verify.data[112], "voucher magic tag").toBe(0x56);
+    expect(verify.data[113], "voucher magic version").toBe(0x01);
+    expect(
+      readU64Le(verify.data, 112 + 2 + 32),
+      "voucher cumulative amount",
+    ).toBe(primaryDelta(scenario));
     settle = nonZeroSettle;
     createPayee = nonZeroCreatePayee;
     createTreasury = nonZeroCreateTreasury;
@@ -1109,8 +1112,8 @@ function expectPaymentChannelSettlement(
   expect(accountAt(message, settle.programAddressIndex)).toBe(
     PAYMENT_CHANNEL_PROGRAM,
   );
-  expect(settle.data[0], "settle_and_finalize discriminator").toBe(4);
-  expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(
+  expect(settle.data[0], "settle_and_seal discriminator").toBe(4);
+  expect(settle.data[1], "settle_and_seal hasVoucher").toBe(
     actual === 0n ? 0 : 1,
   );
 

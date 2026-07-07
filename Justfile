@@ -6,7 +6,7 @@ set shell := ["bash", "-uc"]
 subscriptions_repo     := "solana-foundation/subscriptions"
 subscriptions_ref      := "30a6f7cbd1c53862cc598d93cb771c2c86a10cbf"
 payment_channels_repo  := "Moonsong-Labs/solana-payment-channels"
-payment_channels_ref   := "d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea"
+payment_channels_ref   := "0c07d5751c8972abf6a219570a3f39a72f46f879"
 
 default:
     @just --list
@@ -91,7 +91,7 @@ payment-channels-generate-ts: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:ts
 
 # Render the Python client from the vendored IDL. Wipes
-# `python/src/pay_kit/protocols/programs/paymentchannels/` and rewrites
+# `python/src/solana_pay_kit/protocols/programs/paymentchannels/` and rewrites
 # it in place — see {{codegen_dir}}/generate-payment-channels-client-py.ts.
 payment-channels-generate-py: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:python
