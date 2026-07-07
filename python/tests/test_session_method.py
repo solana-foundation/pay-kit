@@ -278,6 +278,35 @@ async def test_session_challenge_includes_blockhash_with_rpc() -> None:
     assert request.recent_blockhash == fake.blockhash
 
 
+async def test_session_challenge_uses_recent_state_provider() -> None:
+    """The provider stamps recentBlockhash + recentSlot without an RPC client,
+    winning over ``rpc`` — hosts keep the trust-the-payload model while still
+    serving the challenge fields the client derives the channel PDA from."""
+    fake = _FakeRpc()
+    session = _new_test_session(rpc=fake, recent_state_provider=lambda: ("ProviderHash111", 4242))
+    challenge = await session.challenge(SessionChallengeOptions())
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
+
+    request = SessionRequest.from_dict(challenge.decode_request())
+    assert request.recent_blockhash == "ProviderHash111"
+    assert request.recent_slot == 4242
+
+
+async def test_session_challenge_recent_state_provider_failure_is_nonfatal() -> None:
+    """A raising / empty / malformed provider leaves both fields unset."""
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
+
+    def boom() -> tuple[str | None, int | None]:
+        raise RuntimeError("rpc down")
+
+    for provider in (boom, lambda: None, lambda: ("", True)):
+        session = _new_test_session(recent_state_provider=provider)
+        challenge = await session.challenge(SessionChallengeOptions())
+        request = SessionRequest.from_dict(challenge.decode_request())
+        assert request.recent_blockhash is None
+        assert request.recent_slot is None
+
+
 async def test_session_challenge_advertises_pull_strategy() -> None:
     """Mirrors TestSessionChallengeAdvertisesPullStrategy."""
     session = _new_test_session(modes=["pull", "push"], pull_voucher_strategy="clientVoucher")

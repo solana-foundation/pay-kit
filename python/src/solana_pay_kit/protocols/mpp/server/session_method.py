@@ -33,6 +33,7 @@ dispatch.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -164,6 +165,14 @@ class SessionOptions:
     # RPC is the optional RPC client used for on-chain checks. None skips every
     # on-chain check and trusts payload claims as provided.
     rpc: RpcClient | None = None
+    # RecentStateProvider pre-fetches ``(recentBlockhash, recentSlot)`` for
+    # challenge issuance from a single ``getLatestBlockhash`` call (the
+    # response context carries the slot), WITHOUT granting the method an RPC
+    # client — on-chain open verification and settle-at-close stay off, so
+    # payload claims are trusted exactly as with ``rpc=None``. When set it
+    # wins over ``rpc`` at challenge time. Mirrors
+    # ``X402Upto(recent_state_provider=...)``.
+    recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None
     # Signer is the operator/merchant local signer that funds and signs the
     # on-chain settle-at-close (and the server-broadcast open) transactions.
     # None (or no RPC) leaves close a pure state-flip with settledSignature unset.
@@ -291,6 +300,7 @@ class Session:
         rpc: RpcClient | None,
         lifecycle: SessionLifecycle | None,
         signer: LocalSigner | None = None,
+        recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None,
     ) -> None:
         # core is the lower-level SessionServer dispatching open / voucher /
         # commit / topUp / close against the channel store.
@@ -307,6 +317,9 @@ class Session:
         # rpc is the optional RPC client for on-chain checks; None trusts payload
         # claims as provided.
         self._rpc = rpc
+        # recent_state_provider stamps challenge (recentBlockhash, recentSlot)
+        # without an RPC client; wins over rpc at challenge time.
+        self._recent_state_provider = recent_state_provider
         # lifecycle is the idle-close watchdog; None when close_delay is zero.
         self._lifecycle = lifecycle
         # signer settles the channel on-chain at close (and broadcasts server
@@ -345,8 +358,8 @@ class Session:
         is included only when positive, ``modes`` are omitted when push-only,
         ``pull_voucher_strategy`` is included only when pull is offered, and a
         recent blockhash plus the current slot (``recentSlot``, the channel
-        ``openSlot``) are prefetched (non-fatally) when an RPC client is
-        configured.
+        ``openSlot``) are prefetched (non-fatally) when a recent-state
+        provider or an RPC client is configured.
         """
         if options is None:
             options = SessionChallengeOptions()
@@ -361,17 +374,30 @@ class Session:
             request.description = options.description
         if options.external_id != "":
             request.external_id = options.external_id
-        if self._rpc is not None:
-            # Non-fatal: the client fetches its own blockhash when absent. The
-            # blockhash source is the injected RPC client, so unit tests stay
-            # offline. recentSlot is server-provided (the client derives the
-            # channel PDA from it and never fetches the slot itself) and comes
-            # from the same getLatestBlockhash response as the blockhash.
+        # Non-fatal: the client fetches its own blockhash when absent (recentSlot
+        # is server-provided — the client derives the channel PDA from it and
+        # never fetches the slot itself; both come from the same
+        # getLatestBlockhash response). The provider wins over the RPC client so
+        # hosts can stamp challenge state without enabling on-chain checks.
+        blockhash: str | None = None
+        recent_slot: int | None = None
+        if self._recent_state_provider is not None:
+            try:
+                value = self._recent_state_provider()
+            except Exception:  # noqa: BLE001 - provider failures are non-fatal at challenge time
+                value = None
+            if value is not None:
+                blockhash, recent_slot = value
+                if not isinstance(blockhash, str) or blockhash == "":
+                    blockhash = None
+                if isinstance(recent_slot, bool) or not isinstance(recent_slot, int) or recent_slot < 0:
+                    recent_slot = None
+        elif self._rpc is not None:
             blockhash, recent_slot = await _try_recent_blockhash_and_slot(self._rpc)
-            if blockhash:
-                request.recent_blockhash = blockhash
-            if recent_slot is not None:
-                request.recent_slot = recent_slot
+        if blockhash:
+            request.recent_blockhash = blockhash
+        if recent_slot is not None:
+            request.recent_slot = recent_slot
 
         expires = options.expires or minutes(5)
         return PaymentChallenge.with_secret_key(
@@ -983,6 +1009,7 @@ def new_session(options: SessionOptions) -> Session:
         rpc=options.rpc,
         lifecycle=None,
         signer=options.signer,
+        recent_state_provider=options.recent_state_provider,
     )
     if options.close_delay > 0:
         session._lifecycle = SessionLifecycle(session._close_on_idle, options.close_delay)

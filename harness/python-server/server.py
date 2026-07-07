@@ -251,7 +251,9 @@ class _Adapter:
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
-        self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
+        self.settlement_header = optional_env(
+            "X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
+        ).lower()
         self.price = optional_env("X402_HARNESS_PRICE", "0.10")
         # The metered amount the handler "charges" after serving (base units).
         self.actual_amount = int(optional_env("X402_HARNESS_ACTUAL_AMOUNT", "0"))
@@ -353,8 +355,17 @@ class _Adapter:
                 modes=["pull"],
                 pull_voucher_strategy="clientVoucher",
                 open_tx_submitter="client",
-                signer=signer,
+                # The session challenge must carry recentBlockhash + recentSlot
+                # (the client derives the channel PDA from the challenge slot
+                # and never fetches it), but this scenario's surfnet runs no
+                # payment-channels program, so the wire-level trust model must
+                # stay intact: rpc=None keeps open verification / broadcast /
+                # settle-at-close off, and the recent-state provider stamps the
+                # challenge fields from one blocking getLatestBlockhash call
+                # (the slot rides in its context).
+                signer=None,
                 rpc=None,
+                recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
             )
         )
         self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)
