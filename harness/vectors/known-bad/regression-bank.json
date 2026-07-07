@@ -1,0 +1,260 @@
+{
+  "schemaVersion": 1,
+  "ownerLane": "regression-vectors",
+  "description": "Known-bad negative regression bank. Entries may be schema repros before a full signed artifact exists; each escaped bug graduates to an executable vector when practical.",
+  "vectors": [
+    {
+      "id": "known-bad-x402-wrong-network",
+      "protocol": "x402-exact",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "wrong-network",
+      "labels": ["known-bad", "negative", "wrong-network"],
+      "summary": "Credential accepted for devnet must not satisfy a localnet route.",
+      "minimalRepro": {
+        "route": {
+          "method": "POST",
+          "path": "/checkout/pay",
+          "network": "solana:localnet",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "amount": "1000",
+          "payTo": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+        },
+        "submittedCredential": {
+          "x402Version": 2,
+          "accepted": {
+            "scheme": "exact",
+            "network": "solana:devnet",
+            "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "amount": "1000",
+            "payTo": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+          },
+          "payload": {
+            "transaction": "<signed-transaction-for-devnet-offer>"
+          }
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "wrong-network",
+        "runnerRejectCode": "wrong-network"
+      }
+    },
+    {
+      "id": "known-bad-mpp-wrong-route",
+      "protocol": "mpp-charge",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "wrong-route",
+      "labels": ["known-bad", "negative", "wrong-route"],
+      "summary": "A credential minted for one protected route must not replay against a sibling route.",
+      "minimalRepro": {
+        "issuedChallenge": {
+          "method": "POST",
+          "path": "/orders/order-a/pay",
+          "realm": "merchant.example",
+          "challengeId": "ch_route_order_a"
+        },
+        "submittedTo": {
+          "method": "POST",
+          "path": "/orders/order-b/pay",
+          "realm": "merchant.example"
+        },
+        "credential": {
+          "challengeId": "ch_route_order_a",
+          "intent": "charge",
+          "request": "/orders/order-a/pay"
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "wrong-route"
+      }
+    },
+    {
+      "id": "known-bad-x402-wrong-mint",
+      "protocol": "x402-exact",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "wrong-mint",
+      "labels": ["known-bad", "negative", "wrong-mint"],
+      "summary": "The transferChecked mint must match the offer asset exactly.",
+      "minimalRepro": {
+        "offer": {
+          "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+          "amount": "1000",
+          "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+        },
+        "transactionShape": {
+          "instruction": "spl-token.transferChecked",
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "destinationOwner": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+          "amount": "1000"
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "wrong-mint",
+        "x402ExactRejectCode": "invalid_exact_svm_payload_mint_mismatch"
+      }
+    },
+    {
+      "id": "known-bad-x402-wrong-amount",
+      "protocol": "x402-exact",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "wrong-amount",
+      "labels": ["known-bad", "negative", "wrong-amount"],
+      "summary": "The paid base-unit amount must equal the offer amount.",
+      "minimalRepro": {
+        "offer": {
+          "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+          "amount": "1000",
+          "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+        },
+        "transactionShape": {
+          "instruction": "spl-token.transferChecked",
+          "mint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+          "destinationOwner": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+          "amount": "999"
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "wrong-amount",
+        "x402ExactRejectCode": "invalid_exact_svm_payload_amount_mismatch"
+      }
+    },
+    {
+      "id": "known-bad-x402-malformed-envelope",
+      "protocol": "x402-exact",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "malformed-envelope",
+      "labels": ["known-bad", "negative", "malformed-envelope"],
+      "summary": "A payment header that is not a valid x402 envelope must fail before any transaction verification.",
+      "minimalRepro": {
+        "header": "PAYMENT-SIGNATURE",
+        "wireValue": "not-base64-json",
+        "decodedEnvelope": {
+          "x402Version": 2,
+          "accepted": "not-an-offer",
+          "payload": {}
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 400,
+        "rejectionClass": "malformed-envelope",
+        "runnerRejectCode": "invalid-payload"
+      }
+    },
+    {
+      "id": "known-bad-mpp-invalid-signature",
+      "protocol": "mpp-charge",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "invalid-signature",
+      "labels": ["known-bad", "negative", "invalid-signature"],
+      "summary": "Mutating any signed credential byte must invalidate the credential signature.",
+      "minimalRepro": {
+        "challenge": {
+          "challengeId": "ch_sig_guard",
+          "method": "POST",
+          "path": "/charges/submit",
+          "amount": "1000",
+          "currency": "sol"
+        },
+        "credential": {
+          "challengeId": "ch_sig_guard",
+          "payloadHash": "payload-hash-before-mutation",
+          "signature": "ed25519-signature-with-last-byte-flipped"
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 401,
+        "rejectionClass": "invalid-signature"
+      }
+    },
+    {
+      "id": "known-bad-session-expired-voucher",
+      "protocol": "mpp-session",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "expired-voucher",
+      "labels": ["known-bad", "negative", "expired-voucher"],
+      "summary": "A session voucher whose expiresAt is before server time must not authorize usage.",
+      "minimalRepro": {
+        "serverNowUnix": 1760000000,
+        "voucher": {
+          "channelId": "9xQeWvG816bUx9EPf5mF3kdfWG7uM8cLsdcbzYd7GEzr",
+          "cumulativeAmount": "250",
+          "expiresAt": 1759999999,
+          "signature": "valid-ed25519-signature-over-expired-preimage"
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "expired-voucher"
+      }
+    },
+    {
+      "id": "known-bad-x402-wrong-account-order",
+      "protocol": "x402-exact",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "wrong-account-order",
+      "labels": ["known-bad", "negative", "wrong-account-order"],
+      "summary": "A transferChecked instruction with source and destination accounts swapped must not satisfy the offer.",
+      "minimalRepro": {
+        "offer": {
+          "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+          "amount": "1000",
+          "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+        },
+        "transactionShape": {
+          "instruction": "spl-token.transferChecked",
+          "expectedAccounts": ["source", "mint", "destination", "authority"],
+          "actualAccounts": ["destination", "mint", "source", "authority"]
+        }
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "wrong-account-order"
+      }
+    },
+    {
+      "id": "known-bad-x402-wrong-signer-writable-flags",
+      "protocol": "x402-exact",
+      "ownerLane": "regression-vectors",
+      "artifactKind": "schema-repro",
+      "bugClass": "wrong-signer-writable-flags",
+      "labels": ["known-bad", "negative", "wrong-signer-writable-flags"],
+      "summary": "Transfer authority must be a signer and token source/destination accounts must carry writable flags.",
+      "minimalRepro": {
+        "offer": {
+          "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+          "amount": "1000",
+          "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+        },
+        "accountMetas": [
+          { "role": "source", "isSigner": false, "isWritable": false },
+          { "role": "destination", "isSigner": false, "isWritable": false },
+          { "role": "authority", "isSigner": false, "isWritable": false }
+        ]
+      },
+      "expected": {
+        "status": "reject",
+        "httpStatus": 402,
+        "rejectionClass": "wrong-signer-writable-flags"
+      }
+    }
+  ]
+}
