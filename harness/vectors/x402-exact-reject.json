@@ -1,0 +1,291 @@
+[
+  {
+    "id": "x402-exact-mint-mismatch",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "transferChecked to the correct recipient ATA but for a different mint than the offer's asset. Every SDK's exact verifier must reject with the mint-mismatch code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICSEU4yLXRV0yJ8qznuaYvp+t0Nk/NtouoRZUJqLhNLzyeVmqoBd5gekzwVRNhHRXNqw9TMt4WRf3AGpHEPYTW3wMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABUpTWpkpIQZNJOhxYNo4fHw1td28kruB5B+oQEEFRI0G3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAGBAIHAwEKDOgDAAAAAAAABgUAAW0A",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_mint_mismatch"
+    }
+  },
+  {
+    "id": "x402-exact-amount-mismatch",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "transferChecked of 999 base units when the offer requires 1000. Rejected with the amount-mismatch code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAMFAgEKDOcDAAAAAAAABgYAAW0A",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_amount_mismatch"
+    }
+  },
+  {
+    "id": "x402-exact-recipient-mismatch",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "transferChecked whose destination is not ATA(payTo, mint). Rejected with the recipient-mismatch code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICnueXZgYJURS9tfrTonclJiQz0wZAwtljOM6pILkAfmzsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAMFAgEKDOgDAAAAAAAABgYAAW0A",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_recipient_mismatch"
+    }
+  },
+  {
+    "id": "x402-exact-no-transfer",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "No SPL transferChecked in the transfer slot (a memo sits at ix[2]). Rejected with the no-transfer code.",
+    "input": {
+      "transaction": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQACAwEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAwEABQIgTgAAAQAJAwEAAAAAAAAAAgABbQA=",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_no_transfer_instruction"
+    }
+  },
+  {
+    "id": "x402-exact-fee-payer-as-authority",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "The managed fee payer signs as the transfer authority, draining the operator. Rejected with the fee-payer-transferring-funds code.",
+    "input": {
+      "transaction": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAEBwEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBcGAyAd8i1Peq8/c9jWsvoxXd1Afwvg7zxPtYaY6rkkWxqZeta1ViB28FLts8QVL47jy9t9onTdXdjIxXElf0mgMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEAwAFAiBOAAADAAkDAQAAAAAAAAAGBAEEAgAKDOgDAAAAAAAABgUAAW0A",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+    }
+  },
+  {
+    "id": "x402-exact-fee-payer-as-source-ata",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "A distinct customer key signs as authority, but the transfer SOURCE is the fee payer's own ATA for the mint. The source-account guard must reject with the fee-payer-transferring-funds code (the L-4/Rust+Go weakness this unit closes).",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICcGAyAd8i1Peq8/c9jWsvoxXd1Afwvg7zxPtYaY6rkkWxqZeta1ViB28FLts8QVL47jy9t9onTdXdjIxXElf0mgMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAIFAwEKDOgDAAAAAAAABgYAAW0A",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+    }
+  },
+  {
+    "id": "x402-exact-compute-price-too-high",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "ix[1] SetComputeUnitPrice exceeds MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS. Rejected with the compute-price-too-high code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDQUtMAAAAAAAHBAMFAgEKDOgDAAAAAAAABgYAAW0A",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high"
+    }
+  },
+  {
+    "id": "x402-exact-memo-count",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "The offer pins extra.memo but the transaction carries no memo instruction. Rejected with the memo-count code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBAwcBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJAwQABQIgTgAABAAJAwEAAAAAAAAABgQDBQIBCgzoAwAAAAAAAAYA",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "memo": "expected"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_memo_count"
+    }
+  },
+  {
+    "id": "x402-exact-memo-mismatch",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "The offer pins extra.memo='expected' but the transaction's memo is 'actual'. Rejected with the memo-mismatch code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAMFAgEKDOgDAAAAAAAABgYABmFjdHVhbAA=",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "memo": "expected"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_memo_mismatch"
+    }
+  },
+  {
+    "id": "x402-exact-unknown-optional-instruction",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "A System program instruction sits in the first optional slot (ix[3]); only Memo/Lighthouse are allowed. Rejected with the unknown-fourth-instruction code.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBQAFAiBOAAAFAAkDAQAAAAAAAAAHBAMGAgEKDOgDAAAAAAAABgQAAQIA",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "x402ExactRejectCode": "invalid_exact_svm_payload_unknown_fourth_instruction"
+    }
+  },
+  {
+    "id": "x402-exact-accept-with-memo",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "A nominal transferChecked plus exactly one Memo matching the offer's extra.memo. Every SDK must ACCEPT.",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQFSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAMFAgEKDOgDAAAAAAAABgYACGV4cGVjdGVkAA==",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "memo": "expected"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept"
+    }
+  },
+  {
+    "id": "x402-exact-accept-lighthouse-guard-referencing-fee-payer",
+    "intent": "x402-exact",
+    "mode": "verify-x402-transaction",
+    "description": "A Lighthouse guard whose accounts reference the fee payer as a read-only account is NOT a fund move. Every SDK must ACCEPT (the M-6 uniform-verdict case the old Ruby blanket sweep diverged on).",
+    "input": {
+      "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE3615Yv+x3ZJdCp+15tAM5hlbqLs6kf0H75hgxel7uAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAMFAgEKDOgDAAAAAAAABgYBAAEAAA==",
+      "x402ExactManagedSigners": [
+        "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      ],
+      "x402ExactRequirement": {
+        "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+        "amount": "1000",
+        "extra": {
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept"
+    }
+  }
+]

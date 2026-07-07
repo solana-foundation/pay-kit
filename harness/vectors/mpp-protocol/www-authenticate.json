@@ -369,6 +369,47 @@
           "error_type": "parse_error"
         }
       }
+    },
+    {
+      "name": "serialize_escapes_quote_and_backslash",
+      "description": "A description containing a double-quote and a backslash must be escaped on format so it round-trips through the escape-aware parser",
+      "tags": ["happy-path", "edge-case", "quoted-string", "roundtrip"],
+      "object": {
+        "description": "Pay \"premium\" \\ tier",
+        "id": "ch_serialize_escape",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "100"
+        }
+      },
+      "wire": "Payment id=\"ch_serialize_escape\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiIxMDAifQ\", description=\"Pay \\\"premium\\\" \\\\ tier\"",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "error_format_crlf_in_description",
+      "description": "Rejects formatting a challenge whose description embeds a CRLF (header-injection surface)",
+      "tags": ["error", "edge-case", "header-injection"],
+      "object": {
+        "description": "legit\r\nInjected-Header: evil",
+        "id": "ch_crlf",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": "Payment id=\"ch_crlf\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "format": {
+          "success": false,
+          "error_type": "format_error"
+        }
+      }
     }
   ]
 }

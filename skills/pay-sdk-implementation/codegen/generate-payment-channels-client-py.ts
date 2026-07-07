@@ -4,7 +4,7 @@
  *
  * Mirrors generate-payment-channels-client.ts (Rust) - both scripts read the
  * vendored IDL at `<repo-root>/idl/payment-channels.json`. This one renders a
- * Python client into `python/src/pay_kit/protocols/programs/paymentchannels/`
+ * Python client into `python/src/solana_pay_kit/protocols/programs/paymentchannels/`
  * using the community `codama-py` renderer (Solana-ZH/codama-py).
  *
  * codama-py cannot be consumed as an npm/git dependency yet: its package.json
@@ -15,7 +15,7 @@
  * own `genpy` CLI, exactly as the upstream README documents.
  *
  * Output:
- *   python/src/pay_kit/protocols/programs/paymentchannels/   (rendered by codama-py)
+ *   python/src/solana_pay_kit/protocols/programs/paymentchannels/   (rendered by codama-py)
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -36,7 +36,7 @@ const pyClientDir = path.join(
     repoRoot,
     'python',
     'src',
-    'pay_kit',
+    'solana_pay_kit',
     'protocols',
     'programs',
     'paymentchannels',
@@ -58,7 +58,10 @@ if (!fs.existsSync(path.join(cacheDir, 'package.json'))) {
     run('git', ['clone', '--quiet', CODAMA_PY_REPO, cacheDir], __dirname);
 }
 run('git', ['checkout', '--quiet', CODAMA_PY_COMMIT], cacheDir);
-run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--silent'], cacheDir);
+// --ignore-workspace: the clone lives inside this codegen package's own pnpm
+// workspace, and without the flag pnpm hoists the install to the codegen root
+// instead of materializing .codama-py/node_modules.
+run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-workspace', '--silent'], cacheDir);
 
 console.log(`[codegen] Rendering Python client from ${path.relative(repoRoot, idlPath)}`);
 console.log(`[codegen]   → ${path.relative(repoRoot, pyClientDir)}/`);

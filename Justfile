@@ -86,9 +86,11 @@ payment-channels-generate-go: codegen-install
 
 # Render the TypeScript client from the vendored IDL into
 # `typescript/packages/mpp/src/generated/payment-channels/` (see the matching
-# codegen script). Replaces the previously hand-vendored subset.
+# codegen script), then format with the repo prettier config so the output is
+# byte-identical to the committed tree (the regen-diff CI gate relies on it).
 payment-channels-generate-ts: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:ts
+    cd typescript && pnpm exec prettier --write "packages/mpp/src/generated/payment-channels/**/*.ts"
 
 # Render the Python client from the vendored IDL. Wipes
 # `python/src/pay_kit/protocols/programs/paymentchannels/` and rewrites
@@ -157,7 +159,8 @@ rs-fmt:
 
 # Lint Rust
 rs-lint:
-    cd rust && cargo clippy -- -D warnings
+    cd rust && cargo clippy --locked -p solana-pay-kit --all-targets --features mpp,x402,server,client,axum,gcp_kms,confidential,worker,testkit,fetch,otel -- -D warnings
+    cd rust && cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # ── Go ──
 # Recipes live in go/Justfile. The wrappers below delegate so the

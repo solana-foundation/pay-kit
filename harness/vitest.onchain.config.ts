@@ -6,9 +6,15 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/onchain.e2e.test.ts"],
+    // Hard-fails when this config runs under CI without HARNESS_ONCHAIN=1, so a
+    // green on-chain job cannot mean "every settlement assertion was skipped".
+    setupFiles: ["test/onchain.setup.ts"],
     testTimeout: 130_000,
     hookTimeout: 130_000,
     fileParallelism: false,
     maxWorkers: 1,
+    // The settlement suite is entirely under describe.skipIf(!RUN); a config run
+    // that skips everything must not exit green on its own.
+    passWithNoTests: false,
   },
 });
