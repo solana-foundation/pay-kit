@@ -50,7 +50,8 @@ from .sandbox import fund_sandbox, fund_usdc, register_faucet
 solana_pay_kit.configure(
     network=os.getenv("PAY_KIT_NETWORK", "solana_localnet"),
     # Point at a specific Solana RPC (e.g. a local surfnet) when set; otherwise
-    # the network default is used. Mirrors the TS playground's RPC_URL knob.
+    # the network default is used. The TS, Go, and Ruby playgrounds read the
+    # same PAY_KIT_RPC_URL knob.
     rpc_url=os.getenv("PAY_KIT_RPC_URL") or None,
 )
 
