@@ -96,7 +96,7 @@ type VectorInput struct {
 	// ChallengeID supplies the inputs to the MPP challenge-id HMAC-SHA256
 	// derivation in canonical-bytes mode; nil otherwise.
 	ChallengeID *ChallengeID `json:"challengeId"`
-	// VoucherPreimage supplies the inputs to the 48-byte session voucher
+	// VoucherPreimage supplies the inputs to the 50-byte session voucher
 	// preimage in canonical-bytes mode; nil otherwise.
 	VoucherPreimage *VoucherPreimage `json:"voucherPreimage"`
 
@@ -245,17 +245,17 @@ type ChallengeID struct {
 	Opaque string `json:"opaque"`
 }
 
-// VoucherPreimage holds the inputs to the 48-byte session voucher message
-// bytes.
+// VoucherPreimage holds the inputs to the 50-byte session voucher message
+// bytes (a constant [0x56, 0x01] magic prefix leads the payload).
 type VoucherPreimage struct {
 	// ChannelID is the payment-channel address (base58); its 32 raw bytes
-	// form the preimage prefix.
+	// follow the 2-byte magic prefix.
 	ChannelID string `json:"channelId"`
 	// CumulativeAmount is the channel's cumulative spend in token base
-	// units, as a decimal u64 string; encoded little-endian at offset 32.
+	// units, as a decimal u64 string; encoded little-endian at offset 34.
 	CumulativeAmount string `json:"cumulativeAmount"`
 	// ExpiresAt is the voucher expiry as unix epoch seconds; encoded as a
-	// little-endian i64 at offset 40.
+	// little-endian i64 at offset 42.
 	ExpiresAt int64 `json:"expiresAt"`
 }
 
@@ -680,7 +680,7 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 		)
 	}
 	if v := in.VoucherPreimage; v != nil {
-		// The 48-byte session voucher preimage, computed by the production SDK
+		// The 50-byte session voucher preimage, computed by the production SDK
 		// glue (paymentchannels.VoucherMessageBytes) so a byte mismatch is
 		// caught here cross-SDK rather than behind a live channel.
 		channel, err := solana.PublicKeyFromBase58(v.ChannelID)

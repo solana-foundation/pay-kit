@@ -2,7 +2,7 @@ package server
 
 // MemoryChannelStore coverage: insert-on-missing updates, mutator error
 // handling, concurrent update serialization, list filtering, delete,
-// finalization, and clone isolation.
+// sealing, and clone isolation.
 
 import (
 	"context"
@@ -163,9 +163,9 @@ func TestMemoryChannelStoreListChannelsAppliesFilters(t *testing.T) {
 		}
 	}
 	mustInsert(testChannelState("a", 1))
-	finalized := testChannelState("b", 1)
-	finalized.Finalized = true
-	mustInsert(finalized)
+	sealed := testChannelState("b", 1)
+	sealed.Sealed = true
+	mustInsert(sealed)
 	closing := testChannelState("c", 1)
 	closeAt := uint64(123)
 	closing.CloseRequestedAt = &closeAt
@@ -180,15 +180,15 @@ func TestMemoryChannelStoreListChannelsAppliesFilters(t *testing.T) {
 	}
 
 	wantTrue, wantFalse := true, false
-	onlyFinalized, err := store.ListChannels(ctx, &ListChannelsFilter{Finalized: &wantTrue})
+	onlySealed, err := store.ListChannels(ctx, &ListChannelsFilter{Sealed: &wantTrue})
 	if err != nil {
-		t.Fatalf("ListChannels finalized: %v", err)
+		t.Fatalf("ListChannels sealed: %v", err)
 	}
-	if len(onlyFinalized) != 1 || onlyFinalized[0].ChannelID != "b" {
-		t.Fatalf("finalized filter = %+v, want only b", onlyFinalized)
+	if len(onlySealed) != 1 || onlySealed[0].ChannelID != "b" {
+		t.Fatalf("sealed filter = %+v, want only b", onlySealed)
 	}
 
-	closePending, err := store.ListChannels(ctx, &ListChannelsFilter{Finalized: &wantFalse, ClosePending: &wantTrue})
+	closePending, err := store.ListChannels(ctx, &ListChannelsFilter{Sealed: &wantFalse, ClosePending: &wantTrue})
 	if err != nil {
 		t.Fatalf("ListChannels closePending: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestMemoryChannelStoreListChannelsAppliesFilters(t *testing.T) {
 	}
 }
 
-func TestMemoryChannelStoreDeleteAndMarkFinalized(t *testing.T) {
+func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()
 
@@ -207,16 +207,16 @@ func TestMemoryChannelStoreDeleteAndMarkFinalized(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	state, err := store.MarkFinalized(ctx, "c1")
+	state, err := store.MarkSealed(ctx, "c1")
 	if err != nil {
-		t.Fatalf("MarkFinalized: %v", err)
+		t.Fatalf("MarkSealed: %v", err)
 	}
-	if !state.Finalized {
-		t.Fatal("expected finalized state")
+	if !state.Sealed {
+		t.Fatal("expected sealed state")
 	}
 	stored, err := store.GetChannel(ctx, "c1")
-	if err != nil || stored == nil || !stored.Finalized {
-		t.Fatalf("stored state = %+v err=%v, want finalized", stored, err)
+	if err != nil || stored == nil || !stored.Sealed {
+		t.Fatalf("stored state = %+v err=%v, want sealed", stored, err)
 	}
 
 	if err := store.DeleteChannel(ctx, "c1"); err != nil {
@@ -230,8 +230,8 @@ func TestMemoryChannelStoreDeleteAndMarkFinalized(t *testing.T) {
 		t.Fatalf("expected nil after delete, got %+v", missing)
 	}
 
-	if _, err := store.MarkFinalized(ctx, "ghost"); err == nil {
-		t.Fatal("expected error marking missing channel finalized")
+	if _, err := store.MarkSealed(ctx, "ghost"); err == nil {
+		t.Fatal("expected error marking missing channel sealed")
 	}
 }
 

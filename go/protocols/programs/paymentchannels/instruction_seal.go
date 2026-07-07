@@ -13,33 +13,33 @@ import (
 	ag_solanago "github.com/gagliardetto/solana-go"
 )
 
-var FinalizeDiscriminator = 6
+var SealDiscriminator = 6
 
-// Finalize is the `Finalize` instruction.
-type Finalize struct {
+// Seal is the `Seal` instruction.
+type Seal struct {
 	// [0] = [WRITE] Channel
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
 }
 
-// NewFinalizeInstructionBuilder creates a new `Finalize` instruction builder.
-func NewFinalizeInstructionBuilder() *Finalize {
-	nd := &Finalize{}
+// NewSealInstructionBuilder creates a new `Seal` instruction builder.
+func NewSealInstructionBuilder() *Seal {
+	nd := &Seal{}
 	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 1)
 	return nd
 }
 
 // SetChannelAccount sets the "channel" account.
-func (inst *Finalize) SetChannelAccount(channel ag_solanago.PublicKey) *Finalize {
+func (inst *Seal) SetChannelAccount(channel ag_solanago.PublicKey) *Seal {
 	inst.AccountMetaSlice[0] = ag_solanago.Meta(channel).WRITE()
 	return inst
 }
 
 // GetChannelAccount gets the "channel" account.
-func (inst *Finalize) GetChannelAccount() *ag_solanago.AccountMeta {
+func (inst *Seal) GetChannelAccount() *ag_solanago.AccountMeta {
 	return inst.AccountMetaSlice[0]
 }
 
-func (inst Finalize) Build() *Instruction {
+func (inst Seal) Build() *Instruction {
 	return &Instruction{BaseVariant: ag_binary.BaseVariant{
 		Impl:   inst,
 		TypeID: ag_binary.NoTypeIDDefaultID,
@@ -49,25 +49,25 @@ func (inst Finalize) Build() *Instruction {
 // ValidateAndBuild validates the instruction parameters and accounts;
 // if there is a validation error, it returns the error.
 // Otherwise, it builds and returns the instruction.
-func (inst Finalize) ValidateAndBuild() (*Instruction, error) {
+func (inst Seal) ValidateAndBuild() (*Instruction, error) {
 	if err := inst.Validate(); err != nil {
 		return nil, err
 	}
 	return inst.Build(), nil
 }
 
-func (inst *Finalize) Validate() error {
+func (inst *Seal) Validate() error {
 	if inst.AccountMetaSlice[0] == nil {
 		return fmt.Errorf("accounts.Channel is not set")
 	}
 	return nil
 }
 
-func (inst *Finalize) GetAccounts() (out []*ag_solanago.AccountMeta) {
+func (inst *Seal) GetAccounts() (out []*ag_solanago.AccountMeta) {
 	return inst.AccountMetaSlice
 }
 
-func (inst *Finalize) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
+func (inst *Seal) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
 	if len(accounts) < 1 {
 		return fmt.Errorf("not enough accounts: expected at least 1, got %d", len(accounts))
 	}
@@ -75,7 +75,7 @@ func (inst *Finalize) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
 	return nil
 }
 
-func (inst *Finalize) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
+func (inst *Seal) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
 	{
 		err := encoder.Encode(uint8(6))
 		if err != nil {
@@ -85,7 +85,7 @@ func (inst *Finalize) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
 	return nil
 }
 
-func (inst *Finalize) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
+func (inst *Seal) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
 	{
 		var tmp uint8
 		err := decoder.Decode(&tmp)

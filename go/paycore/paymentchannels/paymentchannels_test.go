@@ -52,12 +52,12 @@ func TestSetProgramIDOverridesDerivation(t *testing.T) {
 	payee := solana.NewWallet().PublicKey()
 	mint := solana.NewWallet().PublicKey()
 	signer := solana.NewWallet().PublicKey()
-	overridden, _, err := FindChannelPDA(payer, payee, mint, signer, 1)
+	overridden, _, err := FindChannelPDA(payer, payee, mint, signer, 1, 1_000)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
 	SetProgramID(solana.MustPublicKeyFromBase58(ProgramID))
-	production, _, err := FindChannelPDA(payer, payee, mint, signer, 1)
+	production, _, err := FindChannelPDA(payer, payee, mint, signer, 1, 1_000)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
@@ -73,18 +73,18 @@ func TestPerCallProgramIDOverridesDerivationAndInstruction(t *testing.T) {
 	mint := solana.NewWallet().PublicKey()
 	signer := solana.NewWallet().PublicKey()
 
-	defaultPDA, _, err := FindChannelPDA(payer, payee, mint, signer, 1)
+	defaultPDA, _, err := FindChannelPDA(payer, payee, mint, signer, 1, 1_000)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
-	customPDA, _, err := FindChannelPDAForProgram(payer, payee, mint, signer, 1, custom)
+	customPDA, _, err := FindChannelPDAForProgram(payer, payee, mint, signer, 1, 1_000, custom)
 	if err != nil {
 		t.Fatalf("FindChannelPDAForProgram: %v", err)
 	}
 	if defaultPDA.Equals(customPDA) {
 		t.Fatal("channel PDA did not change with the per-call program id")
 	}
-	zeroPDA, _, err := FindChannelPDAForProgram(payer, payee, mint, signer, 1, solana.PublicKey{})
+	zeroPDA, _, err := FindChannelPDAForProgram(payer, payee, mint, signer, 1, 1_000, solana.PublicKey{})
 	if err != nil {
 		t.Fatalf("FindChannelPDAForProgram zero: %v", err)
 	}
@@ -99,6 +99,7 @@ func TestPerCallProgramIDOverridesDerivationAndInstruction(t *testing.T) {
 		Mint:             mint,
 		AuthorizedSigner: signer,
 		Salt:             1,
+		OpenSlot:         1_000,
 		Deposit:          10,
 		GracePeriod:      900,
 		TokenProgram:     solana.TokenProgramID,
@@ -143,21 +144,24 @@ func TestVoucherMessageBytesLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VoucherMessageBytes: %v", err)
 	}
-	if len(got) != 48 {
-		t.Fatalf("expected 48 bytes, got %d", len(got))
+	if len(got) != 50 {
+		t.Fatalf("expected 50 bytes, got %d", len(got))
 	}
-	if !bytes.Equal(got[:32], channel.Bytes()) {
-		t.Fatalf("offset 0..32 should be channel id")
+	if !bytes.Equal(got[:2], []byte{0x56, 0x01}) {
+		t.Fatalf("offset 0..2 should be the voucher magic [0x56, 0x01], got %x", got[:2])
+	}
+	if !bytes.Equal(got[2:34], channel.Bytes()) {
+		t.Fatalf("offset 2..34 should be channel id")
 	}
 	wantCumulative := make([]byte, 8)
 	binary.LittleEndian.PutUint64(wantCumulative, cumulative)
-	if !bytes.Equal(got[32:40], wantCumulative) {
-		t.Fatalf("offset 32..40 should be cumulative LE u64, got %x", got[32:40])
+	if !bytes.Equal(got[34:42], wantCumulative) {
+		t.Fatalf("offset 34..42 should be cumulative LE u64, got %x", got[34:42])
 	}
 	wantExpires := make([]byte, 8)
 	binary.LittleEndian.PutUint64(wantExpires, uint64(expiresAt))
-	if !bytes.Equal(got[40:48], wantExpires) {
-		t.Fatalf("offset 40..48 should be expiresAt LE i64, got %x", got[40:48])
+	if !bytes.Equal(got[42:50], wantExpires) {
+		t.Fatalf("offset 42..50 should be expiresAt LE i64, got %x", got[42:50])
 	}
 }
 
@@ -171,7 +175,8 @@ func TestVoucherMessageBytesMatchesGeneratedBorsh(t *testing.T) {
 		t.Fatalf("VoucherMessageBytes: %v", err)
 	}
 
-	want := make([]byte, 0, 48)
+	want := make([]byte, 0, 50)
+	want = append(want, 0x56, 0x01)
 	want = append(want, channel.Bytes()...)
 	c := make([]byte, 8)
 	binary.LittleEndian.PutUint64(c, cumulative)
@@ -184,7 +189,7 @@ func TestVoucherMessageBytesMatchesGeneratedBorsh(t *testing.T) {
 		t.Fatalf("voucher bytes mismatch:\n got=%x\nwant=%x", got, want)
 	}
 	// Sanity: the wire layout equals the field order of generated.VoucherArgs.
-	_ = generated.VoucherArgs{ChannelId: channel, CumulativeAmount: cumulative, ExpiresAt: expiresAt}
+	_ = generated.VoucherArgs{Magic: [2]uint8{0x56, 0x01}, ChannelId: channel, CumulativeAmount: cumulative, ExpiresAt: expiresAt}
 }
 
 func TestVoucherMessageBytesRejectsNon32(t *testing.T) {
@@ -196,17 +201,17 @@ func TestVoucherMessageBytesRejectsNon32(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zero key should be valid 32 bytes: %v", err)
 	}
-	if len(got) != 48 {
-		t.Fatalf("expected 48 bytes, got %d", len(got))
+	if len(got) != 50 {
+		t.Fatalf("expected 50 bytes, got %d", len(got))
 	}
 }
 
 func TestFindChannelPDADeterministic(t *testing.T) {
-	a, bumpA, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99)
+	a, bumpA, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99, 55_555)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
-	b, bumpB, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99)
+	b, bumpB, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99, 55_555)
 	if err != nil {
 		t.Fatalf("FindChannelPDA repeat: %v", err)
 	}
@@ -217,11 +222,14 @@ func TestFindChannelPDADeterministic(t *testing.T) {
 	// Reproduce the seeds against the production program id directly.
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, 99)
+	openSlotLE := make([]byte, 8)
+	binary.LittleEndian.PutUint64(openSlotLE, 55_555)
 	want, wantBump, err := solana.FindProgramAddress(
 		[][]byte{
 			[]byte("channel"),
 			pk(1).Bytes(), pk(2).Bytes(), pk(3).Bytes(), pk(4).Bytes(),
 			saltLE,
+			openSlotLE,
 		},
 		programPubkey,
 	)
@@ -234,7 +242,7 @@ func TestFindChannelPDADeterministic(t *testing.T) {
 }
 
 func TestFindChannelPDAUsesCanonicalProgramID(t *testing.T) {
-	got, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99)
+	got, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99, 55_555)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
@@ -242,11 +250,14 @@ func TestFindChannelPDAUsesCanonicalProgramID(t *testing.T) {
 	// proving FindChannelPDA binds to the canonical payment-channels program.
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, 99)
+	openSlotLE := make([]byte, 8)
+	binary.LittleEndian.PutUint64(openSlotLE, 55_555)
 	other, _, err := solana.FindProgramAddress(
 		[][]byte{
 			[]byte("channel"),
 			pk(1).Bytes(), pk(2).Bytes(), pk(3).Bytes(), pk(4).Bytes(),
 			saltLE,
+			openSlotLE,
 		},
 		solana.SystemProgramID,
 	)
@@ -259,16 +270,32 @@ func TestFindChannelPDAUsesCanonicalProgramID(t *testing.T) {
 }
 
 func TestFindChannelPDASaltSensitivity(t *testing.T) {
-	a, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 1)
+	a, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 1, 55_555)
 	if err != nil {
 		t.Fatalf("FindChannelPDA salt 1: %v", err)
 	}
-	b, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 2)
+	b, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 2, 55_555)
 	if err != nil {
 		t.Fatalf("FindChannelPDA salt 2: %v", err)
 	}
 	if a == b {
 		t.Fatalf("different salts must yield different channel pdas")
+	}
+}
+
+func TestFindChannelPDAOpenSlotSensitivity(t *testing.T) {
+	// openSlot is a PDA seed: the same channel parameters opened at a
+	// different slot derive a different (per-incarnation) address.
+	a, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 1, 55_555)
+	if err != nil {
+		t.Fatalf("FindChannelPDA openSlot 55_555: %v", err)
+	}
+	b, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 1, 55_556)
+	if err != nil {
+		t.Fatalf("FindChannelPDA openSlot 55_556: %v", err)
+	}
+	if a == b {
+		t.Fatalf("different open slots must yield different channel pdas")
 	}
 }
 
@@ -294,6 +321,7 @@ func openParams() OpenChannelParams {
 		Mint:             pk(3),
 		AuthorizedSigner: pk(4),
 		Salt:             99,
+		OpenSlot:         321_654_987,
 		Deposit:          1_000_000,
 		GracePeriod:      3600,
 		Recipients: []Distribution{
@@ -320,7 +348,7 @@ func TestBuildOpenInstructionProgramIDAndAccounts(t *testing.T) {
 		t.Fatalf("expected 14 accounts, got %d", len(metas))
 	}
 
-	channel, _, err := FindChannelPDA(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt)
+	channel, _, err := FindChannelPDA(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt, params.OpenSlot)
 	if err != nil {
 		t.Fatalf("channel pda: %v", err)
 	}
@@ -397,7 +425,8 @@ func TestBuildOpenInstructionArgsRoundTrip(t *testing.T) {
 	if err := ag_binary.NewBorshDecoder(data[1:]).Decode(&args); err != nil {
 		t.Fatalf("decode open args: %v", err)
 	}
-	if args.Salt != params.Salt || args.Deposit != params.Deposit || args.GracePeriod != params.GracePeriod {
+	if args.Salt != params.Salt || args.Deposit != params.Deposit ||
+		args.GracePeriod != params.GracePeriod || args.OpenSlot != params.OpenSlot {
 		t.Fatalf("open args round-trip mismatch: %+v", args)
 	}
 	if len(args.Recipients) != len(params.Recipients) {
@@ -431,7 +460,7 @@ func TestBuildOpenInstructionEmptyRecipients(t *testing.T) {
 }
 
 func TestBuildTopUpInstructionProgramIDAndAccounts(t *testing.T) {
-	channel, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99)
+	channel, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99, 55_555)
 	if err != nil {
 		t.Fatalf("channel pda: %v", err)
 	}
