@@ -106,6 +106,20 @@ runners/<lang>.json   per-SDK conformance runner configs
 <lang>-{client,server}/  per-language process adapters
 ```
 
+### Capability registry
+
+`src/capabilities.ts` is the typed registry for harness support. It records the
+current adapter/language support for `charge`, `x402-exact`, `x402-upto`, and
+`session` across four roles: `client`, `server`, `verifier`, and `settlement`.
+
+Unsupported means no capability is declared for that adapter/protocol/role, so a
+matrix or vector driver may skip it deliberately. Unexecuted means a capability
+is declared but has no matching implementation, scenario, runner manifest, or
+vector mode; `test/capabilities.test.ts` fails in that case. The same test also
+checks that default-required capabilities stay represented by the default
+scenario selection, so `DEFAULT_INTENTS` and `harnessScenarios` cannot drift into
+a green run that exercised nothing.
+
 ---
 
 ## Methodology
@@ -124,6 +138,11 @@ runners/<lang>.json   per-SDK conformance runner configs
 - **Environment in, JSON out.** Adapters are language-agnostic processes, so a
   new language joins by implementing the contract — no harness changes beyond
   registration.
+- **Capabilities are explicit.** `src/capabilities.ts` records the factual
+  client/server/verifier/settlement support each adapter has today. A missing
+  capability means the SDK has not implemented that lane yet; a declared
+  capability with zero matching scenarios or adapters is a CI bug and the
+  capability guard fails loudly.
 
 ### Shared environment (selected)
 
