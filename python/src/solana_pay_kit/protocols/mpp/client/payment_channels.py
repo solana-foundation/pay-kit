@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import base64
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -398,13 +398,20 @@ def create_server_opened_payment_channel_session_opener(
     """Open a pull/clientVoucher session whose channel the operator funds.
 
     No transaction is built: the payer defaults to the challenge ``operator``
-    and the server constructs, funds, and broadcasts the open itself.
+    and the server constructs, funds, and broadcasts the open itself. Because
+    the client never builds the on-chain open here, a challenge without a
+    ``recentSlot`` (an offline / trust-mode server) is accepted: the open slot
+    defaults to 0 and the derived channel id serves as the session key the
+    server trusts or replaces with its own on-chain open.
     """
     options = options if options is not None else ServerOpenedPaymentChannelSessionOpenOptions()
     _ensure_client_voucher_pull(request)
     payer = options.payer if options.payer is not None else _parse_pubkey(request.operator, "operator")
     authorized_signer = _signer_pubkey(session_signer)
-    open_ = derive_payment_channel_open(request, payer, authorized_signer, options.open)
+    open_options = options.open
+    if open_options.open_slot is None and request.recent_slot is None:
+        open_options = replace(open_options, open_slot=0)
+    open_ = derive_payment_channel_open(request, payer, authorized_signer, open_options)
     session = _configured_session(open_.channel_id, session_signer, options.cumulative, options.expires_at)
     signature = options.signature if options.signature is not None else PENDING_SERVER_SIGNATURE
     action = SessionAction.open_action(open_.open_payload("pull", signature))

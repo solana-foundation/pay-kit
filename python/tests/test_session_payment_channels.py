@@ -349,6 +349,33 @@ def test_server_opened_opener_uses_operator_payer_without_transaction() -> None:
     assert payload.approved_amount is None
 
 
+def test_server_opened_opener_defaults_open_slot_without_challenge_slot() -> None:
+    """A trust-mode (offline) server issues no recentSlot; the server-opened
+    opener defaults the open slot to 0 (the server constructs any real open
+    itself), while the transaction-building opener stays strict."""
+    request = _request(_pk(1), _pk(2))
+    request.recent_slot = None
+
+    opened = create_server_opened_payment_channel_session_opener(
+        request,
+        _kp(12),
+        ServerOpenedPaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=13)),
+    )
+    assert opened.open.open_slot == 0
+    payload = opened.action.open
+    assert payload is not None
+    assert payload.recent_slot == 0
+
+    with pytest.raises(ValueError, match="recentSlot"):
+        create_payment_channel_session_opener(
+            request,
+            _kp(9),
+            _kp(10),
+            Hash.default(),
+            PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=11)),
+        )
+
+
 def test_opener_rejects_non_pull_challenge() -> None:
     request = _request(_pk(1), _pk(2))
     request.modes = ["push"]
