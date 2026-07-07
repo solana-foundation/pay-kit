@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 func TestReadPrivateKeyEnvParsesJSONByteArray(t *testing.T) {

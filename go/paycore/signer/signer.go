@@ -17,8 +17,8 @@ import (
 	"os"
 	"strings"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // InvalidKeyError is returned by the fallible factories when the input

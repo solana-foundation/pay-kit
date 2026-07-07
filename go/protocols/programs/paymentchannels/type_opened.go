@@ -7,7 +7,7 @@
 package payment_channels
 
 import (
-	ag_solanago "github.com/gagliardetto/solana-go"
+	ag_solanago "github.com/solana-foundation/solana-go/v2"
 )
 
 type Opened struct {

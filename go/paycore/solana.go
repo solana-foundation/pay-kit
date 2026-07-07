@@ -28,6 +28,8 @@ const (
 	PYUSDMainnetMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 	PYUSDDevnetMint  = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
 	CASHMainnetMint  = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
+
+	DefaultStablecoinDecimals uint8 = 6
 )
 
 var knownMints = map[string]map[string]string{
@@ -58,6 +60,15 @@ var token2022Stablecoins = map[string]struct{}{
 	"PYUSD": {},
 	"USDG":  {},
 	"CASH":  {},
+}
+
+var stablecoinDecimals = map[string]uint8{
+	"USDC":  DefaultStablecoinDecimals,
+	"USDT":  DefaultStablecoinDecimals,
+	"USDG":  DefaultStablecoinDecimals,
+	"PYUSD": DefaultStablecoinDecimals,
+	"CASH":  DefaultStablecoinDecimals,
+	"EURC":  DefaultStablecoinDecimals,
 }
 
 // RequireKnownNetwork validates a network slug against the canonical
@@ -133,6 +144,23 @@ func StablecoinSymbol(currency string) string {
 		}
 	}
 	return ""
+}
+
+// DefaultDecimalsForCurrency returns the known token decimals for a stablecoin
+// symbol or mint address. Unknown stablecoin-like inputs fall back to the
+// pay-kit default used by every supported stablecoin today.
+func DefaultDecimalsForCurrency(currency string, network string) uint8 {
+	if decimals, ok := stablecoinDecimals[strings.ToUpper(currency)]; ok {
+		return decimals
+	}
+	symbol := StablecoinSymbol(ResolveMint(currency, network))
+	if symbol == "" {
+		symbol = StablecoinSymbol(currency)
+	}
+	if decimals, ok := stablecoinDecimals[symbol]; ok {
+		return decimals
+	}
+	return DefaultStablecoinDecimals
 }
 
 // DefaultTokenProgramForCurrency returns the known default token program for a currency or mint.

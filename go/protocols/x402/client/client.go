@@ -24,10 +24,10 @@ import (
 	"strconv"
 	"strings"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // nonceBytes is the size of the random memo nonce the client appends when the

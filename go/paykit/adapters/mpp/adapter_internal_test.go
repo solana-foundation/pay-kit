@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // errSigner is a paykit.Signer stub whose Sign method always returns the given
@@ -128,6 +129,9 @@ func TestCoinHelpers(t *testing.T) {
 	}
 	if got := a.priceUnits(paykit.MustParseUSD("0.30")); got != "300000" {
 		t.Errorf("priceUnits: got %s want 300000", got)
+	}
+	if got := a.totalUnits(plain, paycore.PYUSDMainnetMint); got != "100000" {
+		t.Errorf("totalUnits mint decimals: got %s want 100000", got)
 	}
 }
 

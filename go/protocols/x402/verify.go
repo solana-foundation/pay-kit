@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // Program IDs the structural verifier recognises. Mirror the Rust

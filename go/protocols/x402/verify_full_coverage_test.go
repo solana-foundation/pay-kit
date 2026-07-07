@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 func makeTransferCheckedIx(source, mint, destination, authority solana.PublicKey, amount uint64, tokenProg solana.PublicKey) solana.Instruction {

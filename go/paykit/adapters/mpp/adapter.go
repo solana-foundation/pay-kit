@@ -6,12 +6,12 @@ import (
 	"strings"
 	"sync"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 type signerBridge struct {
@@ -183,7 +183,7 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 		Network:        a.cfg.Network.MintsLabel(),
 		Realm:          a.cfg.MPP.Realm,
 		RPCURL:         a.cfg.RPCURL,
-		Decimals:       uint8(decimalsFor(coin)),
+		Decimals:       paycore.DefaultDecimalsForCurrency(coin, a.cfg.Network.MintsLabel()),
 		FeePayerSigner: feePayer,
 	})
 	if err != nil {
@@ -215,14 +215,14 @@ func (a *Adapter) amountString(gate *paykit.Gate) string {
 }
 
 func (a *Adapter) totalUnits(gate *paykit.Gate, coin string) string {
-	dec := decimalsFor(coin)
+	dec := paycore.DefaultDecimalsForCurrency(coin, a.cfg.Network.MintsLabel())
 	total := gate.Total().Amount()
 	scaled := total.Shift(int32(dec))
 	return scaled.Truncate(0).String()
 }
 
 func (a *Adapter) priceUnits(p paykit.Price) string {
-	dec := decimalsFor(a.priceCoin(p))
+	dec := paycore.DefaultDecimalsForCurrency(a.priceCoin(p), a.cfg.Network.MintsLabel())
 	scaled := p.Amount().Shift(int32(dec))
 	return scaled.Truncate(0).String()
 }
@@ -258,13 +258,6 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 		})
 	}
 	return opts
-}
-
-// decimalsFor returns the on-chain decimal precision for a settlement
-// coin. Every stablecoin pay-kit settles (USDC, USDT, PYUSD, ...) is
-// 6-decimal, so the value is fixed today.
-func decimalsFor(string) int {
-	return 6
 }
 
 func init() {

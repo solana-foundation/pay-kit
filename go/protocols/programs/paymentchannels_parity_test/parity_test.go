@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	bin "github.com/gagliardetto/binary"
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 
 	pc "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
