@@ -1,0 +1,75 @@
+{
+  "schema": "value-binding/v1",
+  "verifier": "session-open",
+  "entrypoints": {
+    "typescript": "@solana/mpp/server → verifyOpenTx",
+    "go": "go/protocols/mpp/server/session_onchain.go → VerifyOpenTx",
+    "python": "python/src/solana_pay_kit/protocols/mpp/server/session_onchain.py → verify_open_tx"
+  },
+  "doc": [
+    "VALUE-BINDING radar for the session OPEN verifiers (push mode). verifyOpenTx",
+    "binds openPayload.signature to the transaction's own fee-payer signature and",
+    "(under an RPC) confirms it landed — that half of the binding is real. What is",
+    "NOT bound is the on-chain DISTRIBUTION committed in the open instruction's",
+    "recipients array: verifyOpenTx checks payee == expected.recipient (one",
+    "account) but never checks the open's recipients[] (bps -> recipient split)",
+    "against the merchant's configured splits / a challenge distributionHash. A",
+    "client can therefore open a channel whose deposit and payee look correct but",
+    "whose committed distribution routes settlement to attacker-controlled",
+    "recipients — the HIGH push-open fabricated-distribution finding. The C1 case",
+    "below is the placeholder-open bypass: an empty/placeholder signature with an",
+    "RPC configured must be rejected fleet-wide."
+  ],
+  "cases": [
+    {
+      "id": "open-b-placeholder-signature-with-rpc-c1",
+      "attack": "placeholder-open-signature-with-rpc-configured",
+      "description": "C1 fabricated-deposit bypass: in client-submit mode, with an RPC configured, an empty/placeholder open signature carries no proof the deposit landed. It must be rejected. Confirmed FIXED in TS src (verifyOpenTx C1 guard); the vector keeps the fleet honest for Go/Python and guards against regression.",
+      "openTx": { "deposit": "1000000", "signaturePolicy": "placeholder" },
+      "rpc": "configured",
+      "submitter": "client",
+      "expect": "reject",
+      "rejectClass": "open-placeholder-signature-under-rpc",
+      "status": { "typescript": "GREEN (verified on rebuilt dist)", "go": "verify-in-runner", "python": "verify-in-runner" },
+      "pendingFix": "each SDK's client-submit open verifier must reject an empty/placeholder signature when an RPC is configured."
+    },
+    {
+      "id": "open-d-distribution-diverges-from-splits",
+      "attack": "open-recipients-diverge-from-configured-splits",
+      "description": "The open transaction is otherwise valid — correct payee account, deposit <= cap, channel PDA matches, real bound+confirmed signature — but the open instruction's recipients[] array commits 100% of settlement to an attacker address instead of the merchant's configured distribution. verifyOpenTx has no expected-distribution / distributionHash input and never parses recipients[], so it accepts. The channel then settles to the attacker.",
+      "openTx": { "deposit": "1000000", "recipients": [{ "bps": 10000, "recipient": "ATTACKER" }], "signaturePolicy": "real-bound-confirmed" },
+      "expectedSplits": [{ "bps": 10000, "recipient": "MERCHANT_PAYEE" }],
+      "rpc": "configured",
+      "submitter": "client",
+      "expect": "reject",
+      "rejectClass": "open-distribution-not-bound-to-expected-splits",
+      "status": { "typescript": "RED (verified)", "go": "RED", "python": "RED" },
+      "pendingFix": "verifyOpenTx must gain an expected distribution (splits or a distributionHash from the challenge) and assert the open instruction's recipients[] match it; today the field does not exist so the divergence cannot be caught."
+    },
+    {
+      "id": "open-a-unrelated-confirmed-signature-binding-control",
+      "attack": "unrelated-confirmed-signature-paired-with-different-open-tx",
+      "description": "Positive control for the open path: a different transaction's valid, confirmed signature paired with this open's bytes must be rejected by the signature-binding check (txSignature != openPayload.signature). This is the half of value-binding the open verifier DOES enforce; the vector pins it so a regression that drops the binding turns red.",
+      "openTx": { "deposit": "1000000", "signaturePolicy": "unrelated-other-tx-signature" },
+      "rpc": "configured",
+      "submitter": "client",
+      "expect": "reject",
+      "rejectClass": "open-signature-not-bound-to-transaction",
+      "status": { "typescript": "GREEN (verified)", "go": "verify-in-runner", "python": "verify-in-runner" },
+      "pendingFix": "none — regression guard for the existing signature<->transaction binding."
+    },
+    {
+      "id": "open-e-payee-diverges-from-recipient",
+      "attack": "open-payee-account-diverges-from-challenge-recipient",
+      "description": "The open transaction is otherwise valid — deposit <= cap, correct mint, correct authorizedSigner, rentPayer == operator, a real bound+confirmed signature, internally-consistent channel PDA — but the open instruction's payee account (slot 2) is an ATTACKER address instead of the merchant's challenge recipient. verifyOpenTx pins payee == expected.recipient (TS on-chain.ts:618, Go session_onchain.go:230, Python verify_open_tx), so the divergence must be rejected before the channel ever opens; otherwise settlement would route to the attacker. This is the primary value-binding check every SDK's open verifier enforces — the vector keeps it green fleet-wide and guards against a regression that drops the payee binding.",
+      "openTx": { "deposit": "1000000", "payee": "ATTACKER", "signaturePolicy": "real-bound-confirmed" },
+      "expectedRecipient": "MERCHANT_PAYEE",
+      "rpc": "configured",
+      "submitter": "client",
+      "expect": "reject",
+      "rejectClass": "open-recipient-mismatch",
+      "status": { "typescript": "GREEN (verified)", "go": "verify-in-runner", "python": "verify-in-runner" },
+      "pendingFix": "none — regression guard for the existing payee<->challenge-recipient binding."
+    }
+  ]
+}

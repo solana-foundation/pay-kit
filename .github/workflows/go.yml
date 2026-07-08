@@ -49,11 +49,17 @@ jobs:
       - name: Check coverage gate enforces the per-file floor
         working-directory: go
         run: ./scripts/check_coverage_test.sh
-      - name: Run all Go packages
+      # Run the whole suite under the race detector. Replay/TOCTOU data races
+      # (concurrent claim/reserve/voucher paths, lock-map lifecycle) are the
+      # single largest class of bug that escaped review, and `-race` is the
+      # zero-false-positive detector for them — so it is mandatory here, not
+      # optional. Verified race-clean on this tree.
+      - name: Run all Go packages (race detector)
         working-directory: go
         env:
           GOCACHE: /tmp/go-build-cache
-        run: go test ./...
+          CGO_ENABLED: '1'
+        run: go test -race ./...
       - name: Upload Go coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -101,6 +107,33 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: go
+      # Cross-SDK conformance vectors for Go: the REAL Go structural exact
+      # verifier (go/protocols/x402/verify.go, driven via
+      # go/cmd/conformance/x402.go -> x402.VerifyExactTransaction) must execute
+      # the x402 exact-reject fund-safety vectors, mirroring the ruby/python
+      # legs. Without this leg the only conformance run in CI pinned
+      # MPP_CONFORMANCE_LANGUAGES=typescript (ci.yml), so the fund-safety
+      # vectors — including x402-exact-fee-payer-as-source-ata, the
+      # fee-payer-owns-the-source-ATA drain guard (verify.go:209-217) — never
+      # reached the Go verifier and its guard could silently regress. The
+      # runner (harness/runners/go.json) launches `go run ./cmd/conformance`
+      # from go/. RPC-free and deterministic. A RED here is a real Go verifier
+      # divergence — fix it in go/protocols/x402, do not skip.
+      - name: Run Go cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: go
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK mpp-PROTOCOL conformance: the canonical challenge / receipt /
+      # base64url / challenge-id vectors (incl. the adversarial reject cases)
+      # driven through the real Go protocol codec via the spawned runner. Known Go
+      # divergences (CRLF-in-description, uppercase-method) are tracked in
+      # KNOWN_RUNNER_DIVERGENCES[go]; a RED here is a NEW Go protocol divergence.
+      - name: Run Go protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: go
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Checkout payment channels program
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -182,7 +215,15 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           # Fallback datasource if the artifact path is intentionally omitted.
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          # Kill the zero-run false green: if selector/env drift excludes the Go/
+          # x402 shard, e2e.test.ts runs only bookkeeping skip tests and this job
+          # would otherwise pass having settled nothing. This leg is a strict
+          # superset of the harness.yml Go leg (which pins --exact 12), so require
+          # at least that many real payment pairs. TODO: tighten to --exact once a
+          # green run confirms the expanded count.
+          node scripts/assert-run-count.mjs --report vitest-report.json --min 12
 
   playground-go:
     name: "Payment links E2E: Playground (Go)"

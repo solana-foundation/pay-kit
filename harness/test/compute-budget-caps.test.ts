@@ -45,7 +45,7 @@ type Sdk = {
 const SDKS: Sdk[] = [
   {
     language: "rust",
-    file: "rust/crates/mpp/src/server/charge.rs",
+    file: "rust/crates/kit/src/mpp/server/charge.rs",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*:\s*u32\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*:\s*u64\s*=\s*([0-9_]+)/,
   },
@@ -91,14 +91,19 @@ const SDKS: Sdk[] = [
     pricePattern: /maxComputeUnitPriceMicroLamports\s+uint64\s*=\s*([0-9_]+)/,
     optional: true,
   },
-  // Python #106 lands MAX_COMPUTE_UNIT_* in
-  // python/src/pay_kit/protocols/mpp/server/charge.py; gated until merge.
+  // Python enforces MAX_COMPUTE_UNIT_* in
+  // python/src/solana_pay_kit/protocols/mpp/server/_tx_decode.py (charge.py
+  // imports them). This is on main today, so the row is REQUIRED, not gated.
+  // The previous path (pay_kit/.../charge.py) does not exist, so with
+  // optional:true the check silently returned success and never read the caps
+  // (a false green: `python server enforces canonical caps` passed reading
+  // nothing). Corrected path + optional:false so a Python cap drift now REDs.
   {
     language: "python",
-    file: "python/src/pay_kit/protocols/mpp/server/charge.py",
+    file: "python/src/solana_pay_kit/protocols/mpp/server/_tx_decode.py",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9_]+)/,
-    optional: true,
+    optional: false,
   },
 ];
 

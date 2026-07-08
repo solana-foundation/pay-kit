@@ -1,16 +1,19 @@
 // Cross-SDK conformance-vector driver.
 //
-// Loads every vector under harness/vectors/, spawns the TypeScript
-// reference runner once per vector over stdin/stdout, and asserts the
-// runner output against the vector's `expect` block. The oracle is the
-// DECODED SEMANTIC SHAPE for build/verify vectors and EXACT BYTES for
-// canonical-bytes vectors.
+// Loads the top-level vector files under harness/vectors/ (subdirectories are
+// owned by other drivers; see vector-accounting.test.ts), then spawns EVERY
+// SDK runner discovered from harness/runners/*.json once per vector over
+// stdin/stdout and asserts each runner's output against the vector's `expect`
+// block. The oracle is the DECODED SEMANTIC SHAPE for build/verify vectors and
+// EXACT BYTES for canonical-bytes vectors. Because every runner is held to the
+// SAME expected outcome and reject code, a divergence — one SDK accepting a
+// vector another rejects, or rejecting for a different reason — turns this
+// suite red. That cross-SDK agreement is the point.
 //
-// This suite is deterministic and RPC-free: it needs no surfpool, no
-// loopback socket, and no live validator. Only the TS reference runner
-// ships in this change; runners for the other SDKs are a tracked
-// follow-up (see harness/vectors/README.md), at which point this driver
-// gains a `RUNNERS` table and asserts every runner agrees per vector.
+// This suite is deterministic and RPC-free: it needs no surfpool, no loopback
+// socket, and no live validator. CI narrows the runner set to the languages a
+// PR touches via MPP_CONFORMANCE_LANGUAGES (unset = every runner); each runner
+// resolves against its own SDK toolchain/deps, which the setup actions provide.
 
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";

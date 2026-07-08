@@ -129,6 +129,53 @@ jobs:
         # the harness Python SDK matches every other SDK gate's frozen install.
         run: uv sync --frozen --extra dev
       - uses: ./.github/actions/setup-harness-leg
+      # The session harness settles on-chain (settle_and_finalize + distribute on
+      # the payment-channels program) at close, so it deploys a localnet SBF
+      # artifact onto the embedded surfnet. Mirrors the harness-python job in
+      # .github/workflows/python.yml and the paykit-harness job in
+      # .github/workflows/go.yml.
+      - name: Checkout payment channels program
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: Moonsong-Labs/solana-payment-channels
+          ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
+          path: _payment-channels
+          fetch-depth: 1
+      # Pinned Agave release, fetched as a tarball and checksum-verified.
+      # Bump AGAVE_VERSION + AGAVE_SHA256 together to take upgrades.
+      - name: Install Anza CLI
+        run: |
+          AGAVE_VERSION="v4.1.1"
+          AGAVE_SHA256="a5c8e74b8ffa9ce906872b812849057c7fb21cf036ba08f219eb335e20fa4fb3"
+          curl -sSfL -o /tmp/solana-release.tar.bz2 \
+            "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          echo "${AGAVE_SHA256}  /tmp/solana-release.tar.bz2" | sha256sum -c -
+          mkdir -p "$HOME/.local/share/solana/install"
+          tar -xjf /tmp/solana-release.tar.bz2 -C "$HOME/.local/share/solana/install"
+          echo "$HOME/.local/share/solana/install/solana-release/bin" >> "$GITHUB_PATH"
+      - name: Patch payment channels treasury owner
+        working-directory: _payment-channels
+        run: |
+          program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          lib_file="program/payment_channels/src/lib.rs"
+          sentinel_file="program/payment_channels/src/constants.rs"
+          sentinel_prefix="    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,"
+          sentinel_suffix="    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,"
+          # The pinned upstream ref already declares our canonical program id, so
+          # only the localnet treasury-owner sentinel needs patching. Guard the id
+          # assumption so a future ref bump that changes it fails loudly here.
+          if ! grep -Fq "declare_id!(\"$program_id\")" "$lib_file"; then
+            echo "::error::payment-channels no longer declares $program_id; revisit this patch"
+            exit 1
+          fi
+          perl -0pi -e 's/const TREASURY_OWNER_SENTINEL: \[u8; 32\] = \[\n.*?\n\];/const TREASURY_OWNER_SENTINEL: [u8; 32] = [\n    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,\n    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,\n];/s' "$sentinel_file"
+          if ! grep -Fq "$sentinel_prefix" "$sentinel_file" || ! grep -Fq "$sentinel_suffix" "$sentinel_file"; then
+            echo "::error::payment-channels treasury sentinel patch did not apply"
+            exit 1
+          fi
+      - name: Build payment channels program
+        working-directory: _payment-channels/program/payment_channels
+        run: cargo build-sbf --tools-version v1.52 --arch v1
       # IO-cap regression tests for the Python harness HTTP server
       # (harness/python-server/server.py): headers past the per-header / count /
       # total caps return 431 and an oversized declared body returns 413, before
@@ -151,14 +198,48 @@ jobs:
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Focused Python session harness
         working-directory: harness
+        # Deploys the localnet payment-channels SBF built above so the session
+        # close settles for real on-chain (settle_and_finalize + distribute).
+        # The same session run also exercises the Tier-2 confirmation-gating
+        # fault guards registered in test/e2e.test.ts (a settle broadcast that
+        # never confirms, and one stuck at `processed`): both must leave the
+        # channel un-finalized with settledSignature unset, so a regression that
+        # finalizes on broadcast or accepts `processed` as durable turns this leg
+        # red. They are not pair-titled, so --exact 1 (the settlement pair count)
+        # is unchanged.
         env:
           MPP_HARNESS_INTENTS: session
           MPP_HARNESS_SCENARIOS: session-basic
           MPP_HARNESS_CLIENTS: python-session
           MPP_HARNESS_SERVERS: python
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: |
-          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
           node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
+      - name: Focused Python session fault-injection (missing-ATA, known-red)
+        working-directory: harness
+        # RED-EXPECTED, non-blocking. Pins the missing-ATA-creation finding: the
+        # SDK session close builds [ed25519, settle, distribute] and, unlike the
+        # x402-upto settle path, omits the idempotent payee-ATA creation. A close
+        # to a recipient with no ATA returns 200 + settledSignature yet delivers
+        # nothing on-chain (recipient stays 0, no ATA created). This guard
+        # (gated behind MPP_HARNESS_SESSION_RED_FAULTS so it never contaminates
+        # the green must-pass leg above) fails until the session close creates
+        # the payee ATA or rejects clearly; continue-on-error surfaces it as a
+        # non-blocking red annotation.
+        continue-on-error: true
+        env:
+          MPP_HARNESS_INTENTS: session
+          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_CLIENTS: python-session
+          MPP_HARNESS_SERVERS: python
+          MPP_HARNESS_SESSION_RED_FAULTS: "1"
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts -t "no ATA" --testTimeout 180000
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:

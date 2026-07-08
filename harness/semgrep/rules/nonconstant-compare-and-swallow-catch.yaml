@@ -1,0 +1,178 @@
+# Class 3 — NON-CONSTANT-TIME SECRET COMPARE  and  SWALLOW-CATCH-AS-ACCEPT
+#
+# 3a) Comparing an HMAC / MAC / shared-secret / token / digest with a plain
+#     ==, ===, or .equals() instead of a constant-time compare leaks byte-match
+#     progress through timing. Solana *signatures* are public, so this rule
+#     deliberately targets secret material (hmac/mac/secret/digest/authtag/
+#     token/apikey/bearer), NOT public-key signatures.
+#     Good form in this repo: go/protocols/mpp/wire/challenge.go:106 uses
+#     subtle.ConstantTimeCompare.
+#
+# 3b) A `catch` / `except` on a verification path that RETURNS SUCCESS (returns
+#     true / {valid:true} / accepts) swallows the failure and fails OPEN — any
+#     error in verification is treated as a pass.
+rules:
+  # ---------- 3a: non-constant-time secret compare ----------
+  - id: nonconstant-time-secret-compare-ts
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Non-constant-time comparison of secret material (HMAC/MAC/secret/token/
+      digest). `===`/`==`/`.equals` short-circuits on the first mismatched byte
+      and leaks match progress via timing. Use crypto.timingSafeEqual (or
+      subtle-based constant-time compare) over fixed-length buffers.
+    metadata:
+      class: nonconstant-time-secret-compare
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: $A === $B
+          - pattern: $A !== $B
+          - pattern: $A == $B
+          - pattern: $A != $B
+          - pattern: $A.equals($B)
+      - metavariable-pattern:
+          metavariable: $A
+          patterns:
+            - metavariable-regex:
+                metavariable: $A
+                regex: (?i).*(hmac|\bmac\b|secret|digest|authtag|apikey|api_key|bearertoken|expectedmac|expectedhmac|expectedtag|computedmac).*
+            # Length/size compares are not secret compares.
+            - pattern-not: $X.length
+            - pattern-not: $X.byteLength
+            - pattern-not: $X.size
+      - metavariable-pattern:
+          metavariable: $B
+          patterns:
+            - pattern-not: undefined
+            - pattern-not: "null"
+            - pattern-not: "0"
+            - pattern-not: '""'
+            - pattern-not: $Y.length
+            - pattern-not: $Y.byteLength
+
+  - id: nonconstant-time-secret-compare-py
+    languages: [python]
+    severity: WARNING
+    message: >
+      Non-constant-time comparison of secret material. Python `==` on
+      HMAC/MAC/secret/token/digest is timing-variable. Use hmac.compare_digest.
+    metadata:
+      class: nonconstant-time-secret-compare
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: $A == $B
+          - pattern: $A != $B
+      # Presence / length checks are not secret compares.
+      - pattern-not: len(...) == $N
+      - pattern-not: len(...) != $N
+      - pattern-not: $A == ""
+      - pattern-not: $A != ""
+      - metavariable-regex:
+          metavariable: $A
+          regex: (?i).*(hmac|\bmac\b|secret|digest|auth_tag|apikey|api_key|expected_mac|expected_hmac|computed_mac).*
+      - metavariable-pattern:
+          metavariable: $B
+          patterns:
+            - pattern-not: None
+            - pattern-not: "0"
+            - pattern-not: '""'
+
+  - id: nonconstant-time-secret-compare-go
+    languages: [go]
+    severity: WARNING
+    message: >
+      Non-constant-time comparison of secret material. Go `==` / bytes.Equal on
+      an HMAC/MAC/secret/token/digest is timing-variable. Use
+      subtle.ConstantTimeCompare (returns 1 on match).
+    metadata:
+      class: nonconstant-time-secret-compare
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: $A == $B
+          - pattern: $A != $B
+          - pattern: bytes.Equal($A, $B)
+      # The constant-time primitives are the SAFE form — never flag them.
+      - pattern-not: subtle.ConstantTimeCompare(...) == $N
+      - pattern-not: subtle.ConstantTimeCompare(...) != $N
+      # Presence / length checks are not secret compares.
+      - pattern-not: len(...) == $N
+      - pattern-not: len(...) != $N
+      - pattern-not: $A == ""
+      - pattern-not: $A != ""
+      - metavariable-regex:
+          metavariable: $A
+          regex: (?i).*(hmac|\bmac\b|secret|digest|authtag|expectedmac|expectedhmac|computedmac).*
+
+  # ---------- 3b: swallow-catch-as-accept on a verification path ----------
+  - id: swallow-catch-as-accept-ts
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Catch block on a verification path returns SUCCESS: an error during
+      verification is swallowed and treated as a pass, failing OPEN. Re-throw or
+      return an explicit failure from the catch.
+    metadata:
+      class: swallow-catch-as-accept
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try { ... } catch ($E) { return true; }
+          - pattern: |
+              try { ... } catch { return true; }
+          - pattern: |
+              try { ... } catch ($E) { return { ..., valid: true }; }
+          - pattern: |
+              try { ... } catch ($E) { return { ..., verified: true }; }
+          - pattern: |
+              try { ... } catch ($E) { return { ..., ok: true }; }
+          - pattern: |
+              try { ... } catch ($E) { return { valid: true }; }
+          - pattern: |
+              try { ... } catch ($E) { return { verified: true }; }
+
+  - id: swallow-catch-as-accept-py
+    languages: [python]
+    severity: WARNING
+    message: >
+      Except block on a verification path returns True: an error during
+      verification is swallowed and treated as a pass, failing OPEN. Re-raise or
+      return an explicit failure.
+    metadata:
+      class: swallow-catch-as-accept
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try:
+                  ...
+              except $EXC:
+                  return True
+          - pattern: |
+              try:
+                  ...
+              except:
+                  return True
+
+  - id: swallow-catch-as-accept-go
+    languages: [go]
+    severity: WARNING
+    message: >
+      Error on a verification path is swallowed and success is returned: when
+      err != nil the code returns true / nil-error, treating a verification
+      failure as a pass (fails OPEN). Propagate the error.
+    metadata:
+      class: swallow-catch-as-accept
+      radar: L7
+    patterns:
+      - pattern: |
+          if $ERR != nil {
+            ...
+            return true, nil
+          }
+      - metavariable-regex:
+          metavariable: $ERR
+          regex: (?i)^err$

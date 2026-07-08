@@ -143,6 +143,16 @@ jobs:
         run: |
           eval "$(cd ../lua && luarocks --lua-version=5.1 --tree lua_modules path)"
           pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK mpp-PROTOCOL conformance through the real Lua protocol codec.
+      # Known Lua divergence (uppercase-method not rejected) is tracked in
+      # KNOWN_RUNNER_DIVERGENCES[lua]; a RED is a NEW divergence.
+      - name: Run Lua protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: lua
+        run: |
+          eval "$(cd ../lua && luarocks --lua-version=5.1 --tree lua_modules path)"
+          pnpm exec vitest run test/protocol-conformance.test.ts
 
       # Selection is by the MPP_HARNESS_* env selectors (client, server, and the
       # scenario allowlist) alone; assert-run-count pins the executed pair count

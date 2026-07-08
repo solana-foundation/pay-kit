@@ -75,6 +75,15 @@ jobs:
         env:
           MPP_CONFORMANCE_LANGUAGES: ruby
         run: pnpm exec vitest run test/conformance.test.ts
+      # NOTE: the Ruby mpp-PROTOCOL conformance leg is intentionally deferred (not
+      # wired) pending verification on ruby 3.3. The local probe (ruby 4.0.5)
+      # crashed the runner on the challenge.id unicode case (a US-ASCII/UTF-8 stdin
+      # encoding mismatch in protocol_runner.rb), and an independent second-model
+      # run had ruby conforming, so the observed divergences were environment-
+      # contaminated. Fix the runner's stdin UTF-8 encoding, confirm the real
+      # ruby-3.3 matrix, then wire it like the other SDK legs:
+      #   MPP_CONFORMANCE_LANGUAGES=ruby vitest run test/protocol-conformance.test.ts
+      # and add the corresponding KNOWN_RUNNER_DIVERGENCES[ruby] entry.
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
       # the same ruby adapter binary. The harness's harnessEnv exposes

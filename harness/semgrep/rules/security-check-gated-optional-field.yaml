@@ -1,0 +1,116 @@
+# Class 2 — SECURITY-CHECK-GATED-ON-OPTIONAL-FIELD (the "C1" pattern)
+#
+# A security / verification check is wrapped in `if (someOptionalField) { ...verify... }`,
+# so omitting or emptying the field skips the check entirely. Canonical shape:
+#
+#     if (signature) { await checkOnChain(...) }   // empty signature => no on-chain proof
+#
+# The attacker controls whether the field is present, and its absence is the
+# "happy path" that bypasses the proof. The safe form asserts the field is
+# present FIRST (throw when missing), then verifies unconditionally.
+#
+# Tuned against real constructs in the pay-kit repo (2026-07):
+#   typescript/.../mpp/src/server/session/on-chain.ts:507
+#       if (openPayload.signature && !isPlaceholderSignature(openPayload.signature)) { ...bind/throw... }
+rules:
+  - id: security-check-gated-on-optional-field-ts
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Security check gated on an optional/attacker-controlled field: the
+      verification inside this `if` only runs when the field is truthy, so an
+      omitted or empty value skips the check (e.g. an empty signature bypasses
+      on-chain proof). Assert the field is present first (throw when missing),
+      then verify unconditionally.
+    metadata:
+      class: security-check-gated-optional-field
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if ($FIELD) {
+                ...
+                $VERIFY(...)
+                ...
+              }
+          - pattern: |
+              if ($OBJ.$FIELD) {
+                ...
+                $VERIFY(...)
+                ...
+              }
+          - pattern: |
+              if ($OBJ.$FIELD && ...) {
+                ...
+                $VERIFY(...)
+                ...
+              }
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: (?i)^(signature|sig|proof|attestation|onchainproof|txsig|txsignature|credential|voucher)$
+      - metavariable-regex:
+          metavariable: $VERIFY
+          regex: (?i).*(verif|checkonchain|onchain|assert|validate|confirm|proof|settle).*
+      # A `throw` inside the same block is the safe "assert present" form; but a
+      # verify CALL gated by the field is the dangerous form we want.
+      - pattern-not: |
+          if (!$FIELD) { ... }
+
+  - id: security-check-gated-on-optional-field-py
+    languages: [python]
+    severity: WARNING
+    message: >
+      Security check gated on an optional/attacker-controlled field: the
+      verification inside this `if` only runs when the field is present, so
+      omitting it skips the check. Assert presence first, then verify.
+    metadata:
+      class: security-check-gated-optional-field
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $FIELD:
+                  ...
+                  $VERIFY(...)
+          - pattern: |
+              if $OBJ.$FIELD:
+                  ...
+                  $VERIFY(...)
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: (?i)^(signature|sig|proof|attestation|onchain_proof|tx_sig|credential|voucher)$
+      - metavariable-regex:
+          metavariable: $VERIFY
+          regex: (?i).*(verif|check_on_chain|on_chain|onchain|assert|validate|confirm|proof|settle).*
+
+  - id: security-check-gated-on-optional-field-go
+    languages: [go]
+    severity: WARNING
+    message: >
+      Security check gated on an optional/attacker-controlled field: the
+      verification inside this `if` only runs when the field is non-empty, so an
+      empty value skips the check. Assert presence first (return error), then
+      verify unconditionally.
+    metadata:
+      class: security-check-gated-optional-field
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $OBJ.$FIELD != "" {
+                ...
+                $VERIFY(...)
+                ...
+              }
+          - pattern: |
+              if len($OBJ.$FIELD) > 0 {
+                ...
+                $VERIFY(...)
+                ...
+              }
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: (?i)^(signature|sig|proof|attestation|onchainproof|txsig|credential|voucher)$
+      - metavariable-regex:
+          metavariable: $VERIFY
+          regex: (?i).*(verif|checkonchain|onchain|assert|validate|confirm|proof|settle).*

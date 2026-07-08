@@ -410,6 +410,54 @@
           "error_type": "format_error"
         }
       }
+    },
+    {
+      "name": "error_uppercase_method",
+      "description": "Rejects a challenge whose method token is not lowercase. Agreed outcome: reject (method is a lowercase registered token per spec; it is NOT case-folded to a single normalization). Discriminating: an SDK that case-folds or accepts \"TEMPO\" verbatim diverges and fails RED. (TS reference already rejects.)",
+      "tags": ["error", "invalid-value", "method", "divergence"],
+      "wire": "Payment id=\"ch_upper\", realm=\"api.example.com\", method=\"TEMPO\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_nonalpha_method",
+      "description": "Rejects a challenge whose method token contains a non-alphanumeric character. Agreed outcome: reject (method must match the lowercase token grammar). Discriminating: an SDK with a permissive method grammar accepts \"tempo!\" and fails RED. (TS reference already rejects.)",
+      "tags": ["error", "invalid-value", "method", "divergence"],
+      "wire": "Payment id=\"ch_nonalpha\", realm=\"api.example.com\", method=\"tempo!\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_empty_realm",
+      "description": "Rejects a challenge with an empty-but-PRESENT realm (realm=\"\", key present, value empty — distinct from the key-absent error_missing_realm). Agreed outcome: reject (a required field present with an empty value is invalid, mirroring error_empty_id). RED-EXPECTED for the TS reference until the empty-value guard in @solana/mpp (src/shared/challenge-guard.ts) is extended from id to realm/intent; the WWW-Auth fix in this worktree closes it.",
+      "tags": ["error", "invalid-value", "empty-present", "divergence"],
+      "wire": "Payment id=\"ch_empty_realm\", realm=\"\", method=\"tempo\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_empty_intent",
+      "description": "Rejects a challenge with an empty-but-PRESENT intent (intent=\"\", key present, value empty — distinct from the key-absent error_missing_intent). Agreed outcome: reject (a required field present with an empty value is invalid, mirroring error_empty_id). RED-EXPECTED for the TS reference until the empty-value guard in @solana/mpp (src/shared/challenge-guard.ts) is extended from id to realm/intent; the WWW-Auth fix in this worktree closes it.",
+      "tags": ["error", "invalid-value", "empty-present", "divergence"],
+      "wire": "Payment id=\"ch_empty_intent\", realm=\"api.example.com\", method=\"tempo\", intent=\"\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
     }
   ]
 }

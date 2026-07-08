@@ -1,7 +1,9 @@
+import http from "node:http";
 import net from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createSolanaRpc,
+  getBase58Decoder,
   getBase64Codec,
   getCompiledTransactionMessageDecoder,
   getTransactionDecoder,
@@ -168,7 +170,8 @@ function startSurfnetForScenarios(
   scenarios: readonly HarnessScenario[],
 ): Surfnet {
   const needsPaymentChannels = scenarios.some(
-    (scenario) => scenario.intent === "x402-upto",
+    (scenario) =>
+      scenario.intent === "x402-upto" || scenario.intent === "session",
   );
   if (!needsPaymentChannels) {
     return Surfnet.start();
@@ -245,6 +248,220 @@ async function debugSurfnetTransactions(surfnet: Surfnet): Promise<unknown> {
   return { signatures, transactions };
 }
 
+// ---------------------------------------------------------------------------
+// Tier-2 session fault-injection: a JSON-RPC proxy that sits between the
+// session server's SolanaRpc and the real surfnet and selectively corrupts the
+// confirmation of the settle_and_finalize+distribute close transaction. The
+// happy path already proves the session settles on-chain for real; these model
+// the failure modes the audit flagged as untested:
+//
+//   "drop"      the settle broadcast is ACCEPTED (a signature is returned) but
+//               the transaction never lands / never confirms (getSignatureStatuses
+//               reports it as unknown). A correct SDK must NOT finalize the
+//               channel on the accepted broadcast. Pins the Go/TS
+//               "finalized-on-broadcast strands escrow" finding.
+//   "processed" the settle reaches only `processed` commitment, never
+//               confirmed/finalized. A correct SDK must reject `processed` as
+//               non-durable. Pins the phantom-deposit finding.
+//
+// Only the CLOSE (settle) transaction is corrupted; the OPEN broadcast and its
+// confirmation, the blockhash fetch, and everything else are forwarded to the
+// real surfnet so the channel is opened + funded on-chain exactly as in the
+// happy path. The settle transaction is identified structurally (an instruction
+// to the payment-channels program with the settle_and_finalize discriminator).
+//
+// The fault is surfaced within a couple of poll iterations (the SDK's
+// confirmation wait polls getSignatureStatuses once per second) rather than at
+// the SDK's full 30s timeout: the proxy answers the first status poll with the
+// fault status (unknown for "drop", `processed` for "processed") so the SDK is
+// forced to observe it and decide, then fails the lookup so the SDK's confirm
+// terminates deterministically without racing the client's HTTP read timeout. A
+// buggy SDK that finalized on broadcast (or treated `processed` as durable)
+// would have already returned the settle signature before that second poll.
+type SettleFaultMode = "drop" | "processed";
+
+type JsonRpcRequest = {
+  id?: unknown;
+  method?: unknown;
+  params?: unknown;
+};
+
+type FaultingRpcProxy = {
+  url: string;
+  settleSignatures: Set<string>;
+  close: () => Promise<void>;
+};
+
+function isSettleTransactionBase64(transactionBase64: string): boolean {
+  try {
+    const message = decodeTransactionMessage(transactionBase64);
+    return message.instructions.some(
+      (instruction) =>
+        accountAt(message, instruction.programAddressIndex) ===
+          PAYMENT_CHANNEL_PROGRAM && instruction.data[0] === 4,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function firstSignatureBase58(transactionBase64: string): string {
+  const bytes = new Uint8Array(getBase64Codec().encode(transactionBase64));
+  // Wire format: compact-u16 signature count, then 64-byte signatures. The
+  // settle transaction has a single signer (the merchant fee payer), so the
+  // count fits in one shortvec byte and the fee-payer signature starts at
+  // offset 1 — exactly the signature an RPC would return from sendTransaction.
+  if (bytes.length < 65 || bytes[0] < 1) {
+    throw new Error("settle transaction carries no fee-payer signature");
+  }
+  return getBase58Decoder().decode(bytes.slice(1, 65));
+}
+
+async function startFaultingSettleRpcProxy(
+  targetRpcUrl: string,
+  mode: SettleFaultMode,
+): Promise<FaultingRpcProxy> {
+  const settleSignatures = new Set<string>();
+  const settlePollCounts = new Map<string, number>();
+
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(chunk as Buffer));
+    req.on("end", () => {
+      void (async () => {
+        const bodyText = Buffer.concat(chunks).toString("utf8");
+        let payload: JsonRpcRequest | null = null;
+        try {
+          const parsed: unknown = JSON.parse(bodyText);
+          payload =
+            parsed && typeof parsed === "object" && !Array.isArray(parsed)
+              ? (parsed as JsonRpcRequest)
+              : null;
+        } catch {
+          res.writeHead(400).end();
+          return;
+        }
+
+        const sendJson = (status: number, body: unknown): void => {
+          res
+            .writeHead(status, { "content-type": "application/json" })
+            .end(JSON.stringify(body));
+        };
+        const result = (value: unknown): void =>
+          sendJson(200, { jsonrpc: "2.0", id: payload?.id ?? null, result: value });
+        const rpcError = (message: string): void =>
+          sendJson(200, {
+            jsonrpc: "2.0",
+            id: payload?.id ?? null,
+            error: { code: -32004, message },
+          });
+        const forward = async (): Promise<void> => {
+          const upstream = await fetch(targetRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: bodyText,
+          });
+          const text = await upstream.text();
+          res
+            .writeHead(upstream.status, { "content-type": "application/json" })
+            .end(text);
+        };
+
+        try {
+          if (!payload || typeof payload.method !== "string") {
+            await forward();
+            return;
+          }
+          const params: unknown[] = Array.isArray(payload.params)
+            ? payload.params
+            : [];
+
+          if (payload.method === "sendTransaction") {
+            const encoded = params[0];
+            const options = params[1] as { encoding?: string } | undefined;
+            const encoding = options?.encoding;
+            if (
+              typeof encoded === "string" &&
+              (encoding === undefined || encoding === "base64") &&
+              isSettleTransactionBase64(encoded)
+            ) {
+              // Accept the broadcast (return the fee-payer signature the SDK
+              // expects) but never actually submit it, so the escrow never
+              // moves and the settle can never confirm.
+              const signature = firstSignatureBase58(encoded);
+              settleSignatures.add(signature);
+              result(signature);
+              return;
+            }
+            await forward();
+            return;
+          }
+
+          if (payload.method === "getSignatureStatuses") {
+            const requested = params[0];
+            if (
+              Array.isArray(requested) &&
+              requested.some((sig) => settleSignatures.has(sig as string))
+            ) {
+              const value = requested.map((sig) => {
+                if (!settleSignatures.has(sig as string)) {
+                  return null;
+                }
+                const poll = settlePollCounts.get(sig as string) ?? 0;
+                settlePollCounts.set(sig as string, poll + 1);
+                if (poll === 0) {
+                  // First observation: hand the SDK the fault status and let it
+                  // decide. "drop" => unknown (never landed). "processed" =>
+                  // only-processed, which must not be treated as durable.
+                  return mode === "processed"
+                    ? {
+                        slot: 1,
+                        confirmations: 0,
+                        err: null,
+                        confirmationStatus: "processed",
+                      }
+                    : null;
+                }
+                return "__terminate__";
+              });
+              if (value.includes("__terminate__")) {
+                // Second poll: end the confirmation wait deterministically so
+                // the test does not race the client's 30s HTTP read timeout. A
+                // genuinely dropped / stuck-at-processed settle would raise the
+                // same not-confirmed class after the SDK's own 30s poll.
+                rpcError("settle confirmation unavailable (fault injection)");
+                return;
+              }
+              result({ context: { slot: 1 }, value });
+              return;
+            }
+            await forward();
+            return;
+          }
+
+          await forward();
+        } catch (error) {
+          rpcError(String(error));
+        }
+      })();
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    settleSignatures,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
+}
+
 const socketSupport = await canBindLocalSocket();
 const activeScenarios = selectHarnessScenarios(
   process.env.MPP_HARNESS_INTENTS,
@@ -279,6 +496,14 @@ beforeAll(async () => {
   const payTo = Surfnet.newKeypair();
   const x402UptoPayTo = Surfnet.newKeypair();
   const platform = Surfnet.newKeypair();
+  // Session merchant. The on-chain settle_and_finalize requires the settling
+  // merchant to BE the channel payee, while the server-broadcast open requires
+  // that same signer to be the operator/fee-payer (rentPayer). So the session
+  // model collapses operator == recipient == settle signer into one keypair:
+  // it funds channel opens gaslessly for the client and settles at close. It
+  // needs SOL (open rent + settle fees) and a recipient ATA (the 700-unit
+  // payout lands here).
+  const sessionMerchant = Surfnet.newKeypair();
 
   // Deploy every mint referenced by an active SPL scenario under the
   // right token program with the right decimals byte. SOL-native
@@ -373,6 +598,45 @@ beforeAll(async () => {
     );
   }
 
+  // Session settlement runs settle_and_finalize + distribute at close. Unlike
+  // the x402-upto settle path (which prepends idempotent create-ATA
+  // instructions for the payee and treasury), the SDK session close path
+  // builds only [ed25519?, settle, distribute] and assumes the shared,
+  // long-lived treasury ATA already exists on-chain — the on-chain distribute
+  // handler hard-rejects an uninitialized treasury token account
+  // (TreasuryAccountMismatch). Pre-create the treasury ATA (zero balance, so
+  // the asserted deltas are unchanged) to model that production assumption.
+  // The payee ATA is already created by the `fundToken(payTo, …, 1)` above.
+  let sessionActive = false;
+  for (const scenario of activeScenarios) {
+    if (scenario.intent !== "session") {
+      continue;
+    }
+    sessionActive = true;
+    const mintPubkey = onChainMintFor(scenario);
+    if (!mintPubkey) {
+      throw new Error(
+        `Session scenario ${scenario.id} has no on-chain mint for the treasury ATA`,
+      );
+    }
+    const programAddress = tokenProgramAddress(scenario.tokenProgram);
+    surfnet.fundToken(
+      PAYMENT_CHANNEL_TREASURY_OWNER,
+      mintPubkey,
+      0,
+      programAddress,
+    );
+    // The session merchant receives the settled payout, so pre-create its ATA
+    // (1 base unit, so the asserted delta of +700 is exact against a known
+    // starting balance).
+    surfnet.fundToken(sessionMerchant.publicKey, mintPubkey, 1, programAddress);
+  }
+  if (sessionActive) {
+    // The merchant is the fee payer for both the server-broadcast open and the
+    // settle-at-close, so it needs lamports.
+    surfnet.fundSol(sessionMerchant.publicKey, CLIENT_SOL_FUND_LAMPORTS);
+  }
+
   // G27. SOL-native scenarios need the client wallet pre-funded with
   // lamports so the system transfer can succeed.
   if (needsSolFunding) {
@@ -411,6 +675,13 @@ beforeAll(async () => {
       Array.from(x402UptoPayTo.secretKey),
     ),
     PAYMENT_CHANNELS_PROGRAM_ID: PAYMENT_CHANNEL_PROGRAM,
+    // Session merchant = operator + recipient + settle signer (see the keypair
+    // comment above). The server signs opens (as fee-payer/operator) and settle
+    // (as payee) with this key, and pays the 700-unit payout to its ATA.
+    MPP_HARNESS_SESSION_MERCHANT_SECRET_KEY: JSON.stringify(
+      Array.from(sessionMerchant.secretKey),
+    ),
+    MPP_HARNESS_SESSION_RECIPIENT: sessionMerchant.publicKey,
   };
 });
 
@@ -543,7 +814,12 @@ describe("mpp harness", () => {
             // literal in scenarioEnv goes to the adapter so the SDK's
             // resolver is exercised end-to-end.
             const onChainMint = onChainMintFor(scenario);
-            const assertsOnChainSettlement = scenario.intent !== "session";
+            // Session settlement is a real payment-channel claim on-chain, so
+            // it MUST be balance-verified like every other intent. Excluding it
+            // (the old `intent !== "session"`) is how a session flow that never
+            // broadcasts/settles on-chain shipped green — the "settlement
+            // signature" was only a receipt reference, never a landed claim.
+            const assertsOnChainSettlement = true;
             const initialBalance = assertsOnChainSettlement
               ? await getPrimaryRecipientBalance(
                   surfnet,
@@ -844,7 +1120,249 @@ describe("mpp harness", () => {
       }
     }
   }
+
+  // Tier-2 session fault-injection. Registered only when the session intent is
+  // active (the same gate as session-basic, so the shared beforeAll has already
+  // started surfnet + deployed the payment-channels program and pre-created the
+  // treasury/merchant ATAs). Titles deliberately avoid the "client pays server"
+  // pair-title shape so scripts/assert-run-count.mjs does not count them as
+  // settlement pair-tests.
+  const sessionFaultScenario = activeScenarios.find(
+    (scenario) => scenario.intent === "session",
+  );
+  if (sessionFaultScenario) {
+    const faultServer = serverImplementations.find((impl) => impl.id === "python");
+    const faultClient = clientImplementations.find(
+      (impl) => impl.id === "python-session",
+    );
+    const faultAdaptersReady = Boolean(
+      faultServer?.enabled && faultClient?.enabled,
+    );
+
+    const runSessionClose = async (
+      scenarioEnv: Record<string, string>,
+    ): Promise<ClientRunResultShape> => {
+      if (!faultServer || !faultClient) {
+        throw new Error("session fault adapters are not registered");
+      }
+      const server = await startServer(faultServer, scenarioEnv);
+      runningServers.push(server);
+      const targetUrl = `http://127.0.0.1:${server.ready.port}${sessionFaultScenario.resourcePath}`;
+      return (await runClient(
+        faultClient,
+        targetUrl,
+        scenarioEnv,
+      )) as ClientRunResultShape;
+    };
+
+    // Fault 1 + 2: a settle whose broadcast is accepted but whose confirmation
+    // never reaches confirmed/finalized. Both must leave the channel un-finalized
+    // with settledSignature unset and the recipient escrow un-moved.
+    const unconfirmedFaults: Array<{
+      mode: SettleFaultMode;
+      title: string;
+      finding: string;
+    }> = [
+      {
+        mode: "drop",
+        title: `${sessionFaultScenario.id} fault: settle broadcast that never confirms must not finalize`,
+        finding: "Go/TS finalized-on-broadcast strands escrow",
+      },
+      {
+        mode: "processed",
+        title: `${sessionFaultScenario.id} fault: settle stuck at processed must be rejected as non-durable`,
+        finding: "phantom-deposit / processed-treated-as-durable",
+      },
+    ];
+
+    for (const fault of unconfirmedFaults) {
+      socketAwareIt(fault.title, async () => {
+        if (!surfnet || !harnessEnv) {
+          throw new Error("Surfpool harness environment was not initialized");
+        }
+        if (!faultAdaptersReady) {
+          throw new Error(
+            "session fault-injection requires the python server + python-session client to be enabled",
+          );
+        }
+        const proxy = await startFaultingSettleRpcProxy(surfnet.rpcUrl, fault.mode);
+        try {
+          const scenarioEnv = {
+            ...environmentForScenario(harnessEnv, sessionFaultScenario),
+            // Point ONLY the server's SolanaRpc at the faulting proxy; the
+            // client builds its open from the challenge-carried blockhash and
+            // never touches this URL.
+            MPP_HARNESS_RPC_URL: proxy.url,
+          };
+          const recipient = primaryRecipientForScenario(
+            sessionFaultScenario,
+            scenarioEnv,
+          );
+          const mint = onChainMintFor(sessionFaultScenario);
+          if (!mint) {
+            throw new Error("session fault scenario has no on-chain mint");
+          }
+          const tokenProgram = tokenProgramAddress(
+            sessionFaultScenario.tokenProgram,
+          );
+          const before = await getTokenBalance(
+            surfnet,
+            recipient,
+            mint,
+            tokenProgram,
+            true,
+          );
+
+          const result = await runSessionClose(scenarioEnv);
+
+          const after = await getTokenBalance(
+            surfnet,
+            recipient,
+            mint,
+            tokenProgram,
+            true,
+          );
+          const detail = JSON.stringify(result, null, 2);
+
+          // The settle broadcast must have been attempted (and accepted by the
+          // proxy) — otherwise the test proves nothing about confirmation gating.
+          expect(
+            proxy.settleSignatures.size,
+            `${fault.finding}: no settle broadcast was attempted; ${detail}`,
+          ).toBeGreaterThan(0);
+          // The close MUST fail: an unconfirmed settle may not be finalized.
+          expect(
+            result.status,
+            `${fault.finding}: close returned ${result.status}; a settle that never confirms must not finalize. ${detail}`,
+          ).not.toBe(200);
+          const body = result.responseBody as
+            | { settledSignature?: unknown; reference?: unknown }
+            | undefined;
+          expect(
+            body?.settledSignature ?? null,
+            `${fault.finding}: settledSignature must stay unset on an unconfirmed settle. ${detail}`,
+          ).toBeNull();
+          expect(
+            result.settlement ?? "",
+            `${fault.finding}: no settlement reference may be surfaced on an unconfirmed settle. ${detail}`,
+          ).toBe("");
+          expect(
+            after - before,
+            `${fault.finding}: recipient escrow must not move when the settle never confirms. ${detail}`,
+          ).toBe(0n);
+        } finally {
+          await proxy.close();
+        }
+      });
+    }
+
+    // Fault 3 (RED-EXPECTED): a recipient with NO existing ATA. This pins the
+    // missing-ATA-creation finding and is intentionally red against the current
+    // stack, so it is gated behind MPP_HARNESS_SESSION_RED_FAULTS=1 and runs in a
+    // dedicated allowed-red CI leg — never in the green must-pass session leg
+    // (where a failure would break the shared session-basic verification).
+    //
+    // The x402-upto settle path prepends idempotent createPayee + createTreasury
+    // ATA instructions (see expectPaymentChannelSettlement); the SDK session
+    // close path builds exactly [ed25519, settle, distribute] with NO create-ATA
+    // (see expectSessionChannelSettlement). Against the pinned d1dee6b program a
+    // session close to a payee with no ATA does not revert — it returns 200 with
+    // a settledSignature — but the on-chain distribute neither creates the payee
+    // ATA nor delivers the payout: the recipient receives 0 and no ATA is
+    // created, a silent success-with-no-delivery. The safety invariant asserted
+    // here — a settle reported successful (200 + settledSignature) MUST deliver
+    // the +N payout — is therefore violated and this is RED until the session
+    // close path grows the idempotent payee-ATA creation the upto path already
+    // has (or otherwise rejects clearly instead of reporting a phantom success).
+    if (process.env.MPP_HARNESS_SESSION_RED_FAULTS === "1")
+    socketAwareIt(
+      `${sessionFaultScenario.id} fault: settle to a recipient with no ATA must deliver the payout (missing-ATA-creation)`,
+      async () => {
+        if (!surfnet || !harnessEnv) {
+          throw new Error("Surfpool harness environment was not initialized");
+        }
+        if (!faultAdaptersReady) {
+          throw new Error(
+            "session fault-injection requires the python server + python-session client to be enabled",
+          );
+        }
+        // A brand-new merchant keypair: funded with SOL (open rent + settle fees)
+        // but with NO recipient ATA created. It is operator == recipient ==
+        // settle signer, exactly like the happy-path merchant.
+        const noAtaMerchant = Surfnet.newKeypair();
+        surfnet.fundSol(noAtaMerchant.publicKey, CLIENT_SOL_FUND_LAMPORTS);
+
+        const scenarioEnv = environmentForScenario(
+          {
+            ...harnessEnv,
+            MPP_HARNESS_SESSION_RECIPIENT: noAtaMerchant.publicKey,
+            MPP_HARNESS_SESSION_MERCHANT_SECRET_KEY: JSON.stringify(
+              Array.from(noAtaMerchant.secretKey),
+            ),
+          },
+          sessionFaultScenario,
+        );
+        const mint = onChainMintFor(sessionFaultScenario);
+        if (!mint) {
+          throw new Error("session fault scenario has no on-chain mint");
+        }
+        const tokenProgram = tokenProgramAddress(
+          sessionFaultScenario.tokenProgram,
+        );
+        const before = await getTokenBalance(
+          surfnet,
+          noAtaMerchant.publicKey,
+          mint,
+          tokenProgram,
+          true,
+        );
+
+        const result = await runSessionClose(scenarioEnv);
+
+        const after = await getTokenBalance(
+          surfnet,
+          noAtaMerchant.publicKey,
+          mint,
+          tokenProgram,
+          true,
+        );
+        const detail = JSON.stringify(result, null, 2);
+
+        // Settlement must land: the on-chain distribute creates the payee ATA
+        // and pays out even though it did not exist before the close.
+        expect(result.status, detail).toBe(200);
+        const body = result.responseBody as
+          | { settledSignature?: unknown; reference?: unknown }
+          | undefined;
+        const settledSignature = body?.settledSignature;
+        expect(
+          typeof settledSignature === "string" && settledSignature.length > 0,
+          `missing-ATA-creation: a landed settle must surface a settledSignature. ${detail}`,
+        ).toBe(true);
+        // The landed settle must actually be on-chain (getTransaction, meta.err
+        // null) — not a bare receipt reference.
+        await expectSettledTransactionShape(
+          surfnet,
+          sessionFaultScenario,
+          scenarioEnv,
+          settledSignature,
+        );
+        expect(
+          after - before,
+          `missing-ATA-creation: the +${primaryDelta(sessionFaultScenario)} payout must reach the newly-created recipient ATA. ${detail}`,
+        ).toBe(primaryDelta(sessionFaultScenario));
+      },
+    );
+  }
 });
+
+// Minimal shape of the client result the session fault tests read. Mirrors the
+// harness ClientRunResult but narrowed to the fields these assertions touch.
+type ClientRunResultShape = {
+  status: number;
+  responseBody: unknown;
+  settlement?: unknown;
+};
 
 function environmentForScenario(
   baseEnv: Record<string, string>,
@@ -911,6 +1429,11 @@ function environmentForScenario(
     }
   } else if (scenario.intent === "session") {
     env.PAY_KIT_HARNESS_PROTOCOL = "session";
+    // Collapse operator == recipient == settle signer onto the funded session
+    // merchant: the server signs opens/settle with the merchant key and the
+    // channel pays out to the merchant's ATA (the recipient the delta asserts
+    // against).
+    env.MPP_HARNESS_PAY_TO = baseEnv.MPP_HARNESS_SESSION_RECIPIENT;
   } else {
     env.PAY_KIT_HARNESS_PROTOCOL = "mpp";
   }
@@ -948,6 +1471,11 @@ async function expectSettledTransactionShape(
 
   if (scenario.intent === "x402-upto") {
     expectPaymentChannelSettlement(surfnet, message, scenario, scenarioEnv);
+    return;
+  }
+
+  if (scenario.intent === "session") {
+    expectSessionChannelSettlement(surfnet, message, scenario, scenarioEnv);
     return;
   }
 
@@ -1167,6 +1695,88 @@ function expectPaymentChannelSettlement(
   expect(accountAt(message, distribute.accountIndices[10]), "self program").toBe(
     PAYMENT_CHANNEL_PROGRAM,
   );
+}
+
+// Session settle-at-close on-chain shape. Unlike x402-upto (which prepends
+// idempotent create-ATA instructions for the payee and treasury), the SDK
+// session close path builds exactly [ed25519 verify, settle_and_finalize,
+// distribute] — the payee and treasury ATAs are assumed to already exist (the
+// harness pre-creates the treasury ATA; the payee ATA is created by the
+// recipient's pre-funding). A session always settles a recorded voucher, so
+// the Ed25519 precompile is always present and hasVoucher is always 1.
+function expectSessionChannelSettlement(
+  surfnet: Surfnet,
+  message: CompiledMessage,
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+): void {
+  expect(
+    message.instructions,
+    "session settle instruction count",
+  ).toHaveLength(3);
+
+  const [verify, settle, distribute] = message.instructions;
+
+  // Ed25519 precompile verifying the final voucher.
+  expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
+  expect(verify.data[0], "Ed25519 signature count").toBe(1);
+  expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
+  expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
+  expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
+    primaryDelta(scenario),
+  );
+
+  // settle_and_finalize (discriminator 4), hasVoucher = 1.
+  expect(accountAt(message, settle.programAddressIndex)).toBe(
+    PAYMENT_CHANNEL_PROGRAM,
+  );
+  expect(settle.data[0], "settle_and_finalize discriminator").toBe(4);
+  expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(1);
+
+  const mint = onChainMintFor(scenario);
+  if (!mint) {
+    throw new Error(`session scenario ${scenario.id} has no SPL mint`);
+  }
+  const tokenProgram = tokenProgramAddress(scenario.tokenProgram);
+  const payeeAta = surfnet.getAta(
+    primaryRecipientForScenario(scenario, scenarioEnv),
+    mint,
+    tokenProgram,
+  );
+  const treasuryAta = surfnet.getAta(
+    PAYMENT_CHANNEL_TREASURY_OWNER,
+    mint,
+    tokenProgram,
+  );
+
+  // distribute (discriminator 7): 11-account header, channel matches the
+  // settled channel, payee/treasury ATAs + mint + token program + self program
+  // in their fixed slots.
+  expect(accountAt(message, distribute.programAddressIndex)).toBe(
+    PAYMENT_CHANNEL_PROGRAM,
+  );
+  expect(distribute.data[0], "distribute discriminator").toBe(7);
+  expect(distribute.accountIndices, "distribute account count").toHaveLength(
+    11,
+  );
+  expect(accountAt(message, settle.accountIndices[1]), "settled channel").toBe(
+    accountAt(message, distribute.accountIndices[0]),
+  );
+  expect(accountAt(message, distribute.accountIndices[5]), "payee ATA").toBe(
+    payeeAta,
+  );
+  expect(accountAt(message, distribute.accountIndices[6]), "treasury ATA").toBe(
+    treasuryAta,
+  );
+  expect(accountAt(message, distribute.accountIndices[7]), "mint").toBe(mint);
+  expect(
+    accountAt(message, distribute.accountIndices[8]),
+    "token program",
+  ).toBe(tokenProgram);
+  expect(
+    accountAt(message, distribute.accountIndices[10]),
+    "self program",
+  ).toBe(PAYMENT_CHANNEL_PROGRAM);
 }
 
 async function fetchTransactionBase64(

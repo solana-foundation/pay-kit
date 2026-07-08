@@ -145,14 +145,21 @@ def _x402_env() -> dict[str, str]:
 
 def _session_env() -> dict[str, str]:
     """Env for a clean session boot (the POST body path lives here)."""
+    from solders.keypair import Keypair
+
+    # The session server pins operator == recipient == settle signer, so the
+    # merchant signer's pubkey must equal MPP_HARNESS_PAY_TO or the boot guard
+    # exits. Mint one merchant keypair and use its pubkey as the recipient.
+    merchant = Keypair()
     return {
         **os.environ,
         "PAY_KIT_HARNESS_PROTOCOL": "session",
         "MPP_HARNESS_RPC_URL": "http://127.0.0.1:8899",
         "MPP_HARNESS_NETWORK": "localnet",
-        "MPP_HARNESS_PAY_TO": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "MPP_HARNESS_PAY_TO": str(merchant.pubkey()),
         "MPP_HARNESS_AMOUNT": "1000",
         "MPP_HARNESS_FEE_PAYER_SECRET_KEY": _fake_keypair_json(),
+        "MPP_HARNESS_SESSION_MERCHANT_SECRET_KEY": json.dumps(list(bytes(merchant))),
     }
 
 

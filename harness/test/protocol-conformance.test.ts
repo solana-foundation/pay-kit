@@ -14,6 +14,7 @@ import {
   discoverProtocolRunners,
   spawnedProtocolAdapter,
 } from "../src/protocol/runners/spawn";
+import { parseLanguageAllowlist } from "../src/conformance/select";
 
 const cases = collectProtocolCases();
 
@@ -128,53 +129,73 @@ describe("mpp-protocol conformance (pay-kit extra: adversarial cases vs TS refer
   }
 });
 
-// Per-language wiring proof: drive a representative slice of cases through
-// each manifest-discovered runner over the spawned stdin/stdout ABI, exactly
-// the way the cross-SDK runners are wired in src/conformance. Only the
-// TypeScript reference runner ships a manifest today; other languages are a
-// file-drop follow-up (implement the stdin/stdout runner + drop a manifest).
-const smokeOps = new Set([
-  "base64url.encode",
-  "base64url.decode",
-  "challenge.id",
-  "challenge.parse",
-  "challenge.format",
-  "credential.parse",
-  "receipt.parse",
-]);
-const smokeCases = (() => {
-  const seen = new Set<string>();
-  const picked = [] as typeof cases;
-  for (const c of cases) {
-    if (!c.expectSuccess) continue;
-    if (!smokeOps.has(c.op)) continue;
-    // Adapter-allow-listed cases are language-specific by definition, so
-    // they are never representative smoke cases.
-    if (c.adapters) continue;
-    if (seen.has(c.op)) continue;
-    seen.add(c.op);
-    picked.push(c);
-  }
-  return picked;
-})();
+// Cross-SDK protocol conformance: drive the FULL canonical case set (success
+// AND adversarial reject cases) through each manifest-discovered SDK runner over
+// the spawned stdin/stdout ABI, exactly the way the cross-SDK runners are wired
+// in src/conformance. Every SDK with a protocol runner ships a manifest under
+// harness/protocol-runners/ (go, lua, php, python, ruby, rust, typescript today;
+// kotlin/swift pending). Earlier this loop ran only a success-only "smoke" slice
+// (one case per op), so the adversarial reject cases — the escaping / CRLF /
+// empty-field / method-case bug classes — were exercised against the TS
+// reference IN-PROCESS ONLY, and the same bugs sat untested in every other SDK.
+// Running the full set here surfaces them cross-SDK; the confirmed current
+// divergences are tracked in KNOWN_RUNNER_DIVERGENCES until each SDK is fixed.
 
 // Per-language known divergences from the canonical oracle, keyed by language.
 // Each entry is `${op} :: ${scenario}` and is asserted to STILL diverge so the
 // gap fails loudly the moment the SDK conforms (mirrors KNOWN_TS_DIVERGENCES).
 //
-// Empty: every SDK now conforms to the canonical receipt shape. The Go
-// (`challengeId:""` injected) and Ruby (`challengeId` hard-required) schema
-// mismatches on `receipt.parse :: success_receipt` were both fixed in the
-// per-SDK protocol-conformance round, so there are no remaining known runner
-// divergences.
-const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {};
+// CONFIRMED cross-SDK divergences surfaced by running the full canonical case
+// set (not just the success-only smoke slice) against each spawned SDK runner
+// (2026-07-08). These are the same bug FAMILIES the TS reference carried before
+// it was fixed this round — empty realm/intent not rejected, CRLF-in-description
+// not rejected, unescaped quote/backslash in the challenge quoted-string — plus
+// method-case validation and a Ruby challenge-id unicode divergence. Each is a
+// real per-SDK protocol-codec bug to fix in that SDK's per-language PR; tracking
+// it here makes the harness RED the moment a NEW divergence appears, and RED
+// (loudly) the moment an SDK is fixed so its entry must be removed. php +
+// typescript conform fully.
+const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
+  go: new Set([
+    "challenge.format :: error_format_crlf_in_description",
+    "challenge.parse :: error_uppercase_method",
+  ]),
+  rust: new Set([
+    "challenge.parse :: error_empty_realm",
+    "challenge.parse :: error_empty_intent",
+  ]),
+  python: new Set([
+    "challenge.parse :: error_empty_realm",
+    "challenge.parse :: error_empty_intent",
+  ]),
+  // ruby: intentionally NOT listed and NOT CI-gated (see the note in ruby.yml).
+  // The observed ruby divergences were environment-contaminated: the local probe
+  // ran ruby 4.0.5 (CI pins 3.3), and the challenge.id `unicode_in_description`
+  // case CRASHED the runner on a US-ASCII/UTF-8 encoding mismatch
+  // (protocol_runner.rb stdin encoding) rather than being a real protocol
+  // divergence. An independent second-model run had ruby conforming. Verify on
+  // ruby 3.3 and fix the runner's stdin UTF-8 encoding before wiring ruby as a
+  // strict cross-SDK gate; a local `MPP_CONFORMANCE_LANGUAGES=ruby` run on ruby
+  // 4.x will RED here until then, which is expected.
+  lua: new Set(["challenge.parse :: error_uppercase_method"]),
+};
 
-const runners = discoverProtocolRunners();
+// Honor MPP_CONFORMANCE_LANGUAGES (mirrors conformance.test.ts): the Node-only
+// CI leg sets it to the toolchains actually present (e.g. `typescript`) so the
+// spawn loop does not try to exec absent uv/cargo/php runners and env-fail.
+// Unset = every discovered runner (the local/multi-toolchain default). The
+// in-process TypeScript-reference describe blocks above run regardless, so
+// wiring this file with `=typescript` already un-blinds the WWW-Authenticate /
+// receipt / canonical vectors against the reference verifier in CI.
+const runnerAllowlist = parseLanguageAllowlist(process.env.MPP_CONFORMANCE_LANGUAGES);
+const runners = discoverProtocolRunners().filter(
+  (runner) => !runnerAllowlist || runnerAllowlist.has(runner.language),
+);
 for (const runner of runners) {
   const known = KNOWN_RUNNER_DIVERGENCES[runner.language] ?? new Set<string>();
   describe(`mpp-protocol conformance (spawned ${runner.language} runner)`, () => {
     const adapter = spawnedProtocolAdapter(runner);
-    for (const testCase of smokeCases) {
+    for (const testCase of cases) {
       if (!caseRunsOnAdapter(testCase, runner.language)) continue;
       const key = `${testCase.op} :: ${testCase.scenario}`;
       if (known.has(key)) {

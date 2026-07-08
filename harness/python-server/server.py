@@ -333,8 +333,27 @@ class _Adapter:
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()
-        fee_payer_raw = require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
-        signer = Signer.json(fee_payer_raw)
+        # The on-chain settle_and_finalize requires the settling merchant to be
+        # the channel payee, while the server-broadcast open requires that same
+        # signer to be the operator/fee-payer (rentPayer). So the session model
+        # uses ONE keypair as operator == recipient == settle signer. The harness
+        # provides a dedicated funded merchant key; the recipient (pay_to) is set
+        # to that merchant's pubkey by the orchestrator, so operator and recipient
+        # already agree here.
+        merchant_raw = optional_env(
+            "MPP_HARNESS_SESSION_MERCHANT_SECRET_KEY",
+            require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY"),
+        )
+        signer = Signer.json(merchant_raw)
+        self.session_signer = signer
+        if signer.pubkey() != pay_to:
+            print(
+                "session merchant signer pubkey "
+                f"{signer.pubkey()} must equal the recipient {pay_to} "
+                "(operator == recipient == settle signer)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         self.session_method = new_session(
             SessionOptions(
                 operator=signer.pubkey(),
@@ -347,8 +366,17 @@ class _Adapter:
                 realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
                 modes=["pull"],
                 pull_voucher_strategy="clientVoucher",
-                open_tx_submitter="client",
+                # The client ships a payer-signed (client-funded) open transaction;
+                # the server completes the operator/fee-payer signature and
+                # broadcasts it, so the payment channel is actually created
+                # on-chain before any voucher/close. This is what lets
+                # settle_and_finalize + distribute move real funds at close.
+                open_tx_submitter="server",
                 signer=signer,
+                # rpc is injected per request in ``_handle_session`` (a fresh
+                # SolanaRpc bound to that request's event loop, mirroring the
+                # charge path's ``using_rpc`` per-request client), so both the
+                # server-broadcast open and the settle-at-close run on-chain.
                 rpc=None,
             )
         )
@@ -576,11 +604,33 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
     def _handle_session(self, adapter: _Adapter) -> None:
         auth = self.headers.get("authorization", "")
-        result = asyncio.run(adapter.session_method.handle(auth or None, adapter.session_challenge))
+
+        async def _handle_with_fresh_rpc():
+            # A request-lifetime RPC bound to THIS event loop drives both the
+            # server-broadcast open (openTxSubmitter=server) and the
+            # settle_and_finalize + distribute at close, so the session settles
+            # for real on-chain and ``settledSignature`` is a landed tx. Mirror
+            # the charge path: build a fresh SolanaRpc, scope it onto the
+            # session for the request, and always close it.
+            fresh_rpc = SolanaRpc(adapter.rpc_url)
+            session = adapter.session_method
+            previous = session._rpc
+            session._rpc = fresh_rpc
+            try:
+                return await session.handle(auth or None, adapter.session_challenge)
+            finally:
+                session._rpc = previous
+                await fresh_rpc.aclose()
+
+        result = asyncio.run(_handle_with_fresh_rpc())
         if not result.ok:
             self._send_json(result.status, result.body or {"error": "payment_required"}, extra_headers=result.headers)
             return
         receipt_header = result.headers.get("payment-receipt", "")
+        # For the open GET this reference is the on-chain open signature; for the
+        # close POST it is the on-chain settle_and_finalize signature. The client
+        # only reads the settlement off the close response, so the settlement
+        # header surfaces the landed settle tx.
         reference = parse_receipt(receipt_header).reference if receipt_header else ""
         body = {"ok": True, "paid": True, "protocol": "session", "reference": reference}
         if reference:

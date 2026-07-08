@@ -547,6 +547,47 @@ jobs:
         env:
           MPP_CONFORMANCE_LANGUAGES: typescript
         run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK conformance vectors for Rust: the REAL Rust structural exact
+      # verifier (rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs,
+      # driven via the conformance_runner example ->
+      # verify_exact_versioned_transaction) must execute the x402 exact-reject
+      # fund-safety vectors, mirroring the go/ruby/python legs. This setup-harness
+      # job already provisions the Rust stable toolchain + target cache (it builds
+      # the cargo harness bins and runs the Rust e2e smoke below), so the example
+      # compiles here without extra setup. Before this leg the only conformance
+      # run in CI pinned MPP_CONFORMANCE_LANGUAGES=typescript, so the fund-safety
+      # vectors -- including x402-exact-fee-payer-as-source-ata, the
+      # fee-payer-owns-the-source-ATA drain guard (verify.rs:429-434) -- never
+      # reached the Rust verifier and its guard could silently regress. RPC-free
+      # and deterministic. A RED here is a real Rust verifier divergence -- fix it
+      # in the x402 spine, do not skip.
+      - name: Run Rust cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK mpp-PROTOCOL conformance through the real Rust protocol codec.
+      # Known Rust divergences (empty-realm / empty-intent not rejected) are
+      # tracked in KNOWN_RUNNER_DIVERGENCES[rust]; a RED is a NEW divergence.
+      - name: Run Rust protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
+      # protocol-conformance drives the canonical mpp-protocol vectors (challenge
+      # WWW-Authenticate quoting, receipt parse, challenge parse) through the REAL
+      # TS reference codec surface (@solana/mpp + mppx). It was CI-exempt, which hid
+      # 6 real TS divergences (serialize quote/backslash truncation, missing CRLF /
+      # empty-realm / empty-intent rejection, out-of-range receipt timestamps), all
+      # now fixed at the @solana/mpp boundary. Pinned to typescript so the Node-only
+      # job does not spawn absent uv/cargo/php runners; the in-process TS-reference
+      # blocks run regardless of the pin. A RED here is a real canonical-protocol
+      # divergence -- fix the codec at the boundary, do not skip.
+      - name: Run TypeScript protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       # Guard self-tests for the harness release-gate false-green killers
       # (assert-run-count run-count assertion, the on-chain gate, and the
       # passWithNoTests config). No other workflow runs the bare harness suite,
@@ -555,6 +596,50 @@ jobs:
       - name: Run harness gate self-tests
         working-directory: harness
         run: pnpm exec vitest run test/harness-gates.test.ts
+      # The harness carries ~20 unit + defect-verifier suites that assert the
+      # cross-SDK contract (x402 exact fund-safety defect vectors, session
+      # voucher reject reasons, compute-budget caps, canonical bytes, the
+      # enforced-coverage ledger, capability declarations) — but until now only
+      # e2e / conformance / harness-gates ran by explicit path, so every one of
+      # these guards was DEAD in CI: the safety net existed and never plugged in.
+      # Run the self-contained suites on every push/PR. A RED here is the radar
+      # catching a real SDK divergence (e.g. compute-budget-caps flags a verifier
+      # that dropped a cap) — fix it in the owning SDK; do not skip the test.
+      - name: Run harness unit + defect-verifier suites
+        working-directory: harness
+        run: |
+          pnpm exec vitest run \
+            test/x402-exact-defect-verify.test.ts \
+            test/session-voucher-verify.test.ts \
+            test/session-close-settle-verify.test.ts \
+            test/coverage-shape.test.ts \
+            test/vector-accounting.test.ts \
+            test/regression-bank-coverage.test.ts \
+            test/regression-bank.test.ts \
+            test/compute-budget-caps.test.ts \
+            test/canonical-json.test.ts \
+            test/capabilities.test.ts \
+            test/guards.test.ts \
+            test/intent-selection.test.ts \
+            test/adapter-identity.test.ts \
+            test/x402-amount-base-units.test.ts \
+            test/x402-v1-exact.test.ts \
+            test/x402-upto-verify-open.test.ts \
+            test/x402-upto-over-ceiling.test.ts \
+            test/value-binding-verify.test.ts \
+            test/boot-policy.test.ts \
+            test/process.test.ts \
+            test/flow-conformance.test.ts \
+            test/ci-coverage-gate.test.ts \
+            test/matrix-coverage-gate.test.ts
+      # value-binding-verify drives the real @solana/mpp session verifier with
+      # adversarial on-chain-binding vectors (unrelated-sig + inflated deposit +
+      # recipients-vs-splits) — the integration radar for the fabricated-deposit
+      # class. boot-policy asserts every SDK's server/adapter fails CLOSED when it
+      # would default to an in-memory replay store off-localnet without the
+      # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in; it self-skips any SDK whose
+      # toolchain is absent in this Node job (Go/Python get full coverage in the
+      # multi-toolchain harness.yml legs), so it degrades rather than false-greens.
       # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
       # --testNamePattern matched every one of these pairs, so it was redundant).
       # assert-run-count pins the executed pair count so a title rename or a

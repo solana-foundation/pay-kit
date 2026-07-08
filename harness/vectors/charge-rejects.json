@@ -27,6 +27,32 @@
     }
   },
   {
+    "id": "charge-compute-limit-over-cap-reject",
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "description": "Divergence class: compute-unit-limit cap. Twin of charge-compute-price-over-cap-reject on the OTHER compute-budget axis. A transaction whose SetComputeUnitLimit (ComputeBudget disc 2) requests 250000 compute units must be rejected: the verifier caps the limit at 200000 (server Charge.ts:636 / Go server.go:569). The pinned transaction is the byte-identical build-then-verify wire (compute price left at 1, only the CU-limit inflated) so server-only SDKs verify it directly.",
+    "input": {
+      "transaction": "ATc9q87uHkYA6k/yH8bvcOD7z/gN21vL/8M2Rlfzb1f8KGMyMXv5TVSAG50yl4YrFn9lqdWt7bG5dqvfWwY0RwiAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6DtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwQACQMBAAAAAAAAAAQABQKQ0AMABQQBAwIACgzoAwAAAAAAAAYA",
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "compute-limit-over-cap",
+      "rejectReason": "compute unit limit exceeds the 200_000 cap"
+    }
+  },
+  {
     "id": "charge-feepayer-as-authority-reject",
     "intent": "charge",
     "mode": "verify-transaction",

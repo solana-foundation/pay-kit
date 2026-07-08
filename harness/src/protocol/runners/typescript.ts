@@ -9,12 +9,12 @@
 
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
-import { Credential, PaymentRequest, Receipt } from "mppx";
+import { Credential, PaymentRequest } from "mppx";
 // `Challenge` comes from pay-kit's `@solana/mpp` boundary, which wraps mppx's
 // challenge codec with the canonical empty-id parse guard. This is the surface
 // pay-kit's TypeScript SDK actually exposes, so the conformance run reflects
 // pay-kit behaviour, not raw mppx.
-import { Challenge } from "@solana/mpp/client";
+import { Challenge, Receipt } from "@solana/mpp/client";
 import type { AdapterRequest, AdapterResponse, ProtocolAdapter } from "../driver";
 
 function ok(result: unknown): AdapterResponse {
