@@ -35,16 +35,31 @@ class _RpcError(PaymentError):
 class _RpcResponse:
     """Minimal value-wrapper matching the ``solana-py`` AsyncClient
     response shape that the rest of the codebase expects (``.value``
-    attribute access). Extracted to module level so the same wrapper
+    attribute access, plus ``.context.slot`` where the RPC envelope
+    carries one). Extracted to module level so the same wrapper
     is reused by ``send_raw_transaction``, ``get_transaction``, and the
     legacy ``confirm_transaction`` shim instead of being redeclared
     inside each method body.
     """
 
-    __slots__ = ("value",)
+    __slots__ = ("context", "value")
 
-    def __init__(self, value: Any) -> None:
+    def __init__(self, value: Any, context: _RpcContext | None = None) -> None:
         self.value = value
+        self.context = context
+
+
+class _RpcContext:
+    """``.slot`` holder matching the ``solana-py`` response ``context`` shape.
+
+    ``get_latest_blockhash`` exposes it so challenge issuance can take the
+    current slot (the channel ``recentSlot``) from the same RPC response as
+    the blockhash instead of issuing a separate ``getSlot`` call."""
+
+    __slots__ = ("slot",)
+
+    def __init__(self, slot: int | None) -> None:
+        self.slot = slot
 
 
 class _BlockhashValue:
@@ -104,12 +119,31 @@ class SolanaRpc:
 
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> _RpcResponse:
         """Fetch the latest blockhash. Used by the x402 client when an offer
-        omits ``extra.recentBlockhash``. Returns ``resp.value.blockhash``."""
+        omits ``extra.recentBlockhash``. Returns ``resp.value.blockhash``, and
+        exposes the envelope's current slot as ``resp.context.slot`` (``None``
+        when the endpoint omits it) so challenge issuance can stamp
+        ``recentSlot`` without a separate ``getSlot`` round-trip."""
         result = await self._call("getLatestBlockhash", [{"commitment": commitment}])
         blockhash = ((result or {}).get("value") or {}).get("blockhash") if isinstance(result, dict) else None
         if not isinstance(blockhash, str) or not blockhash:
             raise _RpcError("getLatestBlockhash returned no blockhash", code="payment_invalid")
-        return _RpcResponse(_BlockhashValue(blockhash))
+        slot = ((result or {}).get("context") or {}).get("slot") if isinstance(result, dict) else None
+        if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+            slot = None
+        return _RpcResponse(_BlockhashValue(blockhash), context=_RpcContext(slot))
+
+    async def get_slot(self, commitment: str = "confirmed") -> int:
+        """Fetch the current slot. Used by SERVERS at challenge-issuance time:
+        the program requires ``openSlot <= clock.slot`` with a 1500-slot
+        freshness window, so the server stamps the challenge ``recentSlot``
+        with the current slot (normally taken from the ``getLatestBlockhash``
+        response context; this call is the fallback when a response lacks it).
+        Clients take the channel ``openSlot`` from the challenge — they never
+        fetch the slot themselves."""
+        result = await self._call("getSlot", [{"commitment": commitment}])
+        if not isinstance(result, int) or result < 0:
+            raise _RpcError("getSlot returned a non-integer slot", code="payment_invalid")
+        return result
 
     async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
         """Fetch an account's raw data bytes and owner (base58), or ``None`` when

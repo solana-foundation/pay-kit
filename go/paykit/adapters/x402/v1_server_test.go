@@ -196,5 +196,6 @@ func cfgLocal() paykit.Config {
 		},
 		X402:                    paykit.X402Config{Scheme: "exact"},
 		RecentBlockhashProvider: func() (string, error) { return "BLOCKHASH-STUB-111111111111111111111111111", nil },
+		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	}
 }

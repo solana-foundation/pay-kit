@@ -149,8 +149,10 @@ private fun acceptsFrom(text: String): List<UptoRequirements>? {
  * uniquely identifies this authorization (default: a random 32-character hex
  * string, independent of the channel salt). [saltProvider] mints the channel
  * salt (default: a random u64); it is injectable so deterministic tests can pin
- * it. The requirement MUST carry ``extra.recentBlockhash`` (the operator
- * provides it in the 402 challenge).
+ * it. The requirement MUST carry ``extra.recentBlockhash`` and
+ * ``extra.recentSlot`` (the operator prefetches both into the 402 challenge);
+ * ``recentSlot`` becomes the program's ``open_slot`` channel PDA seed and the
+ * program rejects future slots and slots older than the 1500-slot open window.
  */
 fun buildUptoPayload(
     signer: SolanaSigner,
@@ -200,6 +202,9 @@ fun buildUptoPayload(
         ?: throw IllegalArgumentException("x402 client: requirement missing extra.recentBlockhash")
     val blockhash = Base58.decode(blockhashStr)
 
+    val openSlot = extra.recentSlot
+        ?: throw IllegalArgumentException("x402 client: requirement missing extra.recentSlot")
+
     // The channel salt is an independent random u64, NOT the payload nonce.
     val salt = saltProvider()
     val open = PaymentChannels.buildOpenTransaction(
@@ -210,6 +215,7 @@ fun buildUptoPayload(
         salt = salt,
         deposit = max,
         gracePeriod = PaymentChannels.DEFAULT_GRACE_PERIOD_SECONDS,
+        openSlot = openSlot,
         recipients = recipients,
         tokenProgram = tokenProgram,
         programId = programId,

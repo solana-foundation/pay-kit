@@ -5,12 +5,3 @@ members = [
     "crates/harness-bins",
     "crates/integration-tests",
 ]
-
-# litesvm whose `solana-address` pin is loosened from `=2.2.0` so it can coexist
-# with the confidential-transfer proof crates (solana-zk-sdk 6/7 require
-# `solana-address ^2.5`). Applies to litesvm pulled transitively by surfpool-sdk
-# too. The fix is merged upstream (now `solana-address = ">=2.2, <3"`) but not yet
-# in a crates.io release (0.13.0 still pins `=2.2.0`), so pin upstream master.
-[patch.crates-io]
-litesvm = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
-litesvm-token = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }

@@ -207,6 +207,19 @@ async def test_get_latest_blockhash_returns_value_blockhash():
     rpc = _rpc(payload)
     resp = await rpc.get_latest_blockhash()
     assert resp.value.blockhash == "Bh11111111111111111111111111111111111111111"
+    # The envelope's current slot is surfaced as context.slot so challenge
+    # issuance stamps recentSlot without a separate getSlot round-trip.
+    assert resp.context is not None and resp.context.slot == 1
+
+
+@pytest.mark.asyncio
+async def test_get_latest_blockhash_tolerates_missing_context_slot():
+    payload = {
+        "result": {"value": {"blockhash": "Bh11111111111111111111111111111111111111111"}},
+        "id": 1,
+    }
+    resp = await _rpc(payload).get_latest_blockhash()
+    assert resp.context is not None and resp.context.slot is None
 
 
 @pytest.mark.asyncio
@@ -214,3 +227,10 @@ async def test_get_latest_blockhash_rejects_missing_blockhash():
     rpc = _rpc({"result": {"value": {}}, "id": 1})
     with pytest.raises(_RpcError):
         await rpc.get_latest_blockhash()
+
+
+@pytest.mark.asyncio
+async def test_get_slot_returns_integer_and_rejects_garbage():
+    assert await _rpc({"result": 12345, "id": 1}).get_slot() == 12345
+    with pytest.raises(_RpcError):
+        await _rpc({"result": "not-a-slot", "id": 1}).get_slot()

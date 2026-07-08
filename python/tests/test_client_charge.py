@@ -472,9 +472,7 @@ def _sol_challenge(amount="100", expires="", network="mainnet"):
             "methodDetails": {"network": network, "recentBlockhash": BLOCKHASH},
         }
     )
-    return PaymentChallenge(
-        id="c1", realm="api", method="solana", intent="charge", request=request, expires=expires
-    )
+    return PaymentChallenge(id="c1", realm="api", method="solana", intent="charge", request=request, expires=expires)
 
 
 async def test_client_refuses_expired_challenge():
@@ -488,9 +486,7 @@ async def test_client_max_amount_guard():
     # Audit #10: opt-in max-amount cap.
     challenge = _sol_challenge(amount="1000")
     with pytest.raises(ValueError, match="exceeds max"):
-        await build_credential_header(
-            signer=Keypair(), rpc_client=None, challenge=challenge, max_amount_base_units=999
-        )
+        await build_credential_header(signer=Keypair(), rpc_client=None, challenge=challenge, max_amount_base_units=999)
 
 
 async def test_client_max_amount_at_cap_allowed():
@@ -505,9 +501,7 @@ async def test_client_expected_network_guard():
     # Audit #10: opt-in network pin.
     challenge = _sol_challenge(network="mainnet")
     with pytest.raises(ValueError, match="does not match"):
-        await build_credential_header(
-            signer=Keypair(), rpc_client=None, challenge=challenge, expected_network="devnet"
-        )
+        await build_credential_header(signer=Keypair(), rpc_client=None, challenge=challenge, expected_network="devnet")
 
 
 async def test_client_refuses_unknown_token_2022_without_opt_in():
@@ -566,9 +560,7 @@ async def test_client_requires_decimals_for_spl():
             amount="1000",
             currency="USDC",
             recipient=str(Keypair().pubkey()),
-            method_details=MethodDetails(
-                network="mainnet", token_program=TOKEN_PROGRAM, recent_blockhash=BLOCKHASH
-            ),
+            method_details=MethodDetails(network="mainnet", token_program=TOKEN_PROGRAM, recent_blockhash=BLOCKHASH),
         )
 
 
@@ -591,6 +583,4 @@ async def test_client_blockhash_fetched_with_confirmed_commitment():
         method_details=MethodDetails(),
     )
     # Either a solders Confirmed object or the "confirmed" string is accepted.
-    assert str(captured["commitment"]).lower().find("confirmed") != -1 or captured[
-        "commitment"
-    ] == "confirmed"
+    assert str(captured["commitment"]).lower().find("confirmed") != -1 or captured["commitment"] == "confirmed"

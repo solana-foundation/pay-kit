@@ -12,6 +12,7 @@ opt-out knobs (caveat #7): ``configure(preflight=False)`` and
 from __future__ import annotations
 
 import warnings
+from decimal import Decimal
 
 import pytest
 
@@ -21,6 +22,7 @@ from solana_pay_kit import (
     MppConfig,
     Network,
     Operator,
+    PayConfig,
     Protocol,
     Signer,
     Stablecoin,
@@ -91,6 +93,99 @@ def test_configure_empty_stablecoins_raises():
 def test_configure_rejects_non_operator():
     with pytest.raises(ConfigurationError, match="operator must be"):
         configure(operator={"recipient": "x"})
+
+
+def test_pay_config_coerces_wire_values_and_configures():
+    pay = PayConfig.model_validate(
+        {
+            "enabled": True,
+            "network": "solana_devnet",
+            "price_usd": "0.25",
+            "recipient": "recipient-wallet",
+            "rpc_url": "http://127.0.0.1:8899",
+            "signer_env": None,
+            "protocols": ["mpp"],
+            "stablecoins": ["USDC", "USDT"],
+            "preflight": False,
+        }
+    )
+
+    assert pay.network is Network.SOLANA_DEVNET
+    assert pay.protocols == (Protocol.MPP,)
+    assert pay.stablecoins == (Stablecoin.USDC, Stablecoin.USDT)
+
+    cfg = pay.configure()
+    assert cfg.network is Network.SOLANA_DEVNET
+    assert cfg.accept == (Protocol.MPP,)
+    assert cfg.stablecoins == (Stablecoin.USDC, Stablecoin.USDT)
+    assert cfg.rpc_url == "http://127.0.0.1:8899"
+    assert cfg.operator.recipient == "recipient-wallet"
+
+    gate_ref = pay.gate_ref()
+    assert gate_ref.amount == Decimal("0.25")
+
+
+def test_pay_config_from_sources_applies_env_overrides():
+    pay = PayConfig.from_sources(
+        {
+            "enabled": False,
+            "network": "solana_localnet",
+            "preflight": True,
+        },
+        env_prefix="EXO_PAY_",
+        environ={
+            "EXO_PAY_NETWORK": "solana_mainnet",
+            "EXO_PAY_PRICE_USD": "0.50",
+            "EXO_PAY_RECIPIENT": "recipient-wallet",
+            "EXO_PAY_RPC_URL": "https://rpc.example",
+            "EXO_PAY_SIGNER_ENV": "EXO_PAY_SIGNER",
+            "EXO_PAY_PROTOCOLS": "x402,mpp",
+            "EXO_PAY_STABLECOINS": "PYUSD,CASH",
+            "EXO_PAY_NO_PREFLIGHT": "true",
+        },
+        enabled=True,
+    )
+
+    assert pay.enabled is True
+    assert pay.network is Network.SOLANA_MAINNET
+    assert pay.price_usd == "0.50"
+    assert pay.recipient == "recipient-wallet"
+    assert pay.rpc_url == "https://rpc.example"
+    assert pay.signer_env == "EXO_PAY_SIGNER"
+    assert pay.protocols == (Protocol.X402, Protocol.MPP)
+    assert pay.stablecoins == (Stablecoin.PYUSD, Stablecoin.CASH)
+    assert pay.preflight is False
+
+
+def test_pay_config_from_sources_rejects_invalid_bool_env():
+    with pytest.raises(ConfigurationError, match="EXO_PAY_NO_PREFLIGHT"):
+        PayConfig.from_sources(
+            {},
+            env_prefix="EXO_PAY_",
+            environ={"EXO_PAY_NO_PREFLIGHT": "maybe"},
+        )
+
+
+def test_pay_config_no_preflight_false_reenables_preflight():
+    pay = PayConfig.from_sources(
+        {"preflight": False},
+        env_prefix="EXO_PAY_",
+        environ={"EXO_PAY_NO_PREFLIGHT": "false"},
+    )
+
+    assert pay.preflight is True
+
+
+def test_pay_config_rejects_conflicting_preflight_env():
+    with pytest.raises(ConfigurationError, match="set only one of EXO_PAY_PREFLIGHT or EXO_PAY_NO_PREFLIGHT"):
+        PayConfig.from_sources(
+            {},
+            env_prefix="EXO_PAY_",
+            environ={
+                "EXO_PAY_PREFLIGHT": "false",
+                "EXO_PAY_NO_PREFLIGHT": "false",
+            },
+        )
 
 
 # -- rpc_url defaults (caveat #2) --------------------------------------------

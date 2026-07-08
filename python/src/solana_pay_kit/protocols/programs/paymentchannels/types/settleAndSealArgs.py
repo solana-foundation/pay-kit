@@ -10,11 +10,11 @@ import typing
 from construct import Container
 from dataclasses import dataclass
 
-class SettleAndFinalizeArgsJSON(typing.TypedDict):
+class SettleAndSealArgsJSON(typing.TypedDict):
     hasVoucher: int
 
 @dataclass
-class SettleAndFinalizeArgs:
+class SettleAndSealArgs:
     layout: typing.ClassVar = borsh.CStruct(
         "hasVoucher" /borsh.U8,
         )
@@ -22,7 +22,7 @@ class SettleAndFinalizeArgs:
     hasVoucher: int
     
     @classmethod
-    def from_decoded(cls, obj: Container) -> "SettleAndFinalizeArgs":
+    def from_decoded(cls, obj: Container) -> "SettleAndSealArgs":
         return cls(
         hasVoucher=obj["hasVoucher"],
         )
@@ -32,13 +32,13 @@ class SettleAndFinalizeArgs:
                 "hasVoucher": self.hasVoucher,
                 }
 
-    def to_json(self) -> SettleAndFinalizeArgsJSON:
+    def to_json(self) -> SettleAndSealArgsJSON:
         return {
                 "hasVoucher": self.hasVoucher,
                 }
 
     @classmethod
-    def from_json(cls, obj: SettleAndFinalizeArgsJSON) -> "SettleAndFinalizeArgs":
+    def from_json(cls, obj: SettleAndSealArgsJSON) -> "SettleAndSealArgs":
         return cls(
                 hasVoucher=obj["hasVoucher"],
         )

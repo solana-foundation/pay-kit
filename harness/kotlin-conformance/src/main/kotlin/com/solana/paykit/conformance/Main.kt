@@ -18,7 +18,7 @@ import java.util.Base64
  *
  * The Kotlin SDK is CLIENT-only and the harness drives it for the `session`
  * intent only (harness/runners/kotlin.json). The single session vector shipped
- * today is the canonical-bytes 48-byte voucher preimage; this runner decodes
+ * today is the canonical-bytes 50-byte voucher preimage; this runner decodes
  * input.voucherPreimage and emits the bytes via the real
  * PaymentChannels.voucherMessageBytes encoder. Any other mode is reported as an
  * unsupported-mode reject the driver skips.

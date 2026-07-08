@@ -50,7 +50,11 @@ type UptoExtra struct {
 	ChannelProgram       string `json:"channelProgram,omitempty"`
 	RecentBlockhash      string `json:"recentBlockhash,omitempty"`
 	LastValidBlockHeight string `json:"lastValidBlockHeight,omitempty"`
-	ValidAfter           *int64 `json:"validAfter,omitempty"`
+	// RecentSlot is the current slot pre-fetched by the server alongside
+	// recentBlockhash (decimal u64 string). The client uses it as the channel
+	// open_slot (a PDA seed and open arg); clients never fetch it themselves.
+	RecentSlot string `json:"recentSlot,omitempty"`
+	ValidAfter *int64 `json:"validAfter,omitempty"`
 }
 
 // UptoRequirements is the accepted object for the x402 upto scheme.
@@ -226,6 +230,10 @@ type UptoConfig struct {
 	OperatorSigner          uptoSigner
 	FacilitatorFee          uint16
 	RecentBlockhashProvider func() (string, error)
+	// RecentSlotProvider overrides the current-slot fetch for the challenge's
+	// extra.recentSlot (deterministic tests). Nil fetches via the RPC client's
+	// getSlot.
+	RecentSlotProvider func() (uint64, error)
 }
 
 // X402Upto is the server-side x402 upto payment-channel engine.
@@ -333,17 +341,20 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 	}, nil
 }
 
-// Upto builds the full payment-required envelope for an upto challenge.
+// Upto builds the full payment-required envelope for an upto challenge. The
+// server pre-fetches both the recent blockhash and the current slot (the
+// channel openSlot) into extra so the client never needs an RPC handle.
 func (u *X402Upto) Upto(maxAmount string) (UptoRequiredEnvelope, error) {
 	req, err := u.UptoRequirements(maxAmount)
 	if err != nil {
 		return UptoRequiredEnvelope{}, err
 	}
-	blockhash, err := u.recentBlockhash()
+	blockhash, recentSlot, err := u.recentLifetime()
 	if err != nil {
 		return UptoRequiredEnvelope{}, fmt.Errorf("failed to fetch recent blockhash: %w", err)
 	}
 	req.Extra.RecentBlockhash = blockhash
+	req.Extra.RecentSlot = strconv.FormatUint(recentSlot, 10)
 	var resource *ResourceRef
 	if u.cfg.Resource != "" {
 		resource = &ResourceRef{Type: "http", URL: u.cfg.Resource}
@@ -465,7 +476,16 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction: %w", err)
 	}
-	if err := validateUptoOpenInstruction(tx, programID, u.operator, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID); err != nil {
+	// The challenged recentSlot at verify time: fetched fresh, so the
+	// transaction's openSlot (stamped from the earlier challenge) must sit
+	// at-or-before it inside the program freshness window. A failed fetch
+	// skips the window check (nil); the PDA bind below still holds and the
+	// program enforces the window at broadcast.
+	var challengedSlot *uint64
+	if _, slot, slotErr := u.recentLifetime(); slotErr == nil {
+		challengedSlot = &slot
+	}
+	if err := validateUptoOpenInstruction(tx, programID, u.operator, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID, max, challengedSlot); err != nil {
 		return nil, err
 	}
 	if !transactionFeePayerIs(tx, u.operator) {
@@ -534,8 +554,8 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	var instructions []solana.Instruction
 	if actual == 0 {
 		var err error
-		instructions, err = paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
-			Merchant: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
+		instructions, err = paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
+			Payee: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
 			Signature: nil, CumulativeAmount: 0, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 		})
 		if err != nil {
@@ -555,8 +575,8 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		}
 		var voucherSignature [64]byte
 		copy(voucherSignature[:], sigBytes)
-		instructions, err = paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
-			Merchant: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
+		instructions, err = paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
+			Payee: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
 			Signature: &voucherSignature, CumulativeAmount: actual, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 		})
 		if err != nil {
@@ -661,23 +681,44 @@ func (u *X402Upto) fetchChannel(ctx context.Context, channelID solana.PublicKey)
 	return channel, nil
 }
 
-func (u *X402Upto) recentBlockhash() (string, error) {
+// recentLifetime returns the challenge lifetime pair: a recent blockhash and
+// the current slot (the channel open_slot advertised as extra.recentSlot).
+// One getLatestBlockhash call supplies both — the response context already
+// carries the slot — unless the config providers override them.
+func (u *X402Upto) recentLifetime() (string, uint64, error) {
 	if u.cfg.RecentBlockhashProvider != nil {
-		return u.cfg.RecentBlockhashProvider()
+		blockhash, err := u.cfg.RecentBlockhashProvider()
+		if err != nil {
+			return "", 0, err
+		}
+		if u.cfg.RecentSlotProvider == nil {
+			return "", 0, errors.New("RecentSlotProvider is required when RecentBlockhashProvider is set")
+		}
+		slot, err := u.cfg.RecentSlotProvider()
+		if err != nil {
+			return "", 0, err
+		}
+		return blockhash, slot, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if out == nil || out.Value == nil {
-		return "", errors.New("empty blockhash response")
+		return "", 0, errors.New("empty blockhash response")
 	}
-	return out.Value.Blockhash.String(), nil
+	return out.Value.Blockhash.String(), out.Context.Slot, nil
 }
 
-func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey) error {
+// openSlotWindow is the program's openSlot freshness window (slots): open
+// requires openSlot <= clock.slot and clock.slot - openSlot <= 1500. Applied
+// pre-broadcast against the challenged extra.recentSlot so a stale or forged
+// slot fails before the operator co-signs.
+const openSlotWindow = 1500
+
+func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey, maxAmount uint64, recentSlot *uint64) error {
 	keys := tx.Message.AccountKeys
 	instructions := tx.Message.Instructions
 	if len(instructions) != 1 {
@@ -762,6 +803,40 @@ func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, a
 	}
 	if err := expect(13, programID, "self_program"); err != nil {
 		return err
+	}
+
+	// openArgs layout:
+	// [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+	if len(ix.Data) < 1+8+8+4+8 {
+		return fmt.Errorf("open instruction data too short (%d bytes)", len(ix.Data))
+	}
+	salt := binary.LittleEndian.Uint64(ix.Data[1:9])
+	deposit := binary.LittleEndian.Uint64(ix.Data[9:17])
+	openSlot := binary.LittleEndian.Uint64(ix.Data[21:29])
+
+	// Slot-addressed channel invariant: the channel account must be the PDA
+	// actually derived with the args' salt + openSlot, not just any account
+	// the payload named.
+	derived, _, err := paymentchannels.FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, openSlot, programID)
+	if err != nil {
+		return fmt.Errorf("derive channel PDA: %w", err)
+	}
+	if !derived.Equals(channelID) {
+		return fmt.Errorf("open channel PDA %s != derived %s", channelID, derived)
+	}
+	if deposit != maxAmount {
+		return fmt.Errorf("open deposit %d must equal the authorized maximum %d", deposit, maxAmount)
+	}
+	if recentSlot != nil {
+		if openSlot > *recentSlot {
+			return fmt.Errorf("open openSlot %d is ahead of the challenged recentSlot %d", openSlot, *recentSlot)
+		}
+		if *recentSlot-openSlot > openSlotWindow {
+			return fmt.Errorf(
+				"open openSlot %d is outside the %d-slot freshness window of the challenged recentSlot %d",
+				openSlot, openSlotWindow, *recentSlot,
+			)
+		}
 	}
 	return nil
 }

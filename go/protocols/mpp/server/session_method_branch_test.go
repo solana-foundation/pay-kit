@@ -276,7 +276,7 @@ func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
 	}
 
 	// A close-pending channel that already recorded a settlement signature
-	// (but is not yet marked finalized) is not re-drivable.
+	// (but is not yet marked sealed) is not re-drivable.
 	channelID := solana.NewWallet().PublicKey().String()
 	closeRequestedAt := uint64(1)
 	settled := confirmedSignature(0xAB)
@@ -380,7 +380,7 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 	baseline := fake.calls()
 
 	// The watchdog fires, the settle fails (the broadcast is blocked), and
-	// the channel stays re-drivable rather than finalized.
+	// the channel stays re-drivable rather than sealed.
 	deadline := time.Now().Add(3 * time.Second)
 	for fake.calls() == baseline {
 		if time.Now().After(deadline) {
@@ -389,7 +389,7 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.Finalized || state.SettledSignature != nil {
+	if state.Sealed || state.SettledSignature != nil {
 		t.Fatalf("failed settle mutated state: %+v", state)
 	}
 }

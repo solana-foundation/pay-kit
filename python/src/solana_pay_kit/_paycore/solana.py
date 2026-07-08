@@ -140,9 +140,7 @@ def resolve_server_token_program(currency: str, network: str, rpc_url: str | Non
         return default_token_program_for_currency(currency, network)
     # Arbitrary currency: must be a real mint pubkey.
     if not _is_valid_pubkey(currency):
-        raise ValueError(
-            f"currency '{currency}' is neither a known stablecoin symbol nor a valid mint address"
-        )
+        raise ValueError(f"currency '{currency}' is neither a known stablecoin symbol nor a valid mint address")
     owner = _fetch_mint_owner_sync(currency, rpc_url)
     if owner not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
         raise ValueError(
@@ -160,9 +158,7 @@ def _fetch_mint_owner_sync(mint: str, rpc_url: str | None) -> str:
     arbitrary mint fails fast rather than shipping a wrong ``tokenProgram``.
     """
     if not rpc_url:
-        raise ValueError(
-            f"cannot resolve token program for arbitrary mint '{mint}': no rpc_url configured"
-        )
+        raise ValueError(f"cannot resolve token program for arbitrary mint '{mint}': no rpc_url configured")
     import httpx
 
     payload = {

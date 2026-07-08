@@ -14,35 +14,42 @@ from solders.pubkey import Pubkey as SolPubkey
 
 class OpenedJSON(typing.TypedDict):
     channel: str
+    openSlot: int
 
 @dataclass
 class Opened:
     layout: typing.ClassVar = borsh.CStruct(
         "channel" /BorshPubkey,
+        "openSlot" /borsh.U64,
         )
     #fields
     channel: SolPubkey
+    openSlot: int
     
     @classmethod
     def from_decoded(cls, obj: Container) -> "Opened":
         return cls(
         channel=obj["channel"],
+        openSlot=obj["openSlot"],
         )
 
     def to_encodable(self) -> dict[str, typing.Any]:
         return {
                 "channel": self.channel,
+                "openSlot": self.openSlot,
                 }
 
     def to_json(self) -> OpenedJSON:
         return {
                 "channel": str(self.channel),
+                "openSlot": self.openSlot,
                 }
 
     @classmethod
     def from_json(cls, obj: OpenedJSON) -> "Opened":
         return cls(
                 channel=SolPubkey.from_string(obj["channel"]),
+                openSlot=obj["openSlot"],
         )
 
 

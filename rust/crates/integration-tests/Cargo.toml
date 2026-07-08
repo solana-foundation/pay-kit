@@ -29,9 +29,9 @@ serde_json = "1"
 bytemuck = "1.25"
 spl-record = { version = "0.4.0", features = ["no-entrypoint"] }
 surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "b46c47e06c28ed1aa31e119215b479b70e72d4c3" }
-# litesvm 0.13 via the workspace [patch.crates-io] (local fork with the
-# solana-address pin loosened so the confidential proof crates can resolve).
-litesvm = "0.13.0"
+# litesvm 0.13.1 relaxes the Solana crate pins that made 0.13.0 fail to
+# resolve with the confidential proof crates.
+litesvm = "0.13.1"
 # Atomic solana crates the integration tests import directly.
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 solana-instruction = { version = "3.1", default-features = false }

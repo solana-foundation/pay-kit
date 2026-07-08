@@ -229,6 +229,7 @@ impl X402BatchSettlement {
                 token_program: Some(pc::pubkey_string(&self.token_program()?)),
                 fee_payer: self.operator(),
                 recent_blockhash: None,
+                recent_slot: None,
                 suggested_deposit: None,
                 minimum_deposit: None,
                 min_voucher_delta: (self.config.min_voucher_delta > 0)
@@ -238,14 +239,18 @@ impl X402BatchSettlement {
         })
     }
 
-    /// Build the full 402 challenge envelope (fetches a recent blockhash).
+    /// Build the full 402 challenge envelope. Fetches a recent blockhash and
+    /// the current slot in ONE `getLatestBlockhash` call (its response context
+    /// carries the slot) — `recentSlot` is the hint clients must use as the
+    /// program's `openSlot` when building the channel `open`; they never fetch
+    /// a slot themselves.
     pub fn challenge(&self, amount: &str) -> Result<BatchRequiredEnvelope, Error> {
         let mut requirement = self.requirements(amount)?;
-        let blockhash = self
-            .rpc
-            .get_latest_blockhash()
-            .map_err(|e| Error::Rpc(format!("failed to fetch recent blockhash: {e}")))?;
-        requirement.extra.recent_blockhash = Some(blockhash.to_string());
+        let hint =
+            crate::core::blockhash::fetch_blockhash_with_slot(&self.rpc, self.rpc.commitment())
+                .map_err(|e| Error::Rpc(format!("failed to fetch recent blockhash: {e}")))?;
+        requirement.extra.recent_blockhash = Some(hint.blockhash);
+        requirement.extra.recent_slot = Some(hint.slot.to_string());
         let resource = (!self.config.resource.is_empty()).then(|| ResourceInfo {
             url: self.config.resource.clone(),
             description: self.config.description.clone(),
@@ -301,7 +306,7 @@ impl X402BatchSettlement {
     ///
     /// `deposit` broadcasts + confirms the channel open and accepts the first
     /// voucher; `voucher` accepts a cumulative voucher off-chain; `refund`
-    /// cooperatively settles + finalizes (and is not served).
+    /// cooperatively settles + seals (and is not served).
     pub async fn verify_payment(&self, header: &str, amount: &str) -> Result<BatchOutcome, Error> {
         let payload = self.parse_payment(header)?;
         let requirements = self.requirements(amount)?;
@@ -361,6 +366,11 @@ impl X402BatchSettlement {
             .salt
             .parse()
             .map_err(|_| Error::Other(format!("invalid salt: {}", config.salt)))?;
+        // The config's recentSlot is the program's openSlot (a PDA seed).
+        let open_slot: u64 = config
+            .recent_slot
+            .parse()
+            .map_err(|_| Error::Other(format!("invalid recentSlot: {}", config.recent_slot)))?;
 
         // Derive the expected channel PDA and validate the open transaction binds
         // it (SOL-drain guard) before the operator co-signs as fee payer.
@@ -370,6 +380,7 @@ impl X402BatchSettlement {
             &expected_mint,
             &authorized_signer,
             salt,
+            open_slot,
             &program_id,
         );
         let mut tx = decode_transaction(&transaction)?;
@@ -390,6 +401,13 @@ impl X402BatchSettlement {
             &expected_mint,
             &token_program,
             &channel_id,
+            // Deposit is validated against the on-chain channel post-broadcast
+            // (batch has no single authorized maximum at open time).
+            None,
+            // The config's recentSlot IS the expected openSlot: the args-derived
+            // PDA above already pins it exactly, and the window check keeps the
+            // pre-broadcast failure mode explicit.
+            Some(open_slot),
         )?;
         cosign_operator_fee_payer(
             self.config.operator_signer.as_ref(),
@@ -459,10 +477,12 @@ impl X402BatchSettlement {
                     authorized_signer: pc::pubkey_string(&authorized_signer),
                     deposit: channel.deposit,
                     cumulative: 0,
-                    finalized: false,
+                    sealed: false,
                     highest_voucher_signature: None,
                     highest_voucher_expires_at: None,
                     close_requested_at: None,
+                    // Persisted for PDA re-derivation and the reclaim gate.
+                    open_slot: Some(open_slot),
                     // Stash the payer here so settlement/distribute can refund it
                     // without an extra account fetch.
                     operator: Some(pc::pubkey_string(&payer)),
@@ -626,9 +646,9 @@ impl X402BatchSettlement {
         // Freeze the channel before any on-chain work. Once `close_requested_at`
         // is set, `accept_voucher` rejects further vouchers, so a concurrent
         // request can no longer advance the watermark past what
-        // `settle_and_finalize` is about to read — an advance that would
+        // `settle_and_seal` is about to read — an advance that would
         // otherwise be accepted off-chain yet be unrecoverable on-chain after
-        // the channel is finalized at the earlier watermark.
+        // the channel is sealed at the earlier watermark.
         let frozen = self
             .store
             .update_channel(
@@ -643,7 +663,7 @@ impl X402BatchSettlement {
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
 
-        let sig = self.settle_and_finalize(channel_id).await?;
+        let sig = self.settle_and_seal(channel_id).await?;
         // Skip the sweep when nothing was ever settled — `distribute` would just
         // broadcast a second transaction that moves zero, wasting fees.
         let distribute_sig = if frozen.cumulative > 0 {
@@ -652,7 +672,7 @@ impl X402BatchSettlement {
             None
         };
         self.store
-            .mark_finalized(channel_id)
+            .mark_sealed(channel_id)
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
         // `distribute` sweeps the full settled pool, so once it lands the
@@ -673,7 +693,7 @@ impl X402BatchSettlement {
                 amount: String::new(),
                 charged_amount: None,
                 channel_state: Some(
-                    self.snapshot(channel_id, frozen.deposit, paid_out, "finalized")
+                    self.snapshot(channel_id, frozen.deposit, paid_out, "sealed")
                         .await,
                 ),
             },
@@ -810,7 +830,7 @@ impl X402BatchSettlement {
         Ok(Some(sig.to_string()))
     }
 
-    async fn settle_and_finalize(&self, channel_id: &str) -> Result<String, Error> {
+    async fn settle_and_seal(&self, channel_id: &str) -> Result<String, Error> {
         let state = self
             .store
             .get_channel(channel_id)
@@ -822,7 +842,7 @@ impl X402BatchSettlement {
         let signer = Pubkey::from_str(&state.authorized_signer)
             .map_err(|e| Error::Other(format!("invalid authorizedSigner: {e}")))?;
 
-        // Settle the latest accepted voucher (if any) in the finalize.
+        // Settle the latest accepted voucher (if any) in the seal.
         let (sig_bytes, cumulative, expires_at) = match (
             state.highest_voucher_signature.as_ref(),
             state.highest_voucher_expires_at,
@@ -837,7 +857,7 @@ impl X402BatchSettlement {
             }
             _ => (None, 0, 0),
         };
-        let instructions = pc::build_settle_and_finalize_instructions(
+        let instructions = pc::build_settle_and_seal_instructions(
             &self.operator,
             &channel,
             &signer,
@@ -856,11 +876,11 @@ impl X402BatchSettlement {
             .operator_signer
             .sign_transaction(&mut tx)
             .await
-            .map_err(|e| Error::Other(format!("settle_and_finalize signing failed: {e}")))?;
+            .map_err(|e| Error::Other(format!("settle_and_seal signing failed: {e}")))?;
         let sig = self
             .rpc
             .send_and_confirm_transaction(&tx)
-            .map_err(|e| Error::Rpc(format!("settle_and_finalize broadcast failed: {e}")))?;
+            .map_err(|e| Error::Rpc(format!("settle_and_seal broadcast failed: {e}")))?;
         Ok(sig.to_string())
     }
 
@@ -931,10 +951,11 @@ mod tests {
             authorized_signer: authorized_signer.to_string(),
             deposit: 1_000_000,
             cumulative,
-            finalized: false,
+            sealed: false,
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            open_slot: None,
             operator: None,
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
@@ -1088,6 +1109,6 @@ mod tests {
         // The rejected attempt left the channel open.
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
         assert!(state.close_requested_at.is_none());
-        assert!(!state.finalized);
+        assert!(!state.sealed);
     }
 }

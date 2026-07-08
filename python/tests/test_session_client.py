@@ -243,7 +243,7 @@ def test_voucher_channel_id_matches_session() -> None:
     assert s.channel_id == _channel()
 
 
-# ── Ed25519 signature verification over the 48-byte preimage ──
+# ── Ed25519 signature verification over the 50-byte preimage ──
 
 
 def test_signature_verifies_against_authorized_signer() -> None:
@@ -252,7 +252,7 @@ def test_signature_verifies_against_authorized_signer() -> None:
     voucher = s.sign_increment(250)
 
     preimage = voucher_message_bytes(_channel(), 250, s.expires_at)
-    assert len(preimage) == 48
+    assert len(preimage) == 50
 
     sig = Signature.from_string(voucher.signature)
     assert sig.verify(signer.solders_pubkey, preimage)
@@ -306,7 +306,7 @@ def test_open_action_fields() -> None:
 
 def test_open_payment_channel_action_fields() -> None:
     s = _session()
-    action = s.open_payment_channel_action(9_000, "payer", "payee", "mint", 42, 60, "open-sig")
+    action = s.open_payment_channel_action(9_000, "payer", "payee", "mint", 42, 60, 777, "open-sig")
     assert action.open is not None
     p = action.open
     assert p.mode == "push"
@@ -317,12 +317,13 @@ def test_open_payment_channel_action_fields() -> None:
     assert p.mint == "mint"
     assert p.salt == 42
     assert p.grace_period == 60
+    assert p.recent_slot == 777
     assert p.signature == "open-sig"
 
 
 def test_open_payment_channel_action_can_use_pull_mode() -> None:
     s = _session()
-    action = s.open_payment_channel_action_with_mode("pull", 9_000, "payer", "payee", "mint", 42, 60, "pending")
+    action = s.open_payment_channel_action_with_mode("pull", 9_000, "payer", "payee", "mint", 42, 60, 777, "pending")
     assert action.open is not None
     p = action.open
     assert p.mode == "pull"

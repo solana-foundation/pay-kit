@@ -17,8 +17,9 @@ import {
 
 export enum ChannelStatus {
     Open,
-    Finalized,
+    Sealed,
     Closing,
+    Distributed,
 }
 
 export type ChannelStatusArgs = ChannelStatus;

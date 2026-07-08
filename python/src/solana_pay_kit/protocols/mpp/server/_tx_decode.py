@@ -341,9 +341,7 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
         return str(vtx.message.recent_blockhash)
 
 
-def _validate_compute_budget_instruction(
-    data: bytes, account_count: int, fee_sponsored: bool = False
-) -> None:
+def _validate_compute_budget_instruction(data: bytes, account_count: int, fee_sponsored: bool = False) -> None:
     """Validate a single ComputeBudget program instruction.
 
     Mirrors ``validate_compute_budget_instruction`` in

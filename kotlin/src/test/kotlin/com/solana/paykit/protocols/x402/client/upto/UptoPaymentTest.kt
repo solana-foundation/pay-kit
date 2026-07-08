@@ -43,11 +43,15 @@ class UptoPaymentTest {
 
     private val fixedSalt: ULong = 0x0102030405060708uL
 
+    // Deterministic slot standing in for the server-prefetched extra.recentSlot.
+    private val recentSlot: ULong = 424_242uL
+
     private fun extra(
         assetTransferMethod: String = UPTO_ASSET_TRANSFER_METHOD,
         facilitatorAddress: String? = operator,
         facilitatorFee: Int = 0,
         recentBlockhash: String? = blockhash,
+        recentSlot: ULong? = this.recentSlot,
         validAfter: Long? = null,
         tokenProgram: String? = null,
         channelProgram: String? = null,
@@ -58,6 +62,7 @@ class UptoPaymentTest {
         facilitatorFee = facilitatorFee,
         channelProgram = channelProgram,
         recentBlockhash = recentBlockhash,
+        recentSlot = recentSlot,
         validAfter = validAfter,
     )
 
@@ -141,6 +146,15 @@ class UptoPaymentTest {
             buildUptoPayload(signer, req, expiresAt = 4_102_444_800L)
         }
         assertContains(error.message!!, "missing extra.recentBlockhash")
+    }
+
+    @Test
+    fun rejects_missing_recent_slot() {
+        val req = requirements(extra = extra(recentSlot = null))
+        val error = assertFailsWith<IllegalArgumentException> {
+            buildUptoPayload(signer, req, expiresAt = 4_102_444_800L)
+        }
+        assertContains(error.message!!, "missing extra.recentSlot")
     }
 
     @Test
@@ -259,6 +273,7 @@ class UptoPaymentTest {
             mint = PublicKey.fromBase58(mint),
             authorizedSigner = PublicKey.fromBase58(operator),
             salt = fixedSalt,
+            openSlot = recentSlot,
             programId = PublicKey.fromBase58(PaymentChannels.PROGRAM_ID),
         )
         assertEquals(expected.toBase58(), payload.channelId)
@@ -276,8 +291,20 @@ class UptoPaymentTest {
         val req = requirements(payTo = operator)
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
-        // discriminator(1)+salt(8)+deposit(8)+gracePeriod(4) = 21, then u32 count.
-        assertEquals(0, u32Le(data, 21))
+        // discriminator(1)+salt(8)+deposit(8)+gracePeriod(4)+openSlot(8) = 29,
+        // then u32 count.
+        assertEquals(0, u32Le(data, 29))
+    }
+
+    @Test
+    fun open_args_carry_open_slot_after_grace_period() {
+        val payload = buildUptoPayload(signer, requirements(payTo = operator), 1L, saltProvider = { fixedSalt })
+        val data = openInstructionData(payload.openTransaction!!)
+        // The wire recentSlot lands as the borsh openSlot u64 LE at offset 21
+        // (after discriminator+salt+deposit+gracePeriod).
+        var decoded = 0uL
+        for (i in 0..7) decoded = decoded or ((data[21 + i].toULong() and 0xffuL) shl (8 * i))
+        assertEquals(recentSlot, decoded)
     }
 
     @Test
@@ -285,11 +312,11 @@ class UptoPaymentTest {
         val req = requirements(payTo = beneficiary, extra = extra(facilitatorFee = 250))
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
-        assertEquals(1, u32Le(data, 21))
-        // entry: recipient(32) at offset 25, then bps(u16 LE).
-        val recipient = data.copyOfRange(25, 57)
+        assertEquals(1, u32Le(data, 29))
+        // entry: recipient(32) at offset 33, then bps(u16 LE).
+        val recipient = data.copyOfRange(33, 65)
         assertTrue(recipient.contentEquals(PublicKey.fromBase58(beneficiary).bytes))
-        val bps = (data[57].toInt() and 0xff) or ((data[58].toInt() and 0xff) shl 8)
+        val bps = (data[65].toInt() and 0xff) or ((data[66].toInt() and 0xff) shl 8)
         assertEquals(10_000 - 250, bps)
     }
 
@@ -367,7 +394,8 @@ class UptoPaymentTest {
             "amount":"1000000","asset":"$mint","payTo":"$beneficiary",
             "maxTimeoutSeconds":300,"serverOnlyField":"keep-me",
             "extra":{"assetTransferMethod":"payment-channel",
-            "facilitatorAddress":"$operator","recentBlockhash":"$blockhash"}}]}
+            "facilitatorAddress":"$operator","recentBlockhash":"$blockhash",
+            "recentSlot":"$recentSlot"}}]}
         """.trimIndent().replace("\n", "")
         val req = parseUptoChallenge(mapOf("content-type" to "application/json"), wire)!!
         val header = buildUptoHeader(signer, req, expiresAt = 1L)
@@ -386,8 +414,19 @@ class UptoPaymentTest {
         """{"scheme":"$scheme","network":"$network","amount":"1000000",
             "asset":"$asset","payTo":"$beneficiary","maxTimeoutSeconds":300,
             "extra":{"assetTransferMethod":"payment-channel",
-            "facilitatorAddress":"$operator","recentBlockhash":"$blockhash"}}"""
+            "facilitatorAddress":"$operator","recentBlockhash":"$blockhash",
+            "recentSlot":"$recentSlot"}}"""
             .replace("\n", "").replace("  ", "")
+
+    @Test
+    fun parse_reads_recent_slot_from_string_or_number() {
+        val fromString = parseUptoChallenge(emptyMap(), challengeEnvelope(uptoEntry()))
+        assertEquals(recentSlot, fromString!!.extra.recentSlot)
+        // A server emitting the slot as a bare JSON number must parse too.
+        val numberEntry = uptoEntry().replace(""""recentSlot":"$recentSlot"""", """"recentSlot":$recentSlot""")
+        val fromNumber = parseUptoChallenge(emptyMap(), challengeEnvelope(numberEntry))
+        assertEquals(recentSlot, fromNumber!!.extra.recentSlot)
+    }
 
     @Test
     fun parse_reads_base64_payment_required_header() {

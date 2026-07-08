@@ -28,11 +28,11 @@ use crate::core::{Error, Result};
 
 pub use crate::generated::payment_channels as generated;
 use crate::generated::payment_channels::generated::instructions::{
-    DistributeBuilder, FinalizeBuilder, OpenBuilder, RequestCloseBuilder, SettleAndFinalizeBuilder,
-    SettleBuilder, TopUpBuilder,
+    DistributeBuilder, OpenBuilder, ReclaimBuilder, RequestCloseBuilder, SealBuilder,
+    SettleAndSealBuilder, SettleBuilder, TopUpBuilder,
 };
 use crate::generated::payment_channels::generated::types::{
-    DistributeArgs, DistributionEntry, OpenArgs, SettleAndFinalizeArgs, TopUpArgs, VoucherArgs,
+    DistributeArgs, DistributionEntry, OpenArgs, SettleAndSealArgs, TopUpArgs, VoucherArgs,
 };
 
 /// Canonical payment-channels program ID deployed to Surfnet.
@@ -46,6 +46,18 @@ pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 
 /// Default payment-channel close grace period, in seconds.
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 900;
+
+/// Constant magic prefix of the signed voucher payload (`[0x56, 0x01]`).
+///
+/// The program rejects a voucher whose signed bytes do not start with it
+/// (`VoucherBadMagic`). Wire/JSON voucher shapes are unchanged — the magic
+/// exists only in the signed byte payload.
+pub const VOUCHER_MAGIC: [u8; 2] = [0x56, 0x01];
+
+/// Slot window enforced by the program around `openSlot`: `open` requires
+/// `openSlot <= clock.slot && clock.slot - openSlot <= 1500` (future slots are
+/// rejected), and `reclaim` unlocks only once `clock.slot > open_slot + 1500`.
+pub const OPEN_SLOT_WINDOW: u64 = 1_500;
 
 /// Channel PDA seed prefix.
 pub const CHANNEL_SEED: &[u8] = b"channel";
@@ -81,14 +93,18 @@ pub struct Distribution {
 pub struct OpenChannelParams {
     pub payer: Pubkey,
     /// Operator / fee payer that funds the channel PDA + escrow-ATA rent at open
-    /// (and reclaims it at finalize). Pinned to the same key that co-signs the
-    /// open as fee payer, so one operator signature covers both roles — there is
-    /// no separate wire field for it.
+    /// (and recovers it at distribute/reclaim). Pinned to the same key that
+    /// co-signs the open as fee payer, so one operator signature covers both
+    /// roles — there is no separate wire field for it.
     pub rent_payer: Pubkey,
     pub payee: Pubkey,
     pub mint: Pubkey,
     pub authorized_signer: Pubkey,
     pub salt: u64,
+    /// Slot at which the channel is opened — a channel-PDA seed and an `open`
+    /// arg. Must be the current slot (fetched via RPC `getSlot`): the program
+    /// rejects future slots and slots older than [`OPEN_SLOT_WINDOW`].
+    pub open_slot: u64,
     pub deposit: u64,
     pub grace_period: u32,
     pub recipients: Vec<Distribution>,
@@ -216,12 +232,16 @@ pub async fn cosign_fee_payer(
     Ok(())
 }
 
+// `open_slot` is a PDA seed like the others; each parameter is an independent
+// seed of the on-chain derivation, so the arity is inherent.
+#[allow(clippy::too_many_arguments)]
 pub fn find_channel_pda(
     payer: &Pubkey,
     payee: &Pubkey,
     mint: &Pubkey,
     authorized_signer: &Pubkey,
     salt: u64,
+    open_slot: u64,
     program_id: &Pubkey,
 ) -> (Pubkey, u8) {
     Pubkey::find_program_address(
@@ -232,6 +252,7 @@ pub fn find_channel_pda(
             mint.as_ref(),
             authorized_signer.as_ref(),
             &salt.to_le_bytes(),
+            &open_slot.to_le_bytes(),
         ],
         program_id,
     )
@@ -281,6 +302,7 @@ pub fn derive_channel_addresses(params: &OpenChannelParams) -> ChannelAddresses 
         &params.mint,
         &params.authorized_signer,
         params.salt,
+        params.open_slot,
         &params.program_id,
     );
     let (payer_token_account, _) =
@@ -318,6 +340,7 @@ pub fn voucher_message_bytes(
     expires_at: i64,
 ) -> Result<Vec<u8>> {
     let voucher = VoucherArgs {
+        magic: VOUCHER_MAGIC,
         channel_id: to_address(channel_id),
         cumulative_amount,
         expires_at,
@@ -329,10 +352,10 @@ pub fn voucher_message_bytes(
 /// Builds the `open` instruction.
 ///
 /// `params.rent_payer` is the operator / fee payer: it funds the channel PDA +
-/// escrow ATA rent at open (and reclaims it at finalize). It is always the same
-/// key used as the transaction fee payer, so a single operator signature covers
-/// both the fee-payer and `rentPayer` signer roles — there is no separate wire
-/// field for it.
+/// escrow ATA rent at open (and recovers it at distribute/reclaim). It is
+/// always the same key used as the transaction fee payer, so a single operator
+/// signature covers both the fee-payer and `rentPayer` signer roles — there is
+/// no separate wire field for it.
 pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
     let addresses = derive_channel_addresses(params);
     let recipients = params
@@ -362,6 +385,7 @@ pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
             salt: params.salt,
             deposit: params.deposit,
             grace_period: params.grace_period,
+            open_slot: params.open_slot,
             recipients,
         })
         .instruction();
@@ -449,8 +473,8 @@ pub fn build_settle_instructions(
     Ok(vec![verify, settle])
 }
 
-pub fn build_settle_and_finalize_instructions(
-    merchant: &Pubkey,
+pub fn build_settle_and_seal_instructions(
+    payee: &Pubkey,
     channel: &Pubkey,
     authorized_signer: &Pubkey,
     signature: Option<&[u8; 64]>,
@@ -470,14 +494,14 @@ pub fn build_settle_and_finalize_instructions(
     } else {
         0
     };
-    let mut settle_and_finalize = SettleAndFinalizeBuilder::new()
-        .merchant(to_address(merchant))
+    let mut settle_and_seal = SettleAndSealBuilder::new()
+        .payee(to_address(payee))
         .channel(to_address(channel))
         .instructions_sysvar(to_address(&instructions_sysvar_id()))
-        .settle_and_finalize_args(SettleAndFinalizeArgs { has_voucher })
+        .settle_and_seal_args(SettleAndSealArgs { has_voucher })
         .instruction();
-    settle_and_finalize.program_id = to_address(program_id);
-    instructions.push(settle_and_finalize);
+    settle_and_seal.program_id = to_address(program_id);
+    instructions.push(settle_and_seal);
     Ok(instructions)
 }
 
@@ -494,9 +518,25 @@ pub fn build_request_close_instruction(
     ix
 }
 
-pub fn build_finalize_instruction(channel: &Pubkey, program_id: &Pubkey) -> Instruction {
-    let mut ix = FinalizeBuilder::new()
+pub fn build_seal_instruction(channel: &Pubkey, program_id: &Pubkey) -> Instruction {
+    let mut ix = SealBuilder::new()
         .channel(to_address(channel))
+        .instruction();
+    ix.program_id = to_address(program_id);
+    ix
+}
+
+/// Builds the permissionless `reclaim` instruction: closes a `Distributed`
+/// channel PDA and returns its rent lamports to `rent_payer`. The program
+/// allows it only once `clock.slot > open_slot + OPEN_SLOT_WINDOW`.
+pub fn build_reclaim_instruction(
+    channel: &Pubkey,
+    rent_payer: &Pubkey,
+    program_id: &Pubkey,
+) -> Instruction {
+    let mut ix = ReclaimBuilder::new()
+        .channel(to_address(channel))
+        .rent_payer(to_address(rent_payer))
         .instruction();
     ix.program_id = to_address(program_id);
     ix
@@ -556,7 +596,9 @@ pub fn build_distribute_instruction(
 ///
 /// The `payer` (the `signer`) signs to authorize the deposit; `fee_payer` is the
 /// account that pays the network fee and must co-sign before broadcast (e.g. the
-/// operator). Returns the derived channel PDA and the base64-encoded transaction.
+/// operator). `open_slot` must be the current slot (RPC `getSlot`) — it is a
+/// channel-PDA seed and the program rejects it outside [`OPEN_SLOT_WINDOW`].
+/// Returns the derived channel PDA and the base64-encoded transaction.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_open_payment_channel_tx(
     signer: &dyn SolanaSigner,
@@ -564,6 +606,7 @@ pub async fn build_open_payment_channel_tx(
     mint: &Pubkey,
     authorized_signer: &Pubkey,
     salt: u64,
+    open_slot: u64,
     deposit: u64,
     grace_period: u32,
     recipients: Vec<Distribution>,
@@ -580,6 +623,7 @@ pub async fn build_open_payment_channel_tx(
         mint: *mint,
         authorized_signer: *authorized_signer,
         salt,
+        open_slot,
         deposit,
         grace_period,
         recipients,
@@ -641,16 +685,18 @@ mod tests {
     #[test]
     fn voucher_message_is_program_borsh_layout() {
         let bytes = voucher_message_bytes(&pk(9), 42, 1234).unwrap();
-        assert_eq!(bytes.len(), 48);
-        assert_eq!(&bytes[..32], pk(9).as_ref());
-        assert_eq!(&bytes[32..40], &42u64.to_le_bytes());
-        assert_eq!(&bytes[40..48], &1234i64.to_le_bytes());
+        assert_eq!(bytes.len(), 50);
+        assert_eq!(&bytes[..2], &VOUCHER_MAGIC);
+        assert_eq!(&bytes[2..34], pk(9).as_ref());
+        assert_eq!(&bytes[34..42], &42u64.to_le_bytes());
+        assert_eq!(&bytes[42..50], &1234i64.to_le_bytes());
     }
 
     #[test]
     fn channel_pda_is_stable() {
         let program_id = default_program_id();
-        let (channel, bump) = find_channel_pda(&pk(1), &pk(2), &pk(3), &pk(4), 99, &program_id);
+        let (channel, bump) =
+            find_channel_pda(&pk(1), &pk(2), &pk(3), &pk(4), 99, 123_456, &program_id);
         let expected = Pubkey::create_program_address(
             &[
                 CHANNEL_SEED,
@@ -659,11 +705,21 @@ mod tests {
                 pk(3).as_ref(),
                 pk(4).as_ref(),
                 &99u64.to_le_bytes(),
+                &123_456u64.to_le_bytes(),
                 &[bump],
             ],
             &program_id,
         )
         .unwrap();
         assert_eq!(channel, expected);
+    }
+
+    #[test]
+    fn channel_pda_is_per_incarnation() {
+        // Same params + a different openSlot must yield a different address.
+        let program_id = default_program_id();
+        let (a, _) = find_channel_pda(&pk(1), &pk(2), &pk(3), &pk(4), 99, 100, &program_id);
+        let (b, _) = find_channel_pda(&pk(1), &pk(2), &pk(3), &pk(4), 99, 101, &program_id);
+        assert_ne!(a, b);
     }
 }

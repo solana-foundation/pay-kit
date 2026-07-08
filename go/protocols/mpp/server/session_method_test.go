@@ -495,14 +495,14 @@ func TestSessionOpenReplaySemantics(t *testing.T) {
 		t.Fatal("intruder replay overwrote the authorized signer")
 	}
 
-	// Finalized channel rejects replays.
-	if _, err := session.Core().Store().MarkFinalized(context.Background(), channelID); err != nil {
-		t.Fatalf("MarkFinalized: %v", err)
+	// Sealed channel rejects replays.
+	if _, err := session.Core().Store().MarkSealed(context.Background(), channelID); err != nil {
+		t.Fatalf("MarkSealed: %v", err)
 	}
 	replay := intents.OpenPayloadPush(channelID, "1000", signer.Address(), "open-sig")
 	if _, err := verifySessionAction(t, session, intents.NewOpenAction(replay)); err == nil ||
-		!strings.Contains(err.Error(), "finalized") {
-		t.Fatalf("finalized replay error = %v", err)
+		!strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("sealed replay error = %v", err)
 	}
 }
 
@@ -706,15 +706,15 @@ func TestSessionTopUpHardening(t *testing.T) {
 		t.Fatalf("close-pending error = %v", err)
 	}
 
-	// Finalized blocks top-ups.
-	_, finalizedChannel := openTrustedChannel(t, session, 5_000)
-	if _, err := session.Core().Store().MarkFinalized(context.Background(), finalizedChannel); err != nil {
-		t.Fatalf("MarkFinalized: %v", err)
+	// Sealed blocks top-ups.
+	_, sealedChannel := openTrustedChannel(t, session, 5_000)
+	if _, err := session.Core().Store().MarkSealed(context.Background(), sealedChannel); err != nil {
+		t.Fatalf("MarkSealed: %v", err)
 	}
 	if _, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
-		ChannelID: finalizedChannel, NewDeposit: "9000", Signature: "sig",
-	})); err == nil || !strings.Contains(err.Error(), "finalized") {
-		t.Fatalf("finalized error = %v", err)
+		ChannelID: sealedChannel, NewDeposit: "9000", Signature: "sig",
+	})); err == nil || !strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("sealed error = %v", err)
 	}
 }
 
@@ -767,7 +767,7 @@ func TestSessionCloseFlipsClosePending(t *testing.T) {
 		t.Fatalf("reference = %q, want channel id", receipt.Reference)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.CloseRequestedAt == nil || state.Finalized {
+	if state.CloseRequestedAt == nil || state.Sealed {
 		t.Fatalf("state after close = %+v", state)
 	}
 }
@@ -846,11 +846,11 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("settlement failure error = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.CloseRequestedAt == nil || state.Finalized || state.SettledSignature != nil {
+	if state.CloseRequestedAt == nil || state.Sealed || state.SettledSignature != nil {
 		t.Fatalf("state after failed settle = %+v", state)
 	}
 
-	// Retry succeeds and finalizes the channel.
+	// Retry succeeds and seals the channel.
 	fake.SendErr = nil
 	receipt, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID}))
 	if err != nil {
@@ -860,16 +860,16 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("settlement broadcasts = %d, want 1", len(fake.Sent))
 	}
 	state = mustGetChannel(t, session, channelID)
-	if !state.Finalized || state.SettledSignature == nil {
+	if !state.Sealed || state.SettledSignature == nil {
 		t.Fatalf("state after settle = %+v", state)
 	}
 	if receipt.Reference != *state.SettledSignature {
 		t.Fatalf("reference = %q, want settled signature %q", receipt.Reference, *state.SettledSignature)
 	}
 
-	// A third close on the finalized channel rejects.
+	// A third close on the sealed channel rejects.
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err == nil ||
-		!strings.Contains(err.Error(), "finalized") {
+		!strings.Contains(err.Error(), "sealed") {
 		t.Fatalf("third close error = %v", err)
 	}
 }
@@ -1222,6 +1222,7 @@ func buildServerCompletedOpenFixture(t *testing.T, operator solana.PrivateKey) o
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorized,
 		Salt:             openFixtureSalt,
+		OpenSlot:         openFixtureOpenSlot,
 		Deposit:          openFixtureDeposit,
 		GracePeriod:      openFixtureGrace,
 		TokenProgram:     solana.TokenProgramID,
@@ -1437,7 +1438,7 @@ func TestSessionIdleCloseSettlesOnChain(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		state := mustGetChannel(t, session, channelID)
-		if state != nil && state.Finalized && state.SettledSignature != nil {
+		if state != nil && state.Sealed && state.SettledSignature != nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1460,7 +1461,7 @@ func TestSessionIdleCloseWithoutSignerIsInert(t *testing.T) {
 
 	time.Sleep(80 * time.Millisecond)
 	state := mustGetChannel(t, session, channelID)
-	if state.Finalized || len(fake.Sent) != 0 {
+	if state.Sealed || len(fake.Sent) != 0 {
 		t.Fatalf("idle close ran without a signer: state=%+v sends=%d", state, len(fake.Sent))
 	}
 }

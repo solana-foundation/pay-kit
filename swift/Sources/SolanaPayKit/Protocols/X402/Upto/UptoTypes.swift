@@ -10,9 +10,9 @@ public let X402UptoAssetTransferMethod: String = "payment-channel"
 
 /// The `extra` object on an `upto` requirement.
 ///
-/// Carries the operator binding and the server-prefetched blockhash the client
-/// needs to build the channel `open`. `facilitatorFee` is omitted from the wire
-/// when `0`; every other absent field is `nil`.
+/// Carries the operator binding and the server-prefetched blockhash + slot the
+/// client needs to build the channel `open`. `facilitatorFee` is omitted from
+/// the wire when `0`; every other absent field is `nil`.
 public struct X402UptoExtra: Codable, Sendable, Equatable {
     /// Asset transfer method; must equal `"payment-channel"` for the SVM backend.
     public let assetTransferMethod: String
@@ -30,6 +30,10 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
     public let recentBlockhash: String?
     /// Last block height at which `recentBlockhash` is valid (decimal string).
     public let lastValidBlockHeight: String?
+    /// Server-prefetched current slot for the open (decimal string; the same
+    /// RPC call that prefetches `recentBlockhash` returns it). Becomes the
+    /// program's `openSlot`: it seeds the channel PDA and rides in `openArgs`.
+    public let recentSlot: String?
     /// Earliest activation time (Unix seconds).
     public let validAfter: Int?
 
@@ -41,6 +45,7 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         channelProgram: String? = nil,
         recentBlockhash: String? = nil,
         lastValidBlockHeight: String? = nil,
+        recentSlot: String? = nil,
         validAfter: Int? = nil
     ) {
         self.assetTransferMethod = assetTransferMethod
@@ -50,12 +55,13 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         self.channelProgram = channelProgram
         self.recentBlockhash = recentBlockhash
         self.lastValidBlockHeight = lastValidBlockHeight
+        self.recentSlot = recentSlot
         self.validAfter = validAfter
     }
 
     private enum CodingKeys: String, CodingKey {
         case assetTransferMethod, tokenProgram, facilitatorAddress, facilitatorFee
-        case channelProgram, recentBlockhash, lastValidBlockHeight, validAfter
+        case channelProgram, recentBlockhash, lastValidBlockHeight, recentSlot, validAfter
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +73,7 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         channelProgram = try container.decodeIfPresent(String.self, forKey: .channelProgram)
         recentBlockhash = try container.decodeIfPresent(String.self, forKey: .recentBlockhash)
         lastValidBlockHeight = try container.decodeIfPresent(String.self, forKey: .lastValidBlockHeight)
+        recentSlot = try container.decodeIfPresent(String.self, forKey: .recentSlot)
         validAfter = try container.decodeIfPresent(Int.self, forKey: .validAfter)
     }
 
@@ -82,6 +89,7 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
         try container.encodeIfPresent(channelProgram, forKey: .channelProgram)
         try container.encodeIfPresent(recentBlockhash, forKey: .recentBlockhash)
         try container.encodeIfPresent(lastValidBlockHeight, forKey: .lastValidBlockHeight)
+        try container.encodeIfPresent(recentSlot, forKey: .recentSlot)
         try container.encodeIfPresent(validAfter, forKey: .validAfter)
     }
 }

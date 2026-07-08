@@ -17,9 +17,14 @@ func u64ptr(v uint64) *uint64 { return &v }
 
 func strptr(v string) *string { return &v }
 
+// testRecentSlot is the challenge recentSlot used across these tests (the
+// server pre-fetches it alongside recentBlockhash).
+const testRecentSlot = uint64(321_654_987)
+
 func testSessionRequest(operator, recipient solana.PublicKey) intents.SessionRequest {
 	network := "localnet"
 	strategy := intents.SessionPullVoucherStrategyClientVoucher
+	recentSlot := intents.U64String(testRecentSlot)
 	return intents.SessionRequest{
 		Cap:                 "1000",
 		Currency:            "USDC",
@@ -28,6 +33,7 @@ func testSessionRequest(operator, recipient solana.PublicKey) intents.SessionReq
 		Recipient:           recipient.String(),
 		Modes:               []intents.SessionMode{intents.SessionModePull},
 		PullVoucherStrategy: &strategy,
+		RecentSlot:          &recentSlot,
 	}
 }
 
@@ -82,6 +88,9 @@ func TestDerivePaymentChannelOpenUsesChallengeDefaultsAndSplits(t *testing.T) {
 	if open.Salt != 42 {
 		t.Fatalf("salt = %d, want 42", open.Salt)
 	}
+	if open.OpenSlot != testRecentSlot {
+		t.Fatalf("openSlot = %d, want challenge recentSlot %d", open.OpenSlot, testRecentSlot)
+	}
 	if len(open.Recipients) != 1 || !open.Recipients[0].Recipient.Equals(splitRecipient) || open.Recipients[0].Bps != 10 {
 		t.Fatalf("recipients = %+v, want challenge split", open.Recipients)
 	}
@@ -96,7 +105,7 @@ func TestDerivePaymentChannelOpenUsesChallengeDefaultsAndSplits(t *testing.T) {
 		t.Fatalf("programID = %s, want canonical", open.ProgramID)
 	}
 	expectedChannel, _, err := paymentchannels.FindChannelPDAForProgram(
-		payer, recipient, open.Mint, authorizedSigner, 42, open.ProgramID)
+		payer, recipient, open.Mint, authorizedSigner, 42, testRecentSlot, open.ProgramID)
 	if err != nil {
 		t.Fatalf("FindChannelPDAForProgram: %v", err)
 	}
@@ -224,6 +233,38 @@ func TestDerivePaymentChannelOpenRejectsInvalidChallengeValues(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestDerivePaymentChannelOpenRequiresChallengeRecentSlot(t *testing.T) {
+	operator := testutil.NewPrivateKey().PublicKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	request := testSessionRequest(operator, recipient)
+	request.RecentSlot = nil
+
+	_, err := DerivePaymentChannelOpen(
+		request,
+		testutil.NewPrivateKey().PublicKey(),
+		testutil.NewPrivateKey().PublicKey(),
+		PaymentChannelOpenOptions{Salt: u64ptr(1)},
+	)
+	if err == nil || !strings.Contains(err.Error(), "recentSlot") {
+		t.Fatalf("error = %v, want missing-recentSlot rejection", err)
+	}
+
+	// An explicit options override satisfies the requirement without a
+	// challenge openSlot, and wins over the challenge when both are set.
+	open, err := DerivePaymentChannelOpen(
+		request,
+		testutil.NewPrivateKey().PublicKey(),
+		testutil.NewPrivateKey().PublicKey(),
+		PaymentChannelOpenOptions{Salt: u64ptr(1), OpenSlot: u64ptr(777)},
+	)
+	if err != nil {
+		t.Fatalf("DerivePaymentChannelOpen with override: %v", err)
+	}
+	if open.OpenSlot != 777 {
+		t.Fatalf("openSlot = %d, want override 777", open.OpenSlot)
 	}
 }
 

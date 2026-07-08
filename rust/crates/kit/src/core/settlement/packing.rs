@@ -2,7 +2,7 @@
 //! legacy transactions (no address lookup tables).
 //!
 //! Each channel's settlement is a small group of instructions (ed25519 verify +
-//! settle/finalize + distribute). We pack as many channels as fit under the
+//! settle/seal + distribute). We pack as many channels as fit under the
 //! Solana packet limit, sealing a transaction and starting a new one when the
 //! next channel would overflow (by serialized bytes or a configured cap).
 //!
@@ -15,8 +15,8 @@ use solana_pubkey::Pubkey;
 /// Max serialized transaction size (Solana packet limit).
 pub const MAX_TX_BYTES: usize = 1232;
 
-/// Calibrated default cap on channels per legacy settle tx (P0: settle+finalize
-/// is ~252 bytes/channel ⇒ 3 fit in 986 B, 4 overflow at 1238 B). Packing is
+/// Calibrated default cap on channels per legacy settle tx (P0: settle+seal
+/// is ~254 bytes/channel ⇒ 3 fit under the limit, 4 overflow). Packing is
 /// also byte-bounded, so this is a safety ceiling, not the sole limit.
 pub const DEFAULT_MAX_CHANNELS_PER_TX: usize = 3;
 
@@ -96,9 +96,7 @@ pub fn pack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::payment_channels::{
-        build_settle_and_finalize_instructions, default_program_id,
-    };
+    use crate::core::payment_channels::{build_settle_and_seal_instructions, default_program_id};
 
     fn pk(tag: u8, seed: u64) -> Pubkey {
         let mut b = [0u8; 32];
@@ -107,7 +105,7 @@ mod tests {
         Pubkey::new_from_array(b)
     }
 
-    /// Per-channel **settle+finalize** instructions (ed25519 verify + settle):
+    /// Per-channel **settle+seal** instructions (ed25519 verify + settle):
     /// the on-chain close that the worker batches. `operator` is the shared
     /// fee-payer/authority; channel + authorized_signer are unique per channel,
     /// so the message dedups shared keys exactly as on-chain. (Distribute — the
@@ -119,7 +117,7 @@ mod tests {
         let authorized_signer = pk(0x02, i);
         let sig = [7u8; 64];
 
-        let ixs = build_settle_and_finalize_instructions(
+        let ixs = build_settle_and_seal_instructions(
             &operator,
             &channel,
             &authorized_signer,

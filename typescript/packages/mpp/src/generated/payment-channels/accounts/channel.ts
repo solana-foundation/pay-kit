@@ -62,6 +62,7 @@ export type Channel = {
     authorizedSigner: Address;
     mint: Address;
     rentPayer: Address;
+    openSlot: bigint;
 };
 
 export type ChannelArgs = {
@@ -81,6 +82,7 @@ export type ChannelArgs = {
     authorizedSigner: Address;
     mint: Address;
     rentPayer: Address;
+    openSlot: number | bigint;
 };
 
 /** Gets the encoder for {@link ChannelArgs} account data. */
@@ -102,6 +104,7 @@ export function getChannelEncoder(): FixedSizeEncoder<ChannelArgs> {
         ['authorizedSigner', getAddressEncoder()],
         ['mint', getAddressEncoder()],
         ['rentPayer', getAddressEncoder()],
+        ['openSlot', getU64Encoder()],
     ]);
 }
 
@@ -124,6 +127,7 @@ export function getChannelDecoder(): FixedSizeDecoder<Channel> {
         ['authorizedSigner', getAddressDecoder()],
         ['mint', getAddressDecoder()],
         ['rentPayer', getAddressDecoder()],
+        ['openSlot', getU64Decoder()],
     ]);
 }
 

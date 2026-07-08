@@ -5,10 +5,10 @@ import Foundation
 /// Mirrors the Rust spine (`rust/crates/mpp/src/protocol/intents/session.rs`)
 /// and the Go reference (`go/protocols/mpp/protocol/intents/session.go`)
 /// tag-for-tag and key-for-key. The JSON keys are camelCase and equal the Swift
-/// property names except where noted (`salt` serializes as a decimal string and
-/// reads string-or-number; `VoucherData.cumulativeAmount` also reads the legacy
-/// `cumulative` alias; `SessionAction` is an internally-tagged union flattened
-/// onto the `action` key).
+/// property names except where noted (`salt` and `recentSlot` serialize as
+/// decimal strings and read string-or-number; `VoucherData.cumulativeAmount`
+/// also reads the legacy `cumulative` alias; `SessionAction` is an
+/// internally-tagged union flattened onto the `action` key).
 
 /// Default voucher/session expiry: 2100-01-01T00:00:00Z, kept under JS
 /// `Number.MAX_SAFE_INTEGER`. Matches `DEFAULT_SESSION_EXPIRES_AT`.
@@ -54,6 +54,10 @@ public struct SessionRequest: Codable, Equatable, Sendable {
     public let modes: [SessionMode]
     public let pullVoucherStrategy: SessionPullVoucherStrategy?
     public let recentBlockhash: String?
+    /// Server-prefetched current slot for the channel `open` (the same RPC call
+    /// that prefetches `recentBlockhash` returns it). Serializes as a decimal
+    /// string and reads string-or-number, like `salt`.
+    public let recentSlot: UInt64?
 
     public init(
         cap: String,
@@ -69,7 +73,8 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         minVoucherDelta: String? = nil,
         modes: [SessionMode] = [],
         pullVoucherStrategy: SessionPullVoucherStrategy? = nil,
-        recentBlockhash: String? = nil
+        recentBlockhash: String? = nil,
+        recentSlot: UInt64? = nil
     ) {
         self.cap = cap
         self.currency = currency
@@ -85,12 +90,13 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         self.modes = modes
         self.pullVoucherStrategy = pullVoucherStrategy
         self.recentBlockhash = recentBlockhash
+        self.recentSlot = recentSlot
     }
 
     enum CodingKeys: String, CodingKey {
         case cap, currency, decimals, network, `operator`, recipient, splits
         case programId, description, externalId, minVoucherDelta, modes
-        case pullVoucherStrategy, recentBlockhash
+        case pullVoucherStrategy, recentBlockhash, recentSlot
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,6 +115,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         modes = try c.decodeIfPresent([SessionMode].self, forKey: .modes) ?? []
         pullVoucherStrategy = try c.decodeIfPresent(SessionPullVoucherStrategy.self, forKey: .pullVoucherStrategy)
         recentBlockhash = try c.decodeIfPresent(String.self, forKey: .recentBlockhash)
+        recentSlot = try decodeU64StringOrNumber(c, forKey: .recentSlot)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -127,12 +134,38 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         if !modes.isEmpty { try c.encode(modes, forKey: .modes) }
         try c.encodeIfPresent(pullVoucherStrategy, forKey: .pullVoucherStrategy)
         try c.encodeIfPresent(recentBlockhash, forKey: .recentBlockhash)
+        // recentSlot always serializes as a decimal string.
+        if let recentSlot { try c.encode(String(recentSlot), forKey: .recentSlot) }
     }
 }
 
-/// Open-channel action payload. `salt` serializes as a decimal string and reads
-/// string-or-number; every other field is omitted when nil except
-/// `authorizedSigner` and `signature`, which are always present.
+/// Reads a u64 wire field from either a JSON string ("42") or an integer (42);
+/// absent → nil. A non-integer number (e.g. a float or negative) or a key
+/// present with the wrong type is treated as nil because the first `UInt64`
+/// attempt swallows its error via `try?`; only a present-but-non-numeric string
+/// raises. Backs `salt` and `recentSlot`, which both serialize as decimal
+/// strings on the wire.
+private func decodeU64StringOrNumber<K: CodingKey>(
+    _ c: KeyedDecodingContainer<K>, forKey key: K
+) throws -> UInt64? {
+    if let value = try? c.decode(UInt64.self, forKey: key) {
+        return value
+    }
+    if let s = try c.decodeIfPresent(String.self, forKey: key) {
+        guard let value = UInt64(s) else {
+            throw PayKitError.invalidTransaction("invalid \(key.stringValue) string: \(s)")
+        }
+        return value
+    }
+    return nil
+}
+
+/// Open-channel action payload. `salt` and `recentSlot` serialize as decimal
+/// strings and read string-or-number; every other field is omitted when nil
+/// except `authorizedSigner` and `signature`, which are always present.
+/// `recentSlot` carries the program's `openSlot` (a channel PDA seed), so the
+/// server needs it to re-derive (and later reclaim) the channel; it must be
+/// persisted with the channel params.
 public struct OpenPayload: Codable, Equatable, Sendable {
     public var mode: SessionMode
     public var channelId: String?
@@ -142,6 +175,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
     public var mint: String?
     public var salt: UInt64?
     public var gracePeriod: UInt32?
+    public var recentSlot: UInt64?
     public var transaction: String?
     public var tokenAccount: String?
     public var approvedAmount: String?
@@ -160,6 +194,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         mint: String? = nil,
         salt: UInt64? = nil,
         gracePeriod: UInt32? = nil,
+        recentSlot: UInt64? = nil,
         transaction: String? = nil,
         tokenAccount: String? = nil,
         approvedAmount: String? = nil,
@@ -177,6 +212,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         self.mint = mint
         self.salt = salt
         self.gracePeriod = gracePeriod
+        self.recentSlot = recentSlot
         self.transaction = transaction
         self.tokenAccount = tokenAccount
         self.approvedAmount = approvedAmount
@@ -197,6 +233,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         mint: String,
         salt: UInt64,
         gracePeriod: UInt32,
+        recentSlot: UInt64,
         authorizedSigner: String,
         signature: String
     ) -> OpenPayload {
@@ -209,6 +246,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
             mint: mint,
             salt: salt,
             gracePeriod: gracePeriod,
+            recentSlot: recentSlot,
             authorizedSigner: authorizedSigner,
             signature: signature
         )
@@ -250,7 +288,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case mode, channelId, deposit, payer, payee, mint, salt, gracePeriod
+        case mode, channelId, deposit, payer, payee, mint, salt, gracePeriod, recentSlot
         case transaction, tokenAccount, approvedAmount, owner
         case initMultiDelegateTx, updateDelegationTx, authorizedSigner, signature
     }
@@ -263,8 +301,9 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         payer = try c.decodeIfPresent(String.self, forKey: .payer)
         payee = try c.decodeIfPresent(String.self, forKey: .payee)
         mint = try c.decodeIfPresent(String.self, forKey: .mint)
-        salt = try Self.decodeSalt(c)
+        salt = try decodeU64StringOrNumber(c, forKey: .salt)
         gracePeriod = try c.decodeIfPresent(UInt32.self, forKey: .gracePeriod)
+        recentSlot = try decodeU64StringOrNumber(c, forKey: .recentSlot)
         transaction = try c.decodeIfPresent(String.self, forKey: .transaction)
         tokenAccount = try c.decodeIfPresent(String.self, forKey: .tokenAccount)
         approvedAmount = try c.decodeIfPresent(String.self, forKey: .approvedAmount)
@@ -283,9 +322,10 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         try c.encodeIfPresent(payer, forKey: .payer)
         try c.encodeIfPresent(payee, forKey: .payee)
         try c.encodeIfPresent(mint, forKey: .mint)
-        // salt always serializes as a decimal string.
+        // salt and recentSlot always serialize as decimal strings.
         if let salt { try c.encode(String(salt), forKey: .salt) }
         try c.encodeIfPresent(gracePeriod, forKey: .gracePeriod)
+        if let recentSlot { try c.encode(String(recentSlot), forKey: .recentSlot) }
         try c.encodeIfPresent(transaction, forKey: .transaction)
         try c.encodeIfPresent(tokenAccount, forKey: .tokenAccount)
         try c.encodeIfPresent(approvedAmount, forKey: .approvedAmount)
@@ -296,22 +336,6 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         try c.encode(signature, forKey: .signature)
     }
 
-    /// Reads `salt` from either a JSON string ("42") or an integer (42); absent → nil.
-    /// A non-integer number (e.g. a float or negative) or a key present with the wrong
-    /// type is treated as nil because the first `UInt64` attempt swallows its error via
-    /// `try?`; only a present-but-non-numeric string raises.
-    private static func decodeSalt(_ c: KeyedDecodingContainer<CodingKeys>) throws -> UInt64? {
-        if let value = try? c.decode(UInt64.self, forKey: .salt) {
-            return value
-        }
-        if let s = try c.decodeIfPresent(String.self, forKey: .salt) {
-            guard let value = UInt64(s) else {
-                throw PayKitError.invalidTransaction("invalid salt string: \(s)")
-            }
-            return value
-        }
-        return nil
-    }
 }
 
 /// The signed-voucher data covered by the Ed25519 signature (minus `nonce`).
@@ -357,7 +381,8 @@ public struct VoucherData: Codable, Equatable, Sendable {
         try c.encodeIfPresent(nonce, forKey: .nonce)
     }
 
-    /// The 48-byte Ed25519 preimage for this voucher.
+    /// The 50-byte Ed25519 preimage for this voucher (magic-prefixed; the
+    /// magic never appears in the wire JSON).
     public func messageBytes() throws -> Data {
         let channel = try Pubkey(base58: channelId)
         guard let amount = UInt64(cumulative) else {

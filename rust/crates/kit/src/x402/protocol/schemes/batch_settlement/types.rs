@@ -4,7 +4,7 @@
 //! channel, signs cumulative Ed25519 vouchers per request (verified off-chain
 //! and served immediately), and the operator redeems the latest voucher per
 //! channel on-chain later, in batches. The on-chain backing is the
-//! payment-channels program + 48-byte voucher shared with `upto`; the channel /
+//! payment-channels program + 50-byte voucher shared with `upto`; the channel /
 //! voucher / store logic is the wire-agnostic core also used by the MPP
 //! `session` intent. See `specs/schemes/batch-settlement/scheme_batch_settlement_svm.md`.
 
@@ -59,6 +59,13 @@ pub struct BatchExtra {
     /// Server-prefetched recent blockhash for building `open`/`topUp`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_blockhash: Option<String>,
+
+    /// Server-prefetched current slot (decimal string), analogous to
+    /// `recentBlockhash`. Feeds the program's `openSlot` — a channel-PDA seed;
+    /// the program rejects opens whose slot falls outside its window, so
+    /// clients MUST use this hint rather than fetch their own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent_slot: Option<String>,
 
     /// Suggested initial deposit (base units).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,7 +151,9 @@ pub struct BatchVoucher {
     pub expires_at: i64,
     /// Base58 voucher signer (the channel's `authorizedSigner`).
     pub signer: String,
-    /// Base58 Ed25519 signature over the 48-byte voucher payload.
+    /// Base58 Ed25519 signature over the 50-byte voucher payload (the signed
+    /// bytes carry a constant `[0x56, 0x01]` magic prefix; the JSON shape here
+    /// is unchanged).
     pub signature: String,
 }
 
@@ -168,6 +177,10 @@ pub struct BatchChannelConfig {
     pub mint: String,
     pub authorized_signer: String,
     pub salt: String,
+    /// The challenge's `recentSlot`, echoed back (base-10 u64 string, like
+    /// `salt`): the slot the channel is opened at (the program's `openSlot`) —
+    /// a channel-PDA seed the server needs to re-derive the channel address.
+    pub recent_slot: String,
     pub deposit_amount: String,
     pub grace_period_seconds: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -239,7 +252,7 @@ pub struct BatchChannelSnapshot {
     /// server's own accounting (`"0"` until the close sweeps the pool), not a
     /// fresh read of the on-chain `paidOut`.
     pub paid_out: String,
-    /// `open` | `closing` | `finalized`.
+    /// `open` | `closing` | `sealed`.
     pub status: String,
 }
 
@@ -284,6 +297,7 @@ mod tests {
                 token_program: None,
                 fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
                 recent_blockhash: None,
+                recent_slot: None,
                 suggested_deposit: Some("500000".to_string()),
                 minimum_deposit: Some("100000".to_string()),
                 min_voucher_delta: None,

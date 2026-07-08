@@ -215,8 +215,9 @@ the flow is unchanged.
 | `org.jetbrains.kotlinx:kotlinx-coroutines-core` | suspend call surface (`PayKitClient.get`) | 1.10.1 |
 
 What `web3-solana` does not yet supply (and so stays hand-rolled in
-`paycore`): v0 `VersionedMessage` compilation, the ComputeBudget program, a
-synchronous ATA derivation, and Blake3. The remaining hand-rolled Base58
+`paycore`): v0 `VersionedMessage` compilation, the ComputeBudget program, and
+a synchronous ATA derivation (the distribution hash is SHA-256 via the JDK's
+`MessageDigest`). The remaining hand-rolled Base58
 fallback gap is tracked at
 [solana-foundation/pay-kit#84](https://github.com/solana-foundation/pay-kit/issues/84).
 

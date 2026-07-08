@@ -9,7 +9,7 @@
 //!    channel state back to bind deposit/payee/mint/signer on-chain.
 //! 3. The route handler runs and determines the actual metered amount.
 //! 4. [`X402Upto::settle_actual`] signs a single operator voucher for the actual
-//!    amount and submits `settle_and_finalize` + ATA setup + `distribute`, refunding
+//!    amount and submits `settle_and_seal` + ATA setup + `distribute`, refunding
 //!    `deposit − actual` to the payer.
 
 use std::collections::HashSet;
@@ -116,8 +116,8 @@ pub struct VerifiedUptoOpen {
     pub max_amount: u64,
     pub expires_at: i64,
     pub network: String,
-    /// The channel's merchant/payee — the operator (the only key the server can
-    /// sign `settle_and_finalize` with). The real beneficiary is paid via
+    /// The channel's payee — the operator (the only key the server can sign
+    /// `settle_and_seal` with). The real beneficiary is paid via
     /// `distribution`, not by being the payee. See `verify_open`.
     pub payee: Pubkey,
     /// The bound distribution split validated at open (beneficiary at 100%).
@@ -358,6 +358,7 @@ impl X402Upto {
                 channel_program: Some(pc::pubkey_string(&self.program_id()?)),
                 recent_blockhash: None,
                 last_valid_block_height: None,
+                recent_slot: None,
                 valid_after: None,
             },
         })
@@ -365,39 +366,42 @@ impl X402Upto {
 
     /// Build the full `PAYMENT-REQUIRED` envelope for an `upto` challenge.
     ///
-    /// This is where the (best-effort) recent blockhash is fetched and attached,
-    /// so the client can build the channel `open` without an extra RPC.
+    /// This is where the (best-effort) recent blockhash AND current slot
+    /// (`recentSlot`) are fetched and attached, so the client can build the
+    /// channel `open` without any RPC of its own: the slot feeds the program's
+    /// `openSlot`, a channel-PDA seed the program only accepts within a recent
+    /// window, and clients MUST take it from the challenge rather than fetch a
+    /// slot themselves.
     pub fn upto(&self, max_amount: &str) -> Result<UptoRequiredEnvelope, Error> {
-        // Fail loudly (retryable) rather than issuing a 402 with no blockhash:
-        // the in-SDK client hard-requires `extra.recentBlockhash` to build the
-        // channel open, so a silent `None` would surface as a non-retryable
-        // payment failure on a transient RPC hiccup.
+        // Fail loudly (retryable) rather than issuing a 402 with no blockhash /
+        // recentSlot: the in-SDK client hard-requires both to build the channel
+        // open, so a silent `None` would surface as a non-retryable payment
+        // failure on a transient RPC hiccup.
         // Prefer the shared cache (refreshed out of band) to avoid a blocking
-        // RPC round-trip per challenge; fall back to a direct fetch. Fetched
-        // ONCE and stamped on every offered currency's requirement.
-        let (blockhash, last_valid_block_height) =
-            match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
-                Some(cached) => (cached.blockhash, cached.last_valid_block_height),
-                None => {
-                    let (blockhash, last_valid_block_height) = self
-                        .rpc
-                        .get_latest_blockhash_with_commitment(self.rpc.commitment())
-                        .map_err(|e| {
-                            Error::Rpc(format!("failed to fetch recent blockhash: {e}"))
-                        })?;
-                    (blockhash.to_string(), last_valid_block_height)
-                }
-            };
+        // RPC round-trip per challenge; fall back to a direct fetch. The
+        // blockhash and the slot come from ONE `getLatestBlockhash` call (its
+        // response context carries the slot), fetched ONCE and stamped on
+        // every offered currency's requirement.
+        let hint = match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
+            Some(cached) => cached,
+            None => {
+                crate::core::blockhash::fetch_blockhash_with_slot(&self.rpc, self.rpc.commitment())
+                    .map_err(|e| Error::Rpc(format!("failed to fetch recent blockhash: {e}")))?
+            }
+        };
 
         // One `accepts[]` entry per offered currency (single-currency mode
         // yields exactly one, identical to the prior behaviour). Every entry
-        // carries the SAME freshly-fetched blockhash + last-valid height.
+        // carries the SAME freshly-fetched blockhash + last-valid height +
+        // recentSlot.
         let currencies = self.offered_currencies();
         let mut accepts = Vec::with_capacity(currencies.len());
         for cc in currencies {
             let mut requirement = self.upto_requirements_for(cc, max_amount)?;
-            requirement.extra.recent_blockhash = Some(blockhash.clone());
-            requirement.extra.last_valid_block_height = Some(last_valid_block_height.to_string());
+            requirement.extra.recent_blockhash = Some(hint.blockhash.clone());
+            requirement.extra.last_valid_block_height =
+                Some(hint.last_valid_block_height.to_string());
+            requirement.extra.recent_slot = Some(hint.slot.to_string());
             accepts.push(requirement);
         }
 
@@ -507,8 +511,8 @@ impl X402Upto {
                 Pubkey::from_str(tp)
                     .map_err(|e| Error::Other(format!("invalid matched token program: {e}")))
             })?;
-        // The channel payee/merchant is the operator — the only key that can
-        // sign `settle_and_finalize`. The beneficiary is paid via the bound
+        // The channel payee is the operator — the only key that can sign
+        // `settle_and_seal`. The beneficiary is paid via the bound
         // distribution split (validated below), never by being the payee.
         let expected_payee = self.operator;
         let expected_distribution = self.distribution()?;
@@ -519,7 +523,7 @@ impl X402Upto {
         let max = payload.max_amount()?;
 
         // In-flight dedup: reject a concurrent request replaying the same
-        // channel before its first settlement finalizes. The guard releases the
+        // channel before its first settlement completes. The guard releases the
         // slot on drop - including every early-return below and a handler panic.
         let in_flight = {
             let mut set = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
@@ -553,6 +557,7 @@ impl X402Upto {
             &expected_mint,
             &token_program,
             &channel_id,
+            max,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         self.rpc
@@ -631,7 +636,7 @@ impl X402Upto {
     }
 
     /// Settle the actual metered amount (`actual ≤ max`) against a verified
-    /// open: `settle_and_finalize`, ATA setup, and `distribute`, then broadcast
+    /// open: `settle_and_seal`, ATA setup, and `distribute`, then broadcast
     /// and confirm inline.
     ///
     /// Confirms before returning, so the on-chain confirm sits on the caller's
@@ -667,7 +672,7 @@ impl X402Upto {
         Ok(self.settlement_response(open, actual, signature.to_string()))
     }
 
-    /// Build the settlement instructions (`settle_and_finalize`, ATA setup, and
+    /// Build the settlement instructions (`settle_and_seal`, ATA setup, and
     /// `distribute`) for the actual metered amount (`actual ≤ max`) against a
     /// verified open, signing the operator voucher but WITHOUT building,
     /// signing, or broadcasting a transaction.
@@ -676,7 +681,7 @@ impl X402Upto {
     /// tx it signs + confirms) and the batched-settlement worker (which packs
     /// instructions from several channels into one operator-signed tx). The
     /// settle transaction is operator-signed only — the client's voucher
-    /// authorization rides inside the `settle_and_finalize` instruction data,
+    /// authorization rides inside the `settle_and_seal` instruction data,
     /// not as a transaction signature — so the worker can sign the envelope on
     /// the caller's behalf.
     pub async fn settlement_instructions(
@@ -687,7 +692,7 @@ impl X402Upto {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
 
         let mut instructions = if actual == 0 {
-            pc::build_settle_and_finalize_instructions(
+            pc::build_settle_and_seal_instructions(
                 &self.operator,
                 &open.channel_id,
                 &self.operator,
@@ -706,7 +711,7 @@ impl X402Upto {
                 .await
                 .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
                 .into();
-            pc::build_settle_and_finalize_instructions(
+            pc::build_settle_and_seal_instructions(
                 &self.operator,
                 &open.channel_id,
                 &self.operator,
@@ -717,7 +722,7 @@ impl X402Upto {
             )?
         };
 
-        // The channel payee is the operator (== the settle `merchant`); the
+        // The channel payee is the operator (== the settle `payee` signer); the
         // bound distribution routes the metered amount to the beneficiary split
         // and the operator keeps the remainder. Create the payee, treasury, and
         // each beneficiary ATA before distributing.
@@ -841,8 +846,25 @@ impl X402Upto {
         mint: &Pubkey,
         token_program: &Pubkey,
         channel_id: &Pubkey,
+        max_amount: u64,
     ) -> Result<(), Error> {
         let program_id = self.program_id()?;
+        // The challenged recentSlot at verify time: freshly fetched (cache
+        // first), so the transaction's openSlot — stamped from the earlier
+        // challenge — must sit at-or-before it inside the program freshness
+        // window. A failed fetch skips the window check (None); the PDA bind
+        // in `validate_open_instruction` still holds and the program enforces
+        // the window at broadcast.
+        let challenged_slot = self
+            .blockhash_cache
+            .as_ref()
+            .and_then(|c| c.get())
+            .map(|hint| hint.slot)
+            .or_else(|| {
+                crate::core::blockhash::fetch_blockhash_with_slot(&self.rpc, self.rpc.commitment())
+                    .ok()
+                    .map(|hint| hint.slot)
+            });
         validate_open_instruction(
             tx,
             &program_id,
@@ -855,6 +877,8 @@ impl X402Upto {
             mint,
             token_program,
             channel_id,
+            Some(max_amount),
+            challenged_slot,
         )
     }
 
@@ -890,10 +914,11 @@ pub(crate) fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Erro
 }
 
 /// Remove the server-provided build hints (`recentBlockhash` /
-/// `lastValidBlockHeight`, #2693) from a serialized requirements value so the
-/// verify-time structural match ignores them. They are embedded into the 402
-/// challenge and echoed back by the client in `accepted`, but the verify-time
-/// rebuild omits them. Mirrors exact's `strip_blockhash_hints`.
+/// `lastValidBlockHeight` (#2693) / `recentSlot`) from a serialized
+/// requirements value so the verify-time structural match ignores them. They
+/// are embedded into the 402 challenge and echoed back by the client in
+/// `accepted`, but the verify-time rebuild omits them. Mirrors exact's
+/// `strip_blockhash_hints`.
 fn strip_upto_blockhash_hints(value: &mut serde_json::Value) {
     if let Some(obj) = value.as_object_mut() {
         obj.remove("recentBlockhash");
@@ -901,6 +926,7 @@ fn strip_upto_blockhash_hints(value: &mut serde_json::Value) {
     if let Some(extra) = value.get_mut("extra").and_then(|e| e.as_object_mut()) {
         extra.remove("recentBlockhash");
         extra.remove("lastValidBlockHeight");
+        extra.remove("recentSlot");
     }
 }
 
@@ -977,6 +1003,8 @@ pub(crate) fn validate_open_instruction(
     mint: &Pubkey,
     token_program: &Pubkey,
     channel_id: &Pubkey,
+    max_amount: Option<u64>,
+    recent_slot: Option<u64>,
 ) -> Result<(), Error> {
     // Reject v0 transactions that pull accounts from address lookup tables.
     // This validator (and the fee-payer co-sign) resolves every account via
@@ -1066,6 +1094,59 @@ pub(crate) fn validate_open_instruction(
         "event_authority",
     )?;
     expect(13, program_id, "self_program")?;
+
+    // openArgs layout:
+    // [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+    if ix.data.len() < 1 + 8 + 8 + 4 + 8 {
+        return Err(Error::Other(format!(
+            "open instruction data too short ({} bytes)",
+            ix.data.len()
+        )));
+    }
+    let salt = u64::from_le_bytes(ix.data[1..9].try_into().expect("8-byte slice"));
+    let deposit = u64::from_le_bytes(ix.data[9..17].try_into().expect("8-byte slice"));
+    let open_slot = u64::from_le_bytes(ix.data[21..29].try_into().expect("8-byte slice"));
+
+    // Slot-addressed channel invariant: the channel account must be the PDA
+    // actually derived with the args' salt + openSlot, not just any account
+    // the payload named.
+    let (derived, _) = pc::find_channel_pda(
+        payer,
+        payee,
+        mint,
+        authorized_signer,
+        salt,
+        open_slot,
+        program_id,
+    );
+    if derived != *channel_id {
+        return Err(Error::Other(format!(
+            "open channel PDA {} != derived {}",
+            pc::pubkey_string(channel_id),
+            pc::pubkey_string(&derived)
+        )));
+    }
+    if let Some(max_amount) = max_amount {
+        if deposit != max_amount {
+            return Err(Error::Other(format!(
+                "open deposit {deposit} must equal the authorized maximum {max_amount}"
+            )));
+        }
+    }
+    if let Some(recent_slot) = recent_slot {
+        if open_slot > recent_slot {
+            return Err(Error::Other(format!(
+                "open openSlot {open_slot} is ahead of the challenged recentSlot {recent_slot}"
+            )));
+        }
+        if recent_slot - open_slot > pc::OPEN_SLOT_WINDOW {
+            return Err(Error::Other(format!(
+                "open openSlot {open_slot} is outside the {}-slot freshness window of the \
+                 challenged recentSlot {recent_slot}",
+                pc::OPEN_SLOT_WINDOW
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1121,6 +1202,7 @@ mod tests {
             mint,
             authorized_signer: operator,
             salt: 7,
+            open_slot: 314,
             deposit: 1_000_000,
             grace_period: 900,
             recipients: vec![],
@@ -1164,6 +1246,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_ok());
     }
@@ -1186,6 +1270,7 @@ mod tests {
             mint,
             authorized_signer: payer,
             salt: 7,
+            open_slot: 314,
             deposit: 1_000_000,
             grace_period: 900,
             recipients: vec![],
@@ -1206,6 +1291,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_ok());
 
@@ -1221,8 +1308,67 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn binds_open_args_deposit_and_slot() {
+        // The validator decodes openArgs and enforces the slot-addressed
+        // channel invariant: a deposit that differs from the authorized
+        // maximum, an openSlot ahead of the challenged recentSlot, a stale
+        // openSlot outside the freshness window, and a channel account that is
+        // not the PDA derived from the args all reject. `open_params` uses
+        // deposit 1_000_000 and open_slot 314.
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let check = |channel: &Pubkey, max_amount: Option<u64>, recent_slot: Option<u64>| {
+            validate_open_instruction(
+                &tx,
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &payee,
+                &mint,
+                &token_program(),
+                channel,
+                max_amount,
+                recent_slot,
+            )
+        };
+        assert!(check(&channel, Some(1_000_000), Some(314)).is_ok());
+        // At the window edge and with unknown bounds it still verifies.
+        assert!(check(&channel, Some(1_000_000), Some(314 + pc::OPEN_SLOT_WINDOW)).is_ok());
+        assert!(check(&channel, None, None).is_ok());
+        // Deposit must equal the authorized maximum.
+        let err = check(&channel, Some(999_999), Some(314)).unwrap_err();
+        assert!(err.to_string().contains("authorized maximum"), "{err}");
+        // openSlot ahead of the challenged recentSlot rejects.
+        let err = check(&channel, Some(1_000_000), Some(313)).unwrap_err();
+        assert!(err.to_string().contains("ahead of the challenged"), "{err}");
+        // openSlot outside the freshness window rejects.
+        let err = check(
+            &channel,
+            Some(1_000_000),
+            Some(314 + pc::OPEN_SLOT_WINDOW + 1),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("freshness window"), "{err}");
+        // A channel that is not the PDA derived from the args fails the bind
+        // (the slot-5 account check fires first on the mismatch).
+        let other = Pubkey::new_unique();
+        let err = check(&other, Some(1_000_000), Some(314)).unwrap_err();
+        assert!(err.to_string().contains("channel"), "{err}");
     }
 
     #[test]
@@ -1250,6 +1396,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1283,6 +1431,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
 
@@ -1299,6 +1449,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1327,6 +1479,8 @@ mod tests {
             &mint,
             &wrong_token_program,
             &channel,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1469,6 +1623,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1520,6 +1676,7 @@ mod tests {
         cache.set(
             "CacheTestBlockhash1111111111111111111111111".to_string(),
             100,
+            314,
         );
         let engine = engine.with_blockhash_cache(cache);
 
@@ -1542,9 +1699,11 @@ mod tests {
             pyusd.extra.token_program.as_deref(),
             Some(token_2022.as_str())
         );
-        // Both carry the same fetched blockhash.
+        // Both carry the same fetched blockhash + recentSlot.
         assert_eq!(usdc.extra.recent_blockhash, pyusd.extra.recent_blockhash);
         assert!(usdc.extra.recent_blockhash.is_some());
+        assert_eq!(usdc.extra.recent_slot.as_deref(), Some("314"));
+        assert_eq!(pyusd.extra.recent_slot.as_deref(), Some("314"));
     }
 
     /// The matcher selects the offered requirement whose currency the client
@@ -1574,6 +1733,10 @@ mod tests {
             "lastValidBlockHeight".to_string(),
             serde_json::Value::String("123456789".to_string()),
         );
+        extra.insert(
+            "recentSlot".to_string(),
+            serde_json::Value::String("350123456".to_string()),
+        );
 
         let matched = match_offered_requirement(&offered, &accepted).expect("PYUSD should match");
         assert_eq!(matched.asset, offered[1].asset);
@@ -1594,7 +1757,7 @@ mod tests {
 
     // ── Bug 1 (settle `InvalidChannelPayee`, 0x6) — facilitator payee model ──
     //
-    // `settle_and_finalize` requires its `merchant [signer]` account to equal
+    // `settle_and_seal` requires its `payee [signer]` account to equal
     // `channel.payee`. The only account the server can sign with is the
     // operator/authorized-signer, so the channel MUST be opened with
     // `payee = operator`. When the payout recipient differs from the operator
@@ -1606,11 +1769,11 @@ mod tests {
     /// Regression guard for the correct facilitator open: `payee = operator`
     /// with the real recipient carried as a 100% distribution split. The open
     /// must validate as operator-payee and must NOT validate as recipient-payee
-    /// (so `merchant = operator` at settle always matches `channel.payee`).
+    /// (so the operator-signed settle always matches `channel.payee`).
     #[test]
     fn facilitator_open_binds_channel_payee_to_the_settle_signer() {
         let payer = Pubkey::new_unique();
-        let operator = Pubkey::new_unique(); // signs settle_and_finalize (merchant)
+        let operator = Pubkey::new_unique(); // signs settle_and_seal (payee)
         let recipient = Pubkey::new_unique(); // payout target — NOT a signer
         let mint = Pubkey::new_unique();
         assert_ne!(
@@ -1625,6 +1788,7 @@ mod tests {
             mint,
             authorized_signer: operator,
             salt: 7,
+            open_slot: 314,
             deposit: 1_000_000,
             grace_period: 900,
             // Real recipient is paid via a bound 100% split, not as the payee.
@@ -1638,7 +1802,7 @@ mod tests {
         let channel = derive_channel_addresses(&params).channel;
         let tx = unsigned_tx(&[build_open_instruction(&params)]);
 
-        // verify_open binds the channel payee to the operator (== settle merchant).
+        // verify_open binds the channel payee to the operator (== settle payee signer).
         assert!(
             validate_open_instruction(
                 &tx,
@@ -1650,6 +1814,8 @@ mod tests {
                 &mint,
                 &token_program(),
                 &channel,
+                None,
+                None,
             )
             .is_ok(),
             "facilitator open (payee = operator) must validate"
@@ -1669,6 +1835,8 @@ mod tests {
                 &mint,
                 &token_program(),
                 &channel,
+                None,
+                None,
             )
             .is_err(),
             "channel payee must be the operator/signer, never the payout recipient"

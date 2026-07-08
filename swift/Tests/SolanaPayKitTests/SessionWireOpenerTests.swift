@@ -14,18 +14,19 @@ struct SessionWireTests {
     }
 
     @Test
-    func openActionFlattensTagAndSerializesSaltAsString() throws {
+    func openActionFlattensTagAndSerializesSaltAndRecentSlotAsStrings() throws {
         let payload = OpenPayload.paymentChannel(
             mode: .pull, channelId: "Chan", deposit: "1000", payer: "Payer", payee: "Payee",
-            mint: "Mint", salt: 42, gracePeriod: 900, authorizedSigner: "Auth", signature: "Sig"
+            mint: "Mint", salt: 42, gracePeriod: 900, recentSlot: 5000, authorizedSigner: "Auth", signature: "Sig"
         )
         let object = try encodeToObject(.open(payload))
 
         #expect(object["action"] as? String == "open")
         #expect(object["mode"] as? String == "pull")
         #expect(object["channelId"] as? String == "Chan")
-        // salt is a decimal string, not a number.
+        // salt and recentSlot are decimal strings, not numbers.
         #expect(object["salt"] as? String == "42")
+        #expect(object["recentSlot"] as? String == "5000")
         #expect(object["authorizedSigner"] as? String == "Auth")
     }
 
@@ -77,17 +78,25 @@ struct SessionWireTests {
     }
 
     @Test
-    func openPayloadReadsSaltFromStringOrNumber() throws {
+    func openPayloadReadsSaltAndRecentSlotFromStringOrNumber() throws {
         let fromString = try JSONDecoder().decode(
             OpenPayload.self,
-            from: Data(#"{"mode":"pull","salt":"42","authorizedSigner":"A","signature":"S"}"#.utf8)
+            from: Data(#"{"mode":"pull","salt":"42","recentSlot":"5000","authorizedSigner":"A","signature":"S"}"#.utf8)
         )
         #expect(fromString.salt == 42)
+        #expect(fromString.recentSlot == 5000)
         let fromNumber = try JSONDecoder().decode(
+            OpenPayload.self,
+            from: Data(#"{"mode":"pull","salt":42,"recentSlot":5000,"authorizedSigner":"A","signature":"S"}"#.utf8)
+        )
+        #expect(fromNumber.salt == 42)
+        #expect(fromNumber.recentSlot == 5000)
+        // Absent recentSlot decodes as nil (older peers).
+        let absent = try JSONDecoder().decode(
             OpenPayload.self,
             from: Data(#"{"mode":"pull","salt":42,"authorizedSigner":"A","signature":"S"}"#.utf8)
         )
-        #expect(fromNumber.salt == 42)
+        #expect(absent.recentSlot == nil)
     }
 
     @Test
@@ -121,11 +130,17 @@ struct SessionOpenerTests {
     private let operatorAddress = Base58.encode(Data(repeating: 0x05, count: 32))
     private let recipient = Base58.encode(Data(repeating: 0x06, count: 32))
     private let blockhash = Base58.encode(Data(repeating: 0x11, count: 32))
+    private let openSlot: UInt64 = 4321
 
-    private func request(modes: [SessionMode] = [.pull], strategy: SessionPullVoucherStrategy? = .clientVoucher) -> SessionRequest {
+    private func request(
+        modes: [SessionMode] = [.pull],
+        strategy: SessionPullVoucherStrategy? = .clientVoucher,
+        recentSlot: UInt64? = 4321
+    ) -> SessionRequest {
         SessionRequest(
             cap: "1000000", currency: "USDC", decimals: 6, network: "localnet",
-            operator: operatorAddress, recipient: recipient, modes: modes, pullVoucherStrategy: strategy
+            operator: operatorAddress, recipient: recipient, modes: modes, pullVoucherStrategy: strategy,
+            recentSlot: recentSlot
         )
     }
 
@@ -136,6 +151,7 @@ struct SessionOpenerTests {
 
     @Test
     func buildsPullClientVoucherOpenAction() async throws {
+        // The slot is challenge-sourced: the opener reads request.recentSlot.
         let (payer, sessionSigner) = try signers()
         let opener = try await PaymentChannelSession.open(
             request: request(), payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash
@@ -151,6 +167,10 @@ struct SessionOpenerTests {
         #expect(payload.authorizedSigner == sessionSigner.address)
         #expect(payload.signature == pendingServerSignature)
         #expect(payload.transaction != nil)
+        // The challenge slot threads from the opener into the wire payload's
+        // recentSlot (it is a PDA seed the server re-derives).
+        #expect(payload.recentSlot == openSlot)
+        #expect(opener.open.openSlot == openSlot)
         // localnet USDC resolves to the mainnet mint on the MPP charge path.
         #expect(opener.open.mint.base58 == Mints.usdcMainnet)
         #expect(opener.open.deposit == 1_000_000)
@@ -164,7 +184,8 @@ struct SessionOpenerTests {
         options.cumulative = 20
         options.expiresAt = 1234
         let opener = try await PaymentChannelSession.open(
-            request: request(), payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash, options: options
+            request: request(), payerSigner: payer, sessionSigner: sessionSigner,
+            recentBlockhash: blockhash, options: options
         )
         let voucher = try await opener.session.prepareIncrement(5)
         #expect(voucher.data.cumulative == "25")
@@ -193,6 +214,25 @@ struct SessionOpenerTests {
         }
     }
 
+    @Test
+    func rejectsChallengeWithoutRecentSlot() async throws {
+        // recentSlot carries the channel-PDA openSlot seed; without a
+        // challenge value or an explicit override the open cannot be derived.
+        let (payer, sessionSigner) = try signers()
+        await #expect(throws: PayKitError.self) {
+            _ = try await PaymentChannelSession.open(
+                request: request(recentSlot: nil),
+                payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash
+            )
+        }
+        // An explicit override rescues a challenge that omitted it.
+        let opener = try await PaymentChannelSession.open(
+            request: request(recentSlot: nil),
+            payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash, openSlot: openSlot
+        )
+        #expect(opener.open.openSlot == openSlot)
+    }
+
     /// The hand-rolled `open` instruction must place `rentPayer` (operator /
     /// fee payer) right after `payer` as a second writable signer, shifting
     /// every later account by +1 (14 accounts total). The on-chain open-tx
@@ -216,6 +256,7 @@ struct SessionOpenerTests {
             salt: 7,
             deposit: 1_000_000,
             gracePeriod: PaymentChannels.defaultGracePeriodSeconds,
+            openSlot: 4321,
             recipients: [],
             tokenProgram: tokenProgram,
             programId: PaymentChannels.programId

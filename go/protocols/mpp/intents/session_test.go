@@ -314,7 +314,7 @@ func TestOpenPayloadPullFields(t *testing.T) {
 }
 
 func TestOpenPayloadPaymentChannelAndTxHelpers(t *testing.T) {
-	p := OpenPayloadPaymentChannel("chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, "signer1", "txsig").
+	p := OpenPayloadPaymentChannel("chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 321_654_987, "signer1", "txsig").
 		WithTransaction("open-tx").
 		WithInitTx("init-tx").
 		WithUpdateTx("update-tx")
@@ -345,6 +345,9 @@ func TestOpenPayloadPaymentChannelAndTxHelpers(t *testing.T) {
 	if p.GracePeriod == nil || *p.GracePeriod != 45 {
 		t.Fatalf("gracePeriod: %v", p.GracePeriod)
 	}
+	if p.RecentSlot == nil || *p.RecentSlot != 321_654_987 {
+		t.Fatalf("recentSlot: %v", p.RecentSlot)
+	}
 	if p.Transaction == nil || *p.Transaction != "open-tx" {
 		t.Fatalf("transaction: %v", p.Transaction)
 	}
@@ -357,7 +360,7 @@ func TestOpenPayloadPaymentChannelAndTxHelpers(t *testing.T) {
 }
 
 func TestOpenPayloadPullPaymentChannelUsesChannelIDAndDeposit(t *testing.T) {
-	p := OpenPayloadPaymentChannelWithMode(SessionModePull, "chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, "signer1", "pending").
+	p := OpenPayloadPaymentChannelWithMode(SessionModePull, "chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 321_654_987, "signer1", "pending").
 		WithTransaction("open-tx")
 	if p.Mode != SessionModePull {
 		t.Fatalf("mode: %q", p.Mode)
@@ -488,7 +491,7 @@ func TestOpenPayloadPullRoundtripJSON(t *testing.T) {
 
 func TestOpenPayloadSaltSerializesAsStringAndAcceptsNumber(t *testing.T) {
 	const salt = ^uint64(0) - 7 // u64::MAX - 7
-	p := OpenPayloadPaymentChannel("chan1", "1000000", "payer1", "payee1", "mint1", salt, 900, "signer1", "txsig")
+	p := OpenPayloadPaymentChannel("chan1", "1000000", "payer1", "payee1", "mint1", salt, 900, 321_654_987, "signer1", "txsig")
 	data, err := json.Marshal(p)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -557,6 +560,83 @@ func TestOpenPayloadSaltNullAndAbsent(t *testing.T) {
 	}
 	if q.Salt != nil {
 		t.Fatalf("salt should be nil when absent, got %v", q.Salt)
+	}
+}
+
+func TestOpenPayloadRecentSlotSerializesAsStringAndAcceptsNumber(t *testing.T) {
+	p := OpenPayloadPaymentChannel("chan1", "1000000", "payer1", "payee1", "mint1", 1, 900, 321_654_987, "signer1", "txsig")
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `"recentSlot":"321654987"`
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("recentSlot not a decimal string: %s", data)
+	}
+	var back OpenPayload
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.RecentSlot == nil || *back.RecentSlot != 321_654_987 {
+		t.Fatalf("recentSlot roundtrip: %v", back.RecentSlot)
+	}
+
+	// A JSON number is accepted on decode, mirroring the salt adapter.
+	number := `{"mode":"push","channelId":"c","deposit":"1","recentSlot":321654987,"authorizedSigner":"s","signature":"sig"}`
+	var q OpenPayload
+	if err := json.Unmarshal([]byte(number), &q); err != nil {
+		t.Fatalf("unmarshal number: %v", err)
+	}
+	if q.RecentSlot == nil || *q.RecentSlot != 321_654_987 {
+		t.Fatalf("number recentSlot: %v", q.RecentSlot)
+	}
+
+	// Absent and null both decode to nil; invalid values are rejected.
+	absent := `{"mode":"push","channelId":"c","deposit":"1","authorizedSigner":"s","signature":"sig"}`
+	var r OpenPayload
+	if err := json.Unmarshal([]byte(absent), &r); err != nil {
+		t.Fatalf("unmarshal absent: %v", err)
+	}
+	if r.RecentSlot != nil {
+		t.Fatalf("recentSlot should be nil when absent, got %v", r.RecentSlot)
+	}
+	invalid := `{"mode":"push","channelId":"c","deposit":"1","recentSlot":true,"authorizedSigner":"s","signature":"sig"}`
+	if err := json.Unmarshal([]byte(invalid), &r); err == nil {
+		t.Fatal("expected invalid recentSlot error")
+	}
+}
+
+func TestSessionRequestRecentSlotSerializesAsStringAndAcceptsNumber(t *testing.T) {
+	recentSlot := U64String(^uint64(0) - 7)
+	request := SessionRequest{Cap: "1", Currency: "USDC", Operator: "op", Recipient: "rcpt", RecentSlot: &recentSlot}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `"recentSlot":"18446744073709551608"`
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("recentSlot not a decimal string: %s", data)
+	}
+	var back SessionRequest
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.RecentSlot == nil || uint64(*back.RecentSlot) != ^uint64(0)-7 {
+		t.Fatalf("recentSlot roundtrip: %v", back.RecentSlot)
+	}
+
+	// A JSON number decodes without precision loss, mirroring the salt adapter.
+	number := `{"cap":"1","currency":"USDC","operator":"op","recipient":"rcpt","recentSlot":321654987}`
+	var q SessionRequest
+	if err := json.Unmarshal([]byte(number), &q); err != nil {
+		t.Fatalf("unmarshal number: %v", err)
+	}
+	if q.RecentSlot == nil || uint64(*q.RecentSlot) != 321_654_987 {
+		t.Fatalf("number recentSlot: %v", q.RecentSlot)
+	}
+	invalid := `{"cap":"1","currency":"USDC","operator":"op","recipient":"rcpt","recentSlot":true}`
+	if err := json.Unmarshal([]byte(invalid), &q); err == nil {
+		t.Fatal("expected invalid recentSlot error")
 	}
 }
 
@@ -948,21 +1028,24 @@ func TestVoucherDataMessageBytesWithNonce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("messageBytes: %v", err)
 	}
-	if len(bytes) != 48 {
+	if len(bytes) != 50 {
 		t.Fatalf("len: %d", len(bytes))
 	}
+	if bytes[0] != 0x56 || bytes[1] != 0x01 {
+		t.Fatalf("magic prefix mismatch: %x", bytes[:2])
+	}
 	decoded, _ := base58.Decode(channelID)
-	if string(bytes[:32]) != string(decoded) {
-		t.Fatal("channelId prefix mismatch")
+	if string(bytes[2:34]) != string(decoded) {
+		t.Fatal("channelId after magic mismatch")
 	}
 	var cumWant [8]byte
 	binary.LittleEndian.PutUint64(cumWant[:], 1000)
-	if string(bytes[32:40]) != string(cumWant[:]) {
+	if string(bytes[34:42]) != string(cumWant[:]) {
 		t.Fatal("cumulative LE mismatch")
 	}
 	var expWant [8]byte
 	binary.LittleEndian.PutUint64(expWant[:], 42)
-	if string(bytes[40:48]) != string(expWant[:]) {
+	if string(bytes[42:50]) != string(expWant[:]) {
 		t.Fatal("expiresAt LE mismatch")
 	}
 }
@@ -977,7 +1060,7 @@ func TestVoucherDataMessageBytesWithoutNonce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("messageBytes: %v", err)
 	}
-	if len(bytes) != 48 {
+	if len(bytes) != 50 {
 		t.Fatalf("len: %d", len(bytes))
 	}
 }

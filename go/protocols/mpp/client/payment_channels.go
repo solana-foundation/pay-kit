@@ -6,6 +6,12 @@
 // grace period 900 seconds, random u64 salt, token program resolved from the
 // challenge currency (Token-2022 for PYUSD/USDG/CASH), and the
 // PendingServerSignature placeholder while the operator broadcasts.
+//
+// The channel open_slot (a channel PDA seed and an open arg) comes from the
+// challenge: the server pre-fetches the current slot into
+// SessionRequest.RecentSlot alongside recentBlockhash, and the client echoes
+// it in the open payload recentSlot. Clients never fetch the slot via RPC;
+// the program rejects future slots and slots older than the 1500-slot window.
 package client
 
 import (
@@ -35,7 +41,7 @@ const PendingServerSignature = "111111111111111111111111111111111111111111111111
 // parameter resolved from the challenge plus the resulting channel PDA.
 type PaymentChannelOpen struct {
 	// ChannelID is the channel PDA derived from payer, payee, mint,
-	// authorized signer, and salt against ProgramID.
+	// authorized signer, salt, and openSlot against ProgramID.
 	ChannelID solana.PublicKey
 
 	// Payer is the wallet that funds the escrow deposit.
@@ -60,6 +66,11 @@ type PaymentChannelOpen struct {
 
 	// Salt is the random u64 that makes the channel PDA unique per open.
 	Salt uint64
+
+	// OpenSlot is the channel open_slot resolved from the challenge (or an
+	// explicit override); a channel PDA seed and an open arg, making the
+	// address per-incarnation.
+	OpenSlot uint64
 
 	// Deposit is the escrow deposit in token base units; it defaults to the
 	// challenge cap.
@@ -90,6 +101,7 @@ func (o PaymentChannelOpen) OpenChannelParams() paymentchannels.OpenChannelParam
 		AuthorizedSigner: o.AuthorizedSigner,
 		RentPayer:        o.RentPayer,
 		Salt:             o.Salt,
+		OpenSlot:         o.OpenSlot,
 		Deposit:          o.Deposit,
 		GracePeriod:      o.GracePeriod,
 		Recipients:       o.Recipients,
@@ -110,6 +122,7 @@ func (o PaymentChannelOpen) OpenPayload(mode intents.SessionMode, signature stri
 		o.Mint.String(),
 		o.Salt,
 		o.GracePeriod,
+		o.OpenSlot,
 		o.AuthorizedSigner.String(),
 		signature,
 	)
@@ -136,6 +149,10 @@ type PaymentChannelOpenOptions struct {
 	// DefaultGracePeriodSeconds.
 	GracePeriod *uint32
 
+	// OpenSlot overrides the channel open_slot. Defaults to the challenge
+	// recentSlot (the slot the server pre-fetched alongside recentBlockhash).
+	OpenSlot *uint64
+
 	// ProgramID overrides the payment-channels program. Defaults to the
 	// challenge programId, falling back to the canonical program.
 	ProgramID *solana.PublicKey
@@ -156,11 +173,20 @@ type PaymentChannelOpenOptions struct {
 // challenge: mint and token program from the currency, payee from the
 // recipient, deposit from the cap, splits, program id, grace period 900s, and
 // a random salt, then derives the channel PDA.
+//
+// The channel open_slot comes from the challenge (SessionRequest.RecentSlot,
+// pre-fetched by the server alongside recentBlockhash) unless overridden via
+// options; a challenge without one is rejected, since a wrong open_slot would
+// derive a channel address the program rejects at open.
 func DerivePaymentChannelOpen(
 	request intents.SessionRequest,
 	payer, authorizedSigner solana.PublicKey,
 	options PaymentChannelOpenOptions,
 ) (PaymentChannelOpen, error) {
+	openSlot, err := resolveChallengeRecentSlot(request, options.OpenSlot)
+	if err != nil {
+		return PaymentChannelOpen{}, err
+	}
 	network := ""
 	if request.Network != nil {
 		network = *request.Network
@@ -239,7 +265,7 @@ func DerivePaymentChannelOpen(
 	}
 
 	channelID, _, err := paymentchannels.FindChannelPDAForProgram(
-		payer, payee, mint, authorizedSigner, salt, programID)
+		payer, payee, mint, authorizedSigner, salt, openSlot, programID)
 	if err != nil {
 		return PaymentChannelOpen{}, err
 	}
@@ -252,6 +278,7 @@ func DerivePaymentChannelOpen(
 		AuthorizedSigner: authorizedSigner,
 		RentPayer:        rentPayer,
 		Salt:             salt,
+		OpenSlot:         openSlot,
 		Deposit:          deposit,
 		GracePeriod:      gracePeriod,
 		Recipients:       recipients,
@@ -280,7 +307,9 @@ type BuildOpenPaymentChannelTransactionParams struct {
 	// Empty echoes the challenge recentBlockhash.
 	RecentBlockhash string
 
-	// Options overrides the challenge-derived open defaults.
+	// Options overrides the challenge-derived open defaults. The channel
+	// open_slot defaults to the challenge recentSlot; Options.OpenSlot
+	// overrides it.
 	Options PaymentChannelOpenOptions
 }
 
@@ -370,7 +399,8 @@ type ServerOpenedPaymentChannelSessionOpenOptions struct {
 // CreatePaymentChannelSessionOpener derives a pull/clientVoucher channel open
 // from the challenge, builds the payer-signed open transaction against the
 // challenge recentBlockhash, and returns the active session plus the open
-// action carrying the transaction for the operator to broadcast.
+// action carrying the transaction for the operator to broadcast. The channel
+// open_slot comes from the challenge recentSlot (see DerivePaymentChannelOpen).
 func CreatePaymentChannelSessionOpener(
 	request intents.SessionRequest,
 	payerSigner solanatx.Signer,
@@ -412,7 +442,8 @@ func CreatePaymentChannelSessionOpener(
 // CreateServerOpenedPaymentChannelSessionOpener derives a pull/clientVoucher
 // channel open the operator funds and broadcasts entirely server-side: no
 // transaction is attached and the signature defaults to
-// PendingServerSignature.
+// PendingServerSignature. The channel open_slot comes from the challenge
+// recentSlot (see DerivePaymentChannelOpen).
 func CreateServerOpenedPaymentChannelSessionOpener(
 	request intents.SessionRequest,
 	sessionSigner VoucherSigner,
@@ -532,6 +563,20 @@ func newConfiguredSession(
 		expiry = *expiresAt
 	}
 	return NewActiveSessionWithWatermark(channelID, signer, watermark, expiry)
+}
+
+// resolveChallengeRecentSlot resolves the channel open_slot: an explicit
+// override wins, otherwise the challenge recentSlot (the slot the server
+// pre-fetched alongside recentBlockhash) is used. A challenge without one is
+// rejected — clients never fetch the slot themselves.
+func resolveChallengeRecentSlot(request intents.SessionRequest, override *uint64) (uint64, error) {
+	if override != nil {
+		return *override, nil
+	}
+	if request.RecentSlot != nil {
+		return uint64(*request.RecentSlot), nil
+	}
+	return 0, fmt.Errorf("session open requires an open slot: none provided and the challenge omits recentSlot")
 }
 
 // resolveChallengeBlockhash parses the explicit blockhash, falling back to the
