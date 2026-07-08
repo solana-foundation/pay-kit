@@ -2384,9 +2384,7 @@ class TestAuditSplitIssuanceGuards:
     def test_rejects_invalid_split_recipient_at_issuance(self):
         mpp = self._mpp()
         with pytest.raises(PaymentError, match="not a valid pubkey"):
-            mpp.charge_with_options(
-                "1.00", ChargeOptions(splits=[{"recipient": "bogus", "amount": "1000"}])
-            )
+            mpp.charge_with_options("1.00", ChargeOptions(splits=[{"recipient": "bogus", "amount": "1000"}]))
 
     def test_rejects_duplicate_split_recipient_at_issuance(self):
         mpp = self._mpp()
@@ -2403,9 +2401,7 @@ class TestAuditSplitIssuanceGuards:
         with pytest.raises(PaymentError, match="primary recipient"):
             mpp.charge_with_options(
                 "1.00",
-                ChargeOptions(
-                    splits=[{"recipient": TEST_RECIPIENT, "amount": "1000", "ataCreationRequired": True}]
-                ),
+                ChargeOptions(splits=[{"recipient": TEST_RECIPIENT, "amount": "1000", "ataCreationRequired": True}]),
             )
 
     def test_allows_primary_recipient_split_without_ata_creation(self):

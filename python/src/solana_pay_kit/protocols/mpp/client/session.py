@@ -312,13 +312,17 @@ class ActiveSession:
         mint: str,
         salt: int,
         grace_period: int,
+        recent_slot: int,
         open_tx_signature: str,
     ) -> SessionAction:
         """Build a payment-channel push open action carrying the full channel
         parameters.
+
+        ``recent_slot`` is the challenge-provided slot the channel was derived
+        and opened at (the channel ``openSlot``, a channel PDA seed).
         """
         return self.open_payment_channel_action_with_mode(
-            "push", deposit, payer, payee, mint, salt, grace_period, open_tx_signature
+            "push", deposit, payer, payee, mint, salt, grace_period, recent_slot, open_tx_signature
         )
 
     def open_payment_channel_action_with_mode(
@@ -330,6 +334,7 @@ class ActiveSession:
         mint: str,
         salt: int,
         grace_period: int,
+        recent_slot: int,
         open_tx_signature: str,
     ) -> SessionAction:
         """Build a payment-channel open action with an explicit submission mode."""
@@ -343,6 +348,7 @@ class ActiveSession:
                 mint,
                 salt,
                 grace_period,
+                recent_slot,
                 self.authorized_signer,
                 open_tx_signature,
             )

@@ -4,14 +4,14 @@ import java.io.ByteArrayOutputStream
 import java.util.Base64
 
 /**
- * Client-side payment-channels primitives: PDA/ATA derivation, the 48-byte
- * voucher preimage, and the `open` instruction + payer-signed (operator-fee-
- * payer-unsigned) open transaction the session client broadcasts via the
- * operator.
+ * Client-side payment-channels primitives: PDA/ATA derivation, the 50-byte
+ * magic-prefixed voucher preimage, and the `open` instruction + payer-signed
+ * (operator-fee-payer-unsigned) open transaction the session client broadcasts
+ * via the operator.
  *
  * Mirrors the client-facing subset of `solana_pay_core::payment_channels`
  * (`rust/crates/core/src/payment_channels.rs`). The server-only primitives
- * (ed25519 verify precompile, settle/finalize/distribute, the BLAKE3
+ * (ed25519 verify precompile, settle/seal/distribute/reclaim, the SHA-256
  * distribution hash) are intentionally omitted: this SDK is client-only and the
  * channel `open` passes its recipients inline rather than hashed.
  */
@@ -29,6 +29,9 @@ object PaymentChannels {
     private val CHANNEL_SEED = "channel".encodeToByteArray()
     private val EVENT_AUTHORITY_SEED = "event_authority".encodeToByteArray()
 
+    /** Constant 2-byte magic prefixed to every signed voucher payload. */
+    private val VOUCHER_MAGIC = byteArrayOf(0x56, 0x01)
+
     /** A recipient split: `bps` basis points of the settled balance. */
     data class Distribution(val recipient: PublicKey, val bps: Int) {
         init {
@@ -41,8 +44,8 @@ object PaymentChannels {
         val payer: PublicKey,
         /**
          * The rent payer / operator (transaction fee payer). Funds the channel
-         * PDA + escrow-ATA rent at open and reclaims it at finalize; pinned to
-         * the operator pubkey that co-signs the open as fee payer.
+         * PDA + escrow-ATA rent at open and recovers it at distribute/reclaim;
+         * pinned to the operator pubkey that co-signs the open as fee payer.
          */
         val rentPayer: PublicKey,
         val payee: PublicKey,
@@ -51,6 +54,12 @@ object PaymentChannels {
         val salt: ULong,
         val deposit: ULong,
         val gracePeriod: UInt,
+        /**
+         * The current slot at open time (server-prefetched in the 402
+         * challenge), mixed into the channel PDA seeds. The program rejects
+         * future slots and slots older than the 1500-slot open window.
+         */
+        val openSlot: ULong,
         val recipients: List<Distribution>,
         val tokenProgram: PublicKey,
         val programId: PublicKey,
@@ -62,16 +71,17 @@ object PaymentChannels {
     // ── Voucher preimage ──
 
     /**
-     * The 48-byte Ed25519 voucher preimage:
-     * `channelId(32) || cumulativeAmount(u64 LE) || expiresAt(i64 LE)`.
+     * The 50-byte Ed25519 voucher preimage:
+     * `magic[0x56, 0x01](2) || channelId(32) || cumulativeAmount(u64 LE) || expiresAt(i64 LE)`.
      */
     fun voucherMessageBytes(channelId: String, cumulative: ULong, expiresAt: Long): ByteArray {
         val channel = PublicKey.fromBase58(channelId)
-        val out = ByteArray(48)
-        System.arraycopy(channel.bytes, 0, out, 0, 32)
-        System.arraycopy(u64Le(cumulative), 0, out, 32, 8)
+        val out = ByteArray(50)
+        System.arraycopy(VOUCHER_MAGIC, 0, out, 0, 2)
+        System.arraycopy(channel.bytes, 0, out, 2, 32)
+        System.arraycopy(u64Le(cumulative), 0, out, 34, 8)
         // i64 little-endian shares the two's-complement bit pattern of u64 LE.
-        System.arraycopy(u64Le(expiresAt.toULong()), 0, out, 40, 8)
+        System.arraycopy(u64Le(expiresAt.toULong()), 0, out, 42, 8)
         return out
     }
 
@@ -83,6 +93,7 @@ object PaymentChannels {
         mint: PublicKey,
         authorizedSigner: PublicKey,
         salt: ULong,
+        openSlot: ULong,
         programId: PublicKey,
     ): PublicKey {
         val seeds = listOf(
@@ -92,6 +103,7 @@ object PaymentChannels {
             mint.bytes,
             authorizedSigner.bytes,
             u64Le(salt),
+            u64Le(openSlot),
         )
         return Pda.findProgramAddress(seeds, programId).first
     }
@@ -111,7 +123,8 @@ object PaymentChannels {
 
     fun buildOpenInstruction(params: OpenChannelParams): Instruction {
         val channel = findChannelPda(
-            params.payer, params.payee, params.mint, params.authorizedSigner, params.salt, params.programId
+            params.payer, params.payee, params.mint, params.authorizedSigner, params.salt, params.openSlot,
+            params.programId
         )
         val payerTokenAccount = Pda.associatedTokenAddress(params.payer, params.mint, params.tokenProgram)
         val channelTokenAccount = Pda.associatedTokenAddress(channel, params.mint, params.tokenProgram)
@@ -136,12 +149,13 @@ object PaymentChannels {
             AccountMeta.readOnly(params.programId.toBase58()),
         )
 
-        // data = discriminator(1) || borsh(OpenArgs { salt, deposit, gracePeriod, recipients }).
+        // data = discriminator(1) || borsh(OpenArgs { salt, deposit, gracePeriod, openSlot, recipients }).
         val data = ByteArrayOutputStream()
         data.write(byteArrayOf(OPEN_DISCRIMINATOR))
         data.write(u64Le(params.salt))
         data.write(u64Le(params.deposit))
         data.write(u32Le(params.gracePeriod))
+        data.write(u64Le(params.openSlot))
         data.write(u32Le(params.recipients.size.toUInt()))
         for (entry in params.recipients) {
             data.write(entry.recipient.bytes)
@@ -154,7 +168,8 @@ object PaymentChannels {
     /**
      * Build a payer-signed (fee-payer-unsigned) channel `open` transaction. The
      * `payer` signs to authorize the deposit; the `feePayer` (operator) slot is
-     * left empty for the server to co-sign before broadcast.
+     * left empty for the server to co-sign before broadcast. `openSlot` is the
+     * current slot the server prefetched into the 402 challenge.
      */
     fun buildOpenTransaction(
         payer: SolanaSigner,
@@ -164,6 +179,7 @@ object PaymentChannels {
         salt: ULong,
         deposit: ULong,
         gracePeriod: UInt,
+        openSlot: ULong,
         recipients: List<Distribution>,
         tokenProgram: PublicKey,
         programId: PublicKey,
@@ -173,10 +189,10 @@ object PaymentChannels {
         val payerPubkey = PublicKey(payer.publicKeyBytes)
         val params = OpenChannelParams(
             payer = payerPubkey, rentPayer = feePayer, payee = payee, mint = mint, authorizedSigner = authorizedSigner,
-            salt = salt, deposit = deposit, gracePeriod = gracePeriod, recipients = recipients,
+            salt = salt, deposit = deposit, gracePeriod = gracePeriod, openSlot = openSlot, recipients = recipients,
             tokenProgram = tokenProgram, programId = programId,
         )
-        val channelId = findChannelPda(payerPubkey, payee, mint, authorizedSigner, salt, programId)
+        val channelId = findChannelPda(payerPubkey, payee, mint, authorizedSigner, salt, openSlot, programId)
         val instruction = buildOpenInstruction(params)
         val message = Transaction.buildLegacyMessage(feePayer, recentBlockhash, listOf(instruction))
         val signature = payer.sign(message.serialize())

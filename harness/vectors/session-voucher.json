@@ -3,7 +3,7 @@
     "id": "session-voucher-preimage-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "48-byte Ed25519 voucher preimage channelId(32)||cumulative LE u64||expiresAt LE i64. Frozen cross-SDK vector (matches the rust/Go/Python unit vectors). Pins the single most load-bearing session invariant byte-for-byte.",
+    "description": "50-byte Ed25519 voucher preimage magic(0x56,0x01)||channelId(32)||cumulative LE u64||expiresAt LE i64. Frozen cross-SDK vector (matches the rust/Go/Python unit vectors). Pins the single most load-bearing session invariant byte-for-byte.",
     "input": {
       "voucherPreimage": {
         "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
@@ -14,8 +14,8 @@
     "expect": {
       "outcome": "accept",
       "exactBytes": {
-        "bytes": [9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,42,0,0,0,0,0,0,0,210,4,0,0,0,0,0,0],
-        "base64Url": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkqAAAAAAAAANIEAAAAAAAA"
+        "bytes": [86,1,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,42,0,0,0,0,0,0,0,210,4,0,0,0,0,0,0],
+        "base64Url": "VgEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCSoAAAAAAAAA0gQAAAAAAAA"
       }
     }
   },
@@ -34,7 +34,7 @@
     "expect": {
       "outcome": "accept",
       "exactBytes": {
-        "bytes": [9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,247,255,255,255,255,255,255,255,0,87,134,244,0,0,0,0]
+        "bytes": [86,1,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,247,255,255,255,255,255,255,255,0,87,134,244,0,0,0,0]
       }
     }
   }

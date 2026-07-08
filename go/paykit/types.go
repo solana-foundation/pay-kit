@@ -260,6 +260,14 @@ type Config struct {
 	// x402 adapter then calls Config.RPCURL's getLatestBlockhash at
 	// challenge-build time (caveat #5).
 	RecentBlockhashProvider func() (string, error)
+
+	// RecentSlotProvider lets tests inject a stub current slot (the upto
+	// challenge's extra.recentSlot, used as the channel open_slot) so the
+	// kit never touches the wire. Production callers leave it nil; the
+	// x402 adapter then reads the slot from the same getLatestBlockhash
+	// response that supplies the blockhash. Required when
+	// RecentBlockhashProvider is set.
+	RecentSlotProvider func() (uint64, error)
 }
 
 // Payment is the verified proof attached to the request context after

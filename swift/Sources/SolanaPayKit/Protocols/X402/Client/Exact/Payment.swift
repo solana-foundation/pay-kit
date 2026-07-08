@@ -273,15 +273,15 @@ private func _buildPaymentPayload(
     nonceGenerator: (() -> Data)? = nil
 ) async throws -> X402PaymentPayload {
     guard let amountStr = offer.effectiveAmount, let amount = UInt64(amountStr) else {
-        throw MppError.invalidTransaction(
+        throw PayKitError.invalidTransaction(
             "x402 offer has missing or invalid amount: \(offer.effectiveAmount ?? "nil")"
         )
     }
     guard let payToStr = offer.effectivePayTo, !payToStr.isEmpty else {
-        throw MppError.invalidTransaction("x402 offer is missing payTo / recipient")
+        throw PayKitError.invalidTransaction("x402 offer is missing payTo / recipient")
     }
     guard let assetStr = offer.effectiveAsset, !assetStr.isEmpty else {
-        throw MppError.invalidTransaction("x402 offer is missing asset")
+        throw PayKitError.invalidTransaction("x402 offer is missing asset")
     }
 
     let signerPubkey = try Pubkey(bytes: signer.publicKey)
@@ -351,7 +351,7 @@ private func _buildPaymentPayload(
     if let bhStr = offer.effectiveRecentBlockhash {
         let decoded = try Base58.decode(bhStr)
         guard decoded.count == 32 else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "x402 recentBlockhash decodes to \(decoded.count) bytes, expected 32"
             )
         }
@@ -371,17 +371,17 @@ private func _buildPaymentPayload(
     let messageBytes = message.serialize()
     let signature = try await signer.sign(message: messageBytes)
     guard signature.count == 64 else {
-        throw MppError.signingFailure("signer returned \(signature.count) bytes, expected 64")
+        throw PayKitError.signingFailure("signer returned \(signature.count) bytes, expected 64")
     }
 
     var signatures = SignedTransaction.emptySignatureSlots(
         count: Int(message.header.numRequiredSignatures)
     )
     guard let signerIndex = message.accountKeys.firstIndex(of: signerPubkey) else {
-        throw MppError.signingFailure("signer pubkey not found in transaction accounts")
+        throw PayKitError.signingFailure("signer pubkey not found in transaction accounts")
     }
     guard signerIndex < signatures.count else {
-        throw MppError.signingFailure(
+        throw PayKitError.signingFailure(
             "signer index \(signerIndex) exceeds required signature count"
         )
     }
@@ -427,7 +427,7 @@ private func _appendX402Memo(
     }
     let memoBytes = Data(memoText.utf8)
     guard memoBytes.count <= X402MemoMaxBytes else {
-        throw MppError.invalidTransaction(
+        throw PayKitError.invalidTransaction(
             "x402 memo exceeds \(X402MemoMaxBytes) bytes"
         )
     }

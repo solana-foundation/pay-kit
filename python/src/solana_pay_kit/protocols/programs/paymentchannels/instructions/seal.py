@@ -10,11 +10,11 @@ from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey as SolPubkey
 from ..program_id import PAYMENT_CHANNELS_PROGRAM_ADDRESS
 
-class FinalizeAccounts(typing.TypedDict):
+class SealAccounts(typing.TypedDict):
     channel:SolPubkey
 
-def Finalize(
-    accounts: FinalizeAccounts,
+def Seal(
+    accounts: SealAccounts,
     program_id: SolPubkey =  PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     remaining_accounts: typing.Optional[typing.List[AccountMeta]] = None,
 ) ->Instruction:

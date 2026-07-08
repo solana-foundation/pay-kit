@@ -23,8 +23,8 @@ from . import payoutRedirected
 from .payoutRedirected import PayoutRedirectedJSON,PayoutRedirected;
 from . import redirectReason
 from .redirectReason import RedirectReasonJSON,RedirectReasonKind;
-from . import settleAndFinalizeArgs
-from .settleAndFinalizeArgs import SettleAndFinalizeArgsJSON,SettleAndFinalizeArgs;
+from . import settleAndSealArgs
+from .settleAndSealArgs import SettleAndSealArgsJSON,SettleAndSealArgs;
 from . import settlementWatermarks
 from .settlementWatermarks import SettlementWatermarksJSON,SettlementWatermarks;
 from . import topUpArgs

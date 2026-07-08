@@ -23,6 +23,7 @@ use num_derive::FromPrimitive;
 )]
 pub enum ChannelStatus {
     Open,
-    Finalized,
+    Sealed,
     Closing,
+    Distributed,
 }

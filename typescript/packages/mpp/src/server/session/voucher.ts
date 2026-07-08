@@ -21,7 +21,7 @@ import type { ChannelState } from './store.js';
 export type VoucherRejectReason =
     | 'below-min-delta'
     | 'channel-close-pending'
-    | 'channel-finalized'
+    | 'channel-sealed'
     | 'cumulative-not-monotonic'
     | 'exceeds-deposit'
     | 'expired'
@@ -78,7 +78,7 @@ export interface VerifyVoucherArgs {
      * `gracePeriod` captured at open). When set, a *non-zero* voucher
      * `expiresAt` must outlast the settlement window — i.e. it must still
      * be valid `settlementWindow` seconds from now, so the merchant can
-     * land an async settle_and_finalize before the voucher expires.
+     * land an async settle_and_seal before the voucher expires.
      * A voucher with `expiresAt == 0` never expires and is unaffected.
      * Defaults to 0 (window check disabled — only `expiresAt <= now` is
      * rejected for non-zero expiries).
@@ -113,9 +113,9 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
         return reject('invalid-cumulative', errorMessage(error));
     }
 
-    // 2. Channel must not be finalized
-    if (state.finalized) {
-        return reject('channel-finalized', `Channel ${state.channelId} is already finalized`);
+    // 2. Channel must not be sealed
+    if (state.sealed) {
+        return reject('channel-sealed', `Channel ${state.channelId} is already sealed`);
     }
 
     // 3. Channel must not be in close-pending
@@ -157,7 +157,7 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
         return reject('below-min-delta', `Voucher delta ${delta} is below minimum ${minDelta}`);
     }
 
-    // 8. Verify signature (Ed25519 over the 48-byte canonical payload)
+    // 8. Verify signature (Ed25519 over the 50-byte canonical payload)
     const sigCheck = await safeVerifySignature(signed, state.authorizedSigner);
     if (!sigCheck.ok) return sigCheck.reject;
 

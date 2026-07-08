@@ -58,6 +58,7 @@ async function buildClientOpen(payer: KeyPairSigner, payee: KeyPairSigner, autho
         network: 'localnet',
         operator: payer.address,
         recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+        recentSlot: '4242',
         recipient: payee.address,
     };
     const open = await buildOpenPaymentChannelTransaction({
@@ -142,6 +143,7 @@ describe('verifyOpenTx signature binding', () => {
                 network: 'localnet',
                 operator: payer.address,
                 recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+                recentSlot: '4242',
                 recipient: payee.address,
             },
             salt: 8n,

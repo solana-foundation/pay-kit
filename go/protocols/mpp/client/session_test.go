@@ -346,7 +346,7 @@ func TestVoucherChannelIDMatchesSession(t *testing.T) {
 }
 
 // TestVoucherSignatureVerifies signs an increment and confirms the base58
-// signature verifies against the authorizedSigner pubkey over the exact 48-byte
+// signature verifies against the authorizedSigner pubkey over the exact 50-byte
 // VoucherMessageBytes preimage.
 func TestVoucherSignatureVerifies(t *testing.T) {
 	channel := testutil.NewPrivateKey().PublicKey()
@@ -362,8 +362,8 @@ func TestVoucherSignatureVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("voucher message bytes: %v", err)
 	}
-	if len(preimage) != 48 {
-		t.Fatalf("preimage length = %d, want 48", len(preimage))
+	if len(preimage) != 50 {
+		t.Fatalf("preimage length = %d, want 50", len(preimage))
 	}
 
 	sig, err := solana.SignatureFromBase58(v.Signature)
@@ -426,7 +426,7 @@ func TestOpenActionFields(t *testing.T) {
 func TestOpenPaymentChannelActionFields(t *testing.T) {
 	s, _ := newSession(t)
 	channelID := s.ChannelIDString()
-	action := s.OpenPaymentChannelAction(9_000, "payer", "payee", "mint", 42, 60, "open-sig")
+	action := s.OpenPaymentChannelAction(9_000, "payer", "payee", "mint", 42, 60, 321_654_987, "open-sig")
 	if action.Open == nil {
 		t.Fatal("expected an Open action")
 	}
@@ -455,6 +455,9 @@ func TestOpenPaymentChannelActionFields(t *testing.T) {
 	if p.GracePeriod == nil || *p.GracePeriod != 60 {
 		t.Fatalf("gracePeriod = %v, want 60", p.GracePeriod)
 	}
+	if p.RecentSlot == nil || *p.RecentSlot != 321_654_987 {
+		t.Fatalf("recentSlot = %v, want 321654987", p.RecentSlot)
+	}
 	if p.Signature != "open-sig" {
 		t.Fatalf("signature = %q, want open-sig", p.Signature)
 	}
@@ -464,7 +467,7 @@ func TestOpenPaymentChannelActionPullMode(t *testing.T) {
 	s, _ := newSession(t)
 	channelID := s.ChannelIDString()
 	action := s.OpenPaymentChannelActionWithMode(
-		intents.SessionModePull, 9_000, "payer", "payee", "mint", 42, 60, "pending")
+		intents.SessionModePull, 9_000, "payer", "payee", "mint", 42, 60, 321_654_987, "pending")
 	if action.Open == nil {
 		t.Fatal("expected an Open action")
 	}

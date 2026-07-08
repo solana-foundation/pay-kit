@@ -150,10 +150,14 @@ def test_build_challenge_request_advertises_pull_mode_and_strategy() -> None:
 async def test_process_open_stores_state() -> None:
     """Mirrors TestProcessOpenStoresState."""
     server = new_session_test_server(session_test_config())
-    state = await server.process_open(session_open_payload("chan1", 1_000_000, "signer1"))
+    payload = session_open_payload("chan1", 1_000_000, "signer1")
+    payload.recent_slot = 777
+    state = await server.process_open(payload)
     assert state.deposit == 1_000_000
     assert state.cumulative == 0
-    assert not state.finalized
+    assert not state.sealed
+    # The payload recentSlot is persisted as the channel openSlot (a PDA seed).
+    assert state.open_slot == 777
     assert state.authorized_signer == "signer1"
 
 
@@ -175,7 +179,7 @@ async def test_process_open_rejects_unadvertised_pull_mode() -> None:
     """Mirrors TestProcessOpenRejectsUnadvertisedPullMode."""
     server = new_session_test_server(session_test_config())
     payload = OpenPayload.payment_channel_with_mode(
-        "pull", "chan1", "1000000", "payer", SESSION_TEST_RECIPIENT, "mint", 1, 900, "signer1", "pending"
+        "pull", "chan1", "1000000", "payer", SESSION_TEST_RECIPIENT, "mint", 1, 900, 777, "signer1", "pending"
     )
     with pytest.raises(ValueError, match="not supported"):
         await server.process_open(payload)
@@ -188,7 +192,7 @@ async def test_process_open_accepts_advertised_pull_client_voucher_channel() -> 
     config.pull_voucher_strategy = "clientVoucher"
     server = new_session_test_server(config)
     payload = OpenPayload.payment_channel_with_mode(
-        "pull", "chan1", "1000000", "payer", SESSION_TEST_RECIPIENT, "mint", 1, 900, "signer1", "pending"
+        "pull", "chan1", "1000000", "payer", SESSION_TEST_RECIPIENT, "mint", 1, 900, 777, "signer1", "pending"
     )
     state = await server.process_open(payload)
     assert state.channel_id == "chan1"
@@ -233,13 +237,13 @@ async def test_process_open_replay_with_different_signer_rejected() -> None:
         await server.process_open(session_open_payload(channel_id, 1_000_000, other.address()))
 
 
-async def test_process_open_replay_on_finalized_channel_rejected() -> None:
+async def test_process_open_replay_on_sealed_channel_rejected() -> None:
     """Mirrors TestProcessOpenReplayOnFinalizedChannelRejected."""
     server = new_session_test_server(session_test_config())
     signer, channel_id = await _open_test_channel(server, 1_000_000)
 
-    await server.mark_finalized(channel_id)
-    with pytest.raises(ValueError, match="finalized"):
+    await server.mark_sealed(channel_id)
+    with pytest.raises(ValueError, match="sealed"):
         await server.process_open(session_open_payload(channel_id, 1_000_000, signer.address()))
 
 
@@ -429,7 +433,7 @@ async def test_process_top_up_rejects_over_max_cap() -> None:
         await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="20000000", signature="sig"))
 
 
-async def test_process_top_up_rejects_when_finalized_or_close_pending() -> None:
+async def test_process_top_up_rejects_when_sealed_or_close_pending() -> None:
     """Mirrors TestProcessTopUpRejectsWhenFinalizedOrClosePending."""
     server = new_session_test_server(session_test_config())
     _, channel_id = await _open_test_channel(server, 1_000_000)
@@ -439,8 +443,8 @@ async def test_process_top_up_rejects_when_finalized_or_close_pending() -> None:
 
     server2 = new_session_test_server(session_test_config())
     _, channel_id2 = await _open_test_channel(server2, 1_000_000)
-    await server2.mark_finalized(channel_id2)
-    with pytest.raises(ValueError, match="finalized"):
+    await server2.mark_sealed(channel_id2)
+    with pytest.raises(ValueError, match="sealed"):
         await server2.process_top_up(TopUpPayload(channel_id=channel_id2, new_deposit="2000000", signature="sig"))
 
 

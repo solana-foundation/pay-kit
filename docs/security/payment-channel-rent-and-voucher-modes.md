@@ -6,7 +6,7 @@ open is built, validated, or settled.
 
 | Account slot | Role | Recorded as | Enforced at |
 |---|---|---|---|
-| `[1] rentPayer` | Funds the channel PDA + escrow-ATA rent and co-signs as the transaction fee payer. | `channel.rent_payer` | Must be supplied (matching the recorded value) at `distribute`/`finalize` to receive the rent refund. |
+| `[1] rentPayer` | Funds the channel PDA + escrow-ATA rent and co-signs as the transaction fee payer. | `channel.rent_payer` | Must be supplied (matching the recorded value) at `distribute`/`seal` — and at `reclaim` when `distribute` runs before the reclaim gate (`clock.slot > open_slot + 1500`) unlocks — to receive the rent refund. |
 | `[4] authorizedSigner` | The key whose Ed25519 signatures authorize the channel's cumulative vouchers. | `channel.authorized_signer` | Vouchers must be signed by this key. |
 
 These are **orthogonal**. Two axes produce four combinations:
@@ -59,7 +59,15 @@ passed/validated independently so a future non-gasless (self-pay) mode can pin
 
 ## Settlement
 
-`distribute`/`finalize` must supply the channel's **recorded** `rentPayer` (the
+`distribute`/`seal` must supply the channel's **recorded** `rentPayer` (the
 funder). While gasless that is the operator; under self-pay it would be the
 payer — so prefer reading `channel.rent_payer` from on-chain state over assuming
 the operator, to stay correct across all four combos.
+
+Since the epoch-addressed program update, rent recovery is two-phase when
+`distribute` lands before the reclaim gate opens: `distribute` pays the token
+legs and closes the escrow ATA, leaving the channel PDA in status
+`distributed`; a permissionless `reclaim` (channel + the recorded `rentPayer`,
+after `clock.slot > open_slot + 1500`) then deallocates the PDA and returns its
+lamports to `rent_payer`. Settlement workers that previously treated
+`distribute` as terminal should queue a `reclaim` for full rent recovery.

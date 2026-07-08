@@ -57,6 +57,13 @@ pub struct UptoExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_valid_block_height: Option<String>,
 
+    /// Server-prefetched current slot (decimal string), analogous to
+    /// `recentBlockhash`. Feeds the program's `openSlot` — a channel-PDA seed;
+    /// the program rejects opens whose slot falls outside its window, so
+    /// clients MUST use this hint rather than fetch their own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent_slot: Option<String>,
+
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<i64>,
@@ -241,6 +248,7 @@ mod tests {
                 channel_program: None,
                 recent_blockhash: None,
                 last_valid_block_height: None,
+                recent_slot: None,
                 valid_after: None,
             },
         }

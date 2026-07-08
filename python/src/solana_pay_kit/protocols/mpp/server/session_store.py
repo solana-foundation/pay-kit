@@ -131,8 +131,14 @@ class ChannelState:
     # settled watermark).
     cumulative: int = 0
 
-    # Finalized is true once the channel has been finalized on-chain.
-    finalized: bool = False
+    # Sealed is true once the channel has been sealed on-chain.
+    sealed: bool = False
+
+    # OpenSlot is the slot the channel was opened at (push sessions). A channel
+    # PDA seed since the epoch-addressed program update, so it is persisted to
+    # re-derive the channel address and to reclaim the channel rent after
+    # distribution. Zero when unknown (e.g. pull sessions or trusted opens).
+    open_slot: int = 0
 
     # HighestVoucherSignature is the signature of the highest accepted voucher
     # (base58). Stored for idempotent replay detection.
@@ -157,9 +163,9 @@ class ChannelState:
 
     # Settling is an in-flight guard set atomically (under the per-channel
     # store lock) before the settle broadcast starts, so a concurrent close
-    # retry or idle-watchdog fire cannot both pass the finalize check and
-    # broadcast duplicate settle transactions. Cleared by the finalize mutator
-    # (which sets ``finalized``), or by a failed settle path on its next retry.
+    # retry or idle-watchdog fire cannot both pass the seal check and
+    # broadcast duplicate settle transactions. Cleared by the seal mutator
+    # (which sets ``sealed``), or by a failed settle path on its next retry.
     # Not serialized: it is transient server state and round-trips as absent.
     settling: bool = False
 
@@ -202,7 +208,8 @@ class ChannelState:
             "authorized_signer": self.authorized_signer,
             "deposit": self.deposit,
             "cumulative": self.cumulative,
-            "finalized": self.finalized,
+            "sealed": self.sealed,
+            "open_slot": self.open_slot,
             "highest_voucher_signature": self.highest_voucher_signature,
             "highest_voucher_expires_at": self.highest_voucher_expires_at,
             "close_requested_at": self.close_requested_at,
@@ -220,12 +227,23 @@ class ChannelState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChannelState:
+        # Records persisted before the upstream finalize→seal rename are
+        # intentionally NOT decoded: the epoch-addressed migration is pre-1.0
+        # breaking (pre-rename channels reference the old program's
+        # addressing), so a legacy record fails loudly here instead of
+        # silently reloading a closed channel as unsealed.
+        if "finalized" in data:
+            raise ValueError(
+                "legacy pre-seal channel record (field 'finalized') is not supported; "
+                "migrate or reset the durable channel store"
+            )
         return cls(
             channel_id=data.get("channel_id", ""),
             authorized_signer=data.get("authorized_signer", ""),
             deposit=int(data.get("deposit", 0)),
             cumulative=int(data.get("cumulative", 0)),
-            finalized=bool(data.get("finalized", False)),
+            sealed=bool(data.get("sealed", False)),
+            open_slot=int(data.get("open_slot", 0)),
             highest_voucher_signature=data.get("highest_voucher_signature"),
             highest_voucher_expires_at=(
                 None if data.get("highest_voucher_expires_at") is None else int(data["highest_voucher_expires_at"])
@@ -246,9 +264,9 @@ class ChannelState:
 class ListChannelsFilter:
     """Optional filter for :meth:`ChannelStore.list_channels`."""
 
-    # finalized, when non-None, only includes channels matching this finalized
+    # sealed, when non-None, only includes channels matching this sealed
     # state.
-    finalized: bool | None = None
+    sealed: bool | None = None
 
     # close_pending, when non-None, only includes channels whose
     # close_requested_at presence matches.
@@ -294,8 +312,8 @@ class ChannelStore:
         no filter."""
         raise NotImplementedError
 
-    async def mark_finalized(self, channel_id: str) -> ChannelState:
-        """Flip finalized to True. Raises when the channel is not found."""
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
+        """Flip sealed to True. Raises when the channel is not found."""
         raise NotImplementedError
 
 
@@ -364,7 +382,7 @@ class MemoryChannelStore(ChannelStore):
             out: list[ChannelState] = []
             for state in self._data.values():
                 if filter is not None:
-                    if filter.finalized is not None and state.finalized != filter.finalized:
+                    if filter.sealed is not None and state.sealed != filter.sealed:
                         continue
                     if filter.close_pending is not None:
                         close_pending = state.close_requested_at is not None
@@ -373,10 +391,10 @@ class MemoryChannelStore(ChannelStore):
                 out.append(state.clone())
             return out
 
-    async def mark_finalized(self, channel_id: str) -> ChannelState:
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise KeyError(f"channel {channel_id} not found")
-            return replace(current, finalized=True)
+            return replace(current, sealed=True)
 
         return await self.update_channel(channel_id, mutator)

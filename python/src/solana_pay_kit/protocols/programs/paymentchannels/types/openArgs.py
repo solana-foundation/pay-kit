@@ -15,6 +15,7 @@ class OpenArgsJSON(typing.TypedDict):
     salt: int
     deposit: int
     gracePeriod: int
+    openSlot: int
     recipients: list[distributionEntry.DistributionEntryJSON]
 
 @dataclass
@@ -23,12 +24,14 @@ class OpenArgs:
         "salt" /borsh.U64,
         "deposit" /borsh.U64,
         "gracePeriod" /borsh.U32,
+        "openSlot" /borsh.U64,
         "recipients" /borsh.Vec(typing.cast(Construct, distributionEntry.DistributionEntry.layout)),
         )
     #fields
     salt: int
     deposit: int
     gracePeriod: int
+    openSlot: int
     recipients: list[distributionEntry.DistributionEntry]
     
     @classmethod
@@ -37,6 +40,7 @@ class OpenArgs:
         salt=obj["salt"],
         deposit=obj["deposit"],
         gracePeriod=obj["gracePeriod"],
+        openSlot=obj["openSlot"],
         recipients=list(map(lambda item:distributionEntry.DistributionEntry.from_decoded(item),obj["recipients"])),
         )
 
@@ -45,6 +49,7 @@ class OpenArgs:
                 "salt": self.salt,
                 "deposit": self.deposit,
                 "gracePeriod": self.gracePeriod,
+                "openSlot": self.openSlot,
                 "recipients": list(map(lambda item:item.to_encodable(),self.recipients)),
                 }
 
@@ -53,6 +58,7 @@ class OpenArgs:
                 "salt": self.salt,
                 "deposit": self.deposit,
                 "gracePeriod": self.gracePeriod,
+                "openSlot": self.openSlot,
                 "recipients": list(map(lambda item:item.to_json(),self.recipients)),
                 }
 
@@ -62,6 +68,7 @@ class OpenArgs:
                 salt=obj["salt"],
                 deposit=obj["deposit"],
                 gracePeriod=obj["gracePeriod"],
+                openSlot=obj["openSlot"],
                 recipients=list(map(lambda item:distributionEntry.DistributionEntry.from_json(item),obj["recipients"])),
         )
 

@@ -196,7 +196,7 @@ def test_open_payload_pull_fields():
 
 def test_open_payload_payment_channel_and_tx_helpers():
     p = (
-        OpenPayload.payment_channel("chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, "signer1", "txsig")
+        OpenPayload.payment_channel("chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 777, "signer1", "txsig")
         .with_transaction("open-tx")
         .with_init_tx("init-tx")
         .with_update_tx("update-tx")
@@ -209,6 +209,7 @@ def test_open_payload_payment_channel_and_tx_helpers():
     assert p.mint == "mint1"
     assert p.salt == 99
     assert p.grace_period == 45
+    assert p.recent_slot == 777
     assert p.transaction == "open-tx"
     assert p.init_multi_delegate_tx == "init-tx"
     assert p.update_delegation_tx == "update-tx"
@@ -225,7 +226,7 @@ def test_deposit_amount_rejects_non_u64_values() -> None:
 
 def test_open_payload_pull_payment_channel_uses_channel_id_and_deposit():
     p = OpenPayload.payment_channel_with_mode(
-        "pull", "chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, "signer1", "pending"
+        "pull", "chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 777, "signer1", "pending"
     ).with_transaction("open-tx")
     assert p.mode == "pull"
     assert p.session_id() == "chan1"
@@ -300,12 +301,19 @@ def test_open_payload_pull_roundtrip_dict():
 
 def test_salt_serializes_as_string_and_accepts_number_and_huge_u64():
     salt = 2**64 - 8  # u64::MAX - 7
-    p = OpenPayload.payment_channel("chan1", "1000000", "payer1", "payee1", "mint1", salt, 900, "signer1", "txsig")
+    recent_slot = 2**64 - 3
+    p = OpenPayload.payment_channel(
+        "chan1", "1000000", "payer1", "payee1", "mint1", salt, 900, recent_slot, "signer1", "txsig"
+    )
     d = p.to_dict()
     assert d["salt"] == str(salt)
     assert isinstance(d["salt"], str)
+    # recentSlot uses the same u64-as-string codec as salt.
+    assert d["recentSlot"] == str(recent_slot)
+    assert isinstance(d["recentSlot"], str)
     back = OpenPayload.from_dict(d)
     assert back.salt == salt
+    assert back.recent_slot == recent_slot
 
     # Legacy numeric salt: no float precision loss for a huge u64 because the
     # dict carries a Python int (mirrors rust's number branch).
@@ -319,6 +327,9 @@ def test_salt_serializes_as_string_and_accepts_number_and_huge_u64():
     }
     assert OpenPayload.from_dict(legacy).salt == salt
     assert OpenPayload.from_dict({**legacy, "salt": 42}).salt == 42
+    # recentSlot also accepts a JSON number inbound, and absent decodes to None.
+    assert OpenPayload.from_dict({**legacy, "recentSlot": 123}).recent_slot == 123
+    assert OpenPayload.from_dict(legacy).recent_slot is None
 
 
 def test_salt_absent_is_none():
@@ -509,10 +520,11 @@ def test_voucher_message_bytes_layout(nonce: int | None):
     channel_id = str(Pubkey.from_bytes(channel_bytes))
     data = VoucherData(channel_id=channel_id, cumulative="1000", expires_at=42, nonce=nonce)
     out = data.message_bytes()
-    assert len(out) == 48
-    assert out[:32] == channel_bytes
-    assert out[32:40] == struct.pack("<Q", 1000)
-    assert out[40:48] == struct.pack("<q", 42)
+    assert len(out) == 50
+    assert out[:2] == bytes([0x56, 0x01])
+    assert out[2:34] == channel_bytes
+    assert out[34:42] == struct.pack("<Q", 1000)
+    assert out[42:50] == struct.pack("<q", 42)
     # Deterministic.
     assert data.message_bytes() == data.message_bytes()
 
@@ -532,7 +544,7 @@ def test_voucher_message_bytes_negative_expires_at():
     channel_id = str(Pubkey.from_bytes(bytes([7] * 32)))
     data = VoucherData(channel_id=channel_id, cumulative="1", expires_at=-5)
     out = data.message_bytes()
-    assert out[40:48] == struct.pack("<q", -5)
+    assert out[42:50] == struct.pack("<q", -5)
 
 
 def test_voucher_message_bytes_invalid_channel_and_cumulative():

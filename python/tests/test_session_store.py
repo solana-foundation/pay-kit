@@ -2,7 +2,7 @@
 
 Mirrors the Go ``session_store_test.go`` behaviors one-for-one: insert-on-missing
 updates, prior-write visibility, concurrent update serialization, mutator error
-handling (state unchanged, no poisoning), list filtering, delete, finalization,
+handling (state unchanged, no poisoning), list filtering, delete, sealing,
 and clone isolation.
 """
 
@@ -138,9 +138,9 @@ async def test_list_channels_applies_filters() -> None:
         await store.update_channel(state.channel_id, lambda _current: state)
 
     await must_insert(_test_channel_state("a", 1))
-    finalized = _test_channel_state("b", 1)
-    finalized.finalized = True
-    await must_insert(finalized)
+    sealed = _test_channel_state("b", 1)
+    sealed.sealed = True
+    await must_insert(sealed)
     closing = _test_channel_state("c", 1)
     closing.close_requested_at = 123
     await must_insert(closing)
@@ -148,33 +148,33 @@ async def test_list_channels_applies_filters() -> None:
     all_channels = await store.list_channels(None)
     assert len(all_channels) == 3
 
-    only_finalized = await store.list_channels(ListChannelsFilter(finalized=True))
-    assert len(only_finalized) == 1
-    assert only_finalized[0].channel_id == "b"
+    only_sealed = await store.list_channels(ListChannelsFilter(sealed=True))
+    assert len(only_sealed) == 1
+    assert only_sealed[0].channel_id == "b"
 
-    close_pending = await store.list_channels(ListChannelsFilter(finalized=False, close_pending=True))
+    close_pending = await store.list_channels(ListChannelsFilter(sealed=False, close_pending=True))
     assert len(close_pending) == 1
     assert close_pending[0].channel_id == "c"
 
 
 @pytest.mark.asyncio
-async def test_delete_and_mark_finalized() -> None:
-    """Mirrors TestMemoryChannelStoreDeleteAndMarkFinalized."""
+async def test_delete_and_mark_sealed() -> None:
+    """Mirrors TestMemoryChannelStoreDeleteAndMarkSealed."""
     store = MemoryChannelStore()
     await store.update_channel("c1", lambda _current: _test_channel_state("c1", 1))
 
-    state = await store.mark_finalized("c1")
-    assert state.finalized
+    state = await store.mark_sealed("c1")
+    assert state.sealed
 
     stored = await store.get_channel("c1")
-    assert stored is not None and stored.finalized
+    assert stored is not None and stored.sealed
 
     await store.delete_channel("c1")
     missing = await store.get_channel("c1")
     assert missing is None
 
     with pytest.raises(KeyError):
-        await store.mark_finalized("ghost")
+        await store.mark_sealed("ghost")
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,7 @@ def test_from_dict_accepts_null_delivery_lists() -> None:
         "authorized_signer": "signer1",
         "deposit": 1_000_000,
         "cumulative": 0,
-        "finalized": False,
+        "sealed": False,
         "highest_voucher_signature": None,
         "highest_voucher_expires_at": None,
         "close_requested_at": None,
@@ -234,6 +234,14 @@ def test_from_dict_accepts_null_delivery_lists() -> None:
     state = ChannelState.from_dict(go_record)
     assert state.pending_deliveries == []
     assert state.committed_deliveries == []
+
+
+def test_from_dict_rejects_legacy_finalized_record() -> None:
+    """Records persisted before the finalize->seal rename are not supported:
+    the epoch-addressed migration is pre-1.0 breaking, so a legacy record
+    fails loudly instead of silently reloading a closed channel as unsealed."""
+    with pytest.raises(ValueError, match="legacy pre-seal channel record"):
+        ChannelState.from_dict({"channel_id": "c1", "authorized_signer": "signer1", "finalized": True})
 
 
 def test_from_dict_accepts_missing_and_empty_delivery_lists() -> None:
@@ -295,7 +303,7 @@ def test_round_trips_go_style_null_record() -> None:
         "authorized_signer": "signer1",
         "deposit": 1_000_000,
         "cumulative": 0,
-        "finalized": False,
+        "sealed": False,
         "highest_voucher_signature": None,
         "highest_voucher_expires_at": None,
         "close_requested_at": None,

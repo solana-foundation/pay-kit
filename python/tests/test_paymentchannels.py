@@ -16,10 +16,12 @@ from solders.pubkey import Pubkey
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PAYMENT_CHANNELS_PROGRAM_ID,
     PROGRAM_ID,
+    VOUCHER_MAGIC,
     Distribution,
     OpenChannelParams,
     TopUpParams,
     build_open_instruction,
+    build_reclaim_instruction,
     build_top_up_instruction,
     find_associated_token_address,
     find_channel_pda,
@@ -40,24 +42,28 @@ def test_program_id_is_canonical() -> None:
 
 def test_voucher_message_length_and_offsets() -> None:
     out = voucher_message_bytes(pk(9), 42, 1234)
-    assert len(out) == 48
-    assert out[:32] == bytes([9] * 32)
-    assert out[32:40] == struct.pack("<Q", 42)
-    assert out[40:48] == struct.pack("<q", 1234)
+    assert len(out) == 50
+    assert out[:2] == VOUCHER_MAGIC == bytes([0x56, 0x01])
+    assert out[2:34] == bytes([9] * 32)
+    assert out[34:42] == struct.pack("<Q", 42)
+    assert out[42:50] == struct.pack("<q", 1234)
 
 
 def test_voucher_message_frozen_cross_language_vector() -> None:
-    # Frozen rust/Go vector: channel_id = 32 bytes of 9, cumulative 42, expires 1234.
+    # Frozen rust/Go vector: magic [0x56, 0x01], channel_id = 32 bytes of 9,
+    # cumulative 42, expires 1234.
     out = voucher_message_bytes(pk(9), 42, 1234)
-    expected = bytes([9] * 32) + (42).to_bytes(8, "little") + (1234).to_bytes(8, "little", signed=True)
+    expected = (
+        bytes([0x56, 0x01]) + bytes([9] * 32) + (42).to_bytes(8, "little") + (1234).to_bytes(8, "little", signed=True)
+    )
     assert out == expected
 
 
 def test_voucher_message_negative_expires_at() -> None:
     out = voucher_message_bytes(pk(7), 0, -1)
-    assert len(out) == 48
-    assert out[40:48] == struct.pack("<q", -1)
-    assert out[40:48] == (-1).to_bytes(8, "little", signed=True)
+    assert len(out) == 50
+    assert out[42:50] == struct.pack("<q", -1)
+    assert out[42:50] == (-1).to_bytes(8, "little", signed=True)
 
 
 @pytest.mark.parametrize(
@@ -72,8 +78,9 @@ def test_voucher_message_negative_expires_at() -> None:
 )
 def test_voucher_message_roundtrip(cumulative: int, expires_at: int) -> None:
     out = voucher_message_bytes(pk(3), cumulative, expires_at)
-    assert out[32:40] == struct.pack("<Q", cumulative)
-    assert out[40:48] == struct.pack("<q", expires_at)
+    assert out[:2] == VOUCHER_MAGIC
+    assert out[34:42] == struct.pack("<Q", cumulative)
+    assert out[42:50] == struct.pack("<q", expires_at)
 
 
 def test_voucher_message_rejects_non_32_byte_channel_id() -> None:
@@ -86,15 +93,15 @@ def test_voucher_message_rejects_non_32_byte_channel_id() -> None:
 
 
 def test_find_channel_pda_is_deterministic_and_off_curve() -> None:
-    addr1, bump1 = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 99)
-    addr2, bump2 = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 99)
+    addr1, bump1 = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 99, 777)
+    addr2, bump2 = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 99, 777)
     assert addr1 == addr2
     assert bump1 == bump2
     assert 0 <= bump1 <= 255
 
 
 def test_find_channel_pda_matches_create_program_address() -> None:
-    addr, bump = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 99)
+    addr, bump = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 99, 777)
     expected = Pubkey.create_program_address(
         [
             b"channel",
@@ -103,6 +110,7 @@ def test_find_channel_pda_matches_create_program_address() -> None:
             bytes(pk(3)),
             bytes(pk(4)),
             struct.pack("<Q", 99),
+            struct.pack("<Q", 777),
             bytes([bump]),
         ],
         PROGRAM_ID,
@@ -111,8 +119,16 @@ def test_find_channel_pda_matches_create_program_address() -> None:
 
 
 def test_find_channel_pda_salt_changes_address() -> None:
-    addr_a, _ = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 1)
-    addr_b, _ = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 2)
+    addr_a, _ = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 1, 777)
+    addr_b, _ = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 2, 777)
+    assert addr_a != addr_b
+
+
+def test_find_channel_pda_open_slot_changes_address() -> None:
+    # The address is per-incarnation: same params + different openSlot must
+    # derive a different channel PDA.
+    addr_a, _ = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 1, 777)
+    addr_b, _ = find_channel_pda(pk(1), pk(2), pk(3), pk(4), 1, 778)
     assert addr_a != addr_b
 
 
@@ -145,6 +161,7 @@ def _open_params() -> OpenChannelParams:
         salt=99,
         deposit=1_000_000,
         grace_period=3600,
+        open_slot=777,
         recipients=[Distribution(pk(5), 7_500), Distribution(pk(6), 2_500)],
         token_program=pk(7),
         rent_payer=pk(8),
@@ -168,6 +185,8 @@ def test_build_open_instruction_rejects_out_of_range_fields() -> None:
         build_open_instruction(replace(base, salt=0x1_0000_0000_0000_0000))
     with pytest.raises(ValueError, match="deposit"):
         build_open_instruction(replace(base, deposit=-1))
+    with pytest.raises(ValueError, match="open_slot"):
+        build_open_instruction(replace(base, open_slot=-1))
     with pytest.raises(ValueError, match="bps"):
         build_open_instruction(replace(base, recipients=[Distribution(pk(5), 0x1_0000)]))
 
@@ -177,7 +196,9 @@ def test_build_open_instruction_account_order_and_flags() -> None:
     ix = build_open_instruction(params)
     accounts = ix.accounts
 
-    channel, _ = find_channel_pda(params.payer, params.payee, params.mint, params.authorized_signer, params.salt)
+    channel, _ = find_channel_pda(
+        params.payer, params.payee, params.mint, params.authorized_signer, params.salt, params.open_slot
+    )
     payer_ata, _ = find_associated_token_address(params.payer, params.mint, params.token_program)
     channel_ata, _ = find_associated_token_address(channel, params.mint, params.token_program)
     event_authority, _ = find_event_authority_pda()
@@ -233,6 +254,8 @@ def test_build_open_instruction_data_layout_roundtrip() -> None:
     off += 8
     assert struct.unpack_from("<I", data, off)[0] == params.grace_period
     off += 4
+    assert struct.unpack_from("<Q", data, off)[0] == params.open_slot
+    off += 8
     count = struct.unpack_from("<I", data, off)[0]
     off += 4
     assert count == len(params.recipients)
@@ -249,9 +272,11 @@ def test_build_open_instruction_empty_recipients() -> None:
     params.recipients = []
     ix = build_open_instruction(params)
     data = bytes(ix.data)
-    # disc(1) + salt(8) + deposit(8) + grace(4) + len(4) == 25 bytes, count 0.
-    assert len(data) == 25
-    assert struct.unpack_from("<I", data, 21)[0] == 0
+    # disc(1) + salt(8) + deposit(8) + grace(4) + openSlot(8) + len(4) == 33
+    # bytes, count 0.
+    assert len(data) == 33
+    assert struct.unpack_from("<Q", data, 21)[0] == params.open_slot
+    assert struct.unpack_from("<I", data, 29)[0] == 0
 
 
 def test_open_params_default_token_program_is_spl_token() -> None:
@@ -263,6 +288,7 @@ def test_open_params_default_token_program_is_spl_token() -> None:
         salt=1,
         deposit=1,
         grace_period=1,
+        open_slot=1,
     )
     assert str(params.token_program) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     assert params.recipients == []
@@ -304,3 +330,19 @@ def test_build_top_up_instruction_data_roundtrip() -> None:
 def test_top_up_params_default_token_program_is_spl_token() -> None:
     params = TopUpParams(payer=pk(1), channel=pk(2), mint=pk(3), amount=1)
     assert str(params.token_program) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+
+def test_build_reclaim_instruction_accounts_and_data() -> None:
+    ix = build_reclaim_instruction(channel=pk(1), rent_payer=pk(2))
+    assert ix.program_id == PROGRAM_ID
+    data = bytes(ix.data)
+    # Discriminator-only instruction: reclaim == 9.
+    assert data == bytes([9])
+    accounts = ix.accounts
+    assert len(accounts) == 2
+    assert accounts[0].pubkey == pk(1)
+    assert accounts[0].is_writable is True
+    assert accounts[0].is_signer is False
+    assert accounts[1].pubkey == pk(2)
+    assert accounts[1].is_writable is True
+    assert accounts[1].is_signer is False

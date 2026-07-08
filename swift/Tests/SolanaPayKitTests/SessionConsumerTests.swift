@@ -15,7 +15,7 @@ struct SessionConsumerTests {
         private var settled: [String: String] = [:]
 
         func commit(directive: MeteringDirective, payload: CommitPayload) async throws -> CommitReceipt {
-            if fail { throw MppError.invalidTransaction("commit failed") }
+            if fail { throw PayKitError.invalidTransaction("commit failed") }
             if let prior = settled[directive.deliveryId] {
                 return CommitReceipt(
                     deliveryId: directive.deliveryId, sessionId: directive.sessionId,
@@ -100,15 +100,15 @@ struct SessionConsumerTests {
             deliveryId: "d1", sessionId: "other-session", amount: "1", currency: "USDC",
             sequence: 1, expiresAt: defaultSessionExpiresAt
         )
-        await #expect(throws: MppError.self) { _ = try await consumer.commitDirective(wrong) }
+        await #expect(throws: PayKitError.self) { _ = try await consumer.commitDirective(wrong) }
 
-        await #expect(throws: MppError.self) { _ = try await consumer.commitDirective(directive(session, amount: 0)) }
+        await #expect(throws: PayKitError.self) { _ = try await consumer.commitDirective(directive(session, amount: 0)) }
 
         let badAmount = MeteringDirective(
             deliveryId: "d1", sessionId: session.channelIdString(), amount: "bad", currency: "USDC",
             sequence: 1, expiresAt: defaultSessionExpiresAt
         )
-        await #expect(throws: MppError.self) { _ = try await consumer.commitDirective(badAmount) }
+        await #expect(throws: PayKitError.self) { _ = try await consumer.commitDirective(badAmount) }
 
         #expect(transport.commits.isEmpty)
         #expect(session.cumulative == 0)
@@ -121,7 +121,7 @@ struct SessionConsumerTests {
         transport.fail = true
         let consumer = SessionConsumer(session: session, transport: transport)
 
-        await #expect(throws: MppError.self) { _ = try await consumer.commitDirective(directive(session, amount: 250)) }
+        await #expect(throws: PayKitError.self) { _ = try await consumer.commitDirective(directive(session, amount: 250)) }
         #expect(session.cumulative == 0)
 
         transport.fail = false

@@ -1,31 +1,36 @@
 set shell := ["bash", "-uc"]
 
+# Every recipe runs through uv so the gates work without a manually activated
+# virtualenv: uv resolves the locked project environment (uv.lock) with the
+# dev + framework extras and executes the tool inside it.
+uv_run := "uv run --extra dev --extra fastapi --extra flask --extra django --"
+
 default:
     @just --list
 
-# Install the Python SDK with dev + framework extras.
+# Install the Python SDK with dev + framework extras into the project venv.
 install:
-    pip install -e '.[dev,fastapi,flask,django]'
+    uv sync --extra dev --extra fastapi --extra flask --extra django
 
 # Run the Python unit test suite.
 test:
-    pytest
+    {{uv_run}} pytest
 
 # Lint with ruff.
 lint:
-    ruff check src tests
+    {{uv_run}} ruff check src tests
 
 # Format with ruff.
 fmt:
-    ruff format src tests
+    {{uv_run}} ruff format src tests
 
 # Type-check with pyright.
 typecheck:
-    pyright
+    {{uv_run}} pyright
 
 # Run tests with the 90% line-coverage gate.
 test-cover:
-    pytest --cov=pay_kit --cov-report=term-missing --cov-fail-under=90 --ignore=tests/test_server_html.py
+    {{uv_run}} pytest --cov=solana_pay_kit --cov-report=term-missing --cov-fail-under=90 --ignore=tests/test_server_html.py
 
 # Run all local Python gates.
 check: lint typecheck test-cover

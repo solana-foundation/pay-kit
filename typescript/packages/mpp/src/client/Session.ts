@@ -73,6 +73,8 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly pullVoucherStrategy?: SessionPullVoucherStrategy | undefined;
     /** Server-provided recent blockhash, saving the client an RPC round-trip. */
     readonly recentBlockhash?: string | undefined;
+    /** Server-provided current slot, used as the channel `openSlot` PDA seed (u64 as string). */
+    readonly recentSlot?: number | string | undefined;
     /** Primary recipient of the settled amount (base58). */
     readonly recipient: string;
     /** Basis-point splits distributed at close. */
@@ -150,6 +152,8 @@ export interface OpenPayload {
     readonly payee?: string | undefined;
     /** Push mode: channel payer (base58). */
     readonly payer?: string | undefined;
+    /** Push mode: slot the open was built against (decimal string); the channel `openSlot` PDA seed. */
+    readonly recentSlot?: number | string | undefined;
     /** Push mode: channel-derivation salt (decimal string). */
     readonly salt?: string | undefined;
     /** Open transaction signature, or {@link PENDING_SERVER_SIGNATURE} when the server broadcasts. */
@@ -275,6 +279,8 @@ export interface SessionContext {
     readonly mode?: SessionMode | undefined;
     /** TopUp: new total deposit, in base units. */
     readonly newDeposit?: AmountLike | undefined;
+    /** Push opens: slot the open is built against (a channel PDA seed). Defaults to the challenge `recentSlot`. */
+    readonly openSlot?: AmountLike | undefined;
     /** Pull opens: wallet that owns the delegated token account (base58). */
     readonly owner?: string | undefined;
     /** Push opens: channel payee (base58). */
@@ -314,7 +320,7 @@ export function sessionRequestModes(request: Pick<SessionRequest, 'modes'>): rea
 
 /**
  * Builds canonical payment-channel voucher bytes:
- * `channel_id || cumulative_amount_le_u64 || expires_at_le_i64`.
+ * `magic (0x56, 0x01) || channel_id || cumulative_amount_le_u64 || expires_at_le_i64`.
  *
  * Delegates to the shared encoder so client and server agree on the bytes
  * they sign / verify.
@@ -549,6 +555,7 @@ export class ActiveSession {
             mode: parameters.mode ?? 'push',
             payee: parameters.payee,
             payer: parameters.payer,
+            recentSlot: formatAmount(parameters.openSlot, 'openSlot'),
             salt: formatAmount(parameters.salt, 'salt'),
             signature: parameters.signature,
             ...(parameters.transaction ? { transaction: parameters.transaction } : {}),
@@ -631,6 +638,8 @@ export declare namespace ActiveSession {
         readonly gracePeriod: number;
         /** SPL mint of the deposit (base58). */
         readonly mint: string;
+        /** Slot the open transaction was built against (a channel PDA seed). */
+        readonly openSlot: AmountLike;
         /** Channel payee (base58). */
         readonly payee: string;
         /** Channel payer (base58). */
@@ -773,6 +782,7 @@ function createOpenAction(
         context.payee !== undefined ||
         context.mint !== undefined ||
         context.salt !== undefined ||
+        context.openSlot !== undefined ||
         context.gracePeriod !== undefined
     ) {
         return session_.openPaymentChannelAction({
@@ -780,6 +790,7 @@ function createOpenAction(
             gracePeriod: requireValue(context.gracePeriod, 'gracePeriod'),
             mint: requireString(context.mint, 'mint'),
             mode,
+            openSlot: requireValue(context.openSlot ?? challenge.request.recentSlot, 'openSlot'),
             payee: requireString(context.payee, 'payee'),
             payer: requireString(context.payer, 'payer'),
             salt: requireValue(context.salt, 'salt'),

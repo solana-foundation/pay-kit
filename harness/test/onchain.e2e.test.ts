@@ -53,7 +53,7 @@ async function startServer(): Promise<void> {
     operator: { recipient: operator.address, signer: operator },
     pricing: {
       // x402 `upto` — settles by invoking the payment-channels program
-      // (settle_and_finalize + distribute). This is the scheme that regressed.
+      // (settle_and_seal + distribute). This is the scheme that regressed.
       summarize: usage(usd("0.1"), { description: "Summarize, billed per token" }),
       // Fixed charge baseline (MPP / x402 exact — SPL transfer).
       fortune: { amount: usd("0.01"), description: "A fortune cookie" },

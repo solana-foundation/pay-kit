@@ -805,6 +805,51 @@ class ChargeHandlerTest < Minitest::Test
     assert_match(/failed/, response.body["message"])
   end
 
+  # TOCTOU replay regression (push mode, type="signature"). A single signature
+  # credential is raced by N threads against ONE shared replay store. Settlement
+  # reserves the signature through Store#put_if_absent, a single atomic
+  # check-and-insert (MemoryStore guards it with a Mutex and MRI serializes the
+  # section under the GIL), so there is no get-then-put window to lose: exactly
+  # one thread may settle (200) and every other must be rejected as
+  # already-consumed (402). This asserts the interface stays get-free.
+  def test_rejects_concurrent_replayed_signature
+    shared_store = PayKit::Protocols::Mpp::MemoryStore.new
+    request = charge_request
+    credential = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request).to_echo,
+      payload: {"signature" => valid_signature}
+    )
+    authorization = credential.to_authorization_header
+
+    thread_count = 8
+    results = Array.new(thread_count)
+    gate = Thread::Queue.new
+    threads = (0...thread_count).map do |index|
+      Thread.new do
+        # Each thread drives its own handler + RPC but shares the one replay
+        # store, so the only serialization point is the store reserve.
+        handler = handler_with(FakeRpc.new(transaction_response: transaction_response), store: shared_store)
+        gate.pop
+        results[index] = handler.handle(authorization, request)
+      end
+    end
+    # Release every thread at once to maximize contention on the reserve.
+    thread_count.times { gate.push(:go) }
+    threads.each(&:join)
+
+    statuses = results.map(&:status)
+    assert_equal 1, statuses.count(200), "expected exactly one settlement, got statuses #{statuses.inspect}"
+    assert_equal thread_count - 1, statuses.count(402), "expected the rest to be replay-rejected, got statuses #{statuses.inspect}"
+
+    settled = results.select { |response| response.status == 200 }
+    assert_equal valid_signature, settled.first.signature
+    results.each do |response|
+      next if response.status == 200
+
+      assert_match(/already consumed/, response.body["message"])
+    end
+  end
+
   private
 
   def handler_challenges

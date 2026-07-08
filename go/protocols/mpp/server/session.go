@@ -236,7 +236,7 @@ func (s *SessionServer) supportsMode(mode intents.SessionMode) bool {
 // already exists for the session id with the same authorized signer, the
 // existing state is returned unchanged and the voucher watermark is never
 // reset. Opens for an existing channel are rejected when the channel is
-// finalized or when the payload's authorized signer differs from the stored
+// sealed or when the payload's authorized signer differs from the stored
 // one.
 func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPayload) (ChannelState, error) {
 	if !s.supportsMode(payload.Mode) {
@@ -281,6 +281,7 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		ChannelID:        sessionID,
 		AuthorizedSigner: payload.AuthorizedSigner,
 		Deposit:          deposit,
+		OpenSlot:         openSlotFromPayload(payload),
 		Operator:         operator,
 	}
 
@@ -290,8 +291,8 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 	// accepted vouchers before close.
 	return s.store.UpdateChannel(ctx, sessionID, func(existing *ChannelState) (ChannelState, error) {
 		if existing != nil {
-			if existing.Finalized {
-				return ChannelState{}, fmt.Errorf("channel %s is already finalized", sessionID)
+			if existing.Sealed {
+				return ChannelState{}, fmt.Errorf("channel %s is already sealed", sessionID)
 			}
 			if existing.AuthorizedSigner != payload.AuthorizedSigner {
 				return ChannelState{}, fmt.Errorf("channel %s already exists with a different authorized signer", sessionID)
@@ -301,6 +302,17 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		}
 		return fresh, nil
 	})
+}
+
+// openSlotFromPayload reads the open payload's recentSlot echo (the channel
+// open_slot, a PDA seed persisted so the address stays re-derivable and
+// reclaim stays drivable). Zero when the payload omits it (pull opens, older
+// clients).
+func openSlotFromPayload(payload *intents.OpenPayload) uint64 {
+	if payload.RecentSlot == nil {
+		return 0
+	}
+	return *payload.RecentSlot
 }
 
 // operatorFromVerifiedOpen resolves the channel payer (recorded as Operator)
@@ -407,8 +419,8 @@ func (s *SessionServer) VerifyVoucherDetailed(ctx context.Context, payload *inte
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
 		previousCumulative = current.Cumulative
-		if current.Finalized {
-			return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
+		if current.Sealed {
+			return ChannelState{}, fmt.Errorf("channel %s is already sealed", channelID)
 		}
 		if current.CloseRequestedAt != nil {
 			return ChannelState{}, fmt.Errorf("channel %s close is pending; no further vouchers accepted", channelID)
@@ -447,7 +459,7 @@ func (s *SessionServer) VerifyVoucherDetailed(ctx context.Context, payload *inte
 // deposit cap.
 //
 // The new deposit must exceed the current deposit and must not exceed the
-// configured max cap. Top-ups are rejected once the channel is finalized or a
+// configured max cap. Top-ups are rejected once the channel is sealed or a
 // close has been requested.
 func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUpPayload) (ChannelState, error) {
 	newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
@@ -469,8 +481,8 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
-		if current.Finalized {
-			return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
+		if current.Sealed {
+			return ChannelState{}, fmt.Errorf("channel %s is already sealed", channelID)
 		}
 		if current.CloseRequestedAt != nil {
 			return ChannelState{}, fmt.Errorf("channel %s close is pending; no further top-ups accepted", channelID)
@@ -510,8 +522,8 @@ func (s *SessionServer) BeginDelivery(ctx context.Context, request DeliveryReque
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", sessionID)
 		}
-		if current.Finalized {
-			return ChannelState{}, fmt.Errorf("channel %s is already finalized", sessionID)
+		if current.Sealed {
+			return ChannelState{}, fmt.Errorf("channel %s is already sealed", sessionID)
 		}
 		if current.CloseRequestedAt != nil {
 			return ChannelState{}, fmt.Errorf("channel %s close is pending; no further deliveries accepted", sessionID)
@@ -641,8 +653,8 @@ func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.Comm
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
-		if current.Finalized {
-			return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
+		if current.Sealed {
+			return ChannelState{}, fmt.Errorf("channel %s is already sealed", channelID)
 		}
 		if current.CloseRequestedAt != nil {
 			return ChannelState{}, fmt.Errorf("channel %s close is pending; no further commits accepted", channelID)
@@ -739,8 +751,8 @@ func findCommitted(deliveries []CommittedDelivery, deliveryID string) *Committed
 // are all rejected, and a second close is rejected with "close already
 // requested". A non-monotonic final voucher is a hard error (unless it is an
 // idempotent replay of the current highest voucher) and leaves the state
-// unchanged. On-chain settlement (settle_and_finalize + distribute) is driven
-// by the host after this returns; see MarkFinalized for the post-settlement
+// unchanged. On-chain settlement (settle_and_seal + distribute) is driven
+// by the host after this returns; see MarkSealed for the post-settlement
 // transition.
 func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.ClosePayload) (ChannelState, error) {
 	now := uint64(time.Now().Unix())
@@ -751,8 +763,8 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
-		if current.Finalized {
-			return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
+		if current.Sealed {
+			return ChannelState{}, fmt.Errorf("channel %s is already sealed", channelID)
 		}
 		if current.CloseRequestedAt != nil {
 			return ChannelState{}, fmt.Errorf("close already requested")
@@ -804,9 +816,9 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 	})
 }
 
-// MarkFinalized marks a channel as finalized. Call after the on-chain
-// finalize transaction confirms.
-func (s *SessionServer) MarkFinalized(ctx context.Context, channelID string) error {
-	_, err := s.store.MarkFinalized(ctx, channelID)
+// MarkSealed marks a channel as sealed. Call after the on-chain
+// seal transaction confirms.
+func (s *SessionServer) MarkSealed(ctx context.Context, channelID string) error {
+	_, err := s.store.MarkSealed(ctx, channelID)
 	return err
 }

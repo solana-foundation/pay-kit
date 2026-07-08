@@ -1528,6 +1528,39 @@ test('signature: rejects already-consumed transaction signature', async () => {
     ).rejects.toThrow(/already consumed/);
 });
 
+test('signature: concurrent requests with the same signature settle at most once', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    // Delay every fetch so all N verifies clear the pre-lock consumed check
+    // and reach the on-chain verify at the same time: the exact TOCTOU window.
+    // Without per-signature serialization all of them would settle (one payment,
+    // N accesses); with it, exactly one wins.
+    globalThis.fetch = (async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    }) as typeof fetch;
+
+    const verifyOnce = () =>
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        });
+
+    const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
+    const settled = results.filter(r => r.status === 'fulfilled');
+    const rejectedConsumed = results.filter(
+        r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
+    );
+
+    expect(settled).toHaveLength(1);
+    expect(rejectedConsumed).toHaveLength(7);
+});
+
 // ── RPC error handling (type="signature") ──
 
 test('signature: throws when transaction is not found', async () => {

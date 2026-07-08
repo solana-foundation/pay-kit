@@ -242,7 +242,7 @@ struct ContentView: View {
         // Session endpoints run the real payment-channel flow (open -> stream
         // SSE deliveries -> sign + commit a voucher -> settle), not the one-shot
         // 402 -> charge -> retry loop.
-        if endpoint.intent == "session" {
+        if endpoint.intent == .session {
             busy = .pay(endpoint.id)
             defer { busy = nil }
             do {
@@ -262,12 +262,50 @@ struct ContentView: View {
             return
         }
 
-        // Other non-charge intents (subscription, x402 `upto` usage) are
-        // multi-step flows with dedicated pay-kit APIs the tap demo doesn't drive.
-        guard endpoint.intent == "charge" else {
+        // x402 `upto` (usage): authorize a ceiling by opening a payment channel,
+        // then the server meters actual usage and settles `actual <= max`,
+        // refunding the rest. One tap drives the whole flow through the upto
+        // client; the response body reports the metered amount billed.
+        if endpoint.scheme == .upto {
+            busy = .pay(endpoint.id)
+            defer { busy = nil }
+            let client = PayKit.HttpClient.x402Upto(
+                signer: signer,
+                settlementHeader: "x-payment-response"
+            )
+            let url = playgroundURL.appendingPathComponent(endpoint.path)
+            do {
+                let response = try await client
+                    .request(
+                        url,
+                        method: .post,
+                        headers: ["Accept": "application/json", "Content-Type": "text/plain"],
+                        body: Data("Solana is a fast, low-cost blockchain for payments and apps.".utf8)
+                    )
+                    .response()
+                let bodyString = String(data: response.body, encoding: .utf8) ?? ""
+                if (200..<300).contains(response.status) {
+                    append(.success(
+                        endpoint: endpoint,
+                        signature: response.settlementSignature,
+                        body: bodyString
+                    ))
+                    await refreshBalance()
+                } else {
+                    append(.failure(endpoint: endpoint, message: "HTTP \(response.status)\n\(bodyString)"))
+                }
+            } catch {
+                append(.failure(endpoint: endpoint, message: String(describing: error)))
+            }
+            return
+        }
+
+        // Other non-charge intents (subscription) are multi-step flows with
+        // dedicated pay-kit APIs the tap demo doesn't drive.
+        guard endpoint.intent == .charge else {
             append(.failure(
                 endpoint: endpoint,
-                message: "\(endpoint.label) is an mpp/\(endpoint.intent) flow this demo doesn't drive; use the matching pay-kit API."
+                message: "\(endpoint.label) is an mpp/\(endpoint.intent.label) flow this demo doesn't drive; use the matching pay-kit API."
             ))
             return
         }
@@ -406,6 +444,53 @@ struct ContentView: View {
 
 // MARK: - Endpoint
 
+/// Discovery intent of an offer. `.other` preserves any value the demo does not
+/// special-case so an unknown gateway intent still renders.
+enum EndpointIntent: Hashable {
+    case charge
+    case session
+    case subscription
+    case other(String)
+
+    /// Map a wire intent (defaulting an absent value to `charge`, as the demo
+    /// did before).
+    init(_ raw: String?) {
+        switch raw?.lowercased() {
+        case "session": self = .session
+        case "subscription": self = .subscription
+        case let value? where !value.isEmpty && value != "charge": self = .other(value)
+        default: self = .charge
+        }
+    }
+
+    /// Wire label for display.
+    var label: String {
+        switch self {
+        case .charge: return "charge"
+        case .session: return "session"
+        case .subscription: return "subscription"
+        case let .other(value): return value
+        }
+    }
+}
+
+/// Payment scheme of an offer. `.other` preserves unknown schemes.
+enum EndpointScheme: Hashable {
+    case exact
+    case upto
+    case other(String)
+
+    /// Map a wire scheme, or `nil` when the offer carries none.
+    init?(_ raw: String?) {
+        guard let raw = raw?.lowercased(), !raw.isEmpty else { return nil }
+        switch raw {
+        case "exact": self = .exact
+        case "upto": self = .upto
+        default: self = .other(raw)
+        }
+    }
+}
+
 /// A priced operation discovered from the playground's `/openapi.json`,
 /// rendered as a tappable card in the endpoints collection.
 struct Endpoint: Identifiable, Hashable {
@@ -416,9 +501,13 @@ struct Endpoint: Identifiable, Hashable {
     let priceUSD: String
     let systemImage: String
     let tint: Color
-    /// Discovery intent of the first offer (`charge` / `session` / …); the demo
-    /// only settles `charge` over MPP and explains the rest.
-    let intent: String
+    /// Discovery intent of the first offer; the demo only settles `charge` over
+    /// MPP and explains the rest.
+    let intent: EndpointIntent
+    /// Scheme of the first offer when present. A metered `upto` route advertises
+    /// the generic `charge` intent, so the demo routes by this scheme to reach
+    /// the usage flow.
+    let scheme: EndpointScheme?
     /// Accepted protocols in offer order, e.g. `["x402", "mpp"]`.
     let methods: [String]
     /// The protocol this demo actually settles over (`mpp` for charge endpoints
@@ -440,7 +529,7 @@ private struct EndpointCard: View {
 
     /// Charge endpoints that advertise more than one protocol let the user pick
     /// which to settle over by tapping a method chip.
-    private var selectable: Bool { endpoint.intent == "charge" && endpoint.methods.count > 1 }
+    private var selectable: Bool { endpoint.intent == .charge && endpoint.methods.count > 1 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -479,9 +568,9 @@ private struct EndpointCard: View {
                         .contentShape(Rectangle())
                         .onTapGesture { if selectable { onSelect(method) } }
                 }
-                if endpoint.intent != "charge" {
+                if endpoint.intent != .charge {
                     Text("·").opacity(0.45)
-                    Text(endpoint.intent).opacity(0.55)
+                    Text(endpoint.intent.label).opacity(0.55)
                 }
             }
             .font(.caption2)

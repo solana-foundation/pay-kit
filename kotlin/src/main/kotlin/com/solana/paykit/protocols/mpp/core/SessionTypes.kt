@@ -21,10 +21,11 @@ import kotlinx.serialization.json.buildJsonObject
 /**
  * MPP payment-channel session wire types, mirroring the Rust spine
  * (`rust/crates/mpp/src/protocol/intents/session.rs`) and the Go reference
- * tag-for-tag and key-for-key. JSON keys are camelCase; `salt` serializes as a
- * decimal string (reads string-or-number); `VoucherData.cumulativeAmount` also
- * reads the legacy `cumulative` alias; `SessionAction` is an internally-tagged
- * union flattened onto the `action` key (handled by [SessionActionCodec]).
+ * tag-for-tag and key-for-key. JSON keys are camelCase; `salt` and `recentSlot`
+ * serialize as decimal strings (read string-or-number);
+ * `VoucherData.cumulativeAmount` also reads the legacy `cumulative` alias;
+ * `SessionAction` is an internally-tagged union flattened onto the `action` key
+ * (handled by [SessionActionCodec]).
  */
 
 /** Default voucher/session expiry: 2100-01-01T00:00:00Z (under JS max-safe-int). */
@@ -48,7 +49,7 @@ enum class CommitStatus {
     @SerialName("replayed") REPLAYED,
 }
 
-/** Serializes a nullable u64 salt as a decimal string; reads string or number. */
+/** Serializes a nullable u64 (salt/recentSlot) as a decimal string; reads string or number. */
 object SaltStringSerializer : KSerializer<ULong?> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("Salt", PrimitiveKind.STRING).nullable
@@ -92,6 +93,8 @@ data class SessionRequest(
     val modes: List<SessionMode> = emptyList(),
     val pullVoucherStrategy: SessionPullVoucherStrategy? = null,
     val recentBlockhash: String? = null,
+    /** Server-prefetched current slot; the program's `open_slot` PDA seed the client echoes on open. */
+    @Serializable(with = SaltStringSerializer::class) val recentSlot: ULong? = null,
 )
 
 @Serializable
@@ -104,6 +107,8 @@ data class OpenPayload(
     val mint: String? = null,
     @Serializable(with = SaltStringSerializer::class) val salt: ULong? = null,
     val gracePeriod: Long? = null,
+    /** The program's `open_slot` channel PDA seed; the server re-derives and persists it. */
+    @Serializable(with = SaltStringSerializer::class) val recentSlot: ULong? = null,
     val transaction: String? = null,
     val tokenAccount: String? = null,
     val approvedAmount: String? = null,
@@ -123,11 +128,12 @@ data class OpenPayload(
             mint: String,
             salt: ULong,
             gracePeriod: UInt,
+            recentSlot: ULong,
             authorizedSigner: String,
             signature: String,
         ): OpenPayload = OpenPayload(
             mode = mode, channelId = channelId, deposit = deposit, payer = payer, payee = payee,
-            mint = mint, salt = salt, gracePeriod = gracePeriod.toLong(),
+            mint = mint, salt = salt, gracePeriod = gracePeriod.toLong(), recentSlot = recentSlot,
             authorizedSigner = authorizedSigner, signature = signature,
         )
 
@@ -160,7 +166,7 @@ data class VoucherData(
     val expiresAt: Long,
     val nonce: Long? = null,
 ) {
-    /** The 48-byte Ed25519 preimage for this voucher. */
+    /** The 50-byte magic-prefixed Ed25519 preimage for this voucher. */
     fun messageBytes(): ByteArray {
         val amount = cumulative.toULongOrNull()
             ?: throw MppException.InvalidTransaction("invalid voucher cumulative: $cumulative")

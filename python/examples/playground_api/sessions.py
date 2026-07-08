@@ -144,7 +144,7 @@ async def receipt(channel_id: str) -> JSONResponse:
     """Settle-status poll for a channel — mirrors the TS playground's receipt route.
 
     Settlement is out-of-band (idle-close watchdog), so a client polls this for
-    the settled signature once the channel finalizes.
+    the settled signature once the channel is sealed.
     """
     state = await session.core().store().get_channel(channel_id)
     if state is None:
@@ -154,7 +154,7 @@ async def receipt(channel_id: str) -> JSONResponse:
             "channelId": channel_id,
             "cumulative": str(state.cumulative),
             "deposit": str(state.deposit),
-            "finalized": state.finalized,
+            "sealed": state.sealed,
             "settledSignature": state.settled_signature,
         }
     )

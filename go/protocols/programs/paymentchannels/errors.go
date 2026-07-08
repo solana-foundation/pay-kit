@@ -82,6 +82,8 @@ const (
 	VoucherMessageMismatchError PaymentChannelsError = 0xEC
 	// VoucherSignerMismatchError - Voucher signer does not match channel authorized_signer
 	VoucherSignerMismatchError PaymentChannelsError = 0xED
+	// VoucherBadMagicError - Voucher payload magic prefix is invalid
+	VoucherBadMagicError PaymentChannelsError = 0xEE
 	// InvalidRecipientCountError - num_recipients outside [0, 32]
 	InvalidRecipientCountError PaymentChannelsError = 0x104
 	// InvalidSplitConfigError - Each shareBps must be non-zero and Σbps must be at most 10_000
@@ -100,15 +102,19 @@ const (
 	PayerPayeeMustDifferError PaymentChannelsError = 0x7D1
 	// InvalidAuthorizedSignerError - authorized_signer must be a valid Ed25519 public key
 	InvalidAuthorizedSignerError PaymentChannelsError = 0x7D2
+	// OpenSlotOutOfWindowError - open_slot is in the future or older than the allowed slot window
+	OpenSlotOutOfWindowError PaymentChannelsError = 0x7D3
 	// TopUpDepositOverflowError - Deposit must be non-zero
 	TopUpDepositOverflowError PaymentChannelsError = 0x834
-	// FinalizeDeadlineOverflowError - Deadline overflow on grace period
-	FinalizeDeadlineOverflowError PaymentChannelsError = 0x898
+	// SealDeadlineOverflowError - Deadline overflow on grace period
+	SealDeadlineOverflowError PaymentChannelsError = 0x898
+	// SealGracePeriodNotElapsedError - Grace period has not elapsed yet
+	SealGracePeriodNotElapsedError PaymentChannelsError = 0x899
 	// PayerAlreadyWithdrawnError - Payer refund has already been claimed
 	PayerAlreadyWithdrawnError PaymentChannelsError = 0x8FC
 	// RefundCalculationOverflowError - Payer refund amount calculation underflow
 	RefundCalculationOverflowError PaymentChannelsError = 0x8FD
-	// ChannelNotDistributableError - Channel is not in OPEN or FINALIZED
+	// ChannelNotDistributableError - Channel is not in OPEN or SEALED
 	ChannelNotDistributableError PaymentChannelsError = 0x960
 	// TreasuryAccountMismatchError - Treasury token account is not ATA(TREASURY_OWNER, mint, token_program)
 	TreasuryAccountMismatchError PaymentChannelsError = 0x961
@@ -132,10 +138,12 @@ const (
 	DistributePoolOverflowError PaymentChannelsError = 0x96A
 	// DistributeBalanceCalculationOverflowError - Channel rent rebalance calculation underflow
 	DistributeBalanceCalculationOverflowError PaymentChannelsError = 0x96B
-	// DistributePayerBalanceOverflowError - Payer lamports overflow on rent refund
-	DistributePayerBalanceOverflowError PaymentChannelsError = 0x96C
+	// RentPayerBalanceOverflowError - Rent payer lamports overflow on channel deallocation
+	RentPayerBalanceOverflowError PaymentChannelsError = 0x96C
 	// DistributeTransferQueueOverflowError - Transfer queue capacity exceeded
 	DistributeTransferQueueOverflowError PaymentChannelsError = 0x96D
+	// ChannelCloseTooEarlyError - Channel cannot be fully closed until clock.slot > open_slot + OPEN_SLOT_WINDOW
+	ChannelCloseTooEarlyError PaymentChannelsError = 0x96E
 )
 
 func (e PaymentChannelsError) Error() string {
@@ -208,6 +216,8 @@ func (e PaymentChannelsError) Error() string {
 		return "Reserved (formerly: Ed25519 message does not match Borsh voucher payload)"
 	case VoucherSignerMismatchError:
 		return "Voucher signer does not match channel authorized_signer"
+	case VoucherBadMagicError:
+		return "Voucher payload magic prefix is invalid"
 	case InvalidRecipientCountError:
 		return "num_recipients outside [0, 32]"
 	case InvalidSplitConfigError:
@@ -226,16 +236,20 @@ func (e PaymentChannelsError) Error() string {
 		return "Payer and payee must be different accounts"
 	case InvalidAuthorizedSignerError:
 		return "authorized_signer must be a valid Ed25519 public key"
+	case OpenSlotOutOfWindowError:
+		return "open_slot is in the future or older than the allowed slot window"
 	case TopUpDepositOverflowError:
 		return "Deposit must be non-zero"
-	case FinalizeDeadlineOverflowError:
+	case SealDeadlineOverflowError:
 		return "Deadline overflow on grace period"
+	case SealGracePeriodNotElapsedError:
+		return "Grace period has not elapsed yet"
 	case PayerAlreadyWithdrawnError:
 		return "Payer refund has already been claimed"
 	case RefundCalculationOverflowError:
 		return "Payer refund amount calculation underflow"
 	case ChannelNotDistributableError:
-		return "Channel is not in OPEN or FINALIZED"
+		return "Channel is not in OPEN or SEALED"
 	case TreasuryAccountMismatchError:
 		return "Treasury token account is not ATA(TREASURY_OWNER, mint, token_program)"
 	case InvalidTreasuryTokenAccountError:
@@ -258,10 +272,12 @@ func (e PaymentChannelsError) Error() string {
 		return "Distribution pool calculation underflow"
 	case DistributeBalanceCalculationOverflowError:
 		return "Channel rent rebalance calculation underflow"
-	case DistributePayerBalanceOverflowError:
-		return "Payer lamports overflow on rent refund"
+	case RentPayerBalanceOverflowError:
+		return "Rent payer lamports overflow on channel deallocation"
 	case DistributeTransferQueueOverflowError:
 		return "Transfer queue capacity exceeded"
+	case ChannelCloseTooEarlyError:
+		return "Channel cannot be fully closed until clock.slot > open_slot + OPEN_SLOT_WINDOW"
 	default:
 		return fmt.Sprintf("unknown error: %d", e)
 	}

@@ -87,10 +87,10 @@ struct Base58Tests {
 
     @Test
     func rejectsInvalidCharacters() {
-        #expect(throws: MppError.invalidBase58) {
+        #expect(throws: PayKitError.invalidBase58) {
             _ = try Base58.decode("0OIl")
         }
-        #expect(throws: MppError.invalidBase58) {
+        #expect(throws: PayKitError.invalidBase58) {
             _ = try Base58.decode("not~ascii")
         }
     }
@@ -100,7 +100,7 @@ enum TestHex {
     static func decode(_ string: String) throws -> Data {
         if string.isEmpty { return Data() }
         guard string.count % 2 == 0 else {
-            throw MppError.invalidJSON("odd-length hex string")
+            throw PayKitError.invalidJSON("odd-length hex string")
         }
         var bytes = [UInt8]()
         bytes.reserveCapacity(string.count / 2)
@@ -108,7 +108,7 @@ enum TestHex {
         while index < string.endIndex {
             let next = string.index(index, offsetBy: 2)
             guard let byte = UInt8(string[index..<next], radix: 16) else {
-                throw MppError.invalidJSON("bad hex byte")
+                throw PayKitError.invalidJSON("bad hex byte")
             }
             bytes.append(byte)
             index = next

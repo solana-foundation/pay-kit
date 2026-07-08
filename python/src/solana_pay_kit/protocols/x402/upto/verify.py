@@ -10,12 +10,14 @@ checks and the 14-account open-instruction validation mirror the Rust spine
 
 from __future__ import annotations
 
+import struct
 from typing import Any
 
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.paymentchannels import (
     find_associated_token_address,
+    find_channel_pda,
     find_event_authority_pda,
 )
 from solana_pay_kit._paycore.solana import (
@@ -40,6 +42,12 @@ __all__ = [
 # Payment-channels open instruction discriminator (single-byte Anchor-numeric
 # form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
+
+#: The program's openSlot freshness window (slots): open requires
+#: ``openSlot <= clock.slot`` and ``clock.slot - openSlot <= 1500``. Applied
+#: here against the challenged ``extra.recentSlot`` so a stale open fails
+#: before the operator co-signs and broadcasts.
+OPEN_SLOT_WINDOW = 1500
 
 # Rent sysvar id (slot 10 of the open instruction account layout).
 _RENT_SYSVAR_ID = "SysvarRent111111111111111111111111111111111"
@@ -71,9 +79,7 @@ def verify_upto_payload(
     the settlement voucher).
     """
     if requirements["extra"].get("assetTransferMethod") != UPTO_ASSET_TRANSFER_METHOD:
-        raise InvalidProofError(
-            f"assetTransferMethod must be {UPTO_ASSET_TRANSFER_METHOD}", code="payment_invalid"
-        )
+        raise InvalidProofError(f"assetTransferMethod must be {UPTO_ASSET_TRANSFER_METHOD}", code="payment_invalid")
 
     max_amount = parse_base_units(requirements["amount"], "amount")
     signed_max = parse_base_units(payload.get("maxAmount", ""), "maxAmount")
@@ -123,6 +129,8 @@ def validate_upto_open_instruction(
     mint: Pubkey,
     token_program: Pubkey,
     channel_id: Pubkey,
+    max_amount: int,
+    recent_slot: int | None,
 ) -> None:
     """Validate the client-built channel-open instruction byte-for-byte.
 
@@ -131,6 +139,14 @@ def validate_upto_open_instruction(
     accounts in the fixed order the program expects. ``operator`` is both the
     ``rentPayer`` (slot 1) and the ``authorizedSigner`` (slot 4). Mirrors Go's
     ``validateUptoOpenInstruction``.
+
+    The instruction's own ``openArgs`` are decoded and bound too: the channel
+    account must equal the PDA re-derived from the args' ``salt``/``openSlot``
+    (the slot-addressed channel invariant), the args' ``deposit`` must equal
+    the authorized maximum ``max_amount``, and — when the challenged
+    ``extra.recentSlot`` is known — ``openSlot`` must not be in its future and
+    must sit inside the program's freshness window, so a stale or forged slot
+    fails before the operator co-signs and broadcasts.
     """
     if len(instructions) != 1:
         raise InvalidProofError(
@@ -182,3 +198,35 @@ def validate_upto_open_instruction(
     expect(11, Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM), "associated_token_program")
     expect(12, event_authority, "event_authority")
     expect(13, program_id, "self_program")
+
+    # openArgs layout:
+    # [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+    if len(data) < 1 + 8 + 8 + 4 + 8:
+        raise InvalidProofError(f"open instruction data too short ({len(data)} bytes)", code="payment_invalid")
+    salt = struct.unpack_from("<Q", data, 1)[0]
+    deposit = struct.unpack_from("<Q", data, 9)[0]
+    open_slot = struct.unpack_from("<Q", data, 21)[0]
+
+    # Slot-addressed channel invariant: the channel account must be the PDA
+    # actually derived with the args' salt + openSlot, not just any account
+    # the payload named.
+    derived_channel, _ = find_channel_pda(payer, payee, mint, operator, salt, open_slot, program_id)
+    if derived_channel != channel_id:
+        raise InvalidProofError(f"open channel PDA {channel_id} != derived {derived_channel}", code="payment_invalid")
+    if deposit != max_amount:
+        raise InvalidProofError(
+            f"open deposit {deposit} must equal the authorized maximum {max_amount}",
+            code="payment_invalid",
+        )
+    if recent_slot is not None:
+        if open_slot > recent_slot:
+            raise InvalidProofError(
+                f"open openSlot {open_slot} is ahead of the challenged recentSlot {recent_slot}",
+                code="payment_invalid",
+            )
+        if recent_slot - open_slot > OPEN_SLOT_WINDOW:
+            raise InvalidProofError(
+                f"open openSlot {open_slot} is outside the {OPEN_SLOT_WINDOW}-slot freshness "
+                f"window of the challenged recentSlot {recent_slot}",
+                code="payment_invalid",
+            )

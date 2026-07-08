@@ -37,7 +37,7 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     Distribution,
     build_distribute_instruction,
-    build_settle_and_finalize_instructions,
+    build_settle_and_seal_instructions,
     find_channel_pda,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
@@ -50,7 +50,7 @@ __all__ = [
     "VerifyOpenTxExpected",
     "VerifyOpenTxResult",
     "cosign_and_broadcast_open",
-    "settle_and_finalize_channel",
+    "settle_and_seal_channel",
     "verify_open_tx",
     "new_open_tx_verifier",
     "new_top_up_tx_verifier",
@@ -115,6 +115,12 @@ class VerifyOpenTxExpected:
     # slot-1 check.
     operator: str = ""
     program_id: Pubkey | None = None
+    # The challenge-issued recentSlot, when the caller has it. The open
+    # instruction's own openSlot must equal it: without this bind, a payload
+    # that omits recentSlot would let a transaction built against a different
+    # slot through (and the decoded slot would then overwrite the payload).
+    # None skips the check (offline/trust-mode challenges carry no slot).
+    recent_slot: int | None = None
 
 
 @dataclass
@@ -125,6 +131,10 @@ class VerifyOpenTxResult:
     deposit: int
     grace_period: int
     salt: int
+    # open_slot is the slot stamped into the open instruction (a channel PDA
+    # seed). The caller propagates it onto the payload so the store persists
+    # it (needed to re-derive the PDA and later reclaim the channel rent).
+    open_slot: int
     # payer is the channel funder (open instruction slot 0). The caller
     # propagates it onto the payload so settle-at-close refunds the unspent
     # balance to the opener's ATA, not the recipient's.
@@ -321,13 +331,15 @@ async def verify_open_tx(
             code="invalid-payload",
         )
 
-    # Instruction data: [discriminator u8][salt u64][deposit u64][grace u32][recipients].
+    # Instruction data:
+    # [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
     data = bytes(open_ix.data)
-    if len(data) < 1 + 8 + 8 + 4:
+    if len(data) < 1 + 8 + 8 + 4 + 8:
         raise PaymentError(f"open instruction data too short ({len(data)} bytes)", code="invalid-payload")
     salt = struct.unpack_from("<Q", data, 1)[0]
     deposit = struct.unpack_from("<Q", data, 9)[0]
     grace_period = struct.unpack_from("<I", data, 17)[0]
+    open_slot = struct.unpack_from("<Q", data, 21)[0]
 
     if deposit == 0:
         raise PaymentError("open deposit must be greater than zero", code="invalid-payload")
@@ -335,12 +347,22 @@ async def verify_open_tx(
         raise PaymentError(f"open deposit {deposit} exceeds max cap {expected.max_cap}", code="invalid-payload")
 
     # Re-derive the channel PDA from the instruction's own seeds.
-    derived_channel, _ = find_channel_pda(payer, payee, mint, authorized_signer, salt, program_id)
+    derived_channel, _ = find_channel_pda(payer, payee, mint, authorized_signer, salt, open_slot, program_id)
     if derived_channel != channel:
         raise PaymentError(f"open channel PDA {channel} != derived {derived_channel}", code="invalid-payload")
     if payload.channel_id is not None and payload.channel_id != str(channel):
         raise PaymentError(
             f"openPayload.channelId {payload.channel_id} != transaction channel {channel}",
+            code="invalid-payload",
+        )
+    if payload.recent_slot is not None and payload.recent_slot != open_slot:
+        raise PaymentError(
+            f"openPayload.recentSlot {payload.recent_slot} != transaction openSlot {open_slot}",
+            code="invalid-payload",
+        )
+    if expected.recent_slot is not None and expected.recent_slot != open_slot:
+        raise PaymentError(
+            f"transaction openSlot {open_slot} != challenge recentSlot {expected.recent_slot}",
             code="invalid-payload",
         )
 
@@ -354,6 +376,7 @@ async def verify_open_tx(
         deposit=deposit,
         grace_period=grace_period,
         salt=salt,
+        open_slot=open_slot,
         payer=str(payer),
     )
 
@@ -475,7 +498,7 @@ async def confirm_transaction_signature(
         await asyncio.sleep(poll_interval_seconds)
 
 
-async def settle_and_finalize_channel(
+async def settle_and_seal_channel(
     state: ChannelState,
     *,
     merchant: Keypair,
@@ -485,7 +508,7 @@ async def settle_and_finalize_channel(
     """Build, sign, broadcast, and confirm the close settlement transaction;
     return the confirmed on-chain signature.
 
-    Mirrors the Rust/Go close path: a settle_and_finalize instruction (preceded
+    Mirrors the Rust/Go close path: a settle_and_seal instruction (preceded
     by the Ed25519 precompile when a voucher was recorded) plus a distribute
     instruction in one transaction whose fee payer is the merchant. The caller
     persists ``settled_signature`` on success.
@@ -510,8 +533,8 @@ async def settle_and_finalize_channel(
             )
         expires_at = state.highest_voucher_expires_at
 
-    settle = build_settle_and_finalize_instructions(
-        merchant=merchant_pubkey,
+    settle = build_settle_and_seal_instructions(
+        payee=merchant_pubkey,
         channel=channel,
         authorized_signer=authorized_signer,
         signature=voucher_signature,
@@ -525,7 +548,12 @@ async def settle_and_finalize_channel(
         raise PaymentError(
             f"session settlement requires an SPL token, got currency '{config.currency}'", code="invalid-config"
         )
-    payer_address = state.operator or config.recipient
+    # The channel payer (opener) is the refund destination for the unsettled
+    # remainder. It must be the payer recorded at open: falling back to
+    # another account (e.g. the recipient) would derive the wrong refund ATA
+    # and only fail after the settle transaction is built and broadcast.
+    # Mirrors Go's strict payer handling.
+    payer_address = state.operator
     if not payer_address:
         raise PaymentError(
             f"channel {state.channel_id} payer is unknown; cannot derive the refund account", code="invalid-config"
@@ -538,8 +566,8 @@ async def settle_and_finalize_channel(
         recipients=[Distribution(recipient=Pubkey.from_string(s.recipient), bps=s.bps) for s in config.splits],
         token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
         program_id=program_id,
-        # rentPayer reclaims the channel/escrow rent at finalize; it is the
-        # operator recorded as rentPayer at open.
+        # rentPayer recovers the channel/escrow rent at distribute (or via
+        # reclaim); it is the operator recorded as rentPayer at open.
         rent_payer=Pubkey.from_string(config.operator) if config.operator else None,
     )
 
@@ -549,7 +577,7 @@ async def settle_and_finalize_channel(
     signature = str(sent.value)
     # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
     # settle tx (blockhash expiry, congestion, duplicate-settle race) must raise
-    # here so the caller does NOT mark the channel finalized with an unconfirmed
+    # here so the caller does NOT mark the channel sealed with an unconfirmed
     # signature, which would defeat the re-drivable-close guard.
     await confirm_transaction_signature(rpc, signature, "settle")
     return signature

@@ -2,7 +2,7 @@ import Foundation
 
 /// Shared payment-core error. Lives in `PayCore` (not the MPP package) so both
 /// the MPP and x402 protocol layers can throw it without depending on each other.
-public enum MppError: Error, Equatable {
+public enum PayKitError: Error, Equatable {
     case invalidBase64URL
     case invalidBase58
     case invalidHeader

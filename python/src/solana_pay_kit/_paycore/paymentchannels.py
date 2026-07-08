@@ -2,8 +2,9 @@
 
 Canonical home for payment-channel PDA derivation, associated-token derivation,
 voucher preimage bytes, and the convenience instruction builders (``open``,
-``topUp``, ``settleAndFinalize``, ``distribute``, plus the Ed25519 voucher
-precompile). Shared by the MPP session flow and the x402 ``upto`` scheme; it
+``topUp``, ``settleAndSeal``, ``distribute``, ``reclaim``, plus the Ed25519
+voucher precompile). Shared by the MPP session flow and the x402 ``upto``
+scheme; it
 lives in :mod:`solana_pay_kit._paycore` so neither protocol package depends on the
 other, mirroring the Go ``paycore/paymentchannels`` layout.
 
@@ -39,7 +40,8 @@ from solana_pay_kit._paycore.solana import (
 )
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.distribute import Distribute
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.open import Open
-from solana_pay_kit.protocols.programs.paymentchannels.instructions.settleAndFinalize import SettleAndFinalize
+from solana_pay_kit.protocols.programs.paymentchannels.instructions.reclaim import Reclaim
+from solana_pay_kit.protocols.programs.paymentchannels.instructions.settleAndSeal import SettleAndSeal
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.topUp import TopUp
 from solana_pay_kit.protocols.programs.paymentchannels.types.distributeArgs import DistributeArgs
 from solana_pay_kit.protocols.programs.paymentchannels.types.distributionEntry import (
@@ -48,7 +50,7 @@ from solana_pay_kit.protocols.programs.paymentchannels.types.distributionEntry i
 from solana_pay_kit.protocols.programs.paymentchannels.types.openArgs import (
     OpenArgs as _OpenArgs,
 )
-from solana_pay_kit.protocols.programs.paymentchannels.types.settleAndFinalizeArgs import SettleAndFinalizeArgs
+from solana_pay_kit.protocols.programs.paymentchannels.types.settleAndSealArgs import SettleAndSealArgs
 from solana_pay_kit.protocols.programs.paymentchannels.types.topUpArgs import (
     TopUpArgs as _TopUpArgs,
 )
@@ -59,13 +61,15 @@ __all__ = [
     "PAYMENT_CHANNELS_PROGRAM_ID",
     "PROGRAM_ID",
     "SYSVAR_INSTRUCTIONS",
+    "VOUCHER_MAGIC",
     "Distribution",
     "OpenChannelParams",
     "TopUpParams",
     "build_distribute_instruction",
     "build_ed25519_verify_instruction",
     "build_open_instruction",
-    "build_settle_and_finalize_instructions",
+    "build_reclaim_instruction",
+    "build_settle_and_seal_instructions",
     "build_top_up_instruction",
     "find_associated_token_address",
     "find_channel_pda",
@@ -76,12 +80,18 @@ __all__ = [
 
 #: The Ed25519 native signature-verification precompile program id. A settle
 #: that redeems a voucher must place this instruction immediately before
-#: settle_and_finalize so the program confirms the voucher signature by index.
+#: settle_and_seal so the program confirms the voucher signature by index.
 ED25519_PROGRAM_ID = "Ed25519SigVerify111111111111111111111111111"
 
-#: The Solana instructions sysvar, read by settle_and_finalize to locate the
+#: The Solana instructions sysvar, read by settle_and_seal to locate the
 #: preceding Ed25519 precompile by index.
 SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
+
+#: Constant 2-byte magic prefixed to every signed voucher payload
+#: (``[0x56, 0x01]``). Signers prepend it; verifiers (and the program, which
+#: rejects a bad prefix with ``voucherBadMagic``) check it. It lives only in
+#: the signed byte payload, never in voucher wire JSON.
+VOUCHER_MAGIC = bytes([0x56, 0x01])
 
 # Canonical payment-channels program id deployed to the network. Matches the
 # generated client's default; used for every PDA derivation and instruction.
@@ -124,11 +134,11 @@ class OpenChannelParams:
     Attributes:
         payer: The account funding the channel and signing the open.
         rent_payer: The operator / fee payer that funds the channel PDA +
-            escrow ATA rent at open (and reclaims it at finalize); a SIGNER on
-            the open instruction. It is always the same key used as the
-            transaction fee payer, so a single operator signature covers both
-            roles. Not a wire/payload field. ``None`` defaults to ``payer``
-            (the payer is its own rent payer / fee payer).
+            escrow ATA rent at open (and recovers it at distribute/reclaim); a
+            SIGNER on the open instruction. It is always the same key used as
+            the transaction fee payer, so a single operator signature covers
+            both roles. Not a wire/payload field. ``None`` defaults to
+            ``payer`` (the payer is its own rent payer / fee payer).
         payee: The counterparty the channel pays out to.
         mint: The SPL token mint the channel is denominated in.
         authorized_signer: The key authorized to sign vouchers that redeem
@@ -138,6 +148,11 @@ class OpenChannelParams:
         deposit: The initial token amount deposited into the channel.
         grace_period: Seconds the payee retains to redeem after the channel
             closes before funds are reclaimable by the payer.
+        open_slot: The slot the channel is opened at (part of the channel PDA
+            seeds, so the address is per-incarnation). The program requires
+            ``open_slot <= clock.slot`` and ``clock.slot - open_slot <= 1500``,
+            so callers should fetch the current slot via RPC ``getSlot`` and
+            pass it here.
         recipients: Optional payout split; each entry's basis points apportion
             the channel's payouts. Empty means a single implicit payee.
         token_program: The token program owning the mint (SPL Token or
@@ -153,6 +168,7 @@ class OpenChannelParams:
     salt: int
     deposit: int
     grace_period: int
+    open_slot: int
     recipients: list[Distribution] = field(default_factory=list)
     token_program: Pubkey = field(default_factory=lambda: Pubkey.from_string(TOKEN_PROGRAM))
     program_id: Pubkey = field(default_factory=lambda: PROGRAM_ID)
@@ -180,14 +196,16 @@ class TopUpParams:
 
 
 def voucher_message_bytes(channel_id: Pubkey, cumulative: int, expires_at: int) -> bytes:
-    """Return the 48-byte voucher preimage signed by the authorized signer.
+    """Return the 50-byte voucher preimage signed by the authorized signer.
 
     The signer signs this exact byte string to authorize redeeming
     ``cumulative`` lamports from the channel up to ``expires_at``.
 
-    Layout: ``channelId`` (32) || ``cumulativeAmount`` as little-endian u64
-    (offset 32) || ``expiresAt`` as little-endian i64 (offset 40). Encoded by
-    the generated ``VoucherArgs`` Borsh layout.
+    Layout: ``magic`` :data:`VOUCHER_MAGIC` (2) || ``channelId`` (32, offset 2)
+    || ``cumulativeAmount`` as little-endian u64 (offset 34) || ``expiresAt``
+    as little-endian i64 (offset 42). Encoded by the generated ``VoucherArgs``
+    Borsh layout; the program rejects a missing/mismatched magic with
+    ``voucherBadMagic``.
 
     Args:
         channel_id: The channel PDA the voucher authorizes spending from.
@@ -205,6 +223,7 @@ def voucher_message_bytes(channel_id: Pubkey, cumulative: int, expires_at: int) 
     return bytes(
         VoucherArgs.layout.build(
             {
+                "magic": list(VOUCHER_MAGIC),
                 "channelId": channel_id,
                 "cumulativeAmount": cumulative,
                 "expiresAt": expires_at,
@@ -219,15 +238,18 @@ def find_channel_pda(
     mint: Pubkey,
     authorized_signer: Pubkey,
     salt: int,
+    open_slot: int,
     program_id: Pubkey = PROGRAM_ID,
 ) -> tuple[Pubkey, int]:
     """Derive the channel PDA, defaulting to the production program id.
 
     The channel address is fully determined by its payer, payee, mint,
-    authorized signer, and salt, so the same inputs always resolve to the same
-    channel.
+    authorized signer, salt, and open slot, so the same inputs always resolve
+    to the same channel. The open slot makes the address per-incarnation: the
+    same parameters opened at a different slot derive a different channel.
 
-    Seeds: ``["channel", payer, payee, mint, authorizedSigner, salt u64 LE]``.
+    Seeds: ``["channel", payer, payee, mint, authorizedSigner, salt u64 LE,
+    openSlot u64 LE]``.
 
     Args:
         payer: The account funding the channel.
@@ -236,6 +258,8 @@ def find_channel_pda(
         authorized_signer: The key authorized to sign vouchers for the channel.
         salt: A caller-chosen u64 disambiguating channels with otherwise
             identical seeds, packed little-endian into the seeds.
+        open_slot: The slot the channel is opened at, packed little-endian
+            into the seeds.
         program_id: The payment-channels program to derive against; defaults to
             the production deployment.
 
@@ -250,6 +274,7 @@ def find_channel_pda(
             bytes(mint),
             bytes(authorized_signer),
             struct.pack("<Q", salt),
+            struct.pack("<Q", open_slot),
         ],
         program_id,
     )
@@ -324,6 +349,8 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
         raise ValueError(f"deposit {params.deposit} does not fit in u64")
     if not 0 <= params.grace_period <= 0xFFFF_FFFF:
         raise ValueError(f"grace_period {params.grace_period} does not fit in u32")
+    if not 0 <= params.open_slot <= 0xFFFF_FFFF_FFFF_FFFF:
+        raise ValueError(f"open_slot {params.open_slot} does not fit in u64")
     for entry in params.recipients:
         if not 0 <= entry.bps <= 0xFFFF:
             raise ValueError(f"recipient bps {entry.bps} does not fit in u16")
@@ -334,6 +361,7 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
         params.mint,
         params.authorized_signer,
         params.salt,
+        params.open_slot,
         params.program_id,
     )
     payer_token_account, _ = find_associated_token_address(params.payer, params.mint, params.token_program)
@@ -344,6 +372,7 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
         salt=params.salt,
         deposit=params.deposit,
         gracePeriod=params.grace_period,
+        openSlot=params.open_slot,
         recipients=[DistributionEntry(recipient=entry.recipient, bps=entry.bps) for entry in params.recipients],
     )
     # rentPayer is the operator / fee payer that funds the channel rent. It is
@@ -412,7 +441,7 @@ def build_ed25519_verify_instruction(authorized_signer: Pubkey, signature: bytes
     """Build the Ed25519 precompile instruction that verifies a voucher signature.
 
     The on-chain settle reads the voucher's Ed25519 signature from a sibling
-    instruction; this precompile must sit immediately before ``settleAndFinalize``
+    instruction; this precompile must sit immediately before ``settleAndSeal``
     in the transaction. The public key, signature, and message all live in this
     instruction's own data, so the three offset fields point here (the ``0xffff``
     markers mean "current instruction"). Layout mirrors the Rust/Go builders:
@@ -456,9 +485,9 @@ def treasury_owner() -> Pubkey:
     return Pubkey.from_string("Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
 
 
-def build_settle_and_finalize_instructions(
+def build_settle_and_seal_instructions(
     *,
-    merchant: Pubkey,
+    payee: Pubkey,
     channel: Pubkey,
     authorized_signer: Pubkey,
     signature: bytes | None,
@@ -466,11 +495,11 @@ def build_settle_and_finalize_instructions(
     expires_at: int,
     program_id: Pubkey = PROGRAM_ID,
 ) -> list[Instruction]:
-    """Build the settle-and-finalize instruction set.
+    """Build the settle-and-seal instruction set.
 
     When a voucher was recorded, prepend the Ed25519 precompile that verifies it
     (the program reads the signature from the sibling instruction by index) and
-    set ``hasVoucher``. Returns ``[ed25519?, settleAndFinalize]`` in the order
+    set ``hasVoucher``. Returns ``[ed25519?, settleAndSeal]`` in the order
     the program expects.
     """
     instructions: list[Instruction] = []
@@ -480,14 +509,14 @@ def build_settle_and_finalize_instructions(
         instructions.append(build_ed25519_verify_instruction(authorized_signer, signature, message))
         has_voucher = 1
 
-    settle = SettleAndFinalize(
+    settle = SettleAndSeal(
         {
             # The program reads the voucher from the preceding ed25519 precompile;
-            # settle_and_finalize carries only the hasVoucher flag.
-            "settleAndFinalizeArgs": SettleAndFinalizeArgs(hasVoucher=has_voucher),
+            # settle_and_seal carries only the hasVoucher flag.
+            "settleAndSealArgs": SettleAndSealArgs(hasVoucher=has_voucher),
         },
         {
-            "merchant": merchant,
+            "payee": payee,
             "channel": channel,
             "instructionsSysvar": Pubkey.from_string(SYSVAR_INSTRUCTIONS),
         },
@@ -515,8 +544,9 @@ def build_distribute_instruction(
     recipient (appended as writable remaining accounts, mirroring the Rust/Go
     builders).
 
-    ``rent_payer`` is the operator recorded at open; it reclaims the channel
-    PDA + escrow ATA rent at finalize (writable, not a signer). It is required.
+    ``rent_payer`` is the operator recorded at open; it recovers the channel
+    PDA + escrow ATA rent at distribute (or via ``reclaim`` once the reclaim
+    gate unlocks; writable, not a signer). It is required.
     """
     if rent_payer is None:
         raise ValueError("rent_payer is required (the operator recorded at open)")
@@ -551,4 +581,25 @@ def build_distribute_instruction(
         },
         program_id=program_id,
         remaining_accounts=remaining or None,
+    )
+
+
+def build_reclaim_instruction(
+    *,
+    channel: Pubkey,
+    rent_payer: Pubkey,
+    program_id: Pubkey = PROGRAM_ID,
+) -> Instruction:
+    """Build the permissionless ``reclaim`` instruction that recovers channel rent.
+
+    The program allows it only once the channel status is ``distributed`` AND
+    ``clock.slot > open_slot + 1500``; it closes the channel PDA and sends its
+    lamports to ``rent_payer`` (which must be the rent payer recorded at open).
+    """
+    return Reclaim(
+        {
+            "channel": channel,
+            "rentPayer": rent_payer,
+        },
+        program_id=program_id,
     )
