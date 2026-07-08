@@ -429,7 +429,7 @@ func TestValidateUptoOpenInstructionAcceptsWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, uint64Ptr(55_555))
 	if err != nil {
 		t.Fatalf("expected valid open to pass, got %v", err)
 	}
@@ -455,7 +455,7 @@ func TestValidateUptoOpenInstructionRejectsWrongRentPayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, uint64Ptr(55_555))
 	if err == nil || !strings.Contains(err.Error(), "rent_payer mismatch") {
 		t.Fatalf("expected rent_payer mismatch, got %v", err)
 	}
@@ -469,7 +469,7 @@ func TestValidateUptoOpenInstructionRejectsForeignProgram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, operator, operator, operator, solana.TokenProgramID, operator)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, operator, operator, operator, solana.TokenProgramID, operator, 1_000_000, nil)
 	if err == nil || !strings.Contains(err.Error(), "unexpected program") {
 		t.Fatalf("expected foreign program rejection, got %v", err)
 	}
@@ -492,7 +492,7 @@ func TestValidateUptoOpenInstructionRejectsExtraInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, uint64Ptr(55_555))
 	if err == nil || !strings.Contains(err.Error(), "exactly one instruction") {
 		t.Fatalf("expected extra instruction rejection, got %v", err)
 	}
@@ -512,9 +512,55 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	wrongPayee := testutil.NewPrivateKey().PublicKey()
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, wrongPayee, mint, solana.TokenProgramID, channel)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, wrongPayee, mint, solana.TokenProgramID, channel, 1_000_000, uint64Ptr(55_555))
 	if err == nil || !strings.Contains(err.Error(), "payee mismatch") {
 		t.Fatalf("expected payee mismatch, got %v", err)
+	}
+}
+
+func uint64Ptr(v uint64) *uint64 { return &v }
+
+func TestValidateUptoOpenInstructionBindsOpenArgs(t *testing.T) {
+	payer := testutil.NewPrivateKey().PublicKey()
+	payee := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+	operator := testutil.NewPrivateKey().PublicKey()
+	params := paymentchannels.OpenChannelParams{
+		Payer: payer, RentPayer: operator, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Salt: 7, OpenSlot: 55_555, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_555)
+	ix, _ := paymentchannels.BuildOpenInstruction(params)
+	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+
+	check := func(maxAmount uint64, recentSlot *uint64) error {
+		return validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, maxAmount, recentSlot)
+	}
+	// Deposit must equal the authorized maximum.
+	if err := check(1_000_001, uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "authorized maximum") {
+		t.Fatalf("expected deposit binding rejection, got %v", err)
+	}
+	// openSlot ahead of the challenged recentSlot rejects.
+	if err := check(1_000_000, uint64Ptr(55_554)); err == nil || !strings.Contains(err.Error(), "ahead of the challenged") {
+		t.Fatalf("expected future-slot rejection, got %v", err)
+	}
+	// openSlot outside the 1500-slot freshness window rejects.
+	if err := check(1_000_000, uint64Ptr(55_555+1501)); err == nil || !strings.Contains(err.Error(), "freshness window") {
+		t.Fatalf("expected stale-slot rejection, got %v", err)
+	}
+	// At the window edge (and with an unknown challenged slot) it verifies.
+	if err := check(1_000_000, uint64Ptr(55_555+1500)); err != nil {
+		t.Fatalf("window edge must verify: %v", err)
+	}
+	if err := check(1_000_000, nil); err != nil {
+		t.Fatalf("nil challenged slot must skip the window check: %v", err)
+	}
+	// A channel account that is not the PDA derived from the args fails the
+	// bind (the slot-5 account check fires first on the mismatch).
+	other, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_556)
+	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, other, 1_000_000, uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "channel") {
+		t.Fatalf("expected channel PDA binding rejection, got %v", err)
 	}
 }
 
@@ -532,7 +578,7 @@ func TestValidateUptoOpenInstructionRejectsWrongTokenProgram(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.Token2022ProgramID, channel)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.Token2022ProgramID, channel, 1_000_000, uint64Ptr(55_555))
 	if err == nil || (!strings.Contains(err.Error(), "payer_token_account mismatch") && !strings.Contains(err.Error(), "token_program mismatch")) {
 		t.Fatalf("expected token program binding rejection, got %v", err)
 	}
@@ -1100,7 +1146,7 @@ func TestValidateUptoOpenInstructionRejectsNonOpenDiscriminator(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
 	evil := solana.NewInstruction(paymentchannels.ProgramPubkey(), solana.AccountMetaSlice{}, []byte{99})
 	tx, _ := solana.NewTransaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, payer, solana.TokenProgramID, payer)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, payer, solana.TokenProgramID, payer, 1_000_000, nil)
 	if err == nil || !strings.Contains(err.Error(), "not a channel-open") {
 		t.Fatalf("expected non-open discriminator rejection, got %v", err)
 	}

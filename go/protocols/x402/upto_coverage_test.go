@@ -501,7 +501,7 @@ func TestValidateUptoOpenInstructionStructuralRejections(t *testing.T) {
 		return tx
 	}
 	validate := func(tx *solana.Transaction, program solana.PublicKey) error {
-		return validateUptoOpenInstruction(tx, program, operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
+		return validateUptoOpenInstruction(tx, program, operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, nil)
 	}
 
 	// More than one instruction.

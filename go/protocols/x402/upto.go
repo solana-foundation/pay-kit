@@ -476,7 +476,16 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction: %w", err)
 	}
-	if err := validateUptoOpenInstruction(tx, programID, u.operator, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID); err != nil {
+	// The challenged recentSlot at verify time: fetched fresh, so the
+	// transaction's openSlot (stamped from the earlier challenge) must sit
+	// at-or-before it inside the program freshness window. A failed fetch
+	// skips the window check (nil); the PDA bind below still holds and the
+	// program enforces the window at broadcast.
+	var challengedSlot *uint64
+	if _, slot, slotErr := u.recentLifetime(); slotErr == nil {
+		challengedSlot = &slot
+	}
+	if err := validateUptoOpenInstruction(tx, programID, u.operator, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID, max, challengedSlot); err != nil {
 		return nil, err
 	}
 	if !transactionFeePayerIs(tx, u.operator) {
@@ -703,7 +712,13 @@ func (u *X402Upto) recentLifetime() (string, uint64, error) {
 	return out.Value.Blockhash.String(), out.Context.Slot, nil
 }
 
-func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey) error {
+// openSlotWindow is the program's openSlot freshness window (slots): open
+// requires openSlot <= clock.slot and clock.slot - openSlot <= 1500. Applied
+// pre-broadcast against the challenged extra.recentSlot so a stale or forged
+// slot fails before the operator co-signs.
+const openSlotWindow = 1500
+
+func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey, maxAmount uint64, recentSlot *uint64) error {
 	keys := tx.Message.AccountKeys
 	instructions := tx.Message.Instructions
 	if len(instructions) != 1 {
@@ -788,6 +803,40 @@ func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, a
 	}
 	if err := expect(13, programID, "self_program"); err != nil {
 		return err
+	}
+
+	// openArgs layout:
+	// [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+	if len(ix.Data) < 1+8+8+4+8 {
+		return fmt.Errorf("open instruction data too short (%d bytes)", len(ix.Data))
+	}
+	salt := binary.LittleEndian.Uint64(ix.Data[1:9])
+	deposit := binary.LittleEndian.Uint64(ix.Data[9:17])
+	openSlot := binary.LittleEndian.Uint64(ix.Data[21:29])
+
+	// Slot-addressed channel invariant: the channel account must be the PDA
+	// actually derived with the args' salt + openSlot, not just any account
+	// the payload named.
+	derived, _, err := paymentchannels.FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, openSlot, programID)
+	if err != nil {
+		return fmt.Errorf("derive channel PDA: %w", err)
+	}
+	if !derived.Equals(channelID) {
+		return fmt.Errorf("open channel PDA %s != derived %s", channelID, derived)
+	}
+	if deposit != maxAmount {
+		return fmt.Errorf("open deposit %d must equal the authorized maximum %d", deposit, maxAmount)
+	}
+	if recentSlot != nil {
+		if openSlot > *recentSlot {
+			return fmt.Errorf("open openSlot %d is ahead of the challenged recentSlot %d", openSlot, *recentSlot)
+		}
+		if *recentSlot-openSlot > openSlotWindow {
+			return fmt.Errorf(
+				"open openSlot %d is outside the %d-slot freshness window of the challenged recentSlot %d",
+				openSlot, openSlotWindow, *recentSlot,
+			)
+		}
 	}
 	return nil
 }
