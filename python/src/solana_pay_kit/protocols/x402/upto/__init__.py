@@ -291,6 +291,15 @@ class X402Upto:
                     "payment-channel asset transfer method requires openTransaction (pull)", code="payment_invalid"
                 )
             account_keys, instructions = _decode_transaction(open_tx)
+            # The challenged recentSlot at verify time: the requirement is
+            # recomputed with a fresh slot from the recent-state provider, so
+            # the transaction's openSlot (stamped from the earlier challenge)
+            # must sit at-or-before it, inside the program freshness window.
+            # None (provider unwired / fetch failed) skips the window check;
+            # the PDA bind below still holds and the program enforces the
+            # window at broadcast.
+            raw_slot = requirements["extra"].get("recentSlot")
+            challenged_slot = int(raw_slot) if isinstance(raw_slot, (int, str)) and str(raw_slot).isdigit() else None
             validate_upto_open_instruction(
                 account_keys,
                 instructions,
@@ -301,6 +310,8 @@ class X402Upto:
                 mint=mint,
                 token_program=token_program,
                 channel_id=channel_id,
+                max_amount=max_amount,
+                recent_slot=challenged_slot,
             )
             if not account_keys or account_keys[0] != operator:
                 raise InvalidProofError(
