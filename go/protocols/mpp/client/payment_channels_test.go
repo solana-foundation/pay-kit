@@ -14,9 +14,6 @@ import (
 )
 
 //go:fix inline
-func u64ptr(v uint64) *uint64 { return new(v) }
-
-//go:fix inline
 func strptr(v string) *string { return new(v) }
 
 // testRecentSlot is the challenge recentSlot used across these tests (the
@@ -243,12 +240,13 @@ func TestDerivePaymentChannelOpenRequiresChallengeRecentSlot(t *testing.T) {
 	recipient := testutil.NewPrivateKey().PublicKey()
 	request := testSessionRequest(operator, recipient)
 	request.RecentSlot = nil
+	salt := uint64(1)
 
 	_, err := DerivePaymentChannelOpen(
 		request,
 		testutil.NewPrivateKey().PublicKey(),
 		testutil.NewPrivateKey().PublicKey(),
-		PaymentChannelOpenOptions{Salt: u64ptr(1)},
+		PaymentChannelOpenOptions{Salt: &salt},
 	)
 	if err == nil || !strings.Contains(err.Error(), "recentSlot") {
 		t.Fatalf("error = %v, want missing-recentSlot rejection", err)
@@ -256,11 +254,12 @@ func TestDerivePaymentChannelOpenRequiresChallengeRecentSlot(t *testing.T) {
 
 	// An explicit options override satisfies the requirement without a
 	// challenge openSlot, and wins over the challenge when both are set.
+	overrideSlot := uint64(777)
 	open, err := DerivePaymentChannelOpen(
 		request,
 		testutil.NewPrivateKey().PublicKey(),
 		testutil.NewPrivateKey().PublicKey(),
-		PaymentChannelOpenOptions{Salt: u64ptr(1), OpenSlot: u64ptr(777)},
+		PaymentChannelOpenOptions{Salt: &salt, OpenSlot: &overrideSlot},
 	)
 	if err != nil {
 		t.Fatalf("DerivePaymentChannelOpen with override: %v", err)
