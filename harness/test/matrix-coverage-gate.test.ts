@@ -954,6 +954,145 @@ const DEAD_OR_ALIAS: Record<string, string> = {
 const SEP = "::";
 const cellKeys = [...Object.keys(COVERED), ...Object.keys(KNOWN_GAP)];
 
+// Explicit applicable-cell universe. This is intentionally NOT derived from
+// COVERED/KNOWN_GAP: deleting a single covered cell must leave an expected
+// (path,outcome) behind so the gate turns red even if that path and outcome are
+// still represented elsewhere.
+const APPLICABLE_CELLS: string[] = [
+  "mpp-charge-canonical-json::accept",
+  "mpp-charge-challenge-issue::accept",
+  "mpp-charge-compute-budget-cap::compute-limit-over-cap",
+  "mpp-charge-compute-budget-cap::compute-price-over-cap",
+  "mpp-charge-cross-route-replay::charge_request_mismatch",
+  "mpp-charge-cross-server-portability::challenge_verification_failed",
+  "mpp-charge-decimals::accept",
+  "mpp-charge-decimals::no-matching-transfer",
+  "mpp-charge-idempotent-resubmit::signature_consumed",
+  "mpp-charge-network-mismatch::wrong-network",
+  "mpp-charge-network-mismatch::wrong_network",
+  "mpp-charge-pubkey-currency::accept",
+  "mpp-charge-pull-build-client::accept",
+  "mpp-charge-pull-verify-settle-server::accept",
+  "mpp-charge-pull-verify-settle-server::challenge_expired",
+  "mpp-charge-pull-verify-settle-server::challenge_route_mismatch",
+  "mpp-charge-pull-verify-settle-server::challenge_verification_failed",
+  "mpp-charge-pull-verify-settle-server::charge_request_mismatch",
+  "mpp-charge-pull-verify-settle-server::compute-price-over-cap",
+  "mpp-charge-pull-verify-settle-server::fee-payer-is-funds-source",
+  "mpp-charge-pull-verify-settle-server::fee-payer-not-authority",
+  "mpp-charge-pull-verify-settle-server::no-matching-transfer",
+  "mpp-charge-pull-verify-settle-server::payment_invalid",
+  "mpp-charge-pull-verify-settle-server::signature_consumed",
+  "mpp-charge-pull-verify-settle-server::unexpected-instruction",
+  "mpp-charge-pull-verify-settle-server::wrong_network",
+  "mpp-charge-push-build-client::accept",
+  "mpp-charge-push-verify-server::accept",
+  "mpp-charge-splits-native-sol::accept",
+  "mpp-charge-splits-reject::splits-exceed-amount",
+  "mpp-charge-splits-reject::too-many-splits",
+  "mpp-charge-splits-spl-token::accept",
+  "mpp-charge-splits-token2022::accept",
+  "mpp-charge-symbol-currency::accept",
+  "mpp-session-challenge-issue::accept",
+  "mpp-session-close-settle::accept",
+  "mpp-session-commit-deliver::accept",
+  "mpp-session-idle-close::accept",
+  "mpp-session-open-pull-clientVoucher::accept",
+  "mpp-session-open-pull-operatedVoucher::accept",
+  "mpp-session-open-push-client-submit::accept",
+  "mpp-session-open-push-client-submit::distribution-hash-mismatch",
+  "mpp-session-open-push-client-submit::lookup-tables-unsupported",
+  "mpp-session-open-push-client-submit::no-open-instruction",
+  "mpp-session-open-push-client-submit::open-authorized-signer-mismatch",
+  "mpp-session-open-push-client-submit::open-channel-id-mismatch",
+  "mpp-session-open-push-client-submit::open-channel-pda-mismatch",
+  "mpp-session-open-push-client-submit::open-deposit-must-be-positive",
+  "mpp-session-open-push-client-submit::open-mint-mismatch",
+  "mpp-session-open-push-client-submit::open-recipient-mismatch",
+  "mpp-session-open-push-client-submit::open-rent-payer-mismatch",
+  "mpp-session-open-push-client-submit::open-too-few-accounts",
+  "mpp-session-open-push-client-submit::signature-binding-mismatch",
+  "mpp-session-open-push-client-submit::tx-not-found",
+  "mpp-session-open-push-server-submit::accept",
+  "mpp-session-topup::accept",
+  "mpp-session-topup::deposit-over-cap",
+  "mpp-session-topup::topup-amount-delta-mismatch",
+  "mpp-session-topup::tx-failed-onchain",
+  "mpp-session-topup::tx-not-found",
+  "mpp-session-voucher-canonical-bytes::accept",
+  "mpp-session-voucher::accepted",
+  "mpp-session-voucher::below-min-delta",
+  "mpp-session-voucher::channel-close-pending",
+  "mpp-session-voucher::channel-finalized",
+  "mpp-session-voucher::cumulative-not-monotonic",
+  "mpp-session-voucher::exceeds-deposit",
+  "mpp-session-voucher::expired",
+  "mpp-session-voucher::expiry-too-soon",
+  "mpp-session-voucher::invalid-cumulative",
+  "mpp-session-voucher::invalid-signature",
+  "mpp-session-voucher::replayed",
+  "mpp-subscription-activation-push::accept",
+  "mpp-subscription-activation-transaction::accept",
+  "mpp-subscription-activation-validate::accept",
+  "mpp-subscription-renewal::accept",
+  "x402-batch-client-voucher::accept",
+  "x402-batch-settle-batch-server::accept",
+  "x402-batch-verify-payment-server::accept",
+  "x402-exact-build-client::accept",
+  "x402-exact-challenge-issue::accept",
+  "x402-exact-settle-server::accept",
+  "x402-exact-settle-server::charge_request_mismatch",
+  "x402-exact-settle-server::invalid_gate",
+  "x402-exact-settle-server::invalid_payload",
+  "x402-exact-settle-server::payment_identifier_required",
+  "x402-exact-settle-server::payment_required",
+  "x402-exact-settle-server::send_failed",
+  "x402-exact-settle-server::settlement_failed",
+  "x402-exact-settle-server::signature_consumed",
+  "x402-exact-settle-server::version_mismatch",
+  "x402-exact-v1-build-client::accept",
+  "x402-exact-verify-server::accept",
+  "x402-exact-verify-server::fee-payer-is-funds-source",
+  "x402-exact-verify-server::invalid_exact_svm_payload_amount_mismatch",
+  "x402-exact-verify-server::invalid_exact_svm_payload_memo_count",
+  "x402-exact-verify-server::invalid_exact_svm_payload_memo_mismatch",
+  "x402-exact-verify-server::invalid_exact_svm_payload_mint_mismatch",
+  "x402-exact-verify-server::invalid_exact_svm_payload_no_transfer_instruction",
+  "x402-exact-verify-server::invalid_exact_svm_payload_recipient_mismatch",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_could_not_be_decoded",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_price_instruction",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_length",
+  "x402-exact-verify-server::invalid_exact_svm_payload_unknown_fifth_instruction",
+  "x402-exact-verify-server::invalid_exact_svm_payload_unknown_fourth_instruction",
+  "x402-exact-verify-server::invalid_exact_svm_payload_unknown_optional_instruction",
+  "x402-exact-verify-server::invalid_exact_svm_payload_unknown_sixth_instruction",
+  "x402-exact-versioned-challenge-parse::accept",
+  "x402-exact-versioned-challenge-parse::unsupported-version",
+  "x402-exact-versioned-challenge-parse::version_mismatch",
+  "x402-exact-versioned-challenge-parse::wrong-network",
+  "x402-payment-identifier-extension::accept",
+  "x402-payment-identifier-extension::payment-identifier-required",
+  "x402-upto-build-open-client::accept",
+  "x402-upto-confirm-open-server::accept",
+  "x402-upto-confirm-open-server::invalid_upto_svm_payload_payer_mismatch",
+  "x402-upto-over-ceiling-reject::invalid_upto_svm_payload_settlement_exceeds_amount",
+  "x402-upto-requirements-issue::accept",
+  "x402-upto-settle-actual-server::accept",
+  "x402-upto-verify-open-server::accept",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_amount",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_amount_mismatch",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_authorized_signer",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_channel_id",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_deposit_not_ceiling",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_expired",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_not_yet_active",
+  "x402-upto-verify-open-server::invalid_upto_svm_payload_open_transaction",
+  "x402-upto-zero-actual-refund::accept",
+];
+
 function pathOf(key: string): string {
   return key.slice(0, key.indexOf(SEP));
 }
@@ -1022,6 +1161,19 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
     expect(both, `cells in BOTH COVERED and KNOWN_GAP: ${both.join(", ")}`).toEqual([]);
   });
 
+  it("enumerates each applicable cell exactly once", () => {
+    const duplicates = APPLICABLE_CELLS.filter(
+      (key, index) => APPLICABLE_CELLS.indexOf(key) !== index,
+    );
+    expect(duplicates, `duplicate APPLICABLE_CELLS entries: ${duplicates.join(", ")}`).toEqual([]);
+    const applicable = new Set(APPLICABLE_CELLS);
+    const unlisted = cellKeys.filter((key) => !applicable.has(key));
+    expect(
+      unlisted,
+      `classified cell(s) missing from APPLICABLE_CELLS: ${unlisted.join(", ")}`,
+    ).toEqual([]);
+  });
+
   it("references only enumerated paths and outcomes (no typo'd axis)", () => {
     const paths = new Set(PATHS);
     const outcomes = new Set(OUTCOMES);
@@ -1079,14 +1231,15 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
     ).toEqual([]);
   });
 
-  // Per-cell: COVERED cells resolve to a test+tier; KNOWN_GAP cells carry a
-  // reason + tier + how-to-cover. (An applicable cell is, by construction, one
-  // of these two — the tripwires above prevent an applicable cell from being
-  // silently omitted.)
-  for (const key of cellKeys.sort()) {
+  // Per-cell: every enumerated applicable cell must be COVERED, KNOWN_GAP, or
+  // explicitly NOT_APPLICABLE. This is the anti-vacuous guard: deleting one
+  // covered accept cell for a path that still has reject cells leaves the
+  // applicable key here and turns the gate red.
+  for (const key of [...APPLICABLE_CELLS].sort()) {
     it(`${key} is covered or a declared gap`, () => {
       const covered = COVERED[key];
       const gap = KNOWN_GAP[key];
+      const notApplicable = NOT_APPLICABLE[key];
       if (covered) {
         expect(covered.test.length, `${key}: COVERED must name a test/vector`).toBeGreaterThan(0);
         expect(["T0", "T1", "T2"]).toContain(covered.tier);
@@ -1094,10 +1247,12 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
         expect(gap.reason.length, `${key}: KNOWN_GAP must give a reason`).toBeGreaterThan(0);
         expect(gap.how.length, `${key}: KNOWN_GAP must say how to cover it`).toBeGreaterThan(0);
         expect(["T0", "T1", "T2"]).toContain(gap.tier);
+      } else if (notApplicable) {
+        expect(notApplicable.length, `${key}: NOT_APPLICABLE must give a reason`).toBeGreaterThan(0);
       } else {
         throw new Error(
-          `${key} is neither COVERED nor KNOWN_GAP. An applicable cell must be one or the ` +
-            "other — cover it (add a test/vector) or declare the gap with a reason + tier + how.",
+          `${key} is neither COVERED, KNOWN_GAP, nor NOT_APPLICABLE. An applicable cell ` +
+            "must be classified — cover it, declare the gap, or document why it cannot apply.",
         );
       }
     });

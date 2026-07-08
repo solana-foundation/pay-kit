@@ -184,6 +184,7 @@ type PaymentSignatureEnvelope = {
   x402Version: number;
   accepted?: Record<string, unknown>;
   payload: PaymentProof;
+  resource?: unknown;
   extensions?: PaymentExtensions;
 };
 
@@ -407,15 +408,59 @@ export type X402ServerRoute = {
   recipient: string;
   currency: string;
   amount: string; // base units
+  resource?: string;
+  maxTimeoutSeconds?: number;
+  extra?: Record<string, unknown>;
+  decimals?: number;
+  tokenProgram?: string;
   // When true the route advertised payment-identifier with
   // info.required=true: the credential MUST echo back a valid
   // `pay_`-shaped id or the server rejects.
   requiresPaymentIdentifier?: boolean;
 };
 
+function normalizedJson(value: unknown): string {
+  const normalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(normalize);
+    if (input && typeof input === "object") {
+      const entries = Object.entries(input as Record<string, unknown>)
+        .filter(
+          ([key]) =>
+            key !== "recentBlockhash" && key !== "lastValidBlockHeight",
+        )
+        .sort(([a], [b]) => a.localeCompare(b));
+      return Object.fromEntries(entries.map(([key, val]) => [key, normalize(val)]));
+    }
+    return input;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+function acceptedExtra(accepted: Record<string, unknown>): Record<string, unknown> {
+  const extra = accepted.extra;
+  if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+    return extra as Record<string, unknown>;
+  }
+  return {};
+}
+
+function assertAcceptedField(
+  field: string,
+  expected: unknown,
+  actual: unknown,
+): void {
+  if (normalizedJson(actual) !== normalizedJson(expected)) {
+    throw new Error(
+      `Accepted ${field} mismatch: expected ${normalizedJson(expected)}, got ${normalizedJson(actual)}`,
+    );
+  }
+}
+
 // Verify a payment header against a server route. Mirrors the version
 // dispatch + network gate in rust `parse_payment_signature` and the
-// `accepted`-vs-route field comparison in `verify_envelope_payload`.
+// `accepted`-vs-route field comparison in `verify_envelope_payload`, including
+// the structural fields Rust compares after the targeted amount/payTo/asset
+// checks. Transient blockhash hints are ignored, matching strip_blockhash_hints.
 // RPC-free: the signed-transaction settlement (decode/transferChecked
 // validation) is out of scope for the envelope oracle, so a structurally
 // valid, route-matching envelope is accepted here.
@@ -474,6 +519,34 @@ export function verifyPaymentHeader(
     if (acceptedAsset !== route.currency) {
       throw new Error(
         `Currency mismatch: expected ${route.currency}, got ${acceptedAsset}`,
+      );
+    }
+    if (route.resource !== undefined) {
+      assertAcceptedField("resource", route.resource, accepted.resource);
+    }
+    if (route.maxTimeoutSeconds !== undefined) {
+      assertAcceptedField(
+        "maxTimeoutSeconds",
+        route.maxTimeoutSeconds,
+        accepted.maxTimeoutSeconds,
+      );
+    }
+    const extra = acceptedExtra(accepted);
+    if (route.extra !== undefined) {
+      assertAcceptedField("extra", route.extra, extra);
+    }
+    if (route.decimals !== undefined) {
+      assertAcceptedField(
+        "extra.decimals",
+        route.decimals,
+        extra.decimals ?? accepted.decimals,
+      );
+    }
+    if (route.tokenProgram !== undefined) {
+      assertAcceptedField(
+        "extra.tokenProgram",
+        route.tokenProgram,
+        extra.tokenProgram ?? accepted.tokenProgram,
       );
     }
     // Extensions reject gate: when the route requires a payment-identifier,

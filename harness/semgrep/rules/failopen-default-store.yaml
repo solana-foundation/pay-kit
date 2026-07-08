@@ -115,3 +115,28 @@ rules:
       - metavariable-regex:
           metavariable: $CTOR
           regex: (?i)(create|new|make)(memory|inmemory|inmem).*(store|session|channel)
+
+  - id: failopen-default-store-python
+    languages: [python]
+    severity: WARNING
+    message: >
+      Fail-open default store: a store/session/replay binding defaults to an
+      in-memory or no-op implementation when the configured backing is absent.
+      On a multi-instance deploy each process gets its own store, so
+      replay/session/nonce protection fails OPEN. Require a shared store
+      outside single-process, or make the default an explicit logged opt-in.
+    metadata:
+      class: fail-open-default-store
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: $S = $CONF or $CTOR(...)
+          - pattern: $S = $CONF if $CONF is not None else $CTOR(...)
+          - pattern: return $CONF or $CTOR(...)
+          - pattern: return $CONF if $CONF is not None else $CTOR(...)
+          - pattern: |
+              def $F(..., $S=$CTOR(...), ...):
+                ...
+      - metavariable-regex:
+          metavariable: $CTOR
+          regex: (?i)(memory|inmemory|inmem|noop|null|nop|ephemeral).*(store|session|cache|map)?

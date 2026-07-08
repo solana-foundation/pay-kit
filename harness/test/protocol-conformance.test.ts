@@ -191,6 +191,25 @@ const runnerAllowlist = parseLanguageAllowlist(process.env.MPP_CONFORMANCE_LANGU
 const runners = discoverProtocolRunners().filter(
   (runner) => !runnerAllowlist || runnerAllowlist.has(runner.language),
 );
+
+// Anti-vacuous-pass guard (mirrors conformance.test.ts): when
+// MPP_CONFORMANCE_LANGUAGES pins an allowlist, at least one spawned protocol
+// runner MUST match it. The in-process TypeScript blocks above always run, so a
+// typo like "rustt" would otherwise exercise zero spawned SDKs and still pass.
+describe("protocol conformance runner selection", () => {
+  it("resolves at least one runner for the configured allowlist", () => {
+    if (runnerAllowlist) {
+      const available = discoverProtocolRunners().map((r) => r.language).join(", ");
+      expect(
+        runners.length,
+        `MPP_CONFORMANCE_LANGUAGES=${process.env.MPP_CONFORMANCE_LANGUAGES} matched no ` +
+          `discovered protocol runner (available: ${available}). A typo or a missing ` +
+          `manifest would otherwise run zero spawned SDKs and pass green.`,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
 for (const runner of runners) {
   const known = KNOWN_RUNNER_DIVERGENCES[runner.language] ?? new Set<string>();
   describe(`mpp-protocol conformance (spawned ${runner.language} runner)`, () => {

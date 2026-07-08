@@ -217,13 +217,11 @@ jobs:
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: |
           pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
-          # Kill the zero-run false green: if selector/env drift excludes the Go/
-          # x402 shard, e2e.test.ts runs only bookkeeping skip tests and this job
-          # would otherwise pass having settled nothing. This leg is a strict
-          # superset of the harness.yml Go leg (which pins --exact 12), so require
-          # at least that many real payment pairs. TODO: tighten to --exact once a
-          # green run confirms the expanded count.
-          node scripts/assert-run-count.mjs --report vitest-report.json --min 12
+          # Kill selector drift false greens: the selected charge + x402 exact +
+          # x402 upto shard must execute exactly the current 18 settlement pair
+          # tests. A missing x402-upto slice would otherwise still satisfy the
+          # older 12-pair charge/exact floor.
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 18
 
   playground-go:
     name: "Payment links E2E: Playground (Go)"
