@@ -6,7 +6,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -265,5 +267,36 @@ func TestMemoryChannelStoreReturnsClones(t *testing.T) {
 	}
 	if fresh.PendingDeliveries[0].Amount != 1 {
 		t.Fatalf("stored pending delivery mutated through returned slice: %+v", fresh.PendingDeliveries)
+	}
+}
+
+func TestChannelStateRejectsLegacyFinalizedRecord(t *testing.T) {
+	// Records persisted before the upstream finalize→seal rename are
+	// intentionally NOT decoded (pre-1.0 breaking migration, no alias): a
+	// legacy record carrying "finalized" must fail loudly instead of silently
+	// reloading a closed channel as unsealed.
+	legacy := []byte(`{
+		"channel_id": "c1",
+		"authorized_signer": "signer1",
+		"deposit": 1000000,
+		"cumulative": 42,
+		"finalized": true
+	}`)
+	var state ChannelState
+	err := json.Unmarshal(legacy, &state)
+	if err == nil {
+		t.Fatal("legacy pre-seal record must not decode")
+	}
+	if !strings.Contains(err.Error(), "legacy pre-seal channel record") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A post-rename record still round-trips through the custom decoder.
+	current := []byte(`{"channel_id": "c1", "authorized_signer": "signer1", "sealed": true, "open_slot": 777}`)
+	if err := json.Unmarshal(current, &state); err != nil {
+		t.Fatalf("decode current record: %v", err)
+	}
+	if !state.Sealed || state.OpenSlot != 777 {
+		t.Fatalf("current record decoded incorrectly: %+v", state)
 	}
 }

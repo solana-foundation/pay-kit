@@ -32,11 +32,15 @@ const channelSeed = "channel"
 // eventAuthoritySeed is the event-authority PDA seed prefix.
 const eventAuthoritySeed = "event_authority"
 
-// voucherMagic is the constant 2-byte magic prefix leading every signed
-// voucher payload ([0x56, 0x01]). It is part of the signed bytes only, never
-// carried in wire JSON; the on-chain program rejects payloads without it
-// (voucherBadMagic).
-var voucherMagic = [2]byte{0x56, 0x01}
+// voucherMagic0/voucherMagic1 are the constant 2-byte magic prefix leading
+// every signed voucher payload ([0x56, 0x01]). Go has no const arrays, so the
+// bytes are typed constants rather than a mutable package var. The magic is
+// part of the signed bytes only, never carried in wire JSON; the on-chain
+// program rejects payloads without it (voucherBadMagic).
+const (
+	voucherMagic0 byte = 0x56
+	voucherMagic1 byte = 0x01
+)
 
 // programPubkey is the parsed production program id used for derivation and
 // instruction emission.
@@ -163,7 +167,7 @@ func VoucherMessageBytes(channelID solana.PublicKey, cumulative uint64, expiresA
 		return nil, fmt.Errorf("channel id must be exactly 32 bytes, got %d", len(id))
 	}
 	out := make([]byte, 50)
-	copy(out[:2], voucherMagic[:])
+	out[0], out[1] = voucherMagic0, voucherMagic1
 	copy(out[2:34], id)
 	binary.LittleEndian.PutUint64(out[34:42], cumulative)
 	binary.LittleEndian.PutUint64(out[42:50], uint64(expiresAt))

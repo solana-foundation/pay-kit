@@ -13,6 +13,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -118,6 +120,37 @@ type ChannelState struct {
 	// CommittedDeliveries are recently committed deliveries, kept for
 	// idempotent commit replay.
 	CommittedDeliveries []CommittedDelivery `json:"committed_deliveries"`
+}
+
+// channelStateJSON mirrors ChannelState so UnmarshalJSON can decode the
+// struct fields without recursing into itself.
+type channelStateJSON ChannelState
+
+// UnmarshalJSON rejects records persisted before the upstream finalize→seal
+// rename. encoding/json ignores unknown fields, so without this guard a
+// legacy record carrying "finalized": true (and no "sealed" key) would
+// silently reload a closed channel as unsealed, letting the upgraded server
+// accept further vouchers or re-settle an already-distributed channel. The
+// epoch-addressed migration is intentionally pre-1.0 breaking (no alias):
+// legacy records fail loudly, matching the Python and Rust stores.
+func (s *ChannelState) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		Finalized *bool `json:"finalized"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if probe.Finalized != nil {
+		return errors.New(
+			`legacy pre-seal channel record (field "finalized") is not supported; migrate or reset the durable channel store`,
+		)
+	}
+	var decoded channelStateJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*s = ChannelState(decoded)
+	return nil
 }
 
 // clone returns a deep copy so callers can never alias store-internal state.
