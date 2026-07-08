@@ -401,6 +401,13 @@ impl X402BatchSettlement {
             &expected_mint,
             &token_program,
             &channel_id,
+            // Deposit is validated against the on-chain channel post-broadcast
+            // (batch has no single authorized maximum at open time).
+            None,
+            // The config's recentSlot IS the expected openSlot: the args-derived
+            // PDA above already pins it exactly, and the window check keeps the
+            // pre-broadcast failure mode explicit.
+            Some(open_slot),
         )?;
         cosign_operator_fee_payer(
             self.config.operator_signer.as_ref(),

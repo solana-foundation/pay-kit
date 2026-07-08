@@ -557,6 +557,7 @@ impl X402Upto {
             &expected_mint,
             &token_program,
             &channel_id,
+            max,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         self.rpc
@@ -845,8 +846,25 @@ impl X402Upto {
         mint: &Pubkey,
         token_program: &Pubkey,
         channel_id: &Pubkey,
+        max_amount: u64,
     ) -> Result<(), Error> {
         let program_id = self.program_id()?;
+        // The challenged recentSlot at verify time: freshly fetched (cache
+        // first), so the transaction's openSlot — stamped from the earlier
+        // challenge — must sit at-or-before it inside the program freshness
+        // window. A failed fetch skips the window check (None); the PDA bind
+        // in `validate_open_instruction` still holds and the program enforces
+        // the window at broadcast.
+        let challenged_slot = self
+            .blockhash_cache
+            .as_ref()
+            .and_then(|c| c.get())
+            .map(|hint| hint.slot)
+            .or_else(|| {
+                crate::core::blockhash::fetch_blockhash_with_slot(&self.rpc, self.rpc.commitment())
+                    .ok()
+                    .map(|hint| hint.slot)
+            });
         validate_open_instruction(
             tx,
             &program_id,
@@ -859,6 +877,8 @@ impl X402Upto {
             mint,
             token_program,
             channel_id,
+            Some(max_amount),
+            challenged_slot,
         )
     }
 
@@ -983,6 +1003,8 @@ pub(crate) fn validate_open_instruction(
     mint: &Pubkey,
     token_program: &Pubkey,
     channel_id: &Pubkey,
+    max_amount: Option<u64>,
+    recent_slot: Option<u64>,
 ) -> Result<(), Error> {
     // Reject v0 transactions that pull accounts from address lookup tables.
     // This validator (and the fee-payer co-sign) resolves every account via
@@ -1072,6 +1094,59 @@ pub(crate) fn validate_open_instruction(
         "event_authority",
     )?;
     expect(13, program_id, "self_program")?;
+
+    // openArgs layout:
+    // [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+    if ix.data.len() < 1 + 8 + 8 + 4 + 8 {
+        return Err(Error::Other(format!(
+            "open instruction data too short ({} bytes)",
+            ix.data.len()
+        )));
+    }
+    let salt = u64::from_le_bytes(ix.data[1..9].try_into().expect("8-byte slice"));
+    let deposit = u64::from_le_bytes(ix.data[9..17].try_into().expect("8-byte slice"));
+    let open_slot = u64::from_le_bytes(ix.data[21..29].try_into().expect("8-byte slice"));
+
+    // Slot-addressed channel invariant: the channel account must be the PDA
+    // actually derived with the args' salt + openSlot, not just any account
+    // the payload named.
+    let (derived, _) = pc::find_channel_pda(
+        payer,
+        payee,
+        mint,
+        authorized_signer,
+        salt,
+        open_slot,
+        program_id,
+    );
+    if derived != *channel_id {
+        return Err(Error::Other(format!(
+            "open channel PDA {} != derived {}",
+            pc::pubkey_string(channel_id),
+            pc::pubkey_string(&derived)
+        )));
+    }
+    if let Some(max_amount) = max_amount {
+        if deposit != max_amount {
+            return Err(Error::Other(format!(
+                "open deposit {deposit} must equal the authorized maximum {max_amount}"
+            )));
+        }
+    }
+    if let Some(recent_slot) = recent_slot {
+        if open_slot > recent_slot {
+            return Err(Error::Other(format!(
+                "open openSlot {open_slot} is ahead of the challenged recentSlot {recent_slot}"
+            )));
+        }
+        if recent_slot - open_slot > pc::OPEN_SLOT_WINDOW {
+            return Err(Error::Other(format!(
+                "open openSlot {open_slot} is outside the {}-slot freshness window of the \
+                 challenged recentSlot {recent_slot}",
+                pc::OPEN_SLOT_WINDOW
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -1171,6 +1246,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_ok());
     }
@@ -1214,6 +1291,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_ok());
 
@@ -1229,8 +1308,67 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn binds_open_args_deposit_and_slot() {
+        // The validator decodes openArgs and enforces the slot-addressed
+        // channel invariant: a deposit that differs from the authorized
+        // maximum, an openSlot ahead of the challenged recentSlot, a stale
+        // openSlot outside the freshness window, and a channel account that is
+        // not the PDA derived from the args all reject. `open_params` uses
+        // deposit 1_000_000 and open_slot 314.
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let check = |channel: &Pubkey, max_amount: Option<u64>, recent_slot: Option<u64>| {
+            validate_open_instruction(
+                &tx,
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &payee,
+                &mint,
+                &token_program(),
+                channel,
+                max_amount,
+                recent_slot,
+            )
+        };
+        assert!(check(&channel, Some(1_000_000), Some(314)).is_ok());
+        // At the window edge and with unknown bounds it still verifies.
+        assert!(check(&channel, Some(1_000_000), Some(314 + pc::OPEN_SLOT_WINDOW)).is_ok());
+        assert!(check(&channel, None, None).is_ok());
+        // Deposit must equal the authorized maximum.
+        let err = check(&channel, Some(999_999), Some(314)).unwrap_err();
+        assert!(err.to_string().contains("authorized maximum"), "{err}");
+        // openSlot ahead of the challenged recentSlot rejects.
+        let err = check(&channel, Some(1_000_000), Some(313)).unwrap_err();
+        assert!(err.to_string().contains("ahead of the challenged"), "{err}");
+        // openSlot outside the freshness window rejects.
+        let err = check(
+            &channel,
+            Some(1_000_000),
+            Some(314 + pc::OPEN_SLOT_WINDOW + 1),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("freshness window"), "{err}");
+        // A channel that is not the PDA derived from the args fails the bind
+        // (the slot-5 account check fires first on the mismatch).
+        let other = Pubkey::new_unique();
+        let err = check(&other, Some(1_000_000), Some(314)).unwrap_err();
+        assert!(err.to_string().contains("channel"), "{err}");
     }
 
     #[test]
@@ -1258,6 +1396,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1291,6 +1431,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
 
@@ -1307,6 +1449,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1335,6 +1479,8 @@ mod tests {
             &mint,
             &wrong_token_program,
             &channel,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1477,6 +1623,8 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1666,6 +1814,8 @@ mod tests {
                 &mint,
                 &token_program(),
                 &channel,
+                None,
+                None,
             )
             .is_ok(),
             "facilitator open (payee = operator) must validate"
@@ -1685,6 +1835,8 @@ mod tests {
                 &mint,
                 &token_program(),
                 &channel,
+                None,
+                None,
             )
             .is_err(),
             "channel payee must be the operator/signer, never the payout recipient"
