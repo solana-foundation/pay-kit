@@ -394,10 +394,13 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         }
 
         const usageChallenge = async (error?: InvalidProofError): Promise<PaymentDenied> => {
-            const accepts: AcceptsEntry[] = upto.accepts(gate.amount).map(req => ({ ...req, protocol: 'x402' }));
+            // One server-enriched requirement (recentBlockhash + recentSlot)
+            // shared by the header and the JSON body offers.
+            const requirements = await upto.accepts(gate.amount);
+            const accepts: AcceptsEntry[] = requirements.map(req => ({ ...req, protocol: 'x402' }));
             const challenge: Challenge = {
                 accepts,
-                headers: await upto.challengeHeaders(gate.amount, request),
+                headers: await upto.challengeHeaders(gate.amount, request, requirements),
                 resource: new URL(request.url).pathname,
             };
             return {
@@ -538,7 +541,9 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         };
 
         if (gate.kind === 'usage') {
-            return upto ? upto.accepts(gate.amount).map(req => toOffer({ ...req, protocol: 'x402' }, true)) : [];
+            return upto
+                ? (await upto.accepts(gate.amount)).map(req => toOffer({ ...req, protocol: 'x402' }, true))
+                : [];
         }
         if (gate.kind === 'session') {
             // Session is MPP-only and streams; advertise the ceiling + per-delivery price directly.

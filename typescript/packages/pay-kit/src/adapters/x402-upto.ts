@@ -120,19 +120,31 @@ export class X402Upto {
         return x402PaymentHeader(request) !== undefined;
     }
 
-    /** The 402 challenge headers for a route capped at `maxPrice`. */
-    async challengeHeaders(maxPrice: Price, request: Request): Promise<Readonly<Record<string, string>>> {
+    /**
+     * The 402 challenge headers for a route capped at `maxPrice`. Pass the
+     * entries from {@link accepts} to reuse one server-enriched requirement
+     * (one `getLatestBlockhash` round-trip) for both the header and the body.
+     */
+    async challengeHeaders(
+        maxPrice: Price,
+        request: Request,
+        accepts?: readonly PaymentRequirements[],
+    ): Promise<Readonly<Record<string, string>>> {
         const paymentRequired: PaymentRequired = {
-            accepts: [await this.#challengeRequirements(maxPrice)],
+            accepts: [...(accepts ?? (await this.accepts(maxPrice)))],
             resource: { url: new URL(request.url).pathname },
             x402Version: X402_VERSION,
         };
         return { [PAYMENT_REQUIRED_HEADER]: encodePaymentRequiredHeader(paymentRequired) };
     }
 
-    /** The `accepts[]` entries for the 402 JSON body. */
-    accepts(maxPrice: Price): readonly PaymentRequirements[] {
-        return [this.#requirements(maxPrice)];
+    /**
+     * The `accepts[]` entries for the 402 JSON body — the same server-enriched
+     * requirement (`extra.recentBlockhash` + `extra.recentSlot`) the header
+     * carries, so body-based `upto` clients can build the channel open too.
+     */
+    async accepts(maxPrice: Price): Promise<readonly PaymentRequirements[]> {
+        return [await this.#challengeRequirements(maxPrice)];
     }
 
     /**

@@ -53,7 +53,7 @@ describe('x402 upto engine', () => {
     it('advertises an upto accepts entry with the facilitator binding', async () => {
         const config = await testConfig();
         const upto = new X402Upto(config);
-        const [entry] = upto.accepts(usd('1.00'));
+        const [entry] = await upto.accepts(usd('1.00'));
 
         expect(entry.scheme).toBe('upto');
         expect(entry.amount).toBe('1000000'); // 1.00 USDC ceiling
@@ -71,7 +71,7 @@ describe('x402 upto engine', () => {
             x402: { facilitatorFee: 250 },
         });
         const upto = new X402Upto(config);
-        const [entry] = upto.accepts(usd('1.00'));
+        const [entry] = await upto.accepts(usd('1.00'));
 
         expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(250);
     });
