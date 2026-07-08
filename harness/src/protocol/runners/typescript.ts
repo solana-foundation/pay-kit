@@ -9,7 +9,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
-import { Credential, PaymentRequest } from "mppx";
+import { Challenge as MppxChallenge, Credential, PaymentRequest } from "mppx";
 // `Challenge` comes from pay-kit's `@solana/mpp` boundary, which wraps mppx's
 // challenge codec with the canonical empty-id parse guard. This is the surface
 // pay-kit's TypeScript SDK actually exposes, so the conformance run reflects
@@ -33,16 +33,22 @@ function base64UrlDecode(text: string): string {
   return Buffer.from(text, "base64url").toString("utf8");
 }
 
-// Canonical challenge-id derivation. The HMAC input is the pay-kit/mppx
-// canonical request encoding (`PaymentRequest.serialize` = base64url of the
-// RFC 8785 / JCS canonical JSON) joined into the fixed pipe-slot layout, then
-// HMAC-SHA256, then unpadded base64url. mppx's public `Challenge.from({
-// secretKey })` takes `opaque` as a structured record and re-serializes it;
-// the canonical `challenge.id` ABI instead feeds `opaque` as an
-// already-serialized pipe-slot string, which this reproduces exactly. The
-// HMAC math (request canonicalization + pipe layout + base64url) is identical
-// to mppx's internal `computeId`.
-function generateChallengeId(input: {
+function decodeRoundTrippableOpaque(
+  opaque: string,
+):
+  | { meta: Record<string, string>; roundTrips: true }
+  | { roundTrips: false } {
+  try {
+    const meta = JSON.parse(base64UrlDecode(opaque)) as Record<string, string>;
+    return PaymentRequest.serialize(meta) === opaque
+      ? { meta, roundTrips: true }
+      : { roundTrips: false };
+  } catch {
+    return { roundTrips: false };
+  }
+}
+
+function generateCanonicalChallengeId(input: {
   secretKey: string;
   realm?: string;
   method?: string;
@@ -61,7 +67,41 @@ function generateChallengeId(input: {
     input.digest ?? "",
     input.opaque ?? "",
   ].join("|");
-  return createHmac("sha256", input.secretKey).update(payload, "utf8").digest("base64url");
+  return createHmac("sha256", input.secretKey)
+    .update(payload, "utf8")
+    .digest("base64url");
+}
+
+function generateChallengeId(input: {
+  secretKey: string;
+  realm?: string;
+  method?: string;
+  intent?: string;
+  request?: Record<string, unknown>;
+  expires?: string;
+  digest?: string;
+  opaque?: string;
+}): string {
+  const hasOpaque = input.opaque !== undefined;
+  const opaque = hasOpaque ? decodeRoundTrippableOpaque(input.opaque ?? "") : undefined;
+  if (hasOpaque && !opaque?.roundTrips) {
+    // TODO(mppx): remove this fallback once mppx exposes a public computeId that
+    // accepts the canonical pre-serialized opaque; Challenge.from re-serializes
+    // structured meta so it cannot reproduce a raw-string opaque id.
+    return generateCanonicalChallengeId(input);
+  }
+
+  const challenge = MppxChallenge.from({
+    secretKey: input.secretKey,
+    realm: input.realm ?? "",
+    method: input.method ?? "",
+    intent: input.intent ?? "",
+    request: input.request ?? {},
+    ...(input.expires && { expires: input.expires }),
+    ...(input.digest && { digest: input.digest }),
+    ...(opaque?.roundTrips && { meta: opaque.meta }),
+  });
+  return challenge.id;
 }
 
 function asHeader(input: unknown): string {
