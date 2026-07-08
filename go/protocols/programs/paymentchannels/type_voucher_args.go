@@ -11,6 +11,7 @@ import (
 )
 
 type VoucherArgs struct {
+	Magic            [2]uint8
 	ChannelId        ag_solanago.PublicKey
 	CumulativeAmount uint64
 	ExpiresAt        int64

@@ -273,19 +273,12 @@ impl X402 {
         if let Some(cached) = self.blockhash_cache.as_ref().and_then(|c| c.get()) {
             return Some(cached);
         }
-        if self.config.rpc_url.is_none() {
-            return None;
-        }
-        let Ok((blockhash, last_valid_block_height)) = self
-            .rpc
-            .get_latest_blockhash_with_commitment(self.rpc.commitment())
-        else {
-            return None;
-        };
-        Some(crate::core::blockhash::CachedBlockhash {
-            blockhash: blockhash.to_string(),
-            last_valid_block_height,
-        })
+        self.config.rpc_url.as_ref()?;
+        // One `getLatestBlockhash` call: its response context carries the slot
+        // too. `exact` itself never embeds the slot, but the shared hint type
+        // carries it (upto's `recentSlot`), so the hint stays uniformly
+        // populated at no extra RPC cost.
+        crate::core::blockhash::fetch_blockhash_with_slot(&self.rpc, self.rpc.commitment()).ok()
     }
 
     fn embed_recent_blockhash(
@@ -1410,7 +1403,7 @@ mod tests {
     fn exact_with_options_stamps_same_cached_blockhash_on_all_currencies() {
         let cache = crate::core::blockhash::BlockhashCache::new();
         let blockhash = Hash::new_from_array([7u8; 32]).to_string();
-        cache.set(blockhash.clone(), 123_456);
+        cache.set(blockhash.clone(), 123_456, 314);
         let x402 = X402::new(multi_currency_config(&["USDC", "PYUSD"]))
             .unwrap()
             .with_blockhash_cache(cache);

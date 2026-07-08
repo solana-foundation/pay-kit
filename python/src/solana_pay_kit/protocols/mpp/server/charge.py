@@ -208,9 +208,7 @@ class Mpp:
         # rejected. The result is emitted on every SPL challenge instead of a
         # silent legacy-Token fallback for arbitrary mints.
         try:
-            self._token_program: str | None = resolve_server_token_program(
-                self._currency, self._network, self._rpc_url
-            )
+            self._token_program: str | None = resolve_server_token_program(self._currency, self._network, self._rpc_url)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-config") from exc
         self._html = config.html

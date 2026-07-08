@@ -1,6 +1,7 @@
 package com.solana.paykit.protocols.x402.client.exact
 
 import com.solana.paykit.paycore.*
+import com.solana.paykit.protocols.x402.X402_VERSION
 import com.solana.paykit.protocols.x402.exact.*
 
 import kotlinx.serialization.json.Json
@@ -52,13 +53,6 @@ private val json = Json {
     encodeDefaults = false
     explicitNulls = false
 }
-
-/**
- * x402 protocol version stamped in the envelope. INVARIANT: 2 — the spine
- * (rust ``X402_VERSION_V2``, go ``x402Version = 2``, python) emits v2
- * envelopes. Do NOT revert to 1 (legacy ``X-PAYMENT`` shape).
- */
-private const val X402_VERSION = 2
 
 /**
  * ComputeBudget SetComputeUnitLimit. INVARIANT: 20_000 (matches rust spine +

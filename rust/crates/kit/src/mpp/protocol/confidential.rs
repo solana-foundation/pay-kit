@@ -64,6 +64,48 @@ pub async fn derive_confidential_keys(
     Ok(ConfidentialKeys { elgamal, ae })
 }
 
+/// Everything a test cheatcode (e.g. surfpool's `surfnet_setTokenAccount`)
+/// needs to stand up a configured confidential Token-2022 account for an owner.
+///
+/// The keys are derived from the owner's wallet signature, so they match what
+/// the confidential payment client re-derives when it later reads or spends the
+/// account — a balance fabricated with these is genuinely decryptable/spendable.
+pub struct ConfidentialAccountSetup {
+    /// The owner's associated token account (Token-2022) for the mint.
+    pub token_account: Pubkey,
+    /// The owner's ElGamal public key (32 bytes); confidential balances are
+    /// encrypted to this key.
+    pub elgamal_pubkey: [u8; 32],
+    /// The owner's AES key (16 bytes); produces the `decryptable_available_balance`
+    /// the owner reads to learn its balance.
+    pub ae_key: [u8; 16],
+}
+
+/// Derive the associated token account and confidential keys an owner needs to
+/// be bootstrapped as a confidential party on `mint`.
+///
+/// Confidential transfers are Token-2022 only, so the associated token account
+/// is derived with the Token-2022 program id. The returned key bytes are ready
+/// to hand to a setup cheatcode (base58/base64-encode them for transport).
+pub async fn derive_confidential_account_setup(
+    signer: &dyn SolanaSigner,
+    mint: &Pubkey,
+) -> Result<ConfidentialAccountSetup, Error> {
+    use spl_associated_token_account::get_associated_token_address_with_program_id;
+
+    let token_program = spl_token_2022::id();
+    let owner = signer.pubkey();
+    let token_account = get_associated_token_address_with_program_id(&owner, mint, &token_program);
+
+    let keys = derive_confidential_keys(signer, &token_account).await?;
+
+    Ok(ConfidentialAccountSetup {
+        token_account,
+        elgamal_pubkey: keys.elgamal.pubkey().to_bytes(),
+        ae_key: (&keys.ae).into(),
+    })
+}
+
 /// Recover a confidential-transfer amount from a split (low 16-bit / high)
 /// ElGamal ciphertext pair, using the ElGamal secret of whoever the ciphertexts
 /// were encrypted for.

@@ -30,7 +30,7 @@ export type SessionReceipt = {
     readonly channelId: string;
     readonly cumulative: string;
     readonly deposit: string;
-    readonly finalized: boolean;
+    readonly sealed: boolean;
     readonly settledSignature: string | null;
 };
 
@@ -108,7 +108,7 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
                 channelId: state.channelId,
                 cumulative: state.cumulative.toString(),
                 deposit: state.deposit.toString(),
-                finalized: state.finalized,
+                sealed: state.sealed,
                 settledSignature: state.settledSignature ?? null,
             };
         },

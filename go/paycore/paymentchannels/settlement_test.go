@@ -2,9 +2,9 @@ package paymentchannels
 
 // Settlement builder byte-equivalence tests.
 //
-// These pin the Ed25519 precompile layout and the settle_and_finalize,
-// top_up, distribute, and open instruction bytes so any drift from the
-// on-chain program encoding is caught at unit-test time.
+// These pin the Ed25519 precompile layout and the settle_and_seal,
+// top_up, distribute, reclaim, and open instruction bytes so any drift from
+// the on-chain program encoding is caught at unit-test time.
 
 import (
 	"bytes"
@@ -129,8 +129,8 @@ func TestBuildSettleInstructionsWithVoucher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VoucherMessageBytes: %v", err)
 	}
-	if !bytes.Equal(precompileData[112:160], wantMessage) {
-		t.Fatal("precompile message != canonical 48-byte voucher payload")
+	if !bytes.Equal(precompileData[112:162], wantMessage) {
+		t.Fatal("precompile message != canonical 50-byte voucher payload")
 	}
 	settleData, err := instructions[1].Data()
 	if err != nil {
@@ -144,18 +144,18 @@ func TestBuildSettleInstructionsWithVoucher(t *testing.T) {
 	}
 }
 
-// ── settle_and_finalize ──
+// ── settle_and_seal ──
 
-func TestBuildSettleAndFinalizeVoucherless(t *testing.T) {
-	merchant := fixedKey(0x05)
+func TestBuildSettleAndSealVoucherless(t *testing.T) {
+	payee := fixedKey(0x05)
 	channel := solana.MustPublicKeyFromBase58(zeroChannelID)
 
-	instructions, err := BuildSettleAndFinalizeInstructions(SettleAndFinalizeParams{
-		Merchant: merchant,
-		Channel:  channel,
+	instructions, err := BuildSettleAndSealInstructions(SettleAndSealParams{
+		Payee:   payee,
+		Channel: channel,
 	})
 	if err != nil {
-		t.Fatalf("BuildSettleAndFinalizeInstructions: %v", err)
+		t.Fatalf("BuildSettleAndSealInstructions: %v", err)
 	}
 	if len(instructions) != 1 {
 		t.Fatalf("instructions = %d, want 1 (no precompile without a voucher)", len(instructions))
@@ -169,8 +169,8 @@ func TestBuildSettleAndFinalizeVoucherless(t *testing.T) {
 	if len(accounts) != 3 {
 		t.Fatalf("accounts = %d, want 3", len(accounts))
 	}
-	if !accounts[0].PublicKey.Equals(merchant) || !accounts[0].IsSigner || accounts[0].IsWritable {
-		t.Fatalf("merchant meta = %+v, want readonly signer", accounts[0])
+	if !accounts[0].PublicKey.Equals(payee) || !accounts[0].IsSigner || accounts[0].IsWritable {
+		t.Fatalf("payee meta = %+v, want readonly signer", accounts[0])
 	}
 	if !accounts[1].PublicKey.Equals(channel) || accounts[1].IsSigner || !accounts[1].IsWritable {
 		t.Fatalf("channel meta = %+v, want writable non-signer", accounts[1])
@@ -183,7 +183,7 @@ func TestBuildSettleAndFinalizeVoucherless(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ix.Data: %v", err)
 	}
-	// Voucher is read from the precompile, so settle_and_finalize carries only
+	// Voucher is read from the precompile, so settle_and_seal carries only
 	// [disc=4][hasVoucher=0] = 2 bytes.
 	if len(data) != 2 {
 		t.Fatalf("data length = %d, want 2", len(data))
@@ -196,8 +196,8 @@ func TestBuildSettleAndFinalizeVoucherless(t *testing.T) {
 	}
 }
 
-func TestBuildSettleAndFinalizeWithVoucherPrependsPrecompile(t *testing.T) {
-	merchant := fixedKey(0x05)
+func TestBuildSettleAndSealWithVoucherPrependsPrecompile(t *testing.T) {
+	payee := fixedKey(0x05)
 	authorizedSigner := fixedKey(0x04)
 	channel := solana.MustPublicKeyFromBase58(zeroChannelID)
 	var signature [64]byte
@@ -205,8 +205,8 @@ func TestBuildSettleAndFinalizeWithVoucherPrependsPrecompile(t *testing.T) {
 		signature[i] = 0xAA
 	}
 
-	instructions, err := BuildSettleAndFinalizeInstructions(SettleAndFinalizeParams{
-		Merchant:         merchant,
+	instructions, err := BuildSettleAndSealInstructions(SettleAndSealParams{
+		Payee:            payee,
 		Channel:          channel,
 		AuthorizedSigner: authorizedSigner,
 		Signature:        &signature,
@@ -214,10 +214,10 @@ func TestBuildSettleAndFinalizeWithVoucherPrependsPrecompile(t *testing.T) {
 		ExpiresAt:        4_102_444_800,
 	})
 	if err != nil {
-		t.Fatalf("BuildSettleAndFinalizeInstructions: %v", err)
+		t.Fatalf("BuildSettleAndSealInstructions: %v", err)
 	}
 	if len(instructions) != 2 {
-		t.Fatalf("instructions = %d, want 2 (precompile + settle_and_finalize)", len(instructions))
+		t.Fatalf("instructions = %d, want 2 (precompile + settle_and_seal)", len(instructions))
 	}
 
 	precompile := instructions[0]
@@ -232,8 +232,8 @@ func TestBuildSettleAndFinalizeWithVoucherPrependsPrecompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VoucherMessageBytes: %v", err)
 	}
-	if !bytes.Equal(precompileData[112:160], wantMessage) {
-		t.Fatal("precompile message != canonical 48-byte voucher payload")
+	if !bytes.Equal(precompileData[112:162], wantMessage) {
+		t.Fatal("precompile message != canonical 50-byte voucher payload")
 	}
 	if !bytes.Equal(precompileData[48:112], signature[:]) {
 		t.Fatal("precompile signature != voucher signature")
@@ -246,7 +246,7 @@ func TestBuildSettleAndFinalizeWithVoucherPrependsPrecompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settle.Data: %v", err)
 	}
-	// Voucher lives in the precompile; settle_and_finalize is [disc=4][hasVoucher=1].
+	// Voucher lives in the precompile; settle_and_seal is [disc=4][hasVoucher=1].
 	if len(settleData) != 2 {
 		t.Fatalf("settle data length = %d, want 2", len(settleData))
 	}
@@ -402,12 +402,12 @@ func TestBuildDistributeToken2022DerivesProgramSpecificATAs(t *testing.T) {
 // ── open instruction golden ──
 
 // TestBuildOpenInstructionMatchesTypescriptGolden pins the open instruction
-// data for fixed inputs (salt=42, deposit=1_000_000, gracePeriod=900, one
-// HQyfh.../250bps recipient) to the golden bytes shared with the vendored
-// Codama TS client and the pre-Codama hand encoder, so all three agree byte
-// for byte.
+// data for fixed inputs (salt=42, deposit=1_000_000, gracePeriod=900,
+// openSlot=1_234_567, one HQyfh.../250bps recipient) to the golden bytes
+// shared with the vendored Codama TS client and the pre-Codama hand encoder,
+// so all three agree byte for byte.
 func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
-	const goldenDataHex = "012a0000000000000040420f00000000008403000001000000f3df6c4f444efb2d860ce6dae0b568b6dadee3c402fc33edab10836490385896fa00"
+	const goldenDataHex = "012a0000000000000040420f00000000008403000087d612000000000001000000f3df6c4f444efb2d860ce6dae0b568b6dadee3c402fc33edab10836490385896fa00"
 
 	ix, err := BuildOpenInstruction(OpenChannelParams{
 		Payer:            fixedKey(0x01),
@@ -416,6 +416,7 @@ func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 		Mint:             solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		AuthorizedSigner: fixedKey(0x04),
 		Salt:             42,
+		OpenSlot:         1_234_567,
 		Deposit:          1_000_000,
 		GracePeriod:      900,
 		Recipients: []Distribution{
@@ -432,6 +433,57 @@ func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 	}
 	if got := hex.EncodeToString(data); got != goldenDataHex {
 		t.Fatalf("open instruction data mismatch\n got: %s\nwant: %s", got, goldenDataHex)
+	}
+}
+
+// ── reclaim ──
+
+func TestBuildReclaimInstruction(t *testing.T) {
+	channel := solana.MustPublicKeyFromBase58(zeroChannelID)
+	rentPayer := fixedKey(0x02)
+
+	ix, err := BuildReclaimInstruction(ReclaimParams{
+		Channel:   channel,
+		RentPayer: rentPayer,
+	})
+	if err != nil {
+		t.Fatalf("BuildReclaimInstruction: %v", err)
+	}
+	if !ix.ProgramID().Equals(ProgramPubkey()) {
+		t.Fatalf("program id = %s, want %s", ix.ProgramID(), ProgramID)
+	}
+	accounts := ix.Accounts()
+	if len(accounts) != 2 {
+		t.Fatalf("accounts = %d, want 2 (channel, rentPayer)", len(accounts))
+	}
+	if !accounts[0].PublicKey.Equals(channel) || accounts[0].IsSigner || !accounts[0].IsWritable {
+		t.Fatalf("channel meta = %+v, want writable non-signer", accounts[0])
+	}
+	if !accounts[1].PublicKey.Equals(rentPayer) || accounts[1].IsSigner || !accounts[1].IsWritable {
+		t.Fatalf("rentPayer meta = %+v, want writable non-signer", accounts[1])
+	}
+	data, err := ix.Data()
+	if err != nil {
+		t.Fatalf("ix.Data: %v", err)
+	}
+	// Permissionless rent recovery carries only the discriminator byte.
+	if len(data) != 1 || data[0] != 9 {
+		t.Fatalf("data = %x, want [09] (reclaim discriminator only)", data)
+	}
+}
+
+func TestBuildReclaimInstructionPerCallProgramID(t *testing.T) {
+	custom := solana.NewWallet().PublicKey()
+	ix, err := BuildReclaimInstruction(ReclaimParams{
+		Channel:   fixedKey(0x01),
+		RentPayer: fixedKey(0x02),
+		ProgramID: custom,
+	})
+	if err != nil {
+		t.Fatalf("BuildReclaimInstruction: %v", err)
+	}
+	if !ix.ProgramID().Equals(custom) {
+		t.Fatalf("program id = %s, want per-call override", ix.ProgramID())
 	}
 }
 

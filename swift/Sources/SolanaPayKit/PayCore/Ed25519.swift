@@ -27,7 +27,7 @@ public enum Ed25519 {
         case solanaKeypairLength:
             seed = raw.prefix(secretKeyLength)
         default:
-            throw MppError.signingFailure(
+            throw PayKitError.signingFailure(
                 "expected \(secretKeyLength) or \(solanaKeypairLength) byte secret, got \(raw.count)"
             )
         }
@@ -35,7 +35,7 @@ public enum Ed25519 {
         do {
             return try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
         } catch {
-            throw MppError.signingFailure("CryptoKit rejected secret key: \(error)")
+            throw PayKitError.signingFailure("CryptoKit rejected secret key: \(error)")
         }
     }
 
@@ -43,22 +43,22 @@ public enum Ed25519 {
         do {
             return try privateKey.signature(for: message)
         } catch {
-            throw MppError.signingFailure("CryptoKit signature failed: \(error)")
+            throw PayKitError.signingFailure("CryptoKit signature failed: \(error)")
         }
     }
 
     public static func verify(signature: Data, message: Data, publicKey: Data) throws -> Bool {
         guard signature.count == signatureLength else {
-            throw MppError.signingFailure("signature must be \(signatureLength) bytes")
+            throw PayKitError.signingFailure("signature must be \(signatureLength) bytes")
         }
         guard publicKey.count == publicKeyLength else {
-            throw MppError.signingFailure("public key must be \(publicKeyLength) bytes")
+            throw PayKitError.signingFailure("public key must be \(publicKeyLength) bytes")
         }
         do {
             let key = try Curve25519.Signing.PublicKey(rawRepresentation: publicKey)
             return key.isValidSignature(signature, for: message)
         } catch {
-            throw MppError.signingFailure("CryptoKit rejected public key: \(error)")
+            throw PayKitError.signingFailure("CryptoKit rejected public key: \(error)")
         }
     }
 

@@ -171,6 +171,7 @@ func TestUsageAdapterChallengeHeaders(t *testing.T) {
 		RPCURL:                  "http://localhost:8899",
 		Operator:                paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"}
@@ -274,13 +275,13 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 	payee := operatorKey.PublicKey()
 	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
 	salt := uint64(7)
-	channel, _, err := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
+	channel, _, err := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt, 55_555)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
 	params := paymentchannels.OpenChannelParams{
 		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
-		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
+		Salt: salt, OpenSlot: 55_555, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, err := paymentchannels.BuildOpenInstruction(params)
@@ -324,6 +325,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		Operator:                paykit.Operator{Recipient: paykit.Address(payee.String()), Signer: testSigner{operatorKey}},
 		Stablecoins:             []paykit.Stablecoin{paykit.USDC},
 		RecentBlockhashProvider: func() (string, error) { return blockhash.String(), nil },
+		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	}
 	adapter, err := NewUsageAdapter(cfg)
 	if err != nil {

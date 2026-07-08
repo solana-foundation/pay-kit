@@ -146,10 +146,12 @@ class ActiveSession(
         mint: String,
         salt: ULong,
         gracePeriod: UInt,
+        recentSlot: ULong,
         signature: String,
     ): SessionAction = SessionAction.Open(
         OpenPayload.paymentChannel(
-            mode, channelId, deposit.toString(), payer, payee, mint, salt, gracePeriod, authorizedSigner(), signature
+            mode, channelId, deposit.toString(), payer, payee, mint, salt, gracePeriod, recentSlot,
+            authorizedSigner(), signature
         )
     )
 
@@ -190,6 +192,8 @@ data class PaymentChannelOpen(
     val salt: ULong,
     val deposit: ULong,
     val gracePeriod: UInt,
+    /** Current slot at open time; a channel PDA seed, so persist it with the channel params. */
+    val openSlot: ULong,
     val recipients: List<PaymentChannels.Distribution>,
     val tokenProgram: PublicKey,
     val programId: PublicKey,
@@ -204,6 +208,7 @@ data class PaymentChannelOpen(
             mint = mint.toBase58(),
             salt = salt,
             gracePeriod = gracePeriod,
+            recentSlot = openSlot,
             authorizedSigner = authorizedSigner.toBase58(),
             signature = signature,
         )
@@ -243,7 +248,10 @@ object PaymentChannelSession {
     /**
      * Build a pull + clientVoucher payment-channel session open. The payer
      * partial-signs the open transaction; the operator (fee payer) co-signs and
-     * broadcasts. `recentBlockhash` is base58. Mirrors
+     * broadcasts. `recentBlockhash` is base58; `openSlot` is the server-
+     * prefetched current slot carried by the 402 challenge
+     * ([SessionRequest.recentSlot]) and becomes a channel PDA seed the open
+     * payload echoes back as `recentSlot`. Mirrors
      * `create_payment_channel_session_opener`.
      */
     fun open(
@@ -251,13 +259,14 @@ object PaymentChannelSession {
         payerSigner: SolanaSigner,
         sessionSigner: SolanaSigner,
         recentBlockhash: String,
+        openSlot: ULong,
         options: PaymentChannelSessionOpenOptions = PaymentChannelSessionOpenOptions(),
     ): PaymentChannelSessionOpen {
         ensureClientVoucherPull(request)
         val authorizedSigner = PublicKey(sessionSigner.publicKeyBytes)
         val feePayer = PublicKey.fromBase58(request.operator)
         val payer = PublicKey(payerSigner.publicKeyBytes)
-        val open = deriveOpen(request, payer, authorizedSigner, options.open)
+        val open = deriveOpen(request, payer, authorizedSigner, openSlot, options.open)
 
         val blockhash = Base58.decode(recentBlockhash)
         if (blockhash.size != 32) {
@@ -271,6 +280,7 @@ object PaymentChannelSession {
             salt = open.salt,
             deposit = open.deposit,
             gracePeriod = open.gracePeriod,
+            openSlot = open.openSlot,
             recipients = open.recipients,
             tokenProgram = open.tokenProgram,
             programId = open.programId,
@@ -302,6 +312,7 @@ object PaymentChannelSession {
         request: SessionRequest,
         payer: PublicKey,
         authorizedSigner: PublicKey,
+        openSlot: ULong,
         options: PaymentChannelOpenOptions,
     ): PaymentChannelOpen {
         val mintString = resolveStablecoinMint(request.currency, request.network)
@@ -326,10 +337,10 @@ object PaymentChannelSession {
                 }
             }
         val salt = options.salt ?: PaymentChannels.uniqueSalt()
-        val channelId = PaymentChannels.findChannelPda(payer, payee, mint, authorizedSigner, salt, programId)
+        val channelId = PaymentChannels.findChannelPda(payer, payee, mint, authorizedSigner, salt, openSlot, programId)
         return PaymentChannelOpen(
             channelId = channelId, payer = payer, payee = payee, mint = mint, authorizedSigner = authorizedSigner,
-            salt = salt, deposit = deposit, gracePeriod = gracePeriod, recipients = recipients,
+            salt = salt, deposit = deposit, gracePeriod = gracePeriod, openSlot = openSlot, recipients = recipients,
             tokenProgram = tokenProgram, programId = programId,
         )
     }

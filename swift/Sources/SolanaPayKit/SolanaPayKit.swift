@@ -168,7 +168,7 @@ public extension PayKit {
             settlementHeader: String = "x-fixture-settlement"
         ) -> HttpClient {
             HttpClient(
-                interceptor: X402Interceptor(
+                interceptor: X402.Interceptor(
                     signer: signer, rpc: rpc, selection: selection
                 ),
                 urlSession: urlSession,
@@ -212,7 +212,7 @@ public extension PayKit {
         }
 
         /// Execute the request and decode the response body as `T`. Throws
-        /// `MppError.rpcFailure` when the final status is not 2xx, so the
+        /// `PayKitError.rpcFailure` when the final status is not 2xx, so the
         /// happy path is a clean decode. Mirrors Alamofire's
         /// `serializingDecodable`.
         public func serializingDecodable<T: Decodable>(
@@ -221,7 +221,7 @@ public extension PayKit {
         ) async throws -> T {
             let response = try await response()
             guard response.isSuccess else {
-                throw MppError.rpcFailure(
+                throw PayKitError.rpcFailure(
                     "request to \(url.absoluteString) failed with status \(response.status)"
                 )
             }
@@ -248,7 +248,7 @@ extension PayKit.HttpClient {
 
         let (firstData, firstResponse) = try await urlSession.data(for: initial)
         guard let firstHTTP = firstResponse as? HTTPURLResponse else {
-            throw MppError.rpcFailure("non-HTTP response")
+            throw PayKitError.rpcFailure("non-HTTP response")
         }
 
         guard firstHTTP.statusCode == 402 else {
@@ -267,7 +267,7 @@ extension PayKit.HttpClient {
         case let .retry(retryRequest, paymentSent):
             let (retryData, retryResponse) = try await urlSession.data(for: retryRequest)
             guard let retryHTTP = retryResponse as? HTTPURLResponse else {
-                throw MppError.rpcFailure("non-HTTP response on payment retry")
+                throw PayKitError.rpcFailure("non-HTTP response on payment retry")
             }
             return Self.makeResponse(
                 http: retryHTTP, body: retryData,

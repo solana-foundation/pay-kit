@@ -98,7 +98,7 @@ type SessionOptions struct {
 	// Default OpenTxSubmitterClient.
 	OpenTxSubmitter OpenTxSubmitter
 
-	// Signer is the merchant signer for the settle_and_finalize + distribute
+	// Signer is the merchant signer for the settle_and_seal + distribute
 	// settlement transaction. Settlement at close (and on idle close) only
 	// runs when both Signer and RPC are configured.
 	Signer solanatx.Signer
@@ -304,9 +304,10 @@ type SessionChallengeOptions struct {
 // The requested cap is clamped to the server maximum, minVoucherDelta is
 // included only when positive, modes are omitted when push-only,
 // pullVoucherStrategy is included only when pull is offered, and a recent
-// blockhash is prefetched (non-fatally) when an RPC client is configured.
-// The blockhash source is the injected RPC client rather than a raw URL
-// fetch so unit tests stay offline.
+// blockhash plus the current slot (the channel openSlot) are prefetched
+// (non-fatally) when an RPC client is configured. Both come from the
+// injected RPC client rather than a raw URL fetch so unit tests stay
+// offline; clients never fetch the slot themselves.
 func (s *Session) Challenge(ctx context.Context, options SessionChallengeOptions) (core.PaymentChallenge, error) {
 	capValue := s.cap
 	if options.Cap != "" {
@@ -326,10 +327,19 @@ func (s *Session) Challenge(ctx context.Context, options SessionChallengeOptions
 		request.ExternalID = &externalID
 	}
 	if s.rpc != nil {
-		// Non-fatal: the client fetches its own blockhash when absent.
+		// Non-fatal: the client fetches its own blockhash when absent, and an
+		// omitted recentSlot fails the client's open derivation with a clear
+		// error rather than failing the challenge.
 		if out, err := s.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed); err == nil && out != nil && out.Value != nil {
 			blockhash := out.Value.Blockhash.String()
 			request.RecentBlockhash = &blockhash
+			// The blockhash response's context already carries the current
+			// slot, so recentSlot needs no extra RPC round-trip. A zero slot
+			// means the (test-fake) response omitted the context; skip it.
+			if out.Context.Slot > 0 {
+				recentSlot := intents.U64String(out.Context.Slot)
+				request.RecentSlot = &recentSlot
+			}
 		}
 	}
 	requestValue, err := core.NewBase64URLJSONValue(request)
@@ -390,6 +400,15 @@ func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentC
 	var err error
 	switch {
 	case action.Open != nil:
+		// Sanity-check the challenge-bound recentSlot: when both the
+		// HMAC-bound challenge and the payload carry one, they must agree,
+		// since the payload slot seeds the channel PDA the server re-derives.
+		if request.RecentSlot != nil && action.Open.RecentSlot != nil &&
+			uint64(*request.RecentSlot) != *action.Open.RecentSlot {
+			return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("open payload recentSlot %d does not match the challenge recentSlot %d",
+					*action.Open.RecentSlot, uint64(*request.RecentSlot)))
+		}
 		reference, err = s.handleOpen(ctx, action.Open)
 	case action.Voucher != nil:
 		reference, err = s.handleVoucher(ctx, action.Voucher)
@@ -472,6 +491,9 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	// the program pins to channel.payer), captured from the verified open when
 	// a transaction is present.
 	var channelPayer string
+	// Channel open_slot (a PDA seed), read from the verified open transaction
+	// when one is present, else from the payload's recentSlot echo.
+	openSlot := openSlotFromPayload(payload)
 
 	switch {
 	case hasTransaction:
@@ -505,6 +527,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				channelID = preVerified.ChannelID
 				deposit = preVerified.Deposit
 				channelPayer = preVerified.Payer
+				openSlot = preVerified.OpenSlot
 			} else {
 				submitted, err := SubmitOpenTx(ctx, expected, payload, s.payerSigner, s.rpc)
 				if err != nil {
@@ -513,6 +536,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				channelID = submitted.ChannelID
 				deposit = submitted.Deposit
 				channelPayer = submitted.Payer
+				openSlot = submitted.OpenSlot
 				signature = submitted.Signature
 			}
 		} else {
@@ -523,6 +547,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			channelID = verified.ChannelID
 			deposit = verified.Deposit
 			channelPayer = verified.Payer
+			openSlot = verified.OpenSlot
 		}
 	case mode == intents.SessionModePush:
 		// No transaction in the payload: the client asserts a previously
@@ -574,6 +599,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		ChannelID:        channelID,
 		AuthorizedSigner: payload.AuthorizedSigner,
 		Deposit:          deposit,
+		OpenSlot:         openSlot,
 		Operator:         operator,
 	}
 
@@ -582,8 +608,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	// voucher watermark.
 	if _, err := s.core.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
 		if current != nil {
-			if current.Finalized {
-				return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
+			if current.Sealed {
+				return ChannelState{}, fmt.Errorf("channel %s is already sealed", channelID)
 			}
 			if current.AuthorizedSigner != payload.AuthorizedSigner {
 				return ChannelState{}, fmt.Errorf(
@@ -647,8 +673,8 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 	if existing == nil {
 		return "", fmt.Errorf("channel %s not found", payload.ChannelID)
 	}
-	if existing.Finalized {
-		return "", fmt.Errorf("channel %s is already finalized", payload.ChannelID)
+	if existing.Sealed {
+		return "", fmt.Errorf("channel %s is already sealed", payload.ChannelID)
 	}
 	if existing.CloseRequestedAt != nil {
 		return "", fmt.Errorf("channel %s close is pending; no further top-ups accepted", payload.ChannelID)
@@ -682,8 +708,8 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
-		if current.Finalized {
-			return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
+		if current.Sealed {
+			return ChannelState{}, fmt.Errorf("channel %s is already sealed", channelID)
 		}
 		if current.CloseRequestedAt != nil {
 			if current.SettledSignature == nil {
@@ -754,10 +780,10 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 	return reference, nil
 }
 
-// closeAndSettleChannel builds settle_and_finalize (+ the Ed25519 precompile
+// closeAndSettleChannel builds settle_and_seal (+ the Ed25519 precompile
 // when a voucher was accepted) + distribute for a channel that has flipped
 // to close-pending, submits them as one merchant-signed transaction, and
-// marks the channel finalized with the settled signature. Returns "" when
+// marks the channel sealed with the settled signature. Returns "" when
 // the channel does not exist.
 func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (string, error) {
 	state, err := s.core.store.GetChannel(ctx, channelID)
@@ -801,7 +827,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			return ChannelState{}, fmt.Errorf("channel %s disappeared during settle", channelID)
 		}
 		next := *current
-		next.Finalized = true
+		next.Sealed = true
 		next.SettledSignature = &settled
 		return next, nil
 	}); err != nil {

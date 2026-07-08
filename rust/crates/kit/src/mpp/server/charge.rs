@@ -6509,6 +6509,67 @@ mod tests {
         assert!(store.get(key).await.unwrap().is_some());
     }
 
+    // Concurrent-replay regression: race N tasks that all call the real
+    // `consume_signature` reserve path for the SAME signature on ONE shared
+    // `Mpp`. The reserve is an atomic `put_if_absent` placed AFTER verify, so
+    // exactly ONE task may win (`Ok`) and every other MUST observe the
+    // signature as already-consumed (`signature-consumed`). A TOCTOU gap (the
+    // TypeScript push-mode disclosure) would let two winners settle the same
+    // signature. A `Barrier` releases all tasks together to maximize the
+    // interleaving window on the multi-threaded runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn consume_signature_concurrent_replay_reserves_exactly_once() {
+        const TASKS: usize = 16;
+
+        let mpp = Arc::new(
+            Mpp::new(Config {
+                recipient: TEST_RECIPIENT.to_string(),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
+                store: Some(Arc::new(MemoryStore::new())),
+                network: "devnet".to_string(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+
+        let signature = "concurrent-replay-sig-42";
+        let barrier = Arc::new(tokio::sync::Barrier::new(TASKS));
+
+        let mut handles = Vec::with_capacity(TASKS);
+        for _ in 0..TASKS {
+            let mpp = mpp.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                // Line every task up so they hit the reserve together.
+                barrier.wait().await;
+                mpp.consume_signature(signature).await
+            }));
+        }
+
+        let mut winners = 0usize;
+        let mut losers = 0usize;
+        for handle in handles {
+            match handle.await.expect("task panicked") {
+                Ok(()) => winners += 1,
+                Err(e) => {
+                    assert_eq!(
+                        e.code,
+                        Some("signature-consumed"),
+                        "loser must fail with signature-consumed, got: {e:?}"
+                    );
+                    losers += 1;
+                }
+            }
+        }
+
+        assert_eq!(winners, 1, "exactly one task may reserve the signature");
+        assert_eq!(losers, TASKS - 1, "every other task must be rejected");
+
+        // The reservation is durable: a later attempt still loses.
+        let after = mpp.consume_signature(signature).await;
+        assert_eq!(after.unwrap_err().code, Some("signature-consumed"));
+    }
+
     // ── Receipt tests ──
 
     #[test]

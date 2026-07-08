@@ -316,7 +316,7 @@ class SessionServer:
         channel already exists for the session id with the same authorized
         signer, the existing state is returned unchanged and the voucher
         watermark is never reset. Opens for an existing channel are rejected
-        when the channel is finalized or when the payload's authorized signer
+        when the channel is sealed or when the payload's authorized signer
         differs from the stored one.
         """
         if not self._supports_mode(payload.mode):
@@ -346,6 +346,11 @@ class SessionServer:
             authorized_signer=payload.authorized_signer,
             deposit=deposit,
             operator=operator,
+            # The payload's recentSlot is the channel openSlot (a channel PDA
+            # seed); persist it so the channel address can be re-derived and
+            # the rent reclaimed later. Zero when the payload does not carry
+            # one (pull opens, trusted opens).
+            open_slot=payload.recent_slot or 0,
         )
 
         def mutator(existing: ChannelState | None) -> ChannelState:
@@ -354,8 +359,8 @@ class SessionServer:
             # overwrite existing state; that would reset the voucher watermark
             # and erase accepted vouchers before close.
             if existing is not None:
-                if existing.finalized:
-                    raise ValueError(f"channel {session_id} is already finalized")
+                if existing.sealed:
+                    raise ValueError(f"channel {session_id} is already sealed")
                 if existing.authorized_signer != payload.authorized_signer:
                     raise ValueError(f"channel {session_id} already exists with a different authorized signer")
                 # Idempotent replay: keep existing state untouched.
@@ -407,8 +412,8 @@ class SessionServer:
             # inside the mutator.
             if current is None:
                 raise ValueError(f"channel {channel_id} not found")
-            if current.finalized:
-                raise ValueError(f"channel {channel_id} is already finalized")
+            if current.sealed:
+                raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further vouchers accepted")
             # Idempotent replay inside the mutator.
@@ -434,7 +439,7 @@ class SessionServer:
         """Process a topUp action: atomically raise the channel's deposit cap.
 
         The new deposit must exceed the current deposit and must not exceed the
-        configured max cap. Top-ups are rejected once the channel is finalized
+        configured max cap. Top-ups are rejected once the channel is sealed
         or a close has been requested.
         """
         try:
@@ -455,8 +460,8 @@ class SessionServer:
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise ValueError(f"channel {channel_id} not found")
-            if current.finalized:
-                raise ValueError(f"channel {channel_id} is already finalized")
+            if current.sealed:
+                raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further top-ups accepted")
             if new_deposit <= current.deposit:
@@ -492,8 +497,8 @@ class SessionServer:
             nonlocal directive
             if current is None:
                 raise ValueError(f"channel {session_id} not found")
-            if current.finalized:
-                raise ValueError(f"channel {session_id} is already finalized")
+            if current.sealed:
+                raise ValueError(f"channel {session_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {session_id} close is pending; no further deliveries accepted")
             pending_total = sum(d.amount for d in current.pending_deliveries)
@@ -591,8 +596,8 @@ class SessionServer:
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise ValueError(f"channel {channel_id} not found")
-            if current.finalized:
-                raise ValueError(f"channel {channel_id} is already finalized")
+            if current.sealed:
+                raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further commits accepted")
             existing = _find_committed(current.committed_deliveries, delivery_id)
@@ -657,8 +662,8 @@ class SessionServer:
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise ValueError(f"channel {channel_id} not found")
-            if current.finalized:
-                raise ValueError(f"channel {channel_id} is already finalized")
+            if current.sealed:
+                raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError("close already requested")
 
@@ -703,10 +708,10 @@ class SessionServer:
 
         return await self._store.update_channel(channel_id, mutator)
 
-    async def mark_finalized(self, channel_id: str) -> None:
-        """Mark a channel as finalized. Call after the on-chain finalize
+    async def mark_sealed(self, channel_id: str) -> None:
+        """Mark a channel as sealed. Call after the on-chain seal
         transaction confirms."""
-        await self._store.mark_finalized(channel_id)
+        await self._store.mark_sealed(channel_id)
 
 
 def _voucher_state(state: ChannelState) -> VoucherChannelState:
@@ -718,7 +723,7 @@ def _voucher_state(state: ChannelState) -> VoucherChannelState:
         authorized_signer=state.authorized_signer,
         deposit=state.deposit,
         cumulative=state.cumulative,
-        finalized=state.finalized,
+        sealed=state.sealed,
         highest_voucher_signature=state.highest_voucher_signature,
         highest_voucher_expires_at=state.highest_voucher_expires_at,
         close_requested_at=state.close_requested_at,

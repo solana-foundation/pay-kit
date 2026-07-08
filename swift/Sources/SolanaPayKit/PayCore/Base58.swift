@@ -72,9 +72,9 @@ public enum Base58 {
         var b256 = [UInt8](repeating: 0, count: scalars.count * 733 / 1000 + 1)
         var length = 0
         for byte in scalars {
-            guard Int(byte) < 128 else { throw MppError.invalidBase58 }
+            guard Int(byte) < 128 else { throw PayKitError.invalidBase58 }
             let digit = decodeTable[Int(byte)]
-            guard digit >= 0 else { throw MppError.invalidBase58 }
+            guard digit >= 0 else { throw PayKitError.invalidBase58 }
 
             var carry = Int(digit)
             var i = 0

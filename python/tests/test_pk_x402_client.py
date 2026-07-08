@@ -642,9 +642,7 @@ async def test_parse_stashes_envelope_resource_without_polluting_accepted():
         "accepts": [offer],
     }
     header = base64.b64encode(json.dumps(body).encode()).decode()
-    picked = parse_x402_challenge(
-        {"payment-required": header}, None, ChallengeSelection(network="devnet")
-    )
+    picked = parse_x402_challenge({"payment-required": header}, None, ChallengeSelection(network="devnet"))
     assert picked is not None
     # The wire-visible offer is untouched: no top-level resource/description.
     assert "resource" not in cast("dict[str, Any]", picked)
@@ -819,9 +817,7 @@ async def test_transport_sends_x_payment_header_for_v1_challenge(monkeypatch):
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b"{}"})
             return
-        await send(
-            {"type": "http.response.start", "status": 402, "headers": [(b"content-type", b"application/json")]}
-        )
+        await send({"type": "http.response.start", "status": 402, "headers": [(b"content-type", b"application/json")]})
         await send({"type": "http.response.body", "body": v1_body.encode()})
 
     signer = Signer.generate()

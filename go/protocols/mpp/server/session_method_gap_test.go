@@ -107,7 +107,7 @@ func TestSessionCloseCancelsIdleTimer(t *testing.T) {
 	// watchdog must not fire afterward either.
 	time.Sleep(120 * time.Millisecond)
 	state := mustGetChannel(t, session, channelID)
-	if state.Finalized || len(fake.Sent) != 0 {
+	if state.Sealed || len(fake.Sent) != 0 {
 		t.Fatalf("idle timer fired after close: %+v sends=%d", state, len(fake.Sent))
 	}
 }

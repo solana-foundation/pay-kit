@@ -278,6 +278,35 @@ async def test_session_challenge_includes_blockhash_with_rpc() -> None:
     assert request.recent_blockhash == fake.blockhash
 
 
+async def test_session_challenge_uses_recent_state_provider() -> None:
+    """The provider stamps recentBlockhash + recentSlot without an RPC client,
+    winning over ``rpc`` — hosts keep the trust-the-payload model while still
+    serving the challenge fields the client derives the channel PDA from."""
+    fake = _FakeRpc()
+    session = _new_test_session(rpc=fake, recent_state_provider=lambda: ("ProviderHash111", 4242))
+    challenge = await session.challenge(SessionChallengeOptions())
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
+
+    request = SessionRequest.from_dict(challenge.decode_request())
+    assert request.recent_blockhash == "ProviderHash111"
+    assert request.recent_slot == 4242
+
+
+async def test_session_challenge_recent_state_provider_failure_is_nonfatal() -> None:
+    """A raising / empty / malformed provider leaves both fields unset."""
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
+
+    def boom() -> tuple[str | None, int | None]:
+        raise RuntimeError("rpc down")
+
+    for provider in (boom, lambda: None, lambda: ("", True)):
+        session = _new_test_session(recent_state_provider=provider)
+        challenge = await session.challenge(SessionChallengeOptions())
+        request = SessionRequest.from_dict(challenge.decode_request())
+        assert request.recent_blockhash is None
+        assert request.recent_slot is None
+
+
 async def test_session_challenge_advertises_pull_strategy() -> None:
     """Mirrors TestSessionChallengeAdvertisesPullStrategy."""
     session = _new_test_session(modes=["pull", "push"], pull_voucher_strategy="clientVoucher")
@@ -436,10 +465,10 @@ async def test_session_open_replay_semantics() -> None:
     state = await _get_channel(session, channel_id)
     assert state is not None and state.authorized_signer == signer.address()
 
-    # Finalized channel rejects replays.
-    await session.core().store().mark_finalized(channel_id)
+    # Sealed channel rejects replays.
+    await session.core().store().mark_sealed(channel_id)
     replay = OpenPayload.push(channel_id, "1000", signer.address(), "open-sig")
-    with pytest.raises(PaymentError, match="finalized"):
+    with pytest.raises(PaymentError, match="sealed"):
         await _verify_session_action(session, SessionAction.open_action(replay))
 
 
@@ -598,15 +627,13 @@ async def test_session_top_up_hardening() -> None:
             SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit="9000", signature="sig")),
         )
 
-    # Finalized blocks top-ups.
-    _, finalized_channel = await _open_trusted_channel(session, 5_000)
-    await session.core().store().mark_finalized(finalized_channel)
-    with pytest.raises(PaymentError, match="finalized"):
+    # Sealed blocks top-ups.
+    _, sealed_channel = await _open_trusted_channel(session, 5_000)
+    await session.core().store().mark_sealed(sealed_channel)
+    with pytest.raises(PaymentError, match="sealed"):
         await _verify_session_action(
             session,
-            SessionAction.top_up_action(
-                TopUpPayload(channel_id=finalized_channel, new_deposit="9000", signature="sig")
-            ),
+            SessionAction.top_up_action(TopUpPayload(channel_id=sealed_channel, new_deposit="9000", signature="sig")),
         )
 
 
@@ -664,7 +691,7 @@ async def test_session_close_flips_close_pending() -> None:
     receipt = await _verify_session_action(session, SessionAction.close_action(ClosePayload(channel_id=channel_id)))
     assert receipt.reference == channel_id
     state = await _get_channel(session, channel_id)
-    assert state is not None and state.close_requested_at is not None and not state.finalized
+    assert state is not None and state.close_requested_at is not None and not state.sealed
 
 
 async def test_session_close_with_final_voucher_advances_watermark() -> None:
@@ -735,7 +762,7 @@ async def test_session_close_second_close_on_closing_channel_redrives() -> None:
     after_second = await _get_channel(session, channel_id)
     assert after_second is not None
     assert after_second.close_requested_at == first_close_at
-    assert not after_second.finalized
+    assert not after_second.sealed
 
 
 async def test_session_close_settled_double_close_rejected() -> None:
@@ -779,7 +806,7 @@ async def test_session_idle_close_flips_state_without_signer_or_rpc() -> None:
     state = await _get_channel(session, channel_id)
     assert state is not None
     assert state.close_requested_at is not None
-    assert not state.finalized
+    assert not state.sealed
     assert state.settled_signature is None
 
 
@@ -817,6 +844,7 @@ async def test_session_push_open_requires_payer_or_transaction_for_settlement() 
                 "USDC",
                 1,
                 900,
+                777,
                 signer.address(),
                 _confirmed_signature(0x32),
             )

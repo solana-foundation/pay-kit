@@ -33,6 +33,10 @@ data class Endpoint(
     val tint: Color,
     /** Discovery intent of the first offer (`charge` / `session` / …). */
     val intent: String,
+    /** Scheme of the first offer (`exact` / `upto` / …) when present. A metered
+     *  `upto` route advertises the generic `charge` intent, so the demo routes by
+     *  this scheme to reach the usage flow. */
+    val scheme: String?,
     /** Accepted protocols in offer order, e.g. `["x402", "mpp"]`. */
     val methods: List<String>,
     /** The protocol this demo settles over (`mpp` for charge endpoints that
@@ -137,6 +141,7 @@ object OpenApi {
             icon = iconFor(intent = intent, scheme = scheme, method = payMethod),
             tint = PALETTE[index % PALETTE.size],
             intent = if (!intent.isNullOrEmpty()) intent.lowercase() else "charge",
+            scheme = if (!scheme.isNullOrEmpty()) scheme.lowercase() else null,
             methods = methodsOf(offers),
             selectedProtocol = selectedProtocol(offers, intent),
         )

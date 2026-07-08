@@ -72,6 +72,9 @@ import com.solana.paykit.paycore.Programs
 import com.solana.paykit.paycore.PublicKey
 import com.solana.paykit.paycore.SolanaSigner
 import com.solana.paykit.protocols.mpp.client.JsonRpcClient
+import com.solana.paykit.protocols.x402.client.upto.buildUptoHeader
+import com.solana.paykit.protocols.x402.client.upto.parseUptoChallenge
+import com.solana.paykit.protocols.x402.upto.UPTO_SCHEME
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -312,7 +315,17 @@ private fun DemoScreen() {
                             onSelectProtocol = { protocolChoice = protocolChoice + (endpoint.id to it) },
                             onClick = onClick@{
                                 val s = signer ?: return@onClick
-                                when (endpoint.intent) {
+                                // A metered x402 upto route advertises the generic
+                                // `charge` intent, so route by scheme first: authorize a
+                                // ceiling; the server meters + settles actual <= max.
+                                if (endpoint.scheme == UPTO_SCHEME) {
+                                    busy = BusyKind.Pay(endpoint.id)
+                                    scope.launch {
+                                        append(consumeUpto(s, endpoint))
+                                        refreshBalance()
+                                        busy = null
+                                    }
+                                } else when (endpoint.intent) {
                                     // One-shot charge: the 402 -> sign -> retry loop, over the
                                     // protocol the user picked (default: the advertised mpp).
                                     "charge" -> {
@@ -334,8 +347,8 @@ private fun DemoScreen() {
                                             busy = null
                                         }
                                     }
-                                    // Other intents (subscription, x402 upto) use dedicated
-                                    // pay-kit APIs the tap demo doesn't drive.
+                                    // Other intents (subscription) use dedicated pay-kit
+                                    // APIs the tap demo doesn't drive.
                                     else -> append(
                                         LogEntry.failure(
                                             endpoint,
@@ -570,7 +583,10 @@ private fun EndpointCard(
             fontSize = 15.sp,
             fontWeight = FontWeight.SemiBold,
             color = Color.White,
-            maxLines = 2,
+            // One line (matching the iOS demo) so the price and protocol row
+            // below always fit the fixed-height card instead of being clipped
+            // when a long title would wrap to two lines.
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
@@ -788,6 +804,70 @@ private suspend fun consumeSession(signer: SolanaSigner, endpoint: Endpoint): Lo
         )
     } catch (t: Throwable) {
         android.util.Log.e("PayKitDemo", "session consume failed", t)
+        LogEntry.failure(endpoint, "${t.javaClass.simpleName}: ${t.message ?: "(no message)"}")
+    }
+}
+
+/**
+ * Drive the x402 **upto** (usage) flow for a metered endpoint: POST the input,
+ * and on the 402 challenge open a payment channel authorizing the ceiling, then
+ * replay with the `Payment-Signature` header. The server meters actual usage and
+ * settles `actual <= max`, refunding the rest; the response body reports the
+ * billed amount. Mirrors the iOS demo's `upto` path.
+ */
+private suspend fun consumeUpto(signer: SolanaSigner, endpoint: Endpoint): LogEntry = withContext(Dispatchers.IO) {
+    val url = "$PLAYGROUND_BASE${endpoint.path}"
+    try {
+        val sample = "Solana is a fast, low-cost blockchain for payments and apps."
+        val mediaType = "text/plain".toMediaType()
+        fun post(extra: Map<String, String>): okhttp3.Response {
+            val builder = Request.Builder().url(url)
+                .post(sample.toByteArray().toRequestBody(mediaType))
+                .header("Accept", "application/json")
+            extra.forEach { (k, v) -> builder.header(k, v) }
+            return httpClient.newCall(builder.build()).execute()
+        }
+
+        // First request returns the 402 upto challenge.
+        val challenge = post(emptyMap())
+        val challengeBody = challenge.body?.string().orEmpty()
+        val challengeStatus = challenge.code
+        val headers = challenge.headers.toMultimap().mapValues { it.value.firstOrNull().orEmpty() }
+        challenge.close()
+
+        val requirement = parseUptoChallenge(headers, challengeBody)
+            ?: return@withContext LogEntry.failure(
+                endpoint,
+                "server did not return an x402 upto challenge (HTTP $challengeStatus)",
+            )
+
+        // Fall back to 300s when the challenge advertises a non-positive
+        // maxTimeoutSeconds, matching the harness adapter, so the authorization
+        // does not expire immediately.
+        val timeout = requirement.maxTimeoutSeconds.takeIf { it > 0 } ?: 300L
+        val expiresAt = System.currentTimeMillis() / 1000 + timeout
+        val paymentHeader = buildUptoHeader(signer, requirement, expiresAt)
+
+        // Paid retry: the operator co-signs + broadcasts the open, meters, settles.
+        val paid = post(mapOf("Payment-Signature" to paymentHeader))
+        val paidBody = paid.body?.string().orEmpty()
+        val settlement = paid.header("x-payment-response")
+        val paidStatus = paid.code
+        paid.close()
+
+        if (paidStatus in 200..299) {
+            LogEntry.success(
+                endpoint = endpoint,
+                // x-payment-response is a base64 settlement envelope; show the
+                // on-chain signature like the exact path does, not the blob.
+                signature = settlement?.let { signatureFromReceiptHeader(it) ?: it.takeIf { s -> s.isNotEmpty() } },
+                body = paidBody,
+            )
+        } else {
+            LogEntry.failure(endpoint, "HTTP $paidStatus\n$paidBody")
+        }
+    } catch (t: Throwable) {
+        android.util.Log.e("PayKitDemo", "upto consume failed", t)
         LogEntry.failure(endpoint, "${t.javaClass.simpleName}: ${t.message ?: "(no message)"}")
     }
 }

@@ -123,6 +123,38 @@ type SessionRequest struct {
 	// (base58). Included when the client needs to build server-broadcast
 	// transactions without a second RPC round-trip.
 	RecentBlockhash *string `json:"recentBlockhash,omitempty"`
+
+	// RecentSlot is the current slot pre-fetched by the server at challenge
+	// time, mirroring RecentBlockhash. The client uses it as the channel
+	// open_slot (a PDA seed and open arg) and echoes it in the open payload;
+	// clients never fetch it themselves. Serialized as a base-10 string and
+	// decoded from a string or a JSON number.
+	RecentSlot *U64String `json:"recentSlot,omitempty"`
+}
+
+// U64String is a uint64 serialized as a base-10 JSON string (authorization
+// headers are JSON canonicalized, and arbitrary uint64 values are not safe
+// JSON numbers) and decoded from either a string or a JSON number, mirroring
+// the OpenPayload salt adapter.
+type U64String uint64
+
+// MarshalJSON encodes the value as a base-10 JSON string.
+func (u U64String) MarshalJSON() ([]byte, error) {
+	return json.Marshal(strconv.FormatUint(uint64(u), 10))
+}
+
+// UnmarshalJSON decodes a base-10 string or a JSON number.
+func (u *U64String) UnmarshalJSON(data []byte) error {
+	value, err := parseOptionalU64(data, "u64 value")
+	if err != nil {
+		return err
+	}
+	if value == nil {
+		*u = 0
+		return nil
+	}
+	*u = U64String(*value)
+	return nil
 }
 
 // SessionSplit is a payment split committed at channel open; distributed to a
@@ -305,9 +337,9 @@ func (a *SessionAction) UnmarshalJSON(data []byte) error {
 // Use OpenPayloadPush, OpenPayloadPaymentChannel, or OpenPayloadPull to
 // construct. Inspect Mode to distinguish variants on the server.
 //
-// Salt marshals as a decimal string (authorization headers are JSON
+// Salt and RecentSlot marshal as decimal strings (authorization headers are JSON
 // canonicalized, and arbitrary uint64 values are not safe JSON numbers) and
-// decodes from either a string or a JSON number.
+// decode from either a string or a JSON number.
 type OpenPayload struct {
 	// Mode is the session mode discriminant. Required (no default).
 	Mode SessionMode `json:"mode"`
@@ -335,6 +367,11 @@ type OpenPayload struct {
 
 	// GracePeriod used by the on-chain close path.
 	GracePeriod *uint32 `json:"gracePeriod,omitempty"`
+
+	// RecentSlot is the challenge slot echoed by the client; the channel
+	// open_slot (a PDA seed the server needs to re-derive the address).
+	// Serialized as a decimal string.
+	RecentSlot *uint64 `json:"-"`
 
 	// Transaction is the signed payment-channel open transaction (base64),
 	// when the client wants the server/operator to broadcast it.
@@ -384,6 +421,7 @@ type openPayloadJSON struct {
 	Mint                *string         `json:"mint,omitempty"`                // SPL mint locked in the channel (base58)
 	Salt                json.RawMessage `json:"salt,omitempty"`                // PDA-seed salt; encoded as decimal string, decoded string-or-number
 	GracePeriod         *uint32         `json:"gracePeriod,omitempty"`         // on-chain close grace period
+	RecentSlot          json.RawMessage `json:"recentSlot,omitempty"`          // challenge slot echo (the channel open_slot); encoded as decimal string, decoded string-or-number
 	Transaction         *string         `json:"transaction,omitempty"`         // signed channel-open tx (base64) for server broadcast
 	TokenAccount        *string         `json:"tokenAccount,omitempty"`        // delegated SPL token account (base58); pull mode
 	ApprovedAmount      *string         `json:"approvedAmount,omitempty"`      // operator delegation cap (base units); pull mode
@@ -394,7 +432,7 @@ type openPayloadJSON struct {
 	Signature           string          `json:"signature"`                     // on-chain proof tx signature (base58)
 }
 
-// MarshalJSON serializes Salt as a decimal string.
+// MarshalJSON serializes Salt and RecentSlot as decimal strings.
 func (p OpenPayload) MarshalJSON() ([]byte, error) {
 	wire := openPayloadJSON{
 		Mode:                p.Mode,
@@ -420,6 +458,13 @@ func (p OpenPayload) MarshalJSON() ([]byte, error) {
 		}
 		wire.Salt = raw
 	}
+	if p.RecentSlot != nil {
+		raw, err := json.Marshal(strconv.FormatUint(*p.RecentSlot, 10))
+		if err != nil {
+			return nil, fmt.Errorf("marshal recentSlot: %w", err)
+		}
+		wire.RecentSlot = raw
+	}
 	out, err := json.Marshal(wire)
 	if err != nil {
 		return nil, fmt.Errorf("marshal open payload: %w", err)
@@ -427,7 +472,8 @@ func (p OpenPayload) MarshalJSON() ([]byte, error) {
 	return out, nil
 }
 
-// UnmarshalJSON decodes Salt from either a decimal string or a JSON number.
+// UnmarshalJSON decodes Salt and RecentSlot from either a decimal string or a
+// JSON number.
 func (p *OpenPayload) UnmarshalJSON(data []byte) error {
 	var wire openPayloadJSON
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -453,29 +499,34 @@ func (p *OpenPayload) UnmarshalJSON(data []byte) error {
 	if p.Mode == "" {
 		return fmt.Errorf("open payload: missing mode")
 	}
-	salt, err := parseOptionalSalt(wire.Salt)
+	salt, err := parseOptionalU64(wire.Salt, "salt")
 	if err != nil {
 		return err
 	}
 	p.Salt = salt
+	recentSlot, err := parseOptionalU64(wire.RecentSlot, "recentSlot")
+	if err != nil {
+		return err
+	}
+	p.RecentSlot = recentSlot
 	return nil
 }
 
-// parseOptionalSalt parses a salt value that may be absent, null, a decimal
-// string, or an unsigned 64-bit JSON number.
-func parseOptionalSalt(raw json.RawMessage) (*uint64, error) {
+// parseOptionalU64 parses a u64 wire value (salt, recentSlot) that may be
+// absent, null, a decimal string, or an unsigned 64-bit JSON number.
+func parseOptionalU64(raw json.RawMessage, field string) (*uint64, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmt.Errorf("decode salt: %w", err)
+		return nil, fmt.Errorf("decode %s: %w", field, err)
 	}
 	switch v := value.(type) {
 	case string:
 		parsed, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("salt must be a decimal string: %w", err)
+			return nil, fmt.Errorf("%s must be a decimal string: %w", field, err)
 		}
 		return &parsed, nil
 	case float64:
@@ -484,11 +535,11 @@ func parseOptionalSalt(raw json.RawMessage) (*uint64, error) {
 		// u64 values.
 		parsed, err := strconv.ParseUint(string(raw), 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("salt must be an unsigned 64-bit integer: %w", err)
+			return nil, fmt.Errorf("%s must be an unsigned 64-bit integer: %w", field, err)
 		}
 		return &parsed, nil
 	default:
-		return nil, fmt.Errorf("salt must be a decimal string or unsigned 64-bit integer")
+		return nil, fmt.Errorf("%s must be a decimal string or unsigned 64-bit integer", field)
 	}
 }
 
@@ -508,12 +559,13 @@ func OpenPayloadPaymentChannel(
 	channelID, deposit, payer, payee, mint string,
 	salt uint64,
 	gracePeriod uint32,
+	recentSlot uint64,
 	authorizedSigner, signature string,
 ) OpenPayload {
 	return OpenPayloadPaymentChannelWithMode(
 		SessionModePush,
 		channelID, deposit, payer, payee, mint,
-		salt, gracePeriod, authorizedSigner, signature,
+		salt, gracePeriod, recentSlot, authorizedSigner, signature,
 	)
 }
 
@@ -524,6 +576,7 @@ func OpenPayloadPaymentChannelWithMode(
 	channelID, deposit, payer, payee, mint string,
 	salt uint64,
 	gracePeriod uint32,
+	recentSlot uint64,
 	authorizedSigner, signature string,
 ) OpenPayload {
 	return OpenPayload{
@@ -535,6 +588,7 @@ func OpenPayloadPaymentChannelWithMode(
 		Mint:             &mint,
 		Salt:             &salt,
 		GracePeriod:      &gracePeriod,
+		RecentSlot:       &recentSlot,
 		AuthorizedSigner: authorizedSigner,
 		Signature:        signature,
 	}
@@ -829,8 +883,10 @@ func (v *VoucherData) UnmarshalJSON(data []byte) error {
 }
 
 // MessageBytes serializes the voucher to the payment-channels VoucherArgs bytes
-// signed by Ed25519: channelId(32) || cumulativeAmount(LE u64) ||
-// expiresAt(LE i64), for a total of exactly 48 bytes.
+// signed by Ed25519: magic [0x56, 0x01] (2) || channelId(32) ||
+// cumulativeAmount(LE u64) || expiresAt(LE i64), for a total of exactly 50
+// bytes. The magic prefix lives in the signed bytes only; the voucher wire
+// JSON is unchanged.
 func (v VoucherData) MessageBytes() ([]byte, error) {
 	channelID, err := solana.PublicKeyFromBase58(v.ChannelID)
 	if err != nil {
@@ -840,7 +896,7 @@ func (v VoucherData) MessageBytes() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid voucher cumulative")
 	}
-	// Delegate to the canonical packer so the 48-byte layout has a single
+	// Delegate to the canonical packer so the 50-byte layout has a single
 	// source of truth.
 	return paymentchannels.VoucherMessageBytes(channelID, cumulative, v.ExpiresAt)
 }

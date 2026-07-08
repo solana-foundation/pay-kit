@@ -97,7 +97,12 @@ async def test_session_lifecycle_settles_on_chain() -> None:
             )
         )
 
-        blockhash = (await rpc.get_latest_blockhash()).value.blockhash
+        latest = await rpc.get_latest_blockhash()
+        blockhash = latest.value.blockhash
+        # recentSlot rides the same getLatestBlockhash response context; the
+        # client takes the channel openSlot from the challenge, never from RPC.
+        recent_slot = latest.context.slot if latest.context is not None else None
+        assert recent_slot is not None
         request = SessionRequest(
             cap="1000000",
             currency="USDC",
@@ -108,6 +113,7 @@ async def test_session_lifecycle_settles_on_chain() -> None:
             modes=["pull"],
             pull_voucher_strategy="clientVoucher",
             recent_blockhash=blockhash,
+            recent_slot=recent_slot,
         )
         # The client builds the open and partial-signs as the payer; the server
         # completes the operator fee-payer signature and broadcasts.
@@ -127,10 +133,10 @@ async def test_session_lifecycle_settles_on_chain() -> None:
         opener.session.record_voucher(voucher)
         await session._handle_voucher(VoucherPayload(voucher=voucher))
 
-        # 3. Close settles the highest voucher on-chain and finalizes.
+        # 3. Close settles the highest voucher on-chain and seals.
         close_reference = await session._handle_close(ClosePayload(channel_id=str(channel_id), voucher=voucher))
         settled = await session._core.store().get_channel(str(channel_id))
-        assert settled is not None and settled.finalized and settled.settled_signature
+        assert settled is not None and settled.sealed and settled.settled_signature
         # The settle transaction confirmed on-chain.
         statuses = await rpc._call(
             "getSignatureStatuses", [[settled.settled_signature], {"searchTransactionHistory": True}]

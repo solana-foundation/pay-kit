@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,6 +129,71 @@ func TestVerifyCredentialSignatureReplayRejected(t *testing.T) {
 	}
 	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected replay to be rejected")
+	}
+}
+
+// TestVerifyCredentialSignatureConcurrentReplayRejected is the regression guard
+// for the TOCTOU replay disclosed in the TypeScript push-mode signature verify:
+// two concurrent requests carrying the SAME landed signature could both settle
+// because the on-chain verify and the replay-marker write were not atomic. The
+// Go SDK reserves the signature via store.PutIfAbsent (an atomic op with a
+// mutex-guarded in-memory impl), so exactly ONE of N concurrent verifies must
+// win and the rest must fail with ErrCodeSignatureConsumed. The goroutines are
+// released together via a start channel to maximize the interleaving that would
+// expose a non-atomic reserve-then-write path.
+func TestVerifyCredentialSignatureConcurrentReplayRejected(t *testing.T) {
+	handler, rpcClient, cfg := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	authHeader, err := client.BuildCredentialHeaderWithOptions(context.Background(), cfg.Client, rpcClient, challenge, client.BuildOptions{Broadcast: true})
+	if err != nil {
+		t.Fatalf("build credential failed: %v", err)
+	}
+	credential, err := core.ParseAuthorization(authHeader)
+	if err != nil {
+		t.Fatalf("parse authorization failed: %v", err)
+	}
+
+	const goroutines = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var successes int64
+	var consumed int64
+	errs := make([]error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start // release all goroutines together
+			receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
+			if err != nil {
+				errs[idx] = err
+				var mppErr *core.Error
+				if mppErrAs(err, &mppErr) && mppErr.Code == core.ErrCodeSignatureConsumed {
+					atomic.AddInt64(&consumed, 1)
+				}
+				return
+			}
+			if receipt.Status != core.ReceiptStatusSuccess || receipt.Reference == "" {
+				errs[idx] = fmt.Errorf("unexpected receipt: %#v", receipt)
+				return
+			}
+			atomic.AddInt64(&successes, 1)
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&successes); got != 1 {
+		t.Fatalf("expected exactly 1 successful settlement, got %d", got)
+	}
+	if got := atomic.LoadInt64(&consumed); got != goroutines-1 {
+		t.Fatalf("expected %d verifies rejected with ErrCodeSignatureConsumed, got %d; errors: %v",
+			goroutines-1, got, errs)
 	}
 }
 

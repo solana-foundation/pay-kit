@@ -29,9 +29,7 @@ class ParseError(Exception):
 # ISO-8601 / RFC 3339 timestamp: YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM).
 # Matches the canonical mpp-tools receipt timestamp validation; rejects loose
 # forms like "Jan 29 2026 12:00".
-_ISO8601_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
-)
+_ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 
 
 # ---------------------------------------------------------------------------

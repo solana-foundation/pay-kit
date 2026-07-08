@@ -10,5 +10,6 @@ type OpenArgs struct {
 	Salt        uint64
 	Deposit     uint64
 	GracePeriod uint32
+	OpenSlot    uint64
 	Recipients  []DistributionEntry
 }

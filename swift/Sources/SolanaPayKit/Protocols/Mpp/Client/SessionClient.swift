@@ -43,7 +43,7 @@ public final class ActiveSession {
     /// current watermark.
     public func prepareVoucher(_ cumulative: UInt64) async throws -> SignedVoucher {
         guard cumulative > self.cumulative else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "voucher cumulative \(cumulative) must exceed current watermark \(self.cumulative)"
             )
         }
@@ -68,15 +68,15 @@ public final class ActiveSession {
     /// nonce when higher). Mirrors Go `RecordVoucher`.
     public func recordVoucher(_ voucher: SignedVoucher) throws {
         guard voucher.data.channelId == channelIdString() else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "voucher channel \(voucher.data.channelId) does not match active session \(channelIdString())"
             )
         }
         guard let cumulative = UInt64(voucher.data.cumulative) else {
-            throw MppError.invalidTransaction("invalid voucher cumulative")
+            throw PayKitError.invalidTransaction("invalid voucher cumulative")
         }
         guard cumulative > self.cumulative else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "voucher cumulative \(cumulative) must exceed current watermark \(self.cumulative)"
             )
         }
@@ -144,6 +144,7 @@ public final class ActiveSession {
         mint: String,
         salt: UInt64,
         gracePeriod: UInt32,
+        openSlot: UInt64,
         signature: String
     ) -> SessionAction {
         .open(OpenPayload.paymentChannel(
@@ -155,6 +156,7 @@ public final class ActiveSession {
             mint: mint,
             salt: salt,
             gracePeriod: gracePeriod,
+            recentSlot: openSlot,
             authorizedSigner: authorizedSigner(),
             signature: signature
         ))
@@ -186,7 +188,7 @@ public final class ActiveSession {
     private func addToWatermark(_ amount: UInt64) throws -> UInt64 {
         let (sum, overflow) = cumulative.addingReportingOverflow(amount)
         guard !overflow else {
-            throw MppError.invalidTransaction("voucher cumulative overflow adding \(amount) to \(cumulative)")
+            throw PayKitError.invalidTransaction("voucher cumulative overflow adding \(amount) to \(cumulative)")
         }
         return sum
     }
@@ -198,7 +200,9 @@ public final class ActiveSession {
 /// broadcasting the open transaction.
 public let pendingServerSignature = String(repeating: "1", count: 64)
 
-/// Derived channel parameters for an open.
+/// Derived channel parameters for an open. `openSlot` is part of the channel
+/// PDA seeds, so persisted channel state must keep it to re-derive the address
+/// (and for the permissionless `reclaim` after distribution).
 public struct PaymentChannelOpen: Sendable {
     public let channelId: Pubkey
     public let payer: Pubkey
@@ -208,6 +212,7 @@ public struct PaymentChannelOpen: Sendable {
     public let salt: UInt64
     public let deposit: UInt64
     public let gracePeriod: UInt32
+    public let openSlot: UInt64
     public let recipients: [PaymentChannels.Distribution]
     public let tokenProgram: Pubkey
     public let programId: Pubkey
@@ -222,6 +227,8 @@ public struct PaymentChannelOpen: Sendable {
             mint: mint.base58,
             salt: salt,
             gracePeriod: gracePeriod,
+            // The program's openSlot crosses HTTP as recentSlot.
+            recentSlot: openSlot,
             authorizedSigner: authorizedSigner.base58,
             signature: signature
         )
@@ -283,24 +290,33 @@ public struct PaymentChannelSessionOpen {
 public enum PaymentChannelSession {
     /// Build a pull + clientVoucher payment-channel session open. The payer
     /// partial-signs the open transaction; the operator (fee payer) co-signs and
-    /// broadcasts. `recentBlockhash` is base58. Mirrors
+    /// broadcasts. `recentBlockhash` is base58. The channel-PDA `openSlot` seed
+    /// comes from the challenge (`request.recentSlot`, server-prefetched like
+    /// the blockhash); an explicit `openSlot` argument overrides it, and the
+    /// open fails when neither is present. Mirrors
     /// `create_payment_channel_session_opener`.
     public static func open(
         request: SessionRequest,
         payerSigner: SolanaSigner,
         sessionSigner: SolanaSigner,
         recentBlockhash: String,
+        openSlot: UInt64? = nil,
         options: PaymentChannelSessionOpenOptions = .init()
     ) async throws -> PaymentChannelSessionOpen {
         try ensureClientVoucherPull(request)
+        guard let openSlot = openSlot ?? request.recentSlot else {
+            throw PayKitError.missingField("session challenge did not provide recentSlot")
+        }
         let authorizedSigner = try Pubkey(bytes: sessionSigner.publicKey)
         let feePayer = try Pubkey(base58: request.operator)
         let payer = try Pubkey(bytes: payerSigner.publicKey)
-        let open = try deriveOpen(request: request, payer: payer, authorizedSigner: authorizedSigner, options: options.open)
+        let open = try deriveOpen(
+            request: request, payer: payer, authorizedSigner: authorizedSigner, openSlot: openSlot, options: options.open
+        )
 
         let blockhash = try Base58.decode(recentBlockhash)
         guard blockhash.count == 32 else {
-            throw MppError.invalidTransaction("recentBlockhash must decode to 32 bytes")
+            throw PayKitError.invalidTransaction("recentBlockhash must decode to 32 bytes")
         }
         let tx = try await PaymentChannels.buildOpenTransaction(
             payer: payerSigner,
@@ -310,6 +326,7 @@ public enum PaymentChannelSession {
             salt: open.salt,
             deposit: open.deposit,
             gracePeriod: open.gracePeriod,
+            openSlot: open.openSlot,
             recipients: open.recipients,
             tokenProgram: open.tokenProgram,
             programId: open.programId,
@@ -330,10 +347,10 @@ public enum PaymentChannelSession {
 
     static func ensureClientVoucherPull(_ request: SessionRequest) throws {
         guard request.modes.contains(.pull) else {
-            throw MppError.invalidTransaction("session challenge does not advertise pull mode")
+            throw PayKitError.invalidTransaction("session challenge does not advertise pull mode")
         }
         guard request.pullVoucherStrategy == .clientVoucher else {
-            throw MppError.invalidTransaction("session challenge does not advertise pull + clientVoucher")
+            throw PayKitError.invalidTransaction("session challenge does not advertise pull + clientVoucher")
         }
     }
 
@@ -341,15 +358,16 @@ public enum PaymentChannelSession {
         request: SessionRequest,
         payer: Pubkey,
         authorizedSigner: Pubkey,
+        openSlot: UInt64,
         options: PaymentChannelOpenOptions
     ) throws -> PaymentChannelOpen {
         guard let mintString = Mints.resolveChargeMint(currency: request.currency, network: request.network) else {
-            throw MppError.invalidTransaction("session payment channels require an SPL token")
+            throw PayKitError.invalidTransaction("session payment channels require an SPL token")
         }
         let mint = try Pubkey(base58: mintString)
         let payee: Pubkey
         do { payee = try Pubkey(base58: request.recipient) } catch {
-            throw MppError.invalidPubkey("invalid recipient \(request.recipient)")
+            throw PayKitError.invalidPubkey("invalid recipient \(request.recipient)")
         }
         let deposit: UInt64
         if let explicit = options.deposit {
@@ -357,7 +375,7 @@ public enum PaymentChannelSession {
         } else if let parsed = UInt64(request.cap) {
             deposit = parsed
         } else {
-            throw MppError.invalidTransaction("invalid session cap: \(request.cap)")
+            throw PayKitError.invalidTransaction("invalid session cap: \(request.cap)")
         }
         let gracePeriod = options.gracePeriod ?? PaymentChannels.defaultGracePeriodSeconds
         let programId: Pubkey
@@ -365,7 +383,7 @@ public enum PaymentChannelSession {
             programId = explicit
         } else if let requested = request.programId {
             do { programId = try Pubkey(base58: requested) } catch {
-                throw MppError.invalidPubkey("invalid programId \(requested)")
+                throw PayKitError.invalidPubkey("invalid programId \(requested)")
             }
         } else {
             programId = PaymentChannels.programId
@@ -383,14 +401,15 @@ public enum PaymentChannelSession {
             recipients = try request.splits.map { split in
                 let recipient: Pubkey
                 do { recipient = try Pubkey(base58: split.recipient) } catch {
-                    throw MppError.invalidPubkey("invalid split recipient \(split.recipient)")
+                    throw PayKitError.invalidPubkey("invalid split recipient \(split.recipient)")
                 }
                 return PaymentChannels.Distribution(recipient: recipient, bps: split.bps)
             }
         }
         let salt = options.salt ?? PaymentChannels.uniqueSalt()
         let channelId = try PaymentChannels.findChannelPda(
-            payer: payer, payee: payee, mint: mint, authorizedSigner: authorizedSigner, salt: salt, programId: programId
+            payer: payer, payee: payee, mint: mint, authorizedSigner: authorizedSigner, salt: salt,
+            openSlot: openSlot, programId: programId
         )
         return PaymentChannelOpen(
             channelId: channelId,
@@ -401,6 +420,7 @@ public enum PaymentChannelSession {
             salt: salt,
             deposit: deposit,
             gracePeriod: gracePeriod,
+            openSlot: openSlot,
             recipients: recipients,
             tokenProgram: tokenProgram,
             programId: programId
@@ -428,7 +448,7 @@ extension PaymentChallenge {
     /// Require a `solana`/`session` challenge before opening a session.
     public func requireSolanaSession() throws {
         guard method == "solana", intent == "session" else {
-            throw MppError.unsupportedChallenge(method: method, intent: intent)
+            throw PayKitError.unsupportedChallenge(method: method, intent: intent)
         }
     }
 
@@ -436,13 +456,13 @@ extension PaymentChallenge {
     public var sessionRequest: SessionRequest {
         get throws {
             guard request.utf8.count <= MppHeaders.maxTokenLength else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             let data = try Base64URL.decode(request)
             do {
                 return try JSONDecoder().decode(SessionRequest.self, from: data)
             } catch {
-                throw MppError.invalidJSON(String(describing: error))
+                throw PayKitError.invalidJSON(String(describing: error))
             }
         }
     }

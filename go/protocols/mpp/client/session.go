@@ -29,7 +29,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-// VoucherSigner signs the 48-byte voucher preimage with the ephemeral session
+// VoucherSigner signs the 50-byte voucher preimage with the ephemeral session
 // key. It is the minimal Ed25519 message-signing surface shared with the
 // charge client (solanatx.Signer satisfies it), so memory signers, hardware
 // wallets, and cloud KMS backends all work unchanged.
@@ -46,7 +46,8 @@ type VoucherSigner = solanatx.Signer
 // goroutine or guard it with a mutex.
 type ActiveSession struct {
 	// channelID is the on-chain channel PDA the vouchers settle against; its
-	// raw 32 bytes lead the 48-byte voucher preimage.
+	// raw 32 bytes follow the 2-byte magic prefix in the 50-byte voucher
+	// preimage.
 	channelID solana.PublicKey
 
 	// cumulative is the watermark in token base units: the cumulative total
@@ -54,7 +55,7 @@ type ActiveSession struct {
 	cumulative uint64
 
 	// nonce counts recorded vouchers; it is carried in the voucher JSON for
-	// server bookkeeping but is not part of the signed 48-byte preimage.
+	// server bookkeeping but is not part of the signed 50-byte preimage.
 	nonce uint64
 
 	// expiresAt is the voucher expiry as Unix epoch seconds, encoded
@@ -262,10 +263,11 @@ func (s *ActiveSession) OpenPaymentChannelAction(
 	payer, payee, mint string,
 	salt uint64,
 	gracePeriod uint32,
+	openSlot uint64,
 	openTxSignature string,
 ) intents.SessionAction {
 	return s.OpenPaymentChannelActionWithMode(
-		intents.SessionModePush, deposit, payer, payee, mint, salt, gracePeriod, openTxSignature)
+		intents.SessionModePush, deposit, payer, payee, mint, salt, gracePeriod, openSlot, openTxSignature)
 }
 
 // OpenPaymentChannelActionWithMode builds a payment-channel open action with an
@@ -276,6 +278,7 @@ func (s *ActiveSession) OpenPaymentChannelActionWithMode(
 	payer, payee, mint string,
 	salt uint64,
 	gracePeriod uint32,
+	openSlot uint64,
 	openTxSignature string,
 ) intents.SessionAction {
 	return intents.NewOpenAction(intents.OpenPayloadPaymentChannelWithMode(
@@ -283,7 +286,7 @@ func (s *ActiveSession) OpenPaymentChannelActionWithMode(
 		s.ChannelIDString(),
 		strconv.FormatUint(deposit, 10),
 		payer, payee, mint,
-		salt, gracePeriod,
+		salt, gracePeriod, openSlot,
 		s.AuthorizedSigner(),
 		openTxSignature,
 	))

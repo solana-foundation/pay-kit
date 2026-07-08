@@ -27,7 +27,7 @@ fn random_salt() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// Sign a cumulative voucher over the 48-byte payload with `signer`.
+/// Sign a cumulative voucher over the 50-byte payload with `signer`.
 pub async fn sign_voucher(
     signer: &dyn SolanaSigner,
     channel_id: &Pubkey,
@@ -57,7 +57,11 @@ fn resolve_pubkey(value: &str, label: &str) -> Result<Pubkey, Error> {
 /// operator-fee-payer) plus the first cumulative voucher.
 ///
 /// `expires_at` is the voucher deadline (Unix seconds, must be future). The
-/// payer key is also the `authorizedSigner`.
+/// payer key is also the `authorizedSigner`. The requirement MUST carry
+/// `extra.recentBlockhash` and `extra.recentSlot` (server-prefetched in the
+/// 402 challenge): the slot feeds the program's `openSlot`, a channel-PDA seed
+/// the program only accepts within a recent window, and it comes from the
+/// challenge — never from a client-side RPC fetch.
 pub async fn build_deposit(
     payer_signer: &dyn SolanaSigner,
     requirements: &BatchRequirements,
@@ -93,6 +97,13 @@ pub async fn build_deposit(
             .ok_or_else(|| Error::Other("requirement missing extra.recentBlockhash".to_string()))?,
     )
     .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
+    let open_slot: u64 = requirements
+        .extra
+        .recent_slot
+        .as_deref()
+        .ok_or_else(|| Error::Other("requirement missing extra.recentSlot".to_string()))?
+        .parse()
+        .map_err(|e| Error::Other(format!("invalid recentSlot: {e}")))?;
 
     let recipients: Vec<pc::Distribution> = requirements
         .extra
@@ -115,6 +126,7 @@ pub async fn build_deposit(
         &mint,
         &payer,
         salt,
+        open_slot,
         deposit_amount,
         grace,
         recipients,
@@ -137,6 +149,7 @@ pub async fn build_deposit(
         mint: requirements.asset.clone(),
         authorized_signer: pc::pubkey_string(&payer),
         salt: salt.to_string(),
+        recent_slot: open_slot.to_string(),
         deposit_amount: deposit_amount.to_string(),
         grace_period_seconds: grace,
         distribution_splits: requirements
@@ -278,6 +291,7 @@ mod tests {
                 token_program: None,
                 fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
                 recent_blockhash: Some(Hash::default().to_string()),
+                recent_slot: Some("314".to_string()),
                 suggested_deposit: None,
                 minimum_deposit: None,
                 min_voucher_delta: None,

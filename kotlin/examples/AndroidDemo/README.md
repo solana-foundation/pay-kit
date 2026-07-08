@@ -8,6 +8,11 @@ a local signer, tops it up over Surfpool cheatcodes, and consumes any
 endpoint over MPP, surfacing each charge's settlement signature in an
 append-only log.
 
+The tap flow drives MPP charge, x402 `exact`, MPP `session`, and x402
+`upto` (usage): tapping the metered endpoint authorizes a ceiling, then
+the server meters actual usage and settles `actual <= max`, refunding the
+rest.
+
 ## Layout
 
 ```
@@ -89,7 +94,7 @@ endpoints are rendered from the playground's OpenAPI spec; the log shows
 a `Stock quote — 200 OK` consumed over MPP with its on-chain settlement
 signature.
 
-![Android emulator screenshot: OpenAPI endpoints and a settled MPP charge](docs/android-demo-screenshot.png)
+![Android emulator screenshot: OpenAPI endpoints and a settled x402 upto (metered) payment](docs/android-demo-screenshot.png)
 
 ## Expected UI state
 

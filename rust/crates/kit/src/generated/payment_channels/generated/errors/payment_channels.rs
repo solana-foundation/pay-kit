@@ -112,6 +112,9 @@ pub enum PaymentChannelsError {
     /// 237 - Voucher signer does not match channel authorized_signer
     #[error("Voucher signer does not match channel authorized_signer")]
     VoucherSignerMismatch = 0xED,
+    /// 238 - Voucher payload magic prefix is invalid
+    #[error("Voucher payload magic prefix is invalid")]
+    VoucherBadMagic = 0xEE,
     /// 260 - num_recipients outside [0, 32]
     #[error("num_recipients outside [0, 32]")]
     InvalidRecipientCount = 0x104,
@@ -139,20 +142,26 @@ pub enum PaymentChannelsError {
     /// 2002 - authorized_signer must be a valid Ed25519 public key
     #[error("authorized_signer must be a valid Ed25519 public key")]
     InvalidAuthorizedSigner = 0x7D2,
+    /// 2003 - open_slot is in the future or older than the allowed slot window
+    #[error("open_slot is in the future or older than the allowed slot window")]
+    OpenSlotOutOfWindow = 0x7D3,
     /// 2100 - Deposit must be non-zero
     #[error("Deposit must be non-zero")]
     TopUpDepositOverflow = 0x834,
     /// 2200 - Deadline overflow on grace period
     #[error("Deadline overflow on grace period")]
-    FinalizeDeadlineOverflow = 0x898,
+    SealDeadlineOverflow = 0x898,
+    /// 2201 - Grace period has not elapsed yet
+    #[error("Grace period has not elapsed yet")]
+    SealGracePeriodNotElapsed = 0x899,
     /// 2300 - Payer refund has already been claimed
     #[error("Payer refund has already been claimed")]
     PayerAlreadyWithdrawn = 0x8FC,
     /// 2301 - Payer refund amount calculation underflow
     #[error("Payer refund amount calculation underflow")]
     RefundCalculationOverflow = 0x8FD,
-    /// 2400 - Channel is not in OPEN or FINALIZED
-    #[error("Channel is not in OPEN or FINALIZED")]
+    /// 2400 - Channel is not in OPEN or SEALED
+    #[error("Channel is not in OPEN or SEALED")]
     ChannelNotDistributable = 0x960,
     /// 2401 - Treasury token account is not ATA(TREASURY_OWNER, mint, token_program)
     #[error("Treasury token account is not ATA(TREASURY_OWNER, mint, token_program)")]
@@ -187,12 +196,15 @@ pub enum PaymentChannelsError {
     /// 2411 - Channel rent rebalance calculation underflow
     #[error("Channel rent rebalance calculation underflow")]
     DistributeBalanceCalculationOverflow = 0x96B,
-    /// 2412 - Payer lamports overflow on rent refund
-    #[error("Payer lamports overflow on rent refund")]
-    DistributePayerBalanceOverflow = 0x96C,
+    /// 2412 - Rent payer lamports overflow on channel deallocation
+    #[error("Rent payer lamports overflow on channel deallocation")]
+    RentPayerBalanceOverflow = 0x96C,
     /// 2413 - Transfer queue capacity exceeded
     #[error("Transfer queue capacity exceeded")]
     DistributeTransferQueueOverflow = 0x96D,
+    /// 2414 - Channel cannot be fully closed until clock.slot > open_slot + OPEN_SLOT_WINDOW
+    #[error("Channel cannot be fully closed until clock.slot > open_slot + OPEN_SLOT_WINDOW")]
+    ChannelCloseTooEarly = 0x96E,
 }
 
 impl From<PaymentChannelsError> for solana_program_error::ProgramError {

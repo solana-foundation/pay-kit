@@ -66,6 +66,7 @@ def _request(operator: Pubkey, recipient: Pubkey, currency: str = "USDC") -> Ses
         network="localnet",
         modes=["pull"],
         pull_voucher_strategy="clientVoucher",
+        recent_slot=777,
     )
 
 
@@ -96,12 +97,13 @@ def test_derive_uses_challenge_defaults_and_splits() -> None:
     assert open_.deposit == 1000  # deposit defaults to the cap
     assert open_.grace_period == DEFAULT_GRACE_PERIOD_SECONDS
     assert open_.salt == 42
+    assert open_.open_slot == 777  # openSlot defaults to the challenge recentSlot
     assert open_.recipients == [Distribution(recipient=split_recipient, bps=10)]
     # localnet resolves to the mainnet mint (Surfpool clones mainnet state).
     assert str(open_.mint) == _USDC_MAINNET
     assert str(open_.token_program) == TOKEN_PROGRAM
     assert open_.program_id == PROGRAM_ID
-    expected_channel, _ = find_channel_pda(payer, _pk(2), open_.mint, authorized_signer, 42, PROGRAM_ID)
+    expected_channel, _ = find_channel_pda(payer, _pk(2), open_.mint, authorized_signer, 42, 777, PROGRAM_ID)
     assert open_.channel_id == expected_channel
 
 
@@ -131,6 +133,7 @@ def test_derive_honors_explicit_options() -> None:
         PaymentChannelOpenOptions(
             deposit=55,
             grace_period=12,
+            open_slot=888,
             program_id=program_id,
             recipients=[Distribution(recipient=split_recipient, bps=25)],
             salt=7,
@@ -140,6 +143,7 @@ def test_derive_honors_explicit_options() -> None:
 
     assert open_.deposit == 55
     assert open_.grace_period == 12
+    assert open_.open_slot == 888  # explicit option beats the challenge recentSlot
     assert open_.program_id == program_id
     assert open_.token_program == token_program
     assert open_.recipients == [Distribution(recipient=split_recipient, bps=25)]
@@ -172,6 +176,13 @@ def test_derive_rejects_invalid_challenge_values() -> None:
     request = _request(_pk(1), _pk(2))
     request.splits.append(SessionSplit(recipient="not-a-pubkey", bps=10))
     with pytest.raises(ValueError, match="split recipient"):
+        derive_payment_channel_open(request, payer, signer)
+
+    # The slot is server-provided: a challenge without recentSlot (and no
+    # explicit open_slot override) cannot derive the channel PDA.
+    request = _request(_pk(1), _pk(2))
+    request.recent_slot = None
+    with pytest.raises(ValueError, match="recentSlot"):
         derive_payment_channel_open(request, payer, signer)
 
 
@@ -338,6 +349,33 @@ def test_server_opened_opener_uses_operator_payer_without_transaction() -> None:
     assert payload.approved_amount is None
 
 
+def test_server_opened_opener_defaults_open_slot_without_challenge_slot() -> None:
+    """A trust-mode (offline) server issues no recentSlot; the server-opened
+    opener defaults the open slot to 0 (the server constructs any real open
+    itself), while the transaction-building opener stays strict."""
+    request = _request(_pk(1), _pk(2))
+    request.recent_slot = None
+
+    opened = create_server_opened_payment_channel_session_opener(
+        request,
+        _kp(12),
+        ServerOpenedPaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=13)),
+    )
+    assert opened.open.open_slot == 0
+    payload = opened.action.open
+    assert payload is not None
+    assert payload.recent_slot == 0
+
+    with pytest.raises(ValueError, match="recentSlot"):
+        create_payment_channel_session_opener(
+            request,
+            _kp(9),
+            _kp(10),
+            Hash.default(),
+            PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=11)),
+        )
+
+
 def test_opener_rejects_non_pull_challenge() -> None:
     request = _request(_pk(1), _pk(2))
     request.modes = ["push"]
@@ -387,7 +425,7 @@ def test_ed25519_verify_instruction_golden_layout() -> None:
 
     signer = _pk(7)
     signature = bytes(range(64))
-    message = bytes([0xAB] * 48)  # voucher preimage is 48 bytes
+    message = bytes([0xAB] * 50)  # voucher preimage is 50 bytes (magic-prefixed)
 
     ix = build_ed25519_verify_instruction(signer, signature, message)
 

@@ -82,20 +82,20 @@ func TestVerifyVoucherDetectsConcurrentClose(t *testing.T) {
 	}
 }
 
-func TestVerifyVoucherDetectsConcurrentFinalize(t *testing.T) {
+func TestVerifyVoucherDetectsConcurrentSeal(t *testing.T) {
 	racing := &racingChannelStore{ChannelStore: NewMemoryChannelStore()}
 	server := NewSessionServer(sessionTestConfig(), racing)
 	signer, channelID := openTestChannel(t, server, 1_000_000)
 
 	racing.interleave = func(ctx context.Context, store ChannelStore) {
-		if _, err := store.MarkFinalized(ctx, channelID); err != nil {
-			t.Fatalf("interleaved finalize: %v", err)
+		if _, err := store.MarkSealed(ctx, channelID); err != nil {
+			t.Fatalf("interleaved seal: %v", err)
 		}
 	}
 
 	_, err := submitVoucher(t, server, signer, channelID, 100)
-	if err == nil || !strings.Contains(err.Error(), "finalized") {
-		t.Fatalf("err = %v, want finalized rejection inside the mutator", err)
+	if err == nil || !strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("err = %v, want sealed rejection inside the mutator", err)
 	}
 }
 

@@ -1789,7 +1789,7 @@ packages:
     version: 2.16.0
 
   '@x402/svm@file:.x402-vendor/x402-svm-2.16.0.tgz':
-    resolution: {integrity: sha512-BlQcL9N42P/fRNqQY3cOoHuZGw/fikHF3ThByMv61JFYxvnCDh+cznuneHXG9ADR6QcXa1f50S2lI9EtGq9jaA==, tarball: file:.x402-vendor/x402-svm-2.16.0.tgz}
+    resolution: {integrity: sha512-6LY/4fVY9M9cGL/HShfSCIEwPEptakXoSvb/W5ComrLGn+4Upbpt1cockvJ2qMqpK4o8xDkasBNO59Ms5usdZA==, tarball: file:.x402-vendor/x402-svm-2.16.0.tgz}
     version: 2.16.0
     peerDependencies:
       '@solana/kit': '>=5.1.0'

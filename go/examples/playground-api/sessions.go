@@ -173,7 +173,7 @@ func registerSessions(mux *http.ServeMux, a *app) (func(), error) {
 			"channelId":        state.ChannelID,
 			"cumulative":       fmt.Sprintf("%d", state.Cumulative),
 			"deposit":          fmt.Sprintf("%d", state.Deposit),
-			"finalized":        state.Finalized,
+			"sealed":           state.Sealed,
 			"settledSignature": settledSignature,
 		})
 	})

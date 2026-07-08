@@ -73,7 +73,7 @@ pub trait Broadcaster: Send + Sync {
 pub struct SettlementConfig {
     pub operator: Pubkey,
     pub operator_signer: Arc<dyn SolanaSigner>,
-    /// Calibrated cap (P0 = 3 for settle+finalize); packing is also byte-bounded.
+    /// Calibrated cap (P0 = 3 for settle+seal); packing is also byte-bounded.
     pub max_channels_per_tx: usize,
     /// Linger window before flushing a partial batch.
     pub linger: Duration,
@@ -552,14 +552,14 @@ mod tests {
     }
 
     /// End-to-end (minus the program executing): drive the worker over K
-    /// channels built with the REAL settle+finalize instructions and assert the
+    /// channels built with the REAL settle+seal instructions and assert the
     /// emitted transactions are correctly batched, operator-signed, and
     /// packet-legal. Proves everything the worker is responsible for; only the
-    /// on-chain finalize (which needs the deployed program) is out of scope.
+    /// on-chain seal (which needs the deployed program) is out of scope.
     #[tokio::test]
     async fn batched_settle_emits_correct_transactions() {
         use crate::core::payment_channels::{
-            build_settle_and_finalize_instructions, default_program_id,
+            build_settle_and_seal_instructions, default_program_id,
         };
         use crate::core::settlement::packing::{tx_size, MAX_TX_BYTES};
 
@@ -575,7 +575,7 @@ mod tests {
                 b
             });
             let sig = [7u8; 64];
-            let ixs = build_settle_and_finalize_instructions(
+            let ixs = build_settle_and_seal_instructions(
                 &operator,
                 &channel,
                 &operator,
@@ -585,11 +585,7 @@ mod tests {
                 &program_id,
             )
             .unwrap();
-            assert_eq!(
-                ixs.len(),
-                2,
-                "settle+finalize with voucher = ed25519 + settle"
-            );
+            assert_eq!(ixs.len(), 2, "settle+seal with voucher = ed25519 + settle");
             // Each channel's own tx must be packet-legal.
             assert!(tx_size(&ixs, &operator) <= MAX_TX_BYTES);
             channels.push((channel.to_string(), ixs));

@@ -139,7 +139,7 @@ func TestProcessOpenStoresState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessOpen: %v", err)
 	}
-	if state.Deposit != 1_000_000 || state.Cumulative != 0 || state.Finalized {
+	if state.Deposit != 1_000_000 || state.Cumulative != 0 || state.Sealed {
 		t.Fatalf("state = %+v", state)
 	}
 	if state.AuthorizedSigner != "signer1" {
@@ -166,7 +166,7 @@ func TestProcessOpenRejectsUnadvertisedPullMode(t *testing.T) {
 	payload := intents.OpenPayloadPaymentChannelWithMode(
 		intents.SessionModePull,
 		"chan1", "1000000", "payer", sessionTestRecipient, "mint",
-		1, 900, "signer1", "pending",
+		1, 900, 321_654_987, "signer1", "pending",
 	)
 	_, err := server.ProcessOpen(context.Background(), &payload)
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
@@ -183,7 +183,7 @@ func TestProcessOpenAcceptsAdvertisedPullClientVoucherChannel(t *testing.T) {
 	payload := intents.OpenPayloadPaymentChannelWithMode(
 		intents.SessionModePull,
 		"chan1", "1000000", "payer", sessionTestRecipient, "mint",
-		1, 900, "signer1", "pending",
+		1, 900, 321_654_987, "signer1", "pending",
 	)
 	state, err := server.ProcessOpen(context.Background(), &payload)
 	if err != nil {
@@ -251,16 +251,16 @@ func TestProcessOpenReplayWithDifferentSignerRejected(t *testing.T) {
 	}
 }
 
-func TestProcessOpenReplayOnFinalizedChannelRejected(t *testing.T) {
+func TestProcessOpenReplayOnSealedChannelRejected(t *testing.T) {
 	server := newSessionTestServer(sessionTestConfig())
 	signer, channelID := openTestChannel(t, server, 1_000_000)
 
-	if err := server.MarkFinalized(context.Background(), channelID); err != nil {
-		t.Fatalf("MarkFinalized: %v", err)
+	if err := server.MarkSealed(context.Background(), channelID); err != nil {
+		t.Fatalf("MarkSealed: %v", err)
 	}
 	_, err := server.ProcessOpen(context.Background(), sessionOpenPayload(channelID, 1_000_000, signer.Address()))
-	if err == nil || !strings.Contains(err.Error(), "finalized") {
-		t.Fatalf("err = %v, want finalized rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("err = %v, want sealed rejection", err)
 	}
 }
 
@@ -550,7 +550,7 @@ func TestProcessTopUpRejectsOverMaxCap(t *testing.T) {
 	}
 }
 
-func TestProcessTopUpRejectsWhenFinalizedOrClosePending(t *testing.T) {
+func TestProcessTopUpRejectsWhenSealedOrClosePending(t *testing.T) {
 	server := newSessionTestServer(sessionTestConfig())
 	_, channelID := openTestChannel(t, server, 1_000_000)
 	if _, err := server.ProcessClose(context.Background(), &intents.ClosePayload{ChannelID: channelID}); err != nil {
@@ -565,14 +565,14 @@ func TestProcessTopUpRejectsWhenFinalizedOrClosePending(t *testing.T) {
 
 	server2 := newSessionTestServer(sessionTestConfig())
 	_, channelID2 := openTestChannel(t, server2, 1_000_000)
-	if err := server2.MarkFinalized(context.Background(), channelID2); err != nil {
-		t.Fatalf("MarkFinalized: %v", err)
+	if err := server2.MarkSealed(context.Background(), channelID2); err != nil {
+		t.Fatalf("MarkSealed: %v", err)
 	}
 	_, err = server2.ProcessTopUp(context.Background(), &intents.TopUpPayload{
 		ChannelID: channelID2, NewDeposit: "2000000", Signature: "sig",
 	})
-	if err == nil || !strings.Contains(err.Error(), "finalized") {
-		t.Fatalf("err = %v, want finalized rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("err = %v, want sealed rejection", err)
 	}
 }
 

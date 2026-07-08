@@ -37,9 +37,10 @@ type openTxFixture struct {
 }
 
 const (
-	openFixtureSalt    = uint64(7)
-	openFixtureDeposit = uint64(1_000_000)
-	openFixtureGrace   = uint32(900)
+	openFixtureSalt     = uint64(7)
+	openFixtureDeposit  = uint64(1_000_000)
+	openFixtureGrace    = uint32(900)
+	openFixtureOpenSlot = uint64(321_654_987)
 )
 
 // buildOpenTxFixture builds a payer-signed open transaction in the requested
@@ -52,7 +53,7 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 	authorized := testutil.NewPrivateKey().PublicKey()
 	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
 
-	channel, _, err := paymentchannels.FindChannelPDA(payer.PublicKey(), payee, mint, authorized, openFixtureSalt)
+	channel, _, err := paymentchannels.FindChannelPDA(payer.PublicKey(), payee, mint, authorized, openFixtureSalt, openFixtureOpenSlot)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
@@ -65,6 +66,7 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 		Mint:             mint,
 		AuthorizedSigner: authorized,
 		Salt:             openFixtureSalt,
+		OpenSlot:         openFixtureOpenSlot,
 		Deposit:          openFixtureDeposit,
 		GracePeriod:      openFixtureGrace,
 		TokenProgram:     solana.TokenProgramID,
@@ -127,6 +129,7 @@ func signAndAttachOpenTx(t *testing.T, fixture *openTxFixture, ix solana.Instruc
 		fixture.mint.String(),
 		openFixtureSalt,
 		openFixtureGrace,
+		openFixtureOpenSlot,
 		fixture.authorized.String(),
 		signature,
 	).WithTransaction(encoded)
@@ -342,6 +345,7 @@ func TestVerifyOpenTxRejectsChannelPDAMismatch(t *testing.T) {
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorized,
 		Salt:             openFixtureSalt,
+		OpenSlot:         openFixtureOpenSlot,
 		Deposit:          openFixtureDeposit,
 		GracePeriod:      openFixtureGrace,
 		TokenProgram:     solana.TokenProgramID,
@@ -563,7 +567,7 @@ func openSettlementChannel(t *testing.T, server *SessionServer, payer solana.Pub
 		payer.String(),
 		sessionTestRecipient,
 		paycore.USDCMainnetMint,
-		openFixtureSalt, openFixtureGrace,
+		openFixtureSalt, openFixtureGrace, openFixtureOpenSlot,
 		signer.Address(), "dummy_tx_sig",
 	)
 	if _, err := server.ProcessOpen(context.Background(), &payload); err != nil {
@@ -592,7 +596,7 @@ func TestSettlementInstructionsWithVoucher(t *testing.T) {
 		t.Fatalf("SettlementInstructions: %v", err)
 	}
 	if len(instructions) != 3 {
-		t.Fatalf("instructions = %d, want 3 (ed25519 + settle_and_finalize + distribute)", len(instructions))
+		t.Fatalf("instructions = %d, want 3 (ed25519 + settle_and_seal + distribute)", len(instructions))
 	}
 
 	// Instruction 0: the Ed25519 precompile over the stored highest voucher.
@@ -615,17 +619,17 @@ func TestSettlementInstructionsWithVoucher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("precompile.Data: %v", err)
 	}
-	if !bytes.Equal(precompileData[112:160], wantMessage) {
+	if !bytes.Equal(precompileData[112:162], wantMessage) {
 		t.Fatal("precompile message != stored voucher payload")
 	}
 
-	// Instruction 1: settle_and_finalize committing the watermark.
+	// Instruction 1: settle_and_seal committing the watermark.
 	settleData, err := instructions[1].Data()
 	if err != nil {
 		t.Fatalf("settle.Data: %v", err)
 	}
 	// The voucher (incl. cumulative=500) lives in the precompile, verified
-	// above; settle_and_finalize carries only [disc=4][hasVoucher=1].
+	// above; settle_and_seal carries only [disc=4][hasVoucher=1].
 	if len(settleData) != 2 || settleData[0] != 4 || settleData[1] != 1 {
 		t.Fatalf("settle data = %v, want [4 1]", settleData)
 	}
@@ -701,7 +705,7 @@ func TestSettlementInstructionsResolvesToken2022FromCurrency(t *testing.T) {
 	payload := intents.OpenPayloadPaymentChannel(
 		channelID, "1000000",
 		payer.String(), sessionTestRecipient, paycore.PYUSDMainnetMint,
-		openFixtureSalt, openFixtureGrace, signer.Address(), "dummy_tx_sig",
+		openFixtureSalt, openFixtureGrace, openFixtureOpenSlot, signer.Address(), "dummy_tx_sig",
 	)
 	if _, err := server.ProcessOpen(context.Background(), &payload); err != nil {
 		t.Fatalf("ProcessOpen: %v", err)

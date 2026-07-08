@@ -88,3 +88,39 @@ jobs:
           X402_HARNESS_CLIENTS: swift-x402
           X402_HARNESS_SERVERS: rust-x402
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000
+
+  harness-swift-x402-upto:
+    name: "Harness: Swift x402 upto client to Rust x402 upto server"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "paykit-harness-bins:x402_harness_upto_server"
+          cargo-cache-key: swift-x402-upto
+      # x402 upto opens a real on-chain payment channel; the embedded surfnet
+      # needs the canonical payment-channels program as a localnet SBF build.
+      - name: Build payment channels program
+        id: payment-channels
+        uses: ./.github/actions/build-payment-channels
+      - name: Build Swift x402 upto harness client
+        working-directory: harness/swift-x402-upto-client
+        run: swift build --quiet
+      # Drive the swift-x402-upto client against the rust-x402-upto server:
+      # the client opens the channel and the rust server settles the metered
+      # voucher and refunds the remainder. rust-x402-upto is the only upto
+      # server that runs the canonical close+settle path, and it is the server
+      # the zero-actual scenario is pinned to (serverIds in intents/x402-upto.ts).
+      - name: Run Swift x402 upto client harness against Rust x402 upto server
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-upto
+          MPP_HARNESS_SCENARIOS: x402-upto-basic,x402-upto-zero-actual
+          X402_HARNESS_CLIENTS: swift-x402-upto
+          X402_HARNESS_SERVERS: rust-x402-upto
+          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.payment-channels.outputs.program-so }}
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

@@ -394,10 +394,13 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         }
 
         const usageChallenge = async (error?: InvalidProofError): Promise<PaymentDenied> => {
-            const accepts: AcceptsEntry[] = upto.accepts(gate.amount).map(req => ({ ...req, protocol: 'x402' }));
+            // One server-enriched requirement (recentBlockhash + recentSlot)
+            // shared by the header and the JSON body offers.
+            const requirements = await upto.accepts(gate.amount);
+            const accepts: AcceptsEntry[] = requirements.map(req => ({ ...req, protocol: 'x402' }));
             const challenge: Challenge = {
                 accepts,
-                headers: await upto.challengeHeaders(gate.amount, request),
+                headers: await upto.challengeHeaders(gate.amount, request, requirements),
                 resource: new URL(request.url).pathname,
             };
             return {
@@ -538,7 +541,16 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         };
 
         if (gate.kind === 'usage') {
-            return upto ? upto.accepts(gate.amount).map(req => toOffer({ ...req, protocol: 'x402' }, true)) : [];
+            if (!upto) return [];
+            // Discovery is informational: when the recent-state fetch fails the
+            // enriched requirement throws (a bare offer is unusable — clients
+            // need extra.recentSlot to derive the channel openSlot), so omit
+            // the upto offer rather than failing the whole discovery response.
+            try {
+                return (await upto.accepts(gate.amount)).map(req => toOffer({ ...req, protocol: 'x402' }, true));
+            } catch {
+                return [];
+            }
         }
         if (gate.kind === 'session') {
             // Session is MPP-only and streams; advertise the ceiling + per-delivery price directly.
@@ -636,7 +648,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                 try {
                     response = await handler(request, result.payment);
                 } catch (error) {
-                    // Finalize the upto channel even if the handler threw —
+                    // Seal the upto channel even if the handler threw —
                     // verifyOpen already escrowed the ceiling on-chain (meter is
                     // 0, so this refunds). Best-effort; re-throw the original error.
                     try {
@@ -665,7 +677,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                 } finally {
                     // Settle even if the handler threw: for usage (upto) gates
                     // `verifyOpen` already escrowed the ceiling on-chain, so the
-                    // channel must be finalized regardless of the handler outcome.
+                    // channel must be sealed regardless of the handler outcome.
                     // Best-effort — a transient settle (RPC) failure must not mask
                     // the handler's response (success) or its error (throw).
                     try {
@@ -827,7 +839,7 @@ async function runBufferedSettle(
         next();
     } catch (error) {
         restoreAndReplay();
-        // Finalize the channel even on a synchronous handler throw: for usage
+        // Seal the channel even on a synchronous handler throw: for usage
         // (upto) gates `verifyOpen` already escrowed the ceiling on-chain, so
         // skipping settle would leave it open. The meter is 0 here, so this
         // refunds. Best-effort — forward the original handler error regardless.
@@ -844,12 +856,12 @@ async function runBufferedSettle(
 
     try {
         // Settle even on a handler error: the meter is 0 unless the handler
-        // reported usage, so a failed request finalizes the channel and refunds.
+        // reported usage, so a failed request seals the channel and refunds.
         for (const [name, value] of Object.entries(await result.settle())) res.setHeader(name, value);
     } catch (settleError) {
         // The upto ceiling is already escrowed on-chain, so the request is paid;
         // serve the buffered handler response without settlement headers. The
-        // metered amount is not finalized in-process and nothing retries it — the
+        // metered amount is not sealed in-process and nothing retries it — the
         // channel's on-chain timeout is the only fallback.
         handleSettleFailure(settleError);
     }
