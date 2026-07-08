@@ -13,7 +13,7 @@ function makeState(overrides: Partial<ChannelState> = {}): ChannelState {
         authorizedSigner: '11111111111111111111111111111111',
         deposit: 1_000_000n,
         cumulative: 0n,
-        finalized: false,
+        sealed: false,
         nextDeliverySequence: 0n,
         pendingDeliveries: [],
         committedDeliveries: [],
@@ -100,27 +100,25 @@ describe('createMemorySessionStore', () => {
     test('listChannels applies filters', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('a', () => makeState({ channelId: 'a' }));
-        await store.updateChannel('b', () => makeState({ channelId: 'b', finalized: true }));
+        await store.updateChannel('b', () => makeState({ channelId: 'b', sealed: true }));
         await store.updateChannel('c', () => makeState({ channelId: 'c', closeRequestedAt: 123n }));
 
         expect((await store.listChannels()).length).toBe(3);
-        expect((await store.listChannels({ finalized: true })).map(s => s.channelId)).toEqual(['b']);
-        expect((await store.listChannels({ finalized: false, closePending: true })).map(s => s.channelId)).toEqual([
-            'c',
-        ]);
+        expect((await store.listChannels({ sealed: true })).map(s => s.channelId)).toEqual(['b']);
+        expect((await store.listChannels({ sealed: false, closePending: true })).map(s => s.channelId)).toEqual(['c']);
     });
 
-    test('deleteChannel + markFinalized', async () => {
+    test('deleteChannel + markSealed', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('c1', () => makeState({ channelId: 'c1' }));
 
-        await store.markFinalized('c1');
-        expect((await store.getChannel('c1'))?.finalized).toBe(true);
+        await store.markSealed('c1');
+        expect((await store.getChannel('c1'))?.sealed).toBe(true);
 
         await store.deleteChannel('c1');
         expect(await store.getChannel('c1')).toBeUndefined();
 
-        await expect(store.markFinalized('ghost')).rejects.toThrow();
+        await expect(store.markSealed('ghost')).rejects.toThrow();
     });
 });
 
@@ -248,15 +246,15 @@ describe('verifyVoucherForChannel', () => {
         }
     });
 
-    test('finalized channel rejects vouchers', async () => {
+    test('sealed channel rejects vouchers', async () => {
         const signer = await generateKeyPairSigner();
         const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, FAR_FUTURE);
-        const state = makeState({ authorizedSigner: signer.address, finalized: true });
+        const state = makeState({ authorizedSigner: signer.address, sealed: true });
 
         const result = await verifyVoucherForChannel({ state, signed: voucher, deposit: 1_000n });
         expect(result.status).toBe('rejected');
         if (result.status === 'rejected') {
-            expect(result.reason).toBe('channel-finalized');
+            expect(result.reason).toBe('channel-sealed');
         }
     });
 

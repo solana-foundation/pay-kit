@@ -20,7 +20,7 @@ const testVoucherChannelID = "11111111111111111111111111111111"
 // testVoucherSigner is an in-memory Ed25519 keypair for voucher tests.
 type testVoucherSigner struct {
 	pub  ed25519.PublicKey  // verify key; its base58 form is the channel's authorized signer
-	priv ed25519.PrivateKey // signing key for the canonical 48-byte voucher preimage
+	priv ed25519.PrivateKey // signing key for the canonical 50-byte voucher preimage
 }
 
 func newTestVoucherSigner(t *testing.T) testVoucherSigner {
@@ -37,7 +37,7 @@ func (s testVoucherSigner) Address() string {
 	return solana.PublicKeyFromBytes(s.pub).String()
 }
 
-// SignVoucher signs the canonical 48-byte voucher payload.
+// SignVoucher signs the canonical 50-byte voucher payload.
 func (s testVoucherSigner) SignVoucher(t *testing.T, channelID string, cumulative uint64, expiresAt int64) intents.SignedVoucher {
 	t.Helper()
 	data := intents.VoucherData{
@@ -209,15 +209,15 @@ func TestVerifyVoucherForChannelExpiredRejected(t *testing.T) {
 	}
 }
 
-func TestVerifyVoucherForChannelFinalizedRejected(t *testing.T) {
+func TestVerifyVoucherForChannelSealedRejected(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, farFuture())
 	state := voucherTestState(signer.Address())
-	state.Finalized = true
+	state.Sealed = true
 
 	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: 1_000})
-	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectChannelFinalized {
-		t.Fatalf("result = %+v, want channel-finalized rejection", result)
+	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectChannelSealed {
+		t.Fatalf("result = %+v, want channel-sealed rejection", result)
 	}
 }
 
@@ -469,10 +469,10 @@ func TestVerifyVoucherForChannelStrictIncrementRequired(t *testing.T) {
 // Ordering checks: each earlier step must win over every later failure
 // present in the same voucher.
 
-func TestVerifyVoucherForChannelOrderingParseBeatsFinalized(t *testing.T) {
+func TestVerifyVoucherForChannelOrderingParseBeatsSealed(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 	state := voucherTestState(signer.Address())
-	state.Finalized = true
+	state.Sealed = true
 	voucher := intents.SignedVoucher{
 		Data:      intents.VoucherData{ChannelID: state.ChannelID, Cumulative: "bogus", ExpiresAt: farFuture()},
 		Signature: "sig",
@@ -480,21 +480,21 @@ func TestVerifyVoucherForChannelOrderingParseBeatsFinalized(t *testing.T) {
 
 	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: 1_000})
 	if result.Reason != VoucherRejectInvalidCumulative {
-		t.Fatalf("reason = %s, want invalid-cumulative before channel-finalized", result.Reason)
+		t.Fatalf("reason = %s, want invalid-cumulative before channel-sealed", result.Reason)
 	}
 }
 
-func TestVerifyVoucherForChannelOrderingFinalizedBeatsClosePending(t *testing.T) {
+func TestVerifyVoucherForChannelOrderingSealedBeatsClosePending(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 	state := voucherTestState(signer.Address())
-	state.Finalized = true
+	state.Sealed = true
 	closeAt := uint64(1)
 	state.CloseRequestedAt = &closeAt
 	voucher := signer.SignVoucher(t, state.ChannelID, 100, farFuture())
 
 	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: 1_000})
-	if result.Reason != VoucherRejectChannelFinalized {
-		t.Fatalf("reason = %s, want channel-finalized before channel-close-pending", result.Reason)
+	if result.Reason != VoucherRejectChannelSealed {
+		t.Fatalf("reason = %s, want channel-sealed before channel-close-pending", result.Reason)
 	}
 }
 

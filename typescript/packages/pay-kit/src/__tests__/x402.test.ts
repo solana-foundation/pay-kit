@@ -1,4 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The upto challenge requires a server-fetched recentBlockhash + recentSlot
+// (one getLatestBlockhash call); stub the RPC so the enriched requirement is
+// deterministic offline, and let tests flip `fail` to exercise the
+// no-bare-offer failure path.
+const rpcState = vi.hoisted(() => ({ fail: false }));
+vi.mock('@solana/kit', async importOriginal => {
+    const actual = await importOriginal<typeof import('@solana/kit')>();
+    return {
+        ...actual,
+        createSolanaRpc: () => ({
+            getLatestBlockhash: () => ({
+                send: async () => {
+                    if (rpcState.fail) throw new Error('rpc down');
+                    return {
+                        context: { slot: 314n },
+                        value: {
+                            blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                            lastValidBlockHeight: 100n,
+                        },
+                    };
+                },
+            }),
+        }),
+    };
+});
 
 import { createX402ExactAdapter } from '../adapters/x402.js';
 import { Charge, X402Upto } from '../adapters/x402-upto.js';
@@ -53,7 +79,7 @@ describe('x402 upto engine', () => {
     it('advertises an upto accepts entry with the facilitator binding', async () => {
         const config = await testConfig();
         const upto = new X402Upto(config);
-        const [entry] = upto.accepts(usd('1.00'));
+        const [entry] = await upto.accepts(usd('1.00'));
 
         expect(entry.scheme).toBe('upto');
         expect(entry.amount).toBe('1000000'); // 1.00 USDC ceiling
@@ -62,6 +88,23 @@ describe('x402 upto engine', () => {
         expect((entry.extra as { facilitatorAddress?: string }).facilitatorAddress).toBe(config.operator.signer.pubkey);
         expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(0);
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
+        // The offer is server-enriched: the client derives the channel openSlot
+        // from extra.recentSlot and never fetches the slot itself.
+        expect((entry.extra as { recentSlot?: string }).recentSlot).toBe('314');
+        expect((entry.extra as { recentBlockhash?: string }).recentBlockhash).toBe(
+            'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+        );
+    });
+
+    it('fails the challenge instead of advertising a bare upto offer', async () => {
+        const config = await testConfig();
+        const upto = new X402Upto(config);
+        rpcState.fail = true;
+        try {
+            await expect(upto.accepts(usd('1.00'))).rejects.toThrow(/recentBlockhash\/recentSlot/);
+        } finally {
+            rpcState.fail = false;
+        }
     });
 
     it('advertises the configured facilitator fee', async () => {
@@ -71,7 +114,7 @@ describe('x402 upto engine', () => {
             x402: { facilitatorFee: 250 },
         });
         const upto = new X402Upto(config);
-        const [entry] = upto.accepts(usd('1.00'));
+        const [entry] = await upto.accepts(usd('1.00'));
 
         expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(250);
     });

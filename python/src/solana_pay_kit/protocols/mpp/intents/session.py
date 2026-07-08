@@ -140,6 +140,11 @@ class SessionRequest:
             (e.g. per-delivery vs. cumulative).
         recent_blockhash: Optional blockhash the client reuses when building
             the open transaction, avoiding an extra RPC round-trip.
+        recent_slot: Slot the server fetched at challenge time (alongside the
+            recent blockhash). The client uses it as the channel ``openSlot``
+            (a channel PDA seed and an ``openArgs`` field) and echoes it in
+            the open payload; clients do not fetch the slot themselves.
+            Serialized as a decimal string like ``salt``.
     """
 
     cap: str
@@ -156,6 +161,7 @@ class SessionRequest:
     modes: list[SessionMode] = field(default_factory=list)
     pull_voucher_strategy: SessionPullVoucherStrategy | None = None
     recent_blockhash: str | None = None
+    recent_slot: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -184,6 +190,9 @@ class SessionRequest:
             d["pullVoucherStrategy"] = self.pull_voucher_strategy
         if self.recent_blockhash is not None:
             d["recentBlockhash"] = self.recent_blockhash
+        recent_slot = _u64_to_wire(self.recent_slot)
+        if recent_slot is not None:
+            d["recentSlot"] = recent_slot
         return d
 
     @classmethod
@@ -215,22 +224,24 @@ class SessionRequest:
             modes=modes,
             pull_voucher_strategy=strategy,
             recent_blockhash=data.get("recentBlockhash"),
+            recent_slot=_u64_from_wire(data.get("recentSlot"), "recentSlot"),
         )
 
 
-def _salt_to_wire(salt: int | None) -> str | None:
-    """Serialize an optional salt as a decimal string.
+def _u64_to_wire(value: int | None) -> str | None:
+    """Serialize an optional u64 field (salt / recentSlot) as a decimal string.
 
     Authorization headers are JSON canonicalized and an arbitrary ``u64`` is not
-    a safe JSON number, so the salt always travels as a decimal string.
+    a safe JSON number, so these fields always travel as decimal strings.
     """
-    if salt is None:
+    if value is None:
         return None
-    return str(salt)
+    return str(value)
 
 
-def _salt_from_wire(value: Any) -> int | None:
-    """Parse an optional salt from a decimal string or a JSON number.
+def _u64_from_wire(value: Any, label: str) -> int | None:
+    """Parse an optional u64 field (salt / recentSlot) from a decimal string or a
+    JSON number.
 
     ``int`` is accepted directly (no float precision loss because Python ints
     are arbitrary precision); strings are parsed as base-10 integers.
@@ -238,21 +249,21 @@ def _salt_from_wire(value: Any) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        raise ValueError("salt must be a decimal string or unsigned 64-bit integer")
-    # The salt is validated as a ``u64``, rejecting negative or out-of-range
-    # values here rather than letting a malformed salt fail later inside
+        raise ValueError(f"{label} must be a decimal string or unsigned 64-bit integer")
+    # The value is validated as a ``u64``, rejecting negative or out-of-range
+    # values here rather than letting a malformed field fail later inside
     # struct.pack. Accept an int directly (no float precision loss) or a strict
     # unsigned-decimal string.
     if isinstance(value, int):
         if not 0 <= value <= _U64_MAX:
-            raise ValueError(f"salt out of u64 range: {value}")
+            raise ValueError(f"{label} out of u64 range: {value}")
         return value
     if isinstance(value, str):
         try:
             return _parse_base_units(value)
         except ValueError as exc:
-            raise ValueError(f"salt must be a decimal string: {value}") from exc
-    raise ValueError("salt must be a decimal string or unsigned 64-bit integer")
+            raise ValueError(f"{label} must be a decimal string: {value}") from exc
+    raise ValueError(f"{label} must be a decimal string or unsigned 64-bit integer")
 
 
 @dataclass
@@ -281,6 +292,10 @@ class OpenPayload:
             one payer open several channels to one payee.
         grace_period: (push) Seconds after expiry before the channel can be
             force-closed.
+        recent_slot: (push) Challenge-provided slot the channel was opened at
+            (the channel ``openSlot``); a channel PDA seed, so the server
+            needs it to re-derive the channel address (and later to reclaim
+            the channel rent). Serialized as a decimal string like ``salt``.
         transaction: (push) Base64 signed transaction that opens the channel.
         token_account: (pull) Base58 SPL token account the delegation draws
             from.
@@ -303,6 +318,7 @@ class OpenPayload:
     mint: str | None = None
     salt: int | None = None
     grace_period: int | None = None
+    recent_slot: int | None = None
     transaction: str | None = None
     # Pull mode
     token_account: str | None = None
@@ -342,6 +358,7 @@ class OpenPayload:
         mint: str,
         salt: int,
         grace_period: int,
+        recent_slot: int,
         authorized_signer: str,
         signature: str,
     ) -> OpenPayload:
@@ -349,7 +366,8 @@ class OpenPayload:
         details.
 
         Records the full set of payment-channel fields (channel id, deposit,
-        payer, payee, mint, salt, grace period) in ``"push"`` mode.
+        payer, payee, mint, salt, grace period, recent slot) in ``"push"``
+        mode.
         """
         return cls.payment_channel_with_mode(
             "push",
@@ -360,6 +378,7 @@ class OpenPayload:
             mint,
             salt,
             grace_period,
+            recent_slot,
             authorized_signer,
             signature,
         )
@@ -375,6 +394,7 @@ class OpenPayload:
         mint: str,
         salt: int,
         grace_period: int,
+        recent_slot: int,
         authorized_signer: str,
         signature: str,
     ) -> OpenPayload:
@@ -395,6 +415,7 @@ class OpenPayload:
             mint=mint,
             salt=salt,
             grace_period=grace_period,
+            recent_slot=recent_slot,
         )
 
     @classmethod
@@ -502,11 +523,14 @@ class OpenPayload:
             d["payee"] = self.payee
         if self.mint is not None:
             d["mint"] = self.mint
-        salt = _salt_to_wire(self.salt)
+        salt = _u64_to_wire(self.salt)
         if salt is not None:
             d["salt"] = salt
         if self.grace_period is not None:
             d["gracePeriod"] = self.grace_period
+        recent_slot = _u64_to_wire(self.recent_slot)
+        if recent_slot is not None:
+            d["recentSlot"] = recent_slot
         if self.transaction is not None:
             d["transaction"] = self.transaction
         if self.token_account is not None:
@@ -542,8 +566,9 @@ class OpenPayload:
             payer=data.get("payer"),
             payee=data.get("payee"),
             mint=data.get("mint"),
-            salt=_salt_from_wire(data.get("salt")),
+            salt=_u64_from_wire(data.get("salt"), "salt"),
             grace_period=(int(data["gracePeriod"]) if data.get("gracePeriod") is not None else None),
+            recent_slot=_u64_from_wire(data.get("recentSlot"), "recentSlot"),
             transaction=data.get("transaction"),
             token_account=data.get("tokenAccount"),
             approved_amount=data.get("approvedAmount"),
@@ -558,9 +583,10 @@ class VoucherData:
     """The canonical content of a voucher, signed by the client's session key.
 
     Serialized as the on-chain ``VoucherArgs`` layout before signing:
-    ``channel_id || cumulative_amount_le || expires_at_le``. The wire field for
-    the cumulative amount is ``cumulativeAmount`` with a ``cumulative`` decode
-    alias. ``nonce`` is optional and omitted from the wire when ``None``.
+    ``magic || channel_id || cumulative_amount_le || expires_at_le``. The wire
+    field for the cumulative amount is ``cumulativeAmount`` with a
+    ``cumulative`` decode alias. ``nonce`` is optional and omitted from the
+    wire when ``None``.
     """
 
     channel_id: str
@@ -603,10 +629,12 @@ class VoucherData:
         """Serialize to the payment-channels ``VoucherArgs`` bytes signed by
         Ed25519.
 
-        Layout (exactly 48 bytes): ``channel_id``\\ (32, base58-decoded) ||
-        ``cumulative_amount`` little-endian ``u64`` (offset 32) || ``expires_at``
-        little-endian ``i64`` (offset 40). Delegates to the canonical packer so
-        the 48-byte layout has a single source of truth.
+        Layout (exactly 50 bytes): the constant 2-byte voucher magic
+        ``[0x56, 0x01]`` || ``channel_id``\\ (32, base58-decoded, offset 2) ||
+        ``cumulative_amount`` little-endian ``u64`` (offset 34) || ``expires_at``
+        little-endian ``i64`` (offset 42). The magic lives only in the signed
+        bytes, never in the voucher wire JSON. Delegates to the canonical packer
+        so the 50-byte layout has a single source of truth.
         """
         # Lazy import so the module imports without solders installed (no cycle:
         # the glue does not import the intent layer).

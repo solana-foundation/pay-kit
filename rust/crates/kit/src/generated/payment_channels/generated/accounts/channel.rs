@@ -28,6 +28,7 @@ pub struct Channel {
     pub authorized_signer: Address,
     pub mint: Address,
     pub rent_payer: Address,
+    pub open_slot: u64,
 }
 
 impl Channel {

@@ -106,3 +106,49 @@ jobs:
           X402_HARNESS_CLIENTS: kotlin-x402
           X402_HARNESS_SERVERS: rust-x402
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000
+
+  harness-kotlin-x402-upto:
+    name: "Harness: Kotlin x402 upto client to Rust upto server"
+    needs: test-kotlin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.1"
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "paykit-harness-bins:x402_harness_upto_client,x402_harness_upto_server"
+          cargo-cache-key: kotlin-x402-upto
+      # x402 upto settles on the canonical payment-channels program; the upto
+      # e2e runs this localnet SBF build on the embedded surfnet.
+      - name: Build payment channels program
+        id: payment-channels
+        uses: ./.github/actions/build-payment-channels
+      # Pre-warm the Kotlin x402 upto client install so the harness adapter
+      # (harness/src/implementations.ts → kotlin-x402-upto) can launch the script
+      # at build/install/.../bin/. The kotlin SDK is consumed via the composite
+      # build, so this also compiles the SDK.
+      - name: Pre-warm Gradle for the Kotlin x402 upto harness client
+        working-directory: harness/kotlin-x402-upto-client
+        run: gradle installDist --no-daemon
+      # Drive the Kotlin solana paykit upto client (channel open) against the
+      # canonical Rust upto server (broadcast + voucher settle on the embedded
+      # surfnet). Requires the payment-channels .so built above.
+      - name: Run Kotlin x402 upto client to Rust upto server harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-upto
+          MPP_HARNESS_SCENARIOS: x402-upto-basic,x402-upto-zero-actual
+          X402_HARNESS_CLIENTS: kotlin-x402-upto
+          X402_HARNESS_SERVERS: rust-x402-upto
+          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.payment-channels.outputs.program-so }}
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

@@ -187,7 +187,7 @@ over the rust `SessionServer` core):
   `mpp.metering` / `mpp.usage` / `[DONE]` frames the client decoder
   consumes,
 - an idle-close watchdog (`CloseDelay`) and close settlement
-  (settle_and_finalize + Ed25519 precompile + distribute in one
+  (settle_and_seal + Ed25519 precompile + distribute in one
   merchant-signed transaction), both of which settle on-chain only when
   a merchant `Signer` and an `RPC` client are configured; without them
   payload claims are trusted as provided, matching rust with `rpc_url`

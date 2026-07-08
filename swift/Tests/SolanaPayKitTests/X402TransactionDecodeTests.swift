@@ -37,7 +37,7 @@ enum TxDecoder {
 
     static func decode(base64: String) throws -> DecodedTx {
         guard let data = Data(base64Encoded: base64) else {
-            throw MppError.invalidTransaction("not base64")
+            throw PayKitError.invalidTransaction("not base64")
         }
         var off = 0
         let sigCount = decodeShortVec(data, &off)

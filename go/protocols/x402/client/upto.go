@@ -46,6 +46,12 @@ func resolveChannelProgram(channelProgramStr string) (solana.PublicKey, error) {
 	return paymentchannels.ProgramPubkey(), nil
 }
 
+// BuildUptoPayload derives the payment-channel open and assembles the upto
+// authorization payload. The channel open_slot comes from the challenge
+// (extra.recentSlot, pre-fetched by the server alongside
+// extra.recentBlockhash); clients never fetch the slot via RPC. It is a
+// channel PDA seed and an open arg, and the program rejects future slots and
+// slots older than the 1500-slot window.
 func BuildUptoPayload(
 	ctx context.Context,
 	signer solanatx.Signer,
@@ -55,6 +61,13 @@ func BuildUptoPayload(
 ) (*x402.UptoPayload, error) {
 	if !assetTransferMethodSupported(requirements) {
 		return nil, errors.New("x402 client: requirement does not use the payment-channel asset transfer method")
+	}
+	if requirements.Extra.RecentSlot == "" {
+		return nil, errors.New("x402 client: requirement missing extra.recentSlot")
+	}
+	openSlot, err := strconv.ParseUint(requirements.Extra.RecentSlot, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("x402 client: invalid recentSlot %q: %w", requirements.Extra.RecentSlot, err)
 	}
 	max, err := strconv.ParseUint(requirements.Amount, 10, 64)
 	if err != nil {
@@ -109,7 +122,7 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, err
 	}
-	channel, _, err := paymentchannels.FindChannelPDAForProgram(signer.PublicKey(), operator, mint, operator, salt, programID)
+	channel, _, err := paymentchannels.FindChannelPDAForProgram(signer.PublicKey(), operator, mint, operator, salt, openSlot, programID)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: find channel PDA: %w", err)
 	}
@@ -120,6 +133,7 @@ func BuildUptoPayload(
 		Mint:             mint,
 		AuthorizedSigner: operator,
 		Salt:             salt,
+		OpenSlot:         openSlot,
 		Deposit:          max,
 		GracePeriod:      defaultGracePeriodSeconds,
 		Recipients:       recipients,
@@ -179,6 +193,9 @@ func EncodeUptoHeader(requirements *x402.UptoRequirements, payload *x402.UptoPay
 	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
+// BuildUptoHeader builds and encodes the upto authorization header. The
+// channel open_slot comes from the challenge extra.recentSlot; see
+// BuildUptoPayload.
 func BuildUptoHeader(
 	ctx context.Context,
 	signer solanatx.Signer,

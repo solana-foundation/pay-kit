@@ -31,48 +31,45 @@ import {
     type SelfFetchFunctions,
     type SelfPlanAndSendFunctions,
 } from '@solana/program-client-core';
-import {
-    getChannelCodec,
-    getClosedChannelCodec,
-    type Channel,
-    type ChannelArgs,
-    type ClosedChannel,
-    type ClosedChannelArgs,
-} from '../accounts/index.js';
+import { getChannelCodec, type Channel, type ChannelArgs } from '../accounts/index.js';
 import {
     getDistributeInstructionAsync,
     getEmitEventInstructionAsync,
-    getFinalizeInstruction,
     getOpenInstructionAsync,
+    getReclaimInstruction,
     getRequestCloseInstruction,
-    getSettleAndFinalizeInstruction,
+    getSealInstruction,
+    getSettleAndSealInstruction,
     getSettleInstruction,
     getTopUpInstruction,
     getWithdrawPayerInstruction,
     parseDistributeInstruction,
     parseEmitEventInstruction,
-    parseFinalizeInstruction,
     parseOpenInstruction,
+    parseReclaimInstruction,
     parseRequestCloseInstruction,
-    parseSettleAndFinalizeInstruction,
+    parseSealInstruction,
+    parseSettleAndSealInstruction,
     parseSettleInstruction,
     parseTopUpInstruction,
     parseWithdrawPayerInstruction,
     type DistributeAsyncInput,
     type EmitEventAsyncInput,
-    type FinalizeInput,
     type OpenAsyncInput,
     type ParsedDistributeInstruction,
     type ParsedEmitEventInstruction,
-    type ParsedFinalizeInstruction,
     type ParsedOpenInstruction,
+    type ParsedReclaimInstruction,
     type ParsedRequestCloseInstruction,
-    type ParsedSettleAndFinalizeInstruction,
+    type ParsedSealInstruction,
+    type ParsedSettleAndSealInstruction,
     type ParsedSettleInstruction,
     type ParsedTopUpInstruction,
     type ParsedWithdrawPayerInstruction,
+    type ReclaimInput,
     type RequestCloseInput,
-    type SettleAndFinalizeInput,
+    type SealInput,
+    type SettleAndSealInput,
     type SettleInput,
     type TopUpInput,
     type WithdrawPayerInput,
@@ -84,18 +81,18 @@ export const PAYMENT_CHANNELS_PROGRAM_ADDRESS =
 
 export enum PaymentChannelsAccount {
     Channel,
-    ClosedChannel,
 }
 
 export enum PaymentChannelsInstruction {
     Open,
     Settle,
     TopUp,
-    SettleAndFinalize,
+    SettleAndSeal,
     RequestClose,
-    Finalize,
+    Seal,
     Distribute,
     WithdrawPayer,
+    Reclaim,
     EmitEvent,
 }
 
@@ -113,19 +110,22 @@ export function identifyPaymentChannelsInstruction(
         return PaymentChannelsInstruction.TopUp;
     }
     if (containsBytes(data, getU8Encoder().encode(4), 0)) {
-        return PaymentChannelsInstruction.SettleAndFinalize;
+        return PaymentChannelsInstruction.SettleAndSeal;
     }
     if (containsBytes(data, getU8Encoder().encode(5), 0)) {
         return PaymentChannelsInstruction.RequestClose;
     }
     if (containsBytes(data, getU8Encoder().encode(6), 0)) {
-        return PaymentChannelsInstruction.Finalize;
+        return PaymentChannelsInstruction.Seal;
     }
     if (containsBytes(data, getU8Encoder().encode(7), 0)) {
         return PaymentChannelsInstruction.Distribute;
     }
     if (containsBytes(data, getU8Encoder().encode(8), 0)) {
         return PaymentChannelsInstruction.WithdrawPayer;
+    }
+    if (containsBytes(data, getU8Encoder().encode(9), 0)) {
+        return PaymentChannelsInstruction.Reclaim;
     }
     if (containsBytes(data, getU8Encoder().encode(228), 0)) {
         return PaymentChannelsInstruction.EmitEvent;
@@ -147,20 +147,23 @@ export type ParsedPaymentChannelsInstruction<TProgram extends string = 'CHNLxYvV
           instructionType: PaymentChannelsInstruction.TopUp;
       } & ParsedTopUpInstruction<TProgram>)
     | ({
-          instructionType: PaymentChannelsInstruction.SettleAndFinalize;
-      } & ParsedSettleAndFinalizeInstruction<TProgram>)
+          instructionType: PaymentChannelsInstruction.SettleAndSeal;
+      } & ParsedSettleAndSealInstruction<TProgram>)
     | ({
           instructionType: PaymentChannelsInstruction.RequestClose;
       } & ParsedRequestCloseInstruction<TProgram>)
     | ({
-          instructionType: PaymentChannelsInstruction.Finalize;
-      } & ParsedFinalizeInstruction<TProgram>)
+          instructionType: PaymentChannelsInstruction.Seal;
+      } & ParsedSealInstruction<TProgram>)
     | ({
           instructionType: PaymentChannelsInstruction.Distribute;
       } & ParsedDistributeInstruction<TProgram>)
     | ({
           instructionType: PaymentChannelsInstruction.WithdrawPayer;
       } & ParsedWithdrawPayerInstruction<TProgram>)
+    | ({
+          instructionType: PaymentChannelsInstruction.Reclaim;
+      } & ParsedReclaimInstruction<TProgram>)
     | ({
           instructionType: PaymentChannelsInstruction.EmitEvent;
       } & ParsedEmitEventInstruction<TProgram>);
@@ -191,11 +194,11 @@ export function parsePaymentChannelsInstruction<TProgram extends string>(
                 ...parseTopUpInstruction(instruction),
             };
         }
-        case PaymentChannelsInstruction.SettleAndFinalize: {
+        case PaymentChannelsInstruction.SettleAndSeal: {
             assertIsInstructionWithAccounts(instruction);
             return {
-                instructionType: PaymentChannelsInstruction.SettleAndFinalize,
-                ...parseSettleAndFinalizeInstruction(instruction),
+                instructionType: PaymentChannelsInstruction.SettleAndSeal,
+                ...parseSettleAndSealInstruction(instruction),
             };
         }
         case PaymentChannelsInstruction.RequestClose: {
@@ -205,11 +208,11 @@ export function parsePaymentChannelsInstruction<TProgram extends string>(
                 ...parseRequestCloseInstruction(instruction),
             };
         }
-        case PaymentChannelsInstruction.Finalize: {
+        case PaymentChannelsInstruction.Seal: {
             assertIsInstructionWithAccounts(instruction);
             return {
-                instructionType: PaymentChannelsInstruction.Finalize,
-                ...parseFinalizeInstruction(instruction),
+                instructionType: PaymentChannelsInstruction.Seal,
+                ...parseSealInstruction(instruction),
             };
         }
         case PaymentChannelsInstruction.Distribute: {
@@ -224,6 +227,13 @@ export function parsePaymentChannelsInstruction<TProgram extends string>(
             return {
                 instructionType: PaymentChannelsInstruction.WithdrawPayer,
                 ...parseWithdrawPayerInstruction(instruction),
+            };
+        }
+        case PaymentChannelsInstruction.Reclaim: {
+            assertIsInstructionWithAccounts(instruction);
+            return {
+                instructionType: PaymentChannelsInstruction.Reclaim,
+                ...parseReclaimInstruction(instruction),
             };
         }
         case PaymentChannelsInstruction.EmitEvent: {
@@ -251,26 +261,26 @@ export type PaymentChannelsPlugin = {
 
 export type PaymentChannelsPluginAccounts = {
     channel: ReturnType<typeof getChannelCodec> & SelfFetchFunctions<ChannelArgs, Channel>;
-    closedChannel: ReturnType<typeof getClosedChannelCodec> & SelfFetchFunctions<ClosedChannelArgs, ClosedChannel>;
 };
 
 export type PaymentChannelsPluginInstructions = {
     open: (input: OpenAsyncInput) => ReturnType<typeof getOpenInstructionAsync> & SelfPlanAndSendFunctions;
     settle: (input: SettleInput) => ReturnType<typeof getSettleInstruction> & SelfPlanAndSendFunctions;
     topUp: (input: TopUpInput) => ReturnType<typeof getTopUpInstruction> & SelfPlanAndSendFunctions;
-    settleAndFinalize: (
-        input: SettleAndFinalizeInput,
-    ) => ReturnType<typeof getSettleAndFinalizeInstruction> & SelfPlanAndSendFunctions;
+    settleAndSeal: (
+        input: SettleAndSealInput,
+    ) => ReturnType<typeof getSettleAndSealInstruction> & SelfPlanAndSendFunctions;
     requestClose: (
         input: RequestCloseInput,
     ) => ReturnType<typeof getRequestCloseInstruction> & SelfPlanAndSendFunctions;
-    finalize: (input: FinalizeInput) => ReturnType<typeof getFinalizeInstruction> & SelfPlanAndSendFunctions;
+    seal: (input: SealInput) => ReturnType<typeof getSealInstruction> & SelfPlanAndSendFunctions;
     distribute: (
         input: DistributeAsyncInput,
     ) => ReturnType<typeof getDistributeInstructionAsync> & SelfPlanAndSendFunctions;
     withdrawPayer: (
         input: WithdrawPayerInput,
     ) => ReturnType<typeof getWithdrawPayerInstruction> & SelfPlanAndSendFunctions;
+    reclaim: (input: ReclaimInput) => ReturnType<typeof getReclaimInstruction> & SelfPlanAndSendFunctions;
     emitEvent: (
         input: EmitEventAsyncInput,
     ) => ReturnType<typeof getEmitEventInstructionAsync> & SelfPlanAndSendFunctions;
@@ -290,20 +300,17 @@ export function paymentChannelsProgram() {
     ): ExtendedClient<T, { paymentChannels: PaymentChannelsPlugin }> => {
         return extendClient(client, {
             paymentChannels: <PaymentChannelsPlugin>{
-                accounts: {
-                    channel: addSelfFetchFunctions(client, getChannelCodec()),
-                    closedChannel: addSelfFetchFunctions(client, getClosedChannelCodec()),
-                },
+                accounts: { channel: addSelfFetchFunctions(client, getChannelCodec()) },
                 instructions: {
                     open: input => addSelfPlanAndSendFunctions(client, getOpenInstructionAsync(input)),
                     settle: input => addSelfPlanAndSendFunctions(client, getSettleInstruction(input)),
                     topUp: input => addSelfPlanAndSendFunctions(client, getTopUpInstruction(input)),
-                    settleAndFinalize: input =>
-                        addSelfPlanAndSendFunctions(client, getSettleAndFinalizeInstruction(input)),
+                    settleAndSeal: input => addSelfPlanAndSendFunctions(client, getSettleAndSealInstruction(input)),
                     requestClose: input => addSelfPlanAndSendFunctions(client, getRequestCloseInstruction(input)),
-                    finalize: input => addSelfPlanAndSendFunctions(client, getFinalizeInstruction(input)),
+                    seal: input => addSelfPlanAndSendFunctions(client, getSealInstruction(input)),
                     distribute: input => addSelfPlanAndSendFunctions(client, getDistributeInstructionAsync(input)),
                     withdrawPayer: input => addSelfPlanAndSendFunctions(client, getWithdrawPayerInstruction(input)),
+                    reclaim: input => addSelfPlanAndSendFunctions(client, getReclaimInstruction(input)),
                     emitEvent: input => addSelfPlanAndSendFunctions(client, getEmitEventInstructionAsync(input)),
                 },
                 pdas: { eventAuthority: findEventAuthorityPda },

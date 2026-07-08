@@ -41,9 +41,9 @@ where
         Some(serde_json::Value::Number(value)) => value
             .as_u64()
             .map(Some)
-            .ok_or_else(|| serde::de::Error::custom("salt must be an unsigned 64-bit integer")),
+            .ok_or_else(|| serde::de::Error::custom("expected an unsigned 64-bit integer")),
         Some(_) => Err(serde::de::Error::custom(
-            "salt must be a decimal string or unsigned 64-bit integer",
+            "expected a decimal string or unsigned 64-bit integer",
         )),
     }
 }
@@ -164,6 +164,24 @@ pub struct SessionRequest {
     /// rather than fetching its own.
     #[serde(rename = "recentBlockhash", skip_serializing_if = "Option::is_none")]
     pub recent_blockhash: Option<String>,
+
+    /// Current slot pre-fetched by the server at challenge time (analogous to
+    /// `recentBlockhash`).
+    ///
+    /// Feeds the program's `openSlot`: a channel-PDA seed the program only
+    /// accepts within a recent window. The client MUST use this to derive the
+    /// channel PDA and build `open` (echoing it in the open payload's
+    /// `recentSlot`) rather than fetch a slot itself. Serialized as a decimal
+    /// string (same adapter as the open payload's `salt`); accepted as string
+    /// or number on deserialize.
+    #[serde(
+        default,
+        rename = "recentSlot",
+        deserialize_with = "deserialize_optional_u64_from_string_or_number",
+        serialize_with = "serialize_optional_u64_as_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub recent_slot: Option<u64>,
 }
 
 /// A payment split committed at channel open; distributed to a specific
@@ -184,6 +202,10 @@ pub struct SessionSplit {
 /// Serialized as a tagged object with `"action": "open" | "voucher" | "topup" | "close"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
+// `Open` is inherently the big variant (the full channel-open wire payload);
+// boxing it would ripple through every constructor/match on this public wire
+// enum for a type that is built a handful of times per session.
+#[allow(clippy::large_enum_variant)]
 pub enum SessionAction {
     /// Open a new channel/delegation and start the session.
     Open(OpenPayload),
@@ -210,7 +232,7 @@ pub enum SessionAction {
 /// Wire format:
 /// ```json
 /// // Payment-channel mode, client-broadcast push
-/// {"action":"open","mode":"push","channelId":"...","deposit":"...","authorizedSigner":"...","signature":"..."}
+/// {"action":"open","mode":"push","channelId":"...","deposit":"...","recentSlot":"...","authorizedSigner":"...","signature":"..."}
 ///
 /// // Payment-channel mode, server-broadcast pull
 /// {"action":"open","mode":"pull","channelId":"...","deposit":"...","authorizedSigner":"...","transaction":"..."}
@@ -259,6 +281,22 @@ pub struct OpenPayload {
     /// Grace period used by the on-chain close path.
     #[serde(rename = "gracePeriod", skip_serializing_if = "Option::is_none")]
     pub grace_period: Option<u32>,
+
+    /// The challenge's `recentSlot`, echoed back by the client: the slot the
+    /// channel was opened at (the program's `openSlot` — a channel-PDA seed
+    /// since the epoch-addressed program update). The server needs it to
+    /// re-derive the channel PDA and persists it for the `reclaim` gate.
+    ///
+    /// Serialized as a decimal string (same adapter as `salt`); accepted as
+    /// string or number on deserialize.
+    #[serde(
+        default,
+        rename = "recentSlot",
+        deserialize_with = "deserialize_optional_u64_from_string_or_number",
+        serialize_with = "serialize_optional_u64_as_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub recent_slot: Option<u64>,
 
     /// Signed payment-channel open transaction (base64), when the client wants
     /// the server/operator to broadcast it.
@@ -332,6 +370,7 @@ impl OpenPayload {
             mint: None,
             salt: None,
             grace_period: None,
+            recent_slot: None,
             transaction: None,
             token_account: None,
             approved_amount: None,
@@ -353,6 +392,7 @@ impl OpenPayload {
         mint: String,
         salt: u64,
         grace_period: u32,
+        recent_slot: u64,
         authorized_signer: String,
         signature: String,
     ) -> Self {
@@ -365,6 +405,7 @@ impl OpenPayload {
             mint,
             salt,
             grace_period,
+            recent_slot,
             authorized_signer,
             signature,
         )
@@ -381,6 +422,7 @@ impl OpenPayload {
         mint: String,
         salt: u64,
         grace_period: u32,
+        recent_slot: u64,
         authorized_signer: String,
         signature: String,
     ) -> Self {
@@ -393,6 +435,7 @@ impl OpenPayload {
             mint: Some(mint),
             salt: Some(salt),
             grace_period: Some(grace_period),
+            recent_slot: Some(recent_slot),
             transaction: None,
             token_account: None,
             approved_amount: None,
@@ -427,6 +470,7 @@ impl OpenPayload {
             mint: None,
             salt: None,
             grace_period: None,
+            recent_slot: None,
             transaction: None,
             token_account: Some(token_account),
             approved_amount: Some(approved_amount),
@@ -667,7 +711,9 @@ pub struct SignedVoucher {
 /// The canonical content of a voucher, signed by the client's session key.
 ///
 /// Serialized as the on-chain `VoucherArgs` layout before signing:
-/// `channel_id || cumulative_amount_le || expires_at_le`.
+/// `magic(0x56 0x01) || channel_id || cumulative_amount_le || expires_at_le`
+/// (50 bytes). The magic prefix exists only in the signed bytes — it is never
+/// carried in the JSON voucher.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoucherData {
     /// The channel/session ID this voucher is bound to (base58).
@@ -767,6 +813,7 @@ mod tests {
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
             recent_blockhash: None,
+            recent_slot: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: SessionRequest = serde_json::from_str(&json).unwrap();
@@ -793,6 +840,7 @@ mod tests {
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
+            recent_slot: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("splits"));
@@ -820,6 +868,7 @@ mod tests {
             modes: vec![SessionMode::Push, SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,
+            recent_slot: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"push\""));
@@ -861,6 +910,7 @@ mod tests {
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
+            recent_slot: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: SessionRequest = serde_json::from_str(&json).unwrap();
@@ -916,6 +966,7 @@ mod tests {
             "mint1".to_string(),
             99,
             45,
+            314,
             "signer1".to_string(),
             "txsig".to_string(),
         )
@@ -931,6 +982,7 @@ mod tests {
         assert_eq!(p.mint.as_deref(), Some("mint1"));
         assert_eq!(p.salt, Some(99));
         assert_eq!(p.grace_period, Some(45));
+        assert_eq!(p.recent_slot, Some(314));
         assert_eq!(p.transaction.as_deref(), Some("open-tx"));
         assert_eq!(p.init_multi_delegate_tx.as_deref(), Some("init-tx"));
         assert_eq!(p.update_delegation_tx.as_deref(), Some("update-tx"));
@@ -947,6 +999,7 @@ mod tests {
             "mint1".to_string(),
             99,
             45,
+            314,
             "signer1".to_string(),
             "pending".to_string(),
         )
@@ -1053,8 +1106,9 @@ mod tests {
     }
 
     #[test]
-    fn payment_channel_salt_serializes_as_string_and_accepts_legacy_number() {
+    fn payment_channel_salt_and_recent_slot_serialize_as_strings_and_accept_numbers() {
         let salt = u64::MAX - 7;
+        let recent_slot = 350_123_456u64;
         let p = OpenPayload::payment_channel(
             "chan1".to_string(),
             "1000000".to_string(),
@@ -1063,20 +1117,28 @@ mod tests {
             "mint1".to_string(),
             salt,
             900,
+            recent_slot,
             "signer1".to_string(),
             "txsig".to_string(),
         );
 
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains(&format!(r#""salt":"{salt}""#)));
+        assert!(json.contains(&format!(r#""recentSlot":"{recent_slot}""#)));
         let back: OpenPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(back.salt, Some(salt));
+        assert_eq!(back.recent_slot, Some(recent_slot));
 
-        let legacy_json = format!(
-            r#"{{"mode":"push","channelId":"chan1","deposit":"1000000","payer":"payer1","payee":"payee1","mint":"mint1","salt":42,"gracePeriod":900,"authorizedSigner":"signer1","signature":"txsig"}}"#
-        );
-        let legacy: OpenPayload = serde_json::from_str(&legacy_json).unwrap();
+        // Both fields are also accepted as JSON numbers; a payload without
+        // recentSlot (pre-migration client) still parses.
+        let legacy_json = r#"{"mode":"push","channelId":"chan1","deposit":"1000000","payer":"payer1","payee":"payee1","mint":"mint1","salt":42,"gracePeriod":900,"authorizedSigner":"signer1","signature":"txsig"}"#;
+        let legacy: OpenPayload = serde_json::from_str(legacy_json).unwrap();
         assert_eq!(legacy.salt, Some(42));
+        assert_eq!(legacy.recent_slot, None);
+
+        let numeric_json = r#"{"mode":"push","channelId":"chan1","deposit":"1000000","payer":"payer1","payee":"payee1","mint":"mint1","salt":42,"gracePeriod":900,"recentSlot":7,"authorizedSigner":"signer1","signature":"txsig"}"#;
+        let numeric: OpenPayload = serde_json::from_str(numeric_json).unwrap();
+        assert_eq!(numeric.recent_slot, Some(7));
     }
 
     #[test]
@@ -1317,10 +1379,14 @@ mod tests {
             nonce: Some(1),
         };
         let bytes = data.message_bytes().unwrap();
-        assert_eq!(bytes.len(), 48);
-        assert_eq!(&bytes[..32], bs58::decode(channel_id).into_vec().unwrap());
-        assert_eq!(&bytes[32..40], &1000u64.to_le_bytes());
-        assert_eq!(&bytes[40..48], &42i64.to_le_bytes());
+        assert_eq!(bytes.len(), 50);
+        assert_eq!(
+            &bytes[..2],
+            &crate::mpp::program::payment_channels::VOUCHER_MAGIC
+        );
+        assert_eq!(&bytes[2..34], bs58::decode(channel_id).into_vec().unwrap());
+        assert_eq!(&bytes[34..42], &1000u64.to_le_bytes());
+        assert_eq!(&bytes[42..50], &42i64.to_le_bytes());
     }
 
     #[test]
@@ -1332,7 +1398,7 @@ mod tests {
             nonce: None,
         };
         let bytes = data.message_bytes().unwrap();
-        assert_eq!(bytes.len(), 48);
+        assert_eq!(bytes.len(), 50);
     }
 
     #[test]
@@ -1398,6 +1464,7 @@ mod tests {
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
+            recent_slot: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: SessionRequest = serde_json::from_str(&json).unwrap();
@@ -1422,6 +1489,7 @@ mod tests {
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
+            recent_slot: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("minVoucherDelta"));

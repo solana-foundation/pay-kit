@@ -79,15 +79,12 @@ async def build_credential_header(
         except (ValueError, TypeError) as exc:
             raise ValueError(f"challenge amount {request.amount!r} is not a valid integer") from exc
         if amount_int > max_amount_base_units:
-            raise ValueError(
-                f"refusing to sign: challenge amount {amount_int} exceeds max {max_amount_base_units}"
-            )
+            raise ValueError(f"refusing to sign: challenge amount {amount_int} exceeds max {max_amount_base_units}")
 
     # Audit #10: opt-in expected-network guard.
     if expected_network is not None and details.network != expected_network:
         raise ValueError(
-            f"refusing to sign: challenge network {details.network!r} does not match "
-            f"expected {expected_network!r}"
+            f"refusing to sign: challenge network {details.network!r} does not match expected {expected_network!r}"
         )
 
     payload = await build_charge_transaction(
@@ -182,12 +179,8 @@ async def build_charge_transaction(
     price = compute_unit_price if compute_unit_price is not None else 1
     limit = compute_unit_limit if compute_unit_limit is not None else 200_000
     compute_budget_program = Pubkey.from_string(COMPUTE_BUDGET_PROGRAM)
-    instructions.append(
-        Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), [])
-    )
-    instructions.append(
-        Instruction(compute_budget_program, bytes([2]) + limit.to_bytes(4, "little"), [])
-    )
+    instructions.append(Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), []))
+    instructions.append(Instruction(compute_budget_program, bytes([2]) + limit.to_bytes(4, "little"), []))
 
     def append_memo(memo: str) -> None:
         if not memo:
@@ -207,9 +200,7 @@ async def build_charge_transaction(
         if is_native_sol(currency) or not resolved:
             raise ValueError("ataCreationRequired requires an SPL token charge")
         if resolved != currency:
-            raise ValueError(
-                "ataCreationRequired requires currency to be an SPL token mint address"
-            )
+            raise ValueError("ataCreationRequired requires currency to be an SPL token mint address")
 
     if is_native_sol(currency):
         # SOL transfer
@@ -244,9 +235,7 @@ async def build_charge_transaction(
         from solders.instruction import AccountMeta
 
         mint = resolve_mint(currency, details.network)
-        token_program = await _resolve_token_program(
-            rpc_client, mint, currency, details, allow_unknown_token_2022
-        )
+        token_program = await _resolve_token_program(rpc_client, mint, currency, details, allow_unknown_token_2022)
         # Audit #42: decimals are conditionally required by spec §7.2 — they
         # MUST be present for an SPL charge. Silently defaulting to 6 produces a
         # wrong divisor / wrong transferChecked decimals byte for non-6-decimal
@@ -381,9 +370,7 @@ async def _resolve_token_program(
         token_program = details.token_program
     else:
         owner = await _fetch_mint_owner(rpc_client, mint)
-        token_program = owner if owner is not None else default_token_program_for_currency(
-            mint, details.network
-        )
+        token_program = owner if owner is not None else default_token_program_for_currency(mint, details.network)
     if token_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
         raise ValueError(f"Unsupported token program: {token_program}")
     # Audit #26: refuse to sign an UNKNOWN Token-2022 mint unless explicitly

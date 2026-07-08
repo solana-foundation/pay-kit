@@ -44,9 +44,18 @@ func surfpoolRPCURL() string {
 // Keep explicit MPP_HARNESS_RPC_URL runs strict; only skip the default hosted
 // endpoint on the known ABI-drift signature.
 func hostedPaymentChannelsABIDrift(body string) bool {
-	return os.Getenv("MPP_HARNESS_RPC_URL") == "" &&
-		strings.Contains(body, "NotEnoughAccountKeys") &&
-		strings.Contains(body, paymentchannels.ProgramID)
+	if os.Getenv("MPP_HARNESS_RPC_URL") != "" {
+		return false
+	}
+	if !strings.Contains(body, paymentchannels.ProgramID) {
+		return false
+	}
+	// NotEnoughAccountKeys: pre-rename deployments missing newer accounts.
+	// Custom error 0x104 (invalidRecipientCount) on a well-formed open: the
+	// deployment predates the openSlot open-arg, so it misparses the arg
+	// bytes that follow gracePeriod as the recipients count.
+	return strings.Contains(body, "NotEnoughAccountKeys") ||
+		strings.Contains(body, "custom program error: 0x104")
 }
 
 // requireSurfpool skips the test explicitly when the sandbox is unreachable.
@@ -262,7 +271,7 @@ func TestSessionServerE2ESurfpool(t *testing.T) {
 		t.Fatalf("RecordVoucher: %v", err)
 	}
 
-	// 5. Close: settles the highest voucher on-chain and finalizes.
+	// 5. Close: settles the highest voucher on-chain and seals.
 	closeAuthorization, err := client.SerializeSessionCredential(challenge,
 		intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID}))
 	if err != nil {
@@ -273,7 +282,7 @@ func TestSessionServerE2ESurfpool(t *testing.T) {
 		t.Fatalf("close failed: %d %s", response.StatusCode, body)
 	}
 	state = mustGetChannel(t, session, channelID)
-	if !state.Finalized || state.SettledSignature == nil {
+	if !state.Sealed || state.SettledSignature == nil {
 		t.Fatalf("channel not settled: %+v", state)
 	}
 	settleSignature, err := solana.SignatureFromBase58(*state.SettledSignature)

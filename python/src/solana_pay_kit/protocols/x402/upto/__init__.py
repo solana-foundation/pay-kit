@@ -5,7 +5,7 @@ settled before the handler runs), ``upto`` is two-phase: :meth:`X402Upto.verify_
 broadcasts the client's channel ``open`` (the signed deposit is the ceiling) and
 binds the on-chain channel state *before* the resource is served;
 :meth:`X402Upto.settle_actual` signs a single operator voucher for the metered
-amount and submits ``settle_and_finalize`` + ATA setup + ``distribute``,
+amount and submits ``settle_and_seal`` + ATA setup + ``distribute``,
 refunding ``deposit − actual`` *after* the resource is served.
 
 Mirrors the Rust spine (``server/upto.rs``) and the Go reference
@@ -40,7 +40,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     PAYMENT_CHANNELS_PROGRAM_ID,
     Distribution,
     build_distribute_instruction,
-    build_settle_and_finalize_instructions,
+    build_settle_and_seal_instructions,
     treasury_owner,
     voucher_message_bytes,
 )
@@ -134,8 +134,18 @@ class X402Upto:
         *,
         channel_program: str | None = None,
         recent_blockhash_provider: Callable[[], str | None] | None = None,
+        recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None,
     ) -> None:
-        """Build an engine bound to ``config``; raise for delegated mode."""
+        """Build an engine bound to ``config``; raise for delegated mode.
+
+        ``recent_state_provider`` returns ``(recentBlockhash, recentSlot)``
+        from a single ``getLatestBlockhash`` call (the response context
+        carries the slot); when set it wins over the blockhash-only
+        ``recent_blockhash_provider``, which is kept for embedders that only
+        pre-fetch the blockhash. ``recentSlot`` is server-provided in the
+        challenge: the client derives the channel PDA from it and never
+        fetches the slot itself.
+        """
         if config.x402.is_delegated():
             raise NotImplementedError(
                 "solana_pay_kit: x402 delegated mode is not yet implemented; "
@@ -148,6 +158,7 @@ class X402Upto:
             channel_program or os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or PAYMENT_CHANNELS_PROGRAM_ID
         )
         self._recent_blockhash_provider = recent_blockhash_provider
+        self._recent_state_provider = recent_state_provider
         # Per-channel in-flight reservation (verify_open -> settle_actual), guarded
         # so it is safe even under a threaded server (Go uses a mutex here too);
         # do not rely on set() atomicity for the check-then-add.
@@ -192,9 +203,13 @@ class X402Upto:
                 "channelProgram": self._channel_program,
             },
         }
-        blockhash = self._fetch_recent_blockhash()
+        blockhash, recent_slot = self._fetch_recent_state()
         if blockhash is not None:
             requirements["extra"]["recentBlockhash"] = blockhash
+        if recent_slot is not None:
+            # u64-as-string, matching the session challenge convention; the
+            # client accepts string or number inbound.
+            requirements["extra"]["recentSlot"] = str(recent_slot)
         return requirements
 
     def challenge_headers(self, gate: Gate, request: Any) -> dict[str, str]:
@@ -234,9 +249,7 @@ class X402Upto:
         # required there. There is no envelope-level scheme/network.
         accepted: dict[str, Any] = envelope.get("accepted") or {}
         if accepted.get("scheme") != UPTO_SCHEME:
-            raise InvalidProofError(
-                f"invalid payload type: {accepted.get('scheme')}", code="payment_invalid"
-            )
+            raise InvalidProofError(f"invalid payload type: {accepted.get('scheme')}", code="payment_invalid")
 
         requirements = self.accepts_entry(gate, request)
         payload = _parse_payload(envelope.get("payload"))
@@ -278,6 +291,15 @@ class X402Upto:
                     "payment-channel asset transfer method requires openTransaction (pull)", code="payment_invalid"
                 )
             account_keys, instructions = _decode_transaction(open_tx)
+            # The challenged recentSlot at verify time: the requirement is
+            # recomputed with a fresh slot from the recent-state provider, so
+            # the transaction's openSlot (stamped from the earlier challenge)
+            # must sit at-or-before it, inside the program freshness window.
+            # None (provider unwired / fetch failed) skips the window check;
+            # the PDA bind below still holds and the program enforces the
+            # window at broadcast.
+            raw_slot = requirements["extra"].get("recentSlot")
+            challenged_slot = int(raw_slot) if isinstance(raw_slot, (int, str)) and str(raw_slot).isdigit() else None
             validate_upto_open_instruction(
                 account_keys,
                 instructions,
@@ -288,6 +310,8 @@ class X402Upto:
                 mint=mint,
                 token_program=token_program,
                 channel_id=channel_id,
+                max_amount=max_amount,
+                recent_slot=challenged_slot,
             )
             if not account_keys or account_keys[0] != operator:
                 raise InvalidProofError(
@@ -326,8 +350,8 @@ class X402Upto:
     async def settle_actual(self, verified: VerifiedUptoOpen, actual: int) -> UptoSettlementResponse:
         """Settle the metered ``actual`` (``actual ≤ max``) against a verified open.
 
-        Honours zero: ``actual == 0`` uses the no-voucher ``settle_and_finalize``
-        + ``distribute`` (finalize, full refund, channel closed) and returns
+        Honours zero: ``actual == 0`` uses the no-voucher ``settle_and_seal``
+        + ``distribute`` (seal, full refund, channel closed) and returns
         ``amount="0"`` - matching the Rust spine and the spec ("settled amount
         MAY be 0"). A ``cumulative = 0`` voucher would be non-monotonic/invalid,
         hence the no-voucher path.
@@ -338,8 +362,8 @@ class X402Upto:
             assert_settlement_within_ceiling(actual, verified.max_amount)
 
             if actual == 0:
-                instructions: list[Instruction] = build_settle_and_finalize_instructions(
-                    merchant=operator,
+                instructions: list[Instruction] = build_settle_and_seal_instructions(
+                    payee=operator,
                     channel=verified.channel_id,
                     authorized_signer=operator,
                     signature=None,
@@ -354,8 +378,8 @@ class X402Upto:
                     raise InvalidProofError(
                         f"voucher signature length {len(sig_bytes)}, want 64", code="payment_invalid"
                     )
-                instructions = build_settle_and_finalize_instructions(
-                    merchant=operator,
+                instructions = build_settle_and_seal_instructions(
+                    payee=operator,
                     channel=verified.channel_id,
                     authorized_signer=operator,
                     signature=sig_bytes,
@@ -429,6 +453,28 @@ class X402Upto:
                     "channel is already being processed (concurrent request)", code="payment_invalid"
                 )
             self._in_flight.add(channel_id)
+
+    def _fetch_recent_state(self) -> tuple[str | None, int | None]:
+        """Pre-fetch ``(recentBlockhash, recentSlot)`` for the challenge.
+
+        The combined provider wins (one ``getLatestBlockhash`` call yields
+        both); the blockhash-only provider is the fallback and stamps no slot.
+        Provider failures are non-fatal at challenge time.
+        """
+        if self._recent_state_provider is not None:
+            try:
+                value = self._recent_state_provider()
+            except Exception:  # noqa: BLE001 - provider failures are non-fatal at challenge time
+                return None, None
+            if value is None:
+                return None, None
+            blockhash, slot = value
+            if not isinstance(blockhash, str) or blockhash == "":
+                blockhash = None
+            if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+                slot = None
+            return blockhash, slot
+        return self._fetch_recent_blockhash(), None
 
     def _fetch_recent_blockhash(self) -> str | None:
         if self._recent_blockhash_provider is None:
@@ -610,7 +656,7 @@ def _sign_legacy_transaction(
 ) -> bytes:
     """Build a single-signer legacy transaction, sign with the operator, return wire.
 
-    The operator is the only required signer across settle_and_finalize, the ATA
+    The operator is the only required signer across settle_and_seal, the ATA
     creates, and distribute, so the wire is ``[1][sig64][message]``. Building the
     message + signing via the abstract signer keeps the path KMS-agnostic.
     """

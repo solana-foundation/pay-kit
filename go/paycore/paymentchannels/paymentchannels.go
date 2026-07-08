@@ -32,6 +32,16 @@ const channelSeed = "channel"
 // eventAuthoritySeed is the event-authority PDA seed prefix.
 const eventAuthoritySeed = "event_authority"
 
+// voucherMagic0/voucherMagic1 are the constant 2-byte magic prefix leading
+// every signed voucher payload ([0x56, 0x01]). Go has no const arrays, so the
+// bytes are typed constants rather than a mutable package var. The magic is
+// part of the signed bytes only, never carried in wire JSON; the on-chain
+// program rejects payloads without it (voucherBadMagic).
+const (
+	voucherMagic0 byte = 0x56
+	voucherMagic1 byte = 0x01
+)
+
 // programPubkey is the parsed production program id used for derivation and
 // instruction emission.
 var programPubkey = solana.MustPublicKeyFromBase58(ProgramID)
@@ -74,7 +84,7 @@ type OpenChannelParams struct {
 	// transaction and is a channel PDA seed.
 	Payer solana.PublicKey
 	// RentPayer is the operator / fee payer: it funds the channel PDA + escrow
-	// ATA rent at open (and reclaims it at finalize) and is a SIGNER on the
+	// ATA rent at open (and reclaims it at seal/reclaim) and is a SIGNER on the
 	// open instruction. It is always the same key used as the transaction fee
 	// payer, so a single operator signature covers both roles. It is not a
 	// wire/payload field — callers pin it to the operator already in scope.
@@ -88,9 +98,13 @@ type OpenChannelParams struct {
 	// channel; a channel PDA seed.
 	AuthorizedSigner solana.PublicKey
 	// Salt distinguishes multiple channels sharing the same
-	// payer/payee/mint/signer; encoded little-endian as the final channel
-	// PDA seed.
+	// payer/payee/mint/signer; encoded little-endian as a channel PDA seed.
 	Salt uint64
+	// OpenSlot is the current slot at open time, encoded little-endian as
+	// the final channel PDA seed and carried in the open args. Callers fetch
+	// it via RPC (getSlot); the program rejects future slots and slots older
+	// than the 1500-slot window (openSlotOutOfWindow).
+	OpenSlot uint64
 	// Deposit is the initial escrow amount in token base units
 	// (10^-6 USDC per unit for a 6-decimal mint).
 	Deposit uint64
@@ -142,34 +156,40 @@ func resolveProgram(programID solana.PublicKey) solana.PublicKey {
 	return programID
 }
 
-// VoucherMessageBytes returns the 48-byte voucher preimage signed by the
-// authorized signer: channelId (32) || cumulativeAmount as little-endian u64
-// (offset 32) || expiresAt as little-endian i64 (offset 40). This is the exact
-// Borsh layout of VoucherArgs.
+// VoucherMessageBytes returns the 50-byte voucher preimage signed by the
+// authorized signer: magic [0x56, 0x01] (2) || channelId (32, offset 2) ||
+// cumulativeAmount as little-endian u64 (offset 34) || expiresAt as
+// little-endian i64 (offset 42). This is the exact Borsh layout of
+// VoucherArgs, magic included.
 func VoucherMessageBytes(channelID solana.PublicKey, cumulative uint64, expiresAt int64) ([]byte, error) {
 	id := channelID.Bytes()
 	if len(id) != 32 {
 		return nil, fmt.Errorf("channel id must be exactly 32 bytes, got %d", len(id))
 	}
-	out := make([]byte, 48)
-	copy(out[:32], id)
-	binary.LittleEndian.PutUint64(out[32:40], cumulative)
-	binary.LittleEndian.PutUint64(out[40:48], uint64(expiresAt))
+	out := make([]byte, 50)
+	out[0], out[1] = voucherMagic0, voucherMagic1
+	copy(out[2:34], id)
+	binary.LittleEndian.PutUint64(out[34:42], cumulative)
+	binary.LittleEndian.PutUint64(out[42:50], uint64(expiresAt))
 	return out, nil
 }
 
 // FindChannelPDA derives the channel PDA from
-// ["channel", payer, payee, mint, authorizedSigner, salt as little-endian u64]
-// against the production program id.
-func FindChannelPDA(payer, payee, mint, authorizedSigner solana.PublicKey, salt uint64) (solana.PublicKey, uint8, error) {
-	return FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, programPubkey)
+// ["channel", payer, payee, mint, authorizedSigner, salt as little-endian u64,
+// openSlot as little-endian u64] against the production program id. The
+// address is per-incarnation: the same parameters with a different openSlot
+// derive a different channel.
+func FindChannelPDA(payer, payee, mint, authorizedSigner solana.PublicKey, salt, openSlot uint64) (solana.PublicKey, uint8, error) {
+	return FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, openSlot, programPubkey)
 }
 
 // FindChannelPDAForProgram derives the channel PDA against an explicit program
 // id, for callers honoring a per-challenge programId.
-func FindChannelPDAForProgram(payer, payee, mint, authorizedSigner solana.PublicKey, salt uint64, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
+func FindChannelPDAForProgram(payer, payee, mint, authorizedSigner solana.PublicKey, salt, openSlot uint64, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, salt)
+	openSlotLE := make([]byte, 8)
+	binary.LittleEndian.PutUint64(openSlotLE, openSlot)
 	addr, bump, err := solana.FindProgramAddress(
 		[][]byte{
 			[]byte(channelSeed),
@@ -178,6 +198,7 @@ func FindChannelPDAForProgram(payer, payee, mint, authorizedSigner solana.Public
 			mint.Bytes(),
 			authorizedSigner.Bytes(),
 			saltLE,
+			openSlotLE,
 		},
 		resolveProgram(programID),
 	)
@@ -215,7 +236,7 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 	if params.RentPayer.IsZero() {
 		return nil, fmt.Errorf("rent_payer is required (the operator / fee payer that funds the channel rent)")
 	}
-	channel, _, err := FindChannelPDAForProgram(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt, programID)
+	channel, _, err := FindChannelPDAForProgram(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt, params.OpenSlot, programID)
 	if err != nil {
 		return nil, err
 	}
@@ -259,6 +280,7 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 			Salt:        params.Salt,
 			Deposit:     params.Deposit,
 			GracePeriod: params.GracePeriod,
+			OpenSlot:    params.OpenSlot,
 			Recipients:  recipients,
 		})
 

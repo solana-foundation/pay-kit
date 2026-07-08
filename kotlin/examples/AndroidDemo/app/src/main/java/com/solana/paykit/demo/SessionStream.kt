@@ -74,10 +74,15 @@ object SessionStream {
         val request = PaymentChannelSession.sessionRequest(challenge)
         val blockhash = request.recentBlockhash
         require(!blockhash.isNullOrEmpty()) { "session challenge did not carry a recentBlockhash" }
+        // The server prefetches the current slot into the challenge as
+        // `recentSlot`; it is the program's open_slot channel PDA seed the open
+        // echoes back, only accepted within the 1500-slot open window.
+        val recentSlot = request.recentSlot
+        requireNotNull(recentSlot) { "session challenge did not carry a recentSlot" }
 
         // 2. Open the channel (pull + clientVoucher, server-broadcast).
         val sessionSigner = MemorySigner.fromSeed(randomSeed())
-        val opener = PaymentChannelSession.open(request, payer, sessionSigner, blockhash)
+        val opener = PaymentChannelSession.open(request, payer, sessionSigner, blockhash, recentSlot)
         val channelId = opener.open.channelId.toBase58()
         val credential = PaymentChannelSession.serializeSessionCredential(challenge.echo(), opener.action)
         steps.add("opened channel ${shortId(channelId)} · deposit ${usd(request.cap)}")
@@ -161,9 +166,12 @@ object SessionStream {
                 if (!resp.isSuccessful) return@use null
                 runCatching { json.parseToJsonElement(resp.body!!.string()).jsonObject }.getOrNull()
             } ?: return@repeat
-            val finalized = (obj["finalized"] as? JsonPrimitive)?.contentOrNull == "true"
+            // The program renamed finalize -> seal; accept both receipt keys
+            // while the playground still serves the legacy `finalized` flag.
+            val sealed = (obj["sealed"] as? JsonPrimitive)?.contentOrNull == "true" ||
+                (obj["finalized"] as? JsonPrimitive)?.contentOrNull == "true"
             val sig = (obj["settledSignature"] as? JsonPrimitive)?.contentOrNull
-            if (finalized && !sig.isNullOrEmpty()) return sig
+            if (sealed && !sig.isNullOrEmpty()) return sig
         }
         return null
     }

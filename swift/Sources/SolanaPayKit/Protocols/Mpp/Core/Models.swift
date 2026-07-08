@@ -1,6 +1,6 @@
 import Foundation
 
-// MppError moved to PayCore/Errors.swift (shared payment-core error consumed by
+// PayKitError moved to PayCore/Errors.swift (shared payment-core error consumed by
 // both the MPP and x402 protocol layers; keeps the protocols decoupled).
 
 public struct PaymentChallenge: Codable, Equatable, Sendable {
@@ -19,13 +19,13 @@ public struct PaymentChallenge: Codable, Equatable, Sendable {
             // (audit #9). Closes the direct-construction bypass: a challenge built
             // without going through `parseWWWAuthenticate` must still be bounded.
             guard request.utf8.count <= MppHeaders.maxTokenLength else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             let data = try Base64URL.decode(request)
             do {
                 return try JSONDecoder().decode(ChargeRequest.self, from: data)
             } catch {
-                throw MppError.invalidJSON(String(describing: error))
+                throw PayKitError.invalidJSON(String(describing: error))
             }
         }
     }
@@ -41,7 +41,7 @@ public struct PaymentChallenge: Codable, Equatable, Sendable {
         opaque: String? = nil
     ) throws {
         guard request.utf8.count <= MppHeaders.maxTokenLength else {
-            throw MppError.invalidHeader
+            throw PayKitError.invalidHeader
         }
         _ = try Base64URL.decode(request)
         self.id = id
@@ -56,7 +56,7 @@ public struct PaymentChallenge: Codable, Equatable, Sendable {
 
     public func requireSolanaCharge() throws {
         guard method == "solana", intent == "charge" else {
-            throw MppError.unsupportedChallenge(method: method, intent: intent)
+            throw PayKitError.unsupportedChallenge(method: method, intent: intent)
         }
     }
 

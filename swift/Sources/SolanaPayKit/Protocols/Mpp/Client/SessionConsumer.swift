@@ -37,7 +37,7 @@ public final class SessionConsumer {
         try validateDirective(directive)
         let amount = try directive.amountBaseUnits()
         guard amount != 0 else {
-            throw MppError.invalidTransaction("metered delivery amount must be greater than zero")
+            throw PayKitError.invalidTransaction("metered delivery amount must be greater than zero")
         }
 
         let voucher = try await session.prepareIncrement(amount)
@@ -47,10 +47,10 @@ public final class SessionConsumer {
         switch receipt.status {
         case .replayed:
             guard let settled = UInt64(receipt.cumulative) else {
-                throw MppError.invalidTransaction("invalid replayed receipt cumulative: \(receipt.cumulative)")
+                throw PayKitError.invalidTransaction("invalid replayed receipt cumulative: \(receipt.cumulative)")
             }
             guard let prepared = UInt64(voucher.data.cumulative) else {
-                throw MppError.invalidTransaction("invalid prepared voucher cumulative: \(voucher.data.cumulative)")
+                throw PayKitError.invalidTransaction("invalid prepared voucher cumulative: \(voucher.data.cumulative)")
             }
             session.reconcileSettled(min(settled, prepared))
         case .committed:
@@ -62,7 +62,7 @@ public final class SessionConsumer {
     private func validateDirective(_ directive: MeteringDirective) throws {
         let channelId = session.channelIdString()
         guard directive.sessionId == channelId else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "metered delivery session \(directive.sessionId) does not match active session \(channelId)"
             )
         }

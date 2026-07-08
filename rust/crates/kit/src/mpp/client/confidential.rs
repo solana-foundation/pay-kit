@@ -34,8 +34,9 @@ use std::str::FromStr;
 use solana_zk_elgamal_proof_interface::{
     instruction::{close_context_state, ContextStateInfo, ProofInstruction},
     proof_data::{
+        BatchedGroupedCiphertext2HandlesValidityProofContext,
         BatchedGroupedCiphertext3HandlesValidityProofContext, BatchedRangeProofContext,
-        CiphertextCommitmentEqualityProofContext,
+        CiphertextCommitmentEqualityProofContext, PercentageWithCapProofContext,
     },
     state::ProofContextState,
 };
@@ -49,8 +50,11 @@ use solana_zk_sdk_pod::encryption::elgamal::{
 use spl_token_2022::{
     extension::{
         confidential_transfer::{
-            instruction::inner_transfer, ConfidentialTransferAccount, ConfidentialTransferMint,
+            instruction::{inner_transfer, inner_transfer_with_fee},
+            ConfidentialTransferAccount, ConfidentialTransferMint,
         },
+        confidential_transfer_fee::ConfidentialTransferFeeConfig,
+        transfer_fee::TransferFeeConfig,
         BaseStateWithExtensions, StateWithExtensions,
     },
     solana_zk_sdk::encryption::pod::{
@@ -63,10 +67,12 @@ use spl_token_2022::{
     state::{Account as TokenAccount, Mint},
 };
 use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
-use spl_token_confidential_transfer_proof_generation::transfer::transfer_split_proof_data;
+use spl_token_confidential_transfer_proof_generation::{
+    transfer::transfer_split_proof_data, transfer_with_fee::transfer_with_fee_split_proof_data,
+};
 
 use crate::mpp::error::Error;
-use crate::mpp::protocol::confidential::derive_confidential_keys;
+use crate::mpp::protocol::confidential::{derive_confidential_keys, ConfidentialKeys};
 use crate::mpp::protocol::solana::CredentialPayload;
 
 /// The native ZK ElGamal Proof program.
@@ -216,6 +222,48 @@ pub async fn build_confidential_transfer_bundle(
         }
     };
 
+    // ----- Confidential-transfer fee config (optional) -----
+    // When the mint carries the confidential-transfer fee extension, Token-2022
+    // requires the fee-bearing transfer variant (`TransferWithFee`) with its
+    // extra fee proofs — even when the fee rate is zero. Capture the
+    // withdraw-withheld authority's ElGamal pubkey and the current epoch's fee.
+    let fee_params: Option<(ElGamalPubkey, u16, u64)> =
+        match mint_state.get_extension::<ConfidentialTransferFeeConfig>() {
+            Ok(fee_ext) => {
+                let withdraw_withheld_elgamal: ElGamalPubkey = cast_elgamal_pubkey_legacy_to_v7(
+                    &fee_ext.withdraw_withheld_authority_elgamal_pubkey,
+                )?
+                .try_into()
+                .map_err(|e| Error::Other(format!("withdraw-withheld ElGamal pubkey: {e:?}")))?;
+                let transfer_fee_config =
+                    mint_state
+                        .get_extension::<TransferFeeConfig>()
+                        .map_err(|e| {
+                            Error::Other(format!(
+                                "mint has confidential fee config but no transfer-fee config: {e}"
+                            ))
+                        })?;
+                // Fee parameters are read for the *current* epoch and baked into the fee
+                // proofs. The on-chain `TransferWithFee` re-derives them at execution time, so a
+                // mismatch is possible only when the mint has a *scheduled* fee-schedule change
+                // (older vs newer fee) AND the bundle is built in the last epoch before the
+                // change but lands after the rollover. That case fails closed — the transfer is
+                // rejected, never mis-settled — and is retriable by rebuilding the bundle. For
+                // mints without a pending change (`older == newer`, the common case, e.g. USDPT)
+                // there is no drift. This matches standard spl-token tooling, which likewise reads
+                // the current epoch's fee at build time.
+                let epoch = rpc
+                    .get_epoch_info()
+                    .map_err(|e| Error::Rpc(e.to_string()))?
+                    .epoch;
+                let epoch_fee = transfer_fee_config.get_epoch_fee(epoch);
+                let fee_basis_points: u16 = epoch_fee.transfer_fee_basis_points.into();
+                let maximum_fee: u64 = epoch_fee.maximum_fee.into();
+                Some((withdraw_withheld_elgamal, fee_basis_points, maximum_fee))
+            }
+            Err(_) => None,
+        };
+
     // ----- Sender keys + current confidential balance -----
     let sender_keys = derive_confidential_keys(signer, &sender_token_account).await?;
     let sender_acc = rpc
@@ -260,6 +308,30 @@ pub async fn build_confidential_transfer_bundle(
                 params.amount
             ))
         })?;
+
+    // Fee-bearing mints (e.g. USDPT) require the `TransferWithFee` variant with
+    // its additional fee proofs; delegate to the dedicated builder.
+    if let Some((withdraw_withheld_elgamal, fee_basis_points, maximum_fee)) = fee_params {
+        return build_confidential_transfer_with_fee_bundle(
+            signer,
+            rpc,
+            &params,
+            &sender_token_account,
+            &recipient_token_account,
+            &token_program,
+            &zk_program,
+            &sender_keys,
+            &current_available,
+            &current_decryptable,
+            new_plaintext,
+            &recipient_elgamal,
+            auditor_elgamal.as_ref(),
+            &withdraw_withheld_elgamal,
+            fee_basis_points,
+            maximum_fee,
+        )
+        .await;
+    }
 
     // ----- Generate the three split-transfer proofs (zk-sdk 7.0.1) -----
     let proof_data = transfer_split_proof_data(
@@ -416,6 +488,240 @@ pub async fn build_confidential_transfer_bundle(
         transfer_ix,
         close(&equality_account.pubkey()),
         close(&validity_account.pubkey()),
+        close(&range_account.pubkey()),
+        spl_record::instruction::close_account(&record_account.pubkey(), fee_payer, fee_payer),
+    ];
+    bundle.push(partial_sign_tx(signer, fee_payer, &[], &final_ixs, params.blockhash).await?);
+
+    Ok(bundle)
+}
+
+/// Build the confidential transfer bundle for a fee-bearing mint, using the
+/// Token-2022 `TransferWithFee` variant. This needs five split proofs (equality,
+/// transfer-amount validity, fee sigma / percentage-with-cap, fee validity, and
+/// a U256 range proof) versus three for the plain transfer.
+#[allow(clippy::too_many_arguments)]
+async fn build_confidential_transfer_with_fee_bundle(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    params: &ConfidentialTransferParams<'_>,
+    sender_token_account: &Pubkey,
+    recipient_token_account: &Pubkey,
+    token_program: &Pubkey,
+    zk_program: &Pubkey,
+    sender_keys: &ConfidentialKeys,
+    current_available: &ElGamalCiphertext,
+    current_decryptable: &AeCiphertext,
+    new_plaintext: u64,
+    recipient_elgamal: &ElGamalPubkey,
+    auditor_elgamal: Option<&ElGamalPubkey>,
+    withdraw_withheld_elgamal: &ElGamalPubkey,
+    fee_basis_points: u16,
+    maximum_fee: u64,
+) -> Result<Vec<String>, Error> {
+    let fee_payer = params.fee_payer;
+    let fee_payer_addr = Address::from(fee_payer.to_bytes());
+    let sender_pubkey = signer.pubkey();
+
+    // ----- Generate the five split transfer-with-fee proofs (zk-sdk 7.0.1) -----
+    let proof_data = transfer_with_fee_split_proof_data(
+        current_available,
+        current_decryptable,
+        params.amount,
+        &sender_keys.elgamal,
+        &sender_keys.ae,
+        recipient_elgamal,
+        auditor_elgamal,
+        withdraw_withheld_elgamal,
+        fee_basis_points,
+        maximum_fee,
+    )
+    .map_err(|e| Error::Other(format!("transfer_with_fee_split_proof_data: {e}")))?;
+
+    let mut bundle: Vec<String> = Vec::new();
+
+    // ----- 1. Equality proof context account -----
+    let (equality_account, equality_ixs) =
+        proof_context_pair::<CiphertextCommitmentEqualityProofContext>(
+            rpc,
+            fee_payer,
+            &fee_payer_addr,
+            zk_program,
+            |ctx| {
+                ProofInstruction::VerifyCiphertextCommitmentEquality
+                    .encode_verify_proof(Some(ctx), &proof_data.equality_proof_data)
+            },
+        )?;
+    bundle.push(
+        partial_sign_tx(
+            signer,
+            fee_payer,
+            &[&equality_account],
+            &equality_ixs,
+            params.blockhash,
+        )
+        .await?,
+    );
+
+    // ----- 2. Transfer-amount ciphertext-validity proof (3 handles) -----
+    let (validity_account, validity_ixs) = proof_context_pair::<
+        BatchedGroupedCiphertext3HandlesValidityProofContext,
+    >(
+        rpc,
+        fee_payer,
+        &fee_payer_addr,
+        zk_program,
+        |ctx| {
+            ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity.encode_verify_proof(
+                Some(ctx),
+                &proof_data
+                    .transfer_amount_ciphertext_validity_proof_data_with_ciphertext
+                    .proof_data,
+            )
+        },
+    )?;
+    bundle.push(
+        partial_sign_tx(
+            signer,
+            fee_payer,
+            &[&validity_account],
+            &validity_ixs,
+            params.blockhash,
+        )
+        .await?,
+    );
+
+    // ----- 3. Fee sigma (percentage-with-cap) proof -----
+    let (fee_sigma_account, fee_sigma_ixs) = proof_context_pair::<PercentageWithCapProofContext>(
+        rpc,
+        fee_payer,
+        &fee_payer_addr,
+        zk_program,
+        |ctx| {
+            ProofInstruction::VerifyPercentageWithCap
+                .encode_verify_proof(Some(ctx), &proof_data.percentage_with_cap_proof_data)
+        },
+    )?;
+    bundle.push(
+        partial_sign_tx(
+            signer,
+            fee_payer,
+            &[&fee_sigma_account],
+            &fee_sigma_ixs,
+            params.blockhash,
+        )
+        .await?,
+    );
+
+    // ----- 4. Fee ciphertext-validity proof (2 handles) -----
+    let (fee_validity_account, fee_validity_ixs) =
+        proof_context_pair::<BatchedGroupedCiphertext2HandlesValidityProofContext>(
+            rpc,
+            fee_payer,
+            &fee_payer_addr,
+            zk_program,
+            |ctx| {
+                ProofInstruction::VerifyBatchedGroupedCiphertext2HandlesValidity
+                    .encode_verify_proof(Some(ctx), &proof_data.fee_ciphertext_validity_proof_data)
+            },
+        )?;
+    bundle.push(
+        partial_sign_tx(
+            signer,
+            fee_payer,
+            &[&fee_validity_account],
+            &fee_validity_ixs,
+            params.blockhash,
+        )
+        .await?,
+    );
+
+    // ----- 5. Range proof (U256): stage into an spl-record account -----
+    let record_account = Keypair::new();
+    let (range_account, range_ixs) = proof_context_pair::<BatchedRangeProofContext>(
+        rpc,
+        fee_payer,
+        &fee_payer_addr,
+        zk_program,
+        |ctx| {
+            ProofInstruction::VerifyBatchedRangeProofU256.encode_verify_proof_from_account(
+                Some(ctx),
+                &Address::from(record_account.pubkey().to_bytes()),
+                RECORD_PROOF_OFFSET,
+            )
+        },
+    )?;
+    let proof_bytes = bytemuck::bytes_of(&proof_data.range_proof_data);
+    let mut record_txs = stage_range_proof_record(
+        signer,
+        rpc,
+        fee_payer,
+        &record_account,
+        proof_bytes,
+        &range_ixs,
+        &[&range_account],
+        params.blockhash,
+    )
+    .await?;
+    bundle.append(&mut record_txs);
+
+    // ----- 6. TransferWithFee + close all proof/record accounts -----
+    let new_decryptable = sender_keys.ae.encrypt(new_plaintext);
+    let new_decryptable_legacy = cast_ae_ciphertext_v7_to_legacy(&new_decryptable);
+    let auditor_lo_legacy = cast_elgamal_ciphertext_v7_to_legacy(
+        &proof_data
+            .transfer_amount_ciphertext_validity_proof_data_with_ciphertext
+            .ciphertext_lo,
+    );
+    let auditor_hi_legacy = cast_elgamal_ciphertext_v7_to_legacy(
+        &proof_data
+            .transfer_amount_ciphertext_validity_proof_data_with_ciphertext
+            .ciphertext_hi,
+    );
+
+    let transfer_ix = inner_transfer_with_fee(
+        token_program,
+        sender_token_account,
+        params.mint,
+        recipient_token_account,
+        &new_decryptable_legacy,
+        &auditor_lo_legacy,
+        &auditor_hi_legacy,
+        &sender_pubkey,
+        &[],
+        ProofLocation::ContextStateAccount(&equality_account.pubkey()),
+        ProofLocation::ContextStateAccount(&validity_account.pubkey()),
+        ProofLocation::ContextStateAccount(&fee_sigma_account.pubkey()),
+        ProofLocation::ContextStateAccount(&fee_validity_account.pubkey()),
+        ProofLocation::ContextStateAccount(&range_account.pubkey()),
+    )
+    .map_err(|e| Error::Other(format!("build transfer_with_fee instruction: {e}")))?;
+
+    let close = |ctx: &Pubkey| {
+        close_context_state(
+            ContextStateInfo {
+                context_state_account: &Address::from(ctx.to_bytes()),
+                context_state_authority: &fee_payer_addr,
+            },
+            &fee_payer_addr,
+        )
+    };
+    let compute_budget_program =
+        Pubkey::from_str(COMPUTE_BUDGET_PROGRAM_ID).expect("valid compute budget program id");
+    let mut cu_limit_data = vec![2u8]; // SetComputeUnitLimit
+    cu_limit_data.extend_from_slice(&CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT.to_le_bytes());
+    let cu_limit_ix = Instruction {
+        program_id: compute_budget_program,
+        accounts: vec![],
+        data: cu_limit_data,
+    };
+    let final_ixs = vec![
+        cu_limit_ix,
+        transfer_ix,
+        close(&equality_account.pubkey()),
+        close(&validity_account.pubkey()),
+        close(&fee_sigma_account.pubkey()),
+        close(&fee_validity_account.pubkey()),
         close(&range_account.pubkey()),
         spl_record::instruction::close_account(&record_account.pubkey(), fee_payer, fee_payer),
     ];

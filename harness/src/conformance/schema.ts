@@ -236,11 +236,12 @@ export type VectorInput = {
     opaque?: string;
   };
 
-  // canonical-bytes (session): the 48-byte Ed25519 voucher preimage
-  // `channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64`.
-  // The runner emits it as exactBytes (hex/bytes/base64Url). This pins the
-  // single most load-bearing session invariant byte-for-byte across SDKs.
-  // Mirrors the program voucher_message_bytes layout.
+  // canonical-bytes (session): the 50-byte Ed25519 voucher preimage
+  // `magic([0x56, 0x01]) || channelId(32, base58) || cumulativeAmount LE u64
+  // || expiresAt LE i64`. The runner emits it as exactBytes
+  // (hex/bytes/base64Url). This pins the single most load-bearing session
+  // invariant byte-for-byte across SDKs. Mirrors the program
+  // voucher_message_bytes layout.
   voucherPreimage?: {
     channelId: string;
     cumulativeAmount: string;

@@ -28,7 +28,8 @@ import {
     buildEd25519VerifyInstruction,
     buildMultiDelegatorInitInstruction,
     buildMultiDelegatorUpdateInstruction,
-    buildSettleAndFinalizeInstructions,
+    buildReclaimInstruction,
+    buildSettleAndSealInstructions,
     buildTopUpInstruction,
     ED25519_PROGRAM_ADDRESS,
     encodeVoucherMessageBytes,
@@ -63,17 +64,19 @@ async function loadFixedSigners() {
 // ── encodeVoucherMessageBytes parity check ─────────────────────────────────
 
 describe('encodeVoucherMessageBytes', () => {
-    test('produces the 48-byte canonical voucher payload', () => {
+    test('produces the 50-byte magic-prefixed canonical voucher payload', () => {
         const bytes = encodeVoucherMessageBytes({
             channelId: '11111111111111111111111111111111',
             cumulativeAmount: 0n,
             expiresAt: 0n,
         });
-        expect(bytes.byteLength).toBe(48);
-        expect(bytes.every(b => b === 0)).toBe(true);
+        expect(bytes.byteLength).toBe(50);
+        expect(bytes[0]).toBe(0x56);
+        expect(bytes[1]).toBe(0x01);
+        expect(bytes.slice(2).every(b => b === 0)).toBe(true);
     });
 
-    test('encodes channelId, cumulative (u64 LE), expiresAt (i64 LE) in order', () => {
+    test('encodes magic, channelId, cumulative (u64 LE), expiresAt (i64 LE) in order', () => {
         // Pick an address that encodes to exactly 32 bytes; use deterministic numbers.
         const bytes = encodeVoucherMessageBytes({
             channelId: '11111111111111111111111111111111',
@@ -81,8 +84,10 @@ describe('encodeVoucherMessageBytes', () => {
             expiresAt: 0x7fff_ffff_ffff_fff0n,
         });
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        expect(view.getBigUint64(32, true)).toBe(0x1234_5678n);
-        expect(view.getBigInt64(40, true)).toBe(0x7fff_ffff_ffff_fff0n);
+        expect(bytes[0]).toBe(0x56);
+        expect(bytes[1]).toBe(0x01);
+        expect(view.getBigUint64(34, true)).toBe(0x1234_5678n);
+        expect(view.getBigInt64(42, true)).toBe(0x7fff_ffff_ffff_fff0n);
     });
 });
 
@@ -150,14 +155,14 @@ describe('buildEd25519VerifyInstruction', () => {
     });
 });
 
-// ── settle_and_finalize ─────────────────────────────────────────────────────
+// ── settle_and_seal ─────────────────────────────────────────────────────────
 
-describe('buildSettleAndFinalizeInstructions', () => {
+describe('buildSettleAndSealInstructions', () => {
     test('voucher-less variant emits a single instruction with hasVoucher=0', async () => {
         const [, , , , merchant] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
 
-        const out = buildSettleAndFinalizeInstructions({
+        const out = buildSettleAndSealInstructions({
             channelId,
             merchantSigner: merchant,
         });
@@ -175,7 +180,6 @@ describe('buildSettleAndFinalizeInstructions', () => {
         expect(ix.accounts[2]!.address).toBe(INSTRUCTIONS_SYSVAR_ADDRESS);
         expect(ix.accounts[2]!.role).toBe(AccountRole.READONLY);
 
-        // data = [disc=4][voucher(48 zero)][hasVoucher=0] => 50 bytes
         // The voucher is read from the ed25519 precompile, so the data is just
         // [disc=4][hasVoucher=0] => 2 bytes.
         const data = new Uint8Array(ix.data);
@@ -196,7 +200,7 @@ describe('buildSettleAndFinalizeInstructions', () => {
             signature: fixedSig,
         };
 
-        const out = buildSettleAndFinalizeInstructions({
+        const out = buildSettleAndSealInstructions({
             channelId,
             merchantSigner: merchant,
             voucher: { authorizedSigner: authorizedSignerSk.address, signed },
@@ -289,6 +293,23 @@ describe('buildDistributeInstruction', () => {
     });
 });
 
+// ── reclaim ─────────────────────────────────────────────────────────────────
+
+describe('buildReclaimInstruction', () => {
+    test('encodes the bare discriminator with channel + rentPayer writable', async () => {
+        const [, operator] = await loadFixedSigners();
+        const channelId = '11111111111111111111111111111111';
+        const ix = buildReclaimInstruction({ channelId, rentPayer: operator.address });
+        expect(ix.programAddress).toBe(PAYMENT_CHANNELS_PROGRAM_ID);
+        expect(ix.accounts).toHaveLength(2);
+        expect(ix.accounts[0]!.address).toBe(channelId);
+        expect(ix.accounts[0]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[1]!.address).toBe(operator.address);
+        expect(ix.accounts[1]!.role).toBe(AccountRole.WRITABLE);
+        expect(new Uint8Array(ix.data)).toEqual(new Uint8Array([9]));
+    });
+});
+
 // ── multi-delegator (hand-encoded) ─────────────────────────────────────────
 
 describe('multi-delegator instructions', () => {
@@ -339,6 +360,7 @@ describe('verifyOpenTx', () => {
             decimals: 6,
             modes: ['pull'],
             network: 'localnet',
+            recentSlot: '123456',
             operator: payer.address,
             pullVoucherStrategy: 'clientVoucher',
             recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
@@ -365,6 +387,7 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
+                openSlot: 123_456n,
                 operator: payer.address,
                 programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
@@ -376,6 +399,7 @@ describe('verifyOpenTx', () => {
                 gracePeriod: open.gracePeriod,
                 mint: open.mint,
                 mode: 'pull',
+                recentSlot: open.openSlot,
                 payee: open.payee,
                 payer: open.payer,
                 salt: open.salt,
@@ -386,7 +410,40 @@ describe('verifyOpenTx', () => {
         expect(result.channelId).toBe(open.channelId);
         expect(result.deposit).toBe(1_000_000n);
         expect(result.gracePeriod).toBe(900);
+        expect(result.openSlot).toBe(123_456n);
         expect(result.salt).toBe(7n);
+    });
+
+    test('rejects open whose openSlot differs from the challenge-issued slot', async () => {
+        const [payer, , payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        await expect(
+            verifyOpenTx({
+                expected: {
+                    authorizedSigner: authorizedSigner.address,
+                    currency: USDC.mainnet!,
+                    maxCap: 5_000_000n,
+                    network: 'localnet',
+                    openSlot: 999_999n, // challenge issued a different slot
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
+                    recipient: payee.address,
+                },
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    deposit: open.deposit,
+                    gracePeriod: open.gracePeriod,
+                    mint: open.mint,
+                    mode: 'pull',
+                    recentSlot: open.openSlot,
+                    payee: open.payee,
+                    payer: open.payer,
+                    salt: open.salt,
+                    signature: '1'.repeat(88),
+                    transaction: open.transaction,
+                },
+            }),
+        ).rejects.toThrow(/challenge-issued openSlot/);
     });
 
     test('rejects an open transaction that uses address-lookup tables', async () => {

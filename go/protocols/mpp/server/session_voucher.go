@@ -9,7 +9,7 @@ package server
 //
 // The check sequence (order and operators) is pinned across the language
 // SDKs and harness-tested:
-// parse u64 -> finalized -> close pending -> idempotent replay (same
+// parse u64 -> sealed -> close pending -> idempotent replay (same
 // cumulative AND same signature, signature re-verified) -> cumulative >
 // watermark strictly -> cumulative <= deposit -> delta >= minVoucherDelta ->
 // Ed25519 verify against the stored authorizedSigner -> expiry.
@@ -62,8 +62,8 @@ const (
 	// VoucherRejectChannelClosePending: a close was already requested.
 	VoucherRejectChannelClosePending VoucherRejectReason = "channel-close-pending"
 
-	// VoucherRejectChannelFinalized: the channel is already finalized.
-	VoucherRejectChannelFinalized VoucherRejectReason = "channel-finalized"
+	// VoucherRejectChannelSealed: the channel is already sealed.
+	VoucherRejectChannelSealed VoucherRejectReason = "channel-sealed"
 
 	// VoucherRejectCumulativeNotMonotonic: the cumulative does not strictly
 	// exceed the watermark.
@@ -160,10 +160,10 @@ func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 			fmt.Sprintf("invalid cumulative in voucher: %s", signed.Data.Cumulative))
 	}
 
-	// 2. Channel must not be finalized.
-	if state.Finalized {
-		return voucherReject(VoucherRejectChannelFinalized,
-			fmt.Sprintf("channel %s is already finalized", state.ChannelID))
+	// 2. Channel must not be sealed.
+	if state.Sealed {
+		return voucherReject(VoucherRejectChannelSealed,
+			fmt.Sprintf("channel %s is already sealed", state.ChannelID))
 	}
 
 	// 3. Channel must not be in close-pending.
@@ -205,7 +205,7 @@ func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 			fmt.Sprintf("voucher delta %d is below minimum %d", delta, args.MinVoucherDelta))
 	}
 
-	// 8. Verify the Ed25519 signature over the 48-byte canonical payload.
+	// 8. Verify the Ed25519 signature over the 50-byte canonical payload.
 	if err := verifyVoucherSignatureBytes(signed, state.AuthorizedSigner); err != nil {
 		return voucherReject(VoucherRejectInvalidSignature, err.Error())
 	}
@@ -264,7 +264,7 @@ func voucherNow(override *int64) int64 {
 }
 
 // verifyVoucherSignatureBytes checks the voucher's Ed25519 signature over the
-// canonical 48-byte voucher payload against the authorized signer (both
+// canonical 50-byte voucher payload against the authorized signer (both
 // base58). The expiry check is not included; callers order it explicitly.
 func verifyVoucherSignatureBytes(signed intents.SignedVoucher, authorizedSigner string) error {
 	message, err := signed.Data.MessageBytes()

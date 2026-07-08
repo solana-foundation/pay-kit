@@ -58,22 +58,24 @@ func TestOpenDiscriminator(t *testing.T) {
 }
 
 // TestOpenArgsBorshParity asserts the OpenArgs Borsh layout
-// {salt u64, deposit u64, grace_period u32, recipients Vec<{recipient pubkey, bps u16}>}
-// matches the Rust spine for a frozen input.
+// {salt u64, deposit u64, grace_period u32, open_slot u64,
+// recipients Vec<{recipient pubkey, bps u16}>} matches the Rust spine for a
+// frozen input.
 func TestOpenArgsBorshParity(t *testing.T) {
-	// salt=1, deposit=1_000_000, grace_period=900,
+	// salt=1, deposit=1_000_000, grace_period=900, open_slot=55_555,
 	// recipients=[{recipient=<all-zero pubkey>, bps=10000}]
 	args := pc.OpenArgs{
 		Salt:        1,
 		Deposit:     1_000_000,
 		GracePeriod: 900,
+		OpenSlot:    55_555,
 		Recipients: []pc.DistributionEntry{
 			{Recipient: solana.PublicKey{}, Bps: 10000},
 		},
 	}
 
 	// Frozen from `borsh::to_vec(&OpenArgs{...})` against the Rust spine layout.
-	const wantOpenArgs = "010000000000000040420f0000000000840300000100000000000000000000000000000000000000000000000000000000000000000000001027"
+	const wantOpenArgs = "010000000000000040420f00000000008403000003d90000000000000100000000000000000000000000000000000000000000000000000000000000000000001027"
 	got := borshEncode(t, args)
 	if want := mustHex(t, wantOpenArgs); !bytes.Equal(got, want) {
 		t.Fatalf("OpenArgs borsh mismatch\n got: %s\nwant: %s", hex.EncodeToString(got), wantOpenArgs)
@@ -88,6 +90,7 @@ func TestOpenInstructionDataParity(t *testing.T) {
 		Salt:        1,
 		Deposit:     1_000_000,
 		GracePeriod: 900,
+		OpenSlot:    55_555,
 		Recipients: []pc.DistributionEntry{
 			{Recipient: solana.PublicKey{}, Bps: 10000},
 		},
@@ -99,7 +102,7 @@ func TestOpenInstructionDataParity(t *testing.T) {
 	}
 
 	// Frozen from `[1u8] ++ borsh::to_vec(&OpenArgs{...})` against the Rust spine.
-	const wantOpenIx = "01010000000000000040420f0000000000840300000100000000000000000000000000000000000000000000000000000000000000000000001027"
+	const wantOpenIx = "01010000000000000040420f00000000008403000003d90000000000000100000000000000000000000000000000000000000000000000000000000000000000001027"
 	if want := mustHex(t, wantOpenIx); !bytes.Equal(buf.Bytes(), want) {
 		t.Fatalf("Open instruction data mismatch\n got: %s\nwant: %s", hex.EncodeToString(buf.Bytes()), wantOpenIx)
 	}
@@ -108,33 +111,38 @@ func TestOpenInstructionDataParity(t *testing.T) {
 	}
 }
 
-// TestVoucherPreimageParity asserts the 48-byte voucher preimage exposed by the
+// TestVoucherPreimageParity asserts the 50-byte voucher preimage exposed by the
 // generated VoucherArgs type matches the Rust spine layout
-// channel_id(32) || cumulative_amount_le(8) || expires_at_le(8). This is the
-// load-bearing off-chain Ed25519 signing preimage for the session phase.
+// magic(2) || channel_id(32) || cumulative_amount_le(8) || expires_at_le(8).
+// This is the load-bearing off-chain Ed25519 signing preimage for the session
+// phase; the [0x56, 0x01] magic prefix is part of the signed bytes only.
 func TestVoucherPreimageParity(t *testing.T) {
 	voucher := pc.VoucherArgs{
+		Magic:            [2]uint8{0x56, 0x01},
 		ChannelId:        solana.PublicKey{}, // all-zero channel id
 		CumulativeAmount: 1234567,
 		ExpiresAt:        4102444800, // DEFAULT_SESSION_EXPIRES_AT (2100-01-01)
 	}
 
 	// Frozen from `borsh::to_vec(&VoucherArgs{...})` against the Rust spine.
-	const wantVoucher = "000000000000000000000000000000000000000000000000000000000000000087d6120000000000005786f400000000"
+	const wantVoucher = "5601000000000000000000000000000000000000000000000000000000000000000087d6120000000000005786f400000000"
 	got := borshEncode(t, voucher)
-	if len(got) != 48 {
-		t.Fatalf("voucher preimage = %d bytes, want 48", len(got))
+	if len(got) != 50 {
+		t.Fatalf("voucher preimage = %d bytes, want 50", len(got))
 	}
 	if want := mustHex(t, wantVoucher); !bytes.Equal(got, want) {
 		t.Fatalf("voucher preimage mismatch\n got: %s\nwant: %s", hex.EncodeToString(got), wantVoucher)
 	}
 
-	// Pin the field offsets: cumulative_amount little-endian at byte 32,
-	// expires_at little-endian at byte 40.
-	if v := bin.LE.Uint64(got[32:40]); v != 1234567 {
-		t.Fatalf("cumulative_amount@32 = %d, want 1234567", v)
+	// Pin the field offsets: magic at byte 0, cumulative_amount little-endian
+	// at byte 34, expires_at little-endian at byte 42.
+	if got[0] != 0x56 || got[1] != 0x01 {
+		t.Fatalf("magic@0 = %#02x %#02x, want 0x56 0x01", got[0], got[1])
 	}
-	if v := int64(bin.LE.Uint64(got[40:48])); v != 4102444800 {
-		t.Fatalf("expires_at@40 = %d, want 4102444800", v)
+	if v := bin.LE.Uint64(got[34:42]); v != 1234567 {
+		t.Fatalf("cumulative_amount@34 = %d, want 1234567", v)
+	}
+	if v := int64(bin.LE.Uint64(got[42:50])); v != 4102444800 {
+		t.Fatalf("expires_at@42 = %d, want 4102444800", v)
 	}
 }

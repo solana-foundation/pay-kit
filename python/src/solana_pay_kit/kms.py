@@ -18,8 +18,7 @@ from __future__ import annotations
 __all__ = ["aws", "gcp", "vault"]
 
 _FOLLOW_UP = (
-    "is reserved for a follow-up release; "
-    "use solana_pay_kit.Signer.file or solana_pay_kit.Signer.env in the meantime"
+    "is reserved for a follow-up release; use solana_pay_kit.Signer.file or solana_pay_kit.Signer.env in the meantime"
 )
 
 

@@ -126,7 +126,7 @@ public enum Instructions {
     public static func memo(_ text: String) throws -> SolanaInstruction {
         let bytes = Data(text.utf8)
         guard bytes.count <= memoMaxBytes else {
-            throw MppError.invalidTransaction("memo exceeds \(memoMaxBytes) bytes")
+            throw PayKitError.invalidTransaction("memo exceeds \(memoMaxBytes) bytes")
         }
         return SolanaInstruction(
             programId: .memoProgram,

@@ -43,6 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _rpc = RpcClient::new(rpc_url);
     let expires_at = now_unix() + 3600;
     let nonce = format!("upto-{}", now_unix());
+    // `openSlot` (like `recentBlockhash`) rides in the challenge requirements;
+    // the client never fetches its own slot.
     let payment_header = build_upto_header(&signer, &requirements, expires_at, nonce).await?;
 
     let paid_response = http

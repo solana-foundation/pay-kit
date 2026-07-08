@@ -12,12 +12,14 @@ struct SessionVoucherTests {
         let channel = try Pubkey(bytes: Data(repeating: 9, count: 32))
         let bytes = PaymentChannels.voucherMessageBytes(channelId: channel, cumulative: 42, expiresAt: 1234)
 
-        #expect(bytes.count == 48)
-        #expect(Array(bytes[0..<32]) == Array(repeating: 9, count: 32))
+        #expect(bytes.count == 50)
+        // Constant magic prefix.
+        #expect(Array(bytes[0..<2]) == [0x56, 0x01])
+        #expect(Array(bytes[2..<34]) == Array(repeating: 9, count: 32))
         // 42 little-endian u64.
-        #expect(Array(bytes[32..<40]) == [42, 0, 0, 0, 0, 0, 0, 0])
+        #expect(Array(bytes[34..<42]) == [42, 0, 0, 0, 0, 0, 0, 0])
         // 1234 = 0x04D2 little-endian i64.
-        #expect(Array(bytes[40..<48]) == [0xD2, 0x04, 0, 0, 0, 0, 0, 0])
+        #expect(Array(bytes[42..<50]) == [0xD2, 0x04, 0, 0, 0, 0, 0, 0])
     }
 
     @Test
@@ -25,28 +27,38 @@ struct SessionVoucherTests {
         let channel = try Pubkey(bytes: Data(repeating: 1, count: 32))
         // i64 -1 → all 0xFF.
         let bytes = PaymentChannels.voucherMessageBytes(channelId: channel, cumulative: 0, expiresAt: -1)
-        #expect(Array(bytes[40..<48]) == Array(repeating: 0xFF, count: 8))
+        #expect(Array(bytes[42..<50]) == Array(repeating: 0xFF, count: 8))
     }
 
     @Test
-    func channelPdaIsDeterministicAndSaltSensitive() throws {
+    func channelPdaIsDeterministicAndSaltAndSlotSensitive() throws {
         let payer = try Pubkey(bytes: Data(repeating: 1, count: 32))
         let payee = try Pubkey(bytes: Data(repeating: 2, count: 32))
         let mint = try Pubkey(bytes: Data(repeating: 3, count: 32))
         let signer = try Pubkey(bytes: Data(repeating: 4, count: 32))
 
         let a = try PaymentChannels.findChannelPda(
-            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 99, programId: PaymentChannels.programId
+            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 99, openSlot: 5000,
+            programId: PaymentChannels.programId
         )
         let b = try PaymentChannels.findChannelPda(
-            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 99, programId: PaymentChannels.programId
+            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 99, openSlot: 5000,
+            programId: PaymentChannels.programId
         )
-        let other = try PaymentChannels.findChannelPda(
-            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 100, programId: PaymentChannels.programId
+        let otherSalt = try PaymentChannels.findChannelPda(
+            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 100, openSlot: 5000,
+            programId: PaymentChannels.programId
+        )
+        // openSlot is a seed: the same params at a different slot are a
+        // different channel incarnation.
+        let otherSlot = try PaymentChannels.findChannelPda(
+            payer: payer, payee: payee, mint: mint, authorizedSigner: signer, salt: 99, openSlot: 5001,
+            programId: PaymentChannels.programId
         )
 
         #expect(a == b)
-        #expect(a != other)
+        #expect(a != otherSalt)
+        #expect(a != otherSlot)
     }
 
     @Test

@@ -2,7 +2,7 @@ package paymentchannels
 
 // Server-side settlement instruction builders for the payment-channel close
 // paths: the Ed25519 signature-verification precompile, permissionless settle,
-// cooperative settle_and_finalize, and distribute.
+// cooperative settle_and_seal, distribute, and permissionless reclaim.
 //
 // The instruction bytes built here must stay identical across the language
 // SDKs; the cross-language harness pins them.
@@ -119,11 +119,12 @@ func BuildSettleInstructions(params SettleParams) ([]solana.Instruction, error) 
 	return []solana.Instruction{verify, settle}, nil
 }
 
-// SettleAndFinalizeParams carries the inputs required to build the
-// settle_and_finalize instruction sequence.
-type SettleAndFinalizeParams struct {
-	// Merchant is the signer authorized to settle the channel.
-	Merchant solana.PublicKey
+// SettleAndSealParams carries the inputs required to build the
+// settle_and_seal instruction sequence.
+type SettleAndSealParams struct {
+	// Payee is the signer authorized to settle the channel (the channel
+	// payee recorded at open; named "merchant" before the upstream rename).
+	Payee solana.PublicKey
 
 	// Channel is the payment-channel address being settled.
 	Channel solana.PublicKey
@@ -147,12 +148,12 @@ type SettleAndFinalizeParams struct {
 	ProgramID solana.PublicKey
 }
 
-// BuildSettleAndFinalizeInstructions builds the instruction sequence for an
-// on-chain settle_and_finalize. When a voucher signature is provided, an
-// Ed25519 precompile instruction over the canonical 48-byte voucher message
-// is placed immediately before the settle_and_finalize instruction, which
+// BuildSettleAndSealInstructions builds the instruction sequence for an
+// on-chain settle_and_seal. When a voucher signature is provided, an
+// Ed25519 precompile instruction over the canonical 50-byte voucher message
+// is placed immediately before the settle_and_seal instruction, which
 // references it through the instructions sysvar, and hasVoucher is set to 1.
-func BuildSettleAndFinalizeInstructions(params SettleAndFinalizeParams) ([]solana.Instruction, error) {
+func BuildSettleAndSealInstructions(params SettleAndSealParams) ([]solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
 	instructions := make([]solana.Instruction, 0, 2)
 	hasVoucher := uint8(0)
@@ -170,15 +171,15 @@ func BuildSettleAndFinalizeInstructions(params SettleAndFinalizeParams) ([]solan
 		hasVoucher = 1
 	}
 
-	builder := generated.NewSettleAndFinalizeInstructionBuilder().
-		SetMerchantAccount(params.Merchant).
+	builder := generated.NewSettleAndSealInstructionBuilder().
+		SetPayeeAccount(params.Payee).
 		SetChannelAccount(params.Channel).
 		SetInstructionsSysvarAccount(solana.SysVarInstructionsPubkey).
-		SetSettleAndFinalizeArgs(generated.SettleAndFinalizeArgs{
+		SetSettleAndSealArgs(generated.SettleAndSealArgs{
 			HasVoucher: hasVoucher,
 		})
 	if _, err := builder.ValidateAndBuild(); err != nil {
-		return nil, fmt.Errorf("build settle_and_finalize instruction: %w", err)
+		return nil, fmt.Errorf("build settle_and_seal instruction: %w", err)
 	}
 	settle, err := materialize(builder, builder.GetAccounts(), programID)
 	if err != nil {
@@ -197,7 +198,7 @@ type DistributeParams struct {
 	Payer solana.PublicKey
 
 	// RentPayer is the operator / fee payer recorded at open: it reclaims the
-	// channel PDA + escrow ATA rent at finalize. It is writable (not a signer)
+	// channel PDA + escrow ATA rent at seal. It is writable (not a signer)
 	// on distribute and must be the operator already in scope (the channel's
 	// recorded rentPayer). Not a wire/payload field.
 	RentPayer solana.PublicKey
@@ -293,4 +294,32 @@ func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, er
 	accounts = append(accounts, builder.GetAccounts()...)
 	accounts = append(accounts, recipientTokenAccounts...)
 	return materialize(builder, accounts, programID)
+}
+
+// ReclaimParams carries the inputs required to build a Reclaim instruction.
+type ReclaimParams struct {
+	// Channel is the distributed payment-channel address being reclaimed.
+	Channel solana.PublicKey
+
+	// RentPayer is the rent destination recorded as the channel rent_payer at
+	// open; it receives the channel PDA lamports when the account closes.
+	RentPayer solana.PublicKey
+
+	// ProgramID is the payment-channels program targeted by this reclaim.
+	// The zero value resolves to the package program id.
+	ProgramID solana.PublicKey
+}
+
+// BuildReclaimInstruction builds the permissionless reclaim instruction that
+// closes a Distributed channel PDA and returns its rent lamports to the
+// recorded rent payer. The program only allows it once the channel status is
+// Distributed and clock.slot > open_slot + 1500.
+func BuildReclaimInstruction(params ReclaimParams) (solana.Instruction, error) {
+	builder := generated.NewReclaimInstructionBuilder().
+		SetChannelAccount(params.Channel).
+		SetRentPayerAccount(params.RentPayer)
+	if _, err := builder.ValidateAndBuild(); err != nil {
+		return nil, fmt.Errorf("build reclaim instruction: %w", err)
+	}
+	return materialize(builder, builder.GetAccounts(), resolveProgram(params.ProgramID))
 }

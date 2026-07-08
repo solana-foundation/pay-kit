@@ -40,9 +40,18 @@ func sandboxRPCURL() string {
 // Keep explicit MPP_HARNESS_RPC_URL runs strict; only skip the default hosted
 // endpoint on the known ABI-drift signature.
 func hostedPaymentChannelsABIDrift(body string) bool {
-	return os.Getenv("MPP_HARNESS_RPC_URL") == "" &&
-		strings.Contains(body, "NotEnoughAccountKeys") &&
-		strings.Contains(body, paymentchannels.ProgramID)
+	if os.Getenv("MPP_HARNESS_RPC_URL") != "" {
+		return false
+	}
+	if !strings.Contains(body, paymentchannels.ProgramID) {
+		return false
+	}
+	// NotEnoughAccountKeys: pre-rename deployments missing newer accounts.
+	// Custom error 0x104 (invalidRecipientCount) on a well-formed open: the
+	// deployment predates the openSlot open-arg, so it misparses the arg
+	// bytes that follow gracePeriod as the recipients count.
+	return strings.Contains(body, "NotEnoughAccountKeys") ||
+		strings.Contains(body, "custom program error: 0x104")
 }
 
 // requireSandbox skips the test explicitly when the sandbox is unreachable.
@@ -174,7 +183,7 @@ func TestPlaygroundSessionE2ESurfpool(t *testing.T) {
 	// 4. The idle-close watchdog settles on-chain ~2s after the last
 	// voucher; poll the receipt endpoint the way the web app does.
 	receipt := struct {
-		Finalized        bool    `json:"finalized"`
+		Sealed           bool    `json:"sealed"`
 		Cumulative       string  `json:"cumulative"`
 		SettledSignature *string `json:"settledSignature"`
 	}{}
@@ -186,12 +195,12 @@ func TestPlaygroundSessionE2ESurfpool(t *testing.T) {
 			if err := json.Unmarshal([]byte(body), &receipt); err != nil {
 				t.Fatalf("receipt body = %s (%v)", body, err)
 			}
-			if receipt.Finalized && receipt.SettledSignature != nil {
+			if receipt.Sealed && receipt.SettledSignature != nil {
 				break
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("receipt never finalized: %d %s", response.StatusCode, body)
+			t.Fatalf("receipt never sealed: %d %s", response.StatusCode, body)
 		}
 		time.Sleep(time.Second)
 	}

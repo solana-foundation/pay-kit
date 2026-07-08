@@ -56,6 +56,7 @@ func buildUptoConfig(cfg paykit.Config) (proto.UptoConfig, error) {
 		MaxTimeoutSeconds:       proto.DefaultMaxTimeoutSeconds,
 		OperatorSigner:          uptoSignerWrapper{signer: cfg.Operator.Signer},
 		RecentBlockhashProvider: cfg.RecentBlockhashProvider,
+		RecentSlotProvider:      cfg.RecentSlotProvider,
 	}, nil
 }
 

@@ -74,7 +74,7 @@ attached (`Authorization: Payment ...` for MPP charge,
 instead, build the client with `PayKit.HttpClient.x402(signer:rpc:)`.
 
 The `mpp` and `x402` factories each wire a concrete
-`PayKit.PaymentInterceptor` (`ChargeInterceptor` and `X402Interceptor`).
+`PayKit.PaymentInterceptor` (`ChargeInterceptor` and `X402.Interceptor`).
 Supply your own to the designated `PayKit.HttpClient(interceptor:)`
 initializer to customise the payment flow.
 
@@ -120,18 +120,18 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 
 | Intent | Client |
 |---|:---:|
-| `mpp/charge/pull` | pass |
-| `mpp/charge/push` | planned |
+| `mpp/charge/pull` | ✅ |
+| `mpp/charge/push` | — |
 | `mpp/session` | ✅ |
-| `mpp/subscription` | planned |
+| `mpp/subscription` | — |
 
 ### x402
 
 | Intent | Client |
 |---|:---:|
-| `x402/exact` | pass |
-| `x402/upto` | --- |
-| `x402/batch-settlement` | --- |
+| `x402/exact` | ✅ |
+| `x402/upto` | ✅ |
+| `x402/batch-settlement` | — |
 
 ## Examples
 
@@ -242,8 +242,12 @@ swift/
 │       └── X402/
 │           ├── Client/Exact/
 │           │   ├── Payment.swift     # x402 challenge parse + payment building
-│           │   └── Transport.swift   # X402Interceptor (402 -> Payment-Signature)
-│           └── Exact/Types.swift     # x402 wire-format Codable types
+│           │   └── Transport.swift   # X402.Interceptor (402 -> Payment-Signature)
+│           ├── Client/Upto/
+│           │   ├── UptoPayment.swift   # x402 upto challenge parse + channel-open building
+│           │   └── UptoTransport.swift # X402.UptoInterceptor (402 -> Payment-Signature)
+│           ├── Exact/Types.swift     # x402 wire-format Codable types
+│           └── Upto/UptoTypes.swift  # x402 upto wire-format Codable types
 ├── Tests/SolanaPayKitTests/   # swift-testing suite
 └── Examples/                  # Sample clients (planned: Solana Seeker demo)
 ```

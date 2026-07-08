@@ -170,8 +170,13 @@ pub struct ChannelState {
     /// Highest cumulative amount accepted by the server (settled watermark).
     pub cumulative: u64,
 
-    /// True once the channel has been finalized on-chain.
-    pub finalized: bool,
+    /// True once the channel has been sealed on-chain (phase 1 of close).
+    ///
+    /// Persisted records from before the upstream finalize→seal rename are
+    /// NOT decoded (no `finalized` alias): the epoch-addressed migration is
+    /// pre-1.0 breaking across the board, and pre-rename channels reference
+    /// the old program's addressing anyway.
+    pub sealed: bool,
 
     /// Signature of the highest accepted voucher (base64url).
     /// Stored for idempotent replay detection.
@@ -184,6 +189,16 @@ pub struct ChannelState {
     /// Unix timestamp (seconds) when cooperative close was requested.
     /// Once set, no further vouchers are accepted.
     pub close_requested_at: Option<u64>,
+
+    /// Slot at which the channel was opened, when known.
+    ///
+    /// A channel-PDA seed since the epoch-addressed program update — persisted
+    /// so the PDA can be re-derived and the `reclaim` gate
+    /// (`clock.slot > open_slot + 1500`) evaluated later. `None` for pull
+    /// sessions (no payment-channel PDA) and for state stored before the
+    /// migration.
+    #[serde(default)]
+    pub open_slot: Option<u64>,
 
     /// Pull-mode only: the client's wallet pubkey (base58).
     ///
@@ -250,8 +265,8 @@ pub trait ChannelStore: Send + Sync {
         new_deposit: u64,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 
-    /// Mark a channel as finalized (phase 1 close complete).
-    fn mark_finalized(
+    /// Mark a channel as sealed (phase 1 close complete).
+    fn mark_sealed(
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
@@ -349,14 +364,14 @@ impl ChannelStore for MemoryChannelStore {
         }
     }
 
-    fn mark_finalized(
+    fn mark_sealed(
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         let mut data = self.data.lock().unwrap();
         match data.get_mut(channel_id) {
             Some(state) => {
-                state.finalized = true;
+                state.sealed = true;
                 Box::pin(async { Ok(()) })
             }
             None => Box::pin(async { Err(StoreError::Internal("Channel not found".to_string())) }),
@@ -399,10 +414,11 @@ mod tests {
             authorized_signer: "signer1".to_string(),
             deposit,
             cumulative: 0,
-            finalized: false,
+            sealed: false,
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
+            open_slot: None,
             operator: None,
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
@@ -421,7 +437,7 @@ mod tests {
         let state = store.get_channel("c1").await.unwrap().unwrap();
         assert_eq!(state.deposit, 1_000_000);
         assert_eq!(state.cumulative, 0);
-        assert!(!state.finalized);
+        assert!(!state.sealed);
     }
 
     #[tokio::test]
@@ -462,7 +478,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn channel_store_update_deposit_and_mark_finalized() {
+    async fn channel_store_update_deposit_and_mark_sealed() {
         let store = MemoryChannelStore::new();
         store
             .put_channel("c1", make_state("c1", 1_000_000))
@@ -473,10 +489,32 @@ mod tests {
             store.get_channel("c1").await.unwrap().unwrap().deposit,
             5_000_000
         );
-        store.mark_finalized("c1").await.unwrap();
-        assert!(store.get_channel("c1").await.unwrap().unwrap().finalized);
+        store.mark_sealed("c1").await.unwrap();
+        assert!(store.get_channel("c1").await.unwrap().unwrap().sealed);
         assert!(store.update_deposit("ghost", 1).await.is_err());
-        assert!(store.mark_finalized("ghost").await.is_err());
+        assert!(store.mark_sealed("ghost").await.is_err());
+    }
+
+    // Persisted state written before the upstream finalize→seal rename is
+    // intentionally NOT decoded: the epoch-addressed migration is pre-1.0
+    // breaking (pre-rename channels reference the old program's addressing),
+    // so a legacy `finalized` record fails loudly on its missing `sealed`
+    // field instead of silently reloading a closed channel as unsealed.
+    #[test]
+    fn channel_state_rejects_legacy_finalized_record() {
+        let legacy = serde_json::json!({
+            "channel_id": "c1",
+            "authorized_signer": "signer1",
+            "deposit": 1_000_000,
+            "cumulative": 42,
+            "finalized": true,
+            "highest_voucher_signature": null,
+            "highest_voucher_expires_at": null,
+            "close_requested_at": null,
+            "operator": null,
+        });
+        let decoded: Result<ChannelState, _> = serde_json::from_value(legacy);
+        assert!(decoded.is_err(), "legacy pre-seal records must not decode");
     }
 
     #[tokio::test]

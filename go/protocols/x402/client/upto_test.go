@@ -82,6 +82,7 @@ func uptoRequirements(signer solana.PublicKey) *x402.UptoRequirements {
 			FacilitatorAddress:  signer.String(),
 			ChannelProgram:      paymentchannels.ProgramID,
 			RecentBlockhash:     "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h",
+			RecentSlot:          "55555",
 		},
 	}
 }
@@ -170,6 +171,7 @@ func TestBuildUptoPayloadUsesChannelProgramForChannelID(t *testing.T) {
 		solana.MustPublicKeyFromBase58(req.Asset),
 		solana.MustPublicKeyFromBase58(req.Extra.FacilitatorAddress),
 		mustReadOpenSalt(t, tx),
+		55_555,
 		customProgram,
 	)
 	if err != nil {

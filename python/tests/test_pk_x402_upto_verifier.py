@@ -62,6 +62,7 @@ def _requirements(operator: str, payee: str, *, amount: int = MAX) -> UptoRequir
             "tokenProgram": TOKEN_PROGRAM,
             "facilitatorAddress": operator,
             "recentBlockhash": BH,
+            "recentSlot": "4242",
         },
     }
 
@@ -242,6 +243,8 @@ def test_client_open_tx_passes_engine_validator() -> None:
         mint=Pubkey.from_string(MINT),
         token_program=Pubkey.from_string(TOKEN_PROGRAM),
         channel_id=Pubkey.from_string(payload["channelId"]),
+        max_amount=MAX,
+        recent_slot=4242,  # the challenged extra.recentSlot the client built against
     )
 
     # Encode/decode the header round-trips and carries the payment-channel payload.
@@ -275,7 +278,55 @@ def test_client_open_tx_validator_rejects_wrong_payee() -> None:
             mint=Pubkey.from_string(MINT),
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
             channel_id=Pubkey.from_string(payload["channelId"]),
+            max_amount=MAX,
+            recent_slot=4242,
         )
+
+
+def test_client_open_tx_validator_binds_open_args() -> None:
+    """The validator decodes openArgs and enforces the slot-addressed channel
+    invariant: a wrong deposit, a channel that is not the PDA derived from the
+    args' salt/openSlot, an openSlot ahead of the challenged recentSlot, and a
+    stale openSlot outside the freshness window all reject."""
+    _, op = _operator()
+    payee = str(Keypair().pubkey())
+    client = LocalSigner.from_keypair(Keypair())
+    req = _requirements(op, payee)
+    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
+
+    def check(**overrides):
+        kwargs = {
+            "program_id": _default_program(),
+            "operator": Pubkey.from_string(op),
+            "payer": Pubkey.from_string(client.pubkey()),
+            "payee": Pubkey.from_string(op),
+            "mint": Pubkey.from_string(MINT),
+            "token_program": Pubkey.from_string(TOKEN_PROGRAM),
+            "channel_id": Pubkey.from_string(payload["channelId"]),
+            "max_amount": MAX,
+            "recent_slot": 4242,
+        }
+        kwargs.update(overrides)
+        validate_upto_open_instruction(account_keys, instructions, **kwargs)
+
+    # Deposit must equal the authorized maximum.
+    with pytest.raises(InvalidProofError, match="authorized maximum"):
+        check(max_amount=MAX + 1)
+    # A channel id that is not the PDA derived from the args fails the bind
+    # (channel account check fires first on the mismatched slot-5 account).
+    with pytest.raises(InvalidProofError, match="channel"):
+        check(channel_id=Pubkey.from_string(str(Keypair().pubkey())))
+    # openSlot (4242, from the challenge) ahead of the challenged slot rejects.
+    with pytest.raises(InvalidProofError, match="ahead of the challenged"):
+        check(recent_slot=4241)
+    # openSlot outside the 1500-slot freshness window rejects.
+    with pytest.raises(InvalidProofError, match="freshness"):
+        check(recent_slot=4242 + 1501)
+    # At the window edge it verifies.
+    check(recent_slot=4242 + 1500)
+    # Unknown challenged slot skips the window check but keeps the PDA bind.
+    check(recent_slot=None)
 
 
 def _default_program() -> Pubkey:

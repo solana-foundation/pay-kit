@@ -1,10 +1,11 @@
 //! Wire-agnostic payment-channel voucher verification.
 //!
-//! A voucher authorizes a cumulative spend on a channel: the 48-byte Borsh
-//! payload `channelId ‖ cumulativeAmount ‖ expiresAt` (see
+//! A voucher authorizes a cumulative spend on a channel: the 50-byte Borsh
+//! payload `magic(0x56 0x01) ‖ channelId ‖ cumulativeAmount ‖ expiresAt` (see
 //! [`crate::core::payment_channels::voucher_message_bytes`]) signed Ed25519 by the
-//! channel's authorized signer. Shared by the MPP `session` intent and the x402
-//! `batch-settlement` scheme.
+//! channel's authorized signer. The magic prefix exists only in the signed
+//! bytes — the wire/JSON voucher shape is unchanged. Shared by the MPP
+//! `session` intent and the x402 `batch-settlement` scheme.
 
 use std::str::FromStr;
 
