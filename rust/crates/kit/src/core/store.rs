@@ -172,9 +172,10 @@ pub struct ChannelState {
 
     /// True once the channel has been sealed on-chain (phase 1 of close).
     ///
-    /// `alias = "finalized"` keeps reading state persisted before the upstream
-    /// finalize→seal rename.
-    #[serde(alias = "finalized")]
+    /// Persisted records from before the upstream finalize→seal rename are
+    /// NOT decoded (no `finalized` alias): the epoch-addressed migration is
+    /// pre-1.0 breaking across the board, and pre-rename channels reference
+    /// the old program's addressing anyway.
     pub sealed: bool,
 
     /// Signature of the highest accepted voucher (base64url).
@@ -494,10 +495,13 @@ mod tests {
         assert!(store.mark_sealed("ghost").await.is_err());
     }
 
-    // Persisted state written before the upstream finalize→seal rename (field
-    // `finalized`, no `open_slot`) must still deserialize.
+    // Persisted state written before the upstream finalize→seal rename is
+    // intentionally NOT decoded: the epoch-addressed migration is pre-1.0
+    // breaking (pre-rename channels reference the old program's addressing),
+    // so a legacy `finalized` record fails loudly on its missing `sealed`
+    // field instead of silently reloading a closed channel as unsealed.
     #[test]
-    fn channel_state_reads_legacy_finalized_field() {
+    fn channel_state_rejects_legacy_finalized_record() {
         let legacy = serde_json::json!({
             "channel_id": "c1",
             "authorized_signer": "signer1",
@@ -509,9 +513,8 @@ mod tests {
             "close_requested_at": null,
             "operator": null,
         });
-        let state: ChannelState = serde_json::from_value(legacy).unwrap();
-        assert!(state.sealed);
-        assert_eq!(state.open_slot, None);
+        let decoded: Result<ChannelState, _> = serde_json::from_value(legacy);
+        assert!(decoded.is_err(), "legacy pre-seal records must not decode");
     }
 
     #[tokio::test]
