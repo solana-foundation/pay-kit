@@ -12,7 +12,7 @@ public struct Pubkey: Hashable, Equatable, Sendable {
 
     public init(bytes: Data) throws {
         guard bytes.count == Self.length else {
-            throw MppError.invalidPubkey("expected 32 bytes, got \(bytes.count)")
+            throw PayKitError.invalidPubkey("expected 32 bytes, got \(bytes.count)")
         }
         self.bytes = bytes
     }
@@ -20,7 +20,7 @@ public struct Pubkey: Hashable, Equatable, Sendable {
     public init(base58 string: String) throws {
         let decoded = try Base58.decode(string)
         guard decoded.count == Self.length else {
-            throw MppError.invalidPubkey("decoded length \(decoded.count) is not 32")
+            throw PayKitError.invalidPubkey("decoded length \(decoded.count) is not 32")
         }
         self.bytes = decoded
     }

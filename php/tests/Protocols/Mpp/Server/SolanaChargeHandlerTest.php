@@ -53,7 +53,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenCredentialIsMissingTransaction(): void
     {
-        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $server = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $server->createChallenge($request);
         $credential = new Credential(challenge: $challenge->toEcho(), payload: []);
@@ -67,7 +67,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenChallengeMismatchesExpectedRequest(): void
     {
-        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $server = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $issuedFor = $this->chargeRequest(amount: '500');
         $challenge = $server->createChallenge($issuedFor);
         $credential = new Credential(
@@ -84,7 +84,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturnsChargeSettlementAfterSuccessfulBroadcastAndConfirmation(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -122,7 +122,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testRejectsSignatureReplayAfterSuccessfulSettlement(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -163,7 +163,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenSurfpoolBlockhashOnNonLocalnet(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -186,7 +186,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenBroadcastReportsOnChainFailure(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->chargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -233,7 +233,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturnsChargeSettlementAfterSuccessfulPushSignatureVerification(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $signature = $this->validSignature();
@@ -266,6 +266,26 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertNotEmpty($result->headers['payment-receipt']);
     }
 
+    public function testReturns402WhenPushModeNotOptedIn(): void
+    {
+        // audit #5: with push mode off (the default), a signature credential is
+        // rejected at verification and never reaches the settlement path.
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
+        $request = $this->pushChargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $this->validSignature()],
+        );
+
+        $handler = $this->handler(challenges: $challenges, acceptPushMode: false);
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame(402, $result->status);
+    }
+
     public function testReturns402WhenPushCredentialUsedOnFeePayerRoute(): void
     {
         // B34: routes that advertise `methodDetails.feePayer = true` MUST
@@ -273,7 +293,7 @@ final class SolanaChargeHandlerTest extends TestCase
         // push credential references an already-landed transaction whose
         // fee the client paid, defeating the server-funded charge. The
         // canonical reject message is shared with Rust, Ruby, Lua, Python.
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = new ChargeRequest(
             amount: '1000',
             currency: 'USDC',
@@ -309,7 +329,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenPushSignatureIsReplayed(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $signature = $this->validSignature();
@@ -352,7 +372,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenPushTransactionFetchReportsOnChainFailure(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $signature = $this->validSignature();
@@ -384,7 +404,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenPushTransactionFetchOmitsMetadata(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -414,7 +434,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenPushTransactionIsNotFound(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $signature = $this->validSignature();
@@ -441,7 +461,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenPushTransactionResponseIsMalformed(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -466,7 +486,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenPushTransactionResponseIsNotObject(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -491,7 +511,7 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testReturns402WhenFetchedPushTransactionFailsStructuralVerification(): void
     {
-        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenges = new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api');
         $request = $this->pushChargeRequest();
         $challenge = $challenges->createChallenge($request);
         $credential = new Credential(
@@ -561,9 +581,13 @@ final class SolanaChargeHandlerTest extends TestCase
         ?TransactionPayloadVerifier $transactionVerifier = null,
         ?Store $replayStore = null,
         int $confirmationAttempts = 40,
+        bool $acceptPushMode = true,
     ): SolanaChargeHandler {
+        // Default to acceptPushMode=true here so the push-mode tests below
+        // exercise the settlement path; audit #5's default-off posture is
+        // covered by testReturns402WhenPushModeNotOptedIn.
         return new SolanaChargeHandler(
-            challenges: $challenges ?? new ChargeServer(secretKey: 'secret', realm: 'api'),
+            challenges: $challenges ?? new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
             rpc: $rpc ?? new RpcClient('http://unused.invalid', new NullHttpClient()),
             feePayer: $feePayer,
             network: $network,
@@ -572,6 +596,7 @@ final class SolanaChargeHandlerTest extends TestCase
             confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: 0,
             replayStore: $replayStore,
+            acceptPushMode: $acceptPushMode,
         );
     }
 

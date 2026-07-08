@@ -25,7 +25,10 @@ jobs:
             github.com/solana-foundation/pay-kit/go/paycore \
             github.com/solana-foundation/pay-kit/go/paycore/solanatx \
             github.com/solana-foundation/pay-kit/go/paycore/signer \
+            github.com/solana-foundation/pay-kit/go/paycore/paymentchannels \
             github.com/solana-foundation/pay-kit/go/paykit \
+            github.com/solana-foundation/pay-kit/go/paykit/adapters/x402 \
+            github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp \
             github.com/solana-foundation/pay-kit/go/protocols/mpp \
             github.com/solana-foundation/pay-kit/go/protocols/mpp/core \
             github.com/solana-foundation/pay-kit/go/protocols/mpp/wire \
@@ -77,7 +80,7 @@ jobs:
           skip-cache: true
 
   harness-go:
-    name: Go PayKit harness (mpp charge + x402 exact)
+    name: Go PayKit harness (mpp charge + x402 exact + x402 upto)
     needs: test-go
     runs-on: ubuntu-latest
     steps:
@@ -86,52 +89,61 @@ jobs:
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
+      - uses: ./.github/actions/setup-harness
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-go-harness-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-go-harness-
-      - uses: pnpm/action-setup@v5
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
+          cargo-cache-key: go
+      - name: Checkout payment channels program
+        uses: actions/checkout@v5
         with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Build Rust harness client
-        working-directory: rust
-        run: cargo build -p solana-mpp --bin harness_client
-      - name: Build Rust x402 harness client
-        working-directory: rust
-        run: cargo build -p solana-x402 --bin harness_client
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
+          repository: Moonsong-Labs/solana-payment-channels
+          ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
+          path: _payment-channels
+          fetch-depth: 1
+      - name: Install Anza CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Patch payment channels localnet artifact
+        working-directory: _payment-channels
+        run: |
+          old_program_id="CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg"
+          new_program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          sentinel_file="program/payment_channels/src/constants.rs"
+          sentinel_prefix="    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,"
+          sentinel_suffix="    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,"
+          grep_args=(--exclude-dir=.git --exclude-dir=target)
+          mapfile -t id_files < <(grep -RIl "${grep_args[@]}" "$old_program_id" .)
+          if [ "${#id_files[@]}" -gt 0 ]; then
+            sed -i "s/$old_program_id/$new_program_id/g" "${id_files[@]}"
+          fi
+          perl -0pi -e 's/const TREASURY_OWNER_SENTINEL: \[u8; 32\] = \[\n.*?\n\];/const TREASURY_OWNER_SENTINEL: [u8; 32] = [\n    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,\n    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,\n];/s' "$sentinel_file"
+          if ! grep -R "${grep_args[@]}" "$new_program_id" . >/dev/null; then
+            echo "::error::payment-channels program id patch did not write $new_program_id"
+            exit 1
+          fi
+          if grep -R "${grep_args[@]}" "$old_program_id" . >/dev/null; then
+            echo "::error::payment-channels program id patch left $old_program_id in the checkout"
+            exit 1
+          fi
+          if ! grep -Fq "$sentinel_prefix" "$sentinel_file" || ! grep -Fq "$sentinel_suffix" "$sentinel_file"; then
+            echo "::error::payment-channels treasury sentinel patch did not apply"
+            exit 1
+          fi
+      - name: Build payment channels program
+        working-directory: _payment-channels/program/payment_channels
+        run: cargo build-sbf --tools-version v1.52 --arch v1
       - name: Build Go paykit harness server
         working-directory: harness/go-server
         run: go build -o paykit-server .
-      - name: Run Go PayKit harness matrix (mpp charge + x402 exact)
+      - name: Run Go PayKit harness matrix (mpp charge + x402 exact + x402 upto)
         working-directory: harness
         env:
           # Only the go server runs in this job, so every generated pair
           # targets it: no testNamePattern filter and no skipped rows.
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: go
-          MPP_HARNESS_INTENTS: charge,x402-exact
+          MPP_HARNESS_INTENTS: charge,x402-exact,x402-upto
           # selectHarnessScenarios reads MPP_HARNESS_SCENARIOS for the
           # whole active set (x402 included), so x402-exact-basic must be
           # listed here. Charge scenarios the go server is eligible for:
@@ -140,10 +152,81 @@ jobs:
           # rejection, sum-equals-amount, and the two L6 fault-matrix
           # codes (wrong_network / charge_request_mismatch); plus the
           # x402 exact scheme.
-          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic
-          X402_HARNESS_CLIENTS: rust-x402,go-x402
-          # Pin the x402 server set to the main go server (the rust-x402 /
-          # ts-x402 server fixtures default on; exclude them so the only
-          # x402 server is the go paykit server under test).
-          X402_HARNESS_SERVERS: go
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic,x402-upto-basic,x402-upto-zero-actual
+          X402_HARNESS_CLIENTS: rust-x402,go-x402,rust-x402-upto,go-x402-upto
+          # Pin x402-exact to the main Go server and x402-upto to the Go/Rust
+          # payment-channel servers under test.
+          X402_HARNESS_SERVERS: go,rust-x402-upto,go-x402-upto
+          # x402-upto executes the canonical payment-channels program on the
+          # embedded surfnet. Use a localnet SBF artifact because the mainnet
+          # deployment currently uses BPF instructions unsupported by Surfnet.
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          # Fallback datasource if the artifact path is intentionally omitted.
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+
+  playground-go:
+    name: "Payment links E2E: Playground (Go)"
+    needs: test-go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        working-directory: .
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Build Go playground API
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: go build ./examples/playground-api
+      - name: Start Go playground API
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+          PORT: "3002"
+          NETWORK: localnet
+          RPC_URL: http://localhost:8899
+          MPP_SECRET_KEY: playground-ci-secret-padding-0123456789
+        run: go run ./examples/playground-api &
+      - name: Wait for playground server
+        working-directory: .
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3002/api/v1/health && break
+            sleep 1
+          done
+      - name: Install HTML dependencies & Playwright
+        working-directory: html
+        run: npm install && npx playwright install chromium
+      - name: Run Playwright tests (Go playground)
+        working-directory: html
+        run: FORTUNE_PATH=/api/v1/fortune npm run test:e2e:go

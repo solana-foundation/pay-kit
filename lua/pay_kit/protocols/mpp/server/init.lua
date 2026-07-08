@@ -9,10 +9,25 @@ local store = require('pay_kit.protocols.mpp.store')
 local types = require('pay_kit.protocol.core.types')
 local uint = require('pay_kit.util.uint')
 
+local crypto = require('pay_kit.util._mpp_crypto')
+
 local M = {}
 
-local DEFAULT_REALM = 'MPP Payment'
+local MIN_SECRET_KEY_BYTES = 32
 local CONSUMED_PREFIX = 'solana-charge:consumed:'
+
+-- Audit #15: derive a per-recipient default realm instead of the static
+-- shared `"MPP Payment"`. Two servers that share a secret but front
+-- different recipients now land in different HMAC credential namespaces, so a
+-- credential paid against server A cannot replay against server B. Mirrors the
+-- Rust spine `derive_default_realm` (SHA-256 of the recipient, first 4 bytes
+-- as a decimal id). Deterministic across restarts for the same recipient.
+local function derive_default_realm(recipient)
+  local digest = crypto.sha256(recipient)
+  local b1, b2, b3, b4 = string.byte(digest, 1, 4)
+  local id = ((b1 * 16777216) + (b2 * 65536) + (b3 * 256) + b4) % 100000000
+  return string.format('App Id - #%d', id)
+end
 
 local Server = {}
 Server.__index = Server
@@ -64,19 +79,77 @@ function M.new(config)
   if secret_key == nil or secret_key == '' then
     error('missing secret key')
   end
+  -- Audit #24: the secret is the HMAC-SHA256 key binding challenge IDs. A
+  -- short / guessable key lets an attacker forge challenge IDs. Enforce a
+  -- 32-byte minimum on BOTH the config and the MPP_SECRET_KEY env paths
+  -- (NIST SP 800-107: HMAC key >= hash output length). Mirrors the Rust
+  -- spine `MIN_SECRET_KEY_BYTES = 32`.
+  if #secret_key < MIN_SECRET_KEY_BYTES then
+    error(string.format(
+      'secret key must be at least %d bytes (got %d); generate one with `openssl rand -base64 32`',
+      MIN_SECRET_KEY_BYTES, #secret_key))
+  end
+  -- Audit #37: reject any network outside the {mainnet, devnet, localnet}
+  -- allowlist at boot, before any RPC client / default URL is derived. A typo
+  -- or the legacy `mainnet-beta` alias used to silently resolve to mainnet
+  -- RPC. Mirrors the Rust spine `validate_network`.
+  local network = config.network or 'mainnet'
+  local net_ok, net_err = protocol.validate_network(network)
+  if not net_ok then
+    error(net_err)
+  end
+  -- Audit #15: explicit empty realm is rejected (an operator typo must not
+  -- silently re-introduce the shared-namespace threat). When unset, derive a
+  -- per-recipient default.
+  local realm
+  if config.realm ~= nil then
+    if type(config.realm) ~= 'string' or config.realm == '' then
+      error('realm must be a non-empty string when provided')
+    end
+    realm = config.realm
+  else
+    realm = derive_default_realm(config.recipient)
+  end
+  -- Audit #16: `feePayer = true` requires a fee-payer key (the server-side
+  -- signer's pubkey). Reject the inconsistent boot config so a spec-violating
+  -- `feePayer:true` challenge with no `feePayerKey` can never be issued.
+  -- Mirrors the Rust spine boot gate.
+  local fee_payer = bool_or_nil(config.fee_payer)
+  if fee_payer and (config.fee_payer_key == nil or config.fee_payer_key == '') then
+    error('fee_payer = true requires fee_payer_key (the server fee-payer pubkey)')
+  end
   local currency = config.currency or 'USDC'
   -- Default decimals: SOL uses 9, every SPL stablecoin in our table uses 6.
   -- Caller can still override explicitly.
   local default_decimals = is_native_sol(currency) and 9 or 6
+  -- Audit #28 (part 2): resolve the token program at boot. Known stablecoins
+  -- resolve from the static table; an arbitrary mint requires an explicit
+  -- `config.token_program` or a `config.token_program_resolver` (on-chain
+  -- owner lookup) so we never silently assume legacy Token for a Token-2022
+  -- mint. SOL resolves to nil.
+  local token_program
+  if not is_native_sol(currency) then
+    if config.token_program ~= nil and config.token_program ~= '' then
+      token_program = config.token_program
+    else
+      local resolved, tp_err = protocol.resolve_token_program(
+        currency, network, config.token_program_resolver)
+      if tp_err then
+        error(tp_err)
+      end
+      token_program = resolved
+    end
+  end
   local instance = {
     secret_key = secret_key,
-    realm = config.realm or DEFAULT_REALM,
+    realm = realm,
     recipient = config.recipient,
     currency = currency,
     decimals = config.decimals or default_decimals,
-    network = config.network or 'mainnet',
-    rpc_url = config.rpc_url or protocol.default_rpc_url(config.network or 'mainnet'),
-    fee_payer = bool_or_nil(config.fee_payer),
+    network = network,
+    token_program = token_program,
+    rpc_url = config.rpc_url or protocol.default_rpc_url(network),
+    fee_payer = fee_payer,
     fee_payer_key = config.fee_payer_key,
     store = config.store or store.memory(),
     verify_payment = config.verify_payment,
@@ -84,7 +157,10 @@ function M.new(config)
     html = config.html or false,
   }
   if instance.verify_payment == nil and config.verifier_hooks ~= nil then
-    instance.verify_payment = solana_verify.new_signature_verifier(config.verifier_hooks)
+    -- Audit #5: push mode is opt-in (default off). Thread the server config
+    -- flag into the signature verifier factory.
+    instance.verify_payment = solana_verify.new_signature_verifier(
+      config.verifier_hooks, { accept_push_mode = config.accept_push_mode or false })
   end
   return setmetatable(instance, Server)
 end
@@ -108,11 +184,38 @@ function Server:charge_with_options(amount, options)
       error_codes.raise(error_codes.PAYMENT_INVALID, 'too many splits')
     end
     local split_total = '0'
+    local seen_recipients = {}
     for i = 1, #options.splits do
-      local split_amount = options.splits[i] and options.splits[i].amount
+      local split = options.splits[i]
+      local split_amount = split and split.amount
+      -- Audit #21: positive integer amount. `"0"` matches `^%d+$` but a
+      -- zero-amount split is meaningless and must be rejected.
       if type(split_amount) ~= 'string' or not split_amount:match('^%d+$') then
         error_codes.raise(error_codes.PAYMENT_INVALID,
           'split.amount must be an integer string')
+      end
+      if uint.compare(split_amount, '0') <= 0 then
+        error_codes.raise(error_codes.PAYMENT_INVALID,
+          'split.amount must be greater than zero')
+      end
+      -- Audit #21: recipient must parse as a Solana pubkey.
+      if not protocol.is_pubkey(split.recipient) then
+        error_codes.raise(error_codes.PAYMENT_INVALID,
+          'split.recipient must be a valid Solana address')
+      end
+      -- Audit #21: reject duplicate split recipients.
+      if seen_recipients[split.recipient] then
+        error_codes.raise(error_codes.PAYMENT_INVALID,
+          'duplicate split recipient: ' .. tostring(split.recipient))
+      end
+      seen_recipients[split.recipient] = true
+      -- Audit #38: the primary recipient may legitimately appear in splits,
+      -- but the combination primary-in-splits + ataCreationRequired in a
+      -- fee-sponsored flow is the ATA-recreate drain. Reject only that
+      -- combination (matches the Rust spine's narrow misconfig guard).
+      if split.recipient == self.recipient and split.ataCreationRequired == true then
+        error_codes.raise(error_codes.PAYMENT_INVALID,
+          'primary recipient cannot appear in splits with ataCreationRequired = true')
       end
       split_total = uint.add(split_total, split_amount)
     end
@@ -126,17 +229,28 @@ function Server:charge_with_options(amount, options)
   }
   if not is_native_sol(self.currency) then
     method_details.decimals = self.decimals
+    -- Audit #28: emit the token program resolved (and validated) at boot,
+    -- with a per-call override still honored. No silent legacy fallback for
+    -- arbitrary mints — `self.token_program` is nil only when boot could not
+    -- resolve it, which it would already have rejected for SPL.
     if options.token_program then
       method_details.tokenProgram = options.token_program
-    elseif protocol.stablecoin_symbol(self.currency) then
-      method_details.tokenProgram = protocol.default_token_program_for_currency(self.currency, self.network)
+    elseif self.token_program then
+      method_details.tokenProgram = self.token_program
     end
   end
-  if options.fee_payer or self.fee_payer then
-    method_details.feePayer = true
-    if options.fee_payer_key or self.fee_payer_key then
-      method_details.feePayerKey = options.fee_payer_key or self.fee_payer_key
+  -- Audit #16: a per-call fee-payer override must also carry a key, just like
+  -- the boot gate. Reject `feePayer:true` with no resolvable feePayerKey so a
+  -- spec-violating challenge can never be issued from this path either.
+  local want_fee_payer = options.fee_payer or self.fee_payer
+  if want_fee_payer then
+    local fee_payer_key = options.fee_payer_key or self.fee_payer_key
+    if fee_payer_key == nil or fee_payer_key == '' then
+      error_codes.raise(error_codes.PAYMENT_INVALID,
+        'fee_payer requires a fee_payer_key')
     end
+    method_details.feePayer = true
+    method_details.feePayerKey = fee_payer_key
   end
   if options.splits then
     method_details.splits = options.splits

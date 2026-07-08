@@ -236,6 +236,14 @@ function M.parse_www_authenticate(header)
   if not params.request or params.request == '' then
     error('missing "request" field')
   end
+  -- Audit #9: cap the `request` parameter like the credential / receipt
+  -- parsers (parse_authorization / parse_receipt both cap at max_token_len).
+  -- `request` is the only WWW-Authenticate field that is base64url-decoded
+  -- AND JSON-parsed, so an oversized value drives unbounded decode + parse
+  -- work. Mirrors the Rust spine cap on this exact parameter.
+  if #params.request > max_token_len then
+    error('request field exceeds maximum length of ' .. max_token_len .. ' bytes')
+  end
   local request_bytes, decode_err = types.base64url_decode(params.request)
   if not request_bytes then
     error('invalid request field: ' .. decode_err)

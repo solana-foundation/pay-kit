@@ -8,6 +8,8 @@
 
 # SolanaPayKit
 
+> Building blocks for Agentic payments (x402, MPP, AP2)
+
 Consume stablecoin-gated HTTP endpoints (USDC, USDT, PYUSD, ...) from
 Swift. Implements the client side of the Solana payment method for the
 [Machine Payments Protocol](https://mpp.dev).
@@ -72,7 +74,7 @@ attached (`Authorization: Payment ...` for MPP charge,
 instead, build the client with `PayKit.HttpClient.x402(signer:rpc:)`.
 
 The `mpp` and `x402` factories each wire a concrete
-`PayKit.PaymentInterceptor` (`ChargeInterceptor` and `X402Interceptor`).
+`PayKit.PaymentInterceptor` (`ChargeInterceptor` and `X402.Interceptor`).
 Supply your own to the designated `PayKit.HttpClient(interceptor:)`
 initializer to customise the payment flow.
 
@@ -97,10 +99,17 @@ a built-in table), or a raw base58 mint pubkey.
 Add the package to your Swift Package Manager dependencies:
 
 ```swift
-.package(path: "../mpp-sdk/swift")
+.package(url: "https://github.com/solana-foundation/pay-kit.git", from: "0.6.1")
 ```
 
-Then add `SolanaPayKit` to your target dependencies.
+Or in Xcode: **File ▸ Add Package Dependencies…** and enter
+`https://github.com/solana-foundation/pay-kit`.
+
+Then add `SolanaPayKit` to your target dependencies:
+
+```swift
+.product(name: "SolanaPayKit", package: "pay-kit")
+```
 
 ## Protocol compatibility matrix
 
@@ -111,18 +120,18 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 
 | Intent | Client |
 |---|:---:|
-| `mpp/charge/pull` | pass |
-| `mpp/charge/push` | planned |
-| `mpp/session` | planned |
-| `mpp/subscription` | planned |
+| `mpp/charge/pull` | ✅ |
+| `mpp/charge/push` | — |
+| `mpp/session` | ✅ |
+| `mpp/subscription` | — |
 
 ### x402
 
 | Intent | Client |
 |---|:---:|
-| `x402/exact` | pass |
-| `x402/upto` | --- |
-| `x402/batch-settlement` | --- |
+| `x402/exact` | ✅ |
+| `x402/upto` | ✅ |
+| `x402/batch-settlement` | — |
 
 ## Examples
 
@@ -134,6 +143,10 @@ The `Examples/` directory hosts sample clients:
 - [`PayKitDemo/`](Examples/PayKitDemo) — SwiftUI iOS app that wires the
   SDK into an end-to-end UX: Keychain-backed signer, Surfpool topup, a
   carousel of demo gateway endpoints, and an append-only result log.
+
+<div align="center">
+  <img alt="PayKitDemo iOS app" width="320" src="https://github.com/solana-foundation/pay-kit/raw/main/swift/Examples/PayKitDemo/docs/paykit-demo-screenshot.png">
+</div>
 
 The CLI is source-only so the default `swift build` stays library-only;
 add an executable target to `Package.swift` locally to run it. For
@@ -229,8 +242,12 @@ swift/
 │       └── X402/
 │           ├── Client/Exact/
 │           │   ├── Payment.swift     # x402 challenge parse + payment building
-│           │   └── Transport.swift   # X402Interceptor (402 -> Payment-Signature)
-│           └── Exact/Types.swift     # x402 wire-format Codable types
+│           │   └── Transport.swift   # X402.Interceptor (402 -> Payment-Signature)
+│           ├── Client/Upto/
+│           │   ├── UptoPayment.swift   # x402 upto challenge parse + channel-open building
+│           │   └── UptoTransport.swift # X402.UptoInterceptor (402 -> Payment-Signature)
+│           ├── Exact/Types.swift     # x402 wire-format Codable types
+│           └── Upto/UptoTypes.swift  # x402 upto wire-format Codable types
 ├── Tests/SolanaPayKitTests/   # swift-testing suite
 └── Examples/                  # Sample clients (planned: Solana Seeker demo)
 ```

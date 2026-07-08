@@ -13,7 +13,7 @@ function makeState(overrides: Partial<ChannelState> = {}): ChannelState {
         authorizedSigner: '11111111111111111111111111111111',
         deposit: 1_000_000n,
         cumulative: 0n,
-        finalized: false,
+        sealed: false,
         nextDeliverySequence: 0n,
         pendingDeliveries: [],
         committedDeliveries: [],
@@ -100,27 +100,25 @@ describe('createMemorySessionStore', () => {
     test('listChannels applies filters', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('a', () => makeState({ channelId: 'a' }));
-        await store.updateChannel('b', () => makeState({ channelId: 'b', finalized: true }));
+        await store.updateChannel('b', () => makeState({ channelId: 'b', sealed: true }));
         await store.updateChannel('c', () => makeState({ channelId: 'c', closeRequestedAt: 123n }));
 
         expect((await store.listChannels()).length).toBe(3);
-        expect((await store.listChannels({ finalized: true })).map(s => s.channelId)).toEqual(['b']);
-        expect((await store.listChannels({ finalized: false, closePending: true })).map(s => s.channelId)).toEqual([
-            'c',
-        ]);
+        expect((await store.listChannels({ sealed: true })).map(s => s.channelId)).toEqual(['b']);
+        expect((await store.listChannels({ sealed: false, closePending: true })).map(s => s.channelId)).toEqual(['c']);
     });
 
-    test('deleteChannel + markFinalized', async () => {
+    test('deleteChannel + markSealed', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('c1', () => makeState({ channelId: 'c1' }));
 
-        await store.markFinalized('c1');
-        expect((await store.getChannel('c1'))?.finalized).toBe(true);
+        await store.markSealed('c1');
+        expect((await store.getChannel('c1'))?.sealed).toBe(true);
 
         await store.deleteChannel('c1');
         expect(await store.getChannel('c1')).toBeUndefined();
 
-        await expect(store.markFinalized('ghost')).rejects.toThrow();
+        await expect(store.markSealed('ghost')).rejects.toThrow();
     });
 });
 
@@ -248,15 +246,15 @@ describe('verifyVoucherForChannel', () => {
         }
     });
 
-    test('finalized channel rejects vouchers', async () => {
+    test('sealed channel rejects vouchers', async () => {
         const signer = await generateKeyPairSigner();
         const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, FAR_FUTURE);
-        const state = makeState({ authorizedSigner: signer.address, finalized: true });
+        const state = makeState({ authorizedSigner: signer.address, sealed: true });
 
         const result = await verifyVoucherForChannel({ state, signed: voucher, deposit: 1_000n });
         expect(result.status).toBe('rejected');
         if (result.status === 'rejected') {
-            expect(result.reason).toBe('channel-finalized');
+            expect(result.reason).toBe('channel-sealed');
         }
     });
 
@@ -308,6 +306,205 @@ describe('verifyVoucherForChannel', () => {
         expect(result.status).toBe('rejected');
         if (result.status === 'rejected') {
             expect(result.reason).toBe('invalid-cumulative');
+        }
+    });
+
+    // ── #9 expiry semantics: 0 = never-expires, settlement-window guard ──
+
+    test('expiresAt == 0 is treated as never-expires and accepted', async () => {
+        const signer = await generateKeyPairSigner();
+        // Sign with expiresAt = 0 — the on-chain program treats 0 as no expiry
+        // (`expires_at != 0 && now >= expires_at`), so off-chain must too.
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 0n);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        // Even with `now` far in the future, a 0 expiry must be accepted.
+        const result = await verifyVoucherForChannel({
+            state,
+            signed: voucher,
+            deposit: 1_000n,
+            nowSeconds: 9_999_999_999n,
+        });
+        expect(result.status).toBe('accepted');
+        if (result.status === 'accepted') {
+            expect(result.newCumulative).toBe(100n);
+            expect(result.newExpiresAt).toBe(0n);
+        }
+    });
+
+    test('idempotent replay of an expiresAt == 0 voucher is accepted', async () => {
+        const signer = await generateKeyPairSigner();
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 0n);
+        const state = makeState({
+            authorizedSigner: signer.address,
+            cumulative: 100n,
+            highestVoucherSignature: voucher.signature,
+            highestVoucherExpiresAt: 0n,
+        });
+
+        const result = await verifyVoucherForChannel({
+            state,
+            signed: voucher,
+            deposit: 1_000n,
+            nowSeconds: 9_999_999_999n,
+        });
+        expect(result.status).toBe('replayed');
+    });
+
+    test('non-zero expiry at or before now is still rejected as expired', async () => {
+        const signer = await generateKeyPairSigner();
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 1_000n);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        // expiresAt == now → expired (mirrors on-chain `now >= expires_at`).
+        const atNow = await verifyVoucherForChannel({ state, signed: voucher, deposit: 1_000n, nowSeconds: 1_000n });
+        expect(atNow.status).toBe('rejected');
+        if (atNow.status === 'rejected') expect(atNow.reason).toBe('expired');
+    });
+
+    test('non-zero expiry within the settlement window is rejected', async () => {
+        const signer = await generateKeyPairSigner();
+        // Voucher valid until t=1500; now=1000; window=900 ⇒ must outlast 1900.
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 1_500n);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        const result = await verifyVoucherForChannel({
+            state,
+            signed: voucher,
+            deposit: 1_000n,
+            nowSeconds: 1_000n,
+            settlementWindow: 900n,
+        });
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') {
+            expect(result.reason).toBe('expires-within-settlement-window');
+        }
+    });
+
+    test('non-zero expiry that outlasts the settlement window is accepted', async () => {
+        const signer = await generateKeyPairSigner();
+        // Voucher valid until t=2500; now=1000; window=900 ⇒ 2500 >= 1900 ⇒ ok.
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 2_500n);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        const result = await verifyVoucherForChannel({
+            state,
+            signed: voucher,
+            deposit: 1_000n,
+            nowSeconds: 1_000n,
+            settlementWindow: 900n,
+        });
+        expect(result.status).toBe('accepted');
+    });
+
+    test('expiresAt == 0 bypasses the settlement-window guard', async () => {
+        const signer = await generateKeyPairSigner();
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 0n);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        const result = await verifyVoucherForChannel({
+            state,
+            signed: voucher,
+            deposit: 1_000n,
+            nowSeconds: 1_000n,
+            settlementWindow: 999_999n,
+        });
+        expect(result.status).toBe('accepted');
+    });
+
+    test('settlement window exactly met (expiresAt == now + window) is accepted', async () => {
+        const signer = await generateKeyPairSigner();
+        // expiresAt == now + window ⇒ NOT within the window (reject is `<`).
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 100n, 1_900n);
+        const state = makeState({ authorizedSigner: signer.address });
+
+        const result = await verifyVoucherForChannel({
+            state,
+            signed: voucher,
+            deposit: 1_000n,
+            nowSeconds: 1_000n,
+            settlementWindow: 900n,
+        });
+        expect(result.status).toBe('accepted');
+    });
+
+    // ── #8 cumulative-as-nonce / replay semantics ──
+
+    test('strict increment over the watermark is required (equal-but-new is rejected)', async () => {
+        const signer = await generateKeyPairSigner();
+        // A *fresh* voucher (new signature) at the exact watermark is NOT a
+        // replay — it must be rejected as non-monotonic, not re-served.
+        const fresh = await signVoucher(signer, '11111111111111111111111111111111', 100n, FAR_FUTURE);
+        const state = makeState({
+            authorizedSigner: signer.address,
+            cumulative: 100n,
+            // Different signature recorded as the highest — so `fresh` is not an
+            // exact replay even though its cumulative equals the watermark.
+            highestVoucherSignature: '2'.repeat(88),
+            highestVoucherExpiresAt: FAR_FUTURE,
+        });
+
+        const result = await verifyVoucherForChannel({ state, signed: fresh, deposit: 1_000n });
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') {
+            expect(result.reason).toBe('cumulative-not-monotonic');
+        }
+    });
+
+    test('exact replay (same cumulative AND signature) is idempotent no-charge, not a fresh serve', async () => {
+        const signer = await generateKeyPairSigner();
+        const voucher = await signVoucher(signer, '11111111111111111111111111111111', 250n, FAR_FUTURE);
+        const state = makeState({
+            authorizedSigner: signer.address,
+            cumulative: 250n,
+            highestVoucherSignature: voucher.signature,
+            highestVoucherExpiresAt: FAR_FUTURE,
+        });
+
+        const result = await verifyVoucherForChannel({ state, signed: voucher, deposit: 1_000n });
+        // 'replayed' is the charged-0 / no-new-delivery signal: the watermark
+        // is returned unchanged so the caller serves nothing new.
+        expect(result.status).toBe('replayed');
+        if (result.status === 'replayed') {
+            expect(result.newCumulative).toBe(250n); // unchanged watermark
+        }
+    });
+
+    test('a lower cumulative reusing the highest signature is rejected (not a replay)', async () => {
+        const signer = await generateKeyPairSigner();
+        const high = await signVoucher(signer, '11111111111111111111111111111111', 500n, FAR_FUTURE);
+        // Watermark is 500 (from `high`). A voucher at 300 carrying the highest
+        // signature is neither a strict increment nor an exact replay.
+        const lower = await signVoucher(signer, '11111111111111111111111111111111', 300n, FAR_FUTURE);
+        const state = makeState({
+            authorizedSigner: signer.address,
+            cumulative: 500n,
+            highestVoucherSignature: high.signature,
+            highestVoucherExpiresAt: FAR_FUTURE,
+        });
+
+        const result = await verifyVoucherForChannel({ state, signed: lower, deposit: 1_000n });
+        expect(result.status).toBe('rejected');
+        if (result.status === 'rejected') {
+            expect(result.reason).toBe('cumulative-not-monotonic');
+        }
+    });
+
+    test('a strictly higher cumulative advances the watermark', async () => {
+        const signer = await generateKeyPairSigner();
+        const next = await signVoucher(signer, '11111111111111111111111111111111', 600n, FAR_FUTURE);
+        const state = makeState({
+            authorizedSigner: signer.address,
+            cumulative: 500n,
+            highestVoucherSignature: '3'.repeat(88),
+            highestVoucherExpiresAt: FAR_FUTURE,
+        });
+
+        const result = await verifyVoucherForChannel({ state, signed: next, deposit: 1_000n });
+        expect(result.status).toBe('accepted');
+        if (result.status === 'accepted') {
+            expect(result.newCumulative).toBe(600n);
+            expect(result.newSignature).toBe(next.signature);
         }
     });
 });

@@ -9,7 +9,7 @@ local network_check = require('pay_kit.solana.network_check')
 -- from the others by a machine-readable code, not just a human string.
 
 local TEST_RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
-local TEST_SECRET = 'mpp-test-secret-key'
+local TEST_SECRET = 'mpp-test-secret-key-long-enough-32b'
 
 local function build_server(opts)
   opts = opts or {}
@@ -17,7 +17,7 @@ local function build_server(opts)
     recipient = opts.recipient or TEST_RECIPIENT,
     currency = opts.currency or 'USDC',
     decimals = 6,
-    network = opts.network or 'mainnet-beta',
+    network = opts.network or 'mainnet',
     secret_key = opts.secret_key or TEST_SECRET,
     realm = opts.realm or 'MPP Test',
     store = mpp.store.memory(),
@@ -144,7 +144,7 @@ helper.test('server emits charge_request_mismatch on recipient mismatch', functi
 end)
 
 helper.test('server emits challenge_verification_failed on HMAC mismatch', function()
-  local server = build_server({ secret_key = 'correct-secret' })
+  local server = build_server({ secret_key = 'correct-secret-key-long-enough-32b' })
   local challenge = server:charge('0.001')
   -- Re-issue the challenge under the wrong secret; the HMAC check rebuilds
   -- the id from echoed fields and rejects.

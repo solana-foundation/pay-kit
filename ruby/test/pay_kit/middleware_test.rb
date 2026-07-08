@@ -78,7 +78,7 @@ class PayKitMiddlewareTest < Minitest::Test
       c.stablecoins = %i[USDC]
       c.rpc_url = "https://example.test"
       c.mpp.realm = "Test"
-      c.mpp.challenge_binding_secret = "test"
+      c.mpp.challenge_binding_secret = "test-secret-" + ("0" * 32)
     end
     PayKit.pricing = TestPricing.new
   end

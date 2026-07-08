@@ -3,6 +3,9 @@ package com.solana.paykit.protocols.mpp.core
 import com.solana.paykit.paycore.*
 
 import kotlinx.serialization.Serializable
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.format.DateTimeParseException
 
 // MppException lives in paycore (crypto primitives need it, and protocols need
 // crypto) and is brought into scope by the wildcard import above. No same-package
@@ -23,6 +26,23 @@ data class PaymentChallenge(
 ) {
     /** Decodes this challenge's request as a Solana charge request. */
     fun chargeRequest(): ChargeRequest = MppHeaders.decodeChargeRequest(request)
+
+    /**
+     * Returns true if this challenge has an `expires` timestamp that is at or
+     * before [now] (audit #10). A challenge with no `expires` is never expired
+     * (the spec allows omitting it). FAIL-CLOSED: an `expires` value that is
+     * present but does not parse as an RFC3339 / ISO-8601 offset timestamp is
+     * treated as expired, so a malformed timestamp cannot bypass the refusal.
+     */
+    fun isExpired(now: Instant = Instant.now()): Boolean {
+        val raw = expires ?: return false
+        val expiresAt = try {
+            OffsetDateTime.parse(raw).toInstant()
+        } catch (_: DateTimeParseException) {
+            return true
+        }
+        return !expiresAt.isAfter(now)
+    }
 
     /** Fails unless this challenge targets the Solana charge intent. */
     fun requireSolanaCharge() {

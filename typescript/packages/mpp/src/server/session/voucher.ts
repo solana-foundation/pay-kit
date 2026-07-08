@@ -21,10 +21,11 @@ import type { ChannelState } from './store.js';
 export type VoucherRejectReason =
     | 'below-min-delta'
     | 'channel-close-pending'
-    | 'channel-finalized'
+    | 'channel-sealed'
     | 'cumulative-not-monotonic'
     | 'exceeds-deposit'
     | 'expired'
+    | 'expires-within-settlement-window'
     | 'invalid-cumulative'
     | 'invalid-signature';
 
@@ -72,6 +73,17 @@ export interface VerifyVoucherArgs {
      * for tests and for callers that already have a clock.
      */
     readonly nowSeconds?: bigint | undefined;
+    /**
+     * Forced-close grace period of the channel, in seconds (the on-chain
+     * `gracePeriod` captured at open). When set, a *non-zero* voucher
+     * `expiresAt` must outlast the settlement window — i.e. it must still
+     * be valid `settlementWindow` seconds from now, so the merchant can
+     * land an async settle_and_seal before the voucher expires.
+     * A voucher with `expiresAt == 0` never expires and is unaffected.
+     * Defaults to 0 (window check disabled — only `expiresAt <= now` is
+     * rejected for non-zero expiries).
+     */
+    readonly settlementWindow?: bigint | undefined;
     /** Voucher being submitted. */
     readonly signed: SignedVoucher;
     /** Channel snapshot — typically read just before calling. */
@@ -101,9 +113,9 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
         return reject('invalid-cumulative', errorMessage(error));
     }
 
-    // 2. Channel must not be finalized
-    if (state.finalized) {
-        return reject('channel-finalized', `Channel ${state.channelId} is already finalized`);
+    // 2. Channel must not be sealed
+    if (state.sealed) {
+        return reject('channel-sealed', `Channel ${state.channelId} is already sealed`);
     }
 
     // 3. Channel must not be in close-pending
@@ -120,10 +132,8 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
         // the same so a replay of a forged voucher can't slip through.
         const ok = await safeVerifySignature(signed, state.authorizedSigner);
         if (!ok.ok) return ok.reject;
-        const expiresAt = toBigInt(data.expiresAt);
-        if (expiresAt <= currentTime(args.nowSeconds)) {
-            return reject('expired', 'Voucher has expired');
-        }
+        const expiryReject = checkExpiry(toBigInt(data.expiresAt), currentTime(args.nowSeconds), args.settlementWindow);
+        if (expiryReject) return expiryReject;
         return { newCumulative, status: 'replayed' };
     }
 
@@ -147,15 +157,14 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
         return reject('below-min-delta', `Voucher delta ${delta} is below minimum ${minDelta}`);
     }
 
-    // 8. Verify signature (Ed25519 over the 48-byte canonical payload)
+    // 8. Verify signature (Ed25519 over the 50-byte canonical payload)
     const sigCheck = await safeVerifySignature(signed, state.authorizedSigner);
     if (!sigCheck.ok) return sigCheck.reject;
 
     // 9. Expiry — caller may override `nowSeconds` for deterministic tests.
     const expiresAt = toBigInt(data.expiresAt);
-    if (expiresAt <= currentTime(args.nowSeconds)) {
-        return reject('expired', 'Voucher has expired');
-    }
+    const expiryReject = checkExpiry(expiresAt, currentTime(args.nowSeconds), args.settlementWindow);
+    if (expiryReject) return expiryReject;
 
     return {
         newCumulative,
@@ -169,6 +178,41 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
 
 function reject(reason: VoucherRejectReason, detail: string): VoucherVerifyRejected {
     return { detail, reason, status: 'rejected' };
+}
+
+/**
+ * Voucher expiry rule, mirroring the on-chain settle check
+ * (`expires_at != 0 && now >= expires_at` ⇒ rejected) so the off-chain
+ * acceptance never advances a watermark the program would later refuse.
+ *
+ * - `expiresAt == 0` ⇒ never expires; always accepted regardless of `now`.
+ * - non-zero `expiresAt <= now` ⇒ already expired.
+ * - non-zero `expiresAt` within `settlementWindow` of `now` ⇒ rejected: it
+ *   would not outlast the forced-close grace period, so a merchant settle
+ *   could miss the window. Skipped when `settlementWindow` is unset/zero.
+ *
+ * Returns a {@link VoucherVerifyRejected} to short-circuit on, or
+ * `undefined` when the voucher's expiry is acceptable.
+ */
+function checkExpiry(
+    expiresAt: bigint,
+    now: bigint,
+    settlementWindow: bigint | undefined,
+): VoucherVerifyRejected | undefined {
+    // 0 means never-expires on-chain — accept unconditionally.
+    if (expiresAt === 0n) return undefined;
+    if (expiresAt <= now) {
+        return reject('expired', `Voucher expired at ${expiresAt} (now ${now})`);
+    }
+    const window = settlementWindow ?? 0n;
+    if (window > 0n && expiresAt < now + window) {
+        return reject(
+            'expires-within-settlement-window',
+            `Voucher expiresAt ${expiresAt} is within the settlement window (now ${now} + window ${window} = ${now + window}); ` +
+                'it may expire before settlement lands',
+        );
+    }
+    return undefined;
 }
 
 async function safeVerifySignature(

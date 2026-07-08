@@ -263,4 +263,28 @@ final class HeadersTest extends TestCase
         self::assertSame('challenge-id', $parsed->challengeId);
         self::assertSame('order-001', $parsed->externalId);
     }
+
+    public function testRejectsOversizedRequestParam(): void
+    {
+        // audit #9: the request param is base64url-decoded + JSON-parsed, so it
+        // must be capped like the credential/receipt parsers (16 KiB).
+        $oversized = str_repeat('A', 16 * 1024 + 1);
+        $header = sprintf(
+            'Payment id=x, realm=api, method=solana, intent=charge, request="%s"',
+            $oversized,
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Challenge request parameter exceeds maximum length');
+        Headers::parseWwwAuthenticate($header);
+    }
+
+    public function testAcceptsRequestParamAtMaxSize(): void
+    {
+        // Regression: an at-cap (well-formed) request param must not trip the
+        // size gate. The encoded JSON of a real challenge is far below 16 KiB.
+        $challenge = Challenge::withSecret('secret', 'api', 'solana', 'charge', ['amount' => '1', 'currency' => 'USDC']);
+        $parsed = Headers::parseWwwAuthenticate(Headers::formatWwwAuthenticate($challenge));
+        self::assertSame($challenge->id, $parsed->id);
+    }
 }

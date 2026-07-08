@@ -131,7 +131,7 @@ export const conformanceVectorSchema = {
   required: ["id", "intent", "mode", "input", "expect"],
   properties: {
     id: { type: "string" },
-    intent: { enum: ["charge", "x402-exact"] },
+    intent: { enum: ["charge", "x402-exact", "session"] },
     mode: {
       enum: ["build-transaction", "verify-transaction", "canonical-bytes"],
     },

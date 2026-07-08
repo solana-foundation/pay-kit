@@ -20,7 +20,7 @@ struct PubkeyTests {
 
     @Test
     func rejectsWrongLengthBytes() {
-        #expect(throws: MppError.invalidPubkey("expected 32 bytes, got 31")) {
+        #expect(throws: PayKitError.invalidPubkey("expected 32 bytes, got 31")) {
             _ = try Pubkey(bytes: Data(repeating: 1, count: 31))
         }
     }
@@ -28,7 +28,7 @@ struct PubkeyTests {
     @Test
     func rejectsBase58WithWrongDecodedLength() {
         // "abc" decodes to 2 bytes, not 32.
-        #expect(throws: MppError.self) {
+        #expect(throws: PayKitError.self) {
             _ = try Pubkey(base58: "abc")
         }
     }

@@ -13,9 +13,40 @@ final class MppConfigTest extends TestCase
     public function testDefaultsMatchCrossLanguageTarget(): void
     {
         $c = new MppConfig();
-        $this->assertSame('App', $c->realm);
+        // audit #15: the default realm is now null (= derive per-recipient),
+        // not a shared literal that would put servers sharing a secret on one
+        // credential namespace.
+        $this->assertNull($c->realm);
         $this->assertSame(120, $c->expiresIn);
         $this->assertNull($c->challengeBindingSecret);
+        $this->assertFalse($c->acceptPushMode);
+    }
+
+    public function testEmptyRealmRejected(): void
+    {
+        // An explicit empty realm would re-introduce the shared namespace.
+        $this->expectException(ConfigurationException::class);
+        new MppConfig(realm: '');
+    }
+
+    public function testResolveRealmDerivesDeterministicPerRecipientDefault(): void
+    {
+        $a = new MppConfig();
+        $recipientA = 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY';
+        $recipientB = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+
+        $realmA = $a->resolveRealm($recipientA);
+        // Deterministic / restart-safe.
+        $this->assertSame($realmA, $a->resolveRealm($recipientA));
+        $this->assertMatchesRegularExpression('/^App Id - #\d{1,8}$/', $realmA);
+        // Different recipients get different realms (closes the audit shape).
+        $this->assertNotSame($realmA, $a->resolveRealm($recipientB));
+    }
+
+    public function testResolveRealmUsesExplicitRealmWhenSet(): void
+    {
+        $c = new MppConfig(realm: 'Acme API');
+        $this->assertSame('Acme API', $c->resolveRealm('CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY'));
     }
 
     public function testExpiresInZeroIsDevOnlyOptOut(): void

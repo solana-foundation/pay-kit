@@ -1,34 +1,35 @@
 import { useState, useCallback, type DragEvent } from 'react'
-import {
-  generateWallet,
-  saveSecretKey,
-  getSigner,
-  requestAirdrop,
-  importKeypairJson,
-} from '../lib/wallet'
+import { generateWallet, saveSecretKey, getSigner, requestAirdrop, importKeypairJson } from '../lib/wallet'
 
 interface Props {
   onReady: () => void
 }
 
-type Screen = 'start' | 'generated' | 'importing'
+type Screen = 'start' | 'funded' | 'importing'
 
 export function WalletSetup({ onReady }: Props) {
   const [screen, setScreen] = useState<Screen>('start')
   const [address, setAddress] = useState('')
   const [importKey, setImportKey] = useState('')
   const [error, setError] = useState('')
-  const [airdropping, setAirdropping] = useState(false)
-  const [airdropped, setAirdropped] = useState(false)
+  const [funding, setFunding] = useState(false)
+  const [funded, setFunded] = useState(false)
   const [dragging, setDragging] = useState(false)
 
-  const handleGenerate = async () => {
+  // Create a fresh in-browser keypair and fund it with USDC. No SOL — the
+  // server is the fee payer for every request, so client wallets never pay fees.
+  const handleFundNew = async () => {
+    setError('')
+    setFunding(true)
     try {
-      const signer = await generateWallet()
-      setAddress(signer.address)
-      setScreen('generated')
+      if (!address) setAddress((await generateWallet()).address)
+      setScreen('funded')
+      await requestAirdrop()
+      setFunded(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setFunding(false)
     }
   }
 
@@ -36,37 +37,25 @@ export function WalletSetup({ onReady }: Props) {
     try {
       setError('')
       saveSecretKey(importKey.trim())
-      const signer = await getSigner()
-      setAddress(signer.address)
+      await getSigner()
       onReady()
     } catch (err) {
-      setError('Invalid secret key: ' + (err instanceof Error ? err.message : String(err)))
+      setError('Invalid private key: ' + (err instanceof Error ? err.message : String(err)))
     }
   }
 
-  const handleAirdrop = async () => {
-    setAirdropping(true)
-    try {
-      await requestAirdrop()
-      setAirdropped(true)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setAirdropping(false)
-    }
-  }
-
-  const handleFile = useCallback(async (file: File) => {
-    try {
-      setError('')
-      const text = await file.text()
-      const signer = await importKeypairJson(text)
-      setAddress(signer.address)
-      setScreen('generated')
-    } catch (err) {
-      setError('Failed to import keypair: ' + (err instanceof Error ? err.message : String(err)))
-    }
-  }, [])
+  const handleFile = useCallback(
+    async (file: File) => {
+      try {
+        setError('')
+        await importKeypairJson(await file.text())
+        onReady()
+      } catch (err) {
+        setError('Failed to load keypair: ' + (err instanceof Error ? err.message : String(err)))
+      }
+    },
+    [onReady],
+  )
 
   const onDrop = useCallback(
     (e: DragEvent) => {
@@ -77,41 +66,36 @@ export function WalletSetup({ onReady }: Props) {
     },
     [handleFile],
   )
-
   const onDragOver = (e: DragEvent) => {
     e.preventDefault()
     setDragging(true)
   }
-
   const onDragLeave = () => setDragging(false)
-
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) handleFile(file)
   }
 
-  if (screen === 'generated') {
+  if (screen === 'funded') {
     return (
       <div className="setup-page">
         <div className="setup-card">
-          <h2>Wallet ready</h2>
+          <h2>{funded ? 'Account funded' : 'Funding account…'}</h2>
           <p className="sub">
-            A new keypair was generated and stored in this browser's localStorage. Fund it once to start hitting paid
-            endpoints.
+            A new keypair was generated and stored in this browser's localStorage
+            {funded ? ', funded with 100 USDC.' : '.'} It pays no network fees — the server fee-pays every request.
           </p>
           <div className="modal-field" style={{ marginTop: 20 }}>
             <label>Address</label>
             <div className="value addr">{address}</div>
           </div>
           <div className="setup-actions">
-            <button
-              className={airdropped ? 'btn-secondary' : 'btn-primary'}
-              onClick={handleAirdrop}
-              disabled={airdropping || airdropped}
-            >
-              {airdropping ? 'Requesting…' : airdropped ? 'Funded ✓' : 'Airdrop 100 SOL + 100 USDC'}
-            </button>
-            <button className="btn-secondary" onClick={onReady}>
+            {!funded && (
+              <button className="btn-primary" onClick={handleFundNew} disabled={funding}>
+                {funding ? 'Funding…' : 'Retry funding'}
+              </button>
+            )}
+            <button className={funded ? 'btn-primary' : 'btn-secondary'} onClick={onReady}>
               Enter playground
             </button>
           </div>
@@ -123,12 +107,11 @@ export function WalletSetup({ onReady }: Props) {
 
   if (screen === 'importing') {
     return (
-      <div className="setup-page">
+      <div className="setup-page" onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}>
         <div className="setup-card">
-          <h2>Import wallet</h2>
-          <p className="sub">Paste a base58-encoded 64-byte keypair.</p>
+          <h2>Load a private key</h2>
+          <p className="sub">Paste a base58-encoded 64-byte secret key, or drop a Solana CLI keypair JSON.</p>
           <textarea
-            className="param-row"
             value={importKey}
             onChange={(e) => setImportKey(e.target.value)}
             placeholder="Paste secret key…"
@@ -147,13 +130,32 @@ export function WalletSetup({ onReady }: Props) {
               marginTop: 12,
             }}
           />
+          <div
+            className={`drop-zone${dragging ? ' dragging' : ''}`}
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+          >
+            <div className="icon">{dragging ? '↓' : '📄'}</div>
+            <div className="hint">{dragging ? 'Drop keypair here' : 'or drop a keypair JSON'}</div>
+            <label className="browse">
+              browse
+              <input type="file" accept=".json" onChange={handleFileInput} style={{ display: 'none' }} />
+            </label>
+          </div>
           {error && <div style={{ marginTop: 8, color: 'var(--red)', fontSize: 12 }}>{error}</div>}
           <div className="setup-actions">
-            <button className="btn-secondary" onClick={() => setScreen('start')}>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setScreen('start')
+                setError('')
+              }}
+            >
               Back
             </button>
             <button className="btn-primary" onClick={handleImport} disabled={!importKey.trim()}>
-              Import
+              Load key
             </button>
           </div>
         </div>
@@ -162,33 +164,20 @@ export function WalletSetup({ onReady }: Props) {
   }
 
   return (
-    <div className="setup-page" onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}>
+    <div className="setup-page">
       <div className="setup-card">
         <h2>Welcome to PayKit Playground</h2>
         <p className="sub">
-          A sandbox for testing the four payment primitives the kit ships: <strong>charges</strong>,{' '}
+          A sandbox for the four payment primitives the kit ships: <strong>charges</strong>,{' '}
           <strong>subscriptions</strong>, <strong>sessions</strong>, and <strong>x402</strong>. Runs against the local
           Solana Payment Sandbox — no real funds needed.
         </p>
-        <p className="sub" style={{ marginTop: 12, marginBottom: 0 }}>
-          To get started, generate a fresh in-browser keypair, or drop a Solana CLI keypair JSON.
-        </p>
-
-        <div className={`drop-zone${dragging ? ' dragging' : ''}`} onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}>
-          <div className="icon">{dragging ? '↓' : '📄'}</div>
-          <div className="hint">{dragging ? 'Drop keypair here' : 'Drop a Solana keypair JSON file'}</div>
-          <label className="browse">
-            or browse
-            <input type="file" accept=".json" onChange={handleFileInput} style={{ display: 'none' }} />
-          </label>
-        </div>
-
-        <div className="setup-actions">
-          <button className="btn-primary" onClick={handleGenerate}>
-            Generate new wallet
+        <div className="setup-actions" style={{ marginTop: 24 }}>
+          <button className="btn-primary" onClick={handleFundNew} disabled={funding}>
+            Fund a new account
           </button>
           <button className="btn-secondary" onClick={() => setScreen('importing')}>
-            Paste secret key
+            Load a private key
           </button>
         </div>
         {error && <div style={{ marginTop: 10, color: 'var(--red)', fontSize: 12 }}>{error}</div>}

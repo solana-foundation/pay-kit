@@ -1,31 +1,28 @@
-// Server-side charge: gate an Express route with `solana.charge`.
+// Server-side charge: gate an Express route with `pay.express`.
 // See ./README.md for the snippet:start/end convention.
 
 import express from 'express'
 import type { KeyPairSigner } from '@solana/kit'
-import { Mppx, solana } from '@solana/mpp/server'
+import { createPayKit, usd } from '@solana/pay-kit'
 
 declare const signer: KeyPairSigner
 declare const RECIPIENT: string
 declare const rpcUrl: string
-declare function toWebRequest(req: express.Request): globalThis.Request
-declare function forward(challenge: globalThis.Response, res: express.Response): void
 
 // snippet:start
-const app = express()
-const method = solana.charge({
-  signer, // KeyPairSigner — verifies the on-chain charge
-  recipient: RECIPIENT,
+const pay = await createPayKit({
+  accept: ['mpp', 'x402'], // settle over either protocol — the client picks
   network: 'mainnet',
-  currency: 'USDC',
+  operator: { recipient: RECIPIENT, signer }, // KeyPairSigner verifies the charge
+  pricing: { quote: { amount: usd('0.01'), description: 'Stock quote' } },
   rpcUrl,
 })
-const mppx = Mppx.create({ methods: [method] })
 
-app.get('${PATH}', async (req, res) => {
-  const result = await mppx.charge({ amount: '10000', currency: 'USDC' })(toWebRequest(req))
-  if (result.status === 402) return forward(result.challenge as globalThis.Response, res)
-  return result.withReceipt(globalThis.Response.json({ ok: true }))
+const app = express()
+
+// `pay.express(gate)` settles the 402 (MPP or x402) before the handler runs.
+app.get('${PATH}', pay.express('quote'), (_req, res) => {
+  res.json({ ok: true })
 })
 // snippet:end
 

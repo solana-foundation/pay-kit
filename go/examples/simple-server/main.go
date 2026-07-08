@@ -17,8 +17,8 @@ import (
 
 	_ "github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 )
 
 func main() {

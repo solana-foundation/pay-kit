@@ -17,23 +17,28 @@ public struct RpcClient: Sendable {
         self.urlSession = urlSession
     }
 
-    /// Returns the most recent blockhash from the RPC's processed
+    /// Returns the most recent blockhash from the RPC's `confirmed`
     /// commitment level as a 32-byte value plus its base58 form.
+    ///
+    /// `confirmed` (not `processed`) is passed explicitly per audit #36:
+    /// a `processed` blockhash can disappear under a reorg, leaving the
+    /// client holding a signed transaction that fails with
+    /// `BlockhashNotFound` after broadcast.
     public func getLatestBlockhash() async throws -> (bytes: Data, base58: String) {
         let response = try await rpcCall(
             method: "getLatestBlockhash",
-            params: [["commitment": "processed"]]
+            params: [["commitment": "confirmed"]]
         )
         guard
             let outer = response as? [String: Any],
             let value = (outer["value"] as? [String: Any]),
             let blockhashStr = value["blockhash"] as? String
         else {
-            throw MppError.rpcFailure("getLatestBlockhash returned malformed body")
+            throw PayKitError.rpcFailure("getLatestBlockhash returned malformed body")
         }
         let bytes = try Base58.decode(blockhashStr)
         guard bytes.count == 32 else {
-            throw MppError.rpcFailure("blockhash is not 32 bytes")
+            throw PayKitError.rpcFailure("blockhash is not 32 bytes")
         }
         return (bytes: bytes, base58: blockhashStr)
     }
@@ -51,10 +56,10 @@ public struct RpcClient: Sendable {
             let outer = result as? [String: Any],
             let value = outer["value"] as? [String: Any]
         else {
-            throw MppError.rpcFailure("getAccountInfo returned malformed body for \(pubkeyBase58)")
+            throw PayKitError.rpcFailure("getAccountInfo returned malformed body for \(pubkeyBase58)")
         }
         guard let owner = value["owner"] as? String else {
-            throw MppError.rpcFailure("account \(pubkeyBase58) has no owner field (does it exist?)")
+            throw PayKitError.rpcFailure("account \(pubkeyBase58) has no owner field (does it exist?)")
         }
         return owner
     }
@@ -68,7 +73,7 @@ public struct RpcClient: Sendable {
         ]
         let result = try await rpcCall(method: "sendTransaction", params: [base64SignedTx, options])
         guard let signature = result as? String else {
-            throw MppError.rpcFailure("sendTransaction returned non-string result")
+            throw PayKitError.rpcFailure("sendTransaction returned non-string result")
         }
         return signature
     }
@@ -87,22 +92,22 @@ public struct RpcClient: Sendable {
 
         let (data, urlResponse) = try await urlSession.data(for: request)
         guard let http = urlResponse as? HTTPURLResponse else {
-            throw MppError.rpcFailure("non-HTTP response")
+            throw PayKitError.rpcFailure("non-HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw MppError.rpcFailure("RPC HTTP \(http.statusCode)")
+            throw PayKitError.rpcFailure("RPC HTTP \(http.statusCode)")
         }
         let parsed = try JSONSerialization.jsonObject(with: data)
         guard let object = parsed as? [String: Any] else {
-            throw MppError.rpcFailure("RPC body is not an object")
+            throw PayKitError.rpcFailure("RPC body is not an object")
         }
         if let error = object["error"] as? [String: Any] {
             let message = (error["message"] as? String) ?? "unknown error"
             let code = (error["code"] as? Int) ?? 0
-            throw MppError.rpcFailure("RPC error \(code): \(message)")
+            throw PayKitError.rpcFailure("RPC error \(code): \(message)")
         }
         guard let result = object["result"] else {
-            throw MppError.rpcFailure("RPC body missing result field")
+            throw PayKitError.rpcFailure("RPC body missing result field")
         }
         return result
     }

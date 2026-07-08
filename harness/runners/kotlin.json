@@ -1,0 +1,6 @@
+{
+  "language": "kotlin",
+  "command": ["sh", "-c", "exec build/install/mpp-kotlin-conformance/bin/mpp-kotlin-conformance"],
+  "cwd": "harness/kotlin-conformance",
+  "intents": ["session"]
+}

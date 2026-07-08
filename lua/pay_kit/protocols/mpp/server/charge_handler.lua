@@ -130,6 +130,12 @@ function M.new(config)
     rpc = config.rpc,
     network = config.network or 'mainnet',
     replay_store = config.replay_store,
+    -- Audit #5: push mode (type=signature credentials) is opt-in and default
+    -- OFF. Spec §13.5 accepts that push binds a confirmed tx to a challenge by
+    -- shape only ("first accepted presentation wins"); a server that does not
+    -- need push should not carry that trade-off. Mirrors the Rust spine's
+    -- default-off posture.
+    accept_push_mode = config.accept_push_mode or false,
     transaction_verifier = config.transaction_verifier,
     pull_transaction_signer = config.pull_transaction_signer,
     pull_blockhash_extractor = config.pull_blockhash_extractor,
@@ -282,6 +288,10 @@ function Handler:settle(payload, request)
   if payload.type == 'transaction' then
     return self:settle_pull(payload.transaction, request)
   elseif payload.type == 'signature' then
+    -- Audit #5: reject push-mode credentials unless the operator opted in.
+    if not self.accept_push_mode then
+      verifier_error('Push-mode credentials are disabled on this server (enable accept_push_mode to opt in; spec §13.5)')
+    end
     return self:settle_push(payload.signature, request)
   end
   verifier_error('unsupported payload type: ' .. tostring(payload.type))

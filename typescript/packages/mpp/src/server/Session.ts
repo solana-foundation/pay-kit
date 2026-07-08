@@ -109,6 +109,7 @@ export function session(parameters: session.Parameters) {
         minVoucherDelta,
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
+        settlementWindowSeconds,
     } = parameters;
 
     if (cap <= 0n) {
@@ -157,6 +158,7 @@ export function session(parameters: session.Parameters) {
                         merchantSigner: signer,
                         mint: resolvedMint,
                         network,
+                        operator,
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
@@ -187,7 +189,11 @@ export function session(parameters: session.Parameters) {
             // Don't fetch a blockhash on the verify path — the client
             // already built whatever tx it needed against its own
             // blockhash. We only prefetch when issuing a fresh 402.
+            // The current slot rides along from the same response's context:
+            // it becomes the channel `openSlot` PDA seed, which the client
+            // must take from the challenge rather than its own RPC.
             let recentBlockhash: string | undefined;
+            let recentSlot: string | undefined;
             if (!credential) {
                 try {
                     const res = await fetch(rpcUrl, {
@@ -200,10 +206,15 @@ export function session(parameters: session.Parameters) {
                         headers: { 'Content-Type': 'application/json' },
                         method: 'POST',
                     });
-                    const data = (await res.json()) as { result?: { value?: { blockhash?: string } } };
+                    const data = (await res.json()) as {
+                        result?: { context?: { slot?: number }; value?: { blockhash?: string } };
+                    };
                     recentBlockhash = data.result?.value?.blockhash;
+                    const slot = data.result?.context?.slot;
+                    if (typeof slot === 'number') recentSlot = String(slot);
                 } catch {
-                    // Non-fatal — client will fetch its own blockhash.
+                    // Non-fatal — client will fetch its own blockhash, and
+                    // push opens fail with a clear recentSlot error client-side.
                 }
             }
 
@@ -228,6 +239,7 @@ export function session(parameters: session.Parameters) {
                 ...(programId ? { programId: programId.toString() } : {}),
                 ...(effectiveModes.includes('pull') && pullVoucherStrategy ? { pullVoucherStrategy } : {}),
                 ...(recentBlockhash ? { recentBlockhash } : {}),
+                ...(recentSlot ? { recentSlot } : {}),
                 recipient,
                 ...(splits?.length ? { splits: [...splits] } : {}),
             };
@@ -244,6 +256,7 @@ export function session(parameters: session.Parameters) {
                     return await handleOpen({
                         cap,
                         challengeId: cred.challenge.id,
+                        challengeOpenSlot: parseOptionalU64(cred.challenge.request.recentSlot, 'recentSlot'),
                         currency,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
@@ -252,6 +265,7 @@ export function session(parameters: session.Parameters) {
                         modes: effectiveModes,
                         network,
                         openTxSubmitter,
+                        operator,
                         payerSigner: paymentChannelPayerSigner,
                         payload: cred.payload,
                         programId: resolvedProgramId,
@@ -267,6 +281,7 @@ export function session(parameters: session.Parameters) {
                         lifecycle: lifecycleRef.value,
                         minVoucherDelta,
                         payload: cred.payload,
+                        settlementWindow: settlementWindowSeconds,
                         store,
                     });
                 case 'commit':
@@ -275,6 +290,7 @@ export function session(parameters: session.Parameters) {
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
                         payload: cred.payload,
+                        settlementWindow: settlementWindowSeconds,
                         store,
                     });
                 case 'topUp':
@@ -297,10 +313,12 @@ export function session(parameters: session.Parameters) {
                         merchantSigner: signer,
                         mint: resolvedMint,
                         network,
+                        operator,
                         payload: cred.payload,
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
+                        settlementWindow: settlementWindowSeconds,
                         splits,
                         store,
                         tokenProgram,
@@ -346,6 +364,7 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
             try {
                 const receipt = await commitDelivery(store, {
                     deliveryId: body.deliveryId,
+                    settlementWindow: parameters.settlementWindowSeconds,
                     voucher: body.voucher,
                 });
                 return Response.json(receipt, { status: 200 });
@@ -385,6 +404,8 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
 interface HandleOpenArgs {
     readonly cap: bigint;
     readonly challengeId: string | undefined;
+    /** Slot issued in the 402 challenge; the open tx must echo it. */
+    readonly challengeOpenSlot: bigint | undefined;
     readonly currency: string;
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
@@ -393,6 +414,8 @@ interface HandleOpenArgs {
     readonly modes: SessionMode[];
     readonly network: string;
     readonly openTxSubmitter: 'client' | 'server';
+    /** Operator / fee-payer pubkey (base58); pins the open `rentPayer`. */
+    readonly operator: string;
     readonly payerSigner: TransactionPartialSigner | undefined;
     readonly payload: OpenPayload & { readonly action: 'open' };
     readonly programId: Address;
@@ -415,6 +438,14 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     let channelId: string;
     let deposit: bigint;
     let signature: string | undefined;
+    // Channel payer (the deposit funder / distribute refund destination),
+    // captured from the verified open when a transaction is present.
+    let channelPayer: string | undefined;
+    // Slot the channel was opened at — a channel PDA seed, persisted so the
+    // PDA can be re-derived and reclaim gated later. Read from the verified
+    // open transaction when present; otherwise from the client payload's
+    // `recentSlot` echo.
+    let openSlot: bigint | undefined = parseOptionalU64(payload.recentSlot, 'recentSlot');
 
     if (mode === 'push' && !payload.transaction && !payload.channelId) {
         throw new Error('open payload missing transaction or channelId');
@@ -432,6 +463,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             maxCap: args.cap,
             mint: args.mint,
             network: args.network,
+            openSlot: args.challengeOpenSlot,
+            operator: args.operator,
             programId: args.programId.toString(),
             recipient: args.recipient,
         };
@@ -445,6 +478,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             if (existing) {
                 channelId = preVerified.channelId;
                 deposit = preVerified.deposit;
+                channelPayer = preVerified.payer;
+                openSlot = preVerified.openSlot;
                 signature = payload.signature;
             } else {
                 const submitted = await submitOpenTx({
@@ -455,6 +490,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 });
                 channelId = submitted.channelId;
                 deposit = submitted.deposit;
+                channelPayer = submitted.payer;
+                openSlot = submitted.openSlot;
                 signature = submitted.signature as unknown as string;
             }
         } else {
@@ -465,6 +502,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             });
             channelId = verified.channelId;
             deposit = verified.deposit;
+            channelPayer = verified.payer;
+            openSlot = verified.openSlot;
             signature = payload.signature;
         }
     } else if (mode === 'push') {
@@ -519,20 +558,25 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         committedDeliveries: [],
         cumulative: 0n,
         deposit,
-        finalized: false,
         highestVoucherExpiresAt: undefined,
         highestVoucherSignature: undefined,
         nextDeliverySequence: 0n,
-        operator: payload.owner ?? payload.payer,
+        openSlot,
+        // Prefer the payer read from the verified open transaction (account 0,
+        // what the channel actually records) over the client-supplied payload
+        // fields, which could be stale/wrong. Fall back to the payload only for
+        // opens with no transaction to verify (bare push assertion / pull).
+        operator: channelPayer ?? payload.owner ?? payload.payer,
         pendingDeliveries: [],
+        sealed: false,
     };
 
     // The existence check lives inside the atomic mutator so a concurrent
     // open replay cannot race a fresh create.
     await args.store.updateChannel(channelId, current => {
         if (current) {
-            if (current.finalized) {
-                throw new Error(`Channel ${channelId} is already finalized`);
+            if (current.sealed) {
+                throw new Error(`Channel ${channelId} is already sealed`);
             }
             if (payload.authorizedSigner !== current.authorizedSigner) {
                 throw new Error(
@@ -562,6 +606,8 @@ interface HandleVoucherArgs {
     readonly lifecycle: Lifecycle | undefined;
     readonly minVoucherDelta: bigint | undefined;
     readonly payload: { readonly action: 'voucher'; readonly voucher: SignedVoucher };
+    /** Forced-close grace period a non-zero voucher expiry must outlast. */
+    readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
 }
 
@@ -575,6 +621,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
     const preflight = await verifyVoucherForChannel({
         deposit: existing.deposit,
         minVoucherDelta: args.minVoucherDelta,
+        settlementWindow: args.settlementWindow,
         signed,
         state: existing,
     });
@@ -587,6 +634,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
         const result = await verifyVoucherForChannel({
             deposit: current.deposit,
             minVoucherDelta: args.minVoucherDelta,
+            settlementWindow: args.settlementWindow,
             signed,
             state: current,
         });
@@ -623,12 +671,14 @@ interface HandleCommitArgs {
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
     readonly payload: { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher };
+    readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
 }
 
 async function handleCommit(args: HandleCommitArgs): Promise<Receipt.Receipt> {
     const receipt = await commitDelivery(args.store, {
         deliveryId: args.payload.deliveryId,
+        settlementWindow: args.settlementWindow,
         voucher: args.payload.voucher,
     });
     args.lifecycle?.touch(receipt.sessionId);
@@ -667,7 +717,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // Cheap pre-checks before touching the network.
     const existing = await args.store.getChannel(args.payload.channelId);
     if (!existing) throw new Error(`Channel ${args.payload.channelId} not found`);
-    if (existing.finalized) throw new Error('Channel is already finalized');
+    if (existing.sealed) throw new Error('Channel is already sealed');
     if (existing.closeRequestedAt !== undefined) {
         throw new Error('Channel close is pending — no further top-ups accepted');
     }
@@ -680,7 +730,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
 
     const result = await args.store.updateChannel(args.payload.channelId, current => {
         if (!current) throw new Error(`Channel ${args.payload.channelId} not found`);
-        if (current.finalized) throw new Error('Channel is already finalized');
+        if (current.sealed) throw new Error('Channel is already sealed');
         if (current.closeRequestedAt !== undefined) {
             throw new Error('Channel close is pending — no further top-ups accepted');
         }
@@ -710,6 +760,8 @@ interface HandleCloseArgs {
     readonly merchantSigner: TransactionPartialSigner | undefined;
     readonly mint: string;
     readonly network: string;
+    /** Operator recorded as the channel `rentPayer` at open. */
+    readonly operator: string;
     readonly payload: {
         readonly action: 'close';
         readonly channelId: string;
@@ -718,6 +770,7 @@ interface HandleCloseArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly settlementWindow: bigint | undefined;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
     readonly tokenProgram: string;
@@ -730,7 +783,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
     // Accept the optional final voucher and flip close-pending atomically.
     await args.store.updateChannel(channelId, async current => {
         if (!current) throw new Error(`Channel ${channelId} not found`);
-        if (current.finalized) throw new Error('Channel is already finalized');
+        if (current.sealed) throw new Error('Channel is already sealed');
         if (current.closeRequestedAt !== undefined) {
             // Re-drivable close: a prior close flipped the flag but the
             // on-chain settle never recorded a signature — let the retry
@@ -742,24 +795,27 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
 
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
-            // Idempotent replay of the current highest voucher (same
-            // cumulative AND same signature) is accepted as-is.
-            if (
-                current.highestVoucherSignature === signed.signature &&
-                signed.data.cumulativeAmount === current.cumulative.toString()
-            ) {
-                return { ...current, closeRequestedAt: now };
-            }
+            // Route the final voucher (replay AND advancing) through the verifier
+            // so expiry + the settlement-window margin are enforced on both paths —
+            // an idempotent replay must not record close-pending against a voucher
+            // that no longer outlasts the window, or the async settle fails on-chain.
             const verdict = await verifyVoucherForChannel({
                 deposit: current.deposit,
+                settlementWindow: args.settlementWindow,
                 signed,
                 state: current,
             });
             if (verdict.status === 'rejected') {
-                // Mirrors Rust `process_close`: a non-replay final voucher
-                // at or below the watermark is a hard error — the close
-                // must abort rather than silently settle a stale amount.
+                // Mirrors Rust `process_close`: a final voucher that fails
+                // verification — a non-replay at/below the watermark, or an expiry
+                // that no longer outlasts the settlement window even on replay — is
+                // a hard error; the close aborts rather than settle a stale amount.
                 throw new Error(`${verdict.reason}: ${verdict.detail}`);
+            }
+            if (verdict.status === 'replayed') {
+                // Idempotent replay of the current highest voucher: watermark
+                // unchanged; signature + expiry/window already re-verified above.
+                return { ...current, closeRequestedAt: now };
             }
             if (verdict.status === 'accepted') {
                 return {
@@ -783,6 +839,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             merchantSigner: args.merchantSigner,
             mint: args.mint,
             network: args.network,
+            operator: args.operator,
             programId: args.programId,
             recipient: args.recipient,
             rpc: args.rpc,
@@ -825,7 +882,7 @@ async function reserveDelivery(store: SessionStore, args: ReserveDeliveryArgs): 
     let directive: MeteringDirective | undefined;
     await store.updateChannel(args.sessionId, current => {
         if (!current) throw new Error(`Channel ${args.sessionId} not found`);
-        if (current.finalized) throw new Error('Channel is already finalized');
+        if (current.sealed) throw new Error('Channel is already sealed');
         if (current.closeRequestedAt !== undefined) {
             throw new Error('Channel close is pending — no further deliveries accepted');
         }
@@ -872,6 +929,9 @@ async function reserveDelivery(store: SessionStore, args: ReserveDeliveryArgs): 
 
 interface CommitDeliveryArgs {
     readonly deliveryId: string;
+    /** Reject a final-commit voucher expiring within `now + settlementWindow`
+     * so a committed delivery can't expire before the async settle lands. */
+    readonly settlementWindow: bigint | undefined;
     readonly voucher: SignedVoucher;
 }
 
@@ -884,7 +944,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
     let outcome: { amount: bigint; cumulative: bigint; status: 'committed' | 'replayed' } | undefined;
     await store.updateChannel(channelId, async current => {
         if (!current) throw new Error(`Channel ${channelId} not found`);
-        if (current.finalized) throw new Error('Channel is already finalized');
+        if (current.sealed) throw new Error('Channel is already sealed');
         if (current.closeRequestedAt !== undefined) {
             throw new Error('Channel close is pending — no further commits accepted');
         }
@@ -917,6 +977,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
         // Verify signature on the voucher (matches Rust process_commit).
         const verdict = await verifyVoucherForChannel({
             deposit: current.deposit,
+            settlementWindow: args.settlementWindow,
             signed,
             state: current,
         });
@@ -963,6 +1024,8 @@ interface CloseAndSettleArgs {
     readonly merchantSigner: TransactionPartialSigner;
     readonly mint: string;
     readonly network: string;
+    /** Operator recorded as the channel `rentPayer` at open. */
+    readonly operator: string;
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike;
@@ -972,9 +1035,9 @@ interface CloseAndSettleArgs {
 }
 
 /**
- * Build + submit settle_and_finalize (+ optional Ed25519 precompile) +
+ * Build + submit settle_and_seal (+ optional Ed25519 precompile) +
  * distribute IXs for a channel that has already flipped to
- * `closeRequestedAt`. Marks the channel as finalized on success.
+ * `closeRequestedAt`. Marks the channel as sealed on success.
  *
  * Returns `undefined` when the channel cannot be settled (e.g. no
  * highest voucher recorded — nothing to settle).
@@ -982,6 +1045,16 @@ interface CloseAndSettleArgs {
 async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSettleAndDistributeResult | undefined> {
     const state = await args.store.getChannel(args.channelId);
     if (!state) return undefined;
+
+    // The distribute refund goes to the channel payer (the program enforces
+    // `payer == channel.payer`). It is recorded as `state.operator` at open.
+    // Never fall back to the recipient: refunding the merchant would derive the
+    // wrong refund token account and the settlement would fail on-chain.
+    if (!state.operator) {
+        throw new Error(
+            `cannot settle channel ${args.channelId}: the channel payer (refund destination) was not recorded at open`,
+        );
+    }
 
     let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
     if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
@@ -1010,8 +1083,13 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         mint: args.mint,
         network: args.network,
         payee: args.recipient,
-        payer: state.operator ?? args.recipient,
+        payer: state.operator,
+
         programId: args.programId,
+        // rentPayer reclaims the channel/escrow rent at distribute; it is the
+        // operator recorded as the channel rentPayer at open (the fee payer),
+        // not the refund payer carried in state.operator.
+        rentPayer: args.operator,
         rpc: args.rpc as unknown as {
             sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
         },
@@ -1023,7 +1101,7 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
 
     await args.store.updateChannel(args.channelId, current => {
         if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
-        return { ...current, finalized: true, settledSignature: result.signature as unknown as string };
+        return { ...current, sealed: true, settledSignature: result.signature as unknown as string };
     });
     return result;
 }
@@ -1086,6 +1164,12 @@ function parseU64String(value: string, name: string): bigint {
     const parsed = BigInt(value);
     if (parsed < 0n || parsed > (1n << 64n) - 1n) throw new Error(`${name} outside u64 range`);
     return parsed;
+}
+
+/** Parse an optional u64 carried on the wire as a decimal string or number. */
+function parseOptionalU64(value: number | string | undefined, name: string): bigint | undefined {
+    if (value === undefined) return undefined;
+    return parseU64String(String(value), name);
 }
 
 function errorMessage(error: unknown): string {
@@ -1198,7 +1282,18 @@ export declare namespace session {
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
-        /** Merchant signer for settle_and_finalize + distribute IXs. */
+        /**
+         * Settlement window in seconds — the forced-close grace period a
+         * non-zero voucher `expiresAt` must outlast. When set, a voucher
+         * whose `expiresAt` falls within `now + settlementWindowSeconds`
+         * is rejected (`expires-within-settlement-window`) so the merchant
+         * can still land an async settle_and_seal before it expires.
+         * A voucher with `expiresAt == 0` never expires and is unaffected.
+         * Defaults to 0 (window check disabled). Typically set to the
+         * channel `gracePeriod`.
+         */
+        readonly settlementWindowSeconds?: bigint;
+        /** Merchant signer for settle_and_seal + distribute IXs. */
         readonly signer?: TransactionPartialSigner;
         /** Optional basis-point splits distributed at close. Max 8. */
         readonly splits?: readonly SessionSplit[];

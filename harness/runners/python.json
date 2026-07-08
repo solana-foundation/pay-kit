@@ -1,5 +1,6 @@
 {
   "language": "python",
   "command": ["uv", "run", "python", "conformance_runner.py"],
-  "cwd": "python"
+  "cwd": "python",
+  "intents": ["charge", "x402-exact", "session"]
 }

@@ -18,6 +18,7 @@ describe('configure', () => {
         expect(config.operator.signer.isDemo).toBe(true);
         expect(config.operator.recipient).toBe(config.operator.signer.pubkey);
         expect(config.rpcUrl).toBe('http://localhost:8899');
+        expect(config.x402.facilitatorFee).toBe(0);
     });
 
     it('refuses the demo signer on mainnet', async () => {
@@ -27,8 +28,13 @@ describe('configure', () => {
         expect(config.operator.recipient).toBe(signer.pubkey);
     });
 
+    it('accepts the shipped protocols (mpp + x402)', async () => {
+        const config = await configure({ ...SECRET, accept: ['x402', 'mpp'] });
+        expect(config.accept).toEqual(['x402', 'mpp']);
+    });
+
     it('rejects protocols this SDK does not ship', async () => {
-        await expect(configure({ ...SECRET, accept: ['x402', 'mpp'] })).rejects.toThrow(ProtocolNotSupportedError);
+        await expect(configure({ ...SECRET, accept: ['stripe' as never] })).rejects.toThrow(ProtocolNotSupportedError);
         await expect(configure({ ...SECRET, accept: [] })).rejects.toThrow(ConfigurationError);
     });
 
@@ -37,6 +43,15 @@ describe('configure', () => {
         await expect(configure({ ...SECRET, mpp: { ...SECRET.mpp, expiresIn: -1 } })).rejects.toThrow(
             ConfigurationError,
         );
+    });
+
+    it('validates the x402 facilitator fee', async () => {
+        const config = await configure({ ...SECRET, x402: { facilitatorFee: 250 } });
+        expect(config.x402.facilitatorFee).toBe(250);
+
+        await expect(configure({ ...SECRET, x402: { facilitatorFee: -1 } })).rejects.toThrow(ConfigurationError);
+        await expect(configure({ ...SECRET, x402: { facilitatorFee: 10_001 } })).rejects.toThrow(ConfigurationError);
+        await expect(configure({ ...SECRET, x402: { facilitatorFee: 1.5 } })).rejects.toThrow(ConfigurationError);
     });
 
     it('requires a challenge secret outside localnet', async () => {
@@ -56,18 +71,21 @@ describe('configure', () => {
         process.env.PAY_KIT_MPP_EXPIRES_IN = '60';
         process.env.PAY_KIT_STABLECOINS = '';
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
+        process.env.PAY_KIT_X402_FACILITATOR_FEE = '125';
         try {
             const config = await configureFromEnv();
             expect(config.network).toBe('solana_devnet');
             expect(config.mpp.challengeBindingSecret).toBe('env-secret');
             expect(config.mpp.expiresIn).toBe(60);
             expect(config.rpcUrl).toBe('http://rpc.example');
+            expect(config.x402.facilitatorFee).toBe(125);
         } finally {
             delete process.env.PAY_KIT_NETWORK;
             delete process.env.PAY_KIT_MPP_SECRET;
             delete process.env.PAY_KIT_MPP_EXPIRES_IN;
             delete process.env.PAY_KIT_STABLECOINS;
             delete process.env.PAY_KIT_RPC_URL;
+            delete process.env.PAY_KIT_X402_FACILITATOR_FEE;
         }
     });
 });

@@ -39,7 +39,9 @@ use PayKit\Protocols\Mpp\MppConfig;
 $client = new PayKit(new Config(
     network: Network::SolanaLocalnet,
     preflight: false,
-    mpp: new MppConfig(realm: 'PHP example', challengeBindingSecret: 'local-dev-secret'),
+    // The challenge-binding secret must be >= 32 bytes (audit #24). This is a
+    // throwaway dev value; generate yours with `openssl rand -base64 32`.
+    mpp: new MppConfig(realm: 'PHP example', challengeBindingSecret: 'local-dev-secret-0123456789abcdef-01'),
 ));
 
 // One inline-priced gate. Accepts both x402 and MPP per default

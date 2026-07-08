@@ -92,6 +92,20 @@ module PayCore
         call("getSignatureStatuses", [signatures]).fetch("value")
       end
 
+      # Fetch the owning program of an account (the `owner` field of
+      # getAccountInfo). Returns the owner program ID string, or nil when the
+      # account does not exist. Used to resolve the token program of an
+      # arbitrary SPL mint at boot (audit #28).
+      def account_owner(pubkey)
+        value = call("getAccountInfo", [
+          pubkey,
+          {"encoding" => "base64", "commitment" => "confirmed"}
+        ]).fetch("value")
+        return nil if value.nil?
+
+        value["owner"]
+      end
+
       # Fetch a confirmed transaction by signature using base64 encoding.
       def transaction_base64(signature)
         call("getTransaction", [

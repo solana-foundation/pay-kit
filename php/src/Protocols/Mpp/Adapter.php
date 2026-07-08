@@ -73,7 +73,7 @@ final class Adapter
             'amount'   => (string) $this->totalUnits($gate),
             'currency' => $coin,
             'payTo'    => $payTo,
-            'realm'    => $this->config->mpp->realm,
+            'realm'    => $this->config->mpp->resolveRealm($payTo),
         ];
         if ($gate->hasFees()) {
             $splits = [];
@@ -198,10 +198,25 @@ final class Adapter
         if (isset($this->handlerCache[$key])) {
             return $this->handlerCache[$key];
         }
+        // Pin the route's known currency/recipient/network/decimals so
+        // ChargeServer::validateChargeRequest enforces the field-match checks
+        // unconditionally at issuance on the real route (audit #19 parity with
+        // Rust `validate_charge_request`, which pins to its own
+        // currency/network/decimals). The in-SDK request is built from this
+        // same route config (chargeRequestFor), so these are correct by
+        // construction; pinning makes the enforcement explicit and rejects any
+        // off-route request that reaches this oracle. Decimals is the SDK's
+        // fixed 6-dp micro-unit convention (matches the X402 adapter and
+        // priceUnits()).
         $charges = new ChargeServer(
             secretKey: $this->config->mpp->challengeBindingSecret ?? '',
-            realm: $this->config->mpp->realm,
+            realm: $this->config->mpp->resolveRealm($payTo),
             method: 'solana',
+            blockhashProvider: null,
+            pinnedCurrency: $coin,
+            pinnedRecipient: $payTo,
+            pinnedNetwork: $this->config->network->mintsLabel(),
+            pinnedDecimals: 6,
         );
         $rpc = new RpcClient($this->config->rpcUrl);
         $feePayer = null;
@@ -215,6 +230,7 @@ final class Adapter
             feePayer: $feePayer,
             network: $this->config->network->mintsLabel(),
             replayStore: $this->replayStore,
+            acceptPushMode: $this->config->mpp->acceptPushMode,
         );
         $this->handlerCache[$key] = [$charges, $handler];
         return $this->handlerCache[$key];

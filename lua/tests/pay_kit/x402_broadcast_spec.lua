@@ -138,7 +138,7 @@ helper.test('x402 verify_and_settle: cosigns + broadcasts + reserves signature',
       fee_payer = true,
     },
     x402 = {scheme = 'exact'},
-    mpp  = {realm = 'unused', challenge_binding_secret = 'x'},
+    mpp  = {realm = 'unused', challenge_binding_secret = 'x-secret-key-long-enough-32bytes!!!'},
   })
 
   local mint = base58.encode(string.rep('\4', 32))

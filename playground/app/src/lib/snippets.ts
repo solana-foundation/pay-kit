@@ -117,66 +117,89 @@ function resolve(
 const fallback = {
   typescript: (_: Ctx) => ({}), // migrated — manifest serves all four primitives
   rust: (c: Ctx) => ({
-    client:
-      c.primitive === 'x402'
-        ? `use pay_kit::client::{x402, ClientBuilder};
+    client: `use solana_pay_kit::mpp::client::{build_credential_header, parse_challenge};
 
-let client = ClientBuilder::new().with_x402_signer(signer).build();
-let res = client.get("${c.fullUrl}").send().await?;
-let data: serde_json::Value = res.json().await?;
-println!("{data}");`
-        : `use pay_kit::client::{mpp, ClientBuilder};
+// Read the 402 challenge, sign a credential, and replay the request with it.
+let challenge = parse_challenge(www_authenticate)?;
+let authorization = build_credential_header(&signer, &rpc, &challenge).await?;
+let res = reqwest::Client::new()
+    .get("${c.fullUrl}")
+    .header("Authorization", authorization)
+    .send()
+    .await?;
+println!("{}", res.text().await?);`,
+    // Rust gates a route with paid_get / paid_post (fixed), paid_upto_* (usage),
+    // or paid_batch_* (high-throughput). MPP session & subscription exist at the
+    // protocol layer (solana_pay_kit::mpp) but aren't yet paid_* gates, so the
+    // representative server is the fixed-charge gate.
+    server: `use axum::Router;
+use solana_pay_kit::{paid_${c.method.toLowerCase()}, PayKit, PayKitConfig, Payment};
 
-let client = ClientBuilder::new()
-    .with_mpp_signer(signer)
-    .rpc_url("http://localhost:8899")
-    .build();
+let pay = PayKit::new(PayKitConfig {
+    recipient: recipient.to_string(),
+    network: "mainnet".to_string(),
+    ..Default::default()
+})?;
 
-let res = client.get("${c.fullUrl}").send().await?;
-let data: serde_json::Value = res.json().await?;
-println!("{data}");`,
-    server: `use axum::{Router, routing::${c.method.toLowerCase()}};
-use pay_core::server::{${c.primitive === 'session' ? 'session' : c.primitive === 'subscription' ? 'subscription' : 'charge'}, ServerBuilder};
-
-let gate = ServerBuilder::new()
-    .recipient(recipient)
-    .network("mainnet")
-    .signer(fee_payer)
-    .build_${c.primitive === 'session' ? 'session' : c.primitive === 'subscription' ? 'subscription' : 'charge'}();
-
+// The gate advertises both MPP and x402; the client pays with either.
 let app = Router::new()
-    .route("${c.endpoint.path}", ${c.method.toLowerCase()}(handler).layer(gate));`,
+    .route("${c.endpoint.path}", paid_${c.method.toLowerCase()}(handler, "0.01", &pay));`,
   }),
   go: (c: Ctx) => ({
+    // Go gates a net/http route with the paykit umbrella: client.Require (fixed)
+    // or client.RequireUsage (x402 upto). MPP session lives at the protocol
+    // layer (protocols/mpp/server); subscription isn't implemented in Go.
     server: `import (
     "net/http"
-    "github.com/solana-foundation/pay-kit/go/server"
+
+    "github.com/solana-foundation/pay-kit/go/paykit"
+    _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+    _ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 )
 
-gate := server.New${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}(server.Options{
-    Recipient: recipient, Network: "mainnet", Signer: feePayer,
+client, _ := paykit.New(paykit.Config{
+    Network: paykit.SolanaLocalnet,
+    MPP:     paykit.MPPConfig{ChallengeBindingSecret: []byte("local-dev-secret")},
 })
+gate := paykit.Gate{Amount: paykit.MustParseUSD("0.01")}
 
-http.Handle("${c.endpoint.path}", gate.Wrap(handler))`,
+mux := http.NewServeMux()
+mux.Handle("${c.endpoint.path}", client.Require(gate)(handler))`,
   }),
   python: (c: Ctx) => ({
-    client: `from pay_kit.client import PayKitClient
+    client: `import asyncio
 
-client = PayKitClient(signer=signer, rpc_url="http://localhost:8899")
-res = client.get("${c.fullUrl}")
-print(res.json())`,
-    server: `from flask import Flask
-from pay_kit.server import ${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}Gate
+from solana_pay_kit import Signer
+from solana_pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
+
+
+async def main():
+    # x402_async_client auto-pays the 402 and replays the request.
+    async with x402_async_client(Signer.demo(), SolanaRpc("https://api.devnet.solana.com")) as http:
+        resp = await http.get("${c.fullUrl}")
+        print(resp.status_code, resp.text)
+
+
+asyncio.run(main())`,
+    // Python gates a route with @require_payment (Flask/Django) or
+    // Depends(RequirePayment(...)) (FastAPI). RequireUsage adds x402 upto and
+    // RequireSession adds MPP session; subscription isn't implemented.
+    server: `import solana_pay_kit
+from flask import Flask, jsonify
+from solana_pay_kit import Gate, usd
+from solana_pay_kit.flask import require_payment
+
+solana_pay_kit.configure(network="solana_localnet")
+gate = Gate.build(name="paid", amount=usd("0.01"),
+                  default_pay_to=solana_pay_kit.config().effective_recipient())
 
 app = Flask(__name__)
-gate = ${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}Gate(
-    recipient=RECIPIENT, network="mainnet", signer=fee_payer,
-)
 
-@app.route("${c.endpoint.path}", methods=["${c.method}"])
-@gate.guard
+
+@app.get("${c.endpoint.path}")
+@require_payment(gate)
 def handler():
-    return {"ok": True}`,
+    return jsonify(ok=True)`,
   }),
   ruby: (c: Ctx) => ({
     server: `require "sinatra"

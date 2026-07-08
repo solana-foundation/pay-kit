@@ -24,7 +24,10 @@ import (
 // InvalidKeyError is returned by the fallible factories when the input
 // cannot be parsed into a 64-byte Ed25519 secret key.
 type InvalidKeyError struct {
+	// Source names the input form that failed to parse: "bytes", "json",
+	// "hex", "base58", "file", or "env".
 	Source string
+	// Reason is the human-readable parse failure detail embedded in Error().
 	Reason string
 }
 
@@ -34,8 +37,12 @@ func (e *InvalidKeyError) Error() string {
 
 // localSigner is the concrete value behind every local factory.
 type localSigner struct {
-	priv   ed25519.PrivateKey
-	pub    paykit.Address
+	// priv is the 64-byte Ed25519 private key that produces signatures.
+	priv ed25519.PrivateKey
+	// pub is the base58 public key derived from priv, returned by Pubkey.
+	pub paykit.Address
+	// isDemo marks the package-shipped demo keypair so paykit can warn on
+	// use and reject it on mainnet.
 	isDemo bool
 }
 
@@ -46,8 +53,8 @@ func (s *localSigner) Sign(_ context.Context, msg []byte) ([]byte, error) {
 func (s *localSigner) IsDemo() bool { return s.isDemo }
 
 // demoSecret is the 64-byte secret of the package-shipped demo
-// keypair, identical to Ruby's PayKit::Signer::Demo and PHP's
-// PayKit\Signer\Demo. Pubkey: ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq.
+// keypair, identical across the language SDKs.
+// Pubkey: ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq.
 var demoSecret = func() []byte {
 	raw, _ := hex.DecodeString(
 		"1a3d75c009e81833598769b62f0953f40bd655aae353aa1a37813a7259a0c333" +
@@ -64,9 +71,11 @@ func Demo() paykit.Signer {
 	return &localSigner{priv: priv, pub: pubkeyOf(priv), isDemo: true}
 }
 
-// Generate produces a fresh ephemeral keypair. Test-only; production
-// callers load from a file or env so the same identity survives
-// restarts.
+// Generate produces a fresh ephemeral keypair. Use it for identities that
+// are ephemeral by design (tests, or short-lived signing keys); session
+// clients use client.NewEphemeralSessionSigner for the per-session
+// authorizedSigner. Persistent server identities load from a file or env so
+// the same identity survives restarts.
 func Generate() paykit.Signer {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

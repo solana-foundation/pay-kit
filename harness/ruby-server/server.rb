@@ -109,7 +109,9 @@ else
   pay_to            = require_env("MPP_HARNESS_PAY_TO")
   mint_raw          = require_env("MPP_HARNESS_MINT")
   amount_raw        = require_env("MPP_HARNESS_AMOUNT")
-  mpp_secret        = optional_env("MPP_HARNESS_SECRET_KEY", "pay-kit-harness-secret")
+  # Default >= 32 bytes: the MPP server enforces a 32-byte minimum HMAC
+  # secret at boot (audit #24).
+  mpp_secret        = optional_env("MPP_HARNESS_SECRET_KEY", "pay-kit-harness-secret-padding-000000")
   network_raw       = optional_env("MPP_HARNESS_NETWORK", "localnet")
   resource_path     = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
   settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature")

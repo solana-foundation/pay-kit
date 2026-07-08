@@ -9,7 +9,7 @@ class ExampleTest < Minitest::Test
   def test_sinatra_example_loads_and_exposes_health_route
     with_env(
       "PAY_KIT_PAY_TO" => pubkey(2),
-      "PAY_KIT_MPP_SECRET" => "test-secret"
+      "PAY_KIT_MPP_SECRET" => "test-secret-" + ("0" * 32)
     ) do
       require_relative "../examples/sinatra/app"
 

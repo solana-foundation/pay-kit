@@ -272,10 +272,18 @@ describe("cross-SDK conformance vectors", () => {
     expect(modes.has("canonical-bytes")).toBe(true);
   });
 
-  for (const { language, command, cwd: runnerCwd } of RUNNERS) {
+  for (const { language, command, cwd: runnerCwd, intents } of RUNNERS) {
     describe(`${language} reference runner`, () => {
       for (const vector of vectors) {
         it(`${vector.id} (${vector.mode}) -> ${vector.expect.outcome}`, async (ctx) => {
+          // Skip vectors for an intent this runner does not declare. Lets a new
+          // intent (e.g. "session") land with only the SDKs that implement it;
+          // runners without an explicit `intents` list default to the original
+          // cross-SDK set ("charge", "x402-exact").
+          if (!intents.includes(vector.intent)) {
+            ctx.skip();
+            return;
+          }
           const result = await runVector(command, vector, runnerCwd);
           expect(result.id).toBe(vector.id);
 

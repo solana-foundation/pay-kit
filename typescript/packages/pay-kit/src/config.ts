@@ -16,7 +16,20 @@ export type MppOptions = {
     readonly challengeBindingSecret?: string;
     /** Challenge TTL in seconds. `0` means never expires (dev only). */
     readonly expiresIn?: number;
+    /**
+     * Serve the interactive HTML payment page (the "Continue with Solana"
+     * pay.sh experience) on `402`s for browser requests (`Accept: text/html`),
+     * plus its service worker. API clients (JSON) still get the JSON `402`.
+     * Default `false`.
+     */
+    readonly html?: boolean;
     readonly realm?: string;
+};
+
+/** x402 protocol options. */
+export type X402Options = {
+    /** Facilitator fee for SVM `upto` usage channels, in basis points of the settled amount. */
+    readonly facilitatorFee?: number;
 };
 
 /** Merchant identity: where money lands and which key signs. */
@@ -41,7 +54,7 @@ export type Operator = {
 
 /** Parameters for {@link configure}. */
 export type ConfigureParams = {
-    /** Ordered protocol preference. TypeScript currently supports `['mpp']` only. */
+    /** Ordered protocol preference. */
     readonly accept?: readonly Protocol[];
     readonly mpp?: MppOptions;
     /** Canonical name (`solana_localnet`) or Solana slug (`localnet`). */
@@ -55,21 +68,31 @@ export type ConfigureParams = {
     readonly rpcUrl?: string;
     /** Ordered settlement preference. */
     readonly stablecoins?: readonly Stablecoin[];
+    readonly x402?: X402Options;
 };
 
 /** Resolved, immutable boot configuration. */
 export type PayKitConfig = {
     readonly accept: readonly Protocol[];
-    readonly mpp: { readonly challengeBindingSecret: string; readonly expiresIn: number; readonly realm: string };
+    readonly mpp: {
+        readonly challengeBindingSecret: string;
+        readonly expiresIn: number;
+        readonly html: boolean;
+        readonly realm: string;
+    };
     readonly network: Network;
     readonly operator: Operator;
     readonly preflight: boolean;
     readonly replayStore: Store.Store | undefined;
     readonly rpcUrl: string;
     readonly stablecoins: readonly Stablecoin[];
+    readonly x402: {
+        readonly facilitatorFee: number;
+    };
 };
 
 const DEFAULT_EXPIRES_IN_SECONDS = 120;
+const BASIS_POINTS_DENOMINATOR = 10_000;
 
 function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
     const secret = provided ?? process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
@@ -109,9 +132,9 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
     const accept = params.accept ?? ['mpp'];
     if (accept.length === 0) throw new ConfigurationError('accept must list at least one protocol.');
     for (const protocol of accept) {
-        if (protocol !== 'mpp') {
+        if (protocol !== 'mpp' && protocol !== 'x402') {
             throw new ProtocolNotSupportedError(
-                `Protocol "${protocol}" is not available in the TypeScript SDK yet (MPP only).`,
+                `Protocol "${String(protocol)}" is not available in the TypeScript SDK yet (MPP and x402 only).`,
             );
         }
     }
@@ -147,11 +170,23 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         throw new ConfigurationError('mpp.expiresIn must be a non-negative integer number of seconds.');
     }
 
+    const facilitatorFee = params.x402?.facilitatorFee ?? 0;
+    if (!Number.isInteger(facilitatorFee) || facilitatorFee < 0 || facilitatorFee > BASIS_POINTS_DENOMINATOR) {
+        throw new ConfigurationError('x402.facilitatorFee must be an integer between 0 and 10000 basis points.');
+    }
+
+    // The MPP challenge-binding secret is only meaningful when MPP is accepted;
+    // an x402-only server must not be forced to provide one.
+    const challengeBindingSecret = accept.includes('mpp')
+        ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
+        : (params.mpp?.challengeBindingSecret ?? '');
+
     return Object.freeze({
         accept: Object.freeze([...accept]),
         mpp: Object.freeze({
-            challengeBindingSecret: resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret),
+            challengeBindingSecret,
             expiresIn,
+            html: params.mpp?.html ?? false,
             realm: params.mpp?.realm ?? 'App',
         }),
         network,
@@ -160,6 +195,9 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         replayStore: params.replayStore,
         rpcUrl: params.rpcUrl ?? DEFAULT_RPC_URLS[toSolanaNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet,
         stablecoins: Object.freeze([...stablecoins]),
+        x402: Object.freeze({
+            facilitatorFee,
+        }),
     });
 }
 
@@ -168,13 +206,14 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
  * variables: `NETWORK`, `RPC_URL`, `ACCEPT` and `STABLECOINS`
  * (comma-separated), `OPERATOR_KEY` (any encoding {@link Signer.env}
  * accepts), `RECIPIENT`, `FEE_PAYER`, `MPP_REALM`, `MPP_SECRET`,
- * `MPP_EXPIRES_IN`, and `PREFLIGHT`.
+ * `MPP_EXPIRES_IN`, `X402_FACILITATOR_FEE`, and `PREFLIGHT`.
  */
 export async function configureFromEnv(prefix = 'PAY_KIT_'): Promise<PayKitConfig> {
     const env = (name: string) => process.env[`${prefix}${name}`]?.trim() || undefined;
     const list = (value: string | undefined) => value?.split(',').map(entry => entry.trim()) ?? undefined;
 
     const expiresIn = env('MPP_EXPIRES_IN');
+    const facilitatorFee = env('X402_FACILITATOR_FEE');
     return await configure({
         accept: list(env('ACCEPT')) as readonly Protocol[] | undefined,
         mpp: {
@@ -190,5 +229,8 @@ export async function configureFromEnv(prefix = 'PAY_KIT_'): Promise<PayKitConfi
         },
         preflight: env('PREFLIGHT') === undefined ? undefined : env('PREFLIGHT') !== 'false',
         rpcUrl: env('RPC_URL'),
+        x402: {
+            facilitatorFee: facilitatorFee === undefined ? undefined : Number(facilitatorFee),
+        },
     });
 }

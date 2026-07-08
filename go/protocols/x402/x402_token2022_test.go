@@ -5,7 +5,7 @@ import (
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	x402adapter "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	x402adapter "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 )
 
 // TestAcceptsEntryTokenProgramByCurrency guards the Token-2022 fix: the

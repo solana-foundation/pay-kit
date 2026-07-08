@@ -81,6 +81,15 @@ module PayCore
       end
 
       # Return the default SPL token program for a currency.
+      #
+      # SAFETY (audit #28): this resolves the token program from the static
+      # stablecoin table ONLY. Known stablecoins (including Token-2022 ones:
+      # PYUSD/USDG/CASH) resolve correctly. An ARBITRARY mint address that is
+      # not in the table is NOT recognised here — callers that accept arbitrary
+      # mints MUST NOT rely on this method's legacy-Token default. Use
+      # `known_currency?` to gate, and have the caller require an explicit
+      # on-chain-resolved `tokenProgram` (or reject) for unknown mints. See
+      # `PayKit::Protocols::Mpp::Protocol::Solana::ChargeMethod`.
       def token_program_for(currency, network)
         symbol = symbol_for(currency, network)
         TOKEN_2022_SYMBOLS.include?(symbol) ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM
@@ -95,6 +104,15 @@ module PayCore
           return symbol if entries.value?(resolved)
         end
         nil
+      end
+
+      # True when `currency` is a known symbol (or SOL), or a known stablecoin
+      # mint address. False for an arbitrary, unrecognised mint address — for
+      # which the static `token_program_for` legacy-Token default is NOT safe
+      # to trust (audit #28). Used to decide whether the token program can be
+      # resolved from the table or must be supplied/resolved on-chain.
+      def known_currency?(currency, network)
+        !symbol_for(currency, network).nil?
       end
 
       # Look up the decimals for a known mint symbol or address. Falls back

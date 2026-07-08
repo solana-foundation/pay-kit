@@ -11,6 +11,15 @@ export {
     type PendingDelivery,
     type SessionStore,
 } from './session/store.js';
+export {
+    buildReclaimInstruction,
+    encodeVoucherMessageBytes,
+    type ReclaimBuildArgs,
+    submitSettleAndDistribute,
+    type SubmitSettleAndDistributeResult,
+    waitForSignatureConfirmation,
+} from './session/on-chain.js';
+export { buildAndSignWireTransaction } from './session/wire-tx.js';
 export { subscription } from './Subscription.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/server'
 export { Mppx, Expires, Store } from 'mppx/server';

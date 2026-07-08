@@ -5,8 +5,8 @@
 // in `rust/crates/mpp/src/server/session.rs`. Two responsibilities:
 //
 //   1. Build the exact instruction bytes the on-chain payment-channels
-//      program expects (settle_and_finalize, distribute, top_up, plus the
-//      multi-delegator init/update for OperatedVoucher pull parity).
+//      program expects (settle_and_seal, distribute, top_up, reclaim, plus
+//      the multi-delegator init/update for OperatedVoucher pull parity).
 //   2. Verify client-submitted open transactions against the session
 //      challenge before persisting channel state.
 //
@@ -41,10 +41,13 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
-import { getSettleAndFinalizeInstruction } from '../../generated/payment-channels/instructions/settleAndFinalize.js';
+import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
+import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
+import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
+import { VOUCHER_MAGIC } from '../../shared/voucher.js';
 import { coSignBase64Transaction } from '../../utils/transactions.js';
 
 /**
@@ -66,31 +69,26 @@ export const ED25519_PROGRAM_ADDRESS =
     'Ed25519SigVerify111111111111111111111111111' as Address<'Ed25519SigVerify111111111111111111111111111'>;
 
 /**
- * Canonical payment-channels program ID. The Rust crate uses the Surfnet
- * deployment id; the vendored Codama tree bakes in the upstream
- * canonical id. We default to the Surfnet id here so server behavior
- * matches the Rust mirror; callers can override per-call.
+ * Canonical payment-channels program ID, re-exported from the generated client
+ * so there's a single source of truth that updates on IDL regeneration.
+ * Callers can override per-call.
  */
-export const PAYMENT_CHANNELS_PROGRAM_ID =
-    'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc' as Address<'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc'>;
+export const PAYMENT_CHANNELS_PROGRAM_ID = PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 
 /** Canonical multi-delegator program ID. */
 export const MULTI_DELEGATOR_PROGRAM_ID =
     'EPEUTog1kptYkthDJF6MuB1aM4aDAwHYwoF32Rzv5rqg' as Address<'EPEUTog1kptYkthDJF6MuB1aM4aDAwHYwoF32Rzv5rqg'>;
 
 /**
- * Treasury owner used by the current payment-channels program deployment.
- * Pattern: 32 bytes of repeated 0xBE 0xEF; mirrors `TREASURY_OWNER` in
- * `rust/crates/mpp/src/program/payment_channels.rs`.
+ * Treasury owner baked into the deployed (mainnet-build) payment-channels
+ * program — Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP. The treasury ATA is
+ * ATA(TREASURY_OWNER, mint, tokenProgram). Mirrors `TREASURY_OWNER` in
+ * `rust/crates/core/src/payment_channels.rs`.
  */
-const TREASURY_OWNER_BYTES = (() => {
-    const bytes = new Uint8Array(32);
-    for (let i = 0; i < 32; i += 2) {
-        bytes[i] = 0xbe;
-        bytes[i + 1] = 0xef;
-    }
-    return bytes;
-})();
+const TREASURY_OWNER_BYTES = new Uint8Array([
+    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09, 0xa5, 0x3a, 0x0e,
+    0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,
+]);
 
 /** Payment-channel open instruction discriminator. */
 const OPEN_DISCRIMINATOR = 1;
@@ -102,7 +100,7 @@ const U16_LE = (n: number) => new Uint8Array([n & 0xff, (n >> 8) & 0xff]);
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Build an Ed25519 verify precompile instruction over the 48-byte voucher
+ * Build an Ed25519 verify precompile instruction over the 50-byte voucher
  * message. Layout matches `build_ed25519_verify_instruction` in
  * `rust/crates/mpp/src/program/payment_channels.rs`.
  *
@@ -152,8 +150,8 @@ export function buildEd25519VerifyInstruction(args: {
 }
 
 /**
- * Encode the canonical 48-byte voucher payload. Identical to
- * `encodeVoucherMessage` in `shared/voucher.ts` but kept here so the
+ * Encode the canonical 50-byte voucher payload (magic-prefixed). Identical
+ * to `encodeVoucherMessage` in `shared/voucher.ts` but kept here so the
  * on-chain helpers don't pull in client-side types.
  */
 export function encodeVoucherMessageBytes(args: {
@@ -165,19 +163,20 @@ export function encodeVoucherMessageBytes(args: {
     if (channelBytes.byteLength !== 32) {
         throw new Error(`channelId must decode to 32 bytes; got ${channelBytes.byteLength}`);
     }
-    const out = new Uint8Array(48);
-    out.set(channelBytes as Uint8Array, 0);
-    out.set(getU64Encoder().encode(args.cumulativeAmount) as Uint8Array, 32);
-    out.set(getI64Encoder().encode(args.expiresAt) as Uint8Array, 40);
+    const out = new Uint8Array(50);
+    out.set(VOUCHER_MAGIC, 0);
+    out.set(channelBytes as Uint8Array, 2);
+    out.set(getU64Encoder().encode(args.cumulativeAmount) as Uint8Array, 34);
+    out.set(getI64Encoder().encode(args.expiresAt) as Uint8Array, 42);
     return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// settle_and_finalize + distribute + top_up
+// settle_and_seal + distribute + top_up + reclaim
 // ─────────────────────────────────────────────────────────────────────
 
-/** Arguments to {@link buildSettleAndFinalizeInstructions}. */
-export interface SettleAndFinalizeBuildArgs {
+/** Arguments to {@link buildSettleAndSealInstructions}. */
+export interface SettleAndSealBuildArgs {
     /** Payment-channel address being settled (base58). */
     readonly channelId: string;
     /** Merchant signer authorized to settle the channel. */
@@ -186,7 +185,7 @@ export interface SettleAndFinalizeBuildArgs {
     readonly programId?: Address | undefined;
     /**
      * Optional final voucher. When present, an Ed25519 precompile IX is
-     * prepended and `hasVoucher` is set to 1 on the settle_and_finalize args.
+     * prepended and `hasVoucher` is set to 1 on the settle_and_seal args.
      * Both `signature` (base58, 64 bytes) and `authorizedSigner` (base58, 32 bytes)
      * are required when `voucher` is provided.
      */
@@ -198,8 +197,8 @@ export interface SettleAndFinalizeBuildArgs {
         | undefined;
 }
 
-/** Instructions produced for a settle_and_finalize call. */
-export interface SettleAndFinalizeBuildResult {
+/** Instructions produced for a settle_and_seal call. */
+export interface SettleAndSealBuildResult {
     /** Instructions in submit order (Ed25519 precompile first when a voucher is settled). */
     readonly instructions: readonly ServerInstruction[];
     /** True when the transaction must carry the Ed25519 precompile instruction. */
@@ -207,12 +206,12 @@ export interface SettleAndFinalizeBuildResult {
 }
 
 /**
- * Build the instruction(s) for an on-chain settle_and_finalize. If a
+ * Build the instruction(s) for an on-chain settle_and_seal. If a
  * voucher is provided, an Ed25519 precompile IX is prepended at index 0
- * — the settle_and_finalize IX references the instructions sysvar at
+ * — the settle_and_seal IX references the instructions sysvar at
  * index `-1` (i.e. the precompile immediately before it).
  */
-export function buildSettleAndFinalizeInstructions(args: SettleAndFinalizeBuildArgs): SettleAndFinalizeBuildResult {
+export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): SettleAndSealBuildResult {
     const programId = args.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
     const channel = address(args.channelId);
     const instructions: ServerInstruction[] = [];
@@ -250,19 +249,15 @@ export function buildSettleAndFinalizeInstructions(args: SettleAndFinalizeBuildA
         );
     }
 
-    const ix = getSettleAndFinalizeInstruction(
+    const ix = getSettleAndSealInstruction(
         {
             channel,
             instructionsSysvar: INSTRUCTIONS_SYSVAR_ADDRESS,
-            merchant: args.merchantSigner,
-            settleAndFinalizeArgs: {
-                hasVoucher,
-                voucher: {
-                    channelId: channel,
-                    cumulativeAmount,
-                    expiresAt,
-                },
-            },
+            // The channel payee (merchant) signs the seal.
+            payee: args.merchantSigner,
+            // The program reads the voucher from the ed25519 precompile; the
+            // settle_and_seal args carry only the hasVoucher flag.
+            settleAndSealArgs: { hasVoucher },
         },
         { programAddress: programId },
     );
@@ -280,6 +275,13 @@ export interface DistributeBuildArgs {
     readonly mint: string;
     readonly payerAddr?: string | undefined;
     readonly programId?: Address | undefined;
+    /**
+     * Operator recorded as `rentPayer` at open; it reclaims the channel PDA +
+     * escrow ATA rent at distribute (writable, not a signer). Required — it
+     * must match the rentPayer the channel stored, so there is no payer
+     * fallback.
+     */
+    readonly rentPayer: string;
     readonly splits: readonly { readonly bps: number; readonly recipient: string }[];
     readonly tokenProgram: string;
 }
@@ -298,6 +300,16 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
     const channel = address(args.channelState.channelId);
     const payer = address(args.payerAddr ?? args.channelState.payer);
     const payee = address(args.channelState.payee);
+    // rentPayer reclaims the channel/escrow rent at distribute; it is the
+    // operator recorded as the channel rentPayer at open. It must match the
+    // rentPayer the channel stored, so it is required: a payer fallback would
+    // build an instruction the on-chain rentPayer check rejects.
+    if (!args.rentPayer) {
+        throw new Error(
+            'buildDistributeInstruction: rentPayer is required (the operator recorded as the channel rentPayer at open)',
+        );
+    }
+    const rentPayer = address(args.rentPayer);
 
     const [channelTokenAccount] = await findAssociatedTokenPda({ mint, owner: channel, tokenProgram });
     const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: payer, tokenProgram });
@@ -327,6 +339,7 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
             payer,
             payerTokenAccount,
             recipientTokenAccounts,
+            rentPayer,
             selfProgram: programId,
             tokenProgram,
             treasuryTokenAccount,
@@ -373,6 +386,31 @@ export async function buildTopUpInstruction(args: TopUpBuildArgs): Promise<Serve
     return ix as unknown as ServerInstruction;
 }
 
+/** Arguments to the reclaim instruction builder. */
+export interface ReclaimBuildArgs {
+    readonly channelId: string;
+    readonly programId?: Address | undefined;
+    /** Operator recorded as `rentPayer` at open; receives the channel PDA lamports. */
+    readonly rentPayer: string;
+}
+
+/**
+ * Build a reclaim instruction. Permissionless rent recovery for a channel
+ * left in the `distributed` status: the program closes the channel PDA and
+ * returns its lamports to `rentPayer` once `clock.slot > open_slot + 1500`.
+ */
+export function buildReclaimInstruction(args: ReclaimBuildArgs): ServerInstruction {
+    const programId = args.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
+    const ix = getReclaimInstruction(
+        {
+            channel: address(args.channelId),
+            rentPayer: address(args.rentPayer),
+        },
+        { programAddress: programId },
+    );
+    return ix as unknown as ServerInstruction;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // verifyOpenTx: parse a client-submitted open tx and validate the IX
 // ─────────────────────────────────────────────────────────────────────
@@ -389,6 +427,19 @@ export interface VerifyOpenTxExpected {
     /** Optional override for the SPL mint (otherwise resolved from currency/network). */
     readonly mint?: string | undefined;
     readonly network?: string | undefined;
+    /**
+     * Challenge-issued open slot. When set, the open instruction's `openSlot`
+     * arg must equal it — the client is required to echo the slot the server
+     * handed out in the 402 challenge.
+     */
+    readonly openSlot?: bigint | undefined;
+    /**
+     * Operator / fee-payer pubkey (base58) = the expected `rentPayer`. The open
+     * instruction's `rentPayer` account (slot 1) must equal it (it is pinned to
+     * the operator that co-signs open as fee payer while gasless). Required: the
+     * rentPayer slot is a security boundary and is always checked.
+     */
+    readonly operator: string;
     /** Optional override for the payment-channels program id. */
     readonly programId?: string | undefined;
     /** Primary recipient (challenge `recipient`). */
@@ -428,6 +479,14 @@ export interface VerifyOpenTxResult {
     readonly deposit: bigint;
     /** Close grace period in seconds. */
     readonly gracePeriod: number;
+    /** Slot the open was built against (a channel PDA seed; gates reclaim). */
+    readonly openSlot: bigint;
+    /**
+     * Channel payer (open account 0, base58): the deposit funder and the
+     * distribute refund destination (the program enforces it equals
+     * `channel.payer`).
+     */
+    readonly payer: string;
     /** Channel-derivation salt. */
     readonly salt: bigint;
 }
@@ -461,6 +520,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     // The kit compiled-message decoder dispatches on the version prefix
     // byte, so legacy and v0 messages both decode to this shape.
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        addressTableLookups?: readonly unknown[] | undefined;
         instructions: readonly {
             accountIndices?: readonly number[];
             data?: Uint8Array | undefined;
@@ -468,6 +528,18 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         }[];
         staticAccounts: readonly string[];
     };
+
+    // Reject address-lookup tables. The operator co-signs the open as fee
+    // payer, and every account this verifier inspects (payer, rentPayer,
+    // payee, mint, authorizedSigner, channel) must be a *static* account it
+    // can read directly — an ALT-resolved account is opaque here and would
+    // let a client smuggle a different account past the slot checks. Mirrors
+    // the x402 svm `verifyOpenTransaction` ALT guard.
+    if (message.addressTableLookups && message.addressTableLookups.length > 0) {
+        throw new Error(
+            'verifyOpenTx: address-lookup tables are not permitted in an open transaction — all accounts must be static',
+        );
+    }
 
     // Bind the claimed signature to this transaction (see doc comment).
     if (openPayload.signature && !isPlaceholderSignature(openPayload.signature)) {
@@ -508,11 +580,13 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error('verifyOpenTx: no payment-channels open instruction found');
     }
 
-    // open instruction account layout (matches vendored open.ts):
-    //   0 payer, 1 payee, 2 mint, 3 authorizedSigner, 4 channel,
-    //   5 payerTokenAccount, 6 channelTokenAccount, 7 tokenProgram, …
+    // open instruction account layout (matches vendored open.ts) after the
+    // rentPayer (+1) shift:
+    //   0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,
+    //   6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, …
+    // rentPayer (slot 1) is pinned to the operator / fee payer.
     const indices = openIx.accountIndices;
-    if (indices.length < 7) {
+    if (indices.length < 8) {
         throw new Error(`verifyOpenTx: open instruction has too few accounts (${indices.length})`);
     }
     const accountAt = (slot: number, label: string): string => {
@@ -522,10 +596,11 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         return addr;
     };
     const payerAddr = accountAt(0, 'payer');
-    const payeeAddr = accountAt(1, 'payee');
-    const mintAddr = accountAt(2, 'mint');
-    const authorizedSignerAddr = accountAt(3, 'authorizedSigner');
-    const channelAddr = accountAt(4, 'channel');
+    const rentPayerAddr = accountAt(1, 'rentPayer');
+    const payeeAddr = accountAt(2, 'payee');
+    const mintAddr = accountAt(3, 'mint');
+    const authorizedSignerAddr = accountAt(4, 'authorizedSigner');
+    const channelAddr = accountAt(5, 'channel');
 
     if (payeeAddr !== expected.recipient) {
         throw new Error(`verifyOpenTx: payee ${payeeAddr} != expected recipient ${expected.recipient}`);
@@ -538,21 +613,31 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             `verifyOpenTx: authorizedSigner ${authorizedSignerAddr} != expected ${expected.authorizedSigner}`,
         );
     }
+    if (!expected.operator) {
+        throw new Error('verifyOpenTx: expected.operator (the channel rentPayer) is required');
+    }
+    if (rentPayerAddr !== expected.operator) {
+        throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected operator ${expected.operator}`);
+    }
 
-    // ix data: [discriminator u8][salt u64][deposit u64][grace u32][recipients array]
-    if (openIx.data.length < 1 + 8 + 8 + 4) {
+    // ix data: [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients array]
+    if (openIx.data.length < 1 + 8 + 8 + 4 + 8) {
         throw new Error('verifyOpenTx: open instruction data too short');
     }
     const view = new DataView(openIx.data.buffer, openIx.data.byteOffset, openIx.data.byteLength);
     const salt = view.getBigUint64(1, true);
     const deposit = view.getBigUint64(9, true);
     const gracePeriod = view.getUint32(17, true);
+    const openSlot = view.getBigUint64(21, true);
 
     if (deposit === 0n) {
         throw new Error('verifyOpenTx: deposit must be greater than zero');
     }
     if (deposit > expected.maxCap) {
         throw new Error(`verifyOpenTx: deposit ${deposit} exceeds maxCap ${expected.maxCap}`);
+    }
+    if (expected.openSlot !== undefined && openSlot !== expected.openSlot) {
+        throw new Error(`verifyOpenTx: openSlot ${openSlot} != challenge-issued openSlot ${expected.openSlot}`);
     }
 
     // Re-derive the channel PDA and assert it matches.
@@ -566,6 +651,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             getAddressEncoder().encode(address(mintAddr)),
             getAddressEncoder().encode(address(authorizedSignerAddr)),
             getU64Encoder().encode(salt),
+            getU64Encoder().encode(openSlot),
         ],
     });
     if (derivedChannel !== channelAddr) {
@@ -573,6 +659,9 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     }
     if (openPayload.channelId && openPayload.channelId !== channelAddr) {
         throw new Error(`verifyOpenTx: openPayload.channelId ${openPayload.channelId} != tx channel ${channelAddr}`);
+    }
+    if (openPayload.recentSlot !== undefined && BigInt(openPayload.recentSlot) !== openSlot) {
+        throw new Error(`verifyOpenTx: openPayload.recentSlot ${openPayload.recentSlot} != tx openSlot ${openSlot}`);
     }
 
     // Optional liveness check — only when caller provides an RPC and the
@@ -587,7 +676,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         }
     }
 
-    return { channelId: channelAddr, deposit, gracePeriod, salt };
+    return { channelId: channelAddr, deposit, gracePeriod, openSlot, payer: payerAddr, salt };
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */
@@ -714,6 +803,11 @@ export interface SubmitSettleAndDistributeArgs {
     readonly payee: string;
     readonly payer: string;
     readonly programId?: Address | undefined;
+    /**
+     * Operator recorded as `rentPayer` at open; it reclaims the channel/escrow
+     * rent at distribute. Required (no payer fallback).
+     */
+    readonly rentPayer: string;
     readonly rpc: {
         sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
     };
@@ -737,7 +831,7 @@ export interface SubmitSettleAndDistributeResult {
 }
 
 /**
- * Build settle_and_finalize (+ optional Ed25519 precompile) + distribute
+ * Build settle_and_seal (+ optional Ed25519 precompile) + distribute
  * instructions and submit them as a single transaction. Designed for
  * push-mode close — the caller supplies a signing closure so the actual
  * compile/sign step stays out of this module's surface.
@@ -751,7 +845,7 @@ export async function submitSettleAndDistribute(
         throw new Error('submitSettleAndDistribute: tokenProgram or currency is required');
     }
 
-    const settle = buildSettleAndFinalizeInstructions({
+    const settle = buildSettleAndSealInstructions({
         channelId: args.channelId,
         merchantSigner: args.signer,
         programId: args.programId,
@@ -763,6 +857,7 @@ export async function submitSettleAndDistribute(
         mint: args.mint,
         payerAddr: args.payer,
         programId: args.programId,
+        rentPayer: args.rentPayer,
         splits: args.splits,
         tokenProgram,
     });

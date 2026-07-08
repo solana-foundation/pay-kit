@@ -23,12 +23,13 @@ type Client struct {
 	// Adapters are set during New() via the package-level registration
 	// hooks each adapter registers in its init(). Tests can override
 	// them through ClientOption.
-	mppAdapter  Adapter
-	x402Adapter Adapter
+	mppAdapter   Adapter
+	x402Adapter  Adapter
+	usageAdapter UsageAdapter
 
 	// errorHandler renders the 402 (or other) response when a gate
-	// rejects a request. Defaults to DefaultErrorHandler; override with
-	// SetErrorHandler.
+	// rejects a request. nil means each gate family uses its own
+	// default; override with SetErrorHandler.
 	errorHandler ErrorHandler
 }
 
@@ -39,12 +40,10 @@ type Client struct {
 type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
 // SetErrorHandler replaces the response writer used on a rejected
-// request. A nil handler restores [DefaultErrorHandler]. Not safe to
-// call concurrently with in-flight requests; set it at startup.
+// request. A nil handler restores the default behavior for each gate
+// family. Not safe to call concurrently with in-flight requests; set it
+// at startup.
 func (c *Client) SetErrorHandler(h ErrorHandler) {
-	if h == nil {
-		h = DefaultErrorHandler
-	}
 	c.errorHandler = h
 }
 
@@ -123,6 +122,10 @@ func (c *Client) MppAdapter() Adapter { return c.mppAdapter }
 // Config.Accept).
 func (c *Client) X402Adapter() Adapter { return c.x402Adapter }
 
+// UsageAdapter returns the configured usage (upto) adapter, or nil when
+// usage gates are not available.
+func (c *Client) UsageAdapter() UsageAdapter { return c.usageAdapter }
+
 // New resolves zero-value defaults, runs the boot preflight when
 // enabled, and returns a Client wired against the resolved config.
 func New(cfg Config) (*Client, error) {
@@ -180,7 +183,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.MPP.ChallengeBindingSecret = secret
 	}
 
-	c := &Client{Config: cfg, errorHandler: DefaultErrorHandler}
+	c := &Client{Config: cfg}
 	for _, s := range cfg.Accept {
 		b, ok := registeredBuilders[s]
 		if !ok {
@@ -201,6 +204,16 @@ func New(cfg Config) (*Client, error) {
 		if err := runPreflight(cfg); err != nil {
 			return nil, err
 		}
+	}
+	// Wire the usage (upto) adapter only for x402 upto configs. Exact x402
+	// still supports a recipient separate from the operator signer, while
+	// the payment-channel program requires upto recipient == operator.
+	if containsProtocol(cfg.Accept, X402) && cfg.X402.Scheme == "upto" && registeredUsageBuilder != nil {
+		usageAdapter, err := registeredUsageBuilder(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("paykit: usage adapter: %w", err)
+		}
+		c.usageAdapter = usageAdapter
 	}
 	return c, nil
 }

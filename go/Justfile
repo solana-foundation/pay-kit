@@ -19,20 +19,37 @@ test:
 fmt:
     gofmt -s -w .
 
-# Lint pipeline: gofmt-check + go vet + staticcheck
+# Lint pipeline: gofmt-check + go vet + staticcheck.
+# Codama-generated program clients under protocols/programs/<name>/ carry a
+# "DO NOT EDIT" header and follow gagliardetto/solana-go's generated-client
+# idioms (unkeyed VariantType literals, embedded-field selectors), which trip
+# `go vet -composites` and staticcheck QF1008. They are byte-for-byte
+# reproducible from idl/<name>.json, so we exclude the generated dirs from the
+# authored-code lint gates — mirroring the golangci-lint path exclusion and the
+# Rust crate's pure-passthrough src/generated/ treatment.
 lint:
     test -z "$(gofmt -s -l . | tee /dev/stderr)"
-    go vet ./...
-    go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+    # -composites is disabled module-wide because the generated clients (and any
+    # package importing them, e.g. the parity guard) surface gagliardetto's
+    # unkeyed VariantType literals; golangci-lint's govet (the CI gate) already
+    # runs with composites off, so this keeps the local justfile vet aligned.
+    go vet -composites=false $(go list ./... | grep -v '/protocols/programs/paymentchannels$')
+    go run honnef.co/go/tools/cmd/staticcheck@latest $(go list ./... | grep -v '/protocols/programs/paymentchannels$')
 
 # Run module-deps audit (govulncheck)
 audit:
     go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-# Test with coverage gate (defaults to 90)
+# Test with coverage gate (defaults to 90).
+# The codama-generated payment-channels client and the runnable examples are
+# filtered from the profile before the gate: the generated client is
+# byte-for-byte reproducible from idl/payment-channels.json (the same
+# carve-out the lint recipe applies), and examples are demo binaries that the
+# other SDKs in this repo also keep out of their coverage denominators.
 test-cover gate="90":
     mkdir -p build
-    go test -coverprofile=build/coverage.out ./...
+    go test -coverprofile=build/coverage.raw.out ./...
+    grep -v -e '/protocols/programs/paymentchannels/' -e '/examples/' build/coverage.raw.out > build/coverage.out
     go tool cover -func=build/coverage.out
     @awk -v gate={{gate}} '/^total:/ {pct=$NF+0; if (pct+0 < gate+0) {printf "coverage %s below gate %d%%\n",$NF,gate; exit 1} else {printf "coverage %s meets gate %d%%\n",$NF,gate}}' <(go tool cover -func=build/coverage.out)
 
@@ -43,3 +60,6 @@ check: build lint audit test-cover
 serve-example port="4567":
     go run ./examples/simple-server
 
+# Boot the playground API example (same endpoints as typescript/examples/playground-api)
+serve-playground port="3000":
+    PORT={{port}} go run ./examples/playground-api

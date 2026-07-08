@@ -179,7 +179,7 @@ struct X402LegacyBuildVectorTests {
 
     private func _decodeShape(_ header: String) throws -> [String: Any] {
         guard let data = Data(base64Encoded: header) else {
-            throw MppError.invalidTransaction("header is not standard base64")
+            throw PayKitError.invalidTransaction("header is not standard base64")
         }
         return try JSONSerialization.jsonObject(with: data) as! [String: Any]
     }

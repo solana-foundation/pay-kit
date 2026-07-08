@@ -17,7 +17,7 @@ import { TOKEN_PROGRAM, USDC } from '../constants.js';
 import type { SessionChallenge, SessionRequest } from '../client/Session.js';
 
 const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as Blockhash;
-const PAYMENT_CHANNELS_PROGRAM = 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc';
+const PAYMENT_CHANNELS_PROGRAM = 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX';
 
 type TestCompiledMessage = {
     instructions: readonly { data: Uint8Array; programAddressIndex: number }[];
@@ -49,6 +49,7 @@ test('buildOpenPaymentChannelTransaction creates a single partially signed open 
     expect(open.deposit).toBe(request.cap);
     expect(open.gracePeriod).toBe(900);
     expect(open.mint).toBe(USDC.mainnet);
+    expect(open.openSlot).toBe('9042');
     expect(open.payee).toBe(payee.address);
     expect(open.payer).toBe(payer.address);
     expect(open.salt).toBe('42');
@@ -103,6 +104,7 @@ test('createPaymentChannelSessionOpener emits a pull client-voucher payment-chan
         mode: 'pull',
         payee: payee.address,
         payer: payer.address,
+        recentSlot: '9042',
         salt: '7',
     });
     expect(result.payload.channelId).toBe(result.session.channelId);
@@ -149,6 +151,7 @@ test('createServerOpenedPaymentChannelSessionOpener emits channel fields without
         mode: 'pull',
         payee: payee.address,
         payer: operator.address,
+        recentSlot: '9042',
         salt: '11',
     });
     expect(result.payload.channelId).toBe(result.session.channelId);
@@ -192,6 +195,7 @@ function sessionRequest(
         network: 'localnet',
         pullVoucherStrategy: 'clientVoucher',
         recentBlockhash: BLOCKHASH,
+        recentSlot: '9042',
         splits: [],
         ...overrides,
     };

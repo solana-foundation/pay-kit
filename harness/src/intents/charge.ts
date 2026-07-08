@@ -324,6 +324,12 @@ export const chargeScenarios: readonly HarnessScenario[] = [
     // can drive a 9-split request through the env-only path, so this
     // is typescript-client only. Splits are intentionally tiny so the
     // sum stays well under amount.
+    //
+    // Rust audit #21 promoted this from a runtime-reject to a
+    // refuse-to-boot at server startup. The harness has no notion of
+    // "expected startup failure" yet, so rust is excluded from this
+    // scenario via serverIds — re-include it when the harness gains a
+    // way to assert on adapter-exit-before-readiness.
     id: "charge-splits-too-many",
     intent: "charge",
     network: "localnet",
@@ -333,6 +339,7 @@ export const chargeScenarios: readonly HarnessScenario[] = [
     resourcePath: "/protected/splits-too-many",
     settlementHeader: "x-fixture-settlement",
     clientIds: ["typescript"],
+    serverIds: ["typescript", "php", "ruby", "go", "python", "lua"],
     splits: [
       { recipientKey: "platform", amount: "1" },
       { recipientKey: "platform", amount: "1" },

@@ -14,10 +14,10 @@ import warnings
 import pytest
 from solders.keypair import Keypair
 
-import pay_kit.signer as signer_mod
-from pay_kit import LocalSigner, Operator, Signer
-from pay_kit.errors import ConfigurationError, InvalidKeyError
-from pay_kit.signer import DEMO_PUBKEY
+import solana_pay_kit.signer as signer_mod
+from solana_pay_kit import LocalSigner, Operator, Signer
+from solana_pay_kit.errors import ConfigurationError, InvalidKeyError
+from solana_pay_kit.signer import DEMO_PUBKEY
 
 
 @pytest.fixture(autouse=True)

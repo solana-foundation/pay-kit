@@ -9,13 +9,27 @@ const PRIMITIVE_ROUTE: Record<Primitive, string> = {
   x402: '/x402',
 }
 
-/** Group color family. charge + x402 share the "pay" tile color (both are
- * single-shot payments); session and subscription get their own. */
+/** Group color family. charge + x402 `exact` share the "pay" tile color (both
+ * are single-shot payments); session and subscription get their own. */
 const PRIMITIVE_CLS: Record<Primitive, string> = {
   charge: 'pay',
   x402: 'pay',
   subscription: 'subscription',
   session: 'session',
+}
+
+/** Pill color class for an endpoint — by scheme where it matters: a metered
+ * x402 `upto` route is pink (like sessions), not the blue `pay` tile. */
+function pillClass(ep: Endpoint): string {
+  if (ep.description?.includes('upto')) return 'upto'
+  return PRIMITIVE_CLS[ep.primitive]
+}
+
+/** Color-group display order: blue (single-shot pay) → pink (metered: upto +
+ * session) → yellow (subscription). Docs renders after, separately. */
+const GROUP_RANK: Record<string, number> = { pay: 0, upto: 1, session: 1, subscription: 2 }
+function groupRank(ep: Endpoint): number {
+  return GROUP_RANK[pillClass(ep)] ?? 3
 }
 
 interface Props {
@@ -32,7 +46,7 @@ export function TopNav({ selectedEndpointId, onEndpointClick }: Props) {
   const config = useConfig()
   const navigate = useNavigate()
   const location = useLocation()
-  const endpoints = config?.endpoints ?? []
+  const endpoints = [...(config?.endpoints ?? [])].sort((a, b) => groupRank(a) - groupRank(b))
 
   return (
     <div className="topnav" role="navigation" aria-label="Endpoints">
@@ -44,7 +58,7 @@ export function TopNav({ selectedEndpointId, onEndpointClick }: Props) {
             <button
               key={ep.id}
               type="button"
-              className={`topnav-pill ${PRIMITIVE_CLS[ep.primitive]}${active ? ' active' : ''}`}
+              className={`topnav-pill ${pillClass(ep)}${active ? ' active' : ''}`}
               onClick={() => onEndpointClick(ep)}
               title={`${ep.method} ${ep.path} — ${ep.cost}`}
             >

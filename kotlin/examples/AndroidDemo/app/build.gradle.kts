@@ -80,6 +80,10 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    // Extended Material icon set (CreditCard, ShowChart, Verified, Dangerous,
+    // MonetizationOn, etc.) used by the endpoint cards and log rows to mirror
+    // the iOS demo's SF Symbols. Version is supplied by the Compose BOM above.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("androidx.activity:activity-compose:1.9.2")

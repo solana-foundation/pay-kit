@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-import pay_kit._middleware as mw
-from pay_kit import MppConfig, Payment, Price, Protocol, Stablecoin, configure
-from pay_kit.config import reset
-from pay_kit.errors import PaymentRequiredError, ProtocolNotSupportedError
+import solana_pay_kit._middleware as mw
+from solana_pay_kit import MppConfig, Payment, Price, Protocol, Stablecoin, configure
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import PaymentRequiredError, ProtocolNotSupportedError
 
 SECRET = "challenge-binding-secret-long-enough-for-hmac"
 
@@ -43,7 +43,7 @@ def _valid_payment():
 
 
 def _stub_402():
-    err = PaymentRequiredError("pay_kit: payment required")
+    err = PaymentRequiredError("solana_pay_kit: payment required")
     err.challenge_headers = {"www-authenticate": "Payment realm=App", "content-type": "application/json"}  # type: ignore[attr-defined]
     err.body = {"error": "payment_required", "resource": "/report", "accepts": []}  # type: ignore[attr-defined]
     return err
@@ -66,7 +66,7 @@ def _patch_process(monkeypatch, *, paid: bool):
 def _fastapi_app():
     from fastapi import Depends, FastAPI
 
-    import pay_kit.fastapi as pk_fastapi
+    import solana_pay_kit.fastapi as pk_fastapi
 
     app = FastAPI()
     pk_fastapi.install_exception_handler(app)
@@ -107,7 +107,7 @@ def test_fastapi_exception_handler_renders_pay_kit_error(monkeypatch):
     from fastapi import FastAPI
     from starlette.testclient import TestClient
 
-    import pay_kit.fastapi as pk_fastapi
+    import solana_pay_kit.fastapi as pk_fastapi
 
     app = FastAPI()
     pk_fastapi.install_exception_handler(app)
@@ -121,10 +121,48 @@ def test_fastapi_exception_handler_renders_pay_kit_error(monkeypatch):
 
 
 def test_fastapi_payment_reexport():
-    import pay_kit.fastapi as pk_fastapi
+    import solana_pay_kit.fastapi as pk_fastapi
 
     assert pk_fastapi.payment is not None
     assert pk_fastapi.Payment is Payment
+
+
+def test_fastapi_install_bundles_cors_and_bare_dict_errors():
+    from fastapi import FastAPI, HTTPException
+    from starlette.testclient import TestClient
+
+    import solana_pay_kit.fastapi as pk_fastapi
+
+    app = FastAPI()
+    pk_fastapi.install(app)
+
+    @app.get("/guard")
+    async def guard():
+        raise HTTPException(status_code=400, detail={"error": "bad"})
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/guard", headers={"Origin": "https://x.test"})
+    # Bare-dict HTTPException shape, not Starlette's {"detail": {...}} wrapper.
+    assert resp.json() == {"error": "bad"}
+    # CORS exposes the payment headers so a browser client can read them.
+    exposed = resp.headers.get("access-control-expose-headers", "").lower()
+    assert "www-authenticate" in exposed and "payment-receipt" in exposed
+
+
+def test_fastapi_install_renders_pay_kit_error():
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    import solana_pay_kit.fastapi as pk_fastapi
+
+    app = FastAPI()
+    pk_fastapi.install(app)
+
+    @app.get("/imperative")
+    async def imperative():
+        raise ProtocolNotSupportedError("nope")
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/imperative")
+    assert resp.status_code == 406
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +173,7 @@ def test_fastapi_payment_reexport():
 def _flask_app():
     import flask
 
-    import pay_kit.flask as pk_flask
+    import solana_pay_kit.flask as pk_flask
 
     app = flask.Flask(__name__)
 
@@ -170,7 +208,7 @@ def test_flask_success_attaches_g_and_settlement(monkeypatch):
 def test_flask_non_402_pay_kit_error(monkeypatch):
     import flask
 
-    import pay_kit.flask as pk_flask
+    import solana_pay_kit.flask as pk_flask
 
     async def boom(self, gate_ref, pricing, request):
         raise ProtocolNotSupportedError("unsupported")
@@ -191,7 +229,7 @@ def test_flask_non_402_pay_kit_error(monkeypatch):
 def test_flask_is_paid_without_payment():
     import flask
 
-    import pay_kit.flask as pk_flask
+    import solana_pay_kit.flask as pk_flask
 
     app = flask.Flask(__name__)
 
@@ -228,7 +266,7 @@ def _django_settings():
 def test_django_decorator_402_on_missing_payment(monkeypatch):
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     _patch_process(monkeypatch, paid=False)
 
@@ -247,7 +285,7 @@ def test_django_decorator_success_attaches_and_settles(monkeypatch):
     from django.http import JsonResponse
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     _patch_process(monkeypatch, paid=True)
 
@@ -264,7 +302,7 @@ def test_django_decorator_success_attaches_and_settles(monkeypatch):
 def test_django_decorator_non_402_error(monkeypatch):
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     async def boom(self, gate_ref, pricing, request):
         raise ProtocolNotSupportedError("unsupported")
@@ -285,7 +323,7 @@ def test_django_middleware_passthrough_when_no_gate(monkeypatch):
     from django.http import JsonResponse
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     def get_response(request):
         return JsonResponse({"passthrough": True})
@@ -300,7 +338,7 @@ def test_django_middleware_gates_when_gate_attribute_set(monkeypatch):
     from django.http import JsonResponse
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     _patch_process(monkeypatch, paid=True)
 
@@ -319,7 +357,7 @@ def test_django_middleware_402_when_unpaid(monkeypatch):
     from django.http import JsonResponse
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     _patch_process(monkeypatch, paid=False)
 

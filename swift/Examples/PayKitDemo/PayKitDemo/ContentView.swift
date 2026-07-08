@@ -2,17 +2,22 @@ import SwiftUI
 import SolanaPayKit
 
 struct ContentView: View {
-    // Hardcoded for the demo. `pay server demo` binds the gateway to
-    // `0.0.0.0:1402` and routes settlement through the hosted Surfpool
-    // sandbox at `402.surfnet.dev:8899`. To target a local Surfpool
-    // instead (`pay server demo --local`), edit these two constants.
+    // Hardcoded for the demo. The playground API (`examples/playground-api`,
+    // `pnpm dev`) serves its priced routes + `/openapi.json` discovery on
+    // :3000 and routes settlement through the hosted Surfpool sandbox at
+    // `402.surfnet.dev:8899`. The iOS simulator shares the host network, so
+    // `127.0.0.1` reaches the local playground.
     private let rpcURL = URL(string: "https://402.surfnet.dev:8899")!
-    private let gatewayURL = URL(string: "http://127.0.0.1:1402")!
+    private let playgroundURL = URL(string: "http://127.0.0.1:3000")!
 
     @State private var signer: MemorySigner?
     @State private var usdcBalance: Decimal?
     @State private var log: [LogEntry] = []
     @State private var busy: BusyKind?
+    @State private var endpoints: [Endpoint] = []
+    @State private var endpointsError: String?
+    /// Per-endpoint protocol the user picked to settle over (endpoint id -> method).
+    @State private var protocolChoice: [String: String] = [:]
 
     var body: some View {
         NavigationStack {
@@ -42,6 +47,7 @@ struct ContentView: View {
             } catch {
                 append(.system("Failed to load signer: \(error.localizedDescription)", success: false))
             }
+            await loadEndpoints()
         }
     }
 
@@ -98,21 +104,38 @@ struct ContentView: View {
 
     @ViewBuilder
     private var endpointsSection: some View {
-        Section("Endpoints (\(gatewayURL.absoluteString))") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(EndpointCatalog.all) { endpoint in
-                        EndpointCard(endpoint: endpoint, busy: busy == .pay(endpoint.id)) {
-                            Task { await pay(endpoint) }
-                        }
-                        .disabled(busy != nil || signer == nil)
-                    }
+        Section("Endpoints (\(endpoints.count) from OpenAPI)") {
+            if let endpointsError {
+                Label(endpointsError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if endpoints.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading \(playgroundURL.absoluteString)/openapi.json…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(endpoints) { endpoint in
+                            EndpointCard(
+                                endpoint: endpoint,
+                                busy: busy == .pay(endpoint.id),
+                                selected: protocolChoice[endpoint.id] ?? endpoint.selectedProtocol,
+                                onTap: { Task { await pay(endpoint) } },
+                                onSelect: { method in protocolChoice[endpoint.id] = method }
+                            )
+                            .disabled(busy != nil || signer == nil)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             }
-            .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
 
-            if signer == nil {
+            if signer == nil && !endpoints.isEmpty {
                 Text("Tap **Setup Account** to enable these.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -192,18 +215,127 @@ struct ContentView: View {
         }
     }
 
+    /// Fetch `/openapi.json` from the playground and build the priced-endpoint
+    /// collection. Surfaces a fetch/decode failure in `endpointsError` so the
+    /// section shows it instead of an empty spinner.
+    private func loadEndpoints() async {
+        endpointsError = nil
+        let url = playgroundURL.appendingPathComponent("openapi.json")
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw OpenAPIError.httpStatus(http.statusCode)
+            }
+            let loaded = try OpenAPI.endpoints(from: data)
+            endpoints = loaded
+            if loaded.isEmpty {
+                endpointsError = "No priced endpoints in the OpenAPI spec."
+            }
+        } catch {
+            endpointsError = "Could not load \(url.absoluteString): \(error.localizedDescription)"
+        }
+    }
+
     private func pay(_ endpoint: Endpoint) async {
         guard let signer else { return }
-        let url = gatewayURL.appendingPathComponent(endpoint.path)
+
+        // Session endpoints run the real payment-channel flow (open -> stream
+        // SSE deliveries -> sign + commit a voucher -> settle), not the one-shot
+        // 402 -> charge -> retry loop.
+        if endpoint.intent == .session {
+            busy = .pay(endpoint.id)
+            defer { busy = nil }
+            do {
+                let result = try await SessionStream.consume(
+                    streamURL: playgroundURL.appendingPathComponent(endpoint.path),
+                    payer: signer
+                )
+                append(.success(
+                    endpoint: endpoint,
+                    signature: result.settleSignature,
+                    body: result.steps.joined(separator: "\n")
+                ))
+                await refreshBalance()
+            } catch {
+                append(.failure(endpoint: endpoint, message: String(describing: error)))
+            }
+            return
+        }
+
+        // x402 `upto` (usage): authorize a ceiling by opening a payment channel,
+        // then the server meters actual usage and settles `actual <= max`,
+        // refunding the rest. One tap drives the whole flow through the upto
+        // client; the response body reports the metered amount billed.
+        if endpoint.scheme == .upto {
+            busy = .pay(endpoint.id)
+            defer { busy = nil }
+            let client = PayKit.HttpClient.x402Upto(
+                signer: signer,
+                settlementHeader: "x-payment-response"
+            )
+            let url = playgroundURL.appendingPathComponent(endpoint.path)
+            do {
+                let response = try await client
+                    .request(
+                        url,
+                        method: .post,
+                        headers: ["Accept": "application/json", "Content-Type": "text/plain"],
+                        body: Data("Solana is a fast, low-cost blockchain for payments and apps.".utf8)
+                    )
+                    .response()
+                let bodyString = String(data: response.body, encoding: .utf8) ?? ""
+                if (200..<300).contains(response.status) {
+                    append(.success(
+                        endpoint: endpoint,
+                        signature: response.settlementSignature,
+                        body: bodyString
+                    ))
+                    await refreshBalance()
+                } else {
+                    append(.failure(endpoint: endpoint, message: "HTTP \(response.status)\n\(bodyString)"))
+                }
+            } catch {
+                append(.failure(endpoint: endpoint, message: String(describing: error)))
+            }
+            return
+        }
+
+        // Other non-charge intents (subscription) are multi-step flows with
+        // dedicated pay-kit APIs the tap demo doesn't drive.
+        guard endpoint.intent == .charge else {
+            append(.failure(
+                endpoint: endpoint,
+                message: "\(endpoint.label) is an mpp/\(endpoint.intent.label) flow this demo doesn't drive; use the matching pay-kit API."
+            ))
+            return
+        }
+
+        let url = playgroundURL.appendingPathComponent(endpoint.path)
 
         busy = .pay(endpoint.id)
         defer { busy = nil }
 
-        let client = PayKit.HttpClient.mpp(
-            signer: signer,
-            rpc: RpcClient(endpoint: rpcURL),
-            settlementHeader: "payment-receipt"
-        )
+        // Settle over the protocol the user picked (default: the advertised mpp).
+        let selected = protocolChoice[endpoint.id] ?? endpoint.selectedProtocol
+        let client: PayKit.HttpClient
+        if selected == "x402" {
+            client = PayKit.HttpClient.x402(
+                signer: signer,
+                rpc: RpcClient(endpoint: rpcURL),
+                selection: X402ChallengeSelection(),
+                // x402 settles in the `Payment-Response` header (a base64
+                // envelope whose `transaction` field is the on-chain
+                // signature), not the MPP `Payment-Receipt` header. Read
+                // that so the signature surfaces instead of "no receipt".
+                settlementHeader: "payment-response"
+            )
+        } else {
+            client = PayKit.HttpClient.mpp(
+                signer: signer,
+                rpc: RpcClient(endpoint: rpcURL),
+                settlementHeader: "payment-receipt"
+            )
+        }
         var headers: [String: String] = ["Accept": "application/json"]
         var body: Data? = nil
         if endpoint.method == .post {
@@ -223,7 +355,11 @@ struct ContentView: View {
                 // signature lives in the envelope's `reference` field;
                 // that's what the pay.sh receipt page expects in its
                 // `/receipt/<sig>` path.
+                // MPP wraps the signature in a base64url Payment-Receipt envelope
+                // (`reference` field); x402 returns the bare settlement signature.
+                // Decode the envelope when present, else use the raw value.
                 let signature = response.settlementSignature.flatMap(Self.signatureFromReceiptHeader)
+                    ?? response.settlementSignature
                 append(.success(
                     endpoint: endpoint,
                     signature: signature,
@@ -269,9 +405,16 @@ struct ContentView: View {
         return "\(formatted) USDC"
     }
 
-    /// Decode a `Payment-Receipt` header (base64url-no-pad JSON envelope
-    /// produced by the gateway's `format_receipt`) and return the
-    /// `reference` field — the on-chain signature.
+    /// Format USDC base units (6 decimals) as a dollar string for the log.
+    static func formatBaseUnitsUSD(_ baseUnits: UInt64) -> String {
+        let dollars = Decimal(baseUnits) / 1_000_000
+        let formatted = usdcFormatter.string(from: dollars as NSDecimalNumber) ?? "\(dollars)"
+        return "$\(formatted)"
+    }
+
+    /// Decode a settlement header (base64url-no-pad JSON envelope) and return
+    /// the on-chain signature. MPP's `Payment-Receipt` carries it in
+    /// `reference`; x402's `X-PAYMENT-RESPONSE` carries it in `transaction`.
     static func signatureFromReceiptHeader(_ header: String) -> String? {
         // Re-pad and translate URL-safe alphabet to standard base64 so
         // Foundation's decoder accepts it.
@@ -281,11 +424,10 @@ struct ContentView: View {
         let pad = (4 - s.count % 4) % 4
         s.append(String(repeating: "=", count: pad))
         guard let data = Data(base64Encoded: s),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let reference = json["reference"] as? String,
-              !reference.isEmpty
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return reference
+        let signature = (json["reference"] as? String) ?? (json["transaction"] as? String)
+        return (signature?.isEmpty == false) ? signature : nil
     }
 
     @ViewBuilder
@@ -300,8 +442,57 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Endpoint catalog
+// MARK: - Endpoint
 
+/// Discovery intent of an offer. `.other` preserves any value the demo does not
+/// special-case so an unknown gateway intent still renders.
+enum EndpointIntent: Hashable {
+    case charge
+    case session
+    case subscription
+    case other(String)
+
+    /// Map a wire intent (defaulting an absent value to `charge`, as the demo
+    /// did before).
+    init(_ raw: String?) {
+        switch raw?.lowercased() {
+        case "session": self = .session
+        case "subscription": self = .subscription
+        case let value? where !value.isEmpty && value != "charge": self = .other(value)
+        default: self = .charge
+        }
+    }
+
+    /// Wire label for display.
+    var label: String {
+        switch self {
+        case .charge: return "charge"
+        case .session: return "session"
+        case .subscription: return "subscription"
+        case let .other(value): return value
+        }
+    }
+}
+
+/// Payment scheme of an offer. `.other` preserves unknown schemes.
+enum EndpointScheme: Hashable {
+    case exact
+    case upto
+    case other(String)
+
+    /// Map a wire scheme, or `nil` when the offer carries none.
+    init?(_ raw: String?) {
+        guard let raw = raw?.lowercased(), !raw.isEmpty else { return nil }
+        switch raw {
+        case "exact": self = .exact
+        case "upto": self = .upto
+        default: self = .other(raw)
+        }
+    }
+}
+
+/// A priced operation discovered from the playground's `/openapi.json`,
+/// rendered as a tappable card in the endpoints collection.
 struct Endpoint: Identifiable, Hashable {
     let id: String
     let label: String
@@ -310,74 +501,19 @@ struct Endpoint: Identifiable, Hashable {
     let priceUSD: String
     let systemImage: String
     let tint: Color
-}
-
-enum EndpointCatalog {
-    static let all: [Endpoint] = [
-        Endpoint(
-            id: "reports-usage",
-            label: "Usage Report",
-            method: .get,
-            path: "api/v1/reports/usage",
-            priceUSD: "$0.01",
-            systemImage: "chart.bar.fill",
-            tint: .blue
-        ),
-        Endpoint(
-            id: "compute-run",
-            label: "Compute Job",
-            method: .post,
-            path: "api/v1/compute/run",
-            priceUSD: "$0.10",
-            systemImage: "cpu",
-            tint: .indigo
-        ),
-        Endpoint(
-            id: "subscriptions-charge",
-            label: "Subscription",
-            method: .post,
-            path: "api/v1/subscriptions/charge",
-            priceUSD: "$49.99",
-            systemImage: "repeat.circle.fill",
-            tint: .purple
-        ),
-        Endpoint(
-            id: "invoices-pay",
-            label: "Pay Invoice",
-            method: .post,
-            path: "api/v1/invoices/pay",
-            priceUSD: "$100",
-            systemImage: "doc.text.fill",
-            tint: .pink
-        ),
-        Endpoint(
-            id: "referrals-purchase",
-            label: "Referral Purchase",
-            method: .post,
-            path: "api/v1/referrals/purchase",
-            priceUSD: "$199",
-            systemImage: "person.2.fill",
-            tint: .orange
-        ),
-        Endpoint(
-            id: "orders-checkout",
-            label: "Checkout",
-            method: .post,
-            path: "api/v1/orders/checkout",
-            priceUSD: "$250",
-            systemImage: "cart.fill",
-            tint: .green
-        ),
-        Endpoint(
-            id: "settlements-disburse",
-            label: "Disbursement",
-            method: .post,
-            path: "api/v1/settlements/disburse",
-            priceUSD: "$1000",
-            systemImage: "banknote.fill",
-            tint: .red
-        ),
-    ]
+    /// Discovery intent of the first offer; the demo only settles `charge` over
+    /// MPP and explains the rest.
+    let intent: EndpointIntent
+    /// Scheme of the first offer when present. A metered `upto` route advertises
+    /// the generic `charge` intent, so the demo routes by this scheme to reach
+    /// the usage flow.
+    let scheme: EndpointScheme?
+    /// Accepted protocols in offer order, e.g. `["x402", "mpp"]`.
+    let methods: [String]
+    /// The protocol this demo actually settles over (`mpp` for charge endpoints
+    /// that advertise it); `nil` for flows the demo doesn't consume. Rendered
+    /// emphasized on the card so it's clear which offer is used.
+    let selectedProtocol: String?
 }
 
 // MARK: - Endpoint card
@@ -385,43 +521,68 @@ enum EndpointCatalog {
 private struct EndpointCard: View {
     let endpoint: Endpoint
     let busy: Bool
+    /// The protocol currently selected to settle over (the user's tap choice, or
+    /// the default). Rendered emphasized.
+    let selected: String?
     let onTap: () -> Void
+    let onSelect: (String) -> Void
+
+    /// Charge endpoints that advertise more than one protocol let the user pick
+    /// which to settle over by tapping a method chip.
+    private var selectable: Bool { endpoint.intent == .charge && endpoint.methods.count > 1 }
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: endpoint.systemImage)
-                        .font(.title2)
-                    Spacer()
-                    if busy {
-                        ProgressView()
-                            .tint(.white)
-                    } else {
-                        Text(endpoint.method.rawValue)
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.white.opacity(0.25))
-                            .clipShape(Capsule())
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: endpoint.systemImage)
+                    .font(.title2)
+                Spacer()
+                if busy {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text(endpoint.method.rawValue)
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.25))
+                        .clipShape(Capsule())
                 }
-                Spacer(minLength: 0)
-                Text(endpoint.label)
-                    .font(.subheadline.weight(.semibold))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                Text(endpoint.priceUSD)
-                    .font(.caption.monospacedDigit())
-                    .opacity(0.9)
             }
-            .padding(12)
-            .frame(width: 150, height: 130, alignment: .topLeading)
-            .background(endpoint.tint.gradient)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Spacer(minLength: 0)
+            Text(endpoint.label)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
+            Text(endpoint.priceUSD)
+                .font(.caption.monospacedDigit())
+                .opacity(0.9)
+            HStack(spacing: 3) {
+                ForEach(Array(endpoint.methods.enumerated()), id: \.offset) { index, method in
+                    if index > 0 { Text("·").opacity(0.45) }
+                    let isSelected = method == selected
+                    Text(method)
+                        .fontWeight(isSelected ? .bold : .regular)
+                        .opacity(isSelected ? 1.0 : 0.55)
+                        .underline(isSelected && selectable)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if selectable { onSelect(method) } }
+                }
+                if endpoint.intent != .charge {
+                    Text("·").opacity(0.45)
+                    Text(endpoint.intent.label).opacity(0.55)
+                }
+            }
+            .font(.caption2)
+            .lineLimit(1)
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .frame(width: 150, height: 130, alignment: .topLeading)
+        .background(endpoint.tint.gradient)
+        .foregroundStyle(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture { onTap() }
     }
 }
 
@@ -506,9 +667,9 @@ private struct LogRow: View {
                         .font(.footnote)
                 }
             } else {
-                Text("No `Payment-Receipt` header in response.")
+                Text("Settled. No settlement signature in response.")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
             }
             if !body.isEmpty {
                 Text(body)

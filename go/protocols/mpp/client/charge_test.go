@@ -153,9 +153,9 @@ func TestBuildChargeTransactionTokenPull(t *testing.T) {
 }
 
 // TestBuildChargeTransactionTokenCreateRecipientATAFlag table-tests the
-// opt-in CreateRecipientATA flag. The default (false) matches the
-// canonical Rust/TS clients which leave primary-recipient ATA creation
-// to the server, while setting the flag prepends an idempotent
+// opt-in CreateRecipientATA flag. The default (false) leaves
+// primary-recipient ATA creation to the server, as the other SDK clients
+// do, while setting the flag prepends an idempotent
 // createAssociatedTokenAccount instruction for first-run wallets that
 // do not yet hold a token account for the selected mint.
 func TestBuildChargeTransactionTokenCreateRecipientATAFlag(t *testing.T) {
@@ -255,7 +255,7 @@ func TestBuildChargeTransactionToken2022(t *testing.T) {
 
 	payload, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient, paycore.MethodDetails{
 		Decimals: &decimals,
-	}, BuildOptions{})
+	}, BuildOptions{AllowUnknownToken2022: true})
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
@@ -335,9 +335,11 @@ func TestBuildChargeTransactionTokenWithSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	// 2 compute budget + 1 primary transfer + 2 split instructions + 1 split memo = 6
-	if len(tx.Message.Instructions) != 6 {
-		t.Fatalf("expected 6 instructions, got %d", len(tx.Message.Instructions))
+	// 2 compute budget + 1 primary transfer + 1 split transfer + 1 split memo
+	// = 5. No split ATA-create: the split does not set ataCreationRequired, so
+	// after the #20 fix the client no longer auto-creates it in client-paid mode.
+	if len(tx.Message.Instructions) != 5 {
+		t.Fatalf("expected 5 instructions, got %d", len(tx.Message.Instructions))
 	}
 	if !hasMemoText(memoTexts(t, tx), "platform fee") {
 		t.Fatalf("expected split memo instruction")
@@ -548,6 +550,8 @@ func TestBuildCredentialHeaderRejectsInvalidMethodDetails(t *testing.T) {
 
 // rpcWithBlockhashErr wraps FakeRPC and forces GetLatestBlockhash to error.
 type rpcWithBlockhashErr struct {
+	// FakeRPC supplies the rest of the stub RPC surface unchanged; only the
+	// GetLatestBlockhash method below is overridden to fail.
 	*testutil.FakeRPC
 }
 
@@ -700,9 +704,6 @@ func TestBuildChargeTransactionTokenWithExternalIDMemoTooLong(t *testing.T) {
 		t.Fatal("expected long externalId memo error in token path")
 	}
 }
-
-// rpcSendErr forces SendTransaction to error to cover the broadcast error branch.
-type rpcSendErr struct{ *testutil.FakeRPC }
 
 func TestBuildChargeTransactionBroadcastSendError(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()

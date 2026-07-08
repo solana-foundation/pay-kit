@@ -61,7 +61,7 @@ func TestVerifyCredentialTier2RejectsTamperedRealm(t *testing.T) {
 	resignEcho(cfg.SecretKey, &echo)
 
 	cred := signatureCredentialFromEcho(t, echo)
-	_, err = handler.VerifyCredential(context.Background(), cred)
+	_, err = verifyCredentialEchoed(handler, context.Background(), cred)
 	if err == nil {
 		t.Fatalf("expected Tier-2 to reject tampered realm")
 	}
@@ -81,7 +81,7 @@ func TestVerifyCredentialTier2RejectsTamperedMethod(t *testing.T) {
 	resignEcho(cfg.SecretKey, &echo)
 
 	cred := signatureCredentialFromEcho(t, echo)
-	_, err = handler.VerifyCredential(context.Background(), cred)
+	_, err = verifyCredentialEchoed(handler, context.Background(), cred)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "method") {
 		t.Fatalf("expected method error, got: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestVerifyCredentialTier2RejectsNonChargeIntent(t *testing.T) {
 	resignEcho(cfg.SecretKey, &echo)
 
 	cred := signatureCredentialFromEcho(t, echo)
-	_, err = handler.VerifyCredential(context.Background(), cred)
+	_, err = verifyCredentialEchoed(handler, context.Background(), cred)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "intent") {
 		t.Fatalf("expected intent error, got: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestVerifyCredentialTier2RejectsTamperedCurrency(t *testing.T) {
 	resignEcho(cfg.SecretKey, &echo)
 
 	cred := signatureCredentialFromEcho(t, echo)
-	_, err = handler.VerifyCredential(context.Background(), cred)
+	_, err = verifyCredentialEchoed(handler, context.Background(), cred)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "currency") {
 		t.Fatalf("expected currency error, got: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestVerifyCredentialTier2RejectsTamperedRecipient(t *testing.T) {
 	resignEcho(cfg.SecretKey, &echo)
 
 	cred := signatureCredentialFromEcho(t, echo)
-	_, err = handler.VerifyCredential(context.Background(), cred)
+	_, err = verifyCredentialEchoed(handler, context.Background(), cred)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "recipient") {
 		t.Fatalf("expected recipient error, got: %v", err)
 	}
@@ -227,6 +227,21 @@ func TestVerifyCredentialWithExpectedAcceptsMatchingRoute(t *testing.T) {
 			t.Fatalf("matching route incorrectly tripped binding check: %v", err)
 		}
 	}
+}
+
+// verifyCredentialEchoed mirrors the behavior of the removed Mpp.VerifyCredential
+// convenience method (audit #2): it decodes the credential's own echoed request
+// and verifies against it. This is only safe in tests that construct the
+// credential themselves with known values; production callers MUST use
+// VerifyCredentialWithExpected with an expected request built from static route
+// config. The Tier-2 pinned-field backstop runs before the expected comparison,
+// so tamper tests still exercise it through this helper.
+func verifyCredentialEchoed(handler *Mpp, ctx context.Context, credential core.PaymentCredential) (core.Receipt, error) {
+	var request intents.ChargeRequest
+	if err := credential.Challenge.Request.Decode(&request); err != nil {
+		return core.Receipt{}, err
+	}
+	return handler.VerifyCredentialWithExpected(ctx, credential, request)
 }
 
 // mppErrAs is a small wrapper to avoid pulling errors.As into every test.

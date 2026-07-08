@@ -7,12 +7,22 @@
 // cross-language harness exercises identical behavior.
 package server
 
-import "os"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"os"
+)
 
 // DetectRealm checks environment variables for a suitable realm value.
 // It iterates through common platform-specific variables before falling
-// back to the default realm.
-func DetectRealm() string {
+// back to a realm derived from the recipient pubkey. The recipient is
+// unique per merchant, so two servers that share MPP_SECRET_KEY but pay
+// different recipients get different realms (and therefore different HMAC
+// challenge IDs), which closes the cross-service replay window that a fixed
+// shared default realm would open. Mirrors the Rust reference
+// derive_default_realm.
+func DetectRealm(recipient string) string {
 	for _, key := range []string{
 		"MPP_REALM", "FLY_APP_NAME", "HEROKU_APP_NAME",
 		"RAILWAY_SERVICE_NAME", "RENDER_SERVICE_NAME",
@@ -22,7 +32,17 @@ func DetectRealm() string {
 			return v
 		}
 	}
-	return defaultRealm
+	return deriveDefaultRealm(recipient)
+}
+
+// deriveDefaultRealm hashes the recipient with SHA-256, takes the first 4
+// bytes as a big-endian u32 mod 10^8, and formats it as "App Id - #<digits>".
+// Deterministic (restart-safe) and human-friendly. Mirrors the Rust
+// reference derive_default_realm.
+func deriveDefaultRealm(recipient string) string {
+	sum := sha256.Sum256([]byte(recipient))
+	n := binary.BigEndian.Uint32(sum[:4]) % 100_000_000
+	return fmt.Sprintf("App Id - #%d", n)
 }
 
 // DetectSecretKey reads the MPP_SECRET_KEY environment variable.

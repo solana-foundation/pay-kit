@@ -722,7 +722,9 @@ t.test('server can wire verifier hooks automatically', function()
     currency = 'sol',
     decimals = 9,
     network = 'localnet',
-    secret_key = 'test-secret',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
+    -- Audit #5: push mode is opt-in; this test submits a signature credential.
+    accept_push_mode = true,
     verifier_hooks = {
       fetch_transaction = function(signature)
         t.assert_equal(signature, 'sig-123')
@@ -1099,6 +1101,99 @@ t.test('SECURITY: rejects compute-budget over cap pre-broadcast', function()
   t.assert_equal(send_calls, 0, 'send_transaction must not be called when pre-broadcast policy rejects')
 end)
 
+-- Audit #25: in fee-sponsored pull mode the server co-signs (and pays the
+-- priority fee) before broadcast, so the compute-unit-price cap tightens to
+-- 10_000 µlamports. A client-paid charge keeps the 5_000_000 general cap.
+local function compute_price_tx(price)
+  return {
+    meta = { err = nil },
+    transaction = {
+      message = {
+        instructions = {
+          {
+            programId = 'ComputeBudget111111111111111111111111111111',
+            parsed = { type = 'setComputeUnitPrice', info = { microLamports = price } },
+          },
+          {
+            program = 'system',
+            parsed = {
+              type = 'transfer',
+              -- source is a regular sender, NOT the fee payer, so the
+              -- fee-payer drain guard does not fire and we isolate the cap.
+              info = { source = 'sender-1', destination = 'recipient-1', lamports = '1000' },
+            },
+          },
+        },
+      },
+    },
+  }
+end
+
+t.test('audit #25: fee-sponsored compute price above tight cap is rejected pre-broadcast', function()
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '1000',
+      currency = 'sol',
+      recipient = 'recipient-1',
+      methodDetails = { feePayer = true, feePayerKey = 'fee-payer-1' },
+    },
+    method_details = { feePayer = true, feePayerKey = 'fee-payer-1' },
+  })
+  local over_cap_tx = compute_price_tx(10001)
+  local send_calls = 0
+  t.assert_error(function()
+    verify.verify_transaction(context, {
+      parse_transaction = function() return over_cap_tx.transaction end,
+      send_transaction = function() send_calls = send_calls + 1; return 'sig-evil' end,
+      await_transaction = function() return over_cap_tx end,
+    })
+  end, 'compute unit price exceeds cap')
+  t.assert_equal(send_calls, 0, 'send_transaction must not be called when the tight cap rejects')
+end)
+
+t.test('audit #25: fee-sponsored compute price at the tight cap is accepted', function()
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '1000',
+      currency = 'sol',
+      recipient = 'recipient-1',
+      methodDetails = { feePayer = true, feePayerKey = 'fee-payer-1' },
+    },
+    method_details = { feePayer = true, feePayerKey = 'fee-payer-1' },
+  })
+  local at_cap_tx = compute_price_tx(10000)
+  local result = verify.verify_transaction(context, {
+    parse_transaction = function() return at_cap_tx.transaction end,
+    send_transaction = function() return 'sig-at-cap' end,
+    await_transaction = function() return at_cap_tx end,
+  })
+  t.assert_equal(result.reference, 'sig-at-cap')
+end)
+
+t.test('audit #25: client-paid compute price above the tight cap is still accepted', function()
+  -- Regression: the tight cap MUST NOT apply when the client pays its own gas
+  -- (no feePayer). The general 5_000_000 cap governs; 10_001 is well under it.
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '1000',
+      currency = 'sol',
+      recipient = 'recipient-1',
+      methodDetails = {},
+    },
+    method_details = {},
+  })
+  local over_tight_tx = compute_price_tx(10001)
+  local result = verify.verify_transaction(context, {
+    parse_transaction = function() return over_tight_tx.transaction end,
+    send_transaction = function() return 'sig-client-paid' end,
+    await_transaction = function() return over_tight_tx end,
+  })
+  t.assert_equal(result.reference, 'sig-client-paid')
+end)
+
 t.test('SECURITY: rejects unknown program instruction pre-broadcast', function()
   local context = signature_context({
     payload = { type = 'transaction', transaction = 'base64-tx' },
@@ -1201,3 +1296,58 @@ t.test('SECURITY: result.consumed is not set when context.store is absent', func
   t.assert_equal(result.replay_key, nil)
 end)
 
+
+-- Audit #5: push mode (type=signature) is opt-in via the signature verifier
+-- factory. Default-off reduces a server's attack surface (spec §13.5
+-- first-accepted-presentation trade-off). A transaction (pull) credential is
+-- never gated.
+t.test('audit #5: new_signature_verifier rejects a signature credential by default', function()
+  local verifier = verify.new_signature_verifier({
+    fetch_transaction = function() error('must not fetch when push is disabled') end,
+  })
+  t.assert_error(function()
+    verifier(signature_context({ payload = { type = 'signature', signature = 'sig-1' } }))
+  end, 'Push%-mode credentials are disabled')
+end)
+
+t.test('audit #5: new_signature_verifier accepts a signature credential when opted in', function()
+  local fetched = false
+  local verifier = verify.new_signature_verifier({
+    fetch_transaction = function()
+      fetched = true
+      return {
+        meta = { err = nil },
+        transaction = { message = { instructions = {
+          { program = 'system', parsed = { type = 'transfer',
+            info = { destination = 'recipient-1', lamports = '1' } } },
+        } } },
+      }
+    end,
+  }, { accept_push_mode = true })
+  local result = verifier(signature_context({
+    payload = { type = 'signature', signature = 'sig-1' },
+    request = { amount = '1', currency = 'sol', recipient = 'recipient-1', methodDetails = {} },
+  }))
+  t.assert_true(fetched, 'opted-in push should reach fetch_transaction')
+  t.assert_equal(result.reference, 'sig-1')
+end)
+
+t.test('audit #5: pull (transaction) credentials are never gated by the push opt-in', function()
+  local ok_tx = {
+    meta = { err = nil },
+    transaction = { message = { instructions = {
+      { program = 'system', parsed = { type = 'transfer',
+        info = { destination = 'recipient-1', lamports = '1' } } },
+    } } },
+  }
+  local verifier = verify.new_signature_verifier({
+    parse_transaction = function() return ok_tx end,
+    send_transaction = function() return 'sig-pull' end,
+    await_transaction = function() return ok_tx end,
+  })
+  local result = verifier(signature_context({
+    payload = { type = 'transaction', transaction = 'deadbeef' },
+    request = { amount = '1', currency = 'sol', recipient = 'recipient-1', methodDetails = {} },
+  }))
+  t.assert_equal(result.reference, 'sig-pull')
+end)

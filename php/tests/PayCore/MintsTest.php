@@ -81,6 +81,49 @@ final class MintsTest extends TestCase
         self::assertNull(Mints::symbolFor('FOOBAR'));
     }
 
+    // audit #28 — arbitrary mint resolution
+    public function testIsKnownMintDistinguishesTableMintsFromArbitrary(): void
+    {
+        self::assertTrue(Mints::isKnownMint('USDC'));
+        self::assertTrue(Mints::isKnownMint('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'));
+        // An arbitrary base58 mint address not in the static table.
+        self::assertFalse(Mints::isKnownMint('So11111111111111111111111111111111111111112'));
+    }
+
+    public function testLooksLikeMintAddress(): void
+    {
+        self::assertTrue(Mints::looksLikeMintAddress('So11111111111111111111111111111111111111112'));
+        self::assertFalse(Mints::looksLikeMintAddress('USDC'));
+        self::assertFalse(Mints::looksLikeMintAddress('SOL'));
+    }
+
+    public function testResolveTokenProgramOnChainReturnsOwnerForToken2022(): void
+    {
+        $owner = Mints::resolveTokenProgramOnChain(
+            'So11111111111111111111111111111111111111112',
+            fn (string $mint): string => TokenProgram::TOKEN_2022_PROGRAM_ID,
+        );
+        self::assertSame(TokenProgram::TOKEN_2022_PROGRAM_ID, $owner);
+    }
+
+    public function testResolveTokenProgramOnChainRejectsForeignOwner(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        Mints::resolveTokenProgramOnChain(
+            'So11111111111111111111111111111111111111112',
+            fn (string $mint): string => '11111111111111111111111111111111',
+        );
+    }
+
+    public function testResolveTokenProgramOnChainRejectsMissingMint(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        Mints::resolveTokenProgramOnChain(
+            'So11111111111111111111111111111111111111112',
+            fn (string $mint): ?string => null,
+        );
+    }
+
     /**
      * The canonical mainnet slug is `mainnet`. Legacy `mainnet-beta` input
      * is folded back to `mainnet` by normalizeNetwork() inside resolve(),

@@ -111,7 +111,8 @@ if ($x402Active) {
     $payTo        = require_env('MPP_HARNESS_PAY_TO');
     $mint         = require_env('MPP_HARNESS_MINT');
     $amountUnits  = require_env('MPP_HARNESS_AMOUNT');
-    $mppSecret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret');
+    // Must be >= 32 bytes (audit #24); the default is a fixed harness value.
+    $mppSecret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret-0123456789abcdef');
     $networkRaw   = optional_env('MPP_HARNESS_NETWORK', 'localnet');
     $resourcePath = optional_env('MPP_HARNESS_RESOURCE_PATH', '/paid');
     $settlementHeader = optional_env('MPP_HARNESS_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
@@ -156,6 +157,10 @@ if ($x402Active) {
         network:    $networkRaw,
         settlementHeader: $settlementHeader,
         replayStore: new FileStore(sys_get_temp_dir() . '/mpp-php-harness-replay-' . getmypid()),
+        // Audit #5 made push-mode credentials opt-in (default off). The
+        // charge-push conformance scenario drives this server in push mode,
+        // so enable acceptance only when the harness asks for it.
+        acceptPushMode: $paymentMode === 'push',
     );
 }
 
@@ -391,8 +396,24 @@ while (is_resource($listener)) {
             $protectedAmount = $isReplay && $replayAmount !== null ? (string) $replayAmount : $amountUnits;
             $request = build_charge_request($protectedAmount, $mint, $payTo, $networkRaw, $paymentMode, $handler->feePayerPubkey(), $splits);
             $authorization = $req['headers']['authorization'] ?? null;
-            $result = $handler->handle($authorization, $request);
-            write_response($conn, $result->status, $result->headers, $result->body);
+            try {
+                $result = $handler->handle($authorization, $request);
+                write_response($conn, $result->status, $result->headers, $result->body);
+            } catch (Throwable $issuanceError) {
+                // Audit #21 promoted too-many-splits from a verify-time reject to
+                // a refuse-to-issue at challenge construction. The charge-splits-
+                // too-many scenario expects the 402-class outcome, so surface that
+                // one specific construct-time rejection as a 402 (mirrors the
+                // TypeScript fixture's `challenge_unavailable` allowlist). Any other
+                // error still bubbles to the 500 handler below.
+                if (!preg_match('/too many splits/i', $issuanceError->getMessage())) {
+                    throw $issuanceError;
+                }
+                write_response($conn, 402, ['content-type' => 'application/json'], [
+                    'error'   => 'challenge_unavailable',
+                    'message' => $issuanceError->getMessage(),
+                ]);
+            }
         }
         fclose($conn);
     } catch (Throwable $error) {

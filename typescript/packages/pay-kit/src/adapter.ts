@@ -18,6 +18,13 @@ export type ProtocolAdapter = {
     /** Whether `request` carries this protocol's payment credential. */
     readonly detect: (request: Request) => boolean;
     readonly protocol: Protocol;
+    /**
+     * Optional: a complete `402` response to send as-is for an unpaid request,
+     * when the protocol wants to own the response body (e.g. MPP's interactive
+     * HTML payment page for browsers, or its service worker). Returns
+     * `undefined` to fall back to the framework's standard JSON `402`.
+     */
+    readonly respond?: (gate: Gate, request: Request) => Promise<Response | undefined>;
     readonly scheme: string;
     /**
      * Verifies the credential and settles the payment.

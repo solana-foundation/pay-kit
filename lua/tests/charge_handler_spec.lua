@@ -487,7 +487,7 @@ end)
 --   2. resubmission of the same signature is rejected as signature_consumed
 t.test('Kong-style shared replay_store does not double-consume on first payment', function()
   local mpp = require('tests._mpp')
-  local SECRET = 'kong-test-secret'
+  local SECRET = 'kong-test-secret-key-long-enough-32b'
   local RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
 
   local shared = store.memory()

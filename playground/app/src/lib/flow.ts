@@ -1,5 +1,5 @@
-import { Mppx, solana } from '@solana/mpp/client'
 import { createPaymentChannelSessionOpener, createSessionFetch, type SessionFetchClient } from '@solana/mpp/client'
+import { createPayKitClient, type PayKitClient } from '@solana/pay-kit/client'
 import { getSigner, RPC_URL } from './wallet'
 import type { FlowProgress } from '../types'
 
@@ -22,35 +22,26 @@ interface ProgressEvent {
   [extra: string]: unknown
 }
 
-let chargeMppx: ReturnType<typeof Mppx.create> | null = null
-let subMppx: ReturnType<typeof Mppx.create> | null = null
+let payKitClient: PayKitClient | null = null
 let sessionFetch: SessionFetchClient | null = null
 let progressCallback: ((e: ProgressEvent) => void) | null = null
 
-async function getChargeMppx() {
-  if (!chargeMppx) {
+/**
+ * The unified pay-kit client: pays a 402 over x402 (`exact`/`upto`) or MPP
+ * (`charge`/`subscription`), dispatched by the server's challenge — one client
+ * for every primitive. Sessions stream through the dedicated SessionFetch
+ * client below (the streaming exception the unified client delegates out).
+ */
+async function getPayKitClient(): Promise<PayKitClient> {
+  if (!payKitClient) {
     const signer = await getSigner()
-    const method = solana.charge({
-      signer,
-      rpcUrl: RPC_URL,
+    payKitClient = await createPayKitClient({
       onProgress: (e: unknown) => progressCallback?.(e as ProgressEvent),
-    } as Parameters<typeof solana.charge>[0])
-    chargeMppx = Mppx.create({ methods: [method] })
-  }
-  return chargeMppx
-}
-
-async function getSubscriptionMppx() {
-  if (!subMppx) {
-    const signer = await getSigner()
-    const method = solana.subscription({
-      signer,
       rpcUrl: RPC_URL,
-      onProgress: (e: unknown) => progressCallback?.(e as ProgressEvent),
-    } as Parameters<typeof solana.subscription>[0])
-    subMppx = Mppx.create({ methods: [method] })
+      signer,
+    })
   }
-  return subMppx
+  return payKitClient
 }
 
 let lastSessionChannelId: string | null = null
@@ -111,13 +102,37 @@ function receiptReference(receiptB64: string | undefined): string | null {
   }
 }
 
+/**
+ * Extract the on-chain settlement signature from an x402 `Payment-Response`
+ * header. The header is either a base64-encoded settlement envelope (standard
+ * x402: `{ transaction }`) or the bare base58 signature (some gateways) — try
+ * the envelope first, then fall back to the raw value.
+ */
+function settlementSignature(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    const json = JSON.parse(atob(value.replace(/-/g, '+').replace(/_/g, '/'))) as {
+      transaction?: string
+      signature?: string
+      reference?: string
+    }
+    const sig = json.transaction ?? json.signature ?? json.reference
+    if (sig) return sig
+  } catch {
+    // Not a base64 envelope — fall through to the raw value.
+  }
+  return value
+}
+
 async function pollSessionReceipt(channelId: string, timeoutMs = 10_000): Promise<string | null> {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
     try {
-      const res = await nativeFetch(`/sessions/receipt/${encodeURIComponent(channelId)}`)
+      const res = await nativeFetch(
+        `/__402/payment-channels/receipt/${encodeURIComponent(channelId)}`,
+      )
       if (res.ok) {
-        const body = (await res.json()) as { settledSignature: string | null; finalized: boolean }
+        const body = (await res.json()) as { settledSignature: string | null; sealed: boolean }
         if (body.settledSignature) return body.settledSignature
       }
     } catch {
@@ -155,6 +170,8 @@ async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<st
 interface Options {
   /** Hint about which primitive is being exercised — picks which mppx instance to use. */
   primitive?: 'charge' | 'subscription' | 'session' | 'x402'
+  /** Force a protocol when the endpoint accepts both (the dual-protocol toggle). */
+  protocol?: 'mpp' | 'x402'
   /** Per-delivery price in base units (sessions only) — used as the fallback
    * voucher amount when the response doesn't carry per-chunk costs. */
   unitPrice?: string
@@ -226,8 +243,7 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
         ? // SessionFetchClient resolves its delivery-reservation URL against
           // the resource URL, so sessions need an absolute URL.
           getSessionFetch().fetch(new URL(url, location.origin).toString(), opts.init)
-        : (opts.primitive === 'subscription' ? await getSubscriptionMppx() : await getChargeMppx())
-            .fetch(url, opts.init)
+        : (await getPayKitClient()).fetch(url, opts.init, opts.protocol)
 
     while (true) {
       if (queue.length > 0) {
@@ -298,11 +314,14 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
           }
         }
 
-        // With server-side broadcast the client never emits paying/paid —
-        // the settle signature only comes back in the Payment-Receipt
-        // header. Surface it so the Broadcast / Settled steps complete.
+        // With server-side broadcast the client never emits paying/paid — the
+        // settle signature only comes back in a response header: MPP uses
+        // `Payment-Receipt`, x402 uses `Payment-Response`. Surface it so the
+        // Broadcast / Settled steps complete.
         if (response.ok && !sawPaid) {
-          const signature = receiptReference(headers['payment-receipt'])
+          const signature =
+            receiptReference(headers['payment-receipt']) ??
+            settlementSignature(headers['payment-response'])
           if (signature) {
             yield { type: 'paying' }
             yield { type: 'paid', signature }
@@ -332,9 +351,8 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
   }
 }
 
-/** Reset cached MPP clients (call after wallet reset). */
+/** Reset cached payment clients (call after wallet reset). */
 export function resetMppxClients() {
-  chargeMppx = null
-  subMppx = null
+  payKitClient = null
   sessionFetch = null
 }

@@ -1,13 +1,16 @@
 // Canonical voucher message encoder and Ed25519 verifier.
 //
-// The 48-byte voucher payload is the exact byte layout the on-chain
+// The 50-byte voucher payload is the exact byte layout the on-chain
 // payment-channels program signs over:
+//   magic (2 bytes, constant [0x56, 0x01])
 //   channel_id (32 bytes, base58-decoded pubkey)
 //   cumulative_amount (u64 little-endian)
 //   expires_at (i64 little-endian)
 //
-// This module is the single source of truth for that layout so client and
-// server agree on the bytes they sign / verify. The Rust mirror lives in
+// The magic prefix exists only in the signed bytes — it is never carried in
+// the wire JSON. This module is the single source of truth for that layout
+// so client and server agree on the bytes they sign / verify. The Rust
+// mirror lives in
 // `mpp/src/protocol/intents/session.rs::VoucherData::message_bytes`.
 
 import { getBase58Encoder, getI64Encoder, getU64Encoder } from '@solana/kit';
@@ -17,6 +20,12 @@ import type { AmountLike, VoucherData, VoucherDataInput } from './session-types.
 const U64_MAX = (1n << 64n) - 1n;
 const I64_MIN = -(1n << 63n);
 const I64_MAX = (1n << 63n) - 1n;
+
+/**
+ * Constant 2-byte magic prefix of the signed voucher payload. The on-chain
+ * program rejects vouchers without it (`voucherBadMagic`).
+ */
+export const VOUCHER_MAGIC: Readonly<Uint8Array> = new Uint8Array([0x56, 0x01]);
 
 /**
  * Signed voucher as it may arrive on the wire. `cumulative` is the legacy
@@ -64,7 +73,7 @@ export function normalizeSignedVoucher(signed: WireSignedVoucher): { data: Vouch
 }
 
 /**
- * Canonical 48-byte payment-channel voucher payload signed by the session
+ * Canonical 50-byte payment-channel voucher payload signed by the session
  * key. Accepts the strict `VoucherData` shape used in the protocol types.
  */
 export function encodeVoucherMessage(voucher: VoucherData): Uint8Array {
@@ -85,10 +94,11 @@ export function encodeVoucherMessageLoose(data: VoucherDataInput): Uint8Array {
     const cumulative = parseAmount(requiredCumulative(data), 'cumulativeAmount');
     const expiresAt = parseI64(data.expiresAt, 'expiresAt');
 
-    const bytes = new Uint8Array(48);
-    bytes.set(channelIdBytes, 0);
-    bytes.set(getU64Encoder().encode(cumulative), 32);
-    bytes.set(getI64Encoder().encode(expiresAt), 40);
+    const bytes = new Uint8Array(50);
+    bytes.set(VOUCHER_MAGIC, 0);
+    bytes.set(channelIdBytes, 2);
+    bytes.set(getU64Encoder().encode(cumulative), 34);
+    bytes.set(getI64Encoder().encode(expiresAt), 42);
     return bytes;
 }
 

@@ -34,6 +34,7 @@ import {
     MEMO_PROGRAM,
     normalizeNetwork,
     resolveStablecoinMint,
+    stablecoinSymbolForCurrency,
     SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
@@ -70,7 +71,7 @@ import * as Methods from '../Methods.js';
  * ```
  */
 export function charge(parameters: charge.Parameters) {
-    const { signer, broadcast = false, onProgress } = parameters;
+    const { signer, broadcast = false, onProgress, maxAmount, expectedNetwork, allowUnknownToken2022 } = parameters;
 
     const method = Method.toClient(Methods.charge, {
         async createCredential({ challenge }) {
@@ -80,7 +81,29 @@ export function charge(parameters: charge.Parameters) {
             if (serverPaysFees && broadcast) {
                 throw new Error('broadcast=true cannot be used with fee sponsorship (feePayer: true)');
             }
+
+            // Client-side policy gates (audit #10). The protocol's trust model
+            // assumes a human reviews the challenge before signing; auto-pay
+            // agents break that, so an auto-pay caller can bind what we'll sign.
+            // All gates default to "no constraint" except expiry, which is
+            // always-on (fail-closed).
+            assertChallengeNotExpired(challenge.expires);
+            if (maxAmount !== undefined && BigInt(challenge.request.amount) > maxAmount) {
+                throw new Error(
+                    `Challenge amount ${challenge.request.amount} exceeds the configured maxAmount ${maxAmount}`,
+                );
+            }
+            if (
+                expectedNetwork !== undefined &&
+                normalizeNetwork(network ?? 'mainnet') !== normalizeNetwork(expectedNetwork)
+            ) {
+                throw new Error(
+                    `Challenge network "${network ?? 'mainnet'}" does not match the expected network "${expectedNetwork}"`,
+                );
+            }
+
             const encodedTx = await buildChargeTransaction({
+                allowUnknownToken2022,
                 computeUnitLimit: parameters.computeUnitLimit,
                 computeUnitPrice: parameters.computeUnitPrice,
                 onProgress,
@@ -145,6 +168,7 @@ export async function buildChargeTransaction(
         signer,
         request: { amount, currency, externalId, recipient, methodDetails },
         onProgress,
+        allowUnknownToken2022 = false,
     } = parameters;
     const {
         network,
@@ -209,7 +233,30 @@ export async function buildChargeTransaction(
         // ── SPL token transfers ──
         const mintAddress = address(mint);
         const tokenProg = tokenProgramAddr ? address(tokenProgramAddr) : await resolveTokenProgram(rpc, mintAddress);
-        const tokenDecimals = decimals ?? 6;
+
+        // Audit #26: refuse to sign unknown Token-2022 mints unless explicitly
+        // allowed. Token-2022 mints can carry transfer hooks that execute
+        // arbitrary code on every transfer; the server's pre-broadcast checks do
+        // not simulate inner instructions in pull mode. Vanilla Token mints have
+        // no hooks, so arbitrary mints there stay allowed.
+        if (
+            String(tokenProg) === TOKEN_2022_PROGRAM &&
+            stablecoinSymbolForCurrency(mint) === undefined &&
+            !allowUnknownToken2022
+        ) {
+            throw new Error(
+                'Refusing to sign an unknown Token-2022 mint (transfer-hook risk). ' +
+                    'Set allowUnknownToken2022: true to override.',
+            );
+        }
+
+        // Audit #42: decimals MUST be present for SPL (spec §7.2). Silently
+        // defaulting to 6 produces a wrong transferChecked divisor for
+        // non-6-decimal mints — the worst possible failure for a signer.
+        if (decimals === undefined) {
+            throw new Error('methodDetails.decimals is required for SPL charges (spec §7.2)');
+        }
+        const tokenDecimals = decimals;
 
         const [sourceAta] = await findAssociatedTokenPda({
             mint: mintAddress,
@@ -273,13 +320,12 @@ export async function buildChargeTransaction(
         await addSplTransfer(recipient, primaryAmount, false);
         addMemoInstruction(externalId);
 
-        // Split transfers.
+        // Split transfers. Audit #20: create the split ATA only when the server
+        // flags it via ataCreationRequired, in BOTH modes. Previously
+        // client-paid mode auto-funded every split ATA, letting a hostile server
+        // drain the client with N dust splits (N × ~0.002 SOL rent).
         for (const split of splits ?? []) {
-            await addSplTransfer(
-                split.recipient,
-                BigInt(split.amount),
-                !useServerFeePayer || split.ataCreationRequired === true,
-            );
+            await addSplTransfer(split.recipient, BigInt(split.amount), split.ataCreationRequired === true);
             addMemoInstruction(split.memo);
         }
     } else {
@@ -348,6 +394,23 @@ export async function buildChargeTransaction(
 // ── Helpers ──
 
 /**
+ * Always-on expiry refusal for the client (audit #10): refuse to sign a
+ * challenge whose `expires` timestamp is in the past or malformed. A challenge
+ * with no `expires` is accepted — the protocol allows omitting it and the client
+ * has no anchor to check against.
+ */
+function assertChallengeNotExpired(expires: string | undefined): void {
+    if (expires === undefined) return;
+    const expiresAt = new Date(expires).getTime();
+    if (Number.isNaN(expiresAt)) {
+        throw new Error(`Refusing to sign: malformed challenge expires timestamp "${expires}"`);
+    }
+    if (expiresAt < Date.now()) {
+        throw new Error('Refusing to sign an expired challenge');
+    }
+}
+
+/**
  * Creates an Associated Token Account using the idempotent instruction
  * (CreateIdempotent = discriminator 1). This is a no-op if the ATA exists.
  *
@@ -414,6 +477,13 @@ async function confirmTransaction(rpc: ReturnType<typeof createSolanaRpc>, signa
 export declare namespace charge {
     type Parameters = {
         /**
+         * Opt-in (audit #26): allow signing unknown Token-2022 mints. Token-2022
+         * mints can carry transfer hooks that execute arbitrary code on transfer,
+         * so by default the client refuses unknown (non-stablecoin) Token-2022
+         * mints. Vanilla Token mints are always allowed regardless of this flag.
+         */
+        allowUnknownToken2022?: boolean;
+        /**
          * If true, the client broadcasts the transaction and sends the signature
          * as a `type="signature"` credential. If false (default), the client sends
          * the signed transaction bytes as a `type="transaction"` credential and the
@@ -426,6 +496,17 @@ export declare namespace charge {
         computeUnitLimit?: number;
         /** Compute unit price in micro-lamports for priority fees. Defaults to 1. */
         computeUnitPrice?: bigint;
+        /**
+         * Opt-in guard (audit #10): refuse to sign a challenge whose network does
+         * not match this value. Use for auto-pay flows. Defaults to no constraint.
+         */
+        expectedNetwork?: string;
+        /**
+         * Opt-in guard (audit #10): refuse to sign a challenge whose amount (in
+         * base units) exceeds this cap. Use for auto-pay flows where the server
+         * controls what gets signed. Defaults to no constraint.
+         */
+        maxAmount?: bigint;
         /** Called at each step of the payment process. */
         onProgress?: (event: ProgressEvent) => void;
         /** Custom RPC URL. If not set, inferred from the challenge's network field. */
@@ -457,6 +538,12 @@ export declare namespace charge {
 
 export declare namespace buildChargeTransaction {
     type Parameters = {
+        /**
+         * Allow signing unknown Token-2022 mints (audit #26). Defaults to false;
+         * unknown (non-stablecoin) Token-2022 mints are refused because they may
+         * carry transfer hooks.
+         */
+        allowUnknownToken2022?: boolean;
         /** Compute unit limit. Defaults to 200,000. */
         computeUnitLimit?: number;
         /** Compute unit price in micro-lamports for priority fees. Defaults to 1. */

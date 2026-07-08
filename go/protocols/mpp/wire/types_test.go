@@ -119,6 +119,15 @@ func TestIntentNameIsCharge(t *testing.T) {
 	}
 }
 
+func TestIntentNameIsSession(t *testing.T) {
+	if !NewIntentName("Session").IsSession() {
+		t.Fatal("expected session intent")
+	}
+	if NewIntentName("charge").IsSession() {
+		t.Fatal("charge must not be a session intent")
+	}
+}
+
 func TestMethodNameInvalid(t *testing.T) {
 	tests := []struct {
 		name  string

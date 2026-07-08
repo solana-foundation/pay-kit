@@ -12,7 +12,7 @@ import (
 // VerifyChargeTransactionPreBroadcast runs the RPC-free pre-broadcast
 // verification a charge server applies to a credential transaction before it
 // co-signs, simulates, or broadcasts. It is the deterministic half of
-// [Mpp.VerifyCredential]: the same split-count, address-lookup-table,
+// [Mpp.VerifyCredentialWithExpected]: the same split-count, address-lookup-table,
 // compute-budget, network-blockhash, and transfer/memo/allowlist checks that
 // run in verifyTransaction up to the simulate/send boundary, with no HMAC
 // challenge step and no live RPC.
@@ -42,7 +42,8 @@ func VerifyChargeTransactionPreBroadcast(
 	if len(tx.Message.AddressTableLookups) > 0 {
 		return core.NewError(core.ErrCodeInvalidPayload, "v0 transactions with address lookup tables are not supported")
 	}
-	if err := validateComputeBudgetInstructions(tx); err != nil {
+	feeSponsored := details.FeePayer != nil && *details.FeePayer
+	if err := validateComputeBudgetInstructions(tx, feeSponsored); err != nil {
 		return err
 	}
 	if err := CheckNetworkBlockhash(network, tx.Message.RecentBlockhash.String()); err != nil {

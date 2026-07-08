@@ -3,24 +3,35 @@ import Foundation
 public enum MppHeaders {
     public static let paymentScheme = "Payment"
 
+    /// Upper bound on the base64url-encoded `request` parameter before it is
+    /// decoded and JSON-parsed. Mirrors the rust `MAX_TOKEN_LEN = 16 * 1024`
+    /// cap that the credential/receipt parsers already enforce (audit #9):
+    /// an oversized `WWW-Authenticate` value must not drive unbounded
+    /// base64url-decode + JSON-parse work.
+    public static let maxTokenLength = 16 * 1024
+
     public static func parseWWWAuthenticate(_ header: String) throws -> PaymentChallenge {
         let rest = try paymentSchemePayload(header)
         let params = try parseAuthParams(rest)
 
         guard let request = params["request"], !request.isEmpty else {
-            throw MppError.missingField("request")
+            throw PayKitError.missingField("request")
+        }
+        // Cap the encoded `request` before any decode/JSON-parse work runs.
+        guard request.utf8.count <= maxTokenLength else {
+            throw PayKitError.invalidHeader
         }
         guard let id = params["id"], !id.isEmpty else {
-            throw MppError.missingField("id")
+            throw PayKitError.missingField("id")
         }
         guard let realm = params["realm"], !realm.isEmpty else {
-            throw MppError.missingField("realm")
+            throw PayKitError.missingField("realm")
         }
         guard let method = params["method"], !method.isEmpty else {
-            throw MppError.missingField("method")
+            throw PayKitError.missingField("method")
         }
         guard let intent = params["intent"], !intent.isEmpty else {
-            throw MppError.missingField("intent")
+            throw PayKitError.missingField("intent")
         }
 
         return try PaymentChallenge(
@@ -45,7 +56,7 @@ public enum MppHeaders {
     private static func paymentSchemePayload(_ header: String) throws -> String {
         let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.lowercased().hasPrefix(paymentScheme.lowercased()) else {
-            throw MppError.invalidPaymentScheme
+            throw PayKitError.invalidPaymentScheme
         }
         let index = trimmed.index(trimmed.startIndex, offsetBy: paymentScheme.count)
         return String(trimmed[index...]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -68,11 +79,11 @@ public enum MppHeaders {
                 index = value.index(after: index)
             }
             guard index < value.endIndex else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             let key = value[keyStart..<index].trimmingCharacters(in: .whitespaces)
             guard !key.isEmpty else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             index = value.index(after: index)
 
@@ -80,7 +91,7 @@ public enum MppHeaders {
                 index = value.index(after: index)
             }
             guard index < value.endIndex, value[index] == "\"" else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             index = value.index(after: index)
 
@@ -103,7 +114,7 @@ public enum MppHeaders {
                 }
             }
             guard closed, !escaped else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             params[key] = decoded
         }

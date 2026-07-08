@@ -4,7 +4,7 @@
 loaders:
   - type: python
     search_path: [src]
-    packages: [pay_kit]
+    packages: [solana_pay_kit]
 
 processors:
   - type: filter

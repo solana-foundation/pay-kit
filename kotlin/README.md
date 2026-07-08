@@ -29,6 +29,34 @@ are resolved for you from the challenge.
 [![Coverage](https://img.shields.io/badge/coverage-%3E%3D90%25-brightgreen)]()
 [![Branch coverage](https://img.shields.io/badge/branch%20coverage-jacoco-blue)]()
 
+## Install
+
+The Kotlin SDK is distributed through [JitPack](https://jitpack.io), which
+builds it on demand from a git tag (a published release). Add the JitPack
+repository and the dependency:
+
+```kotlin
+repositories {
+    maven("https://jitpack.io")
+}
+
+dependencies {
+    implementation("com.github.solana-foundation.pay-kit:solana-pay-kit-kotlin:<tag>")
+}
+```
+
+Replace `<tag>` with a release git tag (for example `v0.1.0`); JitPack
+resolves the coordinate from `com.github.<owner>.<repo>:<module>`, where the
+module is the Gradle artifact name `solana-pay-kit-kotlin`. You can also use a
+commit short hash or `main-SNAPSHOT` for an unreleased build.
+
+Groovy DSL equivalent:
+
+```groovy
+repositories { maven { url 'https://jitpack.io' } }
+dependencies { implementation 'com.github.solana-foundation.pay-kit:solana-pay-kit-kotlin:<tag>' }
+```
+
 ## Quick start
 
 The client is built [Retrofit](https://square.github.io/retrofit/)-style: a
@@ -110,9 +138,15 @@ curl -i https://402.surfnet.dev/paid
 MPP_CLIENT_SECRET_KEY_HEX=<hex> ChargeClient https://402.surfnet.dev/paid
 ```
 
-`examples/AndroidDemo` is a full Seeker / Android demo app that gates one
-endpoint behind a wallet signature; its README walks through running it on a
-device or emulator.
+`examples/AndroidDemo` is a Jetpack Compose app that mirrors the iOS demo: on
+launch it fetches the playground's `/openapi.json`, renders the priced
+endpoints as a tappable collection, generates a local signer, tops it up over
+Surfpool cheatcodes, and consumes one over MPP. Its README walks through
+running it on an emulator.
+
+<div align="center">
+  <img alt="AndroidDemo app" width="320" src="https://github.com/solana-foundation/pay-kit/raw/main/kotlin/examples/AndroidDemo/docs/android-demo-screenshot.png">
+</div>
 
 ## x402
 
@@ -123,7 +157,7 @@ the `Payment-Signature` header. See [x402.org](https://x402.org).
 | Intent | Client |
 |---|:---:|
 | `x402/exact` | ✅ |
-| `x402/upto` | — |
+| `x402/upto` | ✅ |
 | `x402/batch-settlement` | — |
 
 ## MPP
@@ -135,7 +169,7 @@ The Machine Payments Protocol charge intent. The client parses the
 |---|:---:|
 | `mpp/charge/pull` | ✅ |
 | `mpp/charge/push` | ✅ |
-| `mpp/session` | — |
+| `mpp/session` | ✅ |
 | `mpp/subscription` | — |
 
 ## Vocabulary
@@ -181,8 +215,9 @@ the flow is unchanged.
 | `org.jetbrains.kotlinx:kotlinx-coroutines-core` | suspend call surface (`PayKitClient.get`) | 1.10.1 |
 
 What `web3-solana` does not yet supply (and so stays hand-rolled in
-`paycore`): v0 `VersionedMessage` compilation, the ComputeBudget program, a
-synchronous ATA derivation, and Blake3. The remaining hand-rolled Base58
+`paycore`): v0 `VersionedMessage` compilation, the ComputeBudget program, and
+a synchronous ATA derivation (the distribution hash is SHA-256 via the JDK's
+`MessageDigest`). The remaining hand-rolled Base58
 fallback gap is tracked at
 [solana-foundation/pay-kit#84](https://github.com/solana-foundation/pay-kit/issues/84).
 
@@ -193,6 +228,8 @@ The harness adapters live outside the shipped library:
 - [`harness/kotlin-client`](../harness/kotlin-client) drives an MPP server.
 - [`harness/kotlin-x402-client`](../harness/kotlin-x402-client) drives an
   x402 exact server.
+- [`harness/kotlin-x402-upto-client`](../harness/kotlin-x402-upto-client) drives
+  an x402 `upto` (payment-channel) server.
 
 ```bash
 cd harness

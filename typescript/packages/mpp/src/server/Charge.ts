@@ -20,10 +20,12 @@ import {
     SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
+    validateNetwork,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
+import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
 
 /**
@@ -67,23 +69,24 @@ export function charge(parameters: charge.Parameters) {
         decimals,
         html: htmlEnabled = false,
         tokenProgram: configuredTokenProgram,
-        network = 'mainnet-beta',
+        network = 'mainnet',
         store = Store.memory(),
         splits,
         signer,
     } = parameters;
 
+    // Reject unknown network slugs at boot (spec: mainnet | devnet | localnet),
+    // rather than silently falling back to mainnet for a typo. The legacy
+    // `mainnet-beta` spelling is accepted as an alias and normalized below.
+    validateNetwork(network);
+
     const isSplToken = currency !== undefined && currency !== 'sol';
     const tokenProgram = configuredTokenProgram ?? defaultTokenProgramForCurrency(currency, network);
 
-    const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet'];
 
     if (isSplToken && decimals === undefined) {
         throw new Error('decimals is required when currency is a token mint address');
-    }
-
-    if (splits && splits.length > 8) {
-        throw new Error('splits cannot exceed 8 entries');
     }
 
     if (signer && !isTransactionPartialSigner(signer)) {
@@ -92,12 +95,30 @@ export function charge(parameters: charge.Parameters) {
         );
     }
 
+    // Validate splits at issuance (audit #21): count cap, parseable recipient,
+    // positive parseable amount, no duplicate recipients, no aggregate overflow.
+    // Invalid splits would otherwise only surface at on-chain settlement.
+    validateChargeSplits(splits);
+
     const hasAtaCreationSplits = splits?.some(split => split.ataCreationRequired === true) === true;
     if (!isSplToken && hasAtaCreationSplits) {
         throw new Error('ataCreationRequired requires an SPL token currency');
     }
     if (hasAtaCreationSplits && (currency === undefined || resolveStablecoinMint(currency, network) !== currency)) {
         throw new Error('ataCreationRequired requires currency to be an SPL token mint address');
+    }
+
+    // Audit #38: in fee-sponsored mode the server funds idempotent ATA-create
+    // for split recipients. If a split targets the PRIMARY recipient AND sets
+    // ataCreationRequired, a malicious recipient can close+recreate that ATA in
+    // a loop to drain the server's fee-payer wallet. Having the primary
+    // recipient appear in splits is otherwise legitimate, so we narrow the gate
+    // to exactly the drain shape (primary-in-splits + ataCreationRequired) and
+    // only when the server is acting as fee payer.
+    if (signer && splits?.some(split => split.recipient === recipient && split.ataCreationRequired === true)) {
+        throw new Error(
+            'A split that targets the primary recipient must not set ataCreationRequired in fee-sponsored mode',
+        );
     }
 
     const method = Method.toServer(Methods.charge, {
@@ -196,6 +217,58 @@ export function charge(parameters: charge.Parameters) {
     return method;
 }
 
+// ── Split validation (issuance, audit #21) ──
+
+const MAX_SPLITS = 8;
+
+/**
+ * Validates the split set supplied at challenge issuance. Enforces:
+ *  - count ≤ {@link MAX_SPLITS}
+ *  - each recipient parses as a base58 Solana pubkey
+ *  - each amount parses as a non-negative u64 BigInt and is > 0
+ *  - the aggregate sum does not overflow u64
+ *
+ * Without this, malformed splits would only surface much later (a `BigInt`
+ * throw while building the transaction, or an on-chain failure).
+ *
+ * Duplicate recipients are intentionally NOT rejected: two splits to the same
+ * recipient (with distinct amounts/memos) is a supported shape, verified
+ * element-wise against distinct transfer instructions on-chain.
+ */
+function validateChargeSplits(splits: charge.Parameters['splits'] | undefined): void {
+    if (!splits || splits.length === 0) return;
+
+    if (splits.length > MAX_SPLITS) {
+        throw new Error(`splits cannot exceed ${MAX_SPLITS} entries`);
+    }
+
+    const U64_MAX = (1n << 64n) - 1n;
+    let total = 0n;
+
+    for (const split of splits) {
+        try {
+            address(split.recipient);
+        } catch {
+            throw new Error(`Invalid split recipient: ${split.recipient}`);
+        }
+
+        let amount: bigint;
+        try {
+            amount = BigInt(split.amount);
+        } catch {
+            throw new Error(`Invalid split amount: ${split.amount}`);
+        }
+        if (amount <= 0n) {
+            throw new Error(`Split amount must be positive: ${split.amount}`);
+        }
+
+        total += amount;
+        if (total > U64_MAX) {
+            throw new Error('Split amounts overflow u64');
+        }
+    }
+}
+
 // ── Payload type resolution ──
 
 function resolvePayloadType(payload: {
@@ -232,6 +305,13 @@ function extractRecentBlockhash(clientTxBase64: string): string | null {
 
 const MAX_COMPUTE_UNIT_LIMIT = 200_000;
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
+// Audit #25: in fee-sponsored pull mode the server co-signs as fee payer and
+// pays the priority fee, so a client picking a price near the general cap could
+// drain the merchant (~0.001 SOL per charge at the general cap × 200k CU). Apply
+// a tight cap when the server is the fee payer. Worst-case priority fee at this
+// cap: ceil(10_000 × 200_000 / 1_000_000) = 2_000 lamports (~20% of base fee) —
+// enough headroom for honest clients to bump priority during congestion.
+const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000n;
 
 type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
@@ -498,7 +578,7 @@ async function validateInstructionAllowlist(
         const program = programAddress(message, ix);
 
         if (program === COMPUTE_BUDGET_PROGRAM) {
-            validateComputeBudgetInstruction(ix);
+            validateComputeBudgetInstruction(ix, options.feePayer !== undefined);
             continue;
         }
 
@@ -540,7 +620,7 @@ async function validateInstructionAllowlist(
     }
 }
 
-function validateComputeBudgetInstruction(ix: CompiledInstruction) {
+function validateComputeBudgetInstruction(ix: CompiledInstruction, feeSponsored: boolean) {
     if ((ix.accountIndices ?? []).length !== 0) {
         throw new Error('Compute budget instruction must not have accounts');
     }
@@ -555,8 +635,13 @@ function validateComputeBudgetInstruction(ix: CompiledInstruction) {
 
     if (ix.data[0] === 3 && ix.data.length === 9) {
         const price = readU64Le(ix.data, 1);
-        if (price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
-            throw new Error(`Compute unit price ${price} exceeds maximum ${MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}`);
+        // Tight cap when the server is the fee payer (audit #25): the merchant,
+        // not the client, pays the priority fee in fee-sponsored mode.
+        const cap = feeSponsored
+            ? MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+            : MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS;
+        if (price > cap) {
+            throw new Error(`Compute unit price ${price} exceeds maximum ${cap}`);
         }
         return;
     }
@@ -690,14 +775,19 @@ async function verifyTransaction(
     // Broadcast the (now fully-signed) transaction.
     const signature = await broadcastTransaction(rpcUrl, txToSend);
 
-    // Wait for on-chain confirmation.
+    // Audit #3: reserve the signature BETWEEN broadcast and confirmation polling.
+    // If we only marked it consumed after confirmation+verify (as before), a tx
+    // that landed during a confirmation-poll timeout could be lost — the user
+    // pays but the signature is never recorded, so a retry re-broadcasts (double
+    // charge) or replays. Reserving here closes the replay window; the
+    // post-timeout status recovery below rescues the false-negative case.
+    await store.put(`solana-charge:consumed:${signature}`, true);
+
+    // Wait for on-chain confirmation (with a definitive post-timeout status check).
     await waitForConfirmation(rpcUrl, signature);
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
-
-    // Mark consumed to prevent replay.
-    await store.put(`solana-charge:consumed:${signature}`, true);
 
     return Receipt.from({
         method: 'solana',
@@ -723,30 +813,49 @@ async function verifySignature(
         throw new Error('Missing signature in credential payload');
     }
 
-    // Replay prevention: reject already-consumed transaction signatures.
     const consumedKey = `solana-charge:consumed:${signature}`;
+
+    // Replay prevention. The consumed-check, on-chain verify, and consumed-mark
+    // must run atomically per signature: `mppx`'s Store has no atomic
+    // put-if-absent, so without serialization two concurrent requests carrying
+    // the same confirmed signature both pass the check, both verify the same
+    // real transaction, and both settle (one payment, two accesses). A cheap
+    // read outside the lock rejects obvious replays without queueing; the
+    // authoritative check-and-mark runs inside `withKeyLock`.
+    //
+    // Scope: single Node process. Multi-process/replica deployments sharing one
+    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
     if (await store.get(consumedKey)) {
         throw new Error('Transaction signature already consumed');
     }
 
-    // Fetch and verify the transaction on-chain.
-    const tx = await fetchTransaction(rpcUrl, signature);
-    if (!tx) throw new Error('Transaction not found or not yet confirmed');
-    if (tx.meta?.err) throw new Error('Transaction failed on-chain');
+    return await withKeyLock(consumedKey, async () => {
+        // Re-check inside the lock: a concurrent request in this process may
+        // have consumed the signature since the read above.
+        if (await store.get(consumedKey)) {
+            throw new Error('Transaction signature already consumed');
+        }
 
-    const instructions = tx.transaction.message.instructions;
-    await verifyInstructions(instructions, challenge, recipient);
+        // Fetch and verify the transaction on-chain.
+        const tx = await fetchTransaction(rpcUrl, signature);
+        if (!tx) throw new Error('Transaction not found or not yet confirmed');
+        if (tx.meta?.err) throw new Error('Transaction failed on-chain');
 
-    // Mark consumed to prevent replay.
-    await store.put(consumedKey, true);
+        const instructions = tx.transaction.message.instructions;
+        await verifyInstructions(instructions, challenge, recipient);
 
-    return Receipt.from({
-        method: 'solana',
-        ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-        reference: signature,
-        ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-        status: 'success',
-        timestamp: new Date().toISOString(),
+        // Mark consumed only after a successful verify, so a failed verify never
+        // burns a legitimately-retryable signature.
+        await store.put(consumedKey, true);
+
+        return Receipt.from({
+            method: 'solana',
+            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
+            reference: signature,
+            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+            status: 'success',
+            timestamp: new Date().toISOString(),
+        });
     });
 }
 
@@ -1222,6 +1331,35 @@ async function broadcastTransaction(rpcUrl: string, base64Tx: string): Promise<s
     return data.result;
 }
 
+/**
+ * Outcome of the one-shot definitive status check performed after the
+ * confirmation-poll loop times out (audit #3). Pure and testable without a live
+ * RPC. Mirrors the Rust `interpret_post_timeout_status` four-case interpretation:
+ *
+ *  - landed cleanly            → `{ kind: 'confirmed' }`     (recover: treat as success)
+ *  - landed but failed on-chain → `{ kind: 'failed' }`        (definitive: payment did not go through)
+ *  - definitively not on-chain  → `{ kind: 'timeout' }`       (keep the timeout error)
+ *  - the recovery RPC itself failed → `{ kind: 'timeout', detail }` (timeout, with RPC detail for triage)
+ */
+export type PostTimeoutStatus =
+    | { detail: string; kind: 'failed' }
+    | { detail?: string; kind: 'timeout' }
+    | { kind: 'confirmed' };
+
+export function interpretPostTimeoutStatus(status: { err: unknown } | null, rpcError?: string): PostTimeoutStatus {
+    if (rpcError !== undefined) {
+        return { detail: rpcError, kind: 'timeout' };
+    }
+    if (status === null) {
+        // Definitively not on-chain.
+        return { kind: 'timeout' };
+    }
+    if (status.err) {
+        return { detail: JSON.stringify(status.err), kind: 'failed' };
+    }
+    return { kind: 'confirmed' };
+}
+
 async function waitForConfirmation(rpcUrl: string, signature: string, timeoutMs = 30_000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -1251,7 +1389,51 @@ async function waitForConfirmation(rpcUrl: string, signature: string, timeoutMs 
         }
         await new Promise(r => setTimeout(r, 2_000));
     }
-    throw new Error('Transaction confirmation timeout');
+
+    // Audit #3: the poll loop timed out, but the tx may have landed during the
+    // window while the RPC lagged. Do ONE definitive status check (with
+    // `searchTransactionHistory`) to distinguish "landed" from "never landed"
+    // before reporting a false-negative timeout.
+    const outcome = await fetchPostTimeoutStatus(rpcUrl, signature);
+    switch (outcome.kind) {
+        case 'confirmed':
+            // Landed cleanly during the timeout window — recover.
+            console.warn(`[solana-mpp] confirmed_via_status_recovery: ${signature}`);
+            return;
+        case 'failed':
+            throw new Error(`Transaction landed on-chain but failed: ${outcome.detail}`);
+        case 'timeout':
+            throw new Error(
+                outcome.detail
+                    ? `Transaction confirmation timeout (status recovery failed: ${outcome.detail})`
+                    : 'Transaction confirmation timeout',
+            );
+    }
+}
+
+async function fetchPostTimeoutStatus(rpcUrl: string, signature: string): Promise<PostTimeoutStatus> {
+    try {
+        const response = await fetch(rpcUrl, {
+            body: JSON.stringify({
+                id: 1,
+                jsonrpc: '2.0',
+                method: 'getSignatureStatuses',
+                params: [[signature], { searchTransactionHistory: true }],
+            }),
+            headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+        });
+        const data = (await response.json()) as {
+            error?: { message: string };
+            result?: { value: ({ err: unknown } | null)[] };
+        };
+        if (data.error) {
+            return interpretPostTimeoutStatus(null, data.error.message);
+        }
+        return interpretPostTimeoutStatus(data.result?.value?.[0] ?? null);
+    } catch (e) {
+        return interpretPostTimeoutStatus(null, e instanceof Error ? e.message : String(e));
+    }
 }
 
 export declare namespace charge {
@@ -1282,8 +1464,12 @@ export declare namespace charge {
          * ```
          */
         html?: boolean;
-        /** Solana network. Defaults to 'mainnet-beta'. */
-        network?: 'devnet' | 'localnet' | 'mainnet-beta' | (string & {});
+        /**
+         * Solana network. One of 'mainnet' | 'devnet' | 'localnet'. Defaults to
+         * 'mainnet'. The legacy 'mainnet-beta' spelling is accepted as an alias.
+         * Any other value is rejected at construction.
+         */
+        network?: 'devnet' | 'localnet' | 'mainnet-beta' | 'mainnet' | (string & {});
         /** Base58-encoded recipient public key that receives payments. */
         recipient: string;
         /** Custom RPC URL. Defaults to public RPC for the selected network. */

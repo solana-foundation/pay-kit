@@ -11,8 +11,8 @@ import (
 
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 )
 
 func disabled() *bool { f := false; return &f }
@@ -273,7 +273,7 @@ func mustClient(t *testing.T) *paykit.Client {
 		Network:   paykit.SolanaLocalnet,
 		Preflight: disabled(),
 		MPP: paykit.MPPConfig{
-			ChallengeBindingSecret: []byte("test-secret"),
+			ChallengeBindingSecret: []byte("test-secret-key-0123456789abcdef"),
 		},
 	})
 	if err != nil {

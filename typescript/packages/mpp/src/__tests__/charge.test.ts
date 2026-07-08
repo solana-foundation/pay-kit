@@ -7,6 +7,7 @@
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
 import { Store } from 'mppx/server';
+import { getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { getTransferSolInstruction } from '@solana-program/system';
 import { findAssociatedTokenPda, getTransferCheckedInstruction } from '@solana-program/token';
 import {
@@ -29,7 +30,7 @@ import {
     type Blockhash,
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
-import { charge } from '../server/Charge.js';
+import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,
@@ -1525,6 +1526,39 @@ test('signature: rejects already-consumed transaction signature', async () => {
             request: {} as any,
         }),
     ).rejects.toThrow(/already consumed/);
+});
+
+test('signature: concurrent requests with the same signature settle at most once', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    // Delay every fetch so all N verifies clear the pre-lock consumed check
+    // and reach the on-chain verify at the same time: the exact TOCTOU window.
+    // Without per-signature serialization all of them would settle (one payment,
+    // N accesses); with it, exactly one wins.
+    globalThis.fetch = (async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+    }) as typeof fetch;
+
+    const verifyOnce = () =>
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+            request: {} as any,
+        });
+
+    const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
+    const settled = results.filter(r => r.status === 'fulfilled');
+    const rejectedConsumed = results.filter(
+        r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
+    );
+
+    expect(settled).toHaveLength(1);
+    expect(rejectedConsumed).toHaveLength(7);
 });
 
 // ── RPC error handling (type="signature") ──
@@ -3088,4 +3122,152 @@ test('splits: multiple splits with SOL', async () => {
     });
 
     expect(receipt.status).toBe('success');
+});
+
+// ── Audit fix coverage ──────────────────────────────────────────────────────
+
+// #37 — network allowlist at boot
+test('#37 charge() rejects an unknown network slug at construction', () => {
+    expect(() => charge({ recipient: RECIPIENT, network: 'testnet' })).toThrow(/Unsupported network/);
+});
+
+test('#37 charge() rejects an empty network slug', () => {
+    expect(() => charge({ recipient: RECIPIENT, network: '' })).toThrow(/must not be empty/);
+});
+
+test('#37 charge() accepts the canonical networks and the mainnet-beta alias', () => {
+    for (const network of ['mainnet', 'devnet', 'localnet', 'mainnet-beta']) {
+        expect(() => charge({ recipient: RECIPIENT, network })).not.toThrow();
+    }
+});
+
+// #21 — split validation at issuance
+test('#21 charge() rejects more than 8 splits at issuance', () => {
+    const splits = Array.from({ length: 9 }, () => ({ recipient: PLATFORM, amount: '1' }));
+    expect(() => charge({ recipient: RECIPIENT, network: 'devnet', splits })).toThrow(/cannot exceed 8/);
+});
+
+test('#21 charge() rejects an unparseable split recipient at issuance', () => {
+    const splits = [{ recipient: 'not-a-pubkey!!!', amount: '100' }];
+    expect(() => charge({ recipient: RECIPIENT, network: 'devnet', splits })).toThrow(/Invalid split recipient/);
+});
+
+test('#21 charge() rejects a zero/negative split amount at issuance', () => {
+    expect(() =>
+        charge({ recipient: RECIPIENT, network: 'devnet', splits: [{ recipient: PLATFORM, amount: '0' }] }),
+    ).toThrow(/must be positive/);
+});
+
+test('#21 charge() accepts a valid split set at issuance', () => {
+    expect(() =>
+        charge({ recipient: RECIPIENT, network: 'devnet', splits: [{ recipient: PLATFORM, amount: '100' }] }),
+    ).not.toThrow();
+});
+
+// #38 — primary recipient in splits + ataCreationRequired in fee-sponsored mode
+test('#38 charge() rejects a primary-recipient split with ataCreationRequired in fee-sponsored mode', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: RECIPIENT, amount: '50000', ataCreationRequired: true }];
+    expect(() =>
+        charge({ recipient: RECIPIENT, currency: USDC_MINT, decimals: 6, network: 'devnet', signer, splits }),
+    ).toThrow(/primary recipient must not set ataCreationRequired/);
+});
+
+test('#38 charge() allows a primary-recipient split WITHOUT ataCreationRequired in fee-sponsored mode', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: RECIPIENT, amount: '50000' }];
+    expect(() =>
+        charge({ recipient: RECIPIENT, currency: USDC_MINT, decimals: 6, network: 'devnet', signer, splits }),
+    ).not.toThrow();
+});
+
+test('#38 charge() allows a primary-recipient split with ataCreationRequired in client-paid mode (no signer)', () => {
+    const splits = [{ recipient: RECIPIENT, amount: '50000', ataCreationRequired: true }];
+    expect(() =>
+        charge({ recipient: RECIPIENT, currency: USDC_MINT, decimals: 6, network: 'devnet', splits }),
+    ).not.toThrow();
+});
+
+// #25 — fee-sponsored compute-unit price cap
+async function buildSolTxWithComputePrice(feePayerKey: string, microLamports: bigint) {
+    const authority = await generateKeyPairSigner();
+    const instructions: Instruction[] = [
+        getSetComputeUnitPriceInstruction({ microLamports }),
+        getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 1_000_000n }),
+    ];
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayer(address(feePayerKey), msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+test('#25 fee-sponsored compute-unit price above the tight cap is rejected', async () => {
+    const signer = await generateKeyPairSigner();
+    const tx = await buildSolTxWithComputePrice(signer.address, 20_000n);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', feePayer: true, feePayerKey: signer.address },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow(/Compute unit price.*exceeds maximum 10000/);
+});
+
+test('#25 fee-sponsored compute-unit price under the tight cap passes', async () => {
+    const signer = await generateKeyPairSigner();
+    const tx = await buildSolTxWithComputePrice(signer.address, 5_000n);
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet', feePayer: true, feePayerKey: signer.address },
+            recipient: RECIPIENT,
+        }),
+    ).resolves.toBeUndefined();
+});
+
+test('#25 client-paid compute-unit price above the tight cap still passes (general cap applies)', async () => {
+    const authority = await generateKeyPairSigner();
+    const instructions: Instruction[] = [
+        getSetComputeUnitPriceInstruction({ microLamports: 20_000n }),
+        getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 1_000_000n }),
+    ];
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(authority, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+    const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).resolves.toBeUndefined();
+});
+
+// #3 — post-timeout definitive status interpretation
+test('#3 interpretPostTimeoutStatus: landed cleanly returns confirmed', () => {
+    expect(interpretPostTimeoutStatus({ err: null })).toEqual({ kind: 'confirmed' });
+});
+
+test('#3 interpretPostTimeoutStatus: landed but failed on-chain returns failed', () => {
+    const outcome = interpretPostTimeoutStatus({ err: { InstructionError: [0, 'Custom'] } });
+    expect(outcome.kind).toBe('failed');
+});
+
+test('#3 interpretPostTimeoutStatus: not found returns timeout', () => {
+    expect(interpretPostTimeoutStatus(null)).toEqual({ kind: 'timeout' });
+});
+
+test('#3 interpretPostTimeoutStatus: rpc error returns timeout with detail', () => {
+    const outcome = interpretPostTimeoutStatus(null, 'connection refused');
+    expect(outcome).toEqual({ detail: 'connection refused', kind: 'timeout' });
 });

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit import (
+from solana_pay_kit import (
     Gate,
     MppConfig,
     Payment,
@@ -26,16 +26,16 @@ from pay_kit import (
     payment,
     require_payment,
 )
-from pay_kit._middleware import PAYMENT_ATTR, PayCore
-from pay_kit.config import reset
-from pay_kit.errors import (
+from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import (
     ChallengeExpiredError,
     ConfigurationError,
     InvalidProofError,
     PaymentRequiredError,
     ProtocolNotSupportedError,
 )
-from pay_kit.pricing import coerce
+from solana_pay_kit.pricing import coerce
 
 SECRET = "challenge-binding-secret-long-enough-for-hmac"
 FEE_A = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ"
@@ -175,7 +175,7 @@ def test_resolve_callable_bad_return_raises():
 
 
 def test_resolve_dynamic_gate_injects_defaults():
-    from pay_kit import gate as dynamic
+    from solana_pay_kit import gate as dynamic
 
     cfg = _cfg()
     core = PayCore(cfg)
@@ -304,7 +304,7 @@ def test_resolve_registry_dynamic_gate_uses_request():
     has the request, so it must inject the Config defaults and resolve the
     dynamic gate instead of rejecting it.
     """
-    from pay_kit import gate as dynamic
+    from solana_pay_kit import gate as dynamic
 
     cfg = _cfg(accept=(Protocol.MPP,))
     core = PayCore(cfg)
@@ -436,7 +436,7 @@ def test_payment_required_http_status():
 
 
 def test_usd_and_eur_shorthands():
-    import pay_kit
+    import solana_pay_kit
 
-    assert pay_kit.usd("1.00", Stablecoin.USDC).currency.value == "USD"
-    assert pay_kit.eur("2.00").currency.value == "EUR"
+    assert solana_pay_kit.usd("1.00", Stablecoin.USDC).currency.value == "USD"
+    assert solana_pay_kit.eur("2.00").currency.value == "EUR"

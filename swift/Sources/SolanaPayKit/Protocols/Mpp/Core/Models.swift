@@ -1,6 +1,6 @@
 import Foundation
 
-// MppError moved to PayCore/Errors.swift (shared payment-core error consumed by
+// PayKitError moved to PayCore/Errors.swift (shared payment-core error consumed by
 // both the MPP and x402 protocol layers; keeps the protocols decoupled).
 
 public struct PaymentChallenge: Codable, Equatable, Sendable {
@@ -15,11 +15,17 @@ public struct PaymentChallenge: Codable, Equatable, Sendable {
 
     public var chargeRequest: ChargeRequest {
         get throws {
+            // Cap before decode/JSON-parse — mirrors the WWW-Authenticate parser
+            // (audit #9). Closes the direct-construction bypass: a challenge built
+            // without going through `parseWWWAuthenticate` must still be bounded.
+            guard request.utf8.count <= MppHeaders.maxTokenLength else {
+                throw PayKitError.invalidHeader
+            }
             let data = try Base64URL.decode(request)
             do {
                 return try JSONDecoder().decode(ChargeRequest.self, from: data)
             } catch {
-                throw MppError.invalidJSON(String(describing: error))
+                throw PayKitError.invalidJSON(String(describing: error))
             }
         }
     }
@@ -34,6 +40,9 @@ public struct PaymentChallenge: Codable, Equatable, Sendable {
         digest: String? = nil,
         opaque: String? = nil
     ) throws {
+        guard request.utf8.count <= MppHeaders.maxTokenLength else {
+            throw PayKitError.invalidHeader
+        }
         _ = try Base64URL.decode(request)
         self.id = id
         self.realm = realm
@@ -47,8 +56,30 @@ public struct PaymentChallenge: Codable, Equatable, Sendable {
 
     public func requireSolanaCharge() throws {
         guard method == "solana", intent == "charge" else {
-            throw MppError.unsupportedChallenge(method: method, intent: intent)
+            throw PayKitError.unsupportedChallenge(method: method, intent: intent)
         }
+    }
+
+    /// Returns `true` if the challenge carries an `expires` timestamp that
+    /// is in the past (or is unparseable). Challenges with no `expires`
+    /// are never considered expired — the protocol allows omitting it and
+    /// the client has no anchor to check against. Mirrors the fail-closed
+    /// RFC3339 parser in rust `protocol::core::challenge::is_expired`: an
+    /// `expires` we cannot parse is treated as expired so a hostile server
+    /// cannot bypass the gate with a malformed timestamp.
+    public func isExpired(now: Date = Date()) -> Bool {
+        guard let expires = expires else { return false }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = formatter.date(from: expires) {
+            return parsed <= now
+        }
+        // Retry without fractional seconds (RFC3339 allows either form).
+        formatter.formatOptions = [.withInternetDateTime]
+        if let parsed = formatter.date(from: expires) {
+            return parsed <= now
+        }
+        return true  // fail-closed: unparseable expiry refuses to sign
     }
 
     public func echo() -> ChallengeEcho {

@@ -72,8 +72,12 @@ final class PayKitServiceProvider extends ServiceProvider
         }
         $opFeePayer = (bool) ($operatorCfg['fee_payer'] ?? true);
 
+        // A null/empty realm derives a per-recipient default (audit #15); a
+        // shared literal like "Laravel" would put every Laravel app on one
+        // credential namespace when they also share a binding secret.
+        $rawRealm = $cfg['mpp']['realm'] ?? null;
         $mpp = new MppConfig(
-            realm: (string) ($cfg['mpp']['realm'] ?? 'Laravel'),
+            realm: ($rawRealm === null || (string) $rawRealm === '') ? null : (string) $rawRealm,
             challengeBindingSecret: isset($cfg['mpp_challenge_binding_secret'])
                 && $cfg['mpp_challenge_binding_secret'] !== ''
                     ? (string) $cfg['mpp_challenge_binding_secret']

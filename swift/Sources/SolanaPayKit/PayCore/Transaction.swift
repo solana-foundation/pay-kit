@@ -78,7 +78,7 @@ enum ShortVec {
         var shift = 0
         for _ in 0..<3 {
             guard offset < data.count else {
-                throw MppError.invalidTransaction("short-vec length truncated")
+                throw PayKitError.invalidTransaction("short-vec length truncated")
             }
             let byte = data[data.startIndex + offset]
             offset += 1
@@ -88,7 +88,7 @@ enum ShortVec {
             }
             shift += 7
         }
-        throw MppError.invalidTransaction("short-vec length exceeds 3 bytes")
+        throw PayKitError.invalidTransaction("short-vec length exceeds 3 bytes")
     }
 }
 
@@ -122,7 +122,7 @@ public struct TransactionMessage: Sendable {
         instructions: [CompiledInstruction]
     ) throws {
         guard recentBlockhash.count == 32 else {
-            throw MppError.invalidTransaction("recentBlockhash must be 32 bytes")
+            throw PayKitError.invalidTransaction("recentBlockhash must be 32 bytes")
         }
         self.version = version
         self.header = header
@@ -239,7 +239,7 @@ public enum TransactionBuilder {
 
         let accountKeys = writableSigners + readonlySigners + writableNonSigners + readonlyNonSigners
         guard accountKeys.count <= 255 else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "transaction has \(accountKeys.count) accounts; the Solana wire format caps account indices at u8 (255)"
             )
         }
@@ -253,7 +253,7 @@ public enum TransactionBuilder {
               readonlySigners.count <= 255,
               readonlyNonSigners.count <= 255
         else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "header counts exceed u8: signers=\(totalSigners), readonlySigners=\(readonlySigners.count), readonlyNonSigners=\(readonlyNonSigners.count)"
             )
         }
@@ -273,7 +273,7 @@ public enum TransactionBuilder {
         compiled.reserveCapacity(instructions.count)
         for ix in instructions {
             guard let programIdIndex = keyIndex[ix.programId] else {
-                throw MppError.invalidTransaction(
+                throw PayKitError.invalidTransaction(
                     "program id \(ix.programId.base58) is missing from compiled account keys"
                 )
             }
@@ -281,7 +281,7 @@ public enum TransactionBuilder {
             accountIndices.reserveCapacity(ix.accounts.count)
             for meta in ix.accounts {
                 guard let idx = keyIndex[meta.pubkey] else {
-                    throw MppError.invalidTransaction(
+                    throw PayKitError.invalidTransaction(
                         "account \(meta.pubkey.base58) is missing from compiled account keys"
                     )
                 }
@@ -313,7 +313,7 @@ public struct SignedTransaction: Sendable {
     public init(signatures: [Data], message: TransactionMessage) throws {
         for sig in signatures {
             guard sig.count == 64 else {
-                throw MppError.invalidTransaction("signature must be 64 bytes, got \(sig.count)")
+                throw PayKitError.invalidTransaction("signature must be 64 bytes, got \(sig.count)")
             }
         }
         self.signatures = signatures

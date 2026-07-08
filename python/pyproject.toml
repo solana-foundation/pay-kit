@@ -4,8 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "solana-pay-kit"
-version = "0.1.0"
-description = "Solana payment method for the Machine Payments Protocol"
+version = "0.2.0"
+description = "Building blocks for Agentic payments (x402, MPP, AP2)"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
@@ -14,12 +15,20 @@ dependencies = [
     "solana>=0.35",
     "pydantic>=2",
     "pydantic-settings>=2",
+    # Required by the codama-py generated payment-channels client
+    # (solana_pay_kit/protocols/programs/paymentchannels).
+    "anchorpy>=0.21",
+    "borsh-construct>=0.1",
 ]
 
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.110"]
 flask = ["flask>=3"]
 django = ["django>=4.2"]
+# The playground-api example: a FastAPI app served with uvicorn. yfinance backs
+# the live stock routes (the python counterpart to the TS example's
+# yahoo-finance2); lookups degrade gracefully so the example runs offline.
+playground = ["fastapi>=0.110", "uvicorn>=0.30", "yfinance>=0.2.40"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
@@ -30,11 +39,16 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pay_kit"]
+packages = ["src/solana_pay_kit"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+# Rendered by codama-py (skills/pay-sdk-implementation/codegen); never edited
+# by hand, so it is exempt from lint and formatting. `docs/snippets` holds
+# illustrative SDK-doc snippets (extracted into the playground + docs site),
+# not part of the package, so it is exempt too.
+extend-exclude = ["src/solana_pay_kit/protocols/programs/paymentchannels", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
@@ -42,63 +56,78 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
-# Strict scope is the hand-authored pay_kit SDK surface plus the two protocol
-# adapters/verifier (pay_kit/protocols/mpp/__init__.py, pay_kit/protocols/x402/*).
+# Strict scope is the hand-authored solana_pay_kit SDK surface plus the two protocol
+# adapters/verifier (solana_pay_kit/protocols/mpp/__init__.py, solana_pay_kit/protocols/x402/*).
 # The MPP wire layer consolidated in from the former solana_mpp package
-# (pay_kit/_paycore/solana.py and pay_kit/protocols/mpp/{core,server,client,intents})
+# (solana_pay_kit/_paycore/solana.py and solana_pay_kit/protocols/mpp/{core,server,client,intents})
 # was authored under standard typing and is left at standard to keep its
 # behavior byte-identical; tightening it to strict is follow-up typing work.
 strict = [
-    "src/pay_kit/__init__.py",
-    "src/pay_kit/_middleware.py",
-    "src/pay_kit/config.py",
-    "src/pay_kit/django.py",
-    "src/pay_kit/errors.py",
-    "src/pay_kit/fastapi.py",
-    "src/pay_kit/fee.py",
-    "src/pay_kit/flask.py",
-    "src/pay_kit/gate.py",
-    "src/pay_kit/kms.py",
-    "src/pay_kit/operator.py",
-    "src/pay_kit/payment.py",
-    "src/pay_kit/preflight.py",
-    "src/pay_kit/price.py",
-    "src/pay_kit/pricing.py",
-    "src/pay_kit/signer.py",
-    "src/pay_kit/_paycore/__init__.py",
-    "src/pay_kit/_paycore/currency.py",
-    "src/pay_kit/_paycore/mints.py",
-    "src/pay_kit/_paycore/network.py",
-    "src/pay_kit/_paycore/protocol.py",
-    "src/pay_kit/_paycore/stablecoin.py",
-    "src/pay_kit/protocols/__init__.py",
-    "src/pay_kit/protocols/mpp/__init__.py",
-    "src/pay_kit/protocols/x402/__init__.py",
-    "src/pay_kit/protocols/x402/exact/__init__.py",
-    "src/pay_kit/protocols/x402/exact/types.py",
-    "src/pay_kit/protocols/x402/exact/verify.py",
-    "src/pay_kit/protocols/x402/client/__init__.py",
-    "src/pay_kit/protocols/x402/client/exact/__init__.py",
-    "src/pay_kit/protocols/x402/client/exact/payment.py",
-    "src/pay_kit/protocols/x402/client/exact/transport.py",
+    "src/solana_pay_kit/__init__.py",
+    "src/solana_pay_kit/_middleware.py",
+    "src/solana_pay_kit/config.py",
+    "src/solana_pay_kit/django.py",
+    "src/solana_pay_kit/errors.py",
+    "src/solana_pay_kit/fastapi.py",
+    "src/solana_pay_kit/fee.py",
+    "src/solana_pay_kit/flask.py",
+    "src/solana_pay_kit/gate.py",
+    "src/solana_pay_kit/kms.py",
+    "src/solana_pay_kit/operator.py",
+    "src/solana_pay_kit/payment.py",
+    "src/solana_pay_kit/preflight.py",
+    "src/solana_pay_kit/price.py",
+    "src/solana_pay_kit/pricing.py",
+    "src/solana_pay_kit/signer.py",
+    "src/solana_pay_kit/usage.py",
+    "src/solana_pay_kit/_paycore/__init__.py",
+    "src/solana_pay_kit/_paycore/currency.py",
+    "src/solana_pay_kit/_paycore/mints.py",
+    "src/solana_pay_kit/_paycore/network.py",
+    "src/solana_pay_kit/_paycore/protocol.py",
+    "src/solana_pay_kit/_paycore/stablecoin.py",
+    "src/solana_pay_kit/protocols/__init__.py",
+    "src/solana_pay_kit/protocols/mpp/__init__.py",
+    "src/solana_pay_kit/protocols/x402/__init__.py",
+    "src/solana_pay_kit/protocols/x402/exact/__init__.py",
+    "src/solana_pay_kit/protocols/x402/exact/types.py",
+    "src/solana_pay_kit/protocols/x402/exact/verify.py",
+    "src/solana_pay_kit/protocols/x402/client/__init__.py",
+    "src/solana_pay_kit/protocols/x402/client/exact/__init__.py",
+    "src/solana_pay_kit/protocols/x402/client/exact/payment.py",
+    "src/solana_pay_kit/protocols/x402/client/exact/transport.py",
+    "src/solana_pay_kit/protocols/x402/upto/__init__.py",
+    "src/solana_pay_kit/protocols/x402/upto/types.py",
+    "src/solana_pay_kit/protocols/x402/upto/verify.py",
+    "src/solana_pay_kit/protocols/x402/client/upto/__init__.py",
+    "src/solana_pay_kit/protocols/x402/client/upto/payment.py",
 ]
 reportMissingTypeStubs = false
 include = ["src", "tests"]
-exclude = ["**/__pycache__"]
+exclude = ["**/__pycache__", "src/solana_pay_kit/protocols/programs/paymentchannels"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# anchorpy ships a pytest plugin for on-chain workspace tests that imports
+# pytest-xprocess at collection time; we only use anchorpy's Borsh helpers,
+# so keep the plugin out of the suite.
+addopts = "-p no:pytest_anchorpy"
 
 [tool.coverage.run]
-source = ["pay_kit"]
+source = ["solana_pay_kit"]
 # Line coverage gate is 90%. Branch coverage is follow-up work tracked in
 # issue #108.
 branch = false
-# pay_kit/preflight.py wraps live Solana RPC + Surfnet cheatcodes that cannot
+# solana_pay_kit/preflight.py wraps live Solana RPC + Surfnet cheatcodes that cannot
 # run inside the offline unit suite; every meaningful path is a network call.
 # Its two opt-out knobs are covered separately against a stubbed run/RPC.
-omit = ["src/pay_kit/preflight.py"]
+omit = [
+    "src/solana_pay_kit/preflight.py",
+    # Generated by codama-py; exercised indirectly through the
+    # _paymentchannels glue and the frozen instruction vectors.
+    "src/solana_pay_kit/protocols/programs/paymentchannels/*",
+]
 
 [tool.coverage.report]
 fail_under = 90

@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 
@@ -27,6 +29,24 @@ type BuildOptions struct {
 	// yet hold a token account for the selected mint; the instruction is
 	// idempotent so it is safe when the account already exists.
 	CreateRecipientATA bool
+
+	// MaxAmountBaseUnits, when non-zero, refuses to sign a challenge whose
+	// amount exceeds this cap (in token base units). Opt-in guard for
+	// auto-pay integrations where the server controls what gets signed
+	// against the user's wallet (#10). Zero means no cap.
+	MaxAmountBaseUnits uint64
+
+	// ExpectedNetwork, when non-empty, refuses to sign a challenge whose
+	// methodDetails.network does not match (compared canonically, so
+	// "mainnet"/"mainnet-beta" are equivalent). Opt-in network pin (#10).
+	ExpectedNetwork string
+
+	// AllowUnknownToken2022, when true, permits signing transfers for a
+	// Token-2022 mint that is not a known stablecoin. Such mints can carry
+	// transfer hooks that execute arbitrary code on every transfer, so they
+	// are refused by default (#26). Vanilla Token-program mints are always
+	// allowed regardless of this flag.
+	AllowUnknownToken2022 bool
 }
 
 // BuildChargeTransaction creates a payment credential payload from challenge fields.
@@ -118,10 +138,24 @@ func BuildChargeTransaction(
 		if err != nil {
 			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeRPC, "resolve token program", err)
 		}
-		decimals := uint8(6)
-		if methodDetails.Decimals != nil {
-			decimals = *methodDetails.Decimals
+		// #26: refuse to sign an unknown Token-2022 mint unless explicitly
+		// allowed. Token-2022 mints can carry transfer hooks that run arbitrary
+		// code on every transfer; the vanilla Token program has no such hook so
+		// arbitrary Token-program mints stay first-class.
+		if tokenProgram.String() == paycore.Token2022Program &&
+			paycore.StablecoinSymbol(currency) == "" &&
+			!options.AllowUnknownToken2022 {
+			return paycore.CredentialPayload{}, core.NewError(core.ErrCodeInvalidConfig,
+				"refusing to sign an unknown Token-2022 mint (transfer-hook risk); set AllowUnknownToken2022 to override")
 		}
+		// #42: decimals are required for SPL charges (spec §7.2 marks them MUST
+		// be present for a mint). Defaulting to 6 would silently build a
+		// transfer at the wrong divisor for a non-6-decimal mint.
+		if methodDetails.Decimals == nil {
+			return paycore.CredentialPayload{}, core.NewError(core.ErrCodeInvalidConfig,
+				"methodDetails.decimals is required for SPL charges (spec §7.2)")
+		}
+		decimals := *methodDetails.Decimals
 		sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
 		if err != nil {
 			return paycore.CredentialPayload{}, err
@@ -171,7 +205,10 @@ func BuildChargeTransaction(
 			if err != nil {
 				return paycore.CredentialPayload{}, err
 			}
-			createTokenAccount := !useServerFeePayer || (split.AtaCreationRequired != nil && *split.AtaCreationRequired)
+			// #20: only create a split ATA when the challenge explicitly flags
+			// it. Creating one per split in client-paid mode let a hostile
+			// server attach N dust splits and drain N x ~0.002 SOL of rent.
+			createTokenAccount := split.AtaCreationRequired != nil && *split.AtaCreationRequired
 			if err := addTransfer(splitKey, splitAmount, createTokenAccount); err != nil {
 				return paycore.CredentialPayload{}, err
 			}
@@ -242,6 +279,23 @@ func BuildCredentialHeaderWithOptions(
 	challenge core.PaymentChallenge,
 	options BuildOptions,
 ) (string, error) {
+	// #17: refuse to sign a challenge that is not a solana/charge challenge
+	// before doing any work. The transport filters before calling, but this is
+	// the lower-level exported builder, so it must gate itself.
+	if challenge.Method != core.NewMethodName("solana") {
+		return "", core.NewError(core.ErrCodeInvalidMethod,
+			"challenge method is not \"solana\"")
+	}
+	if !challenge.Intent.IsCharge() {
+		return "", core.NewError(core.ErrCodeInvalidMethod,
+			"challenge intent is not a charge")
+	}
+	// #10: always refuse to sign an expired challenge. Challenges with no
+	// expiry are still accepted (the protocol allows omitting it).
+	if challenge.IsExpired(time.Now()) {
+		return "", core.NewError(core.ErrCodeChallengeExpired,
+			"refusing to sign an expired challenge")
+	}
 	var request intents.ChargeRequest
 	if err := challenge.Request.Decode(&request); err != nil {
 		return "", err
@@ -254,6 +308,26 @@ func BuildCredentialHeaderWithOptions(
 		}
 		if err := json.Unmarshal(raw, &details); err != nil {
 			return "", err
+		}
+	}
+	// #10: opt-in max-amount cap. Compared in base units, matching how the
+	// server reasons about the amount.
+	if options.MaxAmountBaseUnits > 0 {
+		amount, err := request.ParseAmount()
+		if err != nil {
+			return "", err
+		}
+		if amount > options.MaxAmountBaseUnits {
+			return "", core.NewError(core.ErrCodeAmountMismatch,
+				fmt.Sprintf("challenge amount %d exceeds configured maximum %d", amount, options.MaxAmountBaseUnits))
+		}
+	}
+	// #10: opt-in expected-network pin. Compared canonically so the legacy
+	// "mainnet-beta" spelling matches the canonical "mainnet".
+	if options.ExpectedNetwork != "" {
+		if paycore.ParseSolanaNetwork(details.Network) != paycore.ParseSolanaNetwork(options.ExpectedNetwork) {
+			return "", core.NewError(core.ErrCodeWrongNetwork,
+				fmt.Sprintf("challenge network %q does not match expected %q", details.Network, options.ExpectedNetwork))
 		}
 	}
 	options.ExternalID = request.ExternalID

@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -304,6 +305,28 @@ func TestParseReceiptOversized(t *testing.T) {
 	huge := string(make([]byte, 17*1024))
 	if _, err := ParseReceipt(huge); err == nil {
 		t.Fatal("expected error for oversized receipt")
+	}
+}
+
+// #9: the WWW-Authenticate request param must be capped at maxTokenLen before
+// base64-decode + JSON-parse, matching the credential/receipt parsers.
+func TestParseWWWAuthenticateRejectsOversizedRequestParam(t *testing.T) {
+	oversized := strings.Repeat("A", maxTokenLen+1)
+	header := fmt.Sprintf(`Payment id="abc", realm="r", method="solana", intent="charge", request="%s"`, oversized)
+	if _, err := ParseWWWAuthenticate(header); err == nil {
+		t.Fatal("expected error for oversized request param")
+	}
+}
+
+func TestParseWWWAuthenticateAcceptsAtMaxRequestSize(t *testing.T) {
+	// A valid encoded request at/under the cap must NOT trip the size gate.
+	encoded := Base64URLEncode([]byte(`{"amount":"1","currency":"sol","recipient":"x"}`))
+	if len(encoded) > maxTokenLen {
+		t.Fatalf("fixture request is unexpectedly large: %d", len(encoded))
+	}
+	header := fmt.Sprintf(`Payment id="abc", realm="r", method="solana", intent="charge", request="%s"`, encoded)
+	if _, err := ParseWWWAuthenticate(header); err != nil {
+		t.Fatalf("expected at-cap request to parse, got %v", err)
 	}
 }
 

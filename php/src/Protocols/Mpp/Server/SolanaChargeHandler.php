@@ -84,11 +84,15 @@ final class SolanaChargeHandler
         private readonly int $confirmationAttempts = 40,
         private readonly int $confirmationDelayMicros = 250_000,
         ?Store $replayStore = null,
+        bool $acceptPushMode = false,
     ) {
         $this->rpc = $rpc instanceof RpcGateway ? $rpc : new SolanaRpcGateway($rpc);
-        $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier();
+        // Push mode (§13.5) is off by default; the default verifier is built
+        // with the route's opt-in so a non-opting route rejects push-mode
+        // credentials at verification (audit #5).
+        $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode);
         $this->transactionVerifier = $transactionVerifier
-            ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier());
+            ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode));
         $this->replayStore = $replayStore ?? new MemoryStore();
     }
 

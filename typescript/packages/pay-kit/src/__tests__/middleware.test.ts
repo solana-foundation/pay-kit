@@ -5,13 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProtocolAdapter } from '../adapter.js';
 import { configure } from '../config.js';
 import { InvalidProofError } from '../errors.js';
-import { paid, payment, requirePayment, toWebRequest } from '../express.js';
-import { withPayment } from '../handler.js';
-import { requirePayment as honoRequirePayment, type WebContext } from '../hono.js';
+import { toWebRequest, type WebContext } from '../http.js';
 import type { Payment } from '../payment.js';
 import { createPayKit, type PayKit } from '../paykit.js';
 import { usd } from '../price.js';
-import { createPricing } from '../pricing.js';
 
 const CREDENTIAL_HEADER = 'x-fake-credential';
 
@@ -51,17 +48,16 @@ const fakeAdapter: ProtocolAdapter = {
 
 async function setup(): Promise<PayKit> {
     const config = await configure({ mpp: { challengeBindingSecret: 's3cret' } });
-    const pricing = createPricing(config, { report: { amount: usd('0.10') } });
-    return createPayKit(config, { adapters: [fakeAdapter], pricing });
+    return createPayKit({ adapters: [fakeAdapter], config, pricing: { report: { amount: usd('0.10') } } });
 }
 
-describe('express middleware', () => {
+describe('pay.express', () => {
     let server: Server;
     let base: string;
 
     beforeAll(async () => {
-        const paykit = await setup();
-        const middleware = requirePayment(paykit, 'report');
+        const pay = await setup();
+        const middleware = pay.express('report');
         server = createServer((req, res) => {
             void middleware(req, res, error => {
                 if (error) {
@@ -72,9 +68,9 @@ describe('express middleware', () => {
                 res.writeHead(200, { 'content-type': 'application/json' });
                 res.end(
                     JSON.stringify({
-                        gatePaid: paid(req, 'report'),
-                        otherPaid: paid(req, 'other'),
-                        tx: payment(req)?.transaction,
+                        gatePaid: pay.paid(req, 'report'),
+                        otherPaid: pay.paid(req, 'other'),
+                        tx: pay.payment(req)?.transaction,
                     }),
                 );
             });
@@ -121,22 +117,22 @@ describe('express middleware', () => {
     });
 });
 
-describe('hono middleware', () => {
+describe('pay.hono', () => {
     function context(request: Request): WebContext & { res: Response } {
         return { req: { raw: request }, res: new Response('ok') };
     }
 
     it('returns the 402 challenge when unpaid', async () => {
-        const paykit = await setup();
-        const middleware = honoRequirePayment(paykit, 'report');
+        const pay = await setup();
+        const middleware = pay.hono('report');
         const response = await middleware(context(new Request('http://t/report')), () => Promise.resolve());
         expect(response?.status).toBe(402);
         expect(response?.headers.get('www-authenticate')).toBe('Payment realm="test"');
     });
 
     it('continues the chain and merges settlement headers on success', async () => {
-        const paykit = await setup();
-        const middleware = honoRequirePayment(paykit, 'report');
+        const pay = await setup();
+        const middleware = pay.hono('report');
         const request = new Request('http://t/report', { headers: { [CREDENTIAL_HEADER]: 'valid' } });
         const c = context(request);
         let ran = false;
@@ -147,16 +143,14 @@ describe('hono middleware', () => {
         expect(result).toBeUndefined();
         expect(ran).toBe(true);
         expect(c.res.headers.get('x-payment-settlement-signature')).toBe('TxSig');
-        expect(paykit.payment(request)?.transaction).toBe('TxSig');
+        expect(pay.payment(request)?.transaction).toBe('TxSig');
     });
 });
 
-describe('withPayment', () => {
+describe('pay.fetch', () => {
     it('gates a fetch handler', async () => {
-        const paykit = await setup();
-        const handler = withPayment(paykit, 'report', (_request, settled) =>
-            Response.json({ tx: settled.transaction }),
-        );
+        const pay = await setup();
+        const handler = pay.fetch('report', (_request, settled) => Response.json({ tx: settled.transaction }));
 
         const denied = await handler(new Request('http://t/report'));
         expect(denied.status).toBe(402);

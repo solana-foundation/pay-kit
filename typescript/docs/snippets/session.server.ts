@@ -2,38 +2,39 @@
 // See ./README.md for the snippet:start/end convention.
 
 import express from 'express'
-import { createSolanaRpc, type KeyPairSigner } from '@solana/kit'
-import { Mppx, session } from '@solana/mpp/server'
+import type { KeyPairSigner } from '@solana/kit'
+import { createPayKit, session, usd } from '@solana/pay-kit'
 
 declare const signer: KeyPairSigner
 declare const RECIPIENT: string
 declare const rpcUrl: string
-declare function toWebRequest(req: express.Request): globalThis.Request
-declare function forward(challenge: globalThis.Response, res: express.Response): void
 declare function chunks(): Iterable<string>
 
 // snippet:start
-const app = express()
-const method = session({
-  // On-chain settlement at close needs BOTH the merchant signer and an rpc client.
-  signer,
-  rpc: createSolanaRpc(rpcUrl),
-  operator: signer.address,
-  recipient: RECIPIENT,
+const pay = await createPayKit({
   network: 'mainnet',
-  currency: 'USDC',
-  decimals: 6,
-  cap: 1_000_000n, // 1 USDC max per session
-  pricing: { perDelivery: 100n },
+  operator: { recipient: RECIPIENT, signer },
+  // Cap 1 USDC per session, metered at 0.0001 USDC per delivered chunk.
+  pricing: { stream: session(usd('1.00'), { unitPrice: usd('0.0001') }) },
+  rpcUrl,
 })
-const mppx = Mppx.create({ methods: [method] })
 
-app.get('${PATH}', async (req, res) => {
-  const result = await mppx.session({ cap: '1000000', currency: 'USDC' })(toWebRequest(req))
-  if (result.status === 402) return forward(result.challenge as globalThis.Response, res)
+const app = express()
+
+// Gate the stream; settlement runs out-of-band when the channel idle-closes.
+app.get('${PATH}', pay.express('stream'), (_req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream' })
   for (const chunk of chunks()) res.write(`data: ${chunk}\n\n`)
   res.end()
 })
+
+// Session side-channel + receipt routes — mounted explicitly (pay-kit, like
+// mppx, leaves route-mounting to the app rather than auto-injecting them).
+const routes = pay.sessionRoutes('stream')
+app.post('${PATH}', routes.voucher) // voucher commits to the resource URL
+app.post('/__402/session/deliveries', routes.deliveries)
+app.post('/__402/session/commit', routes.commit)
+app.get('/sessions/receipt/:channelId', routes.receipt)
 // snippet:end
 
 void app

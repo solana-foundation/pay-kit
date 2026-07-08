@@ -39,7 +39,7 @@ module PayKitTestHelpers
       c.x402.facilitator_url = overrides[:x402_facilitator_url]
       c.x402.signer = overrides[:x402_signer]
       c.mpp.realm = overrides[:realm] || "Test"
-      c.mpp.challenge_binding_secret = overrides[:mpp_secret] || "test-secret"
+      c.mpp.challenge_binding_secret = overrides[:mpp_secret] || ("test-secret-" + ("0" * 32))
       c.mpp.expires_in = overrides[:mpp_expires_in] if overrides.key?(:mpp_expires_in)
     end
 

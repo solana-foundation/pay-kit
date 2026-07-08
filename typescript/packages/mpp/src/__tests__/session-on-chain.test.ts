@@ -10,8 +10,11 @@ import {
     createKeyPairSignerFromPrivateKeyBytes,
     generateKeyPairSigner,
     getBase64Codec,
+    getCompiledTransactionMessageDecoder,
+    getCompiledTransactionMessageEncoder,
     getSignatureFromTransaction,
     getTransactionDecoder,
+    getTransactionEncoder,
     type KeyPairSigner,
     type Signature,
 } from '@solana/kit';
@@ -25,7 +28,8 @@ import {
     buildEd25519VerifyInstruction,
     buildMultiDelegatorInitInstruction,
     buildMultiDelegatorUpdateInstruction,
-    buildSettleAndFinalizeInstructions,
+    buildReclaimInstruction,
+    buildSettleAndSealInstructions,
     buildTopUpInstruction,
     ED25519_PROGRAM_ADDRESS,
     encodeVoucherMessageBytes,
@@ -60,17 +64,19 @@ async function loadFixedSigners() {
 // ── encodeVoucherMessageBytes parity check ─────────────────────────────────
 
 describe('encodeVoucherMessageBytes', () => {
-    test('produces the 48-byte canonical voucher payload', () => {
+    test('produces the 50-byte magic-prefixed canonical voucher payload', () => {
         const bytes = encodeVoucherMessageBytes({
             channelId: '11111111111111111111111111111111',
             cumulativeAmount: 0n,
             expiresAt: 0n,
         });
-        expect(bytes.byteLength).toBe(48);
-        expect(bytes.every(b => b === 0)).toBe(true);
+        expect(bytes.byteLength).toBe(50);
+        expect(bytes[0]).toBe(0x56);
+        expect(bytes[1]).toBe(0x01);
+        expect(bytes.slice(2).every(b => b === 0)).toBe(true);
     });
 
-    test('encodes channelId, cumulative (u64 LE), expiresAt (i64 LE) in order', () => {
+    test('encodes magic, channelId, cumulative (u64 LE), expiresAt (i64 LE) in order', () => {
         // Pick an address that encodes to exactly 32 bytes; use deterministic numbers.
         const bytes = encodeVoucherMessageBytes({
             channelId: '11111111111111111111111111111111',
@@ -78,8 +84,10 @@ describe('encodeVoucherMessageBytes', () => {
             expiresAt: 0x7fff_ffff_ffff_fff0n,
         });
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        expect(view.getBigUint64(32, true)).toBe(0x1234_5678n);
-        expect(view.getBigInt64(40, true)).toBe(0x7fff_ffff_ffff_fff0n);
+        expect(bytes[0]).toBe(0x56);
+        expect(bytes[1]).toBe(0x01);
+        expect(view.getBigUint64(34, true)).toBe(0x1234_5678n);
+        expect(view.getBigInt64(42, true)).toBe(0x7fff_ffff_ffff_fff0n);
     });
 });
 
@@ -147,14 +155,14 @@ describe('buildEd25519VerifyInstruction', () => {
     });
 });
 
-// ── settle_and_finalize ─────────────────────────────────────────────────────
+// ── settle_and_seal ─────────────────────────────────────────────────────────
 
-describe('buildSettleAndFinalizeInstructions', () => {
+describe('buildSettleAndSealInstructions', () => {
     test('voucher-less variant emits a single instruction with hasVoucher=0', async () => {
         const [, , , , merchant] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
 
-        const out = buildSettleAndFinalizeInstructions({
+        const out = buildSettleAndSealInstructions({
             channelId,
             merchantSigner: merchant,
         });
@@ -172,9 +180,10 @@ describe('buildSettleAndFinalizeInstructions', () => {
         expect(ix.accounts[2]!.address).toBe(INSTRUCTIONS_SYSVAR_ADDRESS);
         expect(ix.accounts[2]!.role).toBe(AccountRole.READONLY);
 
-        // data = [disc=4][voucher(48 zero)][hasVoucher=0] => 50 bytes
+        // The voucher is read from the ed25519 precompile, so the data is just
+        // [disc=4][hasVoucher=0] => 2 bytes.
         const data = new Uint8Array(ix.data);
-        expect(data.byteLength).toBe(1 + 32 + 8 + 8 + 1);
+        expect(data.byteLength).toBe(2);
         expect(data[0]).toBe(4);
         expect(data[data.byteLength - 1]).toBe(0);
     });
@@ -191,7 +200,7 @@ describe('buildSettleAndFinalizeInstructions', () => {
             signature: fixedSig,
         };
 
-        const out = buildSettleAndFinalizeInstructions({
+        const out = buildSettleAndSealInstructions({
             channelId,
             merchantSigner: merchant,
             voucher: { authorizedSigner: authorizedSignerSk.address, signed },
@@ -202,11 +211,10 @@ describe('buildSettleAndFinalizeInstructions', () => {
         expect(precompile.programAddress).toBe(ED25519_PROGRAM_ADDRESS);
         const settle = out.instructions[1]!;
         const data = new Uint8Array(settle.data);
-        // hasVoucher = 1
+        // Voucher lives in the precompile; settle data is [disc=4][hasVoucher=1].
+        expect(data.byteLength).toBe(2);
+        expect(data[0]).toBe(4);
         expect(data[data.byteLength - 1]).toBe(1);
-        // cumulativeAmount at offset 1 + 32 = 33 (u64 LE) = 500
-        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-        expect(view.getBigUint64(33, true)).toBe(500n);
     });
 });
 
@@ -237,12 +245,13 @@ describe('buildTopUpInstruction', () => {
 
 describe('buildDistributeInstruction', () => {
     test('appends one writable recipient ATA per split', async () => {
-        const [payer, , payee] = await loadFixedSigners();
+        const [payer, operator, payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const splitRecipient = address('HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD');
         const ix = await buildDistributeInstruction({
             channelState: { channelId, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            rentPayer: operator.address,
             splits: [
                 { bps: 1000, recipient: splitRecipient },
                 { bps: 250, recipient: splitRecipient },
@@ -250,11 +259,11 @@ describe('buildDistributeInstruction', () => {
             tokenProgram: TOKEN_PROGRAM,
         });
         expect(ix.programAddress).toBe(PAYMENT_CHANNELS_PROGRAM_ID);
-        // 10 fixed + 2 recipient ATAs
-        expect(ix.accounts).toHaveLength(12);
+        // 11 fixed (after the rentPayer +1 shift) + 2 recipient ATAs
+        expect(ix.accounts).toHaveLength(13);
         // tail accounts must be writable
-        expect(ix.accounts[10]!.role).toBe(AccountRole.WRITABLE);
         expect(ix.accounts[11]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[12]!.role).toBe(AccountRole.WRITABLE);
 
         const data = new Uint8Array(ix.data);
         // [disc=7][recipients_count u32=2][(pubkey32 + bps u16) x 2]
@@ -265,20 +274,39 @@ describe('buildDistributeInstruction', () => {
         expect(view.getUint16(5 + 32 + 34, true)).toBe(250);
     });
 
-    test('zero-split distribute has only 10 fixed accounts', async () => {
-        const [payer, , payee] = await loadFixedSigners();
+    test('zero-split distribute has only 11 fixed accounts', async () => {
+        const [payer, operator, payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const ix = await buildDistributeInstruction({
             channelState: { channelId, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            rentPayer: operator.address,
             splits: [],
             tokenProgram: TOKEN_PROGRAM,
         });
-        expect(ix.accounts).toHaveLength(10);
+        // 11 fixed accounts after the rentPayer (+1) shift.
+        expect(ix.accounts).toHaveLength(11);
         const data = new Uint8Array(ix.data);
         const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
         expect(view.getUint32(1, true)).toBe(0);
         expect(data.byteLength).toBe(1 + 4);
+    });
+});
+
+// ── reclaim ─────────────────────────────────────────────────────────────────
+
+describe('buildReclaimInstruction', () => {
+    test('encodes the bare discriminator with channel + rentPayer writable', async () => {
+        const [, operator] = await loadFixedSigners();
+        const channelId = '11111111111111111111111111111111';
+        const ix = buildReclaimInstruction({ channelId, rentPayer: operator.address });
+        expect(ix.programAddress).toBe(PAYMENT_CHANNELS_PROGRAM_ID);
+        expect(ix.accounts).toHaveLength(2);
+        expect(ix.accounts[0]!.address).toBe(channelId);
+        expect(ix.accounts[0]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[1]!.address).toBe(operator.address);
+        expect(ix.accounts[1]!.role).toBe(AccountRole.WRITABLE);
+        expect(new Uint8Array(ix.data)).toEqual(new Uint8Array([9]));
     });
 });
 
@@ -332,6 +360,7 @@ describe('verifyOpenTx', () => {
             decimals: 6,
             modes: ['pull'],
             network: 'localnet',
+            recentSlot: '123456',
             operator: payer.address,
             pullVoucherStrategy: 'clientVoucher',
             recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
@@ -341,7 +370,7 @@ describe('verifyOpenTx', () => {
             authorizedSigner: authorizedSigner.address,
             deposit: 1_000_000n,
             gracePeriod: 900,
-            programAddress: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+            programAddress: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
             request,
             salt: 7n,
             signer: payer,
@@ -358,7 +387,9 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
-                programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                openSlot: 123_456n,
+                operator: payer.address,
+                programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
             },
             openPayload: {
@@ -368,6 +399,7 @@ describe('verifyOpenTx', () => {
                 gracePeriod: open.gracePeriod,
                 mint: open.mint,
                 mode: 'pull',
+                recentSlot: open.openSlot,
                 payee: open.payee,
                 payer: open.payer,
                 salt: open.salt,
@@ -378,7 +410,74 @@ describe('verifyOpenTx', () => {
         expect(result.channelId).toBe(open.channelId);
         expect(result.deposit).toBe(1_000_000n);
         expect(result.gracePeriod).toBe(900);
+        expect(result.openSlot).toBe(123_456n);
         expect(result.salt).toBe(7n);
+    });
+
+    test('rejects open whose openSlot differs from the challenge-issued slot', async () => {
+        const [payer, , payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        await expect(
+            verifyOpenTx({
+                expected: {
+                    authorizedSigner: authorizedSigner.address,
+                    currency: USDC.mainnet!,
+                    maxCap: 5_000_000n,
+                    network: 'localnet',
+                    openSlot: 999_999n, // challenge issued a different slot
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
+                    recipient: payee.address,
+                },
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    deposit: open.deposit,
+                    gracePeriod: open.gracePeriod,
+                    mint: open.mint,
+                    mode: 'pull',
+                    recentSlot: open.openSlot,
+                    payee: open.payee,
+                    payer: open.payer,
+                    salt: open.salt,
+                    signature: '1'.repeat(88),
+                    transaction: open.transaction,
+                },
+            }),
+        ).rejects.toThrow(/challenge-issued openSlot/);
+    });
+
+    test('rejects an open transaction that uses address-lookup tables', async () => {
+        const [payer, , payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        // Re-encode the open tx with a non-empty addressTableLookups entry so
+        // the verifier sees a v0 message that resolves accounts via an ALT.
+        const altTransaction = injectAddressTableLookup(open.transaction);
+        await expect(
+            verifyOpenTx({
+                expected: {
+                    authorizedSigner: authorizedSigner.address,
+                    currency: USDC.mainnet!,
+                    maxCap: 5_000_000n,
+                    network: 'localnet',
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
+                    recipient: payee.address,
+                },
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    channelId: open.channelId,
+                    deposit: open.deposit,
+                    gracePeriod: open.gracePeriod,
+                    mint: open.mint,
+                    mode: 'pull',
+                    payee: open.payee,
+                    payer: open.payer,
+                    salt: open.salt,
+                    signature: '1'.repeat(88),
+                    transaction: altTransaction,
+                },
+            }),
+        ).rejects.toThrow(/address-lookup tables are not permitted/);
     });
 
     test('rejects open whose deposit exceeds maxCap', async () => {
@@ -391,7 +490,8 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 500_000n,
                     network: 'localnet',
-                    programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payee.address,
                 },
                 openPayload: {
@@ -420,7 +520,8 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 5_000_000n,
                     network: 'localnet',
-                    programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payer.address, // wrong: payer instead of payee
                 },
                 openPayload: {
@@ -460,7 +561,8 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
-                programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                operator: payer.address,
+                programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
             },
             openPayload: {
@@ -497,7 +599,8 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 5_000_000n,
                     network: 'localnet',
-                    programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payee.address,
                 },
                 openPayload: {
@@ -524,6 +627,34 @@ describe('verifyOpenTx', () => {
 function extractTxSignature(transactionBase64: string): Signature {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     return getSignatureFromTransaction(tx);
+}
+
+/**
+ * Re-encode a base64 transaction with a synthetic, non-empty
+ * `addressTableLookups` entry so `verifyOpenTx` exercises its ALT guard.
+ * The lookup itself need not resolve to real accounts — the guard fires on
+ * a non-empty lookup list, before any account resolution.
+ */
+function injectAddressTableLookup(transactionBase64: string): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as Record<string, unknown>;
+    const lookupTableAddress = '11111111111111111111111111111111';
+    const withAlt = {
+        ...message,
+        // Force a v0 message and attach one lookup that pulls in a writable
+        // and a readonly index from a (fake) table.
+        version: 0,
+        addressTableLookups: [
+            {
+                lookupTableAddress: address(lookupTableAddress),
+                readonlyIndexes: [1],
+                writableIndexes: [0],
+            },
+        ],
+    };
+    const messageBytes = new Uint8Array(getCompiledTransactionMessageEncoder().encode(withAlt as never));
+    const rebuilt = getTransactionEncoder().encode({ ...tx, messageBytes } as never);
+    return getBase64Codec().decode(new Uint8Array(rebuilt));
 }
 
 /** Minimal base58 encoder for fixed-byte signatures used in tests. */

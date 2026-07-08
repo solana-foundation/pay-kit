@@ -36,8 +36,14 @@ func NewIntentName(name string) IntentName { return IntentName(strings.ToLower(n
 // IsCharge returns whether the intent is the charge intent.
 func (i IntentName) IsCharge() bool { return strings.EqualFold(string(i), "charge") }
 
+// IsSession returns whether the intent is the session intent.
+func (i IntentName) IsSession() bool { return strings.EqualFold(string(i), "session") }
+
 // Base64URLJSON preserves a base64url-encoded JSON blob.
 type Base64URLJSON struct {
+	// raw is the base64url-encoded JSON kept verbatim as it appeared on
+	// the wire (never re-encoded), so the HMAC challenge ID computed over
+	// it stays byte-stable; "" means the value is absent.
 	raw string
 }
 

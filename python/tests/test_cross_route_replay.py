@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.store import MemoryStore
-from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.challenge import compute_challenge_id
-from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest
-from pay_kit.protocols.mpp.server.charge import Config, Mpp
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.store import MemoryStore
+from solana_pay_kit.protocols.mpp.core.base64url import encode_json
+from solana_pay_kit.protocols.mpp.core.challenge import compute_challenge_id
+from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
+from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
+from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
 
 TEST_SECRET = "cross-route-replay-test-secret-key"
 TEST_RECIPIENT = "11111111111111111111111111111112"
@@ -86,7 +86,10 @@ async def test_tier2_rejects_tampered_realm():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "realm" in str(exc.value).lower()
 
 
@@ -99,7 +102,10 @@ async def test_tier2_rejects_tampered_method():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "method" in str(exc.value).lower()
 
 
@@ -112,7 +118,10 @@ async def test_tier2_rejects_non_charge_intent():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "intent" in str(exc.value).lower()
 
 
@@ -129,7 +138,10 @@ async def test_tier2_rejects_tampered_currency():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "currency" in str(exc.value).lower()
 
 
@@ -146,7 +158,10 @@ async def test_tier2_rejects_tampered_recipient():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "recipient" in str(exc.value).lower()
 
 

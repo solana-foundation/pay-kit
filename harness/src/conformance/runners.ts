@@ -22,7 +22,17 @@ export type RunnerManifest = {
   command: string[];
   // Working directory relative to the repo root. Defaults to the repo root.
   cwd?: string;
+  // Intents this runner can exercise. When omitted, the runner is assumed to
+  // support the original cross-SDK intents ("charge", "x402-exact"); a vector
+  // whose intent is not listed is skipped for this runner rather than failed.
+  // This lets a new intent (e.g. "session") land with only the SDKs that
+  // implement it, without editing every other language's runner.
+  intents?: string[];
 };
+
+// The intents every runner is assumed to support when its manifest does not
+// declare an explicit `intents` list.
+const DEFAULT_INTENTS = ["charge", "x402-exact"];
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
@@ -35,6 +45,12 @@ function isRunnerManifest(value: unknown): value is RunnerManifest {
   if (!Array.isArray(m.command) || m.command.length === 0) return false;
   if (!m.command.every((c) => typeof c === "string")) return false;
   if (m.cwd !== undefined && typeof m.cwd !== "string") return false;
+  if (
+    m.intents !== undefined &&
+    (!Array.isArray(m.intents) || !m.intents.every((i) => typeof i === "string"))
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -43,6 +59,8 @@ export type DiscoveredRunner = {
   command: string[];
   // Absolute working directory the driver spawns the runner in.
   cwd: string;
+  // Resolved intent capabilities (manifest `intents` or the default set).
+  intents: string[];
 };
 
 // Discover every runner manifest under harness/runners/, validate it, and
@@ -64,6 +82,7 @@ export function discoverRunners(): DiscoveredRunner[] {
       language: parsed.language,
       command: parsed.command,
       cwd: parsed.cwd ? join(repoRoot, parsed.cwd) : repoRoot,
+      intents: parsed.intents ?? DEFAULT_INTENTS,
     });
   }
   return runners;

@@ -602,6 +602,97 @@ class TransactionVerifierTest < Minitest::Test
     assert_match(/fee payer cannot authorize|No matching SPL/, result.reason)
   end
 
+  # Audit #25: when the server is the fee payer (fee-sponsored pull mode) a
+  # tight compute-unit-price cap (10_000) applies, since the merchant pays the
+  # priority fee. A client-paid charge keeps the general 5M ceiling.
+  def test_fee_sponsored_compute_unit_price_cap
+    fee_payer = pubkey(1)
+    payer = pubkey(2)
+    recipient = pubkey(3)
+    build = lambda do |price|
+      # account_keys[0] == fee_payer (matches feePayerKey); the SOL transfer
+      # source is `payer` (index 1), not the fee payer, so the value-transfer
+      # passes and the compute-budget cap is the deciding gate.
+      tx_base64(
+        account_keys: [fee_payer, payer, recipient, PROGRAMS::SYSTEM_PROGRAM, PROGRAMS::COMPUTE_BUDGET_PROGRAM],
+        instructions: [
+          compiled_instruction(4, [], [3].pack("C") + u64(price)),
+          compiled_instruction(3, [1, 2], u32(2) + u64(1000))
+        ]
+      )
+    end
+    fee_sponsored = charge_request(recipient: recipient, method_details: {"feePayer" => true, "feePayerKey" => fee_payer})
+
+    # Just over the tight fee-sponsored cap -> rejected.
+    result = @verifier.verify_transaction_payload(build.call(10_001), fee_sponsored)
+    refute result.ok?
+    assert_match(/Compute unit price.*exceeds maximum 10000/, result.reason)
+
+    # At the tight cap -> passes verification entirely.
+    result = @verifier.verify_transaction_payload(build.call(10_000), fee_sponsored)
+    assert result.ok?, result.reason
+  end
+
+  # Audit #25 regression: the tight cap MUST NOT apply when the client pays
+  # its own gas (no server fee payer). A price between the two caps passes.
+  def test_client_paid_compute_unit_price_keeps_general_cap
+    payer = pubkey(1)
+    recipient = pubkey(2)
+    tx = tx_base64(
+      account_keys: [payer, recipient, PROGRAMS::SYSTEM_PROGRAM, PROGRAMS::COMPUTE_BUDGET_PROGRAM],
+      instructions: [
+        compiled_instruction(3, [], [3].pack("C") + u64(1_000_000)),
+        compiled_instruction(2, [0, 1], u32(2) + u64(1000))
+      ]
+    )
+
+    result = @verifier.verify_transaction_payload(tx, charge_request)
+
+    assert result.ok?, result.reason
+  end
+
+  # Audit #28: an arbitrary mint address (not a known stablecoin) with no
+  # embedded methodDetails.tokenProgram must be rejected rather than silently
+  # defaulting to the legacy Token program (which would derive the wrong ATA
+  # for a Token-2022 mint).
+  def test_rejects_arbitrary_mint_without_token_program
+    arbitrary_mint = pubkey(7)
+    request = charge_request(
+      currency: arbitrary_mint,
+      recipient: pubkey(2),
+      method_details: {"network" => "localnet", "decimals" => 6}
+    )
+    tx = tx_base64(
+      account_keys: [pubkey(1), pubkey(3), arbitrary_mint, pubkey(4), PROGRAMS::TOKEN_PROGRAM],
+      instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
+    )
+
+    result = @verifier.verify_transaction_payload(tx, request)
+
+    refute result.ok?
+    assert_match(/tokenProgram is required for an arbitrary mint/, result.reason)
+  end
+
+  # Audit #37: the verifier rejects a non-allowlisted network slug embedded in
+  # the SPL branch (e.g. "mainnet-beta").
+  def test_rejects_unsupported_network_in_method_details
+    mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+    request = charge_request(
+      currency: mint,
+      recipient: pubkey(2),
+      method_details: {"network" => "mainnet-beta", "decimals" => 6, "tokenProgram" => PROGRAMS::TOKEN_PROGRAM}
+    )
+    tx = tx_base64(
+      account_keys: [pubkey(1), pubkey(3), mint, pubkey(4), PROGRAMS::TOKEN_PROGRAM],
+      instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
+    )
+
+    result = @verifier.verify_transaction_payload(tx, request)
+
+    refute result.ok?
+    assert_match(/Unsupported network/, result.reason)
+  end
+
   private
 
   def tx_base64(account_keys:, instructions:)
@@ -712,6 +803,51 @@ class ChargeHandlerTest < Minitest::Test
     response = handler_with(FakeRpc.new(statuses: [{"err" => "boom", "confirmationStatus" => "confirmed"}]), attempts: 1).handle(credential.to_authorization_header, request)
     assert_equal 402, response.status
     assert_match(/failed/, response.body["message"])
+  end
+
+  # TOCTOU replay regression (push mode, type="signature"). A single signature
+  # credential is raced by N threads against ONE shared replay store. Settlement
+  # reserves the signature through Store#put_if_absent, a single atomic
+  # check-and-insert (MemoryStore guards it with a Mutex and MRI serializes the
+  # section under the GIL), so there is no get-then-put window to lose: exactly
+  # one thread may settle (200) and every other must be rejected as
+  # already-consumed (402). This asserts the interface stays get-free.
+  def test_rejects_concurrent_replayed_signature
+    shared_store = PayKit::Protocols::Mpp::MemoryStore.new
+    request = charge_request
+    credential = PayKit::Protocols::Mpp::Protocol::Core::Credential.new(
+      challenge: handler_challenges.create_challenge(request).to_echo,
+      payload: {"signature" => valid_signature}
+    )
+    authorization = credential.to_authorization_header
+
+    thread_count = 8
+    results = Array.new(thread_count)
+    gate = Thread::Queue.new
+    threads = (0...thread_count).map do |index|
+      Thread.new do
+        # Each thread drives its own handler + RPC but shares the one replay
+        # store, so the only serialization point is the store reserve.
+        handler = handler_with(FakeRpc.new(transaction_response: transaction_response), store: shared_store)
+        gate.pop
+        results[index] = handler.handle(authorization, request)
+      end
+    end
+    # Release every thread at once to maximize contention on the reserve.
+    thread_count.times { gate.push(:go) }
+    threads.each(&:join)
+
+    statuses = results.map(&:status)
+    assert_equal 1, statuses.count(200), "expected exactly one settlement, got statuses #{statuses.inspect}"
+    assert_equal thread_count - 1, statuses.count(402), "expected the rest to be replay-rejected, got statuses #{statuses.inspect}"
+
+    settled = results.select { |response| response.status == 200 }
+    assert_equal valid_signature, settled.first.signature
+    results.each do |response|
+      next if response.status == 200
+
+      assert_match(/already consumed/, response.body["message"])
+    end
   end
 
   private

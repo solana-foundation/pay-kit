@@ -30,7 +30,7 @@ helper.test('APISIX access(conf,ctx) returns 402 on unpaid', function()
     rpc_url = 'https://api.devnet.solana.com',
     accept  = {'x402', 'mpp'},
     operator = {recipient = 'ApisixRecipient000000000000000000000000000'},
-    mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret'},
+    mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret-key-long-enough-32bytes'},
   })
 
   local plugin = require('plugins.apisix.plugins.pay-kit')
@@ -48,7 +48,7 @@ helper.test('APISIX access returns 500 on invalid amount', function()
     rpc_url = 'https://api.devnet.solana.com',
     accept  = {'x402', 'mpp'},
     operator = {recipient = 'ApisixRecipient000000000000000000000000000'},
-    mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret'},
+    mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret-key-long-enough-32bytes'},
   })
   local plugin = require('plugins.apisix.plugins.pay-kit')
   local status = plugin.access({amount = 'not-decimal', stablecoins = {'USDC'}},
@@ -63,7 +63,7 @@ helper.test('APISIX access with named gate dispatches to dispatcher', function()
     rpc_url = 'https://api.devnet.solana.com',
     accept  = {'x402', 'mpp'},
     operator = {recipient = 'ApisixRecipient000000000000000000000000000'},
-    mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret'},
+    mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret-key-long-enough-32bytes'},
   })
   pay_kit.gate('report', {amount = pay_kit.usd('0.05', 'USDC')})
   local plugin = require('plugins.apisix.plugins.pay-kit')

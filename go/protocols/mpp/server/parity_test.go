@@ -166,7 +166,7 @@ func TestVerifyRejectsATARequiredWithSymbolCurrency(t *testing.T) {
 func TestChargeRejectsATARequiredOnSOL(t *testing.T) {
 	m := &Mpp{currency: "SOL", network: "mainnet-beta"}
 	err := m.validateChargeOptions(ChargeOptions{
-		Splits: []paycore.Split{{Recipient: "x", Amount: "1", AtaCreationRequired: boolp(true)}},
+		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: boolp(true)}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "SPL token currency") {
 		t.Fatalf("expected SOL ataCreationRequired rejection, got %v", err)
@@ -178,7 +178,7 @@ func TestChargeRejectsATARequiredOnSOL(t *testing.T) {
 func TestChargeRejectsATARequiredOnSymbolCurrency(t *testing.T) {
 	m := &Mpp{currency: "USDC", network: "mainnet-beta"}
 	err := m.validateChargeOptions(ChargeOptions{
-		Splits: []paycore.Split{{Recipient: "x", Amount: "1", AtaCreationRequired: boolp(true)}},
+		Splits: []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1", AtaCreationRequired: boolp(true)}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "SPL token mint address") {
 		t.Fatalf("expected symbol ataCreationRequired rejection, got %v", err)

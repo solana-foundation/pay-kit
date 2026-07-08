@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	"os"
 	"strings"
 	"time"
@@ -21,9 +22,14 @@ import (
 )
 
 const (
-	defaultRealm    = "MPP Payment"
 	secretKeyEnvVar = "MPP_SECRET_KEY"
 	consumedPrefix  = "solana-charge:consumed:"
+
+	// minSecretKeyBytes is the minimum length of the HMAC-SHA256 secret
+	// that binds challenge IDs. 32 bytes matches NIST SP 800-107 guidance
+	// (key length >= hash output length) and the Rust reference's
+	// MIN_SECRET_KEY_BYTES. A weaker key lets an attacker forge challenges.
+	minSecretKeyBytes = 32
 
 	// maxSplits caps the number of secondary recipients per charge.
 	// Matches the limit enforced by every other server SDK (see the
@@ -38,6 +44,16 @@ const (
 	// pathological resource footprint.
 	maxComputeUnitLimit              uint32 = 200_000
 	maxComputeUnitPriceMicroLamports uint64 = 5_000_000
+
+	// maxComputeUnitPriceMicroLamportsFeeSponsored is the tight cap applied
+	// when the server is the fee payer. The server co-signs/broadcasts before
+	// it pays, so an attacker could otherwise pick any price up to the general
+	// 5M cap and bill the priority fee to the merchant. At limit 200_000 the
+	// worst-case priority fee is ceil(10_000 * 200_000 / 1_000_000) = 2_000
+	// lamports (~20% of the per-signature base fee) — enough headroom for an
+	// honest client to bump priority during congestion. Mirrors the Rust
+	// reference MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED.
+	maxComputeUnitPriceMicroLamportsFeeSponsored uint64 = 10_000
 )
 
 // computeBudgetProgramID is the on-chain ID of the ComputeBudget program.
@@ -56,6 +72,14 @@ type Config struct {
 	FeePayerSigner solanatx.Signer
 	Store          core.Store
 	RPC            solanatx.RPCClient
+
+	// AcceptPushMode opts in to accepting type="signature" (push mode)
+	// credentials, where the client broadcasts the transaction itself and
+	// presents only the resulting signature. Default false. Per spec §13.5
+	// push mode trades "first accepted presentation wins" semantics that a
+	// server may not want to take on; leave it off unless the deployment
+	// understands that trade-off.
+	AcceptPushMode bool
 }
 
 // ChargeOptions customize challenge generation.
@@ -81,6 +105,14 @@ type Mpp struct {
 	html           bool
 	feePayerSigner solanatx.Signer
 	store          core.Store
+	// tokenProgram is the SPL token program this server's currency resolves
+	// to, pinned once at New() time. Empty for native SOL. For arbitrary
+	// mint-address currencies it is the on-chain mint owner; New() rejects a
+	// mint whose owner is neither Token nor Token-2022. Mirrors the Rust
+	// reference's boot-time resolve_server_token_program.
+	tokenProgram string
+	// acceptPushMode gates type="signature" credentials (spec §13.5).
+	acceptPushMode bool
 }
 
 // New creates a new server-side handler.
@@ -98,6 +130,15 @@ func New(config Config) (*Mpp, error) {
 	if config.SecretKey == "" {
 		return nil, core.NewError(core.ErrCodeInvalidConfig, "missing secret key")
 	}
+	// The secret key is the HMAC-SHA256 key binding challenge IDs; a weak key
+	// lets an attacker forge challenges. Enforce a 32-byte floor on BOTH the
+	// Config.SecretKey and the MPP_SECRET_KEY env-var paths (they share this
+	// gate because the env value is folded into config.SecretKey above).
+	if len(config.SecretKey) < minSecretKeyBytes {
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("secret key must be at least %d bytes (got %d); use e.g. `openssl rand -base64 32`",
+				minSecretKeyBytes, len(config.SecretKey)))
+	}
 	if config.Currency == "" {
 		config.Currency = "USDC"
 	}
@@ -105,10 +146,20 @@ func New(config Config) (*Mpp, error) {
 		config.Decimals = 6
 	}
 	if config.Network == "" {
-		config.Network = "mainnet-beta"
+		config.Network = string(paycore.NetworkMainnet)
 	}
+	// Reject unknown network slugs (and the legacy "mainnet-beta" spelling) at
+	// boot rather than silently resolving them to mainnet mints downstream.
+	canonicalNetwork, err := paycore.RequireKnownNetwork(config.Network)
+	if err != nil {
+		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid network", err)
+	}
+	config.Network = string(canonicalNetwork)
+	// Derive a per-recipient default realm when none is configured (and reject
+	// an explicitly-empty realm). A shared literal default would let two
+	// servers sharing MPP_SECRET_KEY participate in one credential namespace.
 	if config.Realm == "" {
-		config.Realm = DetectRealm()
+		config.Realm = DetectRealm(config.Recipient)
 	}
 	rpcURL := config.RPCURL
 	if rpcURL == "" {
@@ -119,6 +170,14 @@ func New(config Config) (*Mpp, error) {
 	}
 	if config.Store == nil {
 		config.Store = core.NewMemoryStore()
+	}
+	// Resolve the token program once at boot. Known stablecoins answer from
+	// the static table; an arbitrary mint address is looked up on-chain and
+	// rejected if its owner is neither Token nor Token-2022. Native SOL has no
+	// token program. Mirrors the Rust reference resolve_server_token_program.
+	tokenProgram, err := resolveServerTokenProgram(context.Background(), config.RPC, config.Currency, config.Network)
+	if err != nil {
+		return nil, err
 	}
 	return &Mpp{
 		rpc:            config.RPC,
@@ -132,7 +191,37 @@ func New(config Config) (*Mpp, error) {
 		html:           config.HTML,
 		feePayerSigner: config.FeePayerSigner,
 		store:          config.Store,
+		tokenProgram:   tokenProgram,
+		acceptPushMode: config.AcceptPushMode,
 	}, nil
+}
+
+// resolveServerTokenProgram pins the SPL token program for the server's
+// configured currency at boot. SOL has no token program (returns ""). A known
+// stablecoin symbol or mint answers from the static table. An arbitrary mint
+// address is resolved by fetching its on-chain owner; the owner MUST be the
+// Token or Token-2022 program or boot fails. This stops the SDK from silently
+// defaulting an arbitrary Token-2022 mint to legacy Token. Mirrors the Rust
+// reference's resolve_server_token_program in Mpp::new.
+func resolveServerTokenProgram(ctx context.Context, rpcClient solanatx.RPCClient, currency, network string) (string, error) {
+	if isNativeSOL(currency) {
+		return "", nil
+	}
+	if paycore.StablecoinSymbol(currency) != "" {
+		return paycore.DefaultTokenProgramForCurrency(currency, network), nil
+	}
+	// Arbitrary mint address: parse it and fetch the on-chain owner.
+	mint, err := solana.PublicKeyFromBase58(currency)
+	if err != nil {
+		return "", core.WrapError(core.ErrCodeInvalidConfig,
+			"currency must be a known stablecoin symbol or a valid SPL mint address", err)
+	}
+	program, err := solanatx.ResolveTokenProgram(ctx, rpcClient, mint, "")
+	if err != nil {
+		return "", core.WrapError(core.ErrCodeInvalidConfig,
+			"could not resolve token program for mint (owner must be Token or Token-2022)", err)
+	}
+	return program.String(), nil
 }
 
 // Charge creates a charge challenge from a human-readable amount.
@@ -146,6 +235,33 @@ func (m *Mpp) Charge(ctx context.Context, amount string) (core.PaymentChallenge,
 // (charge.rs:307-335). Idempotent ATA creation is only meaningful for an
 // SPL token whose mint is known to the verifier.
 func (m *Mpp) validateChargeOptions(options ChargeOptions) error {
+	// #16: reject a per-call fee-payer override when no signer is configured.
+	// Emitting feePayer:true with no feePayerKey would be spec-violating
+	// (§7.2). Mirrors the Rust reference validate_charge_options gate.
+	if options.FeePayer && m.feePayerSigner == nil {
+		return core.NewError(core.ErrCodeInvalidConfig,
+			"fee payer sponsorship requires a configured FeePayerSigner")
+	}
+	// #21: validate the split set at issuance (count, recipient parse,
+	// positive amount, no overflow, no duplicate recipients) so invalid
+	// splits are rejected here rather than surfacing only at on-chain
+	// settlement. Mirrors the Rust reference validate_splits.
+	if err := validateSplits(options.Splits); err != nil {
+		return err
+	}
+	// #38: reject the fee-sponsored ATA-recreate drain shape — a split paid to
+	// the primary recipient with ataCreationRequired=true. This combination
+	// lets a server author a challenge that funds (re)creation of the primary
+	// recipient's ATA, exploitable as a slow drain by closing/recreating.
+	// Mirrors the Rust reference's early loop in validate_charge_options.
+	primary := m.recipient.String()
+	for _, split := range options.Splits {
+		if split.Recipient == primary && split.AtaCreationRequired != nil && *split.AtaCreationRequired {
+			return core.NewError(core.ErrCodeInvalidConfig,
+				"a split paid to the primary recipient must not set ataCreationRequired (fee-sponsored ATA-recreate drain)")
+		}
+	}
+
 	hasATACreation := false
 	for _, split := range options.Splits {
 		if split.AtaCreationRequired != nil && *split.AtaCreationRequired {
@@ -170,6 +286,45 @@ func (m *Mpp) validateChargeOptions(options ChargeOptions) error {
 	return nil
 }
 
+// validateSplits validates a split set at challenge issuance: count must not
+// exceed maxSplits, each recipient must parse as a pubkey, each amount must
+// parse as a positive uint64, the aggregate must not overflow uint64, and no
+// recipient may appear twice. Mirrors the Rust reference validate_splits in
+// protocol/solana.rs. Invalid splits caught here would otherwise surface only
+// at on-chain settlement.
+func validateSplits(splits []paycore.Split) error {
+	if err := validateSplitsCount(splits); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(splits))
+	var total uint64
+	for _, split := range splits {
+		if _, err := solana.PublicKeyFromBase58(split.Recipient); err != nil {
+			return core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("invalid split recipient %q: %v", split.Recipient, err))
+		}
+		amount, err := intents.ChargeRequest{Amount: split.Amount}.ParseAmount()
+		if err != nil {
+			return core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("invalid split amount %q: %v", split.Amount, err))
+		}
+		if amount == 0 {
+			return core.NewError(core.ErrCodeInvalidPayload, "split amount must be greater than zero")
+		}
+		sum, carry := bits.Add64(total, amount, 0)
+		if carry != 0 {
+			return core.NewError(core.ErrCodeInvalidPayload, "split amounts overflow uint64")
+		}
+		total = sum
+		if _, dup := seen[split.Recipient]; dup {
+			return core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("duplicate split recipient %q", split.Recipient))
+		}
+		seen[split.Recipient] = struct{}{}
+	}
+	return nil
+}
+
 // ChargeWithOptions creates a challenge with optional fields.
 func (m *Mpp) ChargeWithOptions(ctx context.Context, amount string, options ChargeOptions) (core.PaymentChallenge, error) {
 	if err := m.validateChargeOptions(options); err != nil {
@@ -184,8 +339,13 @@ func (m *Mpp) ChargeWithOptions(ctx context.Context, amount string, options Char
 	}
 	if !isNativeSOL(m.currency) {
 		details.Decimals = &m.decimals
-		if paycore.StablecoinSymbol(m.currency) != "" {
-			details.TokenProgram = paycore.DefaultTokenProgramForCurrency(m.currency, m.network)
+		// Emit the token program resolved once at boot (#28). For known
+		// stablecoins this is the static-table value; for an arbitrary mint
+		// it is the on-chain owner that New() verified is Token/Token-2022.
+		// This stops arbitrary Token-2022 mints from shipping with no/legacy
+		// token program. Mirrors the Rust reference.
+		if m.tokenProgram != "" {
+			details.TokenProgram = m.tokenProgram
 		}
 	}
 	if options.FeePayer || m.feePayerSigner != nil {
@@ -229,33 +389,19 @@ func (m *Mpp) ChargeWithOptions(ctx context.Context, amount string, options Char
 	), nil
 }
 
-// VerifyCredential verifies either a transaction payload or a signature payload.
-//
-// This is the simple API and is appropriate for servers that only gate a single
-// route. Servers that gate multiple routes at different prices on the same
-// secret key MUST use VerifyCredentialWithExpected so the route's expected
-// amount is compared to the credential's claimed amount; otherwise a
-// credential issued for a cheaper route can be replayed at an expensive one.
-//
-// Even on the simple API, a Tier-2 pinned-field check enforces that the
-// credential's method/intent/realm/currency/recipient match this Mpp's
-// configuration — so cross-route replay across instances with different
-// recipients/currencies is blocked, and only the per-call amount remains
-// unpinned (which is what VerifyCredentialWithExpected covers).
-func (m *Mpp) VerifyCredential(ctx context.Context, credential core.PaymentCredential) (core.Receipt, error) {
-	request, details, payload, err := m.verifyChallengeAndDecode(credential)
-	if err != nil {
-		return core.Receipt{}, err
-	}
-	return m.verifyPayload(ctx, credential, request, details, payload)
-}
-
 // VerifyCredentialWithExpected verifies a credential against the route's
-// expected charge request. The amount, currency, and recipient on the
-// credential's claimed challenge must match `expected`; afterward, settlement
-// (transaction broadcast and on-chain checks) runs against `expected` —
-// not against the credential's claims — so a credential built for a different
-// route's request cannot succeed even if its other fields line up.
+// expected charge request. This is the canonical settlement entry point: the
+// simple VerifyCredential method was removed (audit #2) because it verified
+// against the credential's own echoed amount, so a server with more than one
+// priced route on a shared secret would accept a cheap credential at an
+// expensive route. Callers MUST build `expected` from their static route
+// configuration, not from the credential.
+//
+// The amount, currency, and recipient on the credential's claimed challenge
+// must match `expected`; afterward, settlement (transaction broadcast and
+// on-chain checks) runs against `expected` — not against the credential's
+// claims — so a credential built for a different route's request cannot
+// succeed even if its other fields line up.
 func (m *Mpp) VerifyCredentialWithExpected(
 	ctx context.Context,
 	credential core.PaymentCredential,
@@ -396,6 +542,14 @@ func (m *Mpp) verifyPayload(
 	case "transaction":
 		return m.verifyTransaction(ctx, credential, request, details, payload)
 	case "signature":
+		// #5: push mode (client broadcasts, presents only the signature) is
+		// off by default. Per spec §13.5 it carries "first accepted
+		// presentation wins" semantics a server must opt in to via
+		// Config.AcceptPushMode.
+		if !m.acceptPushMode {
+			return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload,
+				`type="signature" (push mode) credentials are not accepted; set Config.AcceptPushMode to enable (spec §13.5)`)
+		}
 		if details.FeePayer != nil && *details.FeePayer {
 			return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload, `type="signature" credentials cannot be used with fee sponsorship`)
 		}
@@ -431,7 +585,13 @@ func (m *Mpp) verifyTransaction(
 	if len(tx.Message.AddressTableLookups) > 0 {
 		return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload, "v0 transactions with address lookup tables are not supported")
 	}
-	if err := validateComputeBudgetInstructions(tx); err != nil {
+	// The server is the fee payer precisely when a fee-payer signer is
+	// configured and the challenge pinned feePayer:true. In that mode apply
+	// the tight compute-unit-price cap (#25): the server co-signs/broadcasts
+	// before paying, so an unconstrained price would bill the priority fee to
+	// the merchant. Client-paid mode keeps the general 5M cap.
+	feeSponsored := m.feePayerSigner != nil && details.FeePayer != nil && *details.FeePayer
+	if err := validateComputeBudgetInstructions(tx, feeSponsored); err != nil {
 		return core.Receipt{}, err
 	}
 	// Reject up-front if the client signed against the wrong network
@@ -1117,7 +1277,11 @@ func resolveProgramID(tx *solana.Transaction, programIDIndex uint16) (solana.Pub
 //   - discriminator 3 + u64 LE => SetComputeUnitPrice
 //
 // Matches rust/src/server/charge.rs validate_compute_budget_instruction.
-func validateComputeBudgetInstructions(tx *solana.Transaction) error {
+func validateComputeBudgetInstructions(tx *solana.Transaction, feeSponsored bool) error {
+	priceCap := maxComputeUnitPriceMicroLamports
+	if feeSponsored {
+		priceCap = maxComputeUnitPriceMicroLamportsFeeSponsored
+	}
 	for _, ix := range tx.Message.Instructions {
 		programID, err := resolveProgramID(tx, ix.ProgramIDIndex)
 		if err != nil {
@@ -1163,10 +1327,10 @@ func validateComputeBudgetInstructions(tx *solana.Transaction) error {
 			}
 			price := uint64(data[1]) | uint64(data[2])<<8 | uint64(data[3])<<16 | uint64(data[4])<<24 |
 				uint64(data[5])<<32 | uint64(data[6])<<40 | uint64(data[7])<<48 | uint64(data[8])<<56
-			if price > maxComputeUnitPriceMicroLamports {
+			if price > priceCap {
 				return core.NewError(
 					core.ErrCodeComputeBudgetExceeded,
-					fmt.Sprintf("compute unit price %d exceeds maximum %d", price, maxComputeUnitPriceMicroLamports),
+					fmt.Sprintf("compute unit price %d exceeds maximum %d", price, priceCap),
 				)
 			}
 		default:

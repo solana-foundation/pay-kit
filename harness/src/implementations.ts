@@ -31,7 +31,11 @@ export function expectedReportedImplementation(
   return implementation.reportsAs ?? implementation.id;
 }
 
-function isEnabled(id: string, envName: string, defaultEnabled: boolean): boolean {
+function isEnabled(
+  id: string,
+  envName: string,
+  defaultEnabled: boolean,
+): boolean {
   const selected = process.env[envName];
   if (!selected || selected.trim() === "") {
     return defaultEnabled;
@@ -39,7 +43,7 @@ function isEnabled(id: string, envName: string, defaultEnabled: boolean): boolea
 
   return selected
     .split(",")
-    .map(value => value.trim())
+    .map((value) => value.trim())
     .filter(Boolean)
     .includes(id);
 }
@@ -70,9 +74,9 @@ export const clientImplementations: ImplementationDefinition[] = [
       "--manifest-path",
       "../rust/Cargo.toml",
       "-p",
-      "solana-mpp",
+      "paykit-harness-bins",
       "--bin",
-      "harness_client",
+      "mpp_harness_client",
     ],
     enabled: isEnabled("rust", "MPP_HARNESS_CLIENTS", true),
   },
@@ -137,9 +141,9 @@ export const clientImplementations: ImplementationDefinition[] = [
       "--manifest-path",
       "../rust/Cargo.toml",
       "-p",
-      "solana-x402",
+      "paykit-harness-bins",
       "--bin",
-      "harness_client",
+      "x402_harness_client",
     ],
     enabled: isEnabled("rust-x402", "X402_HARNESS_CLIENTS", true),
     intents: ["x402-exact"],
@@ -152,6 +156,15 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: ["sh", "-c", "cd go-client && go run ."],
     enabled: isEnabled("go-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
+    reportsAs: "go",
+  },
+  {
+    id: "go-x402-upto",
+    label: "Go x402 upto client",
+    role: "client",
+    command: ["sh", "-c", "cd go-client && go run ."],
+    enabled: isEnabled("go-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
     reportsAs: "go",
   },
   {
@@ -172,6 +185,21 @@ export const clientImplementations: ImplementationDefinition[] = [
     reportsAs: "python",
   },
   {
+    id: "python-session",
+    label: "Python pay_kit session client",
+    role: "client",
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-session-client/main.py",
+    ],
+    enabled: isEnabled("python-session", "MPP_HARNESS_CLIENTS", false),
+    intents: ["session"],
+  },
+  {
     id: "swift-x402",
     label: "Swift x402 exact client",
     role: "client",
@@ -182,6 +210,23 @@ export const clientImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("swift-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
+  },
+  {
+    id: "swift-x402-upto",
+    label: "Swift x402 upto client",
+    role: "client",
+    // Drives the SolanaPayKit x402 upto client (parse the upto challenge ->
+    // build a partially-signed channel open + PAYMENT-SIGNATURE -> retry).
+    // Defaults off to match swift/go/etc: opt in via
+    // `X402_HARNESS_CLIENTS=swift-x402-upto`.
+    command: [
+      "sh",
+      "-c",
+      "cd swift-x402-upto-client && swift run --quiet SwiftX402UptoClient",
+    ],
+    enabled: isEnabled("swift-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "swift",
   },
   {
     id: "kotlin-x402",
@@ -198,6 +243,55 @@ export const clientImplementations: ImplementationDefinition[] = [
     // Defaults off to match swift/go/etc: opt-in via `X402_HARNESS_CLIENTS=kotlin-x402`.
     enabled: isEnabled("kotlin-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
+  },
+  {
+    id: "kotlin-x402-upto",
+    label: "Kotlin x402 upto client",
+    role: "client",
+    // Pre-warmed by `gradle installDist` in the kotlin x402 upto harness job so
+    // the script lands at this path. Local runs can prime it with
+    // `(cd harness/kotlin-x402-upto-client && gradle installDist)`.
+    command: [
+      "sh",
+      "-c",
+      "kotlin-x402-upto-client/build/install/mpp-kotlin-x402-upto-harness-client/bin/mpp-kotlin-x402-upto-harness-client",
+    ],
+    // Defaults off: opt-in via `X402_HARNESS_CLIENTS=kotlin-x402-upto`.
+    enabled: isEnabled("kotlin-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "kotlin",
+  },
+  {
+    id: "rust-x402-upto",
+    label: "Rust x402 upto client",
+    role: "client",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "x402_harness_upto_client",
+    ],
+    enabled: isEnabled("rust-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "rust",
+  },
+  {
+    id: "python-x402-upto",
+    label: "Python pay_kit x402 upto client",
+    role: "client",
+    // Drives the pay_kit x402 upto client (parse the upto challenge -> build a
+    // partially-signed channel open + PAYMENT-SIGNATURE -> retry). Inserts
+    // python/src on sys.path like harness/python-server/server.py. Opt in via
+    // `X402_HARNESS_CLIENTS=python-x402-upto`.
+    command: ["python3", "python-x402-upto-client/main.py"],
+    enabled: isEnabled("python-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "python",
   },
 ];
 
@@ -227,9 +321,9 @@ export const serverImplementations: ImplementationDefinition[] = [
       "--manifest-path",
       "../rust/Cargo.toml",
       "-p",
-      "solana-mpp",
+      "paykit-harness-bins",
       "--bin",
-      "harness_server",
+      "mpp_harness_server",
     ],
     enabled: isEnabled("rust", "MPP_HARNESS_SERVERS", true),
   },
@@ -278,7 +372,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../harness/lua-server/server.lua",
+      'cd ../lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luajit ../harness/lua-server/server.lua',
     ],
     enabled: isEnabled("lua", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact"],
@@ -302,9 +396,16 @@ export const serverImplementations: ImplementationDefinition[] = [
     // ``MPP_HARNESS_SERVERS=python X402_HARNESS_CLIENTS=rust-x402`` with
     // ``MPP_HARNESS_INTENTS=x402-exact`` (x402-exact), or the dedicated
     // focused-matrix CI jobs in .github/workflows/python.yml.
-    command: ["python3", "python-server/server.py"],
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-server/server.py",
+    ],
     enabled: isEnabled("python", "MPP_HARNESS_SERVERS", false),
-    intents: ["charge", "x402-exact"],
+    intents: ["charge", "x402-exact", "session"],
   },
   {
     id: "go",
@@ -344,9 +445,9 @@ export const serverImplementations: ImplementationDefinition[] = [
       "--manifest-path",
       "../rust/Cargo.toml",
       "-p",
-      "solana-x402",
+      "paykit-harness-bins",
       "--bin",
-      "harness_server",
+      "x402_harness_server",
     ],
     enabled: isEnabled("rust-x402", "X402_HARNESS_SERVERS", true),
     intents: ["x402-exact"],
@@ -364,5 +465,54 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("ruby-x402-server", "X402_HARNESS_SERVERS", false),
     intents: ["x402-exact"],
     reportsAs: "ruby",
+  },
+  {
+    id: "rust-x402-upto",
+    label: "Rust x402 upto server",
+    role: "server",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "x402_harness_upto_server",
+    ],
+    enabled: isEnabled("rust-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "rust",
+  },
+  {
+    id: "go-x402-upto",
+    label: "Go PayKit x402 upto server",
+    role: "server",
+    command: ["sh", "-c", "cd go-server && ./paykit-server"],
+    enabled: isEnabled("go-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "go-paykit",
+  },
+  {
+    id: "python-x402-upto",
+    label: "Python PayKit x402 upto server",
+    role: "server",
+    // Same umbrella server as the `python` entry; the orchestrator sets
+    // PAY_KIT_HARNESS_PROTOCOL=x402-upto for the upto intent so it mounts the
+    // upto usage gate (channel open + voucher settle). PayKit usage middleware
+    // fail-closes on a zero charge, so the `x402-upto-zero-actual` scenario
+    // (serverIds: ["rust-x402-upto"]) excludes this server, matching go-paykit.
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-server/server.py",
+    ],
+    enabled: isEnabled("python-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "python",
   },
 ];

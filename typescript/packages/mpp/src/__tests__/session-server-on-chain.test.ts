@@ -58,6 +58,7 @@ async function buildClientOpen(payer: KeyPairSigner, payee: KeyPairSigner, autho
         network: 'localnet',
         operator: payer.address,
         recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+        recentSlot: '4242',
         recipient: payee.address,
     };
     const open = await buildOpenPaymentChannelTransaction({
@@ -72,12 +73,13 @@ async function buildClientOpen(payer: KeyPairSigner, payee: KeyPairSigner, autho
     return { open, request };
 }
 
-function expectedFor(payee: KeyPairSigner, authorizedSigner: KeyPairSigner) {
+function expectedFor(payer: KeyPairSigner, payee: KeyPairSigner, authorizedSigner: KeyPairSigner) {
     return {
         authorizedSigner: authorizedSigner.address,
         currency: USDC.mainnet!,
         maxCap: 5_000_000n,
         network: 'localnet',
+        operator: payer.address,
         programId: PAYMENT_CHANNELS_PROGRAM_ID as string,
         recipient: payee.address,
     };
@@ -114,7 +116,7 @@ describe('verifyOpenTx signature binding', () => {
         const { open } = await buildClientOpen(payer, payee, authorizedSigner);
 
         const result = await verifyOpenTx({
-            expected: expectedFor(payee, authorizedSigner),
+            expected: expectedFor(payer, payee, authorizedSigner),
             openPayload: {
                 authorizedSigner: authorizedSigner.address,
                 mode: 'push',
@@ -141,6 +143,7 @@ describe('verifyOpenTx signature binding', () => {
                 network: 'localnet',
                 operator: payer.address,
                 recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+                recentSlot: '4242',
                 recipient: payee.address,
             },
             salt: 8n,
@@ -149,7 +152,7 @@ describe('verifyOpenTx signature binding', () => {
 
         await expect(
             verifyOpenTx({
-                expected: expectedFor(payee, authorizedSigner),
+                expected: expectedFor(payer, payee, authorizedSigner),
                 openPayload: {
                     authorizedSigner: authorizedSigner.address,
                     mode: 'push',
@@ -165,7 +168,7 @@ describe('verifyOpenTx signature binding', () => {
         const { open } = await buildClientOpen(payer, payee, authorizedSigner);
 
         const result = await verifyOpenTx({
-            expected: expectedFor(payee, authorizedSigner),
+            expected: expectedFor(payer, payee, authorizedSigner),
             openPayload: {
                 authorizedSigner: authorizedSigner.address,
                 mode: 'push',
@@ -187,7 +190,7 @@ describe('verifyOpenTx legacy encoding', () => {
         expect(legacyTransaction).not.toBe(open.transaction);
 
         const result = await verifyOpenTx({
-            expected: expectedFor(payee, authorizedSigner),
+            expected: expectedFor(payer, payee, authorizedSigner),
             openPayload: {
                 authorizedSigner: authorizedSigner.address,
                 mode: 'push',
@@ -245,7 +248,7 @@ describe('submitOpenTx confirmation', () => {
 
         const result = await submitOpenTx({
             confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
-            expected: expectedFor(payee, authorizedSigner),
+            expected: expectedFor(payer, payee, authorizedSigner),
             openPayload: {
                 authorizedSigner: authorizedSigner.address,
                 mode: 'push',
@@ -267,7 +270,7 @@ describe('submitOpenTx confirmation', () => {
         await expect(
             submitOpenTx({
                 confirm: { pollIntervalMs: 1, timeoutMs: 20 },
-                expected: expectedFor(payee, authorizedSigner),
+                expected: expectedFor(payer, payee, authorizedSigner),
                 openPayload: {
                     authorizedSigner: authorizedSigner.address,
                     mode: 'push',
@@ -287,7 +290,7 @@ describe('submitOpenTx confirmation', () => {
         await expect(
             submitOpenTx({
                 confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
-                expected: expectedFor(payee, authorizedSigner),
+                expected: expectedFor(payer, payee, authorizedSigner),
                 openPayload: {
                     authorizedSigner: authorizedSigner.address,
                     mode: 'push',
@@ -309,7 +312,7 @@ describe('submitOpenTx confirmation', () => {
         await expect(
             submitOpenTx({
                 confirm: { pollIntervalMs: 1, signal: controller.signal, timeoutMs: 2_000 },
-                expected: expectedFor(payee, authorizedSigner),
+                expected: expectedFor(payer, payee, authorizedSigner),
                 openPayload: {
                     authorizedSigner: authorizedSigner.address,
                     mode: 'push',

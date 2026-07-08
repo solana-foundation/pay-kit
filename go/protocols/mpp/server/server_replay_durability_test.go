@@ -44,7 +44,7 @@ func TestReplayMarkerRetainedOnConfirmationTimeout(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
 	})
@@ -68,7 +68,7 @@ func TestReplayMarkerRetainedOnConfirmationTimeout(t *testing.T) {
 	// First attempt: broadcast succeeds, confirmation times out.
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	if _, err := handler.VerifyCredential(ctx, credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, ctx, credential); err == nil {
 		t.Fatal("expected confirmation timeout to surface an error")
 	}
 
@@ -79,7 +79,7 @@ func TestReplayMarkerRetainedOnConfirmationTimeout(t *testing.T) {
 
 	// Second attempt with the SAME credential MUST be rejected: the marker
 	// must still be reserved because the original broadcast may land.
-	_, err = handler.VerifyCredential(context.Background(), credential)
+	_, err = verifyCredentialEchoed(handler, context.Background(), credential)
 	if err == nil {
 		t.Fatal("expected re-submission after broadcast+timeout to be rejected as consumed")
 	}

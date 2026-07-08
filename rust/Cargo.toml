@@ -1,10 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core",
-    "crates/mpp",
-    "crates/programs/payment-channels",
-    "crates/programs/subscriptions",
-    "crates/x402",
     "crates/kit",
+    "crates/harness-bins",
+    "crates/integration-tests",
 ]

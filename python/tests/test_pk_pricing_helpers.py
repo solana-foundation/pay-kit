@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit import Gate, MppConfig, Price, Pricing, Protocol, Stablecoin, configure
-from pay_kit._middleware import _HeaderProxy, _read_attr, _read_header, _request_headers, _request_path
-from pay_kit._paycore import mints
-from pay_kit.config import reset
-from pay_kit.errors import ConfigurationError
+from solana_pay_kit import Gate, MppConfig, Price, Pricing, Protocol, Stablecoin, configure
+from solana_pay_kit._middleware import _HeaderProxy, _read_attr, _read_header, _request_headers, _request_path
+from solana_pay_kit._paycore import mints
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import ConfigurationError
 
 SECRET = "challenge-binding-secret-long-enough-for-hmac"
 
@@ -195,9 +195,9 @@ def test_symbol_for_unknown_returns_none():
 def test_flask_is_paid_with_gate_object(monkeypatch):
     import flask
 
-    import pay_kit._middleware as mw
-    import pay_kit.flask as pk_flask
-    from pay_kit import Payment
+    import solana_pay_kit._middleware as mw
+    import solana_pay_kit.flask as pk_flask
+    from solana_pay_kit import Payment
 
     cfg = _cfg()
     gate = Gate.build(

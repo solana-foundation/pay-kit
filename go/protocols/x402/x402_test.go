@@ -7,7 +7,8 @@ import (
 
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	x402adapter "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	x402adapter "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
+	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
 func cfg() paykit.Config {
@@ -123,7 +124,7 @@ func TestVerifyAndSettleRejectsWrongVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := x402adapter.Credential{X402Version: 99}
+	cred := proto.Credential{X402Version: 99}
 	raw, _ := json.Marshal(cred)
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{
@@ -140,7 +141,7 @@ func TestVerifyAndSettleRejectsMissingTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := x402adapter.Credential{X402Version: 2}
+	cred := proto.Credential{X402Version: 2}
 	raw, _ := json.Marshal(cred)
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{

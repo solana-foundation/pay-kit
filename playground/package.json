@@ -18,5 +18,11 @@
     "concurrently": "^9.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@x402/core": "file:../typescript/.x402-vendor/x402-core-2.16.0.tgz",
+      "@x402/svm": "file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz"
+    }
   }
 }

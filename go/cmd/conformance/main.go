@@ -1,8 +1,7 @@
 // Command conformance is the Go cross-SDK conformance-vector runner.
 //
-// It honors the same stdin/stdout contract as the TypeScript reference
-// runner (harness/src/conformance/ts-runner.ts): read one conformance
-// vector as JSON on stdin, drive the real Go pay_kit SDK
+// It honors the harness conformance runner stdin/stdout contract: read one
+// conformance vector as JSON on stdin, drive the real Go pay_kit SDK
 // (paycore + protocols/mpp client build, server pre-broadcast verify, and
 // the wire canonical-JSON / base64url encoders) for the requested mode, and
 // emit one RunnerResult line as JSON on stdout.
@@ -27,11 +26,13 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	solana "github.com/gagliardetto/solana-go"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
@@ -49,144 +50,312 @@ const (
 	defaultSPLDecimals   = 6
 )
 
-// Vector mirrors harness/src/conformance/schema.ts ConformanceVector.
+// Vector is the top-level conformance-vector shape consumed from stdin.
 type Vector struct {
-	ID          string          `json:"id"`
-	Intent      string          `json:"intent"`
-	Mode        string          `json:"mode"`
-	Description string          `json:"description"`
-	Input       VectorInput     `json:"input"`
-	Expect      json.RawMessage `json:"expect"`
+	// ID is the unique vector identifier, echoed back in RunnerResult so
+	// the harness can pair each result line with its vector.
+	ID string `json:"id"`
+	// Intent selects the runner path: "x402-exact" dispatches to the x402
+	// envelope oracle, anything else runs the MPP charge paths.
+	Intent string `json:"intent"`
+	// Mode picks what to exercise: "build-transaction",
+	// "verify-transaction", or "canonical-bytes".
+	Mode string `json:"mode"`
+	// Description is the human-readable summary of what the vector
+	// exercises; the runner never branches on it.
+	Description string `json:"description"`
+	// Input carries the per-mode inputs (request, pinned fixtures,
+	// encoder payloads) this runner consumes.
+	Input VectorInput `json:"input"`
+	// Expect is the expected-outcome JSON asserted by the harness driver;
+	// it is opaque to this runner and passed through unread.
+	Expect json.RawMessage `json:"expect"`
 }
 
-// VectorInput mirrors schema.ts VectorInput.
+// VectorInput carries the per-mode inputs of a conformance vector.
 type VectorInput struct {
-	Request         *ChargeRequest   `json:"request"`
-	Transaction     string           `json:"transaction"`
-	SignerSecretKey []byte           `json:"signerSecretKey"`
-	RPCFixtures     *RPCFixtures     `json:"rpcFixtures"`
-	Value           json.RawMessage  `json:"value"`
+	// Request is the charge request that drives the build/verify modes;
+	// nil for encoder-only (canonical-bytes) vectors.
+	Request *ChargeRequest `json:"request"`
+	// Transaction is a pinned base64 wire transaction to verify; empty in
+	// verify mode means build one from Request first and verify that.
+	Transaction string `json:"transaction"`
+	// SignerSecretKey is the 64-byte ed25519 secret key (carried as a JSON
+	// byte array) acting as transfer authority and default fee payer on
+	// the client build path.
+	SignerSecretKey []byte `json:"signerSecretKey"`
+	// RPCFixtures pins RPC-derived values (mint owners) so build/verify
+	// stay RPC-free; nil when the vector needs none.
+	RPCFixtures *RPCFixtures `json:"rpcFixtures"`
+	// Value is a raw JSON value to canonicalize (JCS) and base64url-encode
+	// in canonical-bytes mode; absent otherwise.
+	Value json.RawMessage `json:"value"`
+	// EncodeBase64URL supplies raw bytes (hex or UTF-8) to base64url-encode
+	// in canonical-bytes mode; nil otherwise.
 	EncodeBase64URL *EncodeBase64URL `json:"encodeBase64Url"`
-	ChallengeID     *ChallengeID     `json:"challengeId"`
+	// ChallengeID supplies the inputs to the MPP challenge-id HMAC-SHA256
+	// derivation in canonical-bytes mode; nil otherwise.
+	ChallengeID *ChallengeID `json:"challengeId"`
+	// VoucherPreimage supplies the inputs to the 50-byte session voucher
+	// preimage in canonical-bytes mode; nil otherwise.
+	VoucherPreimage *VoucherPreimage `json:"voucherPreimage"`
 
-	// x402-exact inputs (mirror schema.ts VectorInput x402 fields).
-	X402Offer             *X402Offer `json:"x402Offer"`
-	X402Version           int        `json:"x402Version"`
-	X402PinnedTransaction string     `json:"x402PinnedTransaction"`
-	X402ServerNetwork     string     `json:"x402ServerNetwork"`
-	X402ServerRecipient   string     `json:"x402ServerRecipient"`
-	X402ServerCurrency    string     `json:"x402ServerCurrency"`
-	X402ServerAmount      string     `json:"x402ServerAmount"`
-	X402PaymentHeader     string     `json:"x402PaymentHeader"`
+	// x402-exact inputs.
+	X402Offer *X402Offer `json:"x402Offer"`
+	// X402Version is the x402Version the build path should produce:
+	// 1 builds the legacy top-level scheme/network envelope, 2 the
+	// accepted-echo envelope, and 0 (absent) exercises the default
+	// producer, which also emits 2.
+	X402Version int `json:"x402Version"`
+	// X402PinnedTransaction is the placeholder base64 transaction proof
+	// placed in payload.transaction on build; the envelope shape, not
+	// these bytes, is the conformance oracle.
+	X402PinnedTransaction string `json:"x402PinnedTransaction"`
+	// X402ServerNetwork is the route network the verify gate expects;
+	// cluster slugs, legacy slugs, and CAIP-2 ids are all normalized to
+	// CAIP-2 before comparison.
+	X402ServerNetwork string `json:"x402ServerNetwork"`
+	// X402ServerRecipient is the route recipient (base58 address) the
+	// envelope's accepted.payTo must equal on verify.
+	X402ServerRecipient string `json:"x402ServerRecipient"`
+	// X402ServerCurrency is the route asset the envelope's accepted.asset
+	// must equal on verify.
+	X402ServerCurrency string `json:"x402ServerCurrency"`
+	// X402ServerAmount is the route amount (decimal string of token base
+	// units) the envelope's accepted.amount must equal on verify.
+	X402ServerAmount string `json:"x402ServerAmount"`
+	// X402PaymentHeader is the base64(JSON) x402 payment header the verify
+	// mode decodes and gates against the route.
+	X402PaymentHeader string `json:"x402PaymentHeader"`
 
-	// x402-exact v2 extensions inputs (mirror schema.ts VectorInput).
-	X402AdvertisedExtensions            json.RawMessage `json:"x402AdvertisedExtensions"`
-	X402PaymentIdentifierID             string          `json:"x402PaymentIdentifierId"`
-	X402ServerRequiresPaymentIdentifier bool            `json:"x402ServerRequiresPaymentIdentifier"`
+	// x402-exact extensions inputs.
+	X402AdvertisedExtensions json.RawMessage `json:"x402AdvertisedExtensions"`
+	// X402PaymentIdentifierID pins the payment-identifier id appended when
+	// the advertised extensions require one; empty means generate a fresh
+	// id via the production helper.
+	X402PaymentIdentifierID string `json:"x402PaymentIdentifierId"`
+	// X402ServerRequiresPaymentIdentifier makes verify reject envelopes
+	// whose echoed extensions carry no valid payment-identifier id.
+	X402ServerRequiresPaymentIdentifier bool `json:"x402ServerRequiresPaymentIdentifier"`
 }
 
-// ChargeRequest mirrors schema.ts VectorChargeRequest.
+// ChargeRequest is the charge-intent request carried in a vector input.
 type ChargeRequest struct {
-	Amount           string         `json:"amount"`
-	Currency         string         `json:"currency"`
-	ExternalID       string         `json:"externalId"`
-	Recipient        string         `json:"recipient"`
-	PayTo            string         `json:"payTo"`
-	Asset            string         `json:"asset"`
-	MethodDetails    *MethodDetails `json:"methodDetails"`
-	ComputeUnitLimit *uint32        `json:"computeUnitLimit"`
-	ComputeUnitPrice *string        `json:"computeUnitPrice"`
+	// Amount is the total charge as a decimal string of integer base units
+	// (lamports for SOL, token base units for SPL); no display decimals.
+	Amount string `json:"amount"`
+	// Currency is the asset symbol (e.g. "USDC", "SOL") or mint address;
+	// Asset takes precedence over it when both are set.
+	Currency string `json:"currency"`
+	// ExternalID is an external reference recorded on-chain as a Memo
+	// instruction; empty means no memo is added.
+	ExternalID string `json:"externalId"`
+	// Recipient is the destination address (base58); PayTo takes
+	// precedence over it when both are set.
+	Recipient string `json:"recipient"`
+	// PayTo is the preferred recipient field; per the conformance
+	// precedence rules it wins over Recipient.
+	PayTo string `json:"payTo"`
+	// Asset is the preferred asset field; per the conformance precedence
+	// rules it wins over Currency.
+	Asset string `json:"asset"`
+	// MethodDetails carries the Solana-specific build/verify knobs
+	// (network, blockhash, token program, splits); nil uses defaults.
+	MethodDetails *MethodDetails `json:"methodDetails"`
+	// ComputeUnitLimit caps compute units for the built transaction;
+	// nil leaves the SDK default in effect.
+	ComputeUnitLimit *uint32 `json:"computeUnitLimit"`
+	// ComputeUnitPrice is the priority fee in micro-lamports per compute
+	// unit, as a decimal string; nil leaves the SDK default in effect.
+	ComputeUnitPrice *string `json:"computeUnitPrice"`
 }
 
-// MethodDetails mirrors schema.ts VectorChargeRequest.methodDetails.
+// MethodDetails is the methodDetails block of a vector charge request.
 type MethodDetails struct {
-	Network         string          `json:"network"`
-	Decimals        *uint8          `json:"decimals"`
-	TokenProgram    string          `json:"tokenProgram"`
-	RecentBlockhash string          `json:"recentBlockhash"`
-	FeePayer        *bool           `json:"feePayer"`
-	FeePayerKey     string          `json:"feePayerKey"`
-	Splits          []paycore.Split `json:"splits"`
+	// Network is the Solana cluster slug (e.g. "mainnet", "devnet");
+	// empty defaults to mainnet.
+	Network string `json:"network"`
+	// Decimals is the SPL mint decimals used for transferChecked; nil
+	// defaults to 6 for non-SOL currencies and is unused for SOL.
+	Decimals *uint8 `json:"decimals"`
+	// TokenProgram is the base58 id of the program owning the mint (Token
+	// or Token-2022); empty resolves via the rpc-fixture mint owner, then
+	// the default-by-currency table, keeping the run RPC-free.
+	TokenProgram string `json:"tokenProgram"`
+	// RecentBlockhash pins the blockhash (base58) used to build the
+	// transaction so no live validator is contacted.
+	RecentBlockhash string `json:"recentBlockhash"`
+	// FeePayer enables server fee sponsorship when true and FeePayerKey is
+	// set; nil or false keeps the signer as fee payer.
+	FeePayer *bool `json:"feePayer"`
+	// FeePayerKey is the base58 public key of the sponsoring fee payer
+	// account used when FeePayer is true.
+	FeePayerKey string `json:"feePayerKey"`
+	// Splits lists additional same-asset transfers carved out of the total
+	// amount, each with its own recipient.
+	Splits []paycore.Split `json:"splits"`
 }
 
-// RPCFixtures mirrors schema.ts VectorRpcFixtures.
+// RPCFixtures pins the RPC-derived values a vector needs so the run stays
+// RPC-free.
 type RPCFixtures struct {
-	RecentBlockhash string            `json:"recentBlockhash"`
-	MintOwners      map[string]string `json:"mintOwners"`
+	// RecentBlockhash is a pinned blockhash (base58) a vector may carry;
+	// the build path reads the blockhash from methodDetails, so this stays
+	// informational for this runner.
+	RecentBlockhash string `json:"recentBlockhash"`
+	// MintOwners maps mint address (base58) to its owning token program
+	// (base58), standing in for the getAccountInfo owner lookup.
+	MintOwners map[string]string `json:"mintOwners"`
 }
 
-// EncodeBase64URL mirrors schema.ts encodeBase64Url.
+// EncodeBase64URL holds the raw bytes (hex or UTF-8) to base64url-encode.
 type EncodeBase64URL struct {
+	// HexBytes is a hex string decoded to raw bytes before base64url
+	// encoding; it takes precedence over UTF8 when both are set.
 	HexBytes string `json:"hexBytes"`
-	UTF8     string `json:"utf8"`
+	// UTF8 is a literal string whose UTF-8 bytes are base64url-encoded
+	// when HexBytes is empty.
+	UTF8 string `json:"utf8"`
 }
 
-// ChallengeID mirrors schema.ts VectorInput.challengeId: the inputs to the
-// MPP charge challenge-id HMAC derivation.
+// ChallengeID holds the inputs to the MPP charge challenge-id HMAC
+// derivation.
 type ChallengeID struct {
+	// SecretKey is the server-side secret keying the HMAC-SHA256; it never
+	// appears in the HMAC input itself.
 	SecretKey string `json:"secretKey"`
-	Realm     string `json:"realm"`
-	Method    string `json:"method"`
-	Intent    string `json:"intent"`
-	Request   string `json:"request"`
-	Expires   string `json:"expires"`
-	Digest    string `json:"digest"`
-	Opaque    string `json:"opaque"`
+	// Realm is the challenge realm parameter, the first "|"-joined segment
+	// of the HMAC input.
+	Realm string `json:"realm"`
+	// Method is the HTTP method bound into the challenge id.
+	Method string `json:"method"`
+	// Intent is the MPP intent (e.g. "charge") bound into the challenge id.
+	Intent string `json:"intent"`
+	// Request is the request binding segment of the HMAC input, joined
+	// verbatim; empty when the challenge omits it.
+	Request string `json:"request"`
+	// Expires is the challenge expiry exactly as carried on the wire,
+	// joined verbatim into the HMAC input.
+	Expires string `json:"expires"`
+	// Digest is the body digest challenge parameter; absent optionals join
+	// as empty strings.
+	Digest string `json:"digest"`
+	// Opaque is the opaque challenge parameter (base64url JSON on the
+	// wire), joined verbatim; empty when absent.
+	Opaque string `json:"opaque"`
 }
 
-// Transfer mirrors schema.ts TransactionShape.transfers element.
+// VoucherPreimage holds the inputs to the 50-byte session voucher message
+// bytes (a constant [0x56, 0x01] magic prefix leads the payload).
+type VoucherPreimage struct {
+	// ChannelID is the payment-channel address (base58); its 32 raw bytes
+	// follow the 2-byte magic prefix.
+	ChannelID string `json:"channelId"`
+	// CumulativeAmount is the channel's cumulative spend in token base
+	// units, as a decimal u64 string; encoded little-endian at offset 34.
+	CumulativeAmount string `json:"cumulativeAmount"`
+	// ExpiresAt is the voucher expiry as unix epoch seconds; encoded as a
+	// little-endian i64 at offset 42.
+	ExpiresAt int64 `json:"expiresAt"`
+}
+
+// Transfer is one decoded transfer in a transaction shape.
 type Transfer struct {
-	Kind             string `json:"kind"`
-	Destination      string `json:"destination,omitempty"`
+	// Kind is the transfer family: "sol" for System Program transfers,
+	// "spl" for token-program transferChecked.
+	Kind string `json:"kind"`
+	// Destination is the base58 receiving account: the recipient wallet
+	// for SOL, the destination token account for SPL.
+	Destination string `json:"destination,omitempty"`
+	// DestinationOwner is the base58 wallet owning the destination token
+	// account; this decoder leaves it empty (omitted on the wire).
 	DestinationOwner string `json:"destinationOwner,omitempty"`
-	Mint             string `json:"mint,omitempty"`
-	Amount           string `json:"amount"`
-	Decimals         *uint8 `json:"decimals,omitempty"`
-	TokenProgram     string `json:"tokenProgram,omitempty"`
+	// Mint is the base58 token mint of an SPL transfer; omitted for SOL.
+	Mint string `json:"mint,omitempty"`
+	// Amount is the transferred quantity as a decimal u64 string in base
+	// units: lamports for SOL, token base units for SPL.
+	Amount string `json:"amount"`
+	// Decimals is the decimals byte asserted by transferChecked; nil for
+	// SOL transfers, which carry none.
+	Decimals *uint8 `json:"decimals,omitempty"`
+	// TokenProgram is the base58 id of the program executing the transfer
+	// (Token or Token-2022); omitted for SOL.
+	TokenProgram string `json:"tokenProgram,omitempty"`
 }
 
-// TransactionShape mirrors schema.ts TransactionShape.
+// TransactionShape is the decoded semantic shape of a built transaction.
 type TransactionShape struct {
-	FeePayer            string     `json:"feePayer,omitempty"`
-	Transfers           []Transfer `json:"transfers,omitempty"`
-	ForbiddenPrograms   []string   `json:"forbiddenPrograms,omitempty"`
-	MaxComputeUnitLimit *uint32    `json:"maxComputeUnitLimit,omitempty"`
-	MaxComputeUnitPrice string     `json:"maxComputeUnitPrice,omitempty"`
-	Memo                []string   `json:"memo,omitempty"`
+	// FeePayer is the base58 key of account[0], the transaction fee payer.
+	FeePayer string `json:"feePayer,omitempty"`
+	// Transfers lists the decoded SOL and SPL transfers in instruction
+	// order.
+	Transfers []Transfer `json:"transfers,omitempty"`
+	// ForbiddenPrograms lists base58 ids of disallowed programs found in
+	// the transaction; this decoder reports none, so it stays empty and is
+	// omitted on the wire.
+	ForbiddenPrograms []string `json:"forbiddenPrograms,omitempty"`
+	// MaxComputeUnitLimit is the cap from the ComputeBudget
+	// SetComputeUnitLimit instruction; nil when the transaction sets none.
+	MaxComputeUnitLimit *uint32 `json:"maxComputeUnitLimit,omitempty"`
+	// MaxComputeUnitPrice is the SetComputeUnitPrice value in
+	// micro-lamports per compute unit, as a decimal u64 string; empty when
+	// the transaction sets none.
+	MaxComputeUnitPrice string `json:"maxComputeUnitPrice,omitempty"`
+	// Memo lists the Memo Program instruction payloads as UTF-8 strings,
+	// in instruction order.
+	Memo []string `json:"memo,omitempty"`
 }
 
-// ExactBytes mirrors schema.ts RunnerResult.exactBytes.
+// ExactBytes carries the exact encoder outputs for canonical-bytes vectors.
 type ExactBytes struct {
+	// CanonicalJSON is the canonical (JCS) JSON text produced by the wire
+	// encoder, where byte-for-byte agreement across SDKs is asserted.
 	CanonicalJSON string `json:"canonicalJson,omitempty"`
-	Base64URL     string `json:"base64Url,omitempty"`
-	Bytes         []int  `json:"bytes,omitempty"`
+	// Base64URL is the unpadded base64url encoding of the produced bytes
+	// (canonical JSON, raw input bytes, challenge id, or voucher preimage).
+	Base64URL string `json:"base64Url,omitempty"`
+	// Bytes is the raw output, one int (0-255) per byte, so the harness
+	// can diff exact bytes across SDKs.
+	Bytes []int `json:"bytes,omitempty"`
 }
 
-// RunnerResult mirrors schema.ts RunnerResult.
+// RunnerResult is the single JSON result line emitted on stdout.
 type RunnerResult struct {
-	ID                string             `json:"id"`
-	Outcome           string             `json:"outcome"`
-	TransactionShape  *TransactionShape  `json:"transactionShape,omitempty"`
+	// ID echoes the vector's id so the harness can pair result to vector.
+	ID string `json:"id"`
+	// Outcome is "accept" or "reject".
+	Outcome string `json:"outcome"`
+	// TransactionShape is the decoded semantic shape for accepted MPP
+	// build/verify vectors; nil for other modes and on reject.
+	TransactionShape *TransactionShape `json:"transactionShape,omitempty"`
+	// X402EnvelopeShape is the decoded envelope shape for accepted
+	// x402-exact vectors; nil for other intents and on reject.
 	X402EnvelopeShape *X402EnvelopeShape `json:"x402EnvelopeShape,omitempty"`
-	ExactBytes        *ExactBytes        `json:"exactBytes,omitempty"`
-	Error             string             `json:"error,omitempty"`
-	RejectCode        string             `json:"rejectCode,omitempty"`
+	// ExactBytes carries the encoder outputs for canonical-bytes vectors;
+	// nil for other modes.
+	ExactBytes *ExactBytes `json:"exactBytes,omitempty"`
+	// Error is the SDK's native error message when Outcome is "reject";
+	// omitted on accept.
+	Error string `json:"error,omitempty"`
+	// RejectCode is the normalized cross-SDK reject category from
+	// classifyReject; empty when the message is unclassified so the
+	// harness can surface it instead of silently passing.
+	RejectCode string `json:"rejectCode,omitempty"`
 }
 
 // rejectPattern pairs a compiled regex with the normalized RejectCode it
 // classifies a Go SDK reject message into.
 type rejectPattern struct {
-	re   *regexp.Regexp
-	code string
+	re   *regexp.Regexp // case-insensitive pattern matched against the SDK reject message
+	code string         // normalized cross-SDK RejectCode emitted when re matches
 }
 
-// rejectPatterns mirrors harness/src/conformance/reject.ts: it maps the Go
-// pay_kit SDK's native reject error strings onto the shared cross-SDK
-// RejectCode vocabulary. The Go messages are tuned here against the real
-// strings the SDK emits (e.g. "no matching token transfer for ..."), so the
-// alternation includes "token". As in the reference, a transferChecked
-// decimals mismatch is enforced through the transfer match key and so
-// honestly surfaces as the generic no-matching-transfer category, not a
+// rejectPatterns maps the Go pay_kit SDK's native reject error strings onto
+// the shared cross-SDK RejectCode vocabulary. The Go messages are tuned here
+// against the real strings the SDK emits (e.g. "no matching token transfer
+// for ..."), so the alternation includes "token". A transferChecked decimals
+// mismatch is enforced through the transfer match key and so honestly
+// surfaces as the generic no-matching-transfer category, not a
 // decimals-specific code.
 var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)compute unit price .* exceeds (maximum|cap)`), "compute-price-over-cap"},
@@ -201,11 +370,10 @@ var rejectPatterns = []rejectPattern{
 	// x402-exact reject categories. `unsupported x402 version` must be
 	// checked before the generic invalid/payload fallback (the message is
 	// "invalid payload: unsupported x402 version: N"). `network mismatch`
-	// likewise precedes the fallback. Mirrors harness/src/conformance/reject.ts.
+	// likewise precedes the fallback.
 	{regexp.MustCompile(`(?i)unsupported x402 version`), "unsupported-version"},
 	{regexp.MustCompile(`(?i)network mismatch`), "wrong-network"},
-	// payment-identifier gate: required-but-missing/invalid id. Mirrors
-	// harness/src/conformance/reject.ts payment-identifier-required.
+	// payment-identifier gate: required-but-missing/invalid id.
 	{regexp.MustCompile(`(?i)payment.identifier .*(required|missing|invalid)`), "payment-identifier-required"},
 }
 
@@ -233,7 +401,7 @@ func classifyReject(message string) string {
 // same interface the Go client build path consumes. The vectors carry the
 // signer as the transfer authority / fee payer.
 type localSigner struct {
-	priv solana.PrivateKey
+	priv solana.PrivateKey // 64-byte ed25519 keypair (seed || public key) backing PublicKey and Sign
 }
 
 func newLocalSigner(secret []byte) (*localSigner, error) {
@@ -328,8 +496,8 @@ func rejected(id string, err error) RunnerResult {
 	return RunnerResult{ID: id, Outcome: "reject", Error: msg, RejectCode: classifyReject(msg)}
 }
 
-// flattenRequest applies the same precedence rules as the TS reference
-// runner: top-level asset / payTo win over currency / recipient, and the
+// flattenRequest applies the conformance contract's precedence rules:
+// top-level asset / payTo win over currency / recipient, and the
 // token program resolves explicit -> rpc-fixture mint owner ->
 // default-by-currency so the build path stays RPC-free. It returns the
 // charge fields plus the resolved paycore.MethodDetails the Go SDK consumes.
@@ -506,18 +674,39 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 	if c := in.ChallengeID; c != nil {
 		// base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
 		// digest|opaque)); absent optionals join as empty strings. Drives the
-		// production SDK derivation (wire.ComputeChallengeID), which mirrors
-		// rust compute_challenge_id (protocol/core/challenge.rs).
+		// production SDK derivation (wire.ComputeChallengeID).
 		eb.Base64URL = wire.ComputeChallengeID(
 			c.SecretKey, c.Realm, c.Method, c.Intent, c.Request, c.Expires, c.Digest, c.Opaque,
 		)
+	}
+	if v := in.VoucherPreimage; v != nil {
+		// The 50-byte session voucher preimage, computed by the production SDK
+		// glue (paymentchannels.VoucherMessageBytes) so a byte mismatch is
+		// caught here cross-SDK rather than behind a live channel.
+		channel, err := solana.PublicKeyFromBase58(v.ChannelID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid voucher channelId: %w", err)
+		}
+		cumulative, err := strconv.ParseUint(v.CumulativeAmount, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid voucher cumulativeAmount: %w", err)
+		}
+		preimage, err := paymentchannels.VoucherMessageBytes(channel, cumulative, v.ExpiresAt)
+		if err != nil {
+			return nil, err
+		}
+		ints := make([]int, len(preimage))
+		for i, b := range preimage {
+			ints[i] = int(b)
+		}
+		eb.Bytes = ints
+		eb.Base64URL = wire.Base64URLEncode(preimage)
 	}
 	return eb, nil
 }
 
 // shapeFromTransaction decodes a base64 wire transaction into the semantic
-// shape the conformance driver asserts against. It mirrors the TS reference
-// decoder (harness/src/conformance/decode.ts): fee payer is account[0], SPL
+// shape the conformance driver asserts against: fee payer is account[0], SPL
 // transfers come from transferChecked (discriminator 12), SOL transfers from
 // the System Program transfer (discriminator 2), memos from the Memo Program,
 // and compute caps from the ComputeBudget program.

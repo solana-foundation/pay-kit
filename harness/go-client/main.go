@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -33,36 +34,70 @@ import (
 const fixtureSettlementHeader = "x-fixture-settlement"
 
 type adapterResult struct {
-	Type            string            `json:"type"`
-	Implementation  string            `json:"implementation"`
-	Role            string            `json:"role"`
-	OK              bool              `json:"ok"`
-	Status          int               `json:"status"`
+	// Type is the harness message discriminator; always "result" here.
+	Type string `json:"type"`
+	// Implementation identifies the SDK under test; always "go" here.
+	Implementation string `json:"implementation"`
+	// Role is the side this adapter exercises; always "client" here.
+	Role string `json:"role"`
+	// OK reports whether the paid request ended with a 2xx status.
+	OK bool `json:"ok"`
+	// Status is the final HTTP status code of the paid request.
+	Status int `json:"status"`
+	// ResponseHeaders holds the final response headers, names lower-cased
+	// and multi-value headers joined with ", ".
 	ResponseHeaders map[string]string `json:"responseHeaders"`
-	ResponseBody    any               `json:"responseBody"`
-	Settlement      string            `json:"settlement,omitempty"`
+	// ResponseBody is the final response body, JSON-decoded when it parses,
+	// otherwise the raw string.
+	ResponseBody any `json:"responseBody"`
+	// Settlement echoes the x-fixture-settlement header the fixture server
+	// sets with its settlement outcome; omitted when absent.
+	Settlement string `json:"settlement,omitempty"`
 }
 
 func main() {
-	if os.Getenv("X402_HARNESS_TARGET_URL") != "" {
+	switch resolveProtocolMode(os.Getenv) {
+	case "x402-upto":
+		if err := runX402UptoAdapter(os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
+	case "x402":
 		if err := runX402Adapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
 		}
-		return
-	}
-	if os.Getenv("MPP_HARNESS_TARGET_URL") != "" {
+	case "mpp":
 		if err := runProcessAdapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
 		}
-		return
+	default:
+		runLegacyHarness()
 	}
-	runLegacyHarness()
+}
+
+// resolveProtocolMode picks the adapter protocol. The harness matrix injects
+// BOTH MPP_HARNESS_TARGET_URL and X402_HARNESS_TARGET_URL on every client
+// run, so the namespace probe alone is ambiguous: the explicit
+// PAY_KIT_HARNESS_PROTOCOL hint set per scenario wins first. The probe order
+// is only reached on manual runs that export a single TARGET_URL.
+func resolveProtocolMode(getenv func(string) string) string {
+	if mode := strings.ToLower(strings.TrimSpace(getenv("PAY_KIT_HARNESS_PROTOCOL"))); mode != "" {
+		return mode
+	}
+	switch {
+	case getenv("X402_HARNESS_TARGET_URL") != "":
+		return "x402"
+	case getenv("MPP_HARNESS_TARGET_URL") != "":
+		return "mpp"
+	default:
+		return ""
+	}
 }
 
 // runX402Adapter drives the x402 (exact) client against the target. It
-// mirrors the Rust x402 harness_client contract: read the offer from the
+// follows the x402 harness client contract: read the offer from the
 // 402 challenge, select by preferred network + currency order, build and
 // submit the Payment-Signature credential, then report the JSON result.
 func runX402Adapter(stdout io.Writer) error {
@@ -102,6 +137,69 @@ func runX402Adapter(stdout io.Writer) error {
 		ResponseHeaders: responseHeaders(resp.Header),
 		ResponseBody:    parseResponseBody(rawBody),
 		Settlement:      resp.Header.Get(fixtureSettlementHeader),
+	}
+	return json.NewEncoder(stdout).Encode(result)
+}
+
+func runX402UptoAdapter(stdout io.Writer) error {
+	targetURL := os.Getenv("X402_HARNESS_TARGET_URL")
+	first, err := http.Get(targetURL)
+	if err != nil {
+		return fmt.Errorf("challenge request: %w", err)
+	}
+	defer first.Body.Close()
+	firstBody, err := io.ReadAll(first.Body)
+	if err != nil {
+		return fmt.Errorf("read challenge body: %w", err)
+	}
+	requirements, ok := x402client.ParseUptoChallenge(first.Header, firstBody)
+	if !ok {
+		return fmt.Errorf("server did not return a supported x402 upto challenge")
+	}
+
+	signer, err := readPrivateKeyEnv("X402_HARNESS_CLIENT_SECRET_KEY")
+	if err != nil {
+		return err
+	}
+	header, err := x402client.BuildUptoHeader(
+		context.Background(),
+		signer,
+		requirements,
+		time.Now().Add(time.Hour).Unix(),
+		fmt.Sprintf("go-upto-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		return fmt.Errorf("build upto payment header: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Payment-Signature", header)
+	if actual := os.Getenv("X402_HARNESS_ACTUAL_AMOUNT"); actual != "" {
+		req.Header.Set("X402-HARNESS-ACTUAL-AMOUNT", actual)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("paid request: %w", err)
+	}
+	defer resp.Body.Close()
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+	headers := responseHeaders(resp.Header)
+	headers["payment-signature-sent"] = header
+	settlementHeader := envOrDefault("X402_HARNESS_SETTLEMENT_HEADER", fixtureSettlementHeader)
+	result := adapterResult{
+		Type:            "result",
+		Implementation:  "go",
+		Role:            "client",
+		OK:              resp.StatusCode >= 200 && resp.StatusCode < 300,
+		Status:          resp.StatusCode,
+		ResponseHeaders: headers,
+		ResponseBody:    parseResponseBody(rawBody),
+		Settlement:      resp.Header.Get(settlementHeader),
 	}
 	return json.NewEncoder(stdout).Encode(result)
 }

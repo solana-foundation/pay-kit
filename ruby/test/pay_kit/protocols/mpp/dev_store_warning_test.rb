@@ -25,7 +25,7 @@ class DevStoreWarningTest < Minitest::Test
 
     # Capture the Kernel.warn output without actually printing it.
     PayKit::Protocols::Mpp.stub(:warn, ->(msg) { warned = msg }) do
-      server = PayKit::Protocols::Mpp.create(method: method_fixture, secret_key: "test-secret")
+      server = PayKit::Protocols::Mpp.create(method: method_fixture, secret_key: ("test-secret-" + ("0" * 32)))
       assert_kind_of PayKit::Protocols::Mpp::Server::Charge, server
     end
 
@@ -46,7 +46,7 @@ class DevStoreWarningTest < Minitest::Test
     PayKit::Protocols::Mpp.stub(:warn, ->(msg) { warned << msg }) do
       server = PayKit::Protocols::Mpp.create(
         method: method_fixture,
-        secret_key: "test-secret",
+        secret_key: ("test-secret-" + ("0" * 32)),
         replay_store: explicit_store
       )
       assert_kind_of PayKit::Protocols::Mpp::Server::Charge, server
@@ -64,7 +64,7 @@ class DevStoreWarningTest < Minitest::Test
       PayKit::Protocols::Mpp.stub(:warn, ->(msg) { warned << msg }) do
         server = PayKit::Protocols::Mpp.create(
           method: method_fixture,
-          secret_key: "test-secret",
+          secret_key: ("test-secret-" + ("0" * 32)),
           replay_store: file_store
         )
         assert_kind_of PayKit::Protocols::Mpp::Server::Charge, server

@@ -1,6 +1,6 @@
 """Exhaustive coverage for SolanaRpc methods.
 
-Hits every branch in :mod:`pay_kit._paycore.rpc` so the JSON-RPC wrapper meets
+Hits every branch in :mod:`solana_pay_kit._paycore.rpc` so the JSON-RPC wrapper meets
 the 90 percent line coverage gate: the error branch in ``_call``, both
 ``get_signature_statuses`` return shapes, ``get_transaction``,
 ``confirm_transaction`` legacy shim (success and timeout), and
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
 
 
 class _FakeResponse:
@@ -120,7 +120,7 @@ async def test_confirm_transaction_timeout():
     # Always returns "processed" status so confirm_transaction loops 40x and returns timeout.
     rpc._client = _ScriptedClient([{"result": {"value": [{"confirmationStatus": "processed"}]}, "id": 1}])  # type: ignore[assignment]
     # Speed up: monkeypatch asyncio.sleep on the module
-    import pay_kit._paycore.rpc as rpc_mod
+    import solana_pay_kit._paycore.rpc as rpc_mod
 
     async def _noop_sleep(_s):
         return None
@@ -207,6 +207,19 @@ async def test_get_latest_blockhash_returns_value_blockhash():
     rpc = _rpc(payload)
     resp = await rpc.get_latest_blockhash()
     assert resp.value.blockhash == "Bh11111111111111111111111111111111111111111"
+    # The envelope's current slot is surfaced as context.slot so challenge
+    # issuance stamps recentSlot without a separate getSlot round-trip.
+    assert resp.context is not None and resp.context.slot == 1
+
+
+@pytest.mark.asyncio
+async def test_get_latest_blockhash_tolerates_missing_context_slot():
+    payload = {
+        "result": {"value": {"blockhash": "Bh11111111111111111111111111111111111111111"}},
+        "id": 1,
+    }
+    resp = await _rpc(payload).get_latest_blockhash()
+    assert resp.context is not None and resp.context.slot is None
 
 
 @pytest.mark.asyncio
@@ -214,3 +227,10 @@ async def test_get_latest_blockhash_rejects_missing_blockhash():
     rpc = _rpc({"result": {"value": {}}, "id": 1})
     with pytest.raises(_RpcError):
         await rpc.get_latest_blockhash()
+
+
+@pytest.mark.asyncio
+async def test_get_slot_returns_integer_and_rejects_garbage():
+    assert await _rpc({"result": 12345, "id": 1}).get_slot() == 12345
+    with pytest.raises(_RpcError):
+        await _rpc({"result": "not-a-slot", "id": 1}).get_slot()

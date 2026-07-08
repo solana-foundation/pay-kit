@@ -1,10 +1,17 @@
-# MPP Charge Demo (Android)
+# PayKit Demo (Android)
 
-A minimal Jetpack Compose Android app that pays a 402-protected route
-using the Kotlin MPP SDK at `kotlin/` and signs the transaction with a
-real Solana wallet via Mobile Wallet Adapter.
+A Jetpack Compose app that mirrors the iOS PayKitDemo. On launch it
+fetches the pay-kit playground's `/openapi.json` (over `10.0.2.2:3000`,
+the emulator's host loopback), renders every priced operation (read from
+each route's `x-payment-info` offers) as a tappable collection, generates
+a local signer, tops it up over Surfpool cheatcodes, and consumes any
+endpoint over MPP, surfacing each charge's settlement signature in an
+append-only log.
 
-Tracked under issue #114.
+The tap flow drives MPP charge, x402 `exact`, MPP `session`, and x402
+`upto` (usage): tapping the metered endpoint authorizes a ceiling, then
+the server meters actual usage and settles `actual <= max`, refunding the
+rest.
 
 ## Layout
 
@@ -14,7 +21,7 @@ kotlin/examples/AndroidDemo
 │   ├── build.gradle.kts          AGP + Compose configuration
 │   └── src/main/
 │       ├── AndroidManifest.xml   single launcher activity
-│       └── java/com/solana/mpp/demo/MainActivity.kt
+│       └── java/com/solana/paykit/demo/   MainActivity.kt + OpenApi.kt
 ├── build.gradle.kts              root project, declares plugins
 ├── settings.gradle.kts           single `:app` module
 └── gradle/wrapper/               pinned Gradle 8.10.2
@@ -81,11 +88,13 @@ destinations remain HTTPS-only.
 
 ## End-to-end screenshot
 
-End-to-end run in the Android 34 (arm64) emulator against local
-Surfpool + the iOSDemo's `MerchantServer/serve.py`. App shows
-"HTTP 200", the fortune body, and the on-chain settlement signature.
+End-to-end run in the Android 34 (arm64) emulator against the pay-kit
+playground (`10.0.2.2:3000`) + the hosted Surfpool sandbox. The
+endpoints are rendered from the playground's OpenAPI spec; the log shows
+a `Stock quote — 200 OK` consumed over MPP with its on-chain settlement
+signature.
 
-![Android emulator screenshot showing HTTP 200 and settlement signature](docs/android-demo-screenshot.png)
+![Android emulator screenshot: OpenAPI endpoints and a settled x402 upto (metered) payment](docs/android-demo-screenshot.png)
 
 ## Expected UI state
 

@@ -83,7 +83,7 @@ export const charge = Method.from({
                 feePayer: z.optional(z.boolean()),
                 /** Server's base58-encoded public key for fee payment. Present when feePayer is true. */
                 feePayerKey: z.optional(z.string()),
-                /** Solana network: mainnet-beta, devnet, or localnet. */
+                /** Solana network: mainnet, devnet, or localnet. */
                 network: z.optional(z.string()),
                 /** Server-provided base58-encoded recent blockhash. Saves the client an RPC round-trip. */
                 recentBlockhash: z.optional(z.string()),
@@ -157,7 +157,7 @@ export const subscription = Method.from({
                 feePayerKey: z.optional(z.string()),
                 /** Base58 of the SPL token mint. Must equal the on-chain plan.mint. */
                 mint: z.string(),
-                /** Solana network: mainnet-beta, devnet, testnet, or localnet. */
+                /** Solana network: mainnet, devnet, or localnet. */
                 network: z.optional(z.string()),
                 /** Base58 of the on-chain Plan PDA. */
                 planId: z.string(),
@@ -234,6 +234,8 @@ export const session = Method.from({
 
                     /** Client wallet funding the push-mode channel. */
                     payer: z.optional(z.string()),
+                    /** Slot the push-mode open was built against (the channel `openSlot` PDA seed). */
+                    recentSlot: z.optional(z.union([z.string(), z.number()])),
                     /** PDA salt used for the payment-channel address. */
                     salt: z.optional(z.union([z.string(), z.number()])),
                     /** On-chain transaction signature proving the open. */
@@ -282,7 +284,7 @@ export const session = Method.from({
             minVoucherDelta: z.optional(z.string()),
             /** Supported funding modes. Omitted means push mode only. */
             modes: z.optional(z.array(sessionMode)),
-            /** Solana network: mainnet-beta, devnet, or localnet. */
+            /** Solana network: mainnet, devnet, or localnet. */
             network: z.optional(z.string()),
             /** Operator/server public key. */
             operator: z.string(),
@@ -292,6 +294,8 @@ export const session = Method.from({
             pullVoucherStrategy: z.optional(sessionPullVoucherStrategy),
             /** Server-provided recent blockhash. */
             recentBlockhash: z.optional(z.string()),
+            /** Server-provided current slot used as the channel `openSlot` PDA seed. */
+            recentSlot: z.optional(z.union([z.string(), z.number()])),
             /** Primary recipient for channel proceeds. */
             recipient: z.string(),
             /** Optional basis-point splits distributed at close. */

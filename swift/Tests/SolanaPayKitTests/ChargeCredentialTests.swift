@@ -37,7 +37,7 @@ struct ChargeCredentialTests {
     func rejectsUnterminatedQuotedAuthParam() throws {
         let request = try Self.encodedRequest()
 
-        #expect(throws: MppError.invalidHeader) {
+        #expect(throws: PayKitError.invalidHeader) {
             _ = try MppHeaders.parseWWWAuthenticate(
                 """
                 Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="\(request)
@@ -48,7 +48,7 @@ struct ChargeCredentialTests {
 
     @Test
     func rejectsDanglingEscapeInQuotedAuthParam() throws {
-        #expect(throws: MppError.invalidHeader) {
+        #expect(throws: PayKitError.invalidHeader) {
             _ = try MppHeaders.parseWWWAuthenticate(
                 """
                 Payment id="challenge-1\\
@@ -71,7 +71,7 @@ struct ChargeCredentialTests {
         do {
             _ = try challenge.chargeRequest
             Issue.record("expected invalid JSON error")
-        } catch let MppError.invalidJSON(detail) {
+        } catch let PayKitError.invalidJSON(detail) {
             #expect(detail.contains("currency"))
         }
     }
@@ -133,14 +133,14 @@ struct ChargeCredentialTests {
             transactionProvider: StaticChargeTransactionProvider(transaction: "tx")
         )
 
-        await #expect(throws: MppError.unsupportedChallenge(method: "solana", intent: "session")) {
+        await #expect(throws: PayKitError.unsupportedChallenge(method: "solana", intent: "session")) {
             _ = try await builder.authorizationHeader(for: challenge)
         }
     }
 
     @Test
     func rejectsMalformedRequestBase64() throws {
-        #expect(throws: MppError.invalidBase64URL) {
+        #expect(throws: PayKitError.invalidBase64URL) {
             _ = try PaymentChallenge(
                 id: "challenge-3",
                 realm: "MPP Payment",
@@ -151,10 +151,36 @@ struct ChargeCredentialTests {
         }
     }
 
+    @Test
+    func rejectsOversizedRequestParam() throws {
+        // Audit #9: the `request` parameter must be capped at 16 KiB before
+        // any base64url-decode + JSON-parse work runs. A value past the cap
+        // is rejected as an invalid header.
+        let oversized = String(repeating: "A", count: MppHeaders.maxTokenLength + 1)
+        let header = """
+        Payment id="c", realm="r", method="solana", intent="charge", request="\(oversized)"
+        """
+        #expect(throws: PayKitError.invalidHeader) {
+            _ = try MppHeaders.parseWWWAuthenticate(header)
+        }
+    }
+
+    @Test
+    func acceptsRequestParamAtCap() throws {
+        // A valid challenge whose encoded request is within the cap parses.
+        let request = try Self.encodedRequest()
+        #expect(request.utf8.count <= MppHeaders.maxTokenLength)
+        let header = """
+        Payment id="c", realm="r", method="solana", intent="charge", request="\(request)"
+        """
+        let challenge = try MppHeaders.parseWWWAuthenticate(header)
+        #expect(challenge.method == "solana")
+    }
+
     private static func challengeHeader() throws -> String {
         let request = try encodedRequest()
         return """
-        Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="\(request)", expires="2026-05-20T00:00:00Z"
+        Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="\(request)", expires="2099-05-20T00:00:00Z"
         """
     }
 
