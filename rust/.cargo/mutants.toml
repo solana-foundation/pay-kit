@@ -1,0 +1,46 @@
+# cargo-mutants configuration — "guard coverage meter" for the x402 exact
+# structural verifier.
+#
+# Thesis: a large security sweep shipped, but line/region coverage alone does
+# not prove the test suite actually *kills* injected bugs. Mutation testing is
+# the objective meter: a surviving mutant is a real defect the tests would let
+# through — a concrete CI blind spot.
+#
+# This config scopes the meter to the single highest-value security-critical
+# module: the x402 `exact` scheme on-chain / signed-transaction verifier. That
+# verifier is the code that decides whether a presented Solana transaction
+# actually pays the route (right mint, destination ATA, amount, authority not a
+# managed fee-payer, bounded compute price). A guard gap here = accepting an
+# under-/mis-payment.
+#
+# Run locally:
+#   cd rust
+#   cargo mutants --features x402 -j 4 --timeout 120
+#
+# Or target a single file for a fast loop:
+#   cargo mutants --features x402 \
+#     --file crates/kit/src/x402/protocol/schemes/exact/verify.rs -j 4 --timeout 120
+#
+# CI runs this advisory/nightly (see .github/workflows/mutants.yml) because a
+# full mutation sweep is slower than a normal test run.
+
+# Only mutate the x402 exact verifier surface. Widen deliberately, not by
+# accident — every added glob multiplies runtime.
+examine_globs = [
+    "crates/kit/src/x402/protocol/schemes/exact/verify.rs",
+]
+
+# Never mutate generated clients or vendored code.
+exclude_globs = [
+    "crates/kit/src/generated/**",
+]
+
+# The verifier only needs the `x402` feature to compile its tests; keep the
+# build lean so the meter stays fast.
+features = ["x402"]
+test_package = ["solana-pay-kit"]
+
+# The unit tests are microsecond-fast; give a generous absolute floor so a
+# slow CI runner never reports a spurious timeout as a "caught" mutant.
+minimum_test_timeout = 120
+timeout_multiplier = 5.0
