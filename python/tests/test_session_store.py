@@ -236,6 +236,14 @@ def test_from_dict_accepts_null_delivery_lists() -> None:
     assert state.committed_deliveries == []
 
 
+def test_from_dict_rejects_legacy_finalized_record() -> None:
+    """Records persisted before the finalize->seal rename are not supported:
+    the epoch-addressed migration is pre-1.0 breaking, so a legacy record
+    fails loudly instead of silently reloading a closed channel as unsealed."""
+    with pytest.raises(ValueError, match="legacy pre-seal channel record"):
+        ChannelState.from_dict({"channel_id": "c1", "authorized_signer": "signer1", "finalized": True})
+
+
 def test_from_dict_accepts_missing_and_empty_delivery_lists() -> None:
     """Missing keys and explicit ``[]`` both decode to an empty list."""
     missing = ChannelState.from_dict({"channel_id": "c1", "authorized_signer": "signer1"})

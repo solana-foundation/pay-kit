@@ -115,6 +115,12 @@ class VerifyOpenTxExpected:
     # slot-1 check.
     operator: str = ""
     program_id: Pubkey | None = None
+    # The challenge-issued recentSlot, when the caller has it. The open
+    # instruction's own openSlot must equal it: without this bind, a payload
+    # that omits recentSlot would let a transaction built against a different
+    # slot through (and the decoded slot would then overwrite the payload).
+    # None skips the check (offline/trust-mode challenges carry no slot).
+    recent_slot: int | None = None
 
 
 @dataclass
@@ -354,6 +360,11 @@ async def verify_open_tx(
             f"openPayload.recentSlot {payload.recent_slot} != transaction openSlot {open_slot}",
             code="invalid-payload",
         )
+    if expected.recent_slot is not None and expected.recent_slot != open_slot:
+        raise PaymentError(
+            f"transaction openSlot {open_slot} != challenge recentSlot {expected.recent_slot}",
+            code="invalid-payload",
+        )
 
     # Optional liveness check: only when the caller provides an RPC client and
     # the client already populated the transaction signature.
@@ -537,7 +548,12 @@ async def settle_and_seal_channel(
         raise PaymentError(
             f"session settlement requires an SPL token, got currency '{config.currency}'", code="invalid-config"
         )
-    payer_address = state.operator or config.recipient
+    # The channel payer (opener) is the refund destination for the unsettled
+    # remainder. It must be the payer recorded at open: falling back to
+    # another account (e.g. the recipient) would derive the wrong refund ATA
+    # and only fail after the settle transaction is built and broadcast.
+    # Mirrors Go's strict payer handling.
+    payer_address = state.operator
     if not payer_address:
         raise PaymentError(
             f"channel {state.channel_id} payer is unknown; cannot derive the refund account", code="invalid-config"

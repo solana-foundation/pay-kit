@@ -133,9 +133,13 @@ class SolanaRpc:
         return _RpcResponse(_BlockhashValue(blockhash), context=_RpcContext(slot))
 
     async def get_slot(self, commitment: str = "confirmed") -> int:
-        """Fetch the current slot. Used at channel-open time: the program
-        requires ``openSlot <= clock.slot`` with a 1500-slot freshness window,
-        so clients stamp the open (and its PDA seed) with the current slot."""
+        """Fetch the current slot. Used by SERVERS at challenge-issuance time:
+        the program requires ``openSlot <= clock.slot`` with a 1500-slot
+        freshness window, so the server stamps the challenge ``recentSlot``
+        with the current slot (normally taken from the ``getLatestBlockhash``
+        response context; this call is the fallback when a response lacks it).
+        Clients take the channel ``openSlot`` from the challenge — they never
+        fetch the slot themselves."""
         result = await self._call("getSlot", [{"commitment": commitment}])
         if not isinstance(result, int) or result < 0:
             raise _RpcError("getSlot returned a non-integer slot", code="payment_invalid")

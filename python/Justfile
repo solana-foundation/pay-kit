@@ -30,7 +30,7 @@ typecheck:
 
 # Run tests with the 90% line-coverage gate.
 test-cover:
-    {{uv_run}} pytest --cov=pay_kit --cov-report=term-missing --cov-fail-under=90 --ignore=tests/test_server_html.py
+    {{uv_run}} pytest --cov=solana_pay_kit --cov-report=term-missing --cov-fail-under=90 --ignore=tests/test_server_html.py
 
 # Run all local Python gates.
 check: lint typecheck test-cover

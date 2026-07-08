@@ -227,6 +227,16 @@ class ChannelState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChannelState:
+        # Records persisted before the upstream finalize→seal rename are
+        # intentionally NOT decoded: the epoch-addressed migration is pre-1.0
+        # breaking (pre-rename channels reference the old program's
+        # addressing), so a legacy record fails loudly here instead of
+        # silently reloading a closed channel as unsealed.
+        if "finalized" in data:
+            raise ValueError(
+                "legacy pre-seal channel record (field 'finalized') is not supported; "
+                "migrate or reset the durable channel store"
+            )
         return cls(
             channel_id=data.get("channel_id", ""),
             authorized_signer=data.get("authorized_signer", ""),

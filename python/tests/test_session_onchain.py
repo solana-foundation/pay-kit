@@ -461,6 +461,22 @@ async def test_verify_open_tx_rejects_payload_recent_slot_mismatch() -> None:
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
+async def test_verify_open_tx_binds_challenge_recent_slot() -> None:
+    """When the caller supplies the challenge-issued recentSlot, the
+    transaction's own openSlot must equal it — even when the payload omits
+    recentSlot (otherwise a transaction built against a different slot would
+    slip through and the decoded slot would overwrite the payload)."""
+    fixture = build_open_tx_fixture(v0=False)
+    fixture.payload.recent_slot = None
+    expected = replace(fixture.expected, recent_slot=OPEN_FIXTURE_SLOT + 1)
+    with pytest.raises(PaymentError, match="challenge recentSlot"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+    accepted = replace(fixture.expected, recent_slot=OPEN_FIXTURE_SLOT)
+    result = await verify_open_tx(accepted, fixture.payload, None)
+    assert result.open_slot == OPEN_FIXTURE_SLOT
+
+
 # -- verify_open_tx: RPC liveness ---------------------------------------------
 
 

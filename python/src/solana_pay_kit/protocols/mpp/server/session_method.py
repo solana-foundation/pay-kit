@@ -455,7 +455,7 @@ class Session:
                     f"the challenge recentSlot {request.recent_slot}",
                     code="invalid-payload",
                 )
-            reference = await self._handle_open(action.open)
+            reference = await self._handle_open(action.open, challenge_recent_slot=request.recent_slot)
         elif action.voucher is not None:
             reference = await self._handle_voucher(action.voucher)
         elif action.commit is not None:
@@ -543,11 +543,13 @@ class Session:
                 code="recipient-mismatch",
             )
 
-    def _open_tx_expected(self, payload: OpenPayload) -> VerifyOpenTxExpected:
+    def _open_tx_expected(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> VerifyOpenTxExpected:
         """Build the on-chain open verification facts for a transaction-carrying
         open. Only the paths that attach a transaction call this, keeping the
         ``program_id`` pubkey parse (and its failure surface) off the
-        trust-the-channel-id paths.
+        trust-the-channel-id paths. ``challenge_recent_slot`` is the recentSlot
+        the verified challenge was issued with; when present the attached
+        transaction's own openSlot must equal it.
         """
         return VerifyOpenTxExpected(
             authorized_signer=payload.authorized_signer,
@@ -557,9 +559,10 @@ class Session:
             max_cap=self._core.config.max_cap,
             operator=self._core.config.operator,
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+            recent_slot=challenge_recent_slot,
         )
 
-    async def _handle_open(self, payload: OpenPayload) -> str:
+    async def _handle_open(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
 
@@ -635,7 +638,7 @@ class Session:
                 # the open on-chain, so the on-chain expected facts (and the
                 # program_id pubkey parse) stay off the trust-the-channel-id
                 # paths.
-                expected = self._open_tx_expected(payload)
+                expected = self._open_tx_expected(payload, challenge_recent_slot)
                 try:
                     verified = await verify_open_tx(expected, payload, None)
                     if not payload.payer:
@@ -652,7 +655,7 @@ class Session:
                 except Exception as exc:
                     raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
         elif has_transaction:
-            expected = self._open_tx_expected(payload)
+            expected = self._open_tx_expected(payload, challenge_recent_slot)
             try:
                 verified = await verify_open_tx(expected, payload, self._rpc)
             except PaymentError:

@@ -178,6 +178,37 @@ async def test_close_without_voucher_omits_ed25519_precompile() -> None:
 
 
 @pytest.mark.asyncio
+async def test_settle_requires_recorded_channel_payer() -> None:
+    """Settlement must fail loudly when the channel payer (opener) was never
+    recorded: falling back to another account (e.g. the recipient) would
+    derive the wrong refund ATA. Mirrors Go's strict payer handling. Nothing
+    is broadcast and the settle guard is released for a retry."""
+    operator = Keypair.from_seed(bytes([31] * 32))
+    channel = str(Keypair.from_seed(bytes([32] * 32)).pubkey())
+    rpc = _SettleRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=None,
+        ),
+    )
+
+    with pytest.raises(PaymentError, match="payer is unknown"):
+        await session._settle_channel(channel)
+
+    assert rpc.sent == []
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settling is False
+
+
+@pytest.mark.asyncio
 async def test_settle_is_noop_without_signer_or_rpc() -> None:
     operator = Keypair.from_seed(bytes([6] * 32))
     session = new_session(
