@@ -197,6 +197,63 @@ def test_paywall_can_gate_fastapi_tags(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == ["/tagged"]
 
 
+def test_pay_required_takes_precedence_over_public_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_process(monkeypatch, paid=False)
+    app = FastAPI()
+    pk_fastapi.install_paywall_from_config(
+        app,
+        pk_fastapi.PaywallConfig(
+            gate_ref=Price.usd("0.10", Stablecoin.USDC),
+            default_policy="public",
+            public_tags=("public",),
+        ),
+        cors_origins=None,
+    )
+
+    @app.get("/explicit", tags=["public"])
+    @pk_fastapi.pay_required()
+    async def explicit() -> dict[str, bool]:
+        return {"ok": True}
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/explicit")
+
+    assert resp.status_code == 402
+    assert calls == ["/explicit"]
+
+
+def test_paywall_gates_mounted_fastapi_child_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_process(monkeypatch, paid=False)
+    app = FastAPI()
+    pk_fastapi.install_paywall_from_config(
+        app,
+        pk_fastapi.PaywallConfig(
+            gate_ref=Price.usd("0.10", Stablecoin.USDC),
+            default_policy="public",
+        ),
+        cors_origins=None,
+    )
+    child = FastAPI()
+
+    @child.get("/paid")
+    @pk_fastapi.pay_required()
+    async def paid() -> dict[str, bool]:
+        return {"ok": True}
+
+    @child.get("/free")
+    async def free() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.mount("/api", child)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    paid_resp = client.get("/api/paid")
+    free_resp = client.get("/api/free")
+
+    assert paid_resp.status_code == 402
+    assert free_resp.status_code == 200
+    assert calls == ["/api/paid"]
+
+
 def test_install_paywall_accepts_app_config_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_process(monkeypatch, paid=False)
     monkeypatch.setenv("EXO_PAY_ENABLED", "true")

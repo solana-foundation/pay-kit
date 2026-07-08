@@ -27,7 +27,7 @@ Starlette lowercase header names at the boundary, so canonical casing is safe).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -543,16 +543,28 @@ def install_exception_handler(app: Any) -> None:
 
 def _matched_route(app: Any, request: Request) -> object | None:
     """Return the Starlette route that would handle ``request``, if any."""
-    routes = getattr(app, "routes", ())
+    return _matched_route_in_routes(cast("Iterable[object]", getattr(app, "routes", ())), request.scope)
+
+
+def _matched_route_in_routes(routes: Iterable[object], scope: Mapping[str, Any]) -> object | None:
+    """Return the deepest matched route for ``scope``, including mounted apps."""
     for route in routes:
         matcher = getattr(route, "matches", None)
         if not callable(matcher):
             continue
         try:
-            match, _child_scope = cast("tuple[Match, dict[str, Any]]", matcher(request.scope))
+            match, child_scope = cast("tuple[Match, dict[str, Any]]", matcher(scope))
         except Exception:  # pragma: no cover - defensive for third-party routes
             continue
         if match is Match.FULL:
+            endpoint = child_scope.get("endpoint")
+            child_routes = getattr(endpoint, "routes", None)
+            if child_routes is not None:
+                child_route = _matched_route_in_routes(
+                    cast("Iterable[object]", child_routes),
+                    {**scope, **child_scope},
+                )
+                return child_route
             return route
     return None
 
@@ -567,13 +579,14 @@ def _paywall_requirement(
 
     if _endpoint_attr(route, _PAYWALL_NOT_REQUIRED_ATTR) is True:
         return None
-    tags = _route_tags(route)
-    if any(tag in paywall.public_tags for tag in tags):
-        return None
 
     requirement = _endpoint_attr(route, _PAYWALL_REQUIRED_ATTR)
     if isinstance(requirement, _PaywallRequirement):
         return requirement
+
+    tags = _route_tags(route)
+    if any(tag in paywall.public_tags for tag in tags):
+        return None
     if any(tag in paywall.paid_tags for tag in tags):
         return _PaywallRequirement()
 
