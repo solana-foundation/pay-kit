@@ -70,6 +70,25 @@ const RUNNERS = discoverRunners().filter(
   (runner) => !allowlist || allowlist.has(runner.language),
 );
 
+// Anti-vacuous-pass guard: when MPP_CONFORMANCE_LANGUAGES pins an allowlist, at
+// least one discovered runner MUST match it. A typo (e.g. "ruts"), a deleted or
+// renamed manifest, or a stale language name would otherwise leave RUNNERS empty
+// and every conformance describe below would register ZERO tests — a green run
+// that exercised no SDK at all. This turns that into a hard RED.
+describe("conformance runner selection", () => {
+  it("resolves at least one runner for the configured allowlist", () => {
+    if (allowlist) {
+      const available = discoverRunners().map((r) => r.language).join(", ");
+      expect(
+        RUNNERS.length,
+        `MPP_CONFORMANCE_LANGUAGES=${process.env.MPP_CONFORMANCE_LANGUAGES} matched no ` +
+          `discovered runner (available: ${available}). A typo or a missing manifest ` +
+          `would otherwise run zero SDKs and pass green.`,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
 function runVector(
   command: string[],
   vector: ConformanceVector,
@@ -327,7 +346,11 @@ describe("cross-SDK conformance vectors", () => {
       // vector, its per-vector assertions all skip and the fund-safety binding
       // is not exercised for that SDK at all. This test fails loudly in that
       // case. Client-only SDKs (e.g. swift) have no server verifier and are
-      // excluded — they legitimately report unsupported-mode.
+      // excluded — they legitimately report unsupported-mode. Rust IS a server
+      // verifier (harness/runners/rust.json declares the x402-exact intent and
+      // ci.yml wires a Rust conformance leg), so it must be guarded here too — a
+      // Rust exact runner that stops executing the fund-safety vectors is the
+      // exact regression this guard exists to catch.
       const EXACT_VERIFIER_LANGUAGES = new Set([
         "typescript",
         "go",
@@ -335,6 +358,7 @@ describe("cross-SDK conformance vectors", () => {
         "ruby",
         "php",
         "lua",
+        "rust",
       ]);
       const exactVectors = vectors.filter(
         (v) => v.mode === "verify-x402-transaction",
