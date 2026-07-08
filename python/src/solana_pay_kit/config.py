@@ -275,13 +275,18 @@ def _apply_pay_config_env(
         if value is not None:
             values[field_name] = _csv_tuple(value)
 
-    preflight = environ.get(f"{env_prefix}PREFLIGHT")
-    if preflight is not None:
-        values["preflight"] = _parse_bool_env(f"{env_prefix}PREFLIGHT", preflight)
+    preflight_raw = environ.get(f"{env_prefix}PREFLIGHT")
+    no_preflight_raw = environ.get(f"{env_prefix}NO_PREFLIGHT")
+    if preflight_raw is not None and no_preflight_raw is not None:
+        raise ConfigurationError(
+            f"solana_pay_kit: set only one of {env_prefix}PREFLIGHT or {env_prefix}NO_PREFLIGHT"
+        )
 
-    no_preflight = environ.get(f"{env_prefix}NO_PREFLIGHT")
-    if no_preflight is not None:
-        values["preflight"] = not _parse_bool_env(f"{env_prefix}NO_PREFLIGHT", no_preflight)
+    if preflight_raw is not None:
+        values["preflight"] = _parse_bool_env(f"{env_prefix}PREFLIGHT", preflight_raw)
+
+    if no_preflight_raw is not None:
+        values["preflight"] = not _parse_bool_env(f"{env_prefix}NO_PREFLIGHT", no_preflight_raw)
 
 
 def _parse_bool_env(name: str, value: str) -> bool:

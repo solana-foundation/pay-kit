@@ -335,17 +335,6 @@ def install_paywall_from_config(
     if paywall.default_policy not in ("public", "paid"):
         raise ValueError("solana_pay_kit.fastapi: default_policy must be 'public' or 'paid'")
 
-    if cors_origins is not None:
-        from fastapi.middleware.cors import CORSMiddleware
-
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=list(cors_origins),
-            allow_methods=["*"],
-            allow_headers=["*"],
-            expose_headers=list(PAYMENT_HEADERS),
-        )
-
     install_exception_handler(app)
 
     @app.middleware("http")
@@ -385,6 +374,17 @@ def install_paywall_from_config(
             setattr(request.state, _SETTLEMENT_STATE_ATTR, dict(verified.settlement_headers))
 
         return await call_next(request)
+
+    if cors_origins is not None:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=list(PAYMENT_HEADERS),
+        )
 
 
 def install_paywall(

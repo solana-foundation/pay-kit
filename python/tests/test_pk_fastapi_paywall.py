@@ -101,6 +101,37 @@ def test_paywall_default_public_gates_only_marked_routes(monkeypatch: pytest.Mon
     assert calls == ["/paid"]
 
 
+def test_paywall_402_response_includes_cors_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_process(monkeypatch, paid=False)
+    app = FastAPI()
+    pk_fastapi.install_paywall_from_config(
+        app,
+        pk_fastapi.PaywallConfig(
+            gate_ref=Price.usd("0.10", Stablecoin.USDC),
+            default_policy="public",
+        ),
+        cors_origins=("https://app.example",),
+    )
+
+    @app.get("/paid")
+    @pk_fastapi.pay_required()
+    async def paid() -> dict[str, bool]:
+        return {"ok": True}
+
+    resp = TestClient(app, raise_server_exceptions=False).get(
+        "/paid",
+        headers={"origin": "https://app.example"},
+    )
+
+    assert resp.status_code == 402
+    assert resp.headers.get("access-control-allow-origin") == "https://app.example"
+    exposed_headers = resp.headers.get("access-control-expose-headers", "")
+    assert "www-authenticate" in exposed_headers
+    assert "x-payment-required" in exposed_headers
+    assert resp.headers.get("www-authenticate") == "Payment realm=App"
+    assert calls == ["/paid"]
+
+
 def test_paywall_success_attaches_payment_and_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_process(monkeypatch, paid=True)
     app = FastAPI()

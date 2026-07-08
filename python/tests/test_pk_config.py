@@ -176,6 +176,18 @@ def test_pay_config_no_preflight_false_reenables_preflight():
     assert pay.preflight is True
 
 
+def test_pay_config_rejects_conflicting_preflight_env():
+    with pytest.raises(ConfigurationError, match="set only one of EXO_PAY_PREFLIGHT or EXO_PAY_NO_PREFLIGHT"):
+        PayConfig.from_sources(
+            {},
+            env_prefix="EXO_PAY_",
+            environ={
+                "EXO_PAY_PREFLIGHT": "false",
+                "EXO_PAY_NO_PREFLIGHT": "false",
+            },
+        )
+
+
 # -- rpc_url defaults (caveat #2) --------------------------------------------
 
 
