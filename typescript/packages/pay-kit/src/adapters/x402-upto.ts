@@ -273,24 +273,29 @@ export class X402Upto {
      * channel-open without its own RPC round-trip (mirroring MPP). The slot
      * comes from the same blockhash response's context and becomes the
      * channel `openSlot` PDA seed, which clients must take from the
-     * challenge. Falls back to the bare requirements on error.
+     * challenge — so a bare offer without it is unusable. A failed fetch
+     * therefore throws (the caller fails the challenge or omits the `upto`
+     * offer) instead of advertising requirements no client can act on.
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
         const base = this.#requirements(maxPrice);
+        let context, value;
         try {
-            const { context, value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
-            return {
-                ...base,
-                extra: {
-                    ...base.extra,
-                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                    recentBlockhash: value.blockhash,
-                    recentSlot: context.slot.toString(),
-                },
-            };
-        } catch {
-            return base;
+            ({ context, value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send());
+        } catch (error) {
+            throw new Error(
+                `x402 upto challenge requires extra.recentBlockhash/recentSlot; getLatestBlockhash failed: ${errorMessage(error)}`,
+            );
         }
+        return {
+            ...base,
+            extra: {
+                ...base.extra,
+                lastValidBlockHeight: value.lastValidBlockHeight.toString(),
+                recentBlockhash: value.blockhash,
+                recentSlot: context.slot.toString(),
+            },
+        };
     }
 }
 

@@ -541,9 +541,16 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         };
 
         if (gate.kind === 'usage') {
-            return upto
-                ? (await upto.accepts(gate.amount)).map(req => toOffer({ ...req, protocol: 'x402' }, true))
-                : [];
+            if (!upto) return [];
+            // Discovery is informational: when the recent-state fetch fails the
+            // enriched requirement throws (a bare offer is unusable — clients
+            // need extra.recentSlot to derive the channel openSlot), so omit
+            // the upto offer rather than failing the whole discovery response.
+            try {
+                return (await upto.accepts(gate.amount)).map(req => toOffer({ ...req, protocol: 'x402' }, true));
+            } catch {
+                return [];
+            }
         }
         if (gate.kind === 'session') {
             // Session is MPP-only and streams; advertise the ceiling + per-delivery price directly.

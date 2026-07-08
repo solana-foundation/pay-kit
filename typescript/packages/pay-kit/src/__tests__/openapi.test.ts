@@ -1,4 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The upto challenge/discovery paths require a server-fetched recentBlockhash
+// + recentSlot and no longer degrade to a bare (unusable) offer; stub the RPC
+// so these offline tests get a deterministic enriched requirement.
+vi.mock('@solana/kit', async importOriginal => {
+    const actual = await importOriginal<typeof import('@solana/kit')>();
+    return {
+        ...actual,
+        createSolanaRpc: () => ({
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    context: { slot: 314n },
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 100n,
+                    },
+                }),
+            }),
+        }),
+    };
+});
 
 import type { ExpressRoutesApp } from '../express-routes.js';
 import { createPayKit } from '../paykit.js';
