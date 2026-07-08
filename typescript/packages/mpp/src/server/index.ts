@@ -12,12 +12,10 @@ export {
     type SessionStore,
 } from './session/store.js';
 export {
-    buildReclaimInstruction,
     encodeVoucherMessageBytes,
-    type ReclaimBuildArgs,
     submitSettleAndDistribute,
-    type SubmitSettleAndDistributeResult,
     waitForSignatureConfirmation,
+    type SubmitSettleAndDistributeResult,
 } from './session/on-chain.js';
 export { buildAndSignWireTransaction } from './session/wire-tx.js';
 export { subscription } from './Subscription.js';

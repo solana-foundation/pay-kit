@@ -42,7 +42,7 @@ struct Ed25519Tests {
 
     @Test
     func rejectsBadSecretKeyLength() {
-        #expect(throws: PayKitError.self) {
+        #expect(throws: MppError.self) {
             _ = try Ed25519.privateKey(from: Data(repeating: 0, count: 31))
         }
     }

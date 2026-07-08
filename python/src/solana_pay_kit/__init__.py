@@ -31,7 +31,6 @@ from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store
 from solana_pay_kit.config import (
     Config,
     MppConfig,
-    PayConfig,
     X402Config,
     config,
     configure,
@@ -83,7 +82,6 @@ __all__ = [
     "kms",
     # config
     "Config",
-    "PayConfig",
     "X402Config",
     "MppConfig",
     "configure",

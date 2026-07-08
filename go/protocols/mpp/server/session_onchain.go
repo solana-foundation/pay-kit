@@ -80,10 +80,6 @@ type VerifyOpenTxResult struct {
 	// GracePeriod is the close grace period in seconds.
 	GracePeriod uint32
 
-	// OpenSlot is the slot the open instruction locks into the channel; a
-	// channel PDA seed, needed to re-derive the address and drive reclaim.
-	OpenSlot uint64
-
 	// Payer is the channel payer (open account 0, base58): the deposit funder
 	// and the distribute refund destination (the program enforces it equals
 	// channel.payer).
@@ -231,15 +227,13 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		return VerifyOpenTxResult{}, fmt.Errorf("open rentPayer %s != expected operator %s", rentPayer, expected.Operator)
 	}
 
-	// Instruction data:
-	// [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
-	if len(openIx.Data) < 1+8+8+4+8 {
+	// Instruction data: [discriminator u8][salt u64][deposit u64][grace u32][recipients].
+	if len(openIx.Data) < 1+8+8+4 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open instruction data too short (%d bytes)", len(openIx.Data))
 	}
 	salt := binary.LittleEndian.Uint64(openIx.Data[1:9])
 	deposit := binary.LittleEndian.Uint64(openIx.Data[9:17])
 	gracePeriod := binary.LittleEndian.Uint32(openIx.Data[17:21])
-	openSlot := binary.LittleEndian.Uint64(openIx.Data[21:29])
 
 	if deposit == 0 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open deposit must be greater than zero")
@@ -249,7 +243,7 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	}
 
 	// Re-derive the channel PDA from the instruction's own seeds.
-	derivedChannel, _, err := paymentchannels.FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, openSlot, programID)
+	derivedChannel, _, err := paymentchannels.FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, programID)
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
@@ -258,9 +252,6 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	}
 	if payload.ChannelID != nil && *payload.ChannelID != channel.String() {
 		return VerifyOpenTxResult{}, fmt.Errorf("openPayload.channelId %s != transaction channel %s", *payload.ChannelID, channel)
-	}
-	if payload.RecentSlot != nil && *payload.RecentSlot != openSlot {
-		return VerifyOpenTxResult{}, fmt.Errorf("openPayload.recentSlot %d != transaction openSlot %d", *payload.RecentSlot, openSlot)
 	}
 
 	// Optional liveness check: only when the caller provides an RPC client
@@ -275,7 +266,6 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		ChannelID:   channel.String(),
 		Deposit:     deposit,
 		GracePeriod: gracePeriod,
-		OpenSlot:    openSlot,
 		Payer:       payer.String(),
 		Salt:        salt,
 	}, nil
@@ -327,11 +317,11 @@ func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.
 }
 
 // SettlementInstructions builds the on-chain settlement sequence for a
-// channel: settle_and_seal over the stored watermark (preceded by the
+// channel: settle_and_finalize over the stored watermark (preceded by the
 // Ed25519 precompile instruction when a voucher was accepted) plus the
 // distribute instruction, to be bundled into one merchant-signed
 // transaction. Hosts drive this after ProcessClose records the close-pending
-// state, then call MarkSealed once the transaction confirms.
+// state, then call MarkFinalized once the transaction confirms.
 //
 // The mint and token program are resolved from the configured currency and
 // network (Token-2022 for PYUSD/USDG/CASH).
@@ -381,8 +371,8 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 		expiresAt = *state.HighestVoucherExpiresAt
 	}
 
-	instructions, err := paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
-		Payee:            merchant,
+	instructions, err := paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
+		Merchant:         merchant,
 		Channel:          channel,
 		AuthorizedSigner: authorizedSigner,
 		Signature:        voucherSignature,
@@ -421,7 +411,7 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient %q: %w", s.config.Recipient, err)
 	}
-	// rentPayer reclaims the channel/escrow rent at seal; it is the
+	// rentPayer reclaims the channel/escrow rent at finalize; it is the
 	// operator recorded as rentPayer at open.
 	rentPayer, err := solana.PublicKeyFromBase58(s.config.Operator)
 	if err != nil {

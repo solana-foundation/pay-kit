@@ -82,8 +82,6 @@ describe('session() request()', () => {
 
     beforeEach(() => {
         originalFetch = globalThis.fetch;
-        // The blockhash prefetch response also carries the current slot in
-        // its context — the server lifts it into the challenge `recentSlot`.
         globalThis.fetch = vi.fn(
             async () =>
                 new Response(
@@ -91,7 +89,6 @@ describe('session() request()', () => {
                         id: 1,
                         jsonrpc: '2.0',
                         result: {
-                            context: { slot: 123456 },
                             value: {
                                 blockhash: 'MockBlockhash1111111111111111111111111111111',
                                 lastValidBlockHeight: 1,
@@ -131,7 +128,6 @@ describe('session() request()', () => {
         expect(parsed.network).toBe('devnet');
         expect(parsed.decimals).toBe(6);
         expect(parsed.recentBlockhash).toBe('MockBlockhash1111111111111111111111111111111');
-        expect(parsed.recentSlot).toBe('123456');
         expect(parsed.modes).toBeUndefined();
     });
 
@@ -173,7 +169,7 @@ describe('session() request()', () => {
         expect(result.pullVoucherStrategy).toBe('clientVoucher');
     });
 
-    test('skips blockhash/slot prefetch when a credential is present', async () => {
+    test('skips blockhash prefetch when a credential is present', async () => {
         const method = session({
             cap: 1_000_000n,
             currency: 'USDC',
@@ -504,7 +500,7 @@ describe('session() verify() close', () => {
 
         const state = await store.getChannel(channelId);
         expect(state?.closeRequestedAt).toBeDefined();
-        expect(state?.sealed).toBe(false);
+        expect(state?.finalized).toBe(false);
     });
 
     test('close with final voucher advances watermark', async () => {
@@ -752,16 +748,16 @@ describe('session() verify() open replay', () => {
         expect(state?.authorizedSigner).toBe(signer.address);
     });
 
-    test('open replay on a sealed channel rejects', async () => {
+    test('open replay on a finalized channel rejects', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = makeMethod(store);
 
         await method.verify({ credential: openCred(signer.address), request: {} as never });
-        await store.markSealed(channelId);
+        await store.markFinalized(channelId);
 
         await expect(method.verify({ credential: openCred(signer.address), request: {} as never })).rejects.toThrow(
-            /sealed/,
+            /finalized/,
         );
     });
 });
@@ -1069,7 +1065,7 @@ describe('session() verify() topUp hardening', () => {
         ).rejects.toThrow(/close is pending/);
     });
 
-    test('topUp rejects on a sealed channel', async () => {
+    test('topUp rejects on a finalized channel', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
@@ -1083,14 +1079,14 @@ describe('session() verify() topUp hardening', () => {
             store,
         });
         await openChannel(method, signer);
-        await store.markSealed(channelId);
+        await store.markFinalized(channelId);
 
         await expect(
             method.verify({
                 credential: makeCred({ action: 'topUp', channelId, newDeposit: '5000', signature: 'topup-sig' }),
                 request: {} as never,
             }),
-        ).rejects.toThrow(/sealed/);
+        ).rejects.toThrow(/finalized/);
     });
 
     test('topUp verifies the signature on-chain when rpc is configured', async () => {
@@ -1283,10 +1279,10 @@ describe('session() verify() close retry', () => {
         ).rejects.toThrow(/blockhash not found/);
         let state = await store.getChannel(channelId);
         expect(state?.closeRequestedAt).toBeDefined();
-        expect(state?.sealed).toBe(false);
+        expect(state?.finalized).toBe(false);
         expect(state?.settledSignature).toBeUndefined();
 
-        // Retry succeeds and seals the channel.
+        // Retry succeeds and finalizes the channel.
         const receipt = await method.verify({
             credential: makeCred({ action: 'close', channelId }),
             request: {} as never,
@@ -1294,13 +1290,13 @@ describe('session() verify() close retry', () => {
         expect(receipt.status).toBe('success');
         expect(sends).toHaveLength(1);
         state = await store.getChannel(channelId);
-        expect(state?.sealed).toBe(true);
+        expect(state?.finalized).toBe(true);
         expect(state?.settledSignature).toBeDefined();
 
-        // A third close on the sealed channel rejects.
+        // A third close on the finalized channel rejects.
         await expect(
             method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
-        ).rejects.toThrow(/sealed/);
+        ).rejects.toThrow(/finalized/);
     });
 
     test('close refuses to settle when the channel payer (refund destination) was not recorded', async () => {
@@ -1380,7 +1376,7 @@ describe('session() verify() commit replay', () => {
             ],
             cumulative: 50n,
             deposit: 1_000n,
-            sealed: false,
+            finalized: false,
             highestVoucherExpiresAt: undefined,
             highestVoucherSignature: undefined,
             nextDeliverySequence: 1n,

@@ -6,5 +6,7 @@
 //!
 
 pub(crate) mod r#channel;
+pub(crate) mod r#closed_channel;
 
 pub use self::r#channel::*;
+pub use self::r#closed_channel::*;

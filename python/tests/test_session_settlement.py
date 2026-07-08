@@ -1,6 +1,6 @@
 """On-chain settle-at-close: a close with a signer + RPC broadcasts a
-settle_and_seal (+ Ed25519 precompile when a voucher was recorded) and a
-distribute instruction, then records the settlement signature and seals.
+settle_and_finalize (+ Ed25519 precompile when a voucher was recorded) and a
+distribute instruction, then records the settlement signature and finalizes.
 Mirrors the Go/TS closeAndSettleChannel path.
 """
 
@@ -109,17 +109,17 @@ async def test_close_settles_with_voucher_and_records_signature() -> None:
     assert settled == _SENT_SIGNATURE
     final = await session._core.store().get_channel(channel)
     assert final is not None
-    assert final.sealed is True
+    assert final.finalized is True
     assert final.settled_signature == settled
-    # Exactly one tx, instructions [ed25519(1), settleAndSeal(4), distribute(7)].
+    # Exactly one tx, instructions [ed25519(1), settleAndFinalize(4), distribute(7)].
     assert len(rpc.sent) == 1
     assert _instruction_discriminators(rpc.sent[0]) == [1, 4, 7]
 
 
 @pytest.mark.asyncio
-async def test_settle_raises_and_does_not_seal_when_tx_unconfirmed() -> None:
+async def test_settle_raises_and_does_not_finalize_when_tx_unconfirmed() -> None:
     """A dropped/failed settle tx must raise (the broadcast is confirmed before
-    return), so the channel is NOT marked sealed with an unconfirmed
+    return), so the channel is NOT marked finalized with an unconfirmed
     signature and the re-drivable-close guard still applies."""
 
     class _FailingSettleRpc(_SettleRpc):
@@ -149,7 +149,7 @@ async def test_settle_raises_and_does_not_seal_when_tx_unconfirmed() -> None:
 
     final = await session._core.store().get_channel(channel)
     assert final is not None
-    assert final.sealed is False
+    assert final.finalized is False
     assert final.settled_signature is None
 
 
@@ -173,39 +173,8 @@ async def test_close_without_voucher_omits_ed25519_precompile() -> None:
 
     await session._settle_channel(channel)
 
-    # No voucher recorded: just [settleAndSeal(4), distribute(7)].
+    # No voucher recorded: just [settleAndFinalize(4), distribute(7)].
     assert _instruction_discriminators(rpc.sent[0]) == [4, 7]
-
-
-@pytest.mark.asyncio
-async def test_settle_requires_recorded_channel_payer() -> None:
-    """Settlement must fail loudly when the channel payer (opener) was never
-    recorded: falling back to another account (e.g. the recipient) would
-    derive the wrong refund ATA. Mirrors Go's strict payer handling. Nothing
-    is broadcast and the settle guard is released for a retry."""
-    operator = Keypair.from_seed(bytes([31] * 32))
-    channel = str(Keypair.from_seed(bytes([32] * 32)).pubkey())
-    rpc = _SettleRpc()
-    session = _session(rpc, operator)
-    await _seed(
-        session,
-        ChannelState(
-            channel_id=channel,
-            authorized_signer=str(operator.pubkey()),
-            deposit=1_000_000,
-            cumulative=0,
-            operator=None,
-        ),
-    )
-
-    with pytest.raises(PaymentError, match="payer is unknown"):
-        await session._settle_channel(channel)
-
-    assert rpc.sent == []
-    state = await session._core.store().get_channel(channel)
-    assert state is not None
-    assert state.sealed is False
-    assert state.settling is False
 
 
 @pytest.mark.asyncio
@@ -256,7 +225,6 @@ def _server_open_payload(operator: Keypair):
         network="localnet",
         modes=["pull"],
         pull_voucher_strategy="clientVoucher",
-        recent_slot=4242,
     )
     opener = create_payment_channel_session_opener(
         request, payer, session_signer, _BLOCKHASH, PaymentChannelSessionOpenOptions()
@@ -481,7 +449,7 @@ async def test_settle_polls_until_confirmed_when_status_initially_none() -> None
     """B1: a just-broadcast settle tx commonly returns ``None`` from
     ``getSignatureStatuses`` for a few rounds before landing. The single-shot
     predecessor raised spuriously; the polling confirm retries until
-    confirmed, seals, and records the signature.
+    confirmed, finalizes, and records the signature.
     """
 
     operator = Keypair.from_seed(bytes([20] * 32))
@@ -510,7 +478,7 @@ async def test_settle_polls_until_confirmed_when_status_initially_none() -> None
     assert len(rpc.status_queries) >= 3
     final = await session._core.store().get_channel(channel)
     assert final is not None
-    assert final.sealed is True
+    assert final.finalized is True
     assert final.settled_signature == _SENT_SIGNATURE
     assert final.settling is False
 
@@ -518,7 +486,7 @@ async def test_settle_polls_until_confirmed_when_status_initially_none() -> None
 @pytest.mark.asyncio
 async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling() -> None:
     """B1: when the poll times out before any status is seen the channel is NOT
-    sealed and the settle-in-progress guard is released so a retry can claim
+    finalized and the settle-in-progress guard is released so a retry can claim
     again (S2)."""
 
     class _StuckNoneRpc(_SettleRpc):
@@ -556,7 +524,7 @@ async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling(
         kwargs[timeout_kw] = 0.1
     if "poll_interval_seconds" in params:
         kwargs["poll_interval_seconds"] = 0.05
-    # Monkey-patch the module-level helper reference used by settle_and_seal
+    # Monkey-patch the module-level helper reference used by settle_and_finalize
     # via the session_onchain module so the timeout applies.
     original = onchain.confirm_transaction_signature
 
@@ -573,7 +541,7 @@ async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling(
 
     final = await session._core.store().get_channel(channel)
     assert final is not None
-    assert final.sealed is False
+    assert final.finalized is False
     assert final.settled_signature is None
     assert final.settling is False
 
@@ -584,9 +552,9 @@ async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling(
 @pytest.mark.asyncio
 async def test_concurrent_settle_claimed_once_does_not_double_broadcast() -> None:
     """S2: a second ``_settle_channel`` call while the first is mid-flight (or
-    after the first sealed) must not broadcast a second settle tx. The
+    after the first finalized) must not broadcast a second settle tx. The
     atomic ``settling`` claim serializes concurrent callers; a second caller
-    after seal is short-circuited by the already-sealed check.
+    after finalize is short-circuited by the already-finalized check.
     """
 
     operator = Keypair.from_seed(bytes([25] * 32))
@@ -615,7 +583,7 @@ async def test_concurrent_settle_claimed_once_does_not_double_broadcast() -> Non
     assert len(rpc.sent) == 1
     final = await session._core.store().get_channel(channel)
     assert final is not None
-    assert final.sealed is True
+    assert final.finalized is True
     assert final.settling is False
 
 
@@ -647,7 +615,7 @@ async def test_concurrent_settle_in_progress_guard_blocks_second_caller() -> Non
     assert len(rpc.sent) == 0
     state = await session._core.store().get_channel(channel)
     assert state is not None
-    assert state.sealed is False
+    assert state.finalized is False
     assert state.settling is True
 
 

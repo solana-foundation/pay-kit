@@ -34,7 +34,7 @@ export interface Lifecycle {
  * `closeOnIdle` is invoked with the channel id when a timer fires. The
  * lifecycle itself does not call `store` — `store` is passed for parity
  * with the Rust signature and for future extension (e.g. skip closing a
- * channel already sealed).
+ * channel already finalized).
  */
 export function createLifecycle(
     store: SessionStore,

@@ -231,7 +231,6 @@ impl ActiveSession {
         mint: &str,
         salt: u64,
         grace_period: u32,
-        open_slot: u64,
         open_tx_signature: &str,
     ) -> SessionAction {
         self.open_payment_channel_action_with_mode(
@@ -242,7 +241,6 @@ impl ActiveSession {
             mint,
             salt,
             grace_period,
-            open_slot,
             open_tx_signature,
         )
     }
@@ -258,7 +256,6 @@ impl ActiveSession {
         mint: &str,
         salt: u64,
         grace_period: u32,
-        open_slot: u64,
         open_tx_signature: &str,
     ) -> SessionAction {
         SessionAction::Open(OpenPayload::payment_channel_with_mode(
@@ -270,7 +267,6 @@ impl ActiveSession {
             mint.to_string(),
             salt,
             grace_period,
-            open_slot,
             self.authorized_signer(),
             open_tx_signature.to_string(),
         ))
@@ -324,9 +320,6 @@ pub struct PaymentChannelOpen {
     pub mint: Pubkey,
     pub authorized_signer: Pubkey,
     pub salt: u64,
-    /// Slot at which the channel is opened — a channel-PDA seed (fetched via
-    /// RPC `getSlot` at open time).
-    pub open_slot: u64,
     pub deposit: u64,
     pub grace_period: u32,
     pub recipients: Vec<Distribution>,
@@ -353,7 +346,6 @@ impl PaymentChannelOpen {
             mint: self.mint,
             authorized_signer: self.authorized_signer,
             salt: self.salt,
-            open_slot: self.open_slot,
             deposit: self.deposit,
             grace_period: self.grace_period,
             recipients: self.recipients.clone(),
@@ -373,7 +365,6 @@ impl PaymentChannelOpen {
             pubkey_string(&self.mint),
             self.salt,
             self.grace_period,
-            self.open_slot,
             pubkey_string(&self.authorized_signer),
             signature.into(),
         )
@@ -384,10 +375,6 @@ impl PaymentChannelOpen {
 pub struct PaymentChannelOpenOptions {
     pub deposit: Option<u64>,
     pub grace_period: Option<u32>,
-    /// Override for the channel's open slot (the program's `openSlot`).
-    /// Defaults to the challenge's `recentSlot` (server-prefetched); the
-    /// client never fetches a slot itself.
-    pub open_slot: Option<u64>,
     pub program_id: Option<Pubkey>,
     pub recipients: Option<Vec<Distribution>>,
     pub salt: Option<u64>,
@@ -465,15 +452,6 @@ pub fn derive_payment_channel_open(
         None => parse_splits(request)?,
     };
     let salt = params.options.salt.unwrap_or_else(random_salt);
-    // The open slot (the program's `openSlot`) is a channel-PDA seed the
-    // program only accepts within a recent window. It comes from the
-    // challenge's `recentSlot` (server-prefetched, like `recentBlockhash`) —
-    // the client never fetches a slot itself.
-    let open_slot = params
-        .options
-        .open_slot
-        .or(request.recent_slot)
-        .ok_or_else(|| Error::Other("session challenge missing recentSlot".to_string()))?;
     let open_params = OpenChannelParams {
         payer: params.payer,
         // rentPayer does not affect channel-PDA derivation (the only use here);
@@ -484,7 +462,6 @@ pub fn derive_payment_channel_open(
         mint,
         authorized_signer: params.authorized_signer,
         salt,
-        open_slot,
         deposit,
         grace_period,
         recipients,
@@ -500,7 +477,6 @@ pub fn derive_payment_channel_open(
         mint: open_params.mint,
         authorized_signer: open_params.authorized_signer,
         salt: open_params.salt,
-        open_slot: open_params.open_slot,
         deposit: open_params.deposit,
         grace_period: open_params.grace_period,
         recipients: open_params.recipients,
@@ -547,7 +523,6 @@ pub async fn build_open_payment_channel_transaction(
         &open.mint,
         &open.authorized_signer,
         open.salt,
-        open.open_slot,
         open.deposit,
         open.grace_period,
         open.recipients.clone(),
@@ -582,7 +557,6 @@ pub async fn create_payment_channel_session_opener(
         &open.mint,
         &open.authorized_signer,
         open.salt,
-        open.open_slot,
         open.deposit,
         open.grace_period,
         open.recipients.clone(),
@@ -855,7 +829,7 @@ mod tests {
         let s = make_session();
         let channel_id = s.channel_id_str();
         let action =
-            s.open_payment_channel_action(9_000, "payer", "payee", "mint", 42, 60, 314, "open-sig");
+            s.open_payment_channel_action(9_000, "payer", "payee", "mint", 42, 60, "open-sig");
         match action {
             SessionAction::Open(p) => {
                 assert_eq!(p.mode, SessionMode::Push);
@@ -866,7 +840,6 @@ mod tests {
                 assert_eq!(p.mint.as_deref(), Some("mint"));
                 assert_eq!(p.salt, Some(42));
                 assert_eq!(p.grace_period, Some(60));
-                assert_eq!(p.recent_slot, Some(314));
                 assert_eq!(p.signature, "open-sig");
             }
             _ => panic!("Expected Open"),
@@ -886,7 +859,6 @@ mod tests {
             "mint",
             42,
             60,
-            314,
             "pending",
         );
         match action {
@@ -1009,9 +981,6 @@ mod open_tests {
             modes: vec![SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,
-            // The server pre-fetches the current slot into the challenge; the
-            // client derives the channel PDA from it.
-            recent_slot: Some(314),
         }
     }
 
@@ -1087,7 +1056,6 @@ mod open_tests {
             options: PaymentChannelOpenOptions {
                 deposit: Some(55),
                 grace_period: Some(12),
-                open_slot: Some(777),
                 program_id: Some(program_id),
                 recipients: Some(vec![Distribution {
                     recipient: split_recipient,
@@ -1101,7 +1069,6 @@ mod open_tests {
 
         assert_eq!(open.deposit, 55);
         assert_eq!(open.grace_period, 12);
-        assert_eq!(open.open_slot, 777);
         assert_eq!(open.program_id, program_id);
         assert_eq!(open.token_program, token_program);
         assert_eq!(open.recipients.len(), 1);
@@ -1173,20 +1140,6 @@ mod open_tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("split recipient"));
-
-        // The open slot comes from the challenge's recentSlot (or an explicit
-        // option override); the client never fetches a slot, so a challenge
-        // without one fails.
-        let mut request = test_request(operator, recipient);
-        request.recent_slot = None;
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("missing recentSlot"));
     }
 
     #[tokio::test]

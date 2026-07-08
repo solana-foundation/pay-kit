@@ -145,13 +145,22 @@
               "type": {
                 "kind": "publicKeyTypeNode"
               }
-            },
+            }
+          ],
+          "kind": "structTypeNode"
+        },
+        "kind": "accountNode",
+        "name": "channel"
+      },
+      {
+        "data": {
+          "fields": [
             {
               "kind": "structFieldTypeNode",
-              "name": "openSlot",
+              "name": "discriminator",
               "type": {
                 "endian": "le",
-                "format": "u64",
+                "format": "u8",
                 "kind": "numberTypeNode"
               }
             }
@@ -159,7 +168,7 @@
           "kind": "structTypeNode"
         },
         "kind": "accountNode",
-        "name": "channel"
+        "name": "closedChannel"
       }
     ],
     "definedTypes": [
@@ -306,15 +315,6 @@
             },
             {
               "kind": "structFieldTypeNode",
-              "name": "openSlot",
-              "type": {
-                "endian": "le",
-                "format": "u64",
-                "kind": "numberTypeNode"
-              }
-            },
-            {
-              "kind": "structFieldTypeNode",
               "name": "recipients",
               "type": {
                 "count": {
@@ -338,7 +338,7 @@
       },
       {
         "kind": "definedTypeNode",
-        "name": "settleAndSealArgs",
+        "name": "settleAndFinalizeArgs",
         "type": {
           "fields": [
             {
@@ -377,22 +377,6 @@
         "name": "voucherArgs",
         "type": {
           "fields": [
-            {
-              "kind": "structFieldTypeNode",
-              "name": "magic",
-              "type": {
-                "count": {
-                  "kind": "fixedCountNode",
-                  "value": 2
-                },
-                "item": {
-                  "endian": "le",
-                  "format": "u8",
-                  "kind": "numberTypeNode"
-                },
-                "kind": "arrayTypeNode"
-              }
-            },
             {
               "kind": "structFieldTypeNode",
               "name": "channelId",
@@ -441,17 +425,12 @@
             {
               "discriminator": 1,
               "kind": "enumEmptyVariantTypeNode",
-              "name": "sealed"
+              "name": "finalized"
             },
             {
               "discriminator": 2,
               "kind": "enumEmptyVariantTypeNode",
               "name": "closing"
-            },
-            {
-              "discriminator": 3,
-              "kind": "enumEmptyVariantTypeNode",
-              "name": "distributed"
             }
           ]
         }
@@ -517,15 +496,6 @@
               "name": "channel",
               "type": {
                 "kind": "publicKeyTypeNode"
-              }
-            },
-            {
-              "kind": "structFieldTypeNode",
-              "name": "openSlot",
-              "type": {
-                "endian": "le",
-                "format": "u64",
-                "kind": "numberTypeNode"
               }
             }
           ],
@@ -787,12 +757,6 @@
         "name": "voucherSignerMismatch"
       },
       {
-        "code": 238,
-        "kind": "errorNode",
-        "message": "Voucher payload magic prefix is invalid",
-        "name": "voucherBadMagic"
-      },
-      {
         "code": 260,
         "kind": "errorNode",
         "message": "num_recipients outside [0, 32]",
@@ -847,12 +811,6 @@
         "name": "invalidAuthorizedSigner"
       },
       {
-        "code": 2003,
-        "kind": "errorNode",
-        "message": "open_slot is in the future or older than the allowed slot window",
-        "name": "openSlotOutOfWindow"
-      },
-      {
         "code": 2100,
         "kind": "errorNode",
         "message": "Deposit must be non-zero",
@@ -862,13 +820,7 @@
         "code": 2200,
         "kind": "errorNode",
         "message": "Deadline overflow on grace period",
-        "name": "sealDeadlineOverflow"
-      },
-      {
-        "code": 2201,
-        "kind": "errorNode",
-        "message": "Grace period has not elapsed yet",
-        "name": "sealGracePeriodNotElapsed"
+        "name": "finalizeDeadlineOverflow"
       },
       {
         "code": 2300,
@@ -885,7 +837,7 @@
       {
         "code": 2400,
         "kind": "errorNode",
-        "message": "Channel is not in OPEN or SEALED",
+        "message": "Channel is not in OPEN or FINALIZED",
         "name": "channelNotDistributable"
       },
       {
@@ -957,20 +909,14 @@
       {
         "code": 2412,
         "kind": "errorNode",
-        "message": "Rent payer lamports overflow on channel deallocation",
-        "name": "rentPayerBalanceOverflow"
+        "message": "Payer lamports overflow on rent refund",
+        "name": "distributePayerBalanceOverflow"
       },
       {
         "code": 2413,
         "kind": "errorNode",
         "message": "Transfer queue capacity exceeded",
         "name": "distributeTransferQueueOverflow"
-      },
-      {
-        "code": 2414,
-        "kind": "errorNode",
-        "message": "Channel cannot be fully closed until clock.slot > open_slot + OPEN_SLOT_WINDOW",
-        "name": "channelCloseTooEarly"
       }
     ],
     "events": [
@@ -1001,15 +947,6 @@
                 "name": "channel",
                 "type": {
                   "kind": "publicKeyTypeNode"
-                }
-              },
-              {
-                "kind": "structFieldTypeNode",
-                "name": "openSlot",
-                "type": {
-                  "endian": "le",
-                  "format": "u64",
-                  "kind": "numberTypeNode"
                 }
               }
             ],
@@ -1388,7 +1325,7 @@
             "isSigner": true,
             "isWritable": false,
             "kind": "instructionAccountNode",
-            "name": "payee"
+            "name": "merchant"
           },
           {
             "isSigner": false,
@@ -1420,10 +1357,10 @@
           },
           {
             "kind": "instructionArgumentNode",
-            "name": "settleAndSealArgs",
+            "name": "settleAndFinalizeArgs",
             "type": {
               "kind": "definedTypeLinkNode",
-              "name": "settleAndSealArgs"
+              "name": "settleAndFinalizeArgs"
             }
           }
         ],
@@ -1435,7 +1372,7 @@
           }
         ],
         "kind": "instructionNode",
-        "name": "settleAndSeal"
+        "name": "settleAndFinalize"
       },
       {
         "accounts": [
@@ -1511,7 +1448,7 @@
           }
         ],
         "kind": "instructionNode",
-        "name": "seal"
+        "name": "finalize"
       },
       {
         "accounts": [
@@ -1703,47 +1640,6 @@
         ],
         "kind": "instructionNode",
         "name": "withdrawPayer"
-      },
-      {
-        "accounts": [
-          {
-            "isSigner": false,
-            "isWritable": true,
-            "kind": "instructionAccountNode",
-            "name": "channel"
-          },
-          {
-            "isSigner": false,
-            "isWritable": true,
-            "kind": "instructionAccountNode",
-            "name": "rentPayer"
-          }
-        ],
-        "arguments": [
-          {
-            "defaultValue": {
-              "kind": "numberValueNode",
-              "number": 9
-            },
-            "defaultValueStrategy": "omitted",
-            "kind": "instructionArgumentNode",
-            "name": "discriminator",
-            "type": {
-              "endian": "le",
-              "format": "u8",
-              "kind": "numberTypeNode"
-            }
-          }
-        ],
-        "discriminators": [
-          {
-            "kind": "fieldDiscriminatorNode",
-            "name": "discriminator",
-            "offset": 0
-          }
-        ],
-        "kind": "instructionNode",
-        "name": "reclaim"
       },
       {
         "accounts": [

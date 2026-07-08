@@ -29,98 +29,92 @@ import {
 import { getAccountMetaFactory, type ResolvedInstructionAccount } from '@solana/program-client-core';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../programs/index.js';
 
-export const RECLAIM_DISCRIMINATOR = 9;
+export const FINALIZE_DISCRIMINATOR = 6;
 
-export function getReclaimDiscriminatorBytes(): ReadonlyUint8Array {
-    return getU8Encoder().encode(RECLAIM_DISCRIMINATOR);
+export function getFinalizeDiscriminatorBytes(): ReadonlyUint8Array {
+    return getU8Encoder().encode(FINALIZE_DISCRIMINATOR);
 }
 
-export type ReclaimInstruction<
+export type FinalizeInstruction<
     TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     TAccountChannel extends string | AccountMeta<string> = string,
-    TAccountRentPayer extends string | AccountMeta<string> = string,
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
     InstructionWithData<ReadonlyUint8Array> &
     InstructionWithAccounts<
-        [
-            TAccountChannel extends string ? WritableAccount<TAccountChannel> : TAccountChannel,
-            TAccountRentPayer extends string ? WritableAccount<TAccountRentPayer> : TAccountRentPayer,
-            ...TRemainingAccounts,
-        ]
+        [TAccountChannel extends string ? WritableAccount<TAccountChannel> : TAccountChannel, ...TRemainingAccounts]
     >;
 
-export type ReclaimInstructionData = { discriminator: number };
+export type FinalizeInstructionData = { discriminator: number };
 
-export type ReclaimInstructionDataArgs = {};
+export type FinalizeInstructionDataArgs = {};
 
-export function getReclaimInstructionDataEncoder(): FixedSizeEncoder<ReclaimInstructionDataArgs> {
+export function getFinalizeInstructionDataEncoder(): FixedSizeEncoder<FinalizeInstructionDataArgs> {
     return transformEncoder(getStructEncoder([['discriminator', getU8Encoder()]]), value => ({
         ...value,
-        discriminator: RECLAIM_DISCRIMINATOR,
+        discriminator: FINALIZE_DISCRIMINATOR,
     }));
 }
 
-export function getReclaimInstructionDataDecoder(): FixedSizeDecoder<ReclaimInstructionData> {
+export function getFinalizeInstructionDataDecoder(): FixedSizeDecoder<FinalizeInstructionData> {
     return getStructDecoder([['discriminator', getU8Decoder()]]);
 }
 
-export function getReclaimInstructionDataCodec(): FixedSizeCodec<ReclaimInstructionDataArgs, ReclaimInstructionData> {
-    return combineCodec(getReclaimInstructionDataEncoder(), getReclaimInstructionDataDecoder());
+export function getFinalizeInstructionDataCodec(): FixedSizeCodec<
+    FinalizeInstructionDataArgs,
+    FinalizeInstructionData
+> {
+    return combineCodec(getFinalizeInstructionDataEncoder(), getFinalizeInstructionDataDecoder());
 }
 
-export type ReclaimInput<TAccountChannel extends string = string, TAccountRentPayer extends string = string> = {
+export type FinalizeInput<TAccountChannel extends string = string> = {
     channel: Address<TAccountChannel>;
-    rentPayer: Address<TAccountRentPayer>;
 };
 
-export function getReclaimInstruction<
+export function getFinalizeInstruction<
     TAccountChannel extends string,
-    TAccountRentPayer extends string,
     TProgramAddress extends Address = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
 >(
-    input: ReclaimInput<TAccountChannel, TAccountRentPayer>,
+    input: FinalizeInput<TAccountChannel>,
     config?: { programAddress?: TProgramAddress },
-): ReclaimInstruction<TProgramAddress, TAccountChannel, TAccountRentPayer> {
+): FinalizeInstruction<TProgramAddress, TAccountChannel> {
     // Program address.
     const programAddress = config?.programAddress ?? PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 
     // Original accounts.
     const originalAccounts = {
         channel: { value: input.channel ?? null, isWritable: true },
-        rentPayer: { value: input.rentPayer ?? null, isWritable: true },
     };
     const accounts = originalAccounts as Record<keyof typeof originalAccounts, ResolvedInstructionAccount>;
 
     const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
     return Object.freeze({
-        accounts: [getAccountMeta('channel', accounts.channel), getAccountMeta('rentPayer', accounts.rentPayer)],
-        data: getReclaimInstructionDataEncoder().encode({}),
+        accounts: [getAccountMeta('channel', accounts.channel)],
+        data: getFinalizeInstructionDataEncoder().encode({}),
         programAddress,
-    } as ReclaimInstruction<TProgramAddress, TAccountChannel, TAccountRentPayer>);
+    } as FinalizeInstruction<TProgramAddress, TAccountChannel>);
 }
 
-export type ParsedReclaimInstruction<
+export type ParsedFinalizeInstruction<
     TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
     programAddress: Address<TProgram>;
     accounts: {
         channel: TAccountMetas[0];
-        rentPayer: TAccountMetas[1];
     };
-    data: ReclaimInstructionData;
+    data: FinalizeInstructionData;
 };
 
-export function parseReclaimInstruction<TProgram extends string, TAccountMetas extends readonly AccountMeta[]>(
+export function parseFinalizeInstruction<TProgram extends string, TAccountMetas extends readonly AccountMeta[]>(
     instruction: Instruction<TProgram> &
         InstructionWithAccounts<TAccountMetas> &
         InstructionWithData<ReadonlyUint8Array>,
-): ParsedReclaimInstruction<TProgram, TAccountMetas> {
-    if (instruction.accounts.length < 2) {
+): ParsedFinalizeInstruction<TProgram, TAccountMetas> {
+    if (instruction.accounts.length < 1) {
         throw new SolanaError(SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS, {
             actualAccountMetas: instruction.accounts.length,
-            expectedAccountMetas: 2,
+            expectedAccountMetas: 1,
         });
     }
     let accountIndex = 0;
@@ -131,7 +125,7 @@ export function parseReclaimInstruction<TProgram extends string, TAccountMetas e
     };
     return {
         programAddress: instruction.programAddress,
-        accounts: { channel: getNextAccount(), rentPayer: getNextAccount() },
-        data: getReclaimInstructionDataDecoder().decode(instruction.data),
+        accounts: { channel: getNextAccount() },
+        data: getFinalizeInstructionDataDecoder().decode(instruction.data),
     };
 }

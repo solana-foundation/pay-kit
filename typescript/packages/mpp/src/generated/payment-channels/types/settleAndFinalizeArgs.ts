@@ -17,18 +17,18 @@ import {
     type FixedSizeEncoder,
 } from '@solana/kit';
 
-export type SettleAndSealArgs = { hasVoucher: number };
+export type SettleAndFinalizeArgs = { hasVoucher: number };
 
-export type SettleAndSealArgsArgs = SettleAndSealArgs;
+export type SettleAndFinalizeArgsArgs = SettleAndFinalizeArgs;
 
-export function getSettleAndSealArgsEncoder(): FixedSizeEncoder<SettleAndSealArgsArgs> {
+export function getSettleAndFinalizeArgsEncoder(): FixedSizeEncoder<SettleAndFinalizeArgsArgs> {
     return getStructEncoder([['hasVoucher', getU8Encoder()]]);
 }
 
-export function getSettleAndSealArgsDecoder(): FixedSizeDecoder<SettleAndSealArgs> {
+export function getSettleAndFinalizeArgsDecoder(): FixedSizeDecoder<SettleAndFinalizeArgs> {
     return getStructDecoder([['hasVoucher', getU8Decoder()]]);
 }
 
-export function getSettleAndSealArgsCodec(): FixedSizeCodec<SettleAndSealArgsArgs, SettleAndSealArgs> {
-    return combineCodec(getSettleAndSealArgsEncoder(), getSettleAndSealArgsDecoder());
+export function getSettleAndFinalizeArgsCodec(): FixedSizeCodec<SettleAndFinalizeArgsArgs, SettleAndFinalizeArgs> {
+    return combineCodec(getSettleAndFinalizeArgsEncoder(), getSettleAndFinalizeArgsDecoder());
 }

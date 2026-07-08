@@ -49,7 +49,6 @@ test('buildOpenPaymentChannelTransaction creates a single partially signed open 
     expect(open.deposit).toBe(request.cap);
     expect(open.gracePeriod).toBe(900);
     expect(open.mint).toBe(USDC.mainnet);
-    expect(open.openSlot).toBe('9042');
     expect(open.payee).toBe(payee.address);
     expect(open.payer).toBe(payer.address);
     expect(open.salt).toBe('42');
@@ -104,7 +103,6 @@ test('createPaymentChannelSessionOpener emits a pull client-voucher payment-chan
         mode: 'pull',
         payee: payee.address,
         payer: payer.address,
-        recentSlot: '9042',
         salt: '7',
     });
     expect(result.payload.channelId).toBe(result.session.channelId);
@@ -151,7 +149,6 @@ test('createServerOpenedPaymentChannelSessionOpener emits channel fields without
         mode: 'pull',
         payee: payee.address,
         payer: operator.address,
-        recentSlot: '9042',
         salt: '11',
     });
     expect(result.payload.channelId).toBe(result.session.channelId);
@@ -195,7 +192,6 @@ function sessionRequest(
         network: 'localnet',
         pullVoucherStrategy: 'clientVoucher',
         recentBlockhash: BLOCKHASH,
-        recentSlot: '9042',
         splits: [],
         ...overrides,
     };

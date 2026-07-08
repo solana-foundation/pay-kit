@@ -54,7 +54,6 @@ export interface PaymentChannelOpen {
     readonly deposit: string;
     readonly gracePeriod: number;
     readonly mint: string;
-    readonly openSlot: string;
     readonly payee: string;
     readonly payer: string;
     readonly salt: string;
@@ -83,7 +82,6 @@ export async function derivePaymentChannelOpen(
         deposit: open.deposit.toString(),
         gracePeriod: open.gracePeriod,
         mint: open.mint,
-        openSlot: open.openSlot.toString(),
         payee: open.payee,
         payer: open.payer,
         salt: open.salt.toString(),
@@ -101,11 +99,11 @@ export async function buildOpenPaymentChannelTransaction(
     parameters: buildOpenPaymentChannelTransaction.Parameters,
 ): Promise<PaymentChannelOpenTransaction> {
     const { request, signer } = parameters;
-    const network = normalizeNetwork(request.network ?? 'mainnet');
     const open = await preparePaymentChannelOpen({
         ...parameters,
         payer: signer.address,
     });
+    const network = normalizeNetwork(request.network ?? 'mainnet');
     const programAddress = open.programAddress;
     const tokenProgram = open.tokenProgram;
     const payer = address(open.payer);
@@ -145,7 +143,6 @@ export async function buildOpenPaymentChannelTransaction(
             openArgs: {
                 deposit: open.deposit,
                 gracePeriod: open.gracePeriod,
-                openSlot: open.openSlot,
                 recipients: open.recipients.map(r => ({ bps: r.bps, recipient: r.recipient })),
                 salt: open.salt,
             },
@@ -183,7 +180,6 @@ export async function buildOpenPaymentChannelTransaction(
         deposit: open.deposit.toString(),
         gracePeriod: open.gracePeriod,
         mint: open.mint,
-        openSlot: open.openSlot.toString(),
         payee: open.payee,
         payer: open.payer,
         salt: open.salt.toString(),
@@ -215,7 +211,6 @@ export function createPaymentChannelSessionOpener(
             authorizedSigner: sessionSigner.address,
             deposit: parameters.deposit,
             gracePeriod: parameters.gracePeriod,
-            openSlot: parameters.openSlot,
             programAddress: parameters.programAddress,
             recipients: parameters.recipients,
             request: challenge.request,
@@ -237,7 +232,6 @@ export function createPaymentChannelSessionOpener(
                 gracePeriod: open.gracePeriod,
                 mint: open.mint,
                 mode: 'pull',
-                openSlot: open.openSlot,
                 payee: open.payee,
                 payer: open.payer,
                 salt: open.salt,
@@ -275,7 +269,6 @@ export function createServerOpenedPaymentChannelSessionOpener(
             authorizedSigner: sessionSigner.address,
             deposit: parameters.deposit,
             gracePeriod: parameters.gracePeriod,
-            openSlot: parameters.openSlot,
             payer: parameters.payer ?? challenge.request.operator,
             programAddress: parameters.programAddress,
             request: challenge.request,
@@ -295,7 +288,6 @@ export function createServerOpenedPaymentChannelSessionOpener(
                 gracePeriod: open.gracePeriod,
                 mint: open.mint,
                 mode: 'pull',
-                openSlot: open.openSlot,
                 payee: open.payee,
                 payer: open.payer,
                 salt: open.salt,
@@ -312,8 +304,6 @@ export declare namespace derivePaymentChannelOpen {
         readonly authorizedSigner: string;
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
-        readonly openSlot?: AmountLike | undefined;
         readonly payer: string;
         readonly programAddress?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
@@ -328,8 +318,6 @@ export declare namespace buildOpenPaymentChannelTransaction {
         readonly authorizedSigner: string;
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
-        readonly openSlot?: AmountLike | undefined;
         readonly programAddress?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         readonly request: SessionRequest;
@@ -346,8 +334,6 @@ export declare namespace createPaymentChannelSessionOpener {
         readonly deposit?: AmountLike | undefined;
         readonly expiresAt?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
-        readonly openSlot?: AmountLike | undefined;
         readonly programAddress?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         readonly rpcUrl?: string | undefined;
@@ -366,8 +352,6 @@ export declare namespace createServerOpenedPaymentChannelSessionOpener {
         readonly deposit?: AmountLike | undefined;
         readonly expiresAt?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
-        readonly openSlot?: AmountLike | undefined;
         readonly payer?: string | undefined;
         readonly programAddress?: string | undefined;
         readonly salt?: AmountLike | undefined;
@@ -383,7 +367,6 @@ interface PreparedPaymentChannelOpen {
     readonly deposit: bigint;
     readonly gracePeriod: number;
     readonly mint: string;
-    readonly openSlot: bigint;
     readonly payee: string;
     readonly payer: string;
     readonly programAddress: Address;
@@ -395,7 +378,6 @@ interface PreparedPaymentChannelOpen {
 interface FindPaymentChannelPdaParameters {
     readonly authorizedSigner: Address;
     readonly mint: Address;
-    readonly openSlot: bigint;
     readonly payee: Address;
     readonly payer: Address;
     readonly programAddress: Address;
@@ -422,17 +404,6 @@ async function preparePaymentChannelOpen(
     const authorizedSigner = address(parameters.authorizedSigner);
     const deposit = parseU64(parameters.deposit ?? request.cap, 'deposit');
     const salt = parseU64(parameters.salt ?? randomU64(), 'salt');
-    // The open slot is a channel PDA seed the program only accepts within a
-    // 1500-slot freshness window. It comes from the 402 challenge's
-    // `recentSlot` (the server pre-fetches it, like `recentBlockhash`)
-    // unless the caller pins one.
-    const openSlotSource = parameters.openSlot ?? request.recentSlot;
-    if (openSlotSource === undefined) {
-        throw new Error(
-            'openSlot required: the session challenge did not provide recentSlot and no override was given',
-        );
-    }
-    const openSlot = parseU64(openSlotSource, 'openSlot');
     const gracePeriod = parameters.gracePeriod ?? DEFAULT_GRACE_PERIOD_SECONDS;
     const recipients =
         parameters.recipients?.map(split => ({ bps: split.bps, recipient: address(split.recipient) })) ??
@@ -442,7 +413,6 @@ async function preparePaymentChannelOpen(
     const [channelId] = await findPaymentChannelPda({
         authorizedSigner,
         mint: mintAddress,
-        openSlot,
         payee,
         payer,
         programAddress,
@@ -454,7 +424,6 @@ async function preparePaymentChannelOpen(
         deposit,
         gracePeriod,
         mint,
-        openSlot,
         payee,
         payer,
         programAddress,
@@ -474,7 +443,6 @@ async function findPaymentChannelPda(parameters: FindPaymentChannelPdaParameters
             getAddressEncoder().encode(parameters.mint),
             getAddressEncoder().encode(parameters.authorizedSigner),
             getU64Encoder().encode(parameters.salt),
-            getU64Encoder().encode(parameters.openSlot),
         ],
     });
 }

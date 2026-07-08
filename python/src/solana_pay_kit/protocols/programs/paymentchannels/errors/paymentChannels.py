@@ -314,15 +314,6 @@ class VoucherSignerMismatch(ProgramError):
     code = 237
     name = "VoucherSignerMismatch"
     msg = ""
-class VoucherBadMagic(ProgramError):
-    def __init__(self) -> None:
-        super().__init__(
-            238, ""
-        )
-
-    code = 238
-    name = "VoucherBadMagic"
-    msg = ""
 class InvalidRecipientCount(ProgramError):
     def __init__(self) -> None:
         super().__init__(
@@ -404,15 +395,6 @@ class InvalidAuthorizedSigner(ProgramError):
     code = 2002
     name = "InvalidAuthorizedSigner"
     msg = ""
-class OpenSlotOutOfWindow(ProgramError):
-    def __init__(self) -> None:
-        super().__init__(
-            2003, ""
-        )
-
-    code = 2003
-    name = "OpenSlotOutOfWindow"
-    msg = ""
 class TopUpDepositOverflow(ProgramError):
     def __init__(self) -> None:
         super().__init__(
@@ -422,23 +404,14 @@ class TopUpDepositOverflow(ProgramError):
     code = 2100
     name = "TopUpDepositOverflow"
     msg = ""
-class SealDeadlineOverflow(ProgramError):
+class FinalizeDeadlineOverflow(ProgramError):
     def __init__(self) -> None:
         super().__init__(
             2200, ""
         )
 
     code = 2200
-    name = "SealDeadlineOverflow"
-    msg = ""
-class SealGracePeriodNotElapsed(ProgramError):
-    def __init__(self) -> None:
-        super().__init__(
-            2201, ""
-        )
-
-    code = 2201
-    name = "SealGracePeriodNotElapsed"
+    name = "FinalizeDeadlineOverflow"
     msg = ""
 class PayerAlreadyWithdrawn(ProgramError):
     def __init__(self) -> None:
@@ -566,14 +539,14 @@ class DistributeBalanceCalculationOverflow(ProgramError):
     code = 2411
     name = "DistributeBalanceCalculationOverflow"
     msg = ""
-class RentPayerBalanceOverflow(ProgramError):
+class DistributePayerBalanceOverflow(ProgramError):
     def __init__(self) -> None:
         super().__init__(
             2412, ""
         )
 
     code = 2412
-    name = "RentPayerBalanceOverflow"
+    name = "DistributePayerBalanceOverflow"
     msg = ""
 class DistributeTransferQueueOverflow(ProgramError):
     def __init__(self) -> None:
@@ -583,15 +556,6 @@ class DistributeTransferQueueOverflow(ProgramError):
 
     code = 2413
     name = "DistributeTransferQueueOverflow"
-    msg = ""
-class ChannelCloseTooEarly(ProgramError):
-    def __init__(self) -> None:
-        super().__init__(
-            2414, ""
-        )
-
-    code = 2414
-    name = "ChannelCloseTooEarly"
     msg = ""
 
 CustomError = typing.Union[
@@ -629,7 +593,6 @@ CustomError = typing.Union[
     VoucherOverDeposit,
     VoucherMessageMismatch,
     VoucherSignerMismatch,
-    VoucherBadMagic,
     InvalidRecipientCount,
     InvalidSplitConfig,
     DistributionPartsOverflow,
@@ -639,10 +602,8 @@ CustomError = typing.Union[
     ChannelAddressMismatch,
     PayerPayeeMustDiffer,
     InvalidAuthorizedSigner,
-    OpenSlotOutOfWindow,
     TopUpDepositOverflow,
-    SealDeadlineOverflow,
-    SealGracePeriodNotElapsed,
+    FinalizeDeadlineOverflow,
     PayerAlreadyWithdrawn,
     RefundCalculationOverflow,
     ChannelNotDistributable,
@@ -657,9 +618,8 @@ CustomError = typing.Union[
     RecipientAccountCountMismatch,
     DistributePoolOverflow,
     DistributeBalanceCalculationOverflow,
-    RentPayerBalanceOverflow,
+    DistributePayerBalanceOverflow,
     DistributeTransferQueueOverflow,
-    ChannelCloseTooEarly,
  ]
 CUSTOM_ERROR_MAP: dict[int, CustomError] = {
     0: NotImplemented(),
@@ -696,7 +656,6 @@ CUSTOM_ERROR_MAP: dict[int, CustomError] = {
     235: VoucherOverDeposit(),
     236: VoucherMessageMismatch(),
     237: VoucherSignerMismatch(),
-    238: VoucherBadMagic(),
     260: InvalidRecipientCount(),
     261: InvalidSplitConfig(),
     262: DistributionPartsOverflow(),
@@ -706,10 +665,8 @@ CUSTOM_ERROR_MAP: dict[int, CustomError] = {
     2000: ChannelAddressMismatch(),
     2001: PayerPayeeMustDiffer(),
     2002: InvalidAuthorizedSigner(),
-    2003: OpenSlotOutOfWindow(),
     2100: TopUpDepositOverflow(),
-    2200: SealDeadlineOverflow(),
-    2201: SealGracePeriodNotElapsed(),
+    2200: FinalizeDeadlineOverflow(),
     2300: PayerAlreadyWithdrawn(),
     2301: RefundCalculationOverflow(),
     2400: ChannelNotDistributable(),
@@ -724,9 +681,8 @@ CUSTOM_ERROR_MAP: dict[int, CustomError] = {
     2409: RecipientAccountCountMismatch(),
     2410: DistributePoolOverflow(),
     2411: DistributeBalanceCalculationOverflow(),
-    2412: RentPayerBalanceOverflow(),
+    2412: DistributePayerBalanceOverflow(),
     2413: DistributeTransferQueueOverflow(),
-    2414: ChannelCloseTooEarly(),
 }
 
 def from_code(code: int) -> typing.Optional[CustomError]:

@@ -12,30 +12,22 @@ import {
     getAddressEncoder,
     getStructDecoder,
     getStructEncoder,
-    getU64Decoder,
-    getU64Encoder,
     type Address,
     type FixedSizeCodec,
     type FixedSizeDecoder,
     type FixedSizeEncoder,
 } from '@solana/kit';
 
-export type Opened = { channel: Address; openSlot: bigint };
+export type Opened = { channel: Address };
 
-export type OpenedArgs = { channel: Address; openSlot: number | bigint };
+export type OpenedArgs = Opened;
 
 export function getOpenedEncoder(): FixedSizeEncoder<OpenedArgs> {
-    return getStructEncoder([
-        ['channel', getAddressEncoder()],
-        ['openSlot', getU64Encoder()],
-    ]);
+    return getStructEncoder([['channel', getAddressEncoder()]]);
 }
 
 export function getOpenedDecoder(): FixedSizeDecoder<Opened> {
-    return getStructDecoder([
-        ['channel', getAddressDecoder()],
-        ['openSlot', getU64Decoder()],
-    ]);
+    return getStructDecoder([['channel', getAddressDecoder()]]);
 }
 
 export function getOpenedCodec(): FixedSizeCodec<OpenedArgs, Opened> {

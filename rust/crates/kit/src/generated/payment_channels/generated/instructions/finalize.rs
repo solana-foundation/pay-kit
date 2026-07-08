@@ -8,15 +8,15 @@
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const SEAL_DISCRIMINATOR: u8 = 6;
+pub const FINALIZE_DISCRIMINATOR: u8 = 6;
 
 /// Accounts.
 #[derive(Debug)]
-pub struct Seal {
+pub struct Finalize {
     pub channel: solana_address::Address,
 }
 
-impl Seal {
+impl Finalize {
     pub fn instruction(&self) -> solana_instruction::Instruction {
         self.instruction_with_remaining_accounts(&[])
     }
@@ -29,7 +29,7 @@ impl Seal {
         let mut accounts = Vec::with_capacity(1 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.channel, false));
         accounts.extend_from_slice(remaining_accounts);
-        let data = SealInstructionData::new().try_to_vec().unwrap();
+        let data = FinalizeInstructionData::new().try_to_vec().unwrap();
 
         solana_instruction::Instruction {
             program_id: crate::generated::payment_channels::PAYMENT_CHANNELS_ID,
@@ -40,11 +40,11 @@ impl Seal {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct SealInstructionData {
+pub struct FinalizeInstructionData {
     discriminator: u8,
 }
 
-impl SealInstructionData {
+impl FinalizeInstructionData {
     pub fn new() -> Self {
         Self { discriminator: 6 }
     }
@@ -54,24 +54,24 @@ impl SealInstructionData {
     }
 }
 
-impl Default for SealInstructionData {
+impl Default for FinalizeInstructionData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Instruction builder for `Seal`.
+/// Instruction builder for `Finalize`.
 ///
 /// ### Accounts:
 ///
 ///   0. `[writable]` channel
 #[derive(Clone, Debug, Default)]
-pub struct SealBuilder {
+pub struct FinalizeBuilder {
     channel: Option<solana_address::Address>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl SealBuilder {
+impl FinalizeBuilder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -97,7 +97,7 @@ impl SealBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = Seal {
+        let accounts = Finalize {
             channel: self.channel.expect("channel is not set"),
         };
 
@@ -105,23 +105,23 @@ impl SealBuilder {
     }
 }
 
-/// `seal` CPI accounts.
-pub struct SealCpiAccounts<'a, 'b> {
+/// `finalize` CPI accounts.
+pub struct FinalizeCpiAccounts<'a, 'b> {
     pub channel: &'b solana_account_info::AccountInfo<'a>,
 }
 
-/// `seal` CPI instruction.
-pub struct SealCpi<'a, 'b> {
+/// `finalize` CPI instruction.
+pub struct FinalizeCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
 
     pub channel: &'b solana_account_info::AccountInfo<'a>,
 }
 
-impl<'a, 'b> SealCpi<'a, 'b> {
+impl<'a, 'b> FinalizeCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: SealCpiAccounts<'a, 'b>,
+        accounts: FinalizeCpiAccounts<'a, 'b>,
     ) -> Self {
         Self {
             __program: program,
@@ -163,7 +163,7 @@ impl<'a, 'b> SealCpi<'a, 'b> {
                 is_writable: remaining_account.2,
             })
         });
-        let data = SealInstructionData::new().try_to_vec().unwrap();
+        let data = FinalizeInstructionData::new().try_to_vec().unwrap();
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::generated::payment_channels::PAYMENT_CHANNELS_ID,
@@ -185,19 +185,19 @@ impl<'a, 'b> SealCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `Seal` via CPI.
+/// Instruction builder for `Finalize` via CPI.
 ///
 /// ### Accounts:
 ///
 ///   0. `[writable]` channel
 #[derive(Clone, Debug)]
-pub struct SealCpiBuilder<'a, 'b> {
-    instruction: Box<SealCpiBuilderInstruction<'a, 'b>>,
+pub struct FinalizeCpiBuilder<'a, 'b> {
+    instruction: Box<FinalizeCpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> SealCpiBuilder<'a, 'b> {
+impl<'a, 'b> FinalizeCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(SealCpiBuilderInstruction {
+        let instruction = Box::new(FinalizeCpiBuilderInstruction {
             __program: program,
             channel: None,
             __remaining_accounts: Vec::new(),
@@ -243,7 +243,7 @@ impl<'a, 'b> SealCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let instruction = SealCpi {
+        let instruction = FinalizeCpi {
             __program: self.instruction.__program,
 
             channel: self.instruction.channel.expect("channel is not set"),
@@ -256,7 +256,7 @@ impl<'a, 'b> SealCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct SealCpiBuilderInstruction<'a, 'b> {
+struct FinalizeCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     channel: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.

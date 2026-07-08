@@ -59,7 +59,7 @@ private struct VectorInput: Decodable {
     // `value` is an arbitrary JSON document Codable cannot model directly.
     let encodeBase64Url: EncodeBase64URL?
     let challengeId: ChallengeID?
-    // session canonical-bytes: the 50-byte Ed25519 voucher preimage.
+    // session canonical-bytes: the 48-byte Ed25519 voucher preimage.
     let voucherPreimage: VoucherPreimage?
     // x402-exact build inputs.
     let x402Version: Int?
@@ -109,8 +109,7 @@ private struct EncodeBase64URL: Decodable {
 }
 
 // session voucher preimage input (mirror schema.ts voucherPreimage):
-// magic(0x56 0x01) || channelId(32, base58) || cumulativeAmount LE u64 ||
-// expiresAt LE i64.
+// channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64.
 private struct VoucherPreimage: Decodable {
     let channelId: String
     let cumulativeAmount: String
@@ -267,7 +266,7 @@ private struct RunnerResult: Encodable {
 // MARK: - Reject classification
 //
 // The harness asserts a normalized reject CATEGORY per reject vector. Map the
-// Swift SDK's native reject message (the `PayKitError` payload string) onto the
+// Swift SDK's native reject message (the `MppError` payload string) onto the
 // shared RejectCode vocabulary so the driver can compare categories across
 // SDKs rather than brittle prose. Swift is a CLIENT-only SDK, so the only
 // harness reject vector it actually processes is the splits-consume-amount

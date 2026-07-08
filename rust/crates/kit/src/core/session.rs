@@ -69,8 +69,8 @@ pub async fn accept_voucher(
         .map_err(store_err)?
         .ok_or_else(|| Error::Other(format!("Channel {channel_id} not found")))?;
 
-    if state.sealed {
-        return Err(Error::Other("Channel is already sealed".to_string()));
+    if state.finalized {
+        return Err(Error::Other("Channel is already finalized".to_string()));
     }
     if state.close_requested_at.is_some() {
         return Err(Error::Other(
@@ -146,9 +146,9 @@ pub async fn accept_voucher(
             Box::new(move |state_opt| {
                 let state = state_opt
                     .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
-                if state.sealed {
+                if state.finalized {
                     return Err(StoreError::Internal(
-                        "Channel is already sealed".to_string(),
+                        "Channel is already finalized".to_string(),
                     ));
                 }
                 if state.close_requested_at.is_some() {
@@ -226,11 +226,10 @@ mod tests {
                     authorized_signer: signer.clone(),
                     deposit: 1_000_000,
                     cumulative: 0,
-                    sealed: false,
+                    finalized: false,
                     highest_voucher_signature: None,
                     highest_voucher_expires_at: None,
                     close_requested_at: None,
-                    open_slot: None,
                     operator: None,
                     next_delivery_sequence: 0,
                     pending_deliveries: vec![],
@@ -286,11 +285,10 @@ mod tests {
             authorized_signer: signer.to_string(),
             deposit,
             cumulative: 0,
-            sealed: false,
+            finalized: false,
             highest_voucher_signature: None,
             highest_voucher_expires_at: None,
             close_requested_at: None,
-            open_slot: None,
             operator: None,
             next_delivery_sequence: 0,
             pending_deliveries: vec![],

@@ -24,7 +24,7 @@ func SetProgramID(pubkey ag_solanago.PublicKey) {
 }
 
 var (
-	Instruction_10_Count uint32 = 10
+	Instruction_9_Count uint32 = 9
 
 	InstructionImplDef = ag_binary.NewVariantDefinition(
 		ag_binary.Uint8TypeIDEncoding,
@@ -38,28 +38,24 @@ var (
 				(*EmitEvent)(nil),
 			},
 			{
-				"Open",
-				(*Open)(nil),
+				"Finalize",
+				(*Finalize)(nil),
 			},
 			{
-				"Reclaim",
-				(*Reclaim)(nil),
+				"Open",
+				(*Open)(nil),
 			},
 			{
 				"RequestClose",
 				(*RequestClose)(nil),
 			},
 			{
-				"Seal",
-				(*Seal)(nil),
-			},
-			{
 				"Settle",
 				(*Settle)(nil),
 			},
 			{
-				"SettleAndSeal",
-				(*SettleAndSeal)(nil),
+				"SettleAndFinalize",
+				(*SettleAndFinalize)(nil),
 			},
 			{
 				"TopUp",

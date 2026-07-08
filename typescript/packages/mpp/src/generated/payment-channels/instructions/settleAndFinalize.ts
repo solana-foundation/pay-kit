@@ -33,21 +33,21 @@ import {
 import { getAccountMetaFactory, type ResolvedInstructionAccount } from '@solana/program-client-core';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../programs/index.js';
 import {
-    getSettleAndSealArgsDecoder,
-    getSettleAndSealArgsEncoder,
-    type SettleAndSealArgs,
-    type SettleAndSealArgsArgs,
+    getSettleAndFinalizeArgsDecoder,
+    getSettleAndFinalizeArgsEncoder,
+    type SettleAndFinalizeArgs,
+    type SettleAndFinalizeArgsArgs,
 } from '../types/index.js';
 
-export const SETTLE_AND_SEAL_DISCRIMINATOR = 4;
+export const SETTLE_AND_FINALIZE_DISCRIMINATOR = 4;
 
-export function getSettleAndSealDiscriminatorBytes(): ReadonlyUint8Array {
-    return getU8Encoder().encode(SETTLE_AND_SEAL_DISCRIMINATOR);
+export function getSettleAndFinalizeDiscriminatorBytes(): ReadonlyUint8Array {
+    return getU8Encoder().encode(SETTLE_AND_FINALIZE_DISCRIMINATOR);
 }
 
-export type SettleAndSealInstruction<
+export type SettleAndFinalizeInstruction<
     TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
-    TAccountPayee extends string | AccountMeta<string> = string,
+    TAccountMerchant extends string | AccountMeta<string> = string,
     TAccountChannel extends string | AccountMeta<string> = string,
     TAccountInstructionsSysvar extends string | AccountMeta<string> = string,
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -55,9 +55,9 @@ export type SettleAndSealInstruction<
     InstructionWithData<ReadonlyUint8Array> &
     InstructionWithAccounts<
         [
-            TAccountPayee extends string
-                ? ReadonlySignerAccount<TAccountPayee> & AccountSignerMeta<TAccountPayee>
-                : TAccountPayee,
+            TAccountMerchant extends string
+                ? ReadonlySignerAccount<TAccountMerchant> & AccountSignerMeta<TAccountMerchant>
+                : TAccountMerchant,
             TAccountChannel extends string ? WritableAccount<TAccountChannel> : TAccountChannel,
             TAccountInstructionsSysvar extends string
                 ? ReadonlyAccount<TAccountInstructionsSysvar>
@@ -66,65 +66,65 @@ export type SettleAndSealInstruction<
         ]
     >;
 
-export type SettleAndSealInstructionData = {
+export type SettleAndFinalizeInstructionData = {
     discriminator: number;
-    settleAndSealArgs: SettleAndSealArgs;
+    settleAndFinalizeArgs: SettleAndFinalizeArgs;
 };
 
-export type SettleAndSealInstructionDataArgs = {
-    settleAndSealArgs: SettleAndSealArgsArgs;
+export type SettleAndFinalizeInstructionDataArgs = {
+    settleAndFinalizeArgs: SettleAndFinalizeArgsArgs;
 };
 
-export function getSettleAndSealInstructionDataEncoder(): FixedSizeEncoder<SettleAndSealInstructionDataArgs> {
+export function getSettleAndFinalizeInstructionDataEncoder(): FixedSizeEncoder<SettleAndFinalizeInstructionDataArgs> {
     return transformEncoder(
         getStructEncoder([
             ['discriminator', getU8Encoder()],
-            ['settleAndSealArgs', getSettleAndSealArgsEncoder()],
+            ['settleAndFinalizeArgs', getSettleAndFinalizeArgsEncoder()],
         ]),
-        value => ({ ...value, discriminator: SETTLE_AND_SEAL_DISCRIMINATOR }),
+        value => ({ ...value, discriminator: SETTLE_AND_FINALIZE_DISCRIMINATOR }),
     );
 }
 
-export function getSettleAndSealInstructionDataDecoder(): FixedSizeDecoder<SettleAndSealInstructionData> {
+export function getSettleAndFinalizeInstructionDataDecoder(): FixedSizeDecoder<SettleAndFinalizeInstructionData> {
     return getStructDecoder([
         ['discriminator', getU8Decoder()],
-        ['settleAndSealArgs', getSettleAndSealArgsDecoder()],
+        ['settleAndFinalizeArgs', getSettleAndFinalizeArgsDecoder()],
     ]);
 }
 
-export function getSettleAndSealInstructionDataCodec(): FixedSizeCodec<
-    SettleAndSealInstructionDataArgs,
-    SettleAndSealInstructionData
+export function getSettleAndFinalizeInstructionDataCodec(): FixedSizeCodec<
+    SettleAndFinalizeInstructionDataArgs,
+    SettleAndFinalizeInstructionData
 > {
-    return combineCodec(getSettleAndSealInstructionDataEncoder(), getSettleAndSealInstructionDataDecoder());
+    return combineCodec(getSettleAndFinalizeInstructionDataEncoder(), getSettleAndFinalizeInstructionDataDecoder());
 }
 
-export type SettleAndSealInput<
-    TAccountPayee extends string = string,
+export type SettleAndFinalizeInput<
+    TAccountMerchant extends string = string,
     TAccountChannel extends string = string,
     TAccountInstructionsSysvar extends string = string,
 > = {
-    payee: TransactionSigner<TAccountPayee>;
+    merchant: TransactionSigner<TAccountMerchant>;
     channel: Address<TAccountChannel>;
     instructionsSysvar: Address<TAccountInstructionsSysvar>;
-    settleAndSealArgs: SettleAndSealInstructionDataArgs['settleAndSealArgs'];
+    settleAndFinalizeArgs: SettleAndFinalizeInstructionDataArgs['settleAndFinalizeArgs'];
 };
 
-export function getSettleAndSealInstruction<
-    TAccountPayee extends string,
+export function getSettleAndFinalizeInstruction<
+    TAccountMerchant extends string,
     TAccountChannel extends string,
     TAccountInstructionsSysvar extends string,
     TProgramAddress extends Address = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
 >(
-    input: SettleAndSealInput<TAccountPayee, TAccountChannel, TAccountInstructionsSysvar>,
+    input: SettleAndFinalizeInput<TAccountMerchant, TAccountChannel, TAccountInstructionsSysvar>,
     config?: { programAddress?: TProgramAddress },
-): SettleAndSealInstruction<TProgramAddress, TAccountPayee, TAccountChannel, TAccountInstructionsSysvar> {
+): SettleAndFinalizeInstruction<TProgramAddress, TAccountMerchant, TAccountChannel, TAccountInstructionsSysvar> {
     // Program address.
     const programAddress = config?.programAddress ?? PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 
     // Original accounts.
     const originalAccounts = {
-        payee: { value: input.payee ?? null, isWritable: false },
+        merchant: { value: input.merchant ?? null, isWritable: false },
         channel: { value: input.channel ?? null, isWritable: true },
         instructionsSysvar: {
             value: input.instructionsSysvar ?? null,
@@ -139,33 +139,36 @@ export function getSettleAndSealInstruction<
     const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
     return Object.freeze({
         accounts: [
-            getAccountMeta('payee', accounts.payee),
+            getAccountMeta('merchant', accounts.merchant),
             getAccountMeta('channel', accounts.channel),
             getAccountMeta('instructionsSysvar', accounts.instructionsSysvar),
         ],
-        data: getSettleAndSealInstructionDataEncoder().encode(args as SettleAndSealInstructionDataArgs),
+        data: getSettleAndFinalizeInstructionDataEncoder().encode(args as SettleAndFinalizeInstructionDataArgs),
         programAddress,
-    } as SettleAndSealInstruction<TProgramAddress, TAccountPayee, TAccountChannel, TAccountInstructionsSysvar>);
+    } as SettleAndFinalizeInstruction<TProgramAddress, TAccountMerchant, TAccountChannel, TAccountInstructionsSysvar>);
 }
 
-export type ParsedSettleAndSealInstruction<
+export type ParsedSettleAndFinalizeInstruction<
     TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
     programAddress: Address<TProgram>;
     accounts: {
-        payee: TAccountMetas[0];
+        merchant: TAccountMetas[0];
         channel: TAccountMetas[1];
         instructionsSysvar: TAccountMetas[2];
     };
-    data: SettleAndSealInstructionData;
+    data: SettleAndFinalizeInstructionData;
 };
 
-export function parseSettleAndSealInstruction<TProgram extends string, TAccountMetas extends readonly AccountMeta[]>(
+export function parseSettleAndFinalizeInstruction<
+    TProgram extends string,
+    TAccountMetas extends readonly AccountMeta[],
+>(
     instruction: Instruction<TProgram> &
         InstructionWithAccounts<TAccountMetas> &
         InstructionWithData<ReadonlyUint8Array>,
-): ParsedSettleAndSealInstruction<TProgram, TAccountMetas> {
+): ParsedSettleAndFinalizeInstruction<TProgram, TAccountMetas> {
     if (instruction.accounts.length < 3) {
         throw new SolanaError(SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS, {
             actualAccountMetas: instruction.accounts.length,
@@ -181,10 +184,10 @@ export function parseSettleAndSealInstruction<TProgram extends string, TAccountM
     return {
         programAddress: instruction.programAddress,
         accounts: {
-            payee: getNextAccount(),
+            merchant: getNextAccount(),
             channel: getNextAccount(),
             instructionsSysvar: getNextAccount(),
         },
-        data: getSettleAndSealInstructionDataDecoder().decode(instruction.data),
+        data: getSettleAndFinalizeInstructionDataDecoder().decode(instruction.data),
     };
 }

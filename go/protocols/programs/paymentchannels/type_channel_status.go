@@ -10,7 +10,6 @@ type ChannelStatus uint8
 
 const (
 	ChannelStatus_Open ChannelStatus = iota
-	ChannelStatus_Sealed
+	ChannelStatus_Finalized
 	ChannelStatus_Closing
-	ChannelStatus_Distributed
 )

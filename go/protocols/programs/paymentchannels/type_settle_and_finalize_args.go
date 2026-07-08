@@ -6,6 +6,6 @@
 
 package payment_channels
 
-type SettleAndSealArgs struct {
+type SettleAndFinalizeArgs struct {
 	HasVoucher uint8
 }

@@ -7,3 +7,5 @@
 
 from . import channel
 from .channel import Channel, ChannelJSON
+from . import closedChannel
+from .closedChannel import ClosedChannel, ClosedChannelJSON

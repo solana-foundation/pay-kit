@@ -138,15 +138,13 @@ def _base_units_to_human(base_units: str, decimals: int) -> str:
     return f"{sign}{quotient}.{fraction}"
 
 
-def _fetch_recent_state_sync(rpc_url: str) -> tuple[str | None, int | None]:
-    """Fetch a recent blockhash + slot via a blocking JSON-RPC call (no asyncio).
+def _fetch_blockhash_sync(rpc_url: str) -> str | None:
+    """Fetch a recent blockhash via a blocking JSON-RPC call (no asyncio).
 
-    The x402 upto challenge requires ``extra.recentBlockhash`` (so the client can
-    build the channel-open transaction) and ``extra.recentSlot`` (the channel's
-    ``openSlot``, a PDA seed). Both come from the one ``getLatestBlockhash``
-    response — the slot rides in its ``context``. ``accepts_entry`` runs both at
-    challenge time and inside ``verify_open`` (itself under ``asyncio.run``), so
-    the provider must be synchronous to avoid nesting event loops.
+    The x402 upto challenge requires ``extra.recentBlockhash`` so the client can
+    build the channel-open transaction. ``accepts_entry`` runs both at challenge
+    time and inside ``verify_open`` (itself under ``asyncio.run``), so the
+    provider must be synchronous to avoid nesting event loops.
     """
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash", "params": [{"commitment": "confirmed"}]}
@@ -156,13 +154,9 @@ def _fetch_recent_state_sync(rpc_url: str) -> tuple[str | None, int | None]:
         with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
             data = json.loads(resp.read())
         blockhash = data["result"]["value"]["blockhash"]
-        slot = data["result"]["context"]["slot"]
-        return (
-            blockhash if isinstance(blockhash, str) and blockhash else None,
-            slot if isinstance(slot, int) else None,
-        )
-    except Exception:  # noqa: BLE001 - recent-state fetch is best-effort at challenge time
-        return (None, None)
+        return blockhash if isinstance(blockhash, str) and blockhash else None
+    except Exception:  # noqa: BLE001 - blockhash fetch is best-effort at challenge time
+        return None
 
 
 def _coin_for_mint(mint: str) -> Stablecoin:
@@ -251,9 +245,7 @@ class _Adapter:
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
-        self.settlement_header = optional_env(
-            "X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
-        ).lower()
+        self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
         self.price = optional_env("X402_HARNESS_PRICE", "0.10")
         # The metered amount the handler "charges" after serving (base units).
         self.actual_amount = int(optional_env("X402_HARNESS_ACTUAL_AMOUNT", "0"))
@@ -275,7 +267,7 @@ class _Adapter:
         self.upto_engine = X402Upto(
             config,
             channel_program=program_id,
-            recent_state_provider=lambda: _fetch_recent_state_sync(rpc_url),
+            recent_blockhash_provider=lambda: _fetch_blockhash_sync(rpc_url),
         )
         self.routes = {self.resource_path: self.price}
         self.replay_path = ""
@@ -355,17 +347,8 @@ class _Adapter:
                 modes=["pull"],
                 pull_voucher_strategy="clientVoucher",
                 open_tx_submitter="client",
-                # The session challenge must carry recentBlockhash + recentSlot
-                # (the client derives the channel PDA from the challenge slot
-                # and never fetches it), but this scenario's surfnet runs no
-                # payment-channels program, so the wire-level trust model must
-                # stay intact: rpc=None keeps open verification / broadcast /
-                # settle-at-close off, and the recent-state provider stamps the
-                # challenge fields from one blocking getLatestBlockhash call
-                # (the slot rides in its context).
-                signer=None,
+                signer=signer,
                 rpc=None,
-                recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
             )
         )
         self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)

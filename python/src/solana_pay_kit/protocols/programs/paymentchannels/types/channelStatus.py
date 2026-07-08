@@ -31,21 +31,21 @@ class Open:
 
 
 
-class SealedJSON(typing.TypedDict):
-    kind: typing.Literal["Sealed"]
+class FinalizedJSON(typing.TypedDict):
+    kind: typing.Literal["Finalized"]
 
 
 @dataclass
-class Sealed:
+class Finalized:
     discriminator: typing.ClassVar = 1
-    def to_json(self) -> SealedJSON:
-        return SealedJSON(
-            kind="Sealed",
+    def to_json(self) -> FinalizedJSON:
+        return FinalizedJSON(
+            kind="Finalized",
         )
 
     def to_encodable(self) -> dict[str, typing.Any]:
         return {
-            "Sealed": {},
+            "Finalized": {},
         }
 
 
@@ -71,38 +71,16 @@ class Closing:
 
 
 
-class DistributedJSON(typing.TypedDict):
-    kind: typing.Literal["Distributed"]
-
-
-@dataclass
-class Distributed:
-    discriminator: typing.ClassVar = 3
-    def to_json(self) -> DistributedJSON:
-        return DistributedJSON(
-            kind="Distributed",
-        )
-
-    def to_encodable(self) -> dict[str, typing.Any]:
-        return {
-            "Distributed": {},
-        }
-
-
-
-
 
 ChannelStatusKind = typing.Union[
     Open,
-    Sealed,
+    Finalized,
     Closing,
-    Distributed,
 ]
 ChannelStatusJSON = typing.Union[
     OpenJSON,
-    SealedJSON,
+    FinalizedJSON,
     ClosingJSON,
-    DistributedJSON,
 ]
 
 def from_decoded(obj: dict) -> ChannelStatusKind:
@@ -110,26 +88,21 @@ def from_decoded(obj: dict) -> ChannelStatusKind:
         raise ValueError("Invalid enum object")
     if "Open" in obj:
       return Open()
-    if "Sealed" in obj:
-      return Sealed()
+    if "Finalized" in obj:
+      return Finalized()
     if "Closing" in obj:
       return Closing()
-    if "Distributed" in obj:
-      return Distributed()
     raise ValueError("Invalid enum object")
 
 def from_json(obj: ChannelStatusJSON) -> ChannelStatusKind:
     if obj["kind"] == "Open":
         return Open()
 
-    if obj["kind"] == "Sealed":
-        return Sealed()
+    if obj["kind"] == "Finalized":
+        return Finalized()
 
     if obj["kind"] == "Closing":
         return Closing()
-
-    if obj["kind"] == "Distributed":
-        return Distributed()
 
     kind = obj["kind"]
     raise ValueError(f"Unrecognized enum kind: {kind}")
@@ -137,7 +110,6 @@ def from_json(obj: ChannelStatusJSON) -> ChannelStatusKind:
 
 layout = EnumForCodegen(
 "Open" / borsh.CStruct(),
-"Sealed" / borsh.CStruct(),
+"Finalized" / borsh.CStruct(),
 "Closing" / borsh.CStruct(),
-"Distributed" / borsh.CStruct(),
 )

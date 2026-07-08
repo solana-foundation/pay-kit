@@ -9,6 +9,6 @@ use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct SettleAndSealArgs {
+pub struct SettleAndFinalizeArgs {
     pub has_voucher: u8,
 }

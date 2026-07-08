@@ -120,31 +120,19 @@ export class X402Upto {
         return x402PaymentHeader(request) !== undefined;
     }
 
-    /**
-     * The 402 challenge headers for a route capped at `maxPrice`. Pass the
-     * entries from {@link accepts} to reuse one server-enriched requirement
-     * (one `getLatestBlockhash` round-trip) for both the header and the body.
-     */
-    async challengeHeaders(
-        maxPrice: Price,
-        request: Request,
-        accepts?: readonly PaymentRequirements[],
-    ): Promise<Readonly<Record<string, string>>> {
+    /** The 402 challenge headers for a route capped at `maxPrice`. */
+    async challengeHeaders(maxPrice: Price, request: Request): Promise<Readonly<Record<string, string>>> {
         const paymentRequired: PaymentRequired = {
-            accepts: [...(accepts ?? (await this.accepts(maxPrice)))],
+            accepts: [await this.#challengeRequirements(maxPrice)],
             resource: { url: new URL(request.url).pathname },
             x402Version: X402_VERSION,
         };
         return { [PAYMENT_REQUIRED_HEADER]: encodePaymentRequiredHeader(paymentRequired) };
     }
 
-    /**
-     * The `accepts[]` entries for the 402 JSON body — the same server-enriched
-     * requirement (`extra.recentBlockhash` + `extra.recentSlot`) the header
-     * carries, so body-based `upto` clients can build the channel open too.
-     */
-    async accepts(maxPrice: Price): Promise<readonly PaymentRequirements[]> {
-        return [await this.#challengeRequirements(maxPrice)];
+    /** The `accepts[]` entries for the 402 JSON body. */
+    accepts(maxPrice: Price): readonly PaymentRequirements[] {
+        return [this.#requirements(maxPrice)];
     }
 
     /**
@@ -174,7 +162,7 @@ export class X402Upto {
 
     /**
      * Settle the metered amount (`actualBaseUnits`, clamped to the ceiling) against
-     * a verified open: operator voucher, settle-and-seal, refund the remainder.
+     * a verified open: operator voucher, settle-and-finalize, refund the remainder.
      *
      * @throws {InvalidProofError} when settlement fails.
      */
@@ -268,34 +256,25 @@ export class X402Upto {
     }
 
     /**
-     * The challenge requirements with a server-fetched recent blockhash and
-     * current slot (`recentSlot`) in `extra` - so the client can sign the
-     * channel-open without its own RPC round-trip (mirroring MPP). The slot
-     * comes from the same blockhash response's context and becomes the
-     * channel `openSlot` PDA seed, which clients must take from the
-     * challenge — so a bare offer without it is unusable. A failed fetch
-     * therefore throws (the caller fails the challenge or omits the `upto`
-     * offer) instead of advertising requirements no client can act on.
+     * The challenge requirements with a server-fetched recent blockhash in
+     * `extra` - so the client can sign the channel-open without its own RPC
+     * round-trip (mirroring MPP). Falls back to the bare requirements on error.
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
         const base = this.#requirements(maxPrice);
-        let context, value;
         try {
-            ({ context, value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send());
-        } catch (error) {
-            throw new Error(
-                `x402 upto challenge requires extra.recentBlockhash/recentSlot; getLatestBlockhash failed: ${errorMessage(error)}`,
-            );
+            const { value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
+            return {
+                ...base,
+                extra: {
+                    ...base.extra,
+                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
+                    recentBlockhash: value.blockhash,
+                },
+            };
+        } catch {
+            return base;
         }
-        return {
-            ...base,
-            extra: {
-                ...base.extra,
-                lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                recentBlockhash: value.blockhash,
-                recentSlot: context.slot.toString(),
-            },
-        };
     }
 }
 

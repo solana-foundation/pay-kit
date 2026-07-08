@@ -13,64 +13,64 @@ import (
 	ag_solanago "github.com/gagliardetto/solana-go"
 )
 
-var SettleAndSealDiscriminator = 4
+var SettleAndFinalizeDiscriminator = 4
 
-// SettleAndSeal is the `SettleAndSeal` instruction.
-type SettleAndSeal struct {
-	// [0] = [SIGNER] Payee
+// SettleAndFinalize is the `SettleAndFinalize` instruction.
+type SettleAndFinalize struct {
+	// [0] = [SIGNER] Merchant
 	// [1] = [WRITE] Channel
 	// [2] = [] InstructionsSysvar
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	SettleAndSealArgs            SettleAndSealArgs
+	SettleAndFinalizeArgs        SettleAndFinalizeArgs
 }
 
-// NewSettleAndSealInstructionBuilder creates a new `SettleAndSeal` instruction builder.
-func NewSettleAndSealInstructionBuilder() *SettleAndSeal {
-	nd := &SettleAndSeal{}
+// NewSettleAndFinalizeInstructionBuilder creates a new `SettleAndFinalize` instruction builder.
+func NewSettleAndFinalizeInstructionBuilder() *SettleAndFinalize {
+	nd := &SettleAndFinalize{}
 	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 3)
 	return nd
 }
 
-// SetSettleAndSealArgs sets the "settle_and_seal_args" parameter.
-func (inst *SettleAndSeal) SetSettleAndSealArgs(settleAndSealArgs SettleAndSealArgs) *SettleAndSeal {
-	inst.SettleAndSealArgs = settleAndSealArgs
+// SetSettleAndFinalizeArgs sets the "settle_and_finalize_args" parameter.
+func (inst *SettleAndFinalize) SetSettleAndFinalizeArgs(settleAndFinalizeArgs SettleAndFinalizeArgs) *SettleAndFinalize {
+	inst.SettleAndFinalizeArgs = settleAndFinalizeArgs
 	return inst
 }
 
-// SetPayeeAccount sets the "payee" account.
-func (inst *SettleAndSeal) SetPayeeAccount(payee ag_solanago.PublicKey) *SettleAndSeal {
-	inst.AccountMetaSlice[0] = ag_solanago.Meta(payee).SIGNER()
+// SetMerchantAccount sets the "merchant" account.
+func (inst *SettleAndFinalize) SetMerchantAccount(merchant ag_solanago.PublicKey) *SettleAndFinalize {
+	inst.AccountMetaSlice[0] = ag_solanago.Meta(merchant).SIGNER()
 	return inst
 }
 
-// GetPayeeAccount gets the "payee" account.
-func (inst *SettleAndSeal) GetPayeeAccount() *ag_solanago.AccountMeta {
+// GetMerchantAccount gets the "merchant" account.
+func (inst *SettleAndFinalize) GetMerchantAccount() *ag_solanago.AccountMeta {
 	return inst.AccountMetaSlice[0]
 }
 
 // SetChannelAccount sets the "channel" account.
-func (inst *SettleAndSeal) SetChannelAccount(channel ag_solanago.PublicKey) *SettleAndSeal {
+func (inst *SettleAndFinalize) SetChannelAccount(channel ag_solanago.PublicKey) *SettleAndFinalize {
 	inst.AccountMetaSlice[1] = ag_solanago.Meta(channel).WRITE()
 	return inst
 }
 
 // GetChannelAccount gets the "channel" account.
-func (inst *SettleAndSeal) GetChannelAccount() *ag_solanago.AccountMeta {
+func (inst *SettleAndFinalize) GetChannelAccount() *ag_solanago.AccountMeta {
 	return inst.AccountMetaSlice[1]
 }
 
 // SetInstructionsSysvarAccount sets the "instructions_sysvar" account.
-func (inst *SettleAndSeal) SetInstructionsSysvarAccount(instructionsSysvar ag_solanago.PublicKey) *SettleAndSeal {
+func (inst *SettleAndFinalize) SetInstructionsSysvarAccount(instructionsSysvar ag_solanago.PublicKey) *SettleAndFinalize {
 	inst.AccountMetaSlice[2] = ag_solanago.Meta(instructionsSysvar)
 	return inst
 }
 
 // GetInstructionsSysvarAccount gets the "instructions_sysvar" account.
-func (inst *SettleAndSeal) GetInstructionsSysvarAccount() *ag_solanago.AccountMeta {
+func (inst *SettleAndFinalize) GetInstructionsSysvarAccount() *ag_solanago.AccountMeta {
 	return inst.AccountMetaSlice[2]
 }
 
-func (inst SettleAndSeal) Build() *Instruction {
+func (inst SettleAndFinalize) Build() *Instruction {
 	return &Instruction{BaseVariant: ag_binary.BaseVariant{
 		Impl:   inst,
 		TypeID: ag_binary.NoTypeIDDefaultID,
@@ -80,16 +80,16 @@ func (inst SettleAndSeal) Build() *Instruction {
 // ValidateAndBuild validates the instruction parameters and accounts;
 // if there is a validation error, it returns the error.
 // Otherwise, it builds and returns the instruction.
-func (inst SettleAndSeal) ValidateAndBuild() (*Instruction, error) {
+func (inst SettleAndFinalize) ValidateAndBuild() (*Instruction, error) {
 	if err := inst.Validate(); err != nil {
 		return nil, err
 	}
 	return inst.Build(), nil
 }
 
-func (inst *SettleAndSeal) Validate() error {
+func (inst *SettleAndFinalize) Validate() error {
 	if inst.AccountMetaSlice[0] == nil {
-		return fmt.Errorf("accounts.Payee is not set")
+		return fmt.Errorf("accounts.Merchant is not set")
 	}
 	if inst.AccountMetaSlice[1] == nil {
 		return fmt.Errorf("accounts.Channel is not set")
@@ -100,11 +100,11 @@ func (inst *SettleAndSeal) Validate() error {
 	return nil
 }
 
-func (inst *SettleAndSeal) GetAccounts() (out []*ag_solanago.AccountMeta) {
+func (inst *SettleAndFinalize) GetAccounts() (out []*ag_solanago.AccountMeta) {
 	return inst.AccountMetaSlice
 }
 
-func (inst *SettleAndSeal) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
+func (inst *SettleAndFinalize) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
 	if len(accounts) < 3 {
 		return fmt.Errorf("not enough accounts: expected at least 3, got %d", len(accounts))
 	}
@@ -112,7 +112,7 @@ func (inst *SettleAndSeal) SetAccounts(accounts []*ag_solanago.AccountMeta) erro
 	return nil
 }
 
-func (inst *SettleAndSeal) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
+func (inst *SettleAndFinalize) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
 	{
 		err := encoder.Encode(uint8(4))
 		if err != nil {
@@ -120,7 +120,7 @@ func (inst *SettleAndSeal) MarshalWithEncoder(encoder *ag_binary.Encoder) error 
 		}
 	}
 	{
-		err := encoder.Encode(inst.SettleAndSealArgs)
+		err := encoder.Encode(inst.SettleAndFinalizeArgs)
 		if err != nil {
 			return err
 		}
@@ -128,7 +128,7 @@ func (inst *SettleAndSeal) MarshalWithEncoder(encoder *ag_binary.Encoder) error 
 	return nil
 }
 
-func (inst *SettleAndSeal) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
+func (inst *SettleAndFinalize) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
 	{
 		var tmp uint8
 		err := decoder.Decode(&tmp)
@@ -137,7 +137,7 @@ func (inst *SettleAndSeal) UnmarshalWithDecoder(decoder *ag_binary.Decoder) erro
 		}
 	}
 	{
-		err := decoder.Decode(&inst.SettleAndSealArgs)
+		err := decoder.Decode(&inst.SettleAndFinalizeArgs)
 		if err != nil {
 			return err
 		}

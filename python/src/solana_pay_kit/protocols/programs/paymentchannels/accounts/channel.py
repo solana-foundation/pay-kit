@@ -34,7 +34,6 @@ class ChannelJSON(typing.TypedDict):
     authorizedSigner: str
     mint: str
     rentPayer: str
-    openSlot: int
 
 @dataclass
 class Channel:
@@ -54,7 +53,6 @@ class Channel:
     authorizedSigner: SolPubkey
     mint: SolPubkey
     rentPayer: SolPubkey
-    openSlot: int
 
 
 
@@ -74,7 +72,6 @@ class Channel:
         "authorizedSigner" /BorshPubkey,
         "mint" /BorshPubkey,
         "rentPayer" /BorshPubkey,
-        "openSlot" /borsh.U64,
         )
 
 
@@ -134,7 +131,6 @@ class Channel:
                 authorizedSigner=dec.authorizedSigner,
                 mint=dec.mint,
                 rentPayer=dec.rentPayer,
-                openSlot=dec.openSlot,
                 )
     def to_encodable(self) -> dict[str, typing.Any]:
         return {
@@ -153,7 +149,6 @@ class Channel:
                 "authorizedSigner": self.authorizedSigner,
                 "mint": self.mint,
                 "rentPayer": self.rentPayer,
-                "openSlot": self.openSlot,
                 }
     def to_json(self) -> ChannelJSON:
         return {
@@ -172,7 +167,6 @@ class Channel:
                 "authorizedSigner": str(self.authorizedSigner),
                 "mint": str(self.mint),
                 "rentPayer": str(self.rentPayer),
-                "openSlot": self.openSlot,
                 }
 
     @classmethod
@@ -193,7 +187,6 @@ class Channel:
                 authorizedSigner=SolPubkey.from_string(obj["authorizedSigner"]),
                 mint=SolPubkey.from_string(obj["mint"]),
                 rentPayer=SolPubkey.from_string(obj["rentPayer"]),
-                openSlot=obj["openSlot"],
                 )
 
 

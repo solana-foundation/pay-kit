@@ -177,15 +177,15 @@ def test_verify_voucher_for_channel_expired_rejected() -> None:
     assert result.reason == VoucherRejectReason.EXPIRED
 
 
-def test_verify_voucher_for_channel_sealed_rejected() -> None:
+def test_verify_voucher_for_channel_finalized_rejected() -> None:
     signer = _TestVoucherSigner(1)
     voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, _far_future())
     state = _voucher_test_state(signer.address())
-    state.sealed = True
+    state.finalized = True
 
     result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
     assert result.status == VoucherVerifyStatus.REJECTED
-    assert result.reason == VoucherRejectReason.CHANNEL_SEALED
+    assert result.reason == VoucherRejectReason.CHANNEL_FINALIZED
 
 
 def test_verify_voucher_for_channel_close_pending_rejected() -> None:
@@ -238,10 +238,10 @@ def test_verify_voucher_for_channel_invalid_cumulative_rejected() -> None:
 # in the same voucher.
 
 
-def test_verify_voucher_for_channel_ordering_parse_beats_sealed() -> None:
+def test_verify_voucher_for_channel_ordering_parse_beats_finalized() -> None:
     signer = _TestVoucherSigner(1)
     state = _voucher_test_state(signer.address())
-    state.sealed = True
+    state.finalized = True
     voucher = SignedVoucher(
         data=VoucherData(
             channel_id=state.channel_id,
@@ -255,15 +255,15 @@ def test_verify_voucher_for_channel_ordering_parse_beats_sealed() -> None:
     assert result.reason == VoucherRejectReason.INVALID_CUMULATIVE
 
 
-def test_verify_voucher_for_channel_ordering_sealed_beats_close_pending() -> None:
+def test_verify_voucher_for_channel_ordering_finalized_beats_close_pending() -> None:
     signer = _TestVoucherSigner(1)
     state = _voucher_test_state(signer.address())
-    state.sealed = True
+    state.finalized = True
     state.close_requested_at = 1
     voucher = signer.sign_voucher(state.channel_id, 100, _far_future())
 
     result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
-    assert result.reason == VoucherRejectReason.CHANNEL_SEALED
+    assert result.reason == VoucherRejectReason.CHANNEL_FINALIZED
 
 
 def test_verify_voucher_for_channel_ordering_monotonic_beats_deposit() -> None:
@@ -361,7 +361,9 @@ def test_verify_voucher_for_channel_zero_expires_at_survives_settlement_window()
     state = _voucher_test_state(signer.address())
 
     result = verify_voucher_for_channel(
-        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900)
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
     )
     assert result.status == VoucherVerifyStatus.ACCEPTED
 
@@ -376,7 +378,9 @@ def test_verify_voucher_for_channel_nonzero_expires_at_must_outlast_settlement_w
     state = _voucher_test_state(signer.address())
 
     result = verify_voucher_for_channel(
-        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900)
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
     )
     assert result.status == VoucherVerifyStatus.REJECTED
     assert result.reason == VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT
@@ -389,7 +393,9 @@ def test_verify_voucher_for_channel_nonzero_expires_at_outlasting_window_accepte
     state = _voucher_test_state(signer.address())
 
     result = verify_voucher_for_channel(
-        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900)
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
     )
     assert result.status == VoucherVerifyStatus.ACCEPTED
 
@@ -402,7 +408,9 @@ def test_verify_voucher_for_channel_expired_beats_settlement_window() -> None:
     state = _voucher_test_state(signer.address())
 
     result = verify_voucher_for_channel(
-        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900)
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
     )
     assert result.status == VoucherVerifyStatus.REJECTED
     assert result.reason == VoucherRejectReason.EXPIRED
@@ -430,7 +438,9 @@ def test_verify_voucher_for_channel_nonzero_expires_at_window_applies_to_replay(
     state.highest_voucher_signature = voucher.signature
 
     result = verify_voucher_for_channel(
-        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900)
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
     )
     assert result.status == VoucherVerifyStatus.REJECTED
     assert result.reason == VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT

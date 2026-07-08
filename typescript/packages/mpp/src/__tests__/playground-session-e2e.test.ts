@@ -53,7 +53,7 @@ async function waitForServer(url: string, timeoutMs = 30_000): Promise<boolean> 
 interface ReceiptBody {
     readonly cumulative: string;
     readonly deposit: string;
-    readonly sealed: boolean;
+    readonly finalized: boolean;
     readonly settledSignature: string | null;
 }
 

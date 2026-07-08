@@ -77,8 +77,7 @@ enum OpenAPI {
             priceUSD: priceString(from: firstOffer),
             systemImage: systemImage(intent: intent, scheme: scheme, method: payMethod),
             tint: tint(for: index),
-            intent: EndpointIntent(intent),
-            scheme: EndpointScheme(scheme),
+            intent: (intent?.isEmpty == false) ? intent!.lowercased() : "charge",
             methods: methods(from: offers),
             selectedProtocol: selectedProtocol(from: offers, intent: intent)
         )

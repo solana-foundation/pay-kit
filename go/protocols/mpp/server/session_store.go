@@ -13,8 +13,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 )
@@ -70,19 +68,12 @@ type ChannelState struct {
 	// (base units).
 	Deposit uint64 `json:"deposit"`
 
-	// OpenSlot is the slot recorded in the channel open args (push sessions).
-	// It is a channel PDA seed, so it is persisted to re-derive the address
-	// and to drive the post-distribute reclaim. Zero for pull sessions and
-	// for opens that never carried it.
-	OpenSlot uint64 `json:"open_slot"`
-
 	// Cumulative is the highest cumulative amount accepted by the server (the
 	// settled watermark).
 	Cumulative uint64 `json:"cumulative"`
 
-	// Sealed is true once the channel has been sealed on-chain (the program's
-	// seal instruction, formerly finalize).
-	Sealed bool `json:"sealed"`
+	// Finalized is true once the channel has been finalized on-chain.
+	Finalized bool `json:"finalized"`
 
 	// HighestVoucherSignature is the signature of the highest accepted voucher
 	// (base58). Stored for idempotent replay detection.
@@ -122,37 +113,6 @@ type ChannelState struct {
 	CommittedDeliveries []CommittedDelivery `json:"committed_deliveries"`
 }
 
-// channelStateJSON mirrors ChannelState so UnmarshalJSON can decode the
-// struct fields without recursing into itself.
-type channelStateJSON ChannelState
-
-// UnmarshalJSON rejects records persisted before the upstream finalize→seal
-// rename. encoding/json ignores unknown fields, so without this guard a
-// legacy record carrying "finalized": true (and no "sealed" key) would
-// silently reload a closed channel as unsealed, letting the upgraded server
-// accept further vouchers or re-settle an already-distributed channel. The
-// epoch-addressed migration is intentionally pre-1.0 breaking (no alias):
-// legacy records fail loudly, matching the Python and Rust stores.
-func (s *ChannelState) UnmarshalJSON(data []byte) error {
-	var probe struct {
-		Finalized *bool `json:"finalized"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return err
-	}
-	if probe.Finalized != nil {
-		return errors.New(
-			`legacy pre-seal channel record (field "finalized") is not supported; migrate or reset the durable channel store`,
-		)
-	}
-	var decoded channelStateJSON
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	*s = ChannelState(decoded)
-	return nil
-}
-
 // clone returns a deep copy so callers can never alias store-internal state.
 func (s ChannelState) clone() ChannelState {
 	out := s
@@ -187,9 +147,9 @@ func (s ChannelState) clone() ChannelState {
 
 // ListChannelsFilter is an optional filter for ChannelStore.ListChannels.
 type ListChannelsFilter struct {
-	// Sealed, when non-nil, only includes channels matching this sealed
+	// Finalized, when non-nil, only includes channels matching this finalized
 	// state.
-	Sealed *bool
+	Finalized *bool
 
 	// ClosePending, when non-nil, only includes channels whose
 	// CloseRequestedAt presence matches.
@@ -225,9 +185,9 @@ type ChannelStore interface {
 	// nil means no filter.
 	ListChannels(ctx context.Context, filter *ListChannelsFilter) ([]ChannelState, error)
 
-	// MarkSealed flips Sealed to true. Errors when the channel is not
+	// MarkFinalized flips Finalized to true. Errors when the channel is not
 	// found.
-	MarkSealed(ctx context.Context, channelID string) (ChannelState, error)
+	MarkFinalized(ctx context.Context, channelID string) (ChannelState, error)
 }
 
 // MemoryChannelStore is an in-memory ChannelStore with per-channel locking:
@@ -320,7 +280,7 @@ func (s *MemoryChannelStore) ListChannels(_ context.Context, filter *ListChannel
 	out := make([]ChannelState, 0, len(s.data))
 	for _, state := range s.data {
 		if filter != nil {
-			if filter.Sealed != nil && state.Sealed != *filter.Sealed {
+			if filter.Finalized != nil && state.Finalized != *filter.Finalized {
 				continue
 			}
 			if filter.ClosePending != nil {
@@ -335,15 +295,15 @@ func (s *MemoryChannelStore) ListChannels(_ context.Context, filter *ListChannel
 	return out, nil
 }
 
-// MarkSealed flips Sealed to true, erroring when the channel is
+// MarkFinalized flips Finalized to true, erroring when the channel is
 // missing.
-func (s *MemoryChannelStore) MarkSealed(ctx context.Context, channelID string) (ChannelState, error) {
+func (s *MemoryChannelStore) MarkFinalized(ctx context.Context, channelID string) (ChannelState, error) {
 	return s.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
 		next := *current
-		next.Sealed = true
+		next.Finalized = true
 		return next, nil
 	})
 }

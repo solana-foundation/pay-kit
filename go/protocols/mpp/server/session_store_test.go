@@ -2,13 +2,11 @@ package server
 
 // MemoryChannelStore coverage: insert-on-missing updates, mutator error
 // handling, concurrent update serialization, list filtering, delete,
-// sealing, and clone isolation.
+// finalization, and clone isolation.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -165,9 +163,9 @@ func TestMemoryChannelStoreListChannelsAppliesFilters(t *testing.T) {
 		}
 	}
 	mustInsert(testChannelState("a", 1))
-	sealed := testChannelState("b", 1)
-	sealed.Sealed = true
-	mustInsert(sealed)
+	finalized := testChannelState("b", 1)
+	finalized.Finalized = true
+	mustInsert(finalized)
 	closing := testChannelState("c", 1)
 	closeAt := uint64(123)
 	closing.CloseRequestedAt = &closeAt
@@ -182,15 +180,15 @@ func TestMemoryChannelStoreListChannelsAppliesFilters(t *testing.T) {
 	}
 
 	wantTrue, wantFalse := true, false
-	onlySealed, err := store.ListChannels(ctx, &ListChannelsFilter{Sealed: &wantTrue})
+	onlyFinalized, err := store.ListChannels(ctx, &ListChannelsFilter{Finalized: &wantTrue})
 	if err != nil {
-		t.Fatalf("ListChannels sealed: %v", err)
+		t.Fatalf("ListChannels finalized: %v", err)
 	}
-	if len(onlySealed) != 1 || onlySealed[0].ChannelID != "b" {
-		t.Fatalf("sealed filter = %+v, want only b", onlySealed)
+	if len(onlyFinalized) != 1 || onlyFinalized[0].ChannelID != "b" {
+		t.Fatalf("finalized filter = %+v, want only b", onlyFinalized)
 	}
 
-	closePending, err := store.ListChannels(ctx, &ListChannelsFilter{Sealed: &wantFalse, ClosePending: &wantTrue})
+	closePending, err := store.ListChannels(ctx, &ListChannelsFilter{Finalized: &wantFalse, ClosePending: &wantTrue})
 	if err != nil {
 		t.Fatalf("ListChannels closePending: %v", err)
 	}
@@ -199,7 +197,7 @@ func TestMemoryChannelStoreListChannelsAppliesFilters(t *testing.T) {
 	}
 }
 
-func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
+func TestMemoryChannelStoreDeleteAndMarkFinalized(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()
 
@@ -209,16 +207,16 @@ func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	state, err := store.MarkSealed(ctx, "c1")
+	state, err := store.MarkFinalized(ctx, "c1")
 	if err != nil {
-		t.Fatalf("MarkSealed: %v", err)
+		t.Fatalf("MarkFinalized: %v", err)
 	}
-	if !state.Sealed {
-		t.Fatal("expected sealed state")
+	if !state.Finalized {
+		t.Fatal("expected finalized state")
 	}
 	stored, err := store.GetChannel(ctx, "c1")
-	if err != nil || stored == nil || !stored.Sealed {
-		t.Fatalf("stored state = %+v err=%v, want sealed", stored, err)
+	if err != nil || stored == nil || !stored.Finalized {
+		t.Fatalf("stored state = %+v err=%v, want finalized", stored, err)
 	}
 
 	if err := store.DeleteChannel(ctx, "c1"); err != nil {
@@ -232,8 +230,8 @@ func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
 		t.Fatalf("expected nil after delete, got %+v", missing)
 	}
 
-	if _, err := store.MarkSealed(ctx, "ghost"); err == nil {
-		t.Fatal("expected error marking missing channel sealed")
+	if _, err := store.MarkFinalized(ctx, "ghost"); err == nil {
+		t.Fatal("expected error marking missing channel finalized")
 	}
 }
 
@@ -267,36 +265,5 @@ func TestMemoryChannelStoreReturnsClones(t *testing.T) {
 	}
 	if fresh.PendingDeliveries[0].Amount != 1 {
 		t.Fatalf("stored pending delivery mutated through returned slice: %+v", fresh.PendingDeliveries)
-	}
-}
-
-func TestChannelStateRejectsLegacyFinalizedRecord(t *testing.T) {
-	// Records persisted before the upstream finalize→seal rename are
-	// intentionally NOT decoded (pre-1.0 breaking migration, no alias): a
-	// legacy record carrying "finalized" must fail loudly instead of silently
-	// reloading a closed channel as unsealed.
-	legacy := []byte(`{
-		"channel_id": "c1",
-		"authorized_signer": "signer1",
-		"deposit": 1000000,
-		"cumulative": 42,
-		"finalized": true
-	}`)
-	var state ChannelState
-	err := json.Unmarshal(legacy, &state)
-	if err == nil {
-		t.Fatal("legacy pre-seal record must not decode")
-	}
-	if !strings.Contains(err.Error(), "legacy pre-seal channel record") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// A post-rename record still round-trips through the custom decoder.
-	current := []byte(`{"channel_id": "c1", "authorized_signer": "signer1", "sealed": true, "open_slot": 777}`)
-	if err := json.Unmarshal(current, &state); err != nil {
-		t.Fatalf("decode current record: %v", err)
-	}
-	if !state.Sealed || state.OpenSlot != 777 {
-		t.Fatalf("current record decoded incorrectly: %+v", state)
 	}
 }

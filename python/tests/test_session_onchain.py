@@ -48,7 +48,6 @@ USDC_MAINNET_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 OPEN_FIXTURE_SALT = 7
 OPEN_FIXTURE_DEPOSIT = 1_000_000
 OPEN_FIXTURE_GRACE = 900
-OPEN_FIXTURE_SLOT = 4242
 
 
 @dataclass
@@ -115,7 +114,6 @@ def _sign_and_attach(fixture: OpenTxFixture, ix: Instruction, v0: bool) -> tuple
         str(fixture.mint),
         OPEN_FIXTURE_SALT,
         OPEN_FIXTURE_GRACE,
-        OPEN_FIXTURE_SLOT,
         str(fixture.authorized),
         signature,
     ).with_transaction(encoded)
@@ -127,9 +125,7 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
     payee = _kp(2).pubkey()
     authorized = _kp(3).pubkey()
     mint = Pubkey.from_string(USDC_MAINNET_MINT)
-    channel, _ = find_channel_pda(
-        payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, OPEN_FIXTURE_SLOT, PROGRAM_ID
-    )
+    channel, _ = find_channel_pda(payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, PROGRAM_ID)
     ix = build_open_instruction(
         OpenChannelParams(
             payer=payer.pubkey(),
@@ -139,7 +135,6 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
             salt=OPEN_FIXTURE_SALT,
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
             rent_payer=payer.pubkey(),
         )
@@ -151,7 +146,7 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
         mint=mint,
         channel=channel,
         signature="",
-        payload=OpenPayload.payment_channel("", "", "", "", "", 0, 0, 0, "", ""),
+        payload=OpenPayload.payment_channel("", "", "", "", "", 0, 0, "", ""),
         expected=VerifyOpenTxExpected(authorized_signer="", recipient="", currency="", network=""),
     )
     fixture.signature, fixture.payload = _sign_and_attach(fixture, ix, v0)
@@ -179,9 +174,6 @@ async def test_verify_open_tx_accepts_legacy_encoding() -> None:
     assert result.deposit == OPEN_FIXTURE_DEPOSIT
     assert result.grace_period == OPEN_FIXTURE_GRACE
     assert result.salt == OPEN_FIXTURE_SALT
-    # openSlot is decoded from the instruction data and surfaced so the method
-    # layer persists it (the channel PDA seed / reclaim input).
-    assert result.open_slot == OPEN_FIXTURE_SLOT
     # payer (open slot 0) is surfaced so the method layer can record
     # state.operator and refund the opener's ATA at settle-at-close.
     assert result.payer == str(fixture.payer.pubkey())
@@ -228,9 +220,7 @@ async def test_verify_open_tx_rejects_address_lookup_tables() -> None:
     payee = _kp(2).pubkey()
     authorized = _kp(3).pubkey()
     mint = Pubkey.from_string(USDC_MAINNET_MINT)
-    channel, _ = find_channel_pda(
-        payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, OPEN_FIXTURE_SLOT, PROGRAM_ID
-    )
+    channel, _ = find_channel_pda(payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, PROGRAM_ID)
     ix = build_open_instruction(
         OpenChannelParams(
             payer=payer.pubkey(),
@@ -240,7 +230,6 @@ async def test_verify_open_tx_rejects_address_lookup_tables() -> None:
             salt=OPEN_FIXTURE_SALT,
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
             rent_payer=payer.pubkey(),
         )
@@ -264,7 +253,6 @@ async def test_verify_open_tx_rejects_address_lookup_tables() -> None:
         str(mint),
         OPEN_FIXTURE_SALT,
         OPEN_FIXTURE_GRACE,
-        OPEN_FIXTURE_SLOT,
         str(authorized),
         str(vtx.signatures[0]),
     ).with_transaction(encoded)
@@ -363,7 +351,6 @@ async def test_verify_open_tx_rejects_zero_deposit() -> None:
             salt=OPEN_FIXTURE_SALT,
             deposit=0,
             grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
             rent_payer=fixture.payer.pubkey(),
         )
@@ -427,7 +414,6 @@ async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
             salt=OPEN_FIXTURE_SALT,
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
             rent_payer=fixture.payer.pubkey(),
         )
@@ -450,31 +436,6 @@ async def test_verify_open_tx_rejects_payload_channel_id_mismatch() -> None:
     fixture.payload.channel_id = str(_kp(88).pubkey())
     with pytest.raises(PaymentError, match="channelId"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_payload_recent_slot_mismatch() -> None:
-    """A payload recentSlot that disagrees with the transaction's openSlot is
-    rejected (the instruction data is authoritative)."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.recent_slot = OPEN_FIXTURE_SLOT + 1
-    with pytest.raises(PaymentError, match="recentSlot"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_binds_challenge_recent_slot() -> None:
-    """When the caller supplies the challenge-issued recentSlot, the
-    transaction's own openSlot must equal it — even when the payload omits
-    recentSlot (otherwise a transaction built against a different slot would
-    slip through and the decoded slot would overwrite the payload)."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.recent_slot = None
-    expected = replace(fixture.expected, recent_slot=OPEN_FIXTURE_SLOT + 1)
-    with pytest.raises(PaymentError, match="challenge recentSlot"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-    accepted = replace(fixture.expected, recent_slot=OPEN_FIXTURE_SLOT)
-    result = await verify_open_tx(accepted, fixture.payload, None)
-    assert result.open_slot == OPEN_FIXTURE_SLOT
 
 
 # -- verify_open_tx: RPC liveness ---------------------------------------------

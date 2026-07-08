@@ -42,7 +42,6 @@ func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
 		MaxTimeoutSeconds:       proto.DefaultMaxTimeoutSeconds,
 		OperatorSigner:          uptoSignerWrapper{signer: cfg.Operator.Signer},
 		RecentBlockhashProvider: cfg.RecentBlockhashProvider,
-		RecentSlotProvider:      cfg.RecentSlotProvider,
 	}
 	engine, err := proto.NewX402Upto(uptoCfg)
 	if err != nil {

@@ -28,7 +28,6 @@ type Channel struct {
 	AuthorizedSigner ag_solanago.PublicKey
 	Mint             ag_solanago.PublicKey
 	RentPayer        ag_solanago.PublicKey
-	OpenSlot         uint64
 }
 
 func (obj *Channel) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
@@ -124,12 +123,6 @@ func (obj *Channel) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
 	}
 	{
 		err := encoder.Encode(obj.RentPayer)
-		if err != nil {
-			return err
-		}
-	}
-	{
-		err := encoder.Encode(obj.OpenSlot)
 		if err != nil {
 			return err
 		}
@@ -230,12 +223,6 @@ func (obj *Channel) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
 	}
 	{
 		err := decoder.Decode(&obj.RentPayer)
-		if err != nil {
-			return err
-		}
-	}
-	{
-		err := decoder.Decode(&obj.OpenSlot)
 		if err != nil {
 			return err
 		}

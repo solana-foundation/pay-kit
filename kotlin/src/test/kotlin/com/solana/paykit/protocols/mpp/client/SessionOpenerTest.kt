@@ -20,7 +20,6 @@ class SessionOpenerTest {
     private val operatorAddress = Base58.encode(ByteArray(32) { 5 })
     private val recipient = Base58.encode(ByteArray(32) { 6 })
     private val blockhash = Base58.encode(ByteArray(32) { 0x11 })
-    private val openSlot = 12_345uL
 
     private fun request(
         modes: List<SessionMode> = listOf(SessionMode.PULL),
@@ -38,17 +37,13 @@ class SessionOpenerTest {
     fun buildsPullClientVoucherOpenAction() {
         val sessionSigner = sessionSigner()
         val payer = payerSigner()
-        val opener = PaymentChannelSession.open(request(), payer, sessionSigner, blockhash, openSlot)
+        val opener = PaymentChannelSession.open(request(), payer, sessionSigner, blockhash)
 
         assertEquals(opener.open.channelId.toBase58(), opener.session.channelIdString())
         val open = opener.action as SessionAction.Open
         assertEquals(SessionMode.PULL, open.payload.mode)
         assertEquals(opener.open.channelId.toBase58(), open.payload.channelId)
         assertEquals(PublicKey(payer.publicKeyBytes).toBase58(), open.payload.payer)
-        // The open slot is a PDA seed, so it must ride the open payload (wire
-        // name `recentSlot`) for the server to re-derive (and persist) the
-        // channel address.
-        assertEquals(openSlot, open.payload.recentSlot)
         assertEquals(sessionSigner.address, open.payload.authorizedSigner)
         assertEquals(PENDING_SERVER_SIGNATURE, open.payload.signature)
         assertNotNull(open.payload.transaction)
@@ -56,13 +51,12 @@ class SessionOpenerTest {
         assertEquals(Mints.USDC_MAINNET, opener.open.mint.toBase58())
         assertEquals(1_000_000uL, opener.open.deposit)
         assertEquals(PaymentChannels.DEFAULT_GRACE_PERIOD_SECONDS, opener.open.gracePeriod)
-        assertEquals(openSlot, opener.open.openSlot)
     }
 
     @Test
     fun appliesSessionOptions() {
         val opener = PaymentChannelSession.open(
-            request(), payerSigner(), sessionSigner(), blockhash, openSlot,
+            request(), payerSigner(), sessionSigner(), blockhash,
             PaymentChannelSessionOpenOptions(cumulative = 20uL, expiresAt = 1234L),
         )
         val voucher = opener.session.prepareIncrement(5uL)
@@ -73,14 +67,14 @@ class SessionOpenerTest {
     @Test
     fun rejectsNonPullChallenge() {
         assertFailsWith<MppException> {
-            PaymentChannelSession.open(request(modes = listOf(SessionMode.PUSH), strategy = null), payerSigner(), sessionSigner(), blockhash, openSlot)
+            PaymentChannelSession.open(request(modes = listOf(SessionMode.PUSH), strategy = null), payerSigner(), sessionSigner(), blockhash)
         }
     }
 
     @Test
     fun rejectsOperatedVoucherChallenge() {
         assertFailsWith<MppException> {
-            PaymentChannelSession.open(request(strategy = SessionPullVoucherStrategy.OPERATED_VOUCHER), payerSigner(), sessionSigner(), blockhash, openSlot)
+            PaymentChannelSession.open(request(strategy = SessionPullVoucherStrategy.OPERATED_VOUCHER), payerSigner(), sessionSigner(), blockhash)
         }
     }
 
@@ -92,7 +86,6 @@ class SessionOpenerTest {
                 payerSigner(),
                 sessionSigner(),
                 blockhash,
-                openSlot,
             )
         }
     }

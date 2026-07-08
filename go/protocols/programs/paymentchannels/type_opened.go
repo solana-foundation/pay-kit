@@ -11,6 +11,5 @@ import (
 )
 
 type Opened struct {
-	Channel  ag_solanago.PublicKey
-	OpenSlot uint64
+	Channel ag_solanago.PublicKey
 }

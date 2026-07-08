@@ -212,23 +212,6 @@ export const clientImplementations: ImplementationDefinition[] = [
     intents: ["x402-exact"],
   },
   {
-    id: "swift-x402-upto",
-    label: "Swift x402 upto client",
-    role: "client",
-    // Drives the SolanaPayKit x402 upto client (parse the upto challenge ->
-    // build a partially-signed channel open + PAYMENT-SIGNATURE -> retry).
-    // Defaults off to match swift/go/etc: opt in via
-    // `X402_HARNESS_CLIENTS=swift-x402-upto`.
-    command: [
-      "sh",
-      "-c",
-      "cd swift-x402-upto-client && swift run --quiet SwiftX402UptoClient",
-    ],
-    enabled: isEnabled("swift-x402-upto", "X402_HARNESS_CLIENTS", false),
-    intents: ["x402-upto"],
-    reportsAs: "swift",
-  },
-  {
     id: "kotlin-x402",
     label: "Kotlin x402 exact client",
     role: "client",
@@ -243,23 +226,6 @@ export const clientImplementations: ImplementationDefinition[] = [
     // Defaults off to match swift/go/etc: opt-in via `X402_HARNESS_CLIENTS=kotlin-x402`.
     enabled: isEnabled("kotlin-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
-  },
-  {
-    id: "kotlin-x402-upto",
-    label: "Kotlin x402 upto client",
-    role: "client",
-    // Pre-warmed by `gradle installDist` in the kotlin x402 upto harness job so
-    // the script lands at this path. Local runs can prime it with
-    // `(cd harness/kotlin-x402-upto-client && gradle installDist)`.
-    command: [
-      "sh",
-      "-c",
-      "kotlin-x402-upto-client/build/install/mpp-kotlin-x402-upto-harness-client/bin/mpp-kotlin-x402-upto-harness-client",
-    ],
-    // Defaults off: opt-in via `X402_HARNESS_CLIENTS=kotlin-x402-upto`.
-    enabled: isEnabled("kotlin-x402-upto", "X402_HARNESS_CLIENTS", false),
-    intents: ["x402-upto"],
-    reportsAs: "kotlin",
   },
   {
     id: "rust-x402-upto",

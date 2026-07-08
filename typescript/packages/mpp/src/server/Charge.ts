@@ -25,7 +25,6 @@ import {
 import * as Methods from '../Methods.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
-import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
 
 /**
@@ -813,49 +812,30 @@ async function verifySignature(
         throw new Error('Missing signature in credential payload');
     }
 
+    // Replay prevention: reject already-consumed transaction signatures.
     const consumedKey = `solana-charge:consumed:${signature}`;
-
-    // Replay prevention. The consumed-check, on-chain verify, and consumed-mark
-    // must run atomically per signature: `mppx`'s Store has no atomic
-    // put-if-absent, so without serialization two concurrent requests carrying
-    // the same confirmed signature both pass the check, both verify the same
-    // real transaction, and both settle (one payment, two accesses). A cheap
-    // read outside the lock rejects obvious replays without queueing; the
-    // authoritative check-and-mark runs inside `withKeyLock`.
-    //
-    // Scope: single Node process. Multi-process/replica deployments sharing one
-    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
     if (await store.get(consumedKey)) {
         throw new Error('Transaction signature already consumed');
     }
 
-    return await withKeyLock(consumedKey, async () => {
-        // Re-check inside the lock: a concurrent request in this process may
-        // have consumed the signature since the read above.
-        if (await store.get(consumedKey)) {
-            throw new Error('Transaction signature already consumed');
-        }
+    // Fetch and verify the transaction on-chain.
+    const tx = await fetchTransaction(rpcUrl, signature);
+    if (!tx) throw new Error('Transaction not found or not yet confirmed');
+    if (tx.meta?.err) throw new Error('Transaction failed on-chain');
 
-        // Fetch and verify the transaction on-chain.
-        const tx = await fetchTransaction(rpcUrl, signature);
-        if (!tx) throw new Error('Transaction not found or not yet confirmed');
-        if (tx.meta?.err) throw new Error('Transaction failed on-chain');
+    const instructions = tx.transaction.message.instructions;
+    await verifyInstructions(instructions, challenge, recipient);
 
-        const instructions = tx.transaction.message.instructions;
-        await verifyInstructions(instructions, challenge, recipient);
+    // Mark consumed to prevent replay.
+    await store.put(consumedKey, true);
 
-        // Mark consumed only after a successful verify, so a failed verify never
-        // burns a legitimately-retryable signature.
-        await store.put(consumedKey, true);
-
-        return Receipt.from({
-            method: 'solana',
-            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-            reference: signature,
-            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-            status: 'success',
-            timestamp: new Date().toISOString(),
-        });
+    return Receipt.from({
+        method: 'solana',
+        ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
+        reference: signature,
+        ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+        status: 'success',
+        timestamp: new Date().toISOString(),
     });
 }
 

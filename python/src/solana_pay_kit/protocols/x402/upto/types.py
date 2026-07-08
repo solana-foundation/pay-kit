@@ -49,16 +49,12 @@ class UptoExtra(_UptoExtraRequired, total=False):
 
     ``assetTransferMethod``/``decimals``/``tokenProgram``/``facilitatorAddress``
     are required. ``facilitatorFee`` is optional and defaults to zero basis
-    points. ``channelProgram``/``recentBlockhash``/``recentSlot``/``validAfter``
-    are optional. ``recentSlot`` is the server-fetched slot the client uses as
-    the channel ``openSlot`` (u64-as-string like the session challenge; a plain
-    number is accepted inbound).
+    points. ``channelProgram``/``recentBlockhash``/``validAfter`` are optional.
     """
 
     facilitatorFee: int
     channelProgram: str
     recentBlockhash: str
-    recentSlot: str
     lastValidBlockHeight: str
     validAfter: int
 

@@ -5,30 +5,45 @@
     @see https://github.com/codama-idl/codama
 '''
 
+import borsh_construct as borsh
 import typing
 from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey as SolPubkey
+from .. import types
 from ..program_id import PAYMENT_CHANNELS_PROGRAM_ADDRESS
+class SettleAndFinalizeArgs(typing.TypedDict):
+    settleAndFinalizeArgs:types.settleAndFinalizeArgs.SettleAndFinalizeArgs
 
-class ReclaimAccounts(typing.TypedDict):
+
+layout = borsh.CStruct(
+    "settleAndFinalizeArgs" /types.settleAndFinalizeArgs.SettleAndFinalizeArgs.layout,
+    )
+
+
+class SettleAndFinalizeAccounts(typing.TypedDict):
+    merchant:SolPubkey
     channel:SolPubkey
-    rentPayer:SolPubkey
+    instructionsSysvar:SolPubkey
 
-def Reclaim(
-    accounts: ReclaimAccounts,
+def SettleAndFinalize(
+    args: SettleAndFinalizeArgs,
+    accounts: SettleAndFinalizeAccounts,
     program_id: SolPubkey =  PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     remaining_accounts: typing.Optional[typing.List[AccountMeta]] = None,
 ) ->Instruction:
     keys: list[AccountMeta] = [
+    AccountMeta(pubkey=accounts["merchant"], is_signer=True, is_writable=False),
     AccountMeta(pubkey=accounts["channel"], is_signer=False, is_writable=True),
-    AccountMeta(pubkey=accounts["rentPayer"], is_signer=False, is_writable=True),
+    AccountMeta(pubkey=accounts["instructionsSysvar"], is_signer=False, is_writable=False),
     ]
     if remaining_accounts is not None:
         keys += remaining_accounts
-    identifier = b"\x09"
+    identifier = b"\x04"
 
 
-    encoded_args = b""
+    encoded_args = layout.build({
+        "settleAndFinalizeArgs":args["settleAndFinalizeArgs"].to_encodable(),
+       })
     data = identifier + encoded_args
     return Instruction(program_id,data,keys)
 

@@ -1,15 +1,16 @@
 # examples/fastapi/app.py
-"""FastAPI server gated with solana_pay_kit route metadata.
+"""FastAPI server gated with solana_pay_kit.
 
-Zero-config: ``install_paywall`` builds a localnet config against the hosted
-Surfpool sandbox at https://402.surfnet.dev:8899 with the shipped demo signer
-as the recipient. No keys, no .env, no flags.
+Zero-config: a bare ``solana_pay_kit.configure()`` boots against solana_localnet
+(the hosted Surfpool sandbox at https://402.surfnet.dev:8899) with the
+shipped demo signer as the recipient. No keys, no .env, no flags.
 
 Two routes:
 
     GET /health  -> free, returns {"ok": true}
-    GET /report  -> gated by its "paid" tag. The paywall answers 402 with a
-                    WWW-Authenticate challenge until a valid proof arrives.
+    GET /report  -> gated. The RequirePayment dependency answers 402 with a
+                    WWW-Authenticate challenge until a valid proof arrives,
+                    then hands the verified Payment to the handler.
 
 Run:
 
@@ -24,21 +25,35 @@ Drive it from a client:
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI
 
-from solana_pay_kit.fastapi import install_paywall, payment
+import solana_pay_kit
+from solana_pay_kit import Gate, Pricing, usd
+from solana_pay_kit.fastapi import Payment, RequirePayment, install_exception_handler
+
+solana_pay_kit.configure(network="solana_localnet")
+
+
+class Catalog(Pricing):
+    """The route catalogue: every paid route declares its gate here."""
+
+    def __init__(self) -> None:
+        self.report = Gate.build(
+            name="report",
+            amount=usd("0.10"),
+            description="Premium report",
+            default_pay_to=solana_pay_kit.config().effective_recipient(),
+            accept_default=solana_pay_kit.config().accept,
+        )
+
+
+catalog = Catalog()
+
+# Module-level dependency singleton (FastAPI resolves it per request).
+require_report = Depends(RequirePayment("report", pricing=catalog))
 
 app = FastAPI()
-install_paywall(
-    app,
-    {
-        "enabled": True,
-        "network": "solana_localnet",
-        "price_usd": "0.10",
-        "signer_env": None,
-    },
-    paid_tags=("paid",),
-)
+install_exception_handler(app)
 
 
 @app.get("/health")
@@ -47,12 +62,7 @@ async def health() -> dict[str, bool]:
     return {"ok": True}
 
 
-@app.get("/report", tags=["paid"])
-async def report(request: Request) -> dict[str, object]:
-    """Paid route. ``payment(request)`` is the verified proof."""
-    verified = payment(request)
-    return {
-        "ok": True,
-        "tx": verified.transaction if verified else None,
-        "protocol": verified.protocol.value if verified else None,
-    }
+@app.get("/report")
+async def report(payment: Payment = require_report) -> dict[str, object]:
+    """Paid route. ``payment`` is the verified proof for this request."""
+    return {"ok": True, "tx": payment.transaction, "protocol": payment.protocol.value}

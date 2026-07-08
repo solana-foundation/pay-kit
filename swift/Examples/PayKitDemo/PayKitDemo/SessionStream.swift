@@ -46,9 +46,6 @@ enum SessionStream {
         guard let blockhash = request.recentBlockhash, !blockhash.isEmpty else {
             throw SessionStreamError.message("session challenge did not carry a recentBlockhash")
         }
-        guard let recentSlot = request.recentSlot else {
-            throw SessionStreamError.message("session challenge did not carry a recentSlot")
-        }
 
         // 2. Open the channel (pull + clientVoucher, server-broadcast).
         let sessionSigner = try MemorySigner(secretKey: randomSeed())
@@ -56,8 +53,7 @@ enum SessionStream {
             request: request,
             payerSigner: payer,
             sessionSigner: sessionSigner,
-            recentBlockhash: blockhash,
-            openSlot: recentSlot
+            recentBlockhash: blockhash
         )
         let channelId = opener.open.channelId.base58
         let credential = try serializeSessionCredential(challenge: challenge.echo(), action: opener.action)
@@ -197,10 +193,8 @@ enum SessionStream {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { continue }
-            // The program renamed finalize -> seal; accept either receipt flag
-            // while playground servers roll over.
-            let sealed = (obj["sealed"] as? Bool) ?? (obj["finalized"] as? Bool) ?? false
-            if sealed, let sig = obj["settledSignature"] as? String, !sig.isEmpty {
+            if let finalized = obj["finalized"] as? Bool, finalized,
+               let sig = obj["settledSignature"] as? String, !sig.isEmpty {
                 return sig
             }
         }

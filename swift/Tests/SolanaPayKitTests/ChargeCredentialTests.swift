@@ -37,7 +37,7 @@ struct ChargeCredentialTests {
     func rejectsUnterminatedQuotedAuthParam() throws {
         let request = try Self.encodedRequest()
 
-        #expect(throws: PayKitError.invalidHeader) {
+        #expect(throws: MppError.invalidHeader) {
             _ = try MppHeaders.parseWWWAuthenticate(
                 """
                 Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="\(request)
@@ -48,7 +48,7 @@ struct ChargeCredentialTests {
 
     @Test
     func rejectsDanglingEscapeInQuotedAuthParam() throws {
-        #expect(throws: PayKitError.invalidHeader) {
+        #expect(throws: MppError.invalidHeader) {
             _ = try MppHeaders.parseWWWAuthenticate(
                 """
                 Payment id="challenge-1\\
@@ -71,7 +71,7 @@ struct ChargeCredentialTests {
         do {
             _ = try challenge.chargeRequest
             Issue.record("expected invalid JSON error")
-        } catch let PayKitError.invalidJSON(detail) {
+        } catch let MppError.invalidJSON(detail) {
             #expect(detail.contains("currency"))
         }
     }
@@ -133,14 +133,14 @@ struct ChargeCredentialTests {
             transactionProvider: StaticChargeTransactionProvider(transaction: "tx")
         )
 
-        await #expect(throws: PayKitError.unsupportedChallenge(method: "solana", intent: "session")) {
+        await #expect(throws: MppError.unsupportedChallenge(method: "solana", intent: "session")) {
             _ = try await builder.authorizationHeader(for: challenge)
         }
     }
 
     @Test
     func rejectsMalformedRequestBase64() throws {
-        #expect(throws: PayKitError.invalidBase64URL) {
+        #expect(throws: MppError.invalidBase64URL) {
             _ = try PaymentChallenge(
                 id: "challenge-3",
                 realm: "MPP Payment",
@@ -160,7 +160,7 @@ struct ChargeCredentialTests {
         let header = """
         Payment id="c", realm="r", method="solana", intent="charge", request="\(oversized)"
         """
-        #expect(throws: PayKitError.invalidHeader) {
+        #expect(throws: MppError.invalidHeader) {
             _ = try MppHeaders.parseWWWAuthenticate(header)
         }
     }

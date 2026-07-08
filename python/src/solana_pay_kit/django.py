@@ -35,7 +35,7 @@ from solana_pay_kit._middleware import payment as _core_payment
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from solana_pay_kit.payment import Payment
-from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
+from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash, finalize_usage
 
 if TYPE_CHECKING:
     from django.http import (  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs (django-stubs is third-party)
@@ -83,12 +83,11 @@ def _upto_engine(config: Config) -> X402Upto:
         return cached
     from solana_pay_kit.protocols.x402.upto import X402Upto
 
-    # Pre-fetch ``extra.recentBlockhash`` and ``extra.recentSlot`` (one
-    # getLatestBlockhash call) from the configured RPC (parity with
+    # Pre-fetch ``extra.recentBlockhash`` from the configured RPC (parity with
     # fastapi/the harness server; degrades to None on any RPC failure).
     engine = X402Upto(
         config,
-        recent_state_provider=lambda: fetch_recent_blockhash_and_slot(config.effective_rpc_url()),
+        recent_blockhash_provider=lambda: fetch_recent_blockhash(config.effective_rpc_url()),
     )
     _UPTO_CACHE[config] = engine
     return engine
@@ -141,7 +140,7 @@ def require_usage(
     :class:`~django.http.JsonResponse` carrying the upto challenge. The view MUST
     call ``charge.charge(actual_base_units)`` with a positive amount before
     returning, else the body is withheld (fail-closed, 402) and the channel is
-    sealed with a full refund.
+    finalized with a full refund.
     """
 
     def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
@@ -167,7 +166,7 @@ def require_usage(
             try:
                 response = view(request, *args, **kwargs)
             except BaseException:
-                # The channel is open on-chain; settle 0 (seal + full refund)
+                # The channel is open on-chain; settle 0 (finalize + full refund)
                 # so an abandoned request never leaves the deposit locked.
                 with contextlib.suppress(Exception):
                     _run(engine.settle_actual(verified, 0))

@@ -1,12 +1,12 @@
 import Foundation
 
-/// Client-side payment-channels primitives: PDA/ATA derivation, the 50-byte
+/// Client-side payment-channels primitives: PDA/ATA derivation, the 48-byte
 /// voucher preimage, and the `open` instruction + partially-signed open
 /// transaction the session client broadcasts via the operator.
 ///
 /// Mirrors the client-facing subset of `solana_pay_core::payment_channels`
 /// (`rust/crates/core/src/payment_channels.rs`). The server-only primitives
-/// (ed25519 verify precompile, settle/seal/distribute/reclaim, the SHA-256
+/// (ed25519 verify precompile, settle/finalize/distribute, the BLAKE3
 /// distribution hash) are intentionally omitted: this SDK is client-only, and
 /// the channel `open` passes its recipients inline rather than hashed.
 public enum PaymentChannels {
@@ -28,16 +28,6 @@ public enum PaymentChannels {
 
     /// Default payment-channel close grace period, in seconds.
     public static let defaultGracePeriodSeconds: UInt32 = 900
-
-    /// Constant magic prefix of the signed voucher payload: version byte 0x01
-    /// under the 0x56 ("V") tag. The program rejects vouchers without it
-    /// (`voucherBadMagic`); the magic lives only in the signed bytes, never in
-    /// the wire JSON.
-    public static let voucherMagic = Data([0x56, 0x01])
-
-    /// Maximum age (in slots) the program accepts for an `openSlot`: the open
-    /// must land within `openSlot + 1500`, and future slots are rejected.
-    public static let openSlotMaxAgeSlots: UInt64 = 1500
 
     /// `open` instruction discriminator (codama `OPEN_DISCRIMINATOR`).
     static let openDiscriminator: UInt8 = 1
@@ -66,11 +56,6 @@ public enum PaymentChannels {
         public let salt: UInt64
         public let deposit: UInt64
         public let gracePeriod: UInt32
-        /// Slot the channel is opened at: a PDA seed and an `openArgs` field.
-        /// Server-prefetched in the 402 challenge (alongside the recent
-        /// blockhash) — clients never fetch it via RPC. The program rejects
-        /// future slots and slots older than ``openSlotMaxAgeSlots``.
-        public let openSlot: UInt64
         public let recipients: [Distribution]
         public let tokenProgram: Pubkey
         public let programId: Pubkey
@@ -84,7 +69,6 @@ public enum PaymentChannels {
             salt: UInt64,
             deposit: UInt64,
             gracePeriod: UInt32,
-            openSlot: UInt64,
             recipients: [Distribution],
             tokenProgram: Pubkey,
             programId: Pubkey
@@ -97,14 +81,13 @@ public enum PaymentChannels {
             self.salt = salt
             self.deposit = deposit
             self.gracePeriod = gracePeriod
-            self.openSlot = openSlot
             self.recipients = recipients
             self.tokenProgram = tokenProgram
             self.programId = programId
         }
     }
 
-    /// Output of ``buildOpenTransaction(payer:payee:mint:authorizedSigner:salt:deposit:gracePeriod:openSlot:recipients:tokenProgram:programId:feePayer:recentBlockhash:)``:
+    /// Output of ``buildOpenTransaction(payer:payee:mint:authorizedSigner:salt:deposit:gracePeriod:recipients:tokenProgram:programId:feePayer:recentBlockhash:)``:
     /// the derived channel PDA and the base64 (payer-signed, fee-payer-unsigned)
     /// open transaction.
     public struct OpenTransaction: Sendable {
@@ -114,13 +97,12 @@ public enum PaymentChannels {
 
     // MARK: - Voucher preimage
 
-    /// The 50-byte Ed25519 voucher preimage:
-    /// `magic(0x56 0x01) || channelId(32) || cumulativeAmount(u64 LE) || expiresAt(i64 LE)`.
-    /// Matches `voucher_message_bytes` (constant ``voucherMagic`` prefix, then
-    /// Borsh of a fixed `[u8;32]` + scalars, no discriminator or length prefix).
+    /// The 48-byte Ed25519 voucher preimage:
+    /// `channelId(32) || cumulativeAmount(u64 LE) || expiresAt(i64 LE)`.
+    /// Matches `voucher_message_bytes` (Borsh of a fixed `[u8;32]` + scalars,
+    /// no discriminator or length prefix).
     public static func voucherMessageBytes(channelId: Pubkey, cumulative: UInt64, expiresAt: Int64) -> Data {
-        var out = Data(capacity: 50)
-        out.append(voucherMagic)
+        var out = Data(capacity: 48)
         out.append(channelId.bytes)
         out.append(littleEndian(cumulative))
         out.append(littleEndian(UInt64(bitPattern: expiresAt)))
@@ -129,17 +111,12 @@ public enum PaymentChannels {
 
     // MARK: - PDA derivation
 
-    /// Channel PDA: `["channel", payer, payee, mint, authorizedSigner,
-    /// salt u64 LE, openSlot u64 LE]`. The `openSlot` seed makes the address
-    /// per-incarnation: same parties + salt at a different slot derive a
-    /// different channel.
     public static func findChannelPda(
         payer: Pubkey,
         payee: Pubkey,
         mint: Pubkey,
         authorizedSigner: Pubkey,
         salt: UInt64,
-        openSlot: UInt64,
         programId: Pubkey
     ) throws -> Pubkey {
         let seeds: [Data] = [
@@ -149,7 +126,6 @@ public enum PaymentChannels {
             mint.bytes,
             authorizedSigner.bytes,
             littleEndian(salt),
-            littleEndian(openSlot),
         ]
         return try ProgramDerivedAddress.find(seeds: seeds, programId: programId).address
     }
@@ -173,7 +149,6 @@ public enum PaymentChannels {
             mint: params.mint,
             authorizedSigner: params.authorizedSigner,
             salt: params.salt,
-            openSlot: params.openSlot,
             programId: params.programId
         )
         let payerTokenAccount = try AssociatedTokenAccount.address(
@@ -204,12 +179,11 @@ public enum PaymentChannels {
             .readonly(params.programId),
         ]
 
-        // data = discriminator(1) || borsh(OpenArgs { salt, deposit, gracePeriod, openSlot, recipients }).
+        // data = discriminator(1) || borsh(OpenArgs { salt, deposit, gracePeriod, recipients }).
         var data = Data([openDiscriminator])
         data.append(littleEndian(params.salt))
         data.append(littleEndian(params.deposit))
         data.append(littleEndian(params.gracePeriod))
-        data.append(littleEndian(params.openSlot))
         data.append(littleEndian(UInt32(params.recipients.count)))
         for entry in params.recipients {
             data.append(entry.recipient.bytes)
@@ -221,10 +195,8 @@ public enum PaymentChannels {
 
     /// Build a payer-signed (fee-payer-unsigned) channel `open` transaction. The
     /// `payer` signs to authorize the deposit; the `feePayer` (operator) slot is
-    /// left empty for the server to co-sign before broadcast. `openSlot` is the
-    /// challenge-provided current slot; it seeds the channel PDA and rides in
-    /// `openArgs`. Returns the derived channel PDA and the base64-encoded
-    /// transaction.
+    /// left empty for the server to co-sign before broadcast. Returns the derived
+    /// channel PDA and the base64-encoded transaction.
     public static func buildOpenTransaction(
         payer: SolanaSigner,
         payee: Pubkey,
@@ -233,7 +205,6 @@ public enum PaymentChannels {
         salt: UInt64,
         deposit: UInt64,
         gracePeriod: UInt32,
-        openSlot: UInt64,
         recipients: [Distribution],
         tokenProgram: Pubkey,
         programId: Pubkey,
@@ -251,7 +222,6 @@ public enum PaymentChannels {
             salt: salt,
             deposit: deposit,
             gracePeriod: gracePeriod,
-            openSlot: openSlot,
             recipients: recipients,
             tokenProgram: tokenProgram,
             programId: programId
@@ -262,7 +232,6 @@ public enum PaymentChannels {
             mint: mint,
             authorizedSigner: authorizedSigner,
             salt: salt,
-            openSlot: openSlot,
             programId: programId
         )
         let instruction = try buildOpenInstruction(params)
@@ -274,16 +243,16 @@ public enum PaymentChannels {
         )
         let signature = try await payer.sign(message: message.serialize())
         guard signature.count == Ed25519.signatureLength else {
-            throw PayKitError.signingFailure("payment-channel open signature must be 64 bytes, got \(signature.count)")
+            throw MppError.signingFailure("payment-channel open signature must be 64 bytes, got \(signature.count)")
         }
         guard let signerIndex = message.accountKeys.firstIndex(of: payerPubkey) else {
-            throw PayKitError.invalidTransaction("payer is not in the open transaction account list")
+            throw MppError.invalidTransaction("payer is not in the open transaction account list")
         }
         var signatures = SignedTransaction.emptySignatureSlots(count: Int(message.header.numRequiredSignatures))
         // The payer must land in the signer prefix of the account list; guard the
         // subscript so a non-signer index throws instead of crashing.
         guard signerIndex < signatures.count else {
-            throw PayKitError.invalidTransaction("payer signer index \(signerIndex) is outside the required-signer range")
+            throw MppError.invalidTransaction("payer signer index \(signerIndex) is outside the required-signer range")
         }
         signatures[signerIndex] = signature
         let transaction = try SignedTransaction(signatures: signatures, message: message)
