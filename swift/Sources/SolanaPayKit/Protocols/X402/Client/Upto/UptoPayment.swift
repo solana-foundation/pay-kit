@@ -2,9 +2,6 @@ import Foundation
 
 // MARK: - x402 upto challenge parsing and payment building (payment-channel)
 
-/// Maximum facilitator fee in basis points (100%).
-let X402UptoMaxFacilitatorFeeBps = 10_000
-
 // MARK: - Challenge parsing
 
 /// Parse a 402 `upto` challenge from response headers and/or body, returning the
@@ -46,22 +43,18 @@ public func parseUptoAccepts(
 
 // MARK: - Payment building
 
-/// Default channel grace period (seconds) the client requests at open.
-let X402UptoDefaultGracePeriodSeconds: UInt32 = PaymentChannels.defaultGracePeriodSeconds
-
 /// Build an `upto` payload for a `payment-channel` requirement.
 ///
-/// The client (`signer`) is the channel payer; the operator
-/// (`extra.facilitatorAddress`) is the channel payee, fee payer, rent payer, and
-/// authorized signer. The `open` transaction is built with the operator as fee
-/// payer and signed only in the client's payer slot; the operator co-signs and
-/// broadcasts. `expiresAt` is the authorization deadline (Unix seconds).
+/// The client (`signer`) is the channel payer. `extra.feePayer` is the
+/// transaction fee payer and rent payer; `extra.receiverAuthorizer` is the
+/// channel payee and voucher signer. The `open` transaction is signed only in
+/// the client's payer slot; the server co-signs and broadcasts. `expiresAt` is
+/// the authorization deadline (Unix seconds).
 ///
 /// - Parameters:
-///   - nonce: Opaque per-authorization identifier. When `nil`, a random 16-byte
-///     hex string is generated (independent of the channel salt).
+///   - nonce: Ignored; the payload nonce is the channel salt decimal string.
 ///   - nonceGenerator: Optional 16-byte source backing the default nonce
-///     (tests). Ignored when `nonce` is supplied.
+///     (tests). Ignored; kept for source compatibility.
 ///   - salt: Optional fixed channel salt (tests). When `nil`, a random `u64`
 ///     salt is drawn, independent of `nonce`.
 ///   - openSlot: Optional override for the channel-PDA slot seed (tests).
@@ -77,41 +70,33 @@ public func buildUptoPayload(
     openSlot: UInt64? = nil
 ) async throws -> X402UptoPayload {
     let extra = requirements.extra
-    guard extra.assetTransferMethod == X402UptoAssetTransferMethod else {
-        throw PayKitError.invalidTransaction(
-            "x402 client: requirement does not use the payment-channel asset transfer method"
-        )
-    }
 
     let max = try requirements.maxAmount()
     let mint = try Pubkey(base58: requirements.asset)
-    guard !extra.facilitatorAddress.isEmpty else {
-        throw PayKitError.missingField("x402 client: requirement missing extra.facilitatorAddress")
+    guard !extra.feePayer.isEmpty else {
+        throw PayKitError.missingField("x402 client: requirement missing extra.feePayer")
     }
-    let operator_ = try Pubkey(base58: extra.facilitatorAddress)
+    let feePayer = try Pubkey(base58: extra.feePayer)
+    guard !extra.receiverAuthorizer.isEmpty else {
+        throw PayKitError.missingField("x402 client: requirement missing extra.receiverAuthorizer")
+    }
+    let receiverAuthorizer = try Pubkey(base58: extra.receiverAuthorizer)
+    guard extra.withdrawDelay > 0 else {
+        throw PayKitError.missingField("x402 client: requirement missing extra.withdrawDelay")
+    }
     let beneficiary = try Pubkey(base58: requirements.payTo)
 
-    guard extra.facilitatorFee >= 0, extra.facilitatorFee <= X402UptoMaxFacilitatorFeeBps else {
-        throw PayKitError.invalidTransaction(
-            "x402 client: facilitatorFee must be between 0 and 10000 basis points"
-        )
-    }
     let recipients: [PaymentChannels.Distribution]
-    if beneficiary == operator_ {
+    if beneficiary == receiverAuthorizer {
         recipients = []
     } else {
         recipients = [PaymentChannels.Distribution(
             recipient: beneficiary,
-            bps: UInt16(X402UptoMaxFacilitatorFeeBps - extra.facilitatorFee)
+            bps: 10_000
         )]
     }
 
-    let programId: Pubkey
-    if let value = extra.channelProgram, !value.isEmpty {
-        programId = try Pubkey(base58: value)
-    } else {
-        programId = PaymentChannels.programId
-    }
+    let programId = PaymentChannels.programId
 
     let tokenProgram: Pubkey
     if let value = extra.tokenProgram, !value.isEmpty {
@@ -144,36 +129,36 @@ public func buildUptoPayload(
         throw PayKitError.missingField("x402 client: requirement missing extra.recentSlot")
     }
 
-    // The channel salt is an independent random u64, not the payload nonce.
+    // The channel salt is also the payload nonce, encoded as a decimal string.
     let channelSalt = salt ?? PaymentChannels.uniqueSalt()
     let open = try await PaymentChannels.buildOpenTransaction(
         payer: signer,
-        payee: operator_,
+        payee: receiverAuthorizer,
         mint: mint,
-        authorizedSigner: operator_,
+        authorizedSigner: receiverAuthorizer,
         salt: channelSalt,
         deposit: max,
-        gracePeriod: X402UptoDefaultGracePeriodSeconds,
+        gracePeriod: extra.withdrawDelay,
         openSlot: resolvedOpenSlot,
         recipients: recipients,
         tokenProgram: tokenProgram,
         programId: programId,
-        feePayer: operator_,
+        feePayer: feePayer,
         recentBlockhash: blockhash
     )
 
     let signerPubkey = try Pubkey(bytes: signer.publicKey)
-    let resolvedNonce = nonce ?? randomNonceHex(nonceGenerator: nonceGenerator)
 
     return X402UptoPayload(
         from: signerPubkey.base58,
         maxAmount: String(max),
         expiresAt: expiresAt,
         validAfter: extra.validAfter ?? 0,
-        nonce: resolvedNonce,
+        nonce: String(channelSalt),
         channelId: open.channelId.base58,
         deposit: String(max),
-        authorizedSigner: operator_.base58,
+        authorizedSigner: receiverAuthorizer.base58,
+        openSlot: String(resolvedOpenSlot),
         openTransaction: open.transaction
     )
 }
@@ -218,21 +203,4 @@ public func buildUptoHeader(
         openSlot: openSlot
     )
     return try encodeUptoHeader(requirements: requirements, payload: payload)
-}
-
-// MARK: - Internal helpers
-
-/// 16 random bytes rendered as 32 lowercase hex chars: the default opaque
-/// payload nonce, independent of the channel salt.
-private func randomNonceHex(nonceGenerator: (() -> Data)? = nil) -> String {
-    let bytes: Data
-    if let nonceGenerator {
-        bytes = nonceGenerator()
-    } else {
-        var rng = SystemRandomNumberGenerator()
-        var raw = [UInt8](repeating: 0, count: 16)
-        for i in 0..<16 { raw[i] = rng.next() }
-        bytes = Data(raw)
-    }
-    return bytes.map { String(format: "%02x", $0) }.joined()
 }

@@ -12,7 +12,7 @@
 //   X402_HARNESS_MINT=... \
 //   X402_HARNESS_PAY_TO=... \
 //   X402_HARNESS_CLIENT_SECRET_KEY=[...] \
-//   X402_HARNESS_FACILITATOR_SECRET_KEY=[...] \
+//   X402_HARNESS_FEE_PAYER_SECRET_KEY=[...] \
 //   pnpm test x402-upto.e2e.test.ts
 
 import { afterAll, describe, expect, it } from "vitest";
@@ -30,13 +30,16 @@ const requiredEnvs = [
   "X402_HARNESS_MINT",
   "X402_HARNESS_PAY_TO",
   "X402_HARNESS_CLIENT_SECRET_KEY",
-  "X402_HARNESS_FACILITATOR_SECRET_KEY",
 ];
 
 function missingEnvs(): string[] {
-  return requiredEnvs.filter(
+  const missing = requiredEnvs.filter(
     (name) => !process.env[name] || process.env[name]?.trim() === "",
   );
+  if (!process.env.X402_HARNESS_FEE_PAYER_SECRET_KEY?.trim()) {
+    missing.push("X402_HARNESS_FEE_PAYER_SECRET_KEY");
+  }
+  return missing;
 }
 
 const uptoScenarios = harnessScenarios.filter(
@@ -96,12 +99,17 @@ describe("x402 upto intent — cross-language matrix", () => {
     for (const server of scenarioServers) {
       for (const client of scenarioClients) {
         it(`${client.id} client <-> ${server.id} server: ${scenario.id}`, async () => {
+          const feePayerSecret = process.env.X402_HARNESS_FEE_PAYER_SECRET_KEY!;
           const env = {
             X402_HARNESS_NETWORK: scenario.network,
             X402_HARNESS_PRICE: scenario.price,
             X402_HARNESS_RESOURCE_PATH: scenario.resourcePath,
             X402_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
             X402_HARNESS_ACTUAL_AMOUNT: scenario.actualAmount ?? "0",
+            X402_HARNESS_FEE_PAYER_SECRET_KEY: feePayerSecret,
+            X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY:
+              process.env.X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY ??
+              feePayerSecret,
             PAY_KIT_HARNESS_PROTOCOL: "x402-upto",
           } satisfies Record<string, string>;
 

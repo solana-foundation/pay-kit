@@ -18,20 +18,17 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * x402 ``upto`` wire shapes (payment-channel asset transfer method).
+ * x402 ``upto`` wire shapes.
  *
  * ``upto`` authorizes a maximum amount: the client opens an on-chain payment
- * channel whose deposit is the ceiling, with the operator (facilitator) as the
- * channel payee, authorized signer, fee payer, and rent payer. The operator
- * later settles the metered amount with a single voucher and refunds the
+ * channel whose deposit is the ceiling, with the advertised fee payer funding
+ * the transaction/rent and the receiver authorizer acting as payee and voucher
+ * signer. The server later settles the metered amount and refunds the
  * remainder. The client signs only its payer slot of the ``open`` transaction.
  */
 
 /** ``upto`` scheme identifier. */
 const val UPTO_SCHEME: String = "upto"
-
-/** Payment-channel asset transfer method (the only SVM ``upto`` backend). */
-const val UPTO_ASSET_TRANSFER_METHOD: String = "payment-channel"
 
 /**
  * Serializes a nullable u64 slot as a decimal string; reads string or number
@@ -63,16 +60,14 @@ object SlotStringSerializer : KSerializer<ULong?> {
 /** The ``extra`` object on an ``upto`` requirement. */
 @Serializable
 data class UptoExtra(
-    /** Asset transfer method; MUST equal ``payment-channel`` for the SVM backend. */
-    val assetTransferMethod: String,
     /** Token program address; defaults to the legacy SPL Token program when absent. */
     val tokenProgram: String? = null,
-    /** Base58 operator key: channel payee, authorized signer, fee payer, and settler. */
-    val facilitatorAddress: String? = null,
-    /** Operator cut in basis points (0..10000) of the settled amount; omitted when 0. */
-    val facilitatorFee: Int = 0,
-    /** Channel program id; defaults to the canonical deployment when absent. */
-    val channelProgram: String? = null,
+    /** Base58 fee payer key: transaction fee payer and channel rent payer. */
+    val feePayer: String? = null,
+    /** Base58 receiver authorizer key: channel payee and voucher signer. */
+    val receiverAuthorizer: String? = null,
+    /** Forced-close/withdraw delay advertised by the server. */
+    val withdrawDelay: Int = 0,
     /** Server-prefetched recent blockhash for building the open transaction. */
     val recentBlockhash: String? = null,
     /** Last block height at which ``recentBlockhash`` is valid (decimal string). */
@@ -131,7 +126,7 @@ data class UptoRequiredEnvelope(
  *
  * For the payment-channel method the channel ``open`` is the authorization: the
  * client's signature commits the deposit ceiling, payee, and mint. There is no
- * ``signature`` or ``profile`` field; the operator settles with its own voucher.
+ * ``signature`` or ``profile`` field; the receiver authorizer settles with its own voucher.
  */
 @Serializable
 data class UptoPayload(
@@ -143,15 +138,17 @@ data class UptoPayload(
     val expiresAt: Long,
     /** Activation time (Unix seconds). */
     val validAfter: Long,
-    /** Unique per-authorization identifier. */
+    /** Open salt (decimal string). */
     val nonce: String,
     /** Channel PDA (base58). */
     val channelId: String,
     /** On-chain escrow ceiling in base units; MUST equal ``maxAmount``. */
     val deposit: String,
-    /** Voucher signer: the operator/facilitator key (base58). */
+    /** Voucher signer: the receiver authorizer key (base58). */
     val authorizedSigner: String,
-    /** Base64 client-signed ``open`` transaction for the operator to co-sign and broadcast. */
+    /** Open slot seed (decimal string). */
+    val openSlot: String,
+    /** Base64 client-signed ``open`` transaction for the fee payer to co-sign and broadcast. */
     val openTransaction: String? = null,
 )
 
@@ -173,7 +170,7 @@ data class UptoSettlementResponse(
     val success: Boolean,
     /** Reason for failure when ``success`` is false. */
     val errorReason: String? = null,
-    /** Payer wallet (base58) the operator settled against. */
+    /** Payer wallet (base58) the server settled against. */
     val payer: String? = null,
     /** Settlement transaction signature; absent on a failure response. */
     val transaction: String? = null,

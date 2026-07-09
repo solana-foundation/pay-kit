@@ -1,9 +1,9 @@
 //! Client-side payment building for the x402 `upto` scheme (payment-channel).
 //!
 //! The client opens a channel whose `deposit` is the authorized maximum, with
-//! `authorized_signer = operator` so the operator can settle the actual amount
-//! with a single voucher. The client signs only the `open` transaction; the
-//! operator broadcasts it and settles after metering.
+//! `authorized_signer = receiverAuthorizer` so the receiver can settle the
+//! actual amount with a single voucher. The client signs only the `open`
+//! transaction; the fee payer broadcasts it and settlement runs after metering.
 
 use std::str::FromStr;
 
@@ -15,8 +15,7 @@ use crate::core::payment_channels as pc;
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::upto::{
-    UptoPayload, UptoRequiredEnvelope, UptoRequirements, UptoSignatureEnvelope,
-    UPTO_ASSET_TRANSFER_METHOD, UPTO_SCHEME,
+    UptoPayload, UptoRequiredEnvelope, UptoRequirements, UptoSignatureEnvelope, UPTO_SCHEME,
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 
@@ -32,43 +31,31 @@ pub async fn build_upto_payload(
     payer_signer: &dyn SolanaSigner,
     requirements: &UptoRequirements,
     expires_at: i64,
-    nonce: impl Into<String>,
+    _nonce: impl Into<String>,
 ) -> Result<UptoPayload, Error> {
-    if requirements.extra.asset_transfer_method != UPTO_ASSET_TRANSFER_METHOD {
-        return Err(Error::Other(
-            "requirement does not use the payment-channel asset transfer method".to_string(),
-        ));
-    }
-
     let max = requirements.max_amount()?;
     let mint = Pubkey::from_str(&requirements.asset)
         .map_err(|e| Error::Other(format!("invalid asset mint: {e}")))?;
-    // EVM-aligned: `facilitatorAddress` is the settler/operator. The Solana
-    // channel program requires the channel payee == the settle signer, so the
-    // channel is opened with payee = facilitator and the beneficiary (`payTo`)
-    // is paid via a derived distribution split of `10000 - facilitatorFee`.
-    let operator = Pubkey::from_str(&requirements.extra.facilitator_address)
-        .map_err(|e| Error::Other(format!("invalid facilitatorAddress: {e}")))?;
+    let fee_payer = Pubkey::from_str(&requirements.extra.fee_payer)
+        .map_err(|e| Error::Other(format!("invalid feePayer: {e}")))?;
+    let receiver_authorizer = Pubkey::from_str(&requirements.extra.receiver_authorizer)
+        .map_err(|e| Error::Other(format!("invalid receiverAuthorizer: {e}")))?;
+    if requirements.extra.withdraw_delay == 0 {
+        return Err(Error::Other(
+            "requirement missing extra.withdrawDelay".to_string(),
+        ));
+    }
     let beneficiary = Pubkey::from_str(&requirements.pay_to)
         .map_err(|e| Error::Other(format!("invalid payTo: {e}")))?;
-    let recipients = if beneficiary == operator {
-        // Facilitator is the beneficiary — it keeps 100%, no split needed.
+    let recipients = if beneficiary == receiver_authorizer {
         Vec::new()
     } else {
-        let bps = 10_000u16
-            .checked_sub(requirements.extra.facilitator_fee)
-            .ok_or_else(|| Error::Other("facilitatorFee exceeds 100%".to_string()))?;
         vec![pc::Distribution {
             recipient: beneficiary,
-            bps,
+            bps: 10_000,
         }]
     };
-    let program_id = match &requirements.extra.channel_program {
-        Some(value) => {
-            Pubkey::from_str(value).map_err(|e| Error::Other(format!("invalid programId: {e}")))?
-        }
-        None => pc::default_program_id(),
-    };
+    let program_id = pc::default_program_id();
     let token_program = match &requirements.extra.token_program {
         Some(value) => Pubkey::from_str(value)
             .map_err(|e| Error::Other(format!("invalid tokenProgram: {e}")))?,
@@ -91,20 +78,19 @@ pub async fn build_upto_payload(
         .map_err(|e| Error::Other(format!("invalid recentSlot: {e}")))?;
 
     let salt = pc::random_salt();
-    // operator is both the voucher signer (authorized_signer) and the fee payer.
     let open = pc::build_open_payment_channel_tx(
         payer_signer,
-        &operator, // channel payee == authorized_signer == fee_payer
+        &receiver_authorizer,
         &mint,
-        &operator,
+        &receiver_authorizer,
         salt,
         open_slot,
         max,
-        pc::DEFAULT_GRACE_PERIOD_SECONDS,
+        requirements.extra.withdraw_delay,
         recipients,
         &token_program,
         &program_id,
-        &operator,
+        &fee_payer,
         blockhash,
     )
     .await?;
@@ -114,10 +100,11 @@ pub async fn build_upto_payload(
         max_amount: max.to_string(),
         expires_at,
         valid_after: requirements.extra.valid_after.unwrap_or(0),
-        nonce: nonce.into(),
+        nonce: salt.to_string(),
         channel_id: pc::pubkey_string(&open.channel_id),
         deposit: max.to_string(),
-        authorized_signer: pc::pubkey_string(&operator),
+        authorized_signer: pc::pubkey_string(&receiver_authorizer),
+        open_slot: open_slot.to_string(),
         open_transaction: Some(open.transaction),
     })
 }
@@ -198,7 +185,7 @@ mod tests {
     use super::*;
     use crate::x402::protocol::schemes::upto::UptoExtra;
 
-    const OPERATOR: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+    const RECEIVER_AUTHORIZER: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
 
     fn requirements() -> UptoRequirements {
         UptoRequirements {
@@ -209,11 +196,10 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: None,
-                facilitator_address: OPERATOR.to_string(),
-                facilitator_fee: 0,
-                channel_program: None,
+                fee_payer: RECEIVER_AUTHORIZER.to_string(),
+                receiver_authorizer: RECEIVER_AUTHORIZER.to_string(),
+                withdraw_delay: 900,
                 recent_blockhash: Some(Hash::default().to_string()),
                 last_valid_block_height: None,
                 recent_slot: Some("314".to_string()),
@@ -231,7 +217,8 @@ mod tests {
             nonce: "n-1".to_string(),
             channel_id: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             deposit: "1000000".to_string(),
-            authorized_signer: OPERATOR.to_string(),
+            authorized_signer: RECEIVER_AUTHORIZER.to_string(),
+            open_slot: "314".to_string(),
             open_transaction: Some("tx".to_string()),
         }
     }
@@ -266,7 +253,9 @@ mod tests {
 
         let parsed = parse_upto_challenge(&headers, None).unwrap();
         assert_eq!(parsed.amount, "1000000");
-        assert_eq!(parsed.extra.facilitator_address, OPERATOR);
+        assert_eq!(parsed.extra.fee_payer, RECEIVER_AUTHORIZER);
+        assert_eq!(parsed.extra.receiver_authorizer, RECEIVER_AUTHORIZER);
+        assert_eq!(parsed.extra.withdraw_delay, 900);
     }
 
     #[test]

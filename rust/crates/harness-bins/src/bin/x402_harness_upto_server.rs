@@ -74,7 +74,15 @@ fn read_state(
     let mint = env::var("X402_HARNESS_MINT")
         .unwrap_or_else(|_| "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU".to_string());
     let pay_to = read_required_env("X402_HARNESS_PAY_TO")?;
-    let operator_signer = Arc::new(read_memory_signer("X402_HARNESS_FACILITATOR_SECRET_KEY")?);
+    let fee_payer_signer: Arc<dyn SolanaSigner> = Arc::new(read_memory_signer_any(&[
+        "X402_HARNESS_FEE_PAYER_SECRET_KEY",
+        "X402_HARNESS_FACILITATOR_SECRET_KEY",
+    ])?);
+    let receiver_authorizer_signer: Arc<dyn SolanaSigner> =
+        match read_optional_memory_signer("X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY")? {
+            Some(signer) => Arc::new(signer),
+            None => fee_payer_signer.clone(),
+        };
     let price =
         normalize_price(&env::var("X402_HARNESS_PRICE").unwrap_or_else(|_| "$0.10".to_string()))?;
     let actual_amount = env::var("X402_HARNESS_ACTUAL_AMOUNT").unwrap_or_else(|_| "0".to_string());
@@ -83,8 +91,8 @@ fn read_state(
     let settlement_header = env::var("X402_HARNESS_SETTLEMENT_HEADER")
         .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string());
     let program_id = env::var("PAYMENT_CHANNELS_PROGRAM_ID").ok();
-    let operator = operator_signer.pubkey().to_string();
-    let payout = harness_upto_payout(pay_to, &operator);
+    let receiver_authorizer = receiver_authorizer_signer.pubkey().to_string();
+    let payout = harness_upto_payout(pay_to, &receiver_authorizer);
 
     let upto = X402Upto::new(UptoConfig {
         payout,
@@ -99,7 +107,9 @@ fn read_state(
         description: Some("Surfpool-backed usage endpoint".to_string()),
         max_timeout_seconds: 300,
         program_id,
-        operator_signer,
+        withdraw_delay: 900,
+        fee_payer_signer,
+        receiver_authorizer_signer: Some(receiver_authorizer_signer),
     })?;
 
     Ok(UptoHarnessState {
@@ -112,14 +122,11 @@ fn read_state(
     })
 }
 
-fn harness_upto_payout(pay_to: String, operator: &str) -> UptoPayout {
-    if pay_to == operator {
-        UptoPayout::OperatorKeepsAll
+fn harness_upto_payout(pay_to: String, receiver_authorizer: &str) -> UptoPayout {
+    if pay_to == receiver_authorizer {
+        UptoPayout::ReceiverKeepsAll
     } else {
-        UptoPayout::Beneficiary {
-            address: pay_to,
-            operator_fee_bps: 0,
-        }
+        UptoPayout::Beneficiary { address: pay_to }
     }
 }
 
@@ -259,12 +266,26 @@ fn read_required_env(name: &str) -> Result<String, Box<dyn std::error::Error + S
     env::var(name).map_err(|_| format!("{name} is required").into())
 }
 
-fn read_memory_signer(
-    name: &str,
+fn read_memory_signer_any(
+    names: &[&str],
 ) -> Result<MemorySigner, Box<dyn std::error::Error + Send + Sync>> {
-    let raw = read_required_env(name)?;
+    for name in names {
+        if let Ok(raw) = env::var(name) {
+            let bytes: Vec<u8> = serde_json::from_str(&raw)?;
+            return Ok(MemorySigner::from_bytes(&bytes)?);
+        }
+    }
+    Err(format!("one of {} is required", names.join(", ")).into())
+}
+
+fn read_optional_memory_signer(
+    name: &str,
+) -> Result<Option<MemorySigner>, Box<dyn std::error::Error + Send + Sync>> {
+    let Ok(raw) = env::var(name) else {
+        return Ok(None);
+    };
     let bytes: Vec<u8> = serde_json::from_str(&raw)?;
-    Ok(MemorySigner::from_bytes(&bytes)?)
+    Ok(Some(MemorySigner::from_bytes(&bytes)?))
 }
 
 fn normalize_price(price: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -287,23 +308,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn harness_upto_payout_keeps_all_when_pay_to_is_operator() {
-        let operator = "operator";
-        match harness_upto_payout(operator.to_string(), operator) {
-            UptoPayout::OperatorKeepsAll => {}
-            other => panic!("expected OperatorKeepsAll, got {other:?}"),
+    fn harness_upto_payout_keeps_all_when_pay_to_is_receiver_authorizer() {
+        let receiver_authorizer = "receiver";
+        match harness_upto_payout(receiver_authorizer.to_string(), receiver_authorizer) {
+            UptoPayout::ReceiverKeepsAll => {}
+            other => panic!("expected ReceiverKeepsAll, got {other:?}"),
         }
     }
 
     #[test]
     fn harness_upto_payout_uses_100_percent_beneficiary_for_distinct_pay_to() {
-        match harness_upto_payout("beneficiary".to_string(), "operator") {
-            UptoPayout::Beneficiary {
-                address,
-                operator_fee_bps,
-            } => {
+        match harness_upto_payout("beneficiary".to_string(), "receiver") {
+            UptoPayout::Beneficiary { address } => {
                 assert_eq!(address, "beneficiary");
-                assert_eq!(operator_fee_bps, 0);
             }
             other => panic!("expected Beneficiary payout, got {other:?}"),
         }

@@ -782,7 +782,7 @@ mod tests {
                 "asset": currency,
                 "payTo": RECIPIENT,
                 "maxTimeoutSeconds": 300,
-                "extra": { "assetTransferMethod": "payment-channel", "facilitatorAddress": RECIPIENT },
+                "extra": { "feePayer": RECIPIENT, "receiverAuthorizer": RECIPIENT, "withdrawDelay": 900 },
             }],
         })
         .to_string()
@@ -831,7 +831,7 @@ mod tests {
                 "asset": asset,
                 "payTo": RECIPIENT,
                 "maxTimeoutSeconds": 300,
-                "extra": { "assetTransferMethod": "payment-channel", "facilitatorAddress": RECIPIENT },
+                "extra": { "feePayer": RECIPIENT, "receiverAuthorizer": RECIPIENT, "withdrawDelay": 900 },
             })
         };
         serde_json::json!({ "x402Version": 2, "accepts": [entry(c1), entry(c2)] }).to_string()

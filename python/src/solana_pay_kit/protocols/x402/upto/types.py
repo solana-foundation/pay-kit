@@ -14,7 +14,7 @@ from typing import TypedDict
 
 __all__ = [
     "UPTO_SCHEME",
-    "UPTO_ASSET_TRANSFER_METHOD",
+    "DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS",
     "UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT",
     "UptoExtra",
     "UptoRequirements",
@@ -27,8 +27,8 @@ __all__ = [
 #: The x402 scheme identifier for usage-based ``upto`` authorizations.
 UPTO_SCHEME = "upto"
 
-#: The SVM asset transfer method for ``upto`` authorizations.
-UPTO_ASSET_TRANSFER_METHOD = "payment-channel"
+#: Default forced-close delay, in seconds, for SVM ``upto`` payment channels.
+DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS = 900
 
 #: Settlement error raised when the metered actual exceeds the signed ceiling.
 #: Identical string to the Rust/Go constant so cross-language error parity holds.
@@ -38,25 +38,23 @@ UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlement_exce
 class _UptoExtraRequired(TypedDict):
     """Spec-required ``extra`` fields (always advertised by a server offer)."""
 
-    assetTransferMethod: str
     decimals: int
     tokenProgram: str
-    facilitatorAddress: str
+    feePayer: str
+    receiverAuthorizer: str
+    withdrawDelay: int
 
 
 class UptoExtra(_UptoExtraRequired, total=False):
     """The ``extra`` object on an ``upto`` payment requirement.
 
-    ``assetTransferMethod``/``decimals``/``tokenProgram``/``facilitatorAddress``
-    are required. ``facilitatorFee`` is optional and defaults to zero basis
-    points. ``channelProgram``/``recentBlockhash``/``recentSlot``/``validAfter``
-    are optional. ``recentSlot`` is the server-fetched slot the client uses as
-    the channel ``openSlot`` (u64-as-string like the session challenge; a plain
-    number is accepted inbound).
+    ``decimals``/``tokenProgram``/``feePayer``/``receiverAuthorizer``/
+    ``withdrawDelay`` are required. ``recentBlockhash``/``recentSlot``/
+    ``lastValidBlockHeight``/``validAfter`` are optional. ``recentSlot`` is the
+    server-fetched slot the client uses as the channel ``openSlot`` (u64-as-string
+    like the session challenge; a plain number is accepted inbound).
     """
 
-    facilitatorFee: int
-    channelProgram: str
     recentBlockhash: str
     recentSlot: str
     lastValidBlockHeight: str
@@ -91,6 +89,7 @@ _UptoPayloadRequired = TypedDict(
         "channelId": str,
         "deposit": str,
         "authorizedSigner": str,
+        "openSlot": str,
     },
 )
 

@@ -18,8 +18,7 @@ import (
 )
 
 const (
-	defaultGracePeriodSeconds = 900
-	tokenProgramID            = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	tokenProgramID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 )
 
 func randomSalt() (uint64, error) {
@@ -29,21 +28,6 @@ func randomSalt() (uint64, error) {
 		return 0, fmt.Errorf("x402 client: random salt: %w", err)
 	}
 	return n.Uint64(), nil
-}
-
-func assetTransferMethodSupported(requirements *x402.UptoRequirements) bool {
-	return requirements.Extra.AssetTransferMethod == x402.UptoAssetTransferMethod
-}
-
-func resolveChannelProgram(channelProgramStr string) (solana.PublicKey, error) {
-	if channelProgramStr != "" {
-		pk, err := solana.PublicKeyFromBase58(channelProgramStr)
-		if err != nil {
-			return solana.PublicKey{}, fmt.Errorf("x402 client: invalid channelProgram %q: %w", channelProgramStr, err)
-		}
-		return pk, nil
-	}
-	return paymentchannels.ProgramPubkey(), nil
 }
 
 // BuildUptoPayload derives the payment-channel open and assembles the upto
@@ -57,11 +41,8 @@ func BuildUptoPayload(
 	signer solanatx.Signer,
 	requirements *x402.UptoRequirements,
 	expiresAt int64,
-	nonce string,
+	_ string,
 ) (*x402.UptoPayload, error) {
-	if !assetTransferMethodSupported(requirements) {
-		return nil, errors.New("x402 client: requirement does not use the payment-channel asset transfer method")
-	}
 	if requirements.Extra.RecentSlot == "" {
 		return nil, errors.New("x402 client: requirement missing extra.recentSlot")
 	}
@@ -81,24 +62,25 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid asset mint %q: %w", requirements.Asset, err)
 	}
-	operator, err := solana.PublicKeyFromBase58(requirements.Extra.FacilitatorAddress)
+	feePayer, err := solana.PublicKeyFromBase58(requirements.Extra.FeePayer)
 	if err != nil {
-		return nil, fmt.Errorf("x402 client: invalid facilitatorAddress %q: %w", requirements.Extra.FacilitatorAddress, err)
+		return nil, fmt.Errorf("x402 client: invalid feePayer %q: %w", requirements.Extra.FeePayer, err)
+	}
+	receiverAuthorizer, err := solana.PublicKeyFromBase58(requirements.Extra.ReceiverAuthorizer)
+	if err != nil {
+		return nil, fmt.Errorf("x402 client: invalid receiverAuthorizer %q: %w", requirements.Extra.ReceiverAuthorizer, err)
+	}
+	if requirements.Extra.WithdrawDelay == 0 {
+		return nil, errors.New("x402 client: requirement missing extra.withdrawDelay")
 	}
 	recipients := []paymentchannels.Distribution(nil)
-	if !beneficiary.Equals(operator) {
-		if requirements.Extra.FacilitatorFee > 10_000 {
-			return nil, errors.New("x402 client: facilitatorFee exceeds 100%")
-		}
+	if !beneficiary.Equals(receiverAuthorizer) {
 		recipients = []paymentchannels.Distribution{{
 			Recipient: beneficiary,
-			Bps:       10_000 - requirements.Extra.FacilitatorFee,
+			Bps:       10_000,
 		}}
 	}
-	programID, err := resolveChannelProgram(requirements.Extra.ChannelProgram)
-	if err != nil {
-		return nil, err
-	}
+	programID := paymentchannels.ProgramPubkey()
 	var tokenProgram solana.PublicKey
 	if requirements.Extra.TokenProgram != "" {
 		tokenProgram, err = solana.PublicKeyFromBase58(requirements.Extra.TokenProgram)
@@ -122,20 +104,28 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, err
 	}
-	channel, _, err := paymentchannels.FindChannelPDAForProgram(signer.PublicKey(), operator, mint, operator, salt, openSlot, programID)
+	channel, _, err := paymentchannels.FindChannelPDAForProgram(
+		signer.PublicKey(),
+		receiverAuthorizer,
+		mint,
+		receiverAuthorizer,
+		salt,
+		openSlot,
+		programID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: find channel PDA: %w", err)
 	}
 	openIx, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            signer.PublicKey(),
-		RentPayer:        operator,
-		Payee:            operator,
+		RentPayer:        feePayer,
+		Payee:            receiverAuthorizer,
 		Mint:             mint,
-		AuthorizedSigner: operator,
+		AuthorizedSigner: receiverAuthorizer,
 		Salt:             salt,
 		OpenSlot:         openSlot,
 		Deposit:          max,
-		GracePeriod:      defaultGracePeriodSeconds,
+		GracePeriod:      requirements.Extra.WithdrawDelay,
 		Recipients:       recipients,
 		TokenProgram:     tokenProgram,
 		ProgramID:        programID,
@@ -146,7 +136,7 @@ func BuildUptoPayload(
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{openIx},
 		blockhash,
-		solana.TransactionPayer(operator),
+		solana.TransactionPayer(feePayer),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: build transaction: %w", err)
@@ -168,10 +158,11 @@ func BuildUptoPayload(
 		MaxAmount:        strconv.FormatUint(max, 10),
 		ExpiresAt:        expiresAt,
 		ValidAfter:       validAfter,
-		Nonce:            nonce,
+		Nonce:            strconv.FormatUint(salt, 10),
 		ChannelID:        channel.String(),
 		Deposit:          strconv.FormatUint(max, 10),
-		AuthorizedSigner: operator.String(),
+		AuthorizedSigner: receiverAuthorizer.String(),
+		OpenSlot:         strconv.FormatUint(openSlot, 10),
 		OpenTransaction:  txBase64,
 	}, nil
 }
