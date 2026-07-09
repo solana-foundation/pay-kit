@@ -1,0 +1,11 @@
+---
+# Documented bundler-audit exceptions. Each entry needs a reason and a removal
+# trigger (constitution exception discipline).
+#
+# CVE-2026-38969 — WEBrick (<= 1.9.2) re-parses trailers. webrick is a transitive
+# test/tooling dependency only: there is no `require "webrick"` anywhere under the
+# SDK runtime (ruby/lib or ruby/exe), and the pay-kit Ruby SDK does not run a
+# WEBrick server in production. No patched webrick (> 1.9.2) has been released
+# yet. REMOVE this entry and bump the lockfile once a fixed webrick ships.
+ignore:
+  - CVE-2026-38969

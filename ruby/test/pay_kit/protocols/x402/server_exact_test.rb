@@ -273,6 +273,27 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "No matching payment requirements: accepted payment requirement does not match server challenge", error.message
   end
 
+  def test_settlement_tolerates_accepted_omitting_amount
+    # A v2 credential may omit the amount (the facilitator fills it in). Omission
+    # must NOT break requirement matching -- only a present-but-drifted amount is
+    # rejected (see test_settlement_rejects_accepted_amount_drift). Regression for
+    # the tolerance-predicate direction: the omission tolerance is keyed on the
+    # credential (`accepted`), not the server candidate which always carries the
+    # amount; the reversed predicate made omission raise "No matching payment
+    # requirements".
+    state = build_state
+    envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
+    envelope.fetch("accepted").delete("amount")
+    envelope.fetch("accepted").delete("maxAmountRequired")
+    payment_header = Base64.strict_encode64(JSON.generate(envelope))
+
+    begin
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+    rescue RuntimeError => err
+      refute_equal "No matching payment requirements: accepted payment requirement does not match server challenge", err.message
+    end
+  end
+
   def test_settlement_tolerates_unknown_keys_in_accepted_extra
     # Unknown extra keys (drift) must not break matching: clients ship
     # extension fields the server doesn't recognise, the server still
