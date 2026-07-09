@@ -192,12 +192,12 @@ const runners = discoverProtocolRunners().filter(
   (runner) => !runnerAllowlist || runnerAllowlist.has(runner.language),
 );
 
-// Anti-vacuous-pass guard (mirrors conformance.test.ts): when
-// MPP_CONFORMANCE_LANGUAGES pins an allowlist, at least one spawned protocol
-// runner MUST match it. The in-process TypeScript blocks above always run, so a
-// typo like "rustt" would otherwise exercise zero spawned SDKs and still pass.
+// Anti-vacuous-pass guard (mirrors conformance.test.ts): at least one spawned
+// protocol runner MUST be selected. The in-process TypeScript blocks above
+// always run, so a typo like "rustt" or deleting every manifest would otherwise
+// exercise zero spawned SDKs and still pass.
 describe("protocol conformance runner selection", () => {
-  it("resolves at least one runner for the configured allowlist", () => {
+  it("resolves at least one spawned protocol runner", () => {
     if (runnerAllowlist) {
       const available = discoverProtocolRunners().map((r) => r.language).join(", ");
       expect(
@@ -205,6 +205,11 @@ describe("protocol conformance runner selection", () => {
         `MPP_CONFORMANCE_LANGUAGES=${process.env.MPP_CONFORMANCE_LANGUAGES} matched no ` +
           `discovered protocol runner (available: ${available}). A typo or a missing ` +
           `manifest would otherwise run zero spawned SDKs and pass green.`,
+      ).toBeGreaterThan(0);
+    } else {
+      expect(
+        runners.length,
+        "no protocol runners discovered under harness/protocol-runners/ — deleting every manifest would run zero spawned SDKs while the in-process TS blocks kept the file green",
       ).toBeGreaterThan(0);
     }
   });

@@ -67,6 +67,15 @@ describe("CI coverage gate: every harness test runs in CI (or is documented-exem
     expect(workflowText.length).toBeGreaterThan(100);
   });
 
+  it("does not carry stale CI_EXEMPT entries", () => {
+    for (const f of Object.keys(CI_EXEMPT)) {
+      expect(
+        allTests,
+        `CI_EXEMPT names '${f}' but no such harness test exists — remove the stale exemption`,
+      ).toContain(f);
+    }
+  });
+
   for (const test of allTests) {
     it(`${test} is wired into a workflow or in CI_EXEMPT`, () => {
       const wired = workflowText.includes(`test/${test}`);

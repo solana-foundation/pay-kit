@@ -88,7 +88,7 @@ function baseState(signer: Signer, overrides: Partial<ChannelState> = {}): Chann
     committedDeliveries: [],
     cumulative: 0n,
     deposit: 1000n,
-    finalized: false,
+    sealed: false,
     nextDeliverySequence: 0n,
     pendingDeliveries: [],
     ...overrides,
@@ -164,11 +164,11 @@ describe("session voucher verifier — adversarial", () => {
     );
   });
 
-  it("rejects vouchers on a finalized channel", async () => {
+  it("rejects vouchers on a sealed channel", async () => {
     const signed = await signVoucher(signer, 100n, 0n);
     await expectReject(
-      { deposit: 1000n, nowSeconds: NOW, signed, state: baseState(signer, { finalized: true }) },
-      "channel-finalized",
+      { deposit: 1000n, nowSeconds: NOW, signed, state: baseState(signer, { sealed: true }) },
+      "channel-sealed",
     );
   });
 

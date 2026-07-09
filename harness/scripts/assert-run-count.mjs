@@ -68,6 +68,11 @@ function main() {
   if (min === undefined || Number.isNaN(min)) {
     throw new Error("one of --min <n> or --exact <n> is required");
   }
+  if (min <= 0) {
+    throw new Error(
+      `run-count floor must be >= 1 (got ${min}); a floor of 0 would let a zero-execution leg pass`,
+    );
+  }
   if (args.exact !== undefined && Number.isNaN(args.exact)) {
     throw new Error("--exact must be a number");
   }

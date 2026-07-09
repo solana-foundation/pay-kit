@@ -379,7 +379,7 @@ async function seedChannel(store: SessionStore, channelId: string, deposit: bigi
         committedDeliveries: [],
         cumulative: 0n,
         deposit,
-        finalized: false,
+        sealed: false,
         nextDeliverySequence: 0n,
         pendingDeliveries: [],
     }));

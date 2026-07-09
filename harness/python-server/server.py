@@ -632,6 +632,7 @@ class HarnessHandler(BaseHTTPRequestHandler):
             fresh_rpc = SolanaRpc(adapter.rpc_url)
             session = adapter.session_method
             previous = session._rpc
+            # Reaches private session state because there is no public per-request rpc-injection API; safe only in this synchronous single-threaded harness, never production.
             session._rpc = fresh_rpc
             try:
                 return await session.handle(auth or None, adapter.session_challenge)

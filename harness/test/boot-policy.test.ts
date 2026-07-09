@@ -102,7 +102,8 @@ afterEach(async () => {
 
 function commandExists(cmd: string): boolean {
   try {
-    execFileSync("sh", ["-c", `command -v ${cmd}`], { stdio: "ignore" });
+    // Pass cmd as $1 so it is never interpolated into the shell script.
+    execFileSync("sh", ["-c", 'command -v "$1"', "sh", cmd], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -111,23 +112,19 @@ function commandExists(cmd: string): boolean {
 
 // Build the Go umbrella server fixture once so the boot probe runs a real
 // binary instead of relying on a pre-warmed `paykit-server` (which the default
-// checkout does not ship). Returns null when Go is unavailable or the build
-// fails, in which case the Go probe is skipped (never false-passed).
+// checkout does not ship). Returns null when Go is unavailable; when Go is
+// available, a build failure must be a hard error, not a quiet skip.
 function tryBuildGoServer(): string | null {
   if (!commandExists("go")) {
     return null;
   }
-  try {
-    const outDir = mkdtempSync(join(tmpdir(), "pk-boot-policy-go-"));
-    const bin = join(outDir, "paykit-server");
-    execFileSync("go", ["build", "-o", bin, "."], {
-      cwd: join(process.cwd(), "go-server"),
-      stdio: "pipe",
-    });
-    return bin;
-  } catch {
-    return null;
-  }
+  const outDir = mkdtempSync(join(tmpdir(), "pk-boot-policy-go-"));
+  const bin = join(outDir, "paykit-server");
+  execFileSync("go", ["build", "-o", bin, "."], {
+    cwd: join(process.cwd(), "go-server"),
+    stdio: "pipe",
+  });
+  return bin;
 }
 
 const goServerBin = tryBuildGoServer();
