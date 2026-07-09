@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // offlineRPC satisfies solanatx.RPCClient but refuses every network call.

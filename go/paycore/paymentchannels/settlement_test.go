@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // fixedKey returns a deterministic 32-byte public key filled with b.

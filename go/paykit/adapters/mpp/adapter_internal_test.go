@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
