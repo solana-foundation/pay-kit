@@ -83,6 +83,7 @@ end
 -- encoder; key order is canonical, which is fine because the driver parses
 -- the line with JSON.parse and reads fields by name.
 local function emit(result)
+  result.language = 'lua'
   io.write(json.encode(result) .. '\n')
 end
 
