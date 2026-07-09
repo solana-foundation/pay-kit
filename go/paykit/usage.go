@@ -200,17 +200,12 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 					perr.Protocols = []Protocol{X402}
 					perr.status = http.StatusPaymentRequired
 					perr.resource = r.URL.Path
-					if entry, err := adapter.UsageAcceptsEntry(&gate); err != nil {
-						slog.Error("paykit: usage settlement-error accepts entry failed",
-							"gate", gate.Name, "err", err)
-					} else if entry != nil {
+					// Both-or-neither: a 402 that carries an accepts entry without
+					// its challenge header is unpayable. Same atomic assembly as
+					// appendChallenge in middleware.go.
+					if entry, headers := usageChallenge(&gate, adapter); entry != nil {
 						perr.accepts = []AcceptsEntry{entry}
-					}
-					if h, err := adapter.UsageChallengeHeaders(&gate); err != nil {
-						slog.Error("paykit: usage settlement-error challenge headers failed",
-							"gate", gate.Name, "err", err)
-					} else {
-						perr.headers = h
+						perr.headers = headers
 					}
 					handler(w, r, perr)
 				},
@@ -267,23 +262,42 @@ func DefaultUsageErrorHandler(w http.ResponseWriter, r *http.Request, err error)
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// usageChallenge builds a usage gate's accepts entry and challenge headers
+// atomically: it returns a non-nil entry only when BOTH succeed, so a 402
+// response can never carry an accepts entry without its matching challenge
+// header (which the client cannot bind a credential to -- an unpayable 402).
+// A build failure on either half is logged and yields (nil, nil). Mirrors
+// appendChallenge in middleware.go.
+func usageChallenge(gate *Gate, adapter UsageAdapter) (AcceptsEntry, map[string]string) {
+	entry, err := adapter.UsageAcceptsEntry(gate)
+	if err != nil {
+		slog.Error("paykit: building usage 402 accepts entry failed",
+			"gate", gate.Name, "err", err)
+		return nil, nil
+	}
+	if entry == nil {
+		return nil, nil
+	}
+	headers, err := adapter.UsageChallengeHeaders(gate)
+	if err != nil {
+		slog.Error("paykit: building usage 402 challenge headers failed",
+			"gate", gate.Name, "err", err)
+		return nil, nil
+	}
+	return entry, headers
+}
+
 // writeUsage402 assembles the usage-gate 402 challenge and dispatches to
 // the configured error handler. The challenge carries the upto accepts
 // entry and challenge headers from the usage adapter.
 func (c *Client) writeUsage402(w http.ResponseWriter, r *http.Request, gate *Gate, adapter UsageAdapter, perrOpt ...*PaymentError) {
 	accepts := []AcceptsEntry{}
 	headers := map[string]string{}
-	if entry, err := adapter.UsageAcceptsEntry(gate); err != nil {
-		slog.Error("paykit: building usage 402 accepts entry failed",
-			"gate", gate.Name, "err", err)
-	} else if entry != nil {
+	// Both-or-neither: never emit an accepts entry without its challenge header
+	// (an unpayable 402). Same atomic pattern as appendChallenge in middleware.go.
+	if entry, ch := usageChallenge(gate, adapter); entry != nil {
 		accepts = append(accepts, entry)
-	}
-	if h, err := adapter.UsageChallengeHeaders(gate); err != nil {
-		slog.Error("paykit: building usage 402 challenge headers failed",
-			"gate", gate.Name, "err", err)
-	} else {
-		maps.Copy(headers, h)
+		maps.Copy(headers, ch)
 	}
 	var perr *PaymentError
 	if len(perrOpt) > 0 && perrOpt[0] != nil {
