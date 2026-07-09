@@ -265,48 +265,11 @@ jobs:
 
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
-        run: |
-          python3 - <<'PY'
-          import json, sys
-          with open('coverage.json') as f:
-              files = json.load(f)['data'][0]['files']
-          # Both surfaces are gated at 90% on LINE and REGION (region is llvm-cov's
-          # branch-like metric). Enforced both in AGGREGATE and PER-FILE, so a weak
-          # file cannot hide behind inflated easy ones and no branch class can
-          # silently regress.
-          FLOOR = 90.0
-          is_x402 = lambda n: '/src/x402/' in n
-          def rate(f, m):
-              M = f['summary'][m]
-              return 100.0 * M['covered'] / M['count'] if M['count'] else 100.0
-          def agg(pred, m):
-              tot = cov = 0
-              for f in files:
-                  if pred(f['filename']):
-                      M = f['summary'][m]; tot += M['count']; cov += M['covered']
-              return 100.0 * cov / tot if tot else 100.0
-          fails = []
-          for label, pred in [('mpp', lambda n: not is_x402(n)), ('x402', is_x402)]:
-              for metric in ('lines', 'regions'):
-                  v = agg(pred, metric)
-                  print(f"{label} {metric}: {v:.2f}% (floor {FLOOR})")
-                  if v < FLOOR:
-                      fails.append(f"{label} aggregate {metric} {v:.2f}% < {FLOOR}")
-          for f in files:
-              n = f['filename']
-              if '/src/' not in n:
-                  continue
-              for metric in ('lines', 'regions'):
-                  v = rate(f, metric)
-                  if v < FLOOR:
-                      fails.append(f"per-file {metric} {v:.1f}% < {FLOOR}: {n.split('/src/')[-1]}")
-          if fails:
-              print("COVERAGE GATE FAILURES:")
-              for x in fails:
-                  print("  " + x)
-              sys.exit(1)
-          print("coverage gate passed (line + region >= 90, aggregate + per-file)")
-          PY
+        run: python3 ../scripts/check-rust-coverage.py coverage.json
+
+      - name: Test Rust coverage gate rejects empty scopes
+        working-directory: .
+        run: python3 scripts/check-rust-coverage_test.py
 
       - name: Rust format check
         working-directory: rust

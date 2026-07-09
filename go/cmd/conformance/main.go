@@ -650,13 +650,9 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 	eb := &ExactBytes{}
 	in := vector.Input
 	if len(in.Value) > 0 {
-		decoder := json.NewDecoder(strings.NewReader(string(in.Value)))
-		decoder.UseNumber()
-		var value any
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		canonical, err := wire.NewBase64URLJSONValue(value)
+		// Preserve raw escapes until the wire encoder has rejected unpaired
+		// surrogates; decoding here would silently substitute U+FFFD first.
+		canonical, err := wire.NewBase64URLJSONValue(in.Value)
 		if err != nil {
 			return nil, err
 		}

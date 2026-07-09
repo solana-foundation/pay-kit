@@ -3,6 +3,7 @@ package x402
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
@@ -43,11 +44,15 @@ func VerifyFail(code, msg string) error { return &VerifyError{Code: code, Msg: m
 // TransferRequirements is the subset of the advertised accept entry the
 // structural verifier checks the on-wire transaction against.
 type TransferRequirements struct {
-	PayTo        solana.PublicKey
-	Mint         solana.PublicKey
+	PayTo solana.PublicKey
+	Mint  solana.PublicKey
+	// TokenProgram is the advertised program. The verifier derives ATAs with
+	// the actual transfer instruction program so its check matches Rust and TS.
 	TokenProgram solana.PublicKey
 	Amount       uint64
-	FeePayer     solana.PublicKey // the operator; must not be the transfer authority
+	// ManagedSigners are facilitator-controlled keys that must not move funds.
+	// Every key is checked, including multisig signer-tail accounts.
+	ManagedSigners []solana.PublicKey
 	// ExpectedMemo, when non-empty, is the advertised extra.memo. The x402
 	// SVM spec requires the verifier to confirm exactly one Memo instruction
 	// whose data equals it.
@@ -63,7 +68,7 @@ type TransferRequirements struct {
 //  2. ix[0] = ComputeBudget SetComputeUnitLimit
 //  3. ix[1] = ComputeBudget SetComputeUnitPrice, <= cap
 //  4. ix[2] = transferChecked to ATA(payTo, mint, program) for the
-//     exact amount + mint, authority != fee-payer
+//     exact amount + mint, without a managed signer moving funds
 //  5. ix[3..] = only Memo or Lighthouse programs
 //
 // Returns a *paykit.PaymentError-friendly error string on the first
@@ -194,38 +199,41 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 	if err != nil {
 		return err
 	}
-	authority, err := keyForIndex(ix.Accounts[3], keys)
-	if err != nil {
-		return err
+	// Fund-mover guard: a managed signer must not authorize the transfer,
+	// appear in its multisig signer tail, name the source directly, or own the
+	// source ATA. Optional instructions are intentionally not swept here.
+	for _, accountIndex := range ix.Accounts[3:] {
+		account, err := keyForIndex(accountIndex, keys)
+		if err != nil {
+			return err
+		}
+		if isManagedSigner(account, req.ManagedSigners) {
+			return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+				"transfer authority or multisig signer is managed")
+		}
 	}
-	// Fund-mover guard: the managed fee-payer (operator) must not move the
-	// customer's funds — that would let a malicious server drain the operator.
-	// It is a fund move whether the fee-payer signs as the transfer authority,
-	// is named directly as the source token account, or owns the source ATA
-	// for the mint. This runs before the mint/recipient/amount checks and uses
-	// the transaction's own mint and token program, mirroring the shared
-	// reference (harness/src/conformance/x402.ts) and the Rust spine
-	// verify_exact_instructions. An appended instruction that merely references
-	// the fee-payer is NOT a fund move and is allowed by the optional-slot pass.
-	if authority.Equals(req.FeePayer) || source.Equals(req.FeePayer) {
-		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
-			"transfer authority or source is the fee-payer")
-	}
-	feePayerATA, err := solanatx.FindAssociatedTokenAddressWithProgram(req.FeePayer, mint, prog)
-	if err != nil {
-		// Fail closed on a security-critical derivation rather than skipping
-		// the ATA check, mirroring the recipient-ATA derivation below.
-		return fmt.Errorf("x402: derive fee-payer ATA: %w", err)
-	}
-	if source.Equals(feePayerATA) {
-		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
-			"transfer source is the fee-payer's ATA for the mint")
+	for _, managed := range req.ManagedSigners {
+		if source.Equals(managed) {
+			return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+				"transfer source is managed")
+		}
+		managedATA, err := solanatx.FindAssociatedTokenAddressWithProgram(managed, mint, prog)
+		if err != nil {
+			return fmt.Errorf("x402: derive managed signer ATA: %w", err)
+		}
+		if source.Equals(managedATA) {
+			return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+				"transfer source is a managed signer's ATA for the mint")
+		}
 	}
 	if !mint.Equals(req.Mint) {
 		return VerifyFail("invalid_exact_svm_payload_mint_mismatch",
 			fmt.Sprintf("mint mismatch: got %s want %s", mint, req.Mint))
 	}
-	expectedDest, err := solanatx.FindAssociatedTokenAddressWithProgram(req.PayTo, req.Mint, req.TokenProgram)
+	// The transfer's actual program determines the ATA derivation. This is the
+	// Rust/TS behavior even if the advertised requirement names another SPL
+	// program.
+	expectedDest, err := solanatx.FindAssociatedTokenAddressWithProgram(req.PayTo, req.Mint, prog)
 	if err != nil {
 		return fmt.Errorf("x402: derive recipient ATA: %w", err)
 	}
@@ -239,6 +247,10 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 			fmt.Sprintf("amount mismatch: got %d want %d", amount, req.Amount))
 	}
 	return nil
+}
+
+func isManagedSigner(key solana.PublicKey, managedSigners []solana.PublicKey) bool {
+	return slices.ContainsFunc(managedSigners, key.Equals)
 }
 
 func programIDForIx(ix solana.CompiledInstruction, keys solana.PublicKeySlice) (solana.PublicKey, error) {

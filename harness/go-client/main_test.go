@@ -43,6 +43,24 @@ func TestReadPrivateKeyEnvRejectsInvalidLength(t *testing.T) {
 	}
 }
 
+func TestReadPrivateKeyEnvRejectsMismatchedSeedAndPublicKey(t *testing.T) {
+	privateKey, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatalf("new private key: %v", err)
+	}
+	invalid := append([]byte(nil), privateKey...)
+	invalid[len(invalid)-1] ^= 0xff
+	raw, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatalf("marshal invalid private key: %v", err)
+	}
+	t.Setenv("MPP_HARNESS_CLIENT_SECRET_KEY", string(raw))
+
+	if _, err := readPrivateKeyEnv("MPP_HARNESS_CLIENT_SECRET_KEY"); err == nil {
+		t.Fatal("expected mismatched seed/public key to fail as configuration")
+	}
+}
+
 func TestResponseHeadersLowercaseAndJoinValues(t *testing.T) {
 	headers := http.Header{}
 	headers.Add("X-Fixture-Settlement", "abc")

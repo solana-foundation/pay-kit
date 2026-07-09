@@ -136,10 +136,8 @@ func TestWriteCanonicalStringEscapes(t *testing.T) {
 	}
 }
 
-// TestWriteCanonicalNumberNormalization pins the ES6 Number::toString
-// normalization RFC 8785 requires: integers pass through verbatim (so u64
-// values beyond 2^53 survive), while any number carrying a fraction or
-// exponent is renormalized.
+// TestWriteCanonicalNumberNormalization pins the IEEE-754 / ES6
+// Number::toString normalization RFC 8785 requires for every JSON number.
 func TestWriteCanonicalNumberNormalization(t *testing.T) {
 	tests := []struct {
 		name string
@@ -151,9 +149,10 @@ func TestWriteCanonicalNumberNormalization(t *testing.T) {
 		{"padded fraction", "100.00", "100"},
 		{"trim to one decimal", "1.50", "1.5"},
 		{"negative zero fraction", "-0.0", "0"},
+		{"negative zero integer", "-0", "0"},
 		{"needs positive exponent", "1e21", "1e+21"},
 		{"needs negative exponent", "1e-7", "1e-7"},
-		{"large integer verbatim", "9007199254740993", "9007199254740993"},
+		{"large integer rounds to IEEE-754", "9007199254740993", "9007199254740992"},
 		{"plain integer verbatim", "42", "42"},
 		{"negative fraction", "-12.50", "-12.5"},
 	}
@@ -170,13 +169,37 @@ func TestWriteCanonicalNumberNormalization(t *testing.T) {
 	}
 }
 
-// TestWriteCanonicalNumberError covers the error path: a malformed number
-// literal that still contains "." (so it is routed through Float64) but does
-// not parse.
+// TestWriteCanonicalNumberError covers malformed, non-finite, and out-of-range
+// values that cannot appear in a JCS document.
 func TestWriteCanonicalNumberError(t *testing.T) {
-	var buf bytes.Buffer
-	if err := writeCanonicalNumber(&buf, json.Number("1.2.3")); err == nil {
-		t.Fatal("expected error for malformed number literal")
+	for _, input := range []json.Number{"1.2.3", "NaN", "Infinity", "1e400"} {
+		var buf bytes.Buffer
+		if err := writeCanonicalNumber(&buf, input); err == nil {
+			t.Fatalf("expected %q to fail", input)
+		}
+	}
+}
+
+func TestNewBase64URLJSONValueValidatesRawSurrogateEscapes(t *testing.T) {
+	for _, input := range []json.RawMessage{
+		json.RawMessage(`{"k":"\uD800"}`),
+		json.RawMessage(`{"\uDE00":"ok"}`),
+	} {
+		if _, err := NewBase64URLJSONValue(input); err == nil {
+			t.Fatalf("expected %s to reject an unpaired surrogate", input)
+		}
+	}
+
+	encoded, err := NewBase64URLJSONValue(json.RawMessage(`{"k":"\uD83D\uDE00"}`))
+	if err != nil {
+		t.Fatalf("valid surrogate pair: %v", err)
+	}
+	decoded, err := Base64URLDecode(encoded.Raw())
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got, want := string(decoded), `{"k":"😀"}`; got != want {
+		t.Fatalf("canonical JSON = %q, want %q", got, want)
 	}
 }
 

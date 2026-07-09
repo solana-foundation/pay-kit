@@ -2,5 +2,10 @@
   "language": "go",
   "command": ["go", "run", "./cmd/conformance"],
   "cwd": "go",
-  "intents": ["charge", "x402-exact", "session"]
+  "intents": ["charge", "x402-exact", "session"],
+  "modesByIntent": {
+    "charge": ["canonical-bytes"],
+    "session": ["canonical-bytes"],
+    "x402-exact": ["verify-x402-transaction"]
+  }
 }

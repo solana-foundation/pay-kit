@@ -1,5 +1,6 @@
 local t = require('tests.test_helper')
 local mpp = require('tests._mpp')
+local mpp_adapter = require('pay_kit.protocols.mpp')
 
 local function new_server()
   return mpp.server.new({
@@ -58,6 +59,34 @@ t.test('verify credential rejects replay', function()
   end, 'payment already consumed')
 end)
 
+t.test('verify credential rejects a bare consumed flag on double submit', function()
+  local replay = mpp.store.memory()
+  local server = mpp.server.new({
+    recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = replay,
+    verify_payment = function(context)
+      return { reference = context.payload.signature, consumed = true }
+    end,
+  })
+  local challenge = server:charge('0.001')
+  local credential = mpp.NewPaymentCredential(challenge:to_echo(), {
+    type = 'signature',
+    signature = 'bare-consumed-double-submit',
+  })
+
+  local receipt = server:verify_credential(credential, 1770000000)
+  t.assert_equal(receipt.reference, 'bare-consumed-double-submit')
+  local _value, present = replay:get('solana-charge:consumed:bare-consumed-double-submit')
+  t.assert_true(present, 'outer replay guard must write a marker')
+  t.assert_error(function()
+    server:verify_credential(credential, 1770000000)
+  end, 'payment already consumed')
+end)
+
 t.test('verify credential rejects expired challenge', function()
   local server = new_server()
   local challenge = server:charge_with_options('0.001', {
@@ -96,6 +125,7 @@ t.test('verify credential rejects sponsored push mode', function()
     decimals = 6,
     network = 'localnet',
     secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = mpp.store.memory(),
     fee_payer = true,
     -- Audit #16: feePayer=true now requires a fee_payer_key at boot.
     fee_payer_key = '9yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
@@ -117,6 +147,7 @@ t.test('verify credential requires verification callback', function()
   local server = mpp.server.new({
     recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
     secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = t.shared_replay_store(),
   })
   local challenge = server:charge('1')
   local credential = mpp.NewPaymentCredential(challenge:to_echo(), {
@@ -134,6 +165,7 @@ t.test('verify credential accepts transaction payload when lua verifier hooks ar
     currency = 'sol',
     decimals = 9,
     secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = t.shared_replay_store(),
     verifier_hooks = (function()
       local pull_tx = {
         meta = { err = nil },
@@ -270,8 +302,120 @@ local function server_with(overrides)
     end,
   }
   for k, v in pairs(overrides or {}) do cfg[k] = v end
+  if cfg.network ~= 'localnet' and (not overrides or overrides.store == nil) then
+    cfg.store = t.shared_replay_store()
+  end
   return mpp.server.new(cfg)
 end
+
+local function credential_for(server, signature)
+  local challenge = server:charge('0.001')
+  return mpp.NewPaymentCredential(challenge:to_echo(), {
+    type = 'signature',
+    signature = signature,
+  })
+end
+
+t.test('security: direct server requires a replay store outside localnet', function()
+  for _, network in ipairs({ 'mainnet', 'devnet' }) do
+    t.assert_error(function()
+      mpp.server.new({
+        recipient = VALID_RECIPIENT,
+        network = network,
+        secret_key = 'test-secret-key-long-enough-for-hmac',
+        verify_payment = function() return { reference = 'unused' } end,
+      })
+    end, 'replay store is required outside localnet')
+  end
+end)
+
+t.test('security: direct server rejects an explicit process-local replay store outside localnet', function()
+  t.assert_error(function()
+    mpp.server.new({
+      recipient = VALID_RECIPIENT,
+      network = 'devnet',
+      secret_key = 'test-secret-key-long-enough-for-hmac',
+      store = mpp.store.memory(),
+      verify_payment = function() return { reference = 'unused' } end,
+    })
+  end, 'replay store must be shared outside localnet')
+end)
+
+t.test('security: direct server accepts a shared replay store outside localnet', function()
+  local server = mpp.server.new({
+    recipient = VALID_RECIPIENT,
+    network = 'devnet',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = t.shared_replay_store(),
+    verify_payment = function() return { reference = 'unused' } end,
+  })
+  t.assert_true(server ~= nil)
+end)
+
+t.test('security: MPP adapter requires a replay store before transport setup', function()
+  local config = {
+    network = 'solana_devnet',
+    rpc_url = 'https://api.devnet.solana.com',
+    operator = {
+      signer = function() return {} end,
+      fee_payer = function() return false end,
+    },
+    mpp = {challenge_binding_secret = 'test-secret-key-long-enough-for-hmac'},
+  }
+  local adapter = assert(mpp_adapter.new({config_resolver = function() return config end}))
+  local gate = {
+    pay_to = function() return VALID_RECIPIENT end,
+    amount = function()
+      return {primary_coin = function() return 'USDC' end}
+    end,
+  }
+  t.assert_error(function()
+    adapter:accepts_entry(gate, {})
+  end, 'MPP replay store is required outside localnet')
+end)
+
+t.test('security: localnet direct server retains the memory-store fallback', function()
+  local server = mpp.server.new({
+    recipient = VALID_RECIPIENT,
+    network = 'localnet',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
+    verify_payment = function() return { reference = 'unused' } end,
+  })
+  t.assert_true(server.store ~= nil)
+  t.assert_true(type(server.store.put_if_absent) == 'function')
+end)
+
+t.test('security: verifier must return a table', function()
+  local server = server_with({ verify_payment = function() return nil end })
+  t.assert_error(function()
+    server:verify_credential(credential_for(server, 'nil-result'), 1770000000)
+  end, 'verification result must be a table')
+
+  local non_table = server_with({ verify_payment = function() return 'accepted' end })
+  t.assert_error(function()
+    non_table:verify_credential(credential_for(non_table, 'string-result'), 1770000000)
+  end, 'verification result must be a table')
+end)
+
+t.test('security: verifier must provide a non-empty reference', function()
+  local server = server_with({ verify_payment = function() return { reference = '' } end })
+  t.assert_error(function()
+    server:verify_credential(credential_for(server, 'empty-reference'), 1770000000)
+  end, 'non%-empty reference')
+end)
+
+t.test('security: verifier errors never consume or issue a receipt', function()
+  local replay = mpp.store.memory()
+  local server = server_with({
+    store = replay,
+    verify_payment = function() error('verifier unavailable') end,
+  })
+  t.assert_error(function()
+    server:verify_credential(credential_for(server, 'verifier-error'), 1770000000)
+  end, 'verifier unavailable')
+  local _value, present = replay:get('solana-charge:consumed:verifier-error')
+  t.assert_true(not present)
+end)
 
 -- Audit #24: weak secret key.
 t.test('audit #24: rejects secret key shorter than 32 bytes', function()

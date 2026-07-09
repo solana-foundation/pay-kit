@@ -370,7 +370,9 @@ func (a *Adapter) transferRequirements(gate *paykit.Gate) (proto.TransferRequire
 		Mint:         mint,
 		TokenProgram: tokenProgram,
 		Amount:       amount,
-		FeePayer:     feePayer,
+		ManagedSigners: []solana.PublicKey{
+			feePayer,
+		},
 		ExpectedMemo: gate.Desc,
 	}, nil
 }
@@ -380,14 +382,10 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 	if err != nil {
 		return nil, fmt.Errorf("operator pubkey: %w", err)
 	}
-	cosignIdx := -1
-	for i, key := range tx.Message.AccountKeys {
-		if key.Equals(operator) && i < len(tx.Signatures) && tx.Signatures[i].IsZero() {
-			cosignIdx = i
-			break
-		}
-	}
-	if cosignIdx < 0 {
+	// The fee payer is the canonical first required signer and therefore owns
+	// signature slot 0. Never sign a matching operator key in a later slot.
+	if len(tx.Message.AccountKeys) == 0 || len(tx.Signatures) == 0 ||
+		!tx.Message.AccountKeys[0].Equals(operator) || !tx.Signatures[0].IsZero() {
 		return rawTx, nil
 	}
 	msgBytes, err := tx.Message.MarshalBinary()
@@ -401,7 +399,8 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 	if len(signature) != 64 {
 		return nil, fmt.Errorf("operator signature length %d, want 64", len(signature))
 	}
-	offset := 1 + cosignIdx*64
+	const feePayerSignatureOffset = 1
+	offset := feePayerSignatureOffset
 	if offset+64 > len(rawTx) {
 		return nil, errors.New("signature slot offset out of range")
 	}

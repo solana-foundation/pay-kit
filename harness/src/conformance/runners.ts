@@ -16,6 +16,11 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ConformanceVector, VectorMode } from "./schema";
+
+export type ModeCapabilities = Partial<
+  Record<ConformanceVector["intent"], VectorMode[]>
+>;
 
 export type RunnerManifest = {
   language: string;
@@ -28,6 +33,9 @@ export type RunnerManifest = {
   // This lets a new intent (e.g. "session") land with only the SDKs that
   // implement it, without editing every other language's runner.
   intents?: string[];
+  // Exact modes backed by a real verifier. Declaring a mode makes every
+  // eligible vector mandatory; unsupported-mode is then a conformance error.
+  modesByIntent?: ModeCapabilities;
   // Optional explicit identity when the spawned process intentionally reports
   // a shared implementation name instead of the manifest language.
   reportsAs?: string;
@@ -36,6 +44,13 @@ export type RunnerManifest = {
 // The intents every runner is assumed to support when its manifest does not
 // declare an explicit `intents` list.
 const DEFAULT_INTENTS = ["charge", "x402-exact"];
+const KNOWN_INTENTS = new Set(["charge", "x402-exact", "session"]);
+const KNOWN_MODES = new Set<VectorMode>([
+  "build-transaction",
+  "verify-transaction",
+  "canonical-bytes",
+  "verify-x402-transaction",
+]);
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
@@ -54,6 +69,19 @@ function isRunnerManifest(value: unknown): value is RunnerManifest {
   ) {
     return false;
   }
+  if (m.modesByIntent !== undefined) {
+    if (typeof m.modesByIntent !== "object" || m.modesByIntent === null || Array.isArray(m.modesByIntent)) {
+      return false;
+    }
+    const intents = m.intents ?? DEFAULT_INTENTS;
+    for (const [intent, modes] of Object.entries(m.modesByIntent)) {
+      if (!KNOWN_INTENTS.has(intent) || !intents.includes(intent)) return false;
+      if (!Array.isArray(modes) || modes.length === 0 || !modes.every((mode) => typeof mode === "string" && KNOWN_MODES.has(mode as VectorMode))) {
+        return false;
+      }
+      if (new Set(modes).size !== modes.length) return false;
+    }
+  }
   if (m.reportsAs !== undefined && typeof m.reportsAs !== "string") return false;
   return true;
 }
@@ -65,6 +93,7 @@ export type DiscoveredRunner = {
   cwd: string;
   // Resolved intent capabilities (manifest `intents` or the default set).
   intents: string[];
+  modesByIntent?: ModeCapabilities;
   reportsAs?: string;
 };
 
@@ -88,6 +117,7 @@ export function discoverRunners(): DiscoveredRunner[] {
       command: parsed.command,
       cwd: parsed.cwd ? join(repoRoot, parsed.cwd) : repoRoot,
       intents: parsed.intents ?? DEFAULT_INTENTS,
+      ...(parsed.modesByIntent ? { modesByIntent: parsed.modesByIntent } : {}),
       ...(parsed.reportsAs ? { reportsAs: parsed.reportsAs } : {}),
     });
   }

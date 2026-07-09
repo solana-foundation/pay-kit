@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +63,9 @@ func NewBase64URLJSONRaw(raw string) Base64URLJSON { return Base64URLJSON{raw: r
 func NewBase64URLJSONValue(value any) (Base64URLJSON, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
+		return Base64URLJSON{}, err
+	}
+	if err := validateJSONSurrogateEscapes(raw); err != nil {
 		return Base64URLJSON{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -164,11 +168,8 @@ const hexDigits = "0123456789abcdef"
 func compareUTF16(a, b string) int {
 	au := utf16.Encode([]rune(a))
 	bu := utf16.Encode([]rune(b))
-	n := len(au)
-	if len(bu) < n {
-		n = len(bu)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(bu), len(au))
+	for i := range n {
 		if au[i] != bu[i] {
 			if au[i] < bu[i] {
 				return -1
@@ -180,7 +181,7 @@ func compareUTF16(a, b string) int {
 }
 
 // writeCanonicalString serializes a JSON string per RFC 8785: two-character
-// escapes for the named control characters, \u00XX for the remaining C0
+// escapes for the named control characters, \u00XX for the remaining ASCII
 // controls, \\ and \" for backslash and quote, and every other rune (including
 // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which encoding/json
 // escapes unconditionally) emitted as raw UTF-8.
@@ -215,23 +216,93 @@ func writeCanonicalString(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
 }
 
-// writeCanonicalNumber serializes a JSON number per RFC 8785. Integer literals
-// are emitted verbatim so values beyond float64's 2^53 exact-integer range
-// (e.g. u64 sequence numbers) survive the round-trip; numbers carrying a
-// fraction or exponent are normalized through the ES6 Number::toString
-// algorithm, collapsing 1.0, 1E2, 100.00 and 1.50 to 1, 100, 100 and 1.5.
+// writeCanonicalNumber serializes a JSON number per RFC 8785. Every number is
+// first interpreted as an IEEE-754 binary64 value, then rendered with the ES6
+// Number::toString algorithm. This deliberately rounds literals such as
+// 9007199254740993 to 9007199254740992 and collapses both -0 and -0.0 to 0.
 func writeCanonicalNumber(buf *bytes.Buffer, n json.Number) error {
 	s := n.String()
-	if !strings.ContainsAny(s, ".eE") {
-		buf.WriteString(s)
-		return nil
-	}
 	f, err := n.Float64()
 	if err != nil {
 		return fmt.Errorf("canonical json: normalize number %q: %w", s, err)
 	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return fmt.Errorf("canonical json: number %q is not finite", s)
+	}
 	buf.WriteString(formatES6Number(f))
 	return nil
+}
+
+// validateJSONSurrogateEscapes rejects unpaired UTF-16 surrogate escapes in a
+// raw JSON document before encoding/json substitutes U+FFFD during decoding.
+// It deliberately leaves all other JSON validation to encoding/json.
+func validateJSONSurrogateEscapes(raw []byte) error {
+	inString := false
+	for i := 0; i < len(raw); {
+		if !inString {
+			if raw[i] == '"' {
+				inString = true
+			}
+			i++
+			continue
+		}
+
+		switch raw[i] {
+		case '"':
+			inString = false
+			i++
+		case '\\':
+			if i+1 >= len(raw) || raw[i+1] != 'u' {
+				i += 2
+				continue
+			}
+			unit, ok := jsonEscapeUTF16Unit(raw, i+2)
+			if !ok {
+				i += 2
+				continue
+			}
+			switch {
+			case unit >= 0xd800 && unit <= 0xdbff:
+				if i+7 >= len(raw) || raw[i+6] != '\\' || raw[i+7] != 'u' {
+					return fmt.Errorf("canonical json: unpaired surrogate escape")
+				}
+				low, ok := jsonEscapeUTF16Unit(raw, i+8)
+				if !ok || low < 0xdc00 || low > 0xdfff {
+					return fmt.Errorf("canonical json: unpaired surrogate escape")
+				}
+				i += 12
+			case unit >= 0xdc00 && unit <= 0xdfff:
+				return fmt.Errorf("canonical json: unpaired surrogate escape")
+			default:
+				i += 6
+			}
+		default:
+			i++
+		}
+	}
+	return nil
+}
+
+func jsonEscapeUTF16Unit(raw []byte, start int) (uint16, bool) {
+	if start+4 > len(raw) {
+		return 0, false
+	}
+	var unit uint16
+	for _, b := range raw[start : start+4] {
+		var digit byte
+		switch {
+		case b >= '0' && b <= '9':
+			digit = b - '0'
+		case b >= 'a' && b <= 'f':
+			digit = b - 'a' + 10
+		case b >= 'A' && b <= 'F':
+			digit = b - 'A' + 10
+		default:
+			return 0, false
+		}
+		unit = unit<<4 | uint16(digit)
+	}
+	return unit, true
 }
 
 // formatES6Number renders a finite float64 the way ECMAScript's

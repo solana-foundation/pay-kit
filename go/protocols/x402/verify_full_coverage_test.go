@@ -35,7 +35,9 @@ func validTransferReq(feePayer, mint, payTo solana.PublicKey, amount uint64) Tra
 		Mint:         mint,
 		TokenProgram: solana.TokenProgramID,
 		Amount:       amount,
-		FeePayer:     feePayer,
+		ManagedSigners: []solana.PublicKey{
+			feePayer,
+		},
 	}
 }
 
@@ -90,10 +92,85 @@ func TestVerifyExactTransactionAcceptsValidToken2022(t *testing.T) {
 		makeTransferCheckedIx(src, mint, dest, authority, 1000, solana.Token2022ProgramID),
 	}, feePayer)
 
+	// The requirement advertises legacy SPL Token, but the actual transfer is
+	// Token-2022. Rust/TS derive the recipient ATA from the actual program.
 	req := validTransferReq(feePayer, mint, payTo, 1000)
-	req.TokenProgram = solana.Token2022ProgramID
 	if err := VerifyExactTransaction(tx, req); err != nil {
 		t.Fatalf("VerifyExactTransaction Token2022: %v", err)
+	}
+}
+
+func TestVerifyExactTransactionRejectsManagedSignerInMultisigTail(t *testing.T) {
+	feePayer := solana.NewWallet().PublicKey()
+	managedTail := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	payTo := solana.NewWallet().PublicKey()
+	authority := solana.NewWallet().PublicKey()
+	dest := sourceATA(t, payTo, mint)
+	src := sourceATA(t, authority, mint)
+	transferData := make([]byte, 10)
+	transferData[0] = 12
+	binary.LittleEndian.PutUint64(transferData[1:9], 1000)
+	transferData[9] = 6
+	transfer := solana.NewInstruction(
+		solana.TokenProgramID,
+		solana.AccountMetaSlice{
+			solana.Meta(src).WRITE(),
+			solana.Meta(mint),
+			solana.Meta(dest).WRITE(),
+			solana.Meta(authority).SIGNER(),
+			solana.Meta(managedTail).SIGNER(),
+		},
+		transferData,
+	)
+	tx := buildValidTx(t, []solana.Instruction{
+		makeComputeBudgetIx(2, []byte{200, 0, 0, 0}),
+		makeComputeBudgetIx(3, []byte{0, 0, 0, 0, 0, 0, 0, 0}),
+		transfer,
+	}, feePayer)
+	req := validTransferReq(feePayer, mint, payTo, 1000)
+	req.ManagedSigners = append(req.ManagedSigners, managedTail)
+	if err := VerifyExactTransaction(tx, req); err == nil {
+		t.Fatal("expected managed signer in multisig tail to be rejected")
+	}
+}
+
+func TestVerifyExactTransactionRejectsSecondManagedSignerAsSource(t *testing.T) {
+	feePayer := solana.NewWallet().PublicKey()
+	secondManaged := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	payTo := solana.NewWallet().PublicKey()
+	authority := solana.NewWallet().PublicKey()
+	dest := sourceATA(t, payTo, mint)
+	tx := buildValidTx(t, []solana.Instruction{
+		makeComputeBudgetIx(2, []byte{200, 0, 0, 0}),
+		makeComputeBudgetIx(3, []byte{0, 0, 0, 0, 0, 0, 0, 0}),
+		makeTransferCheckedIx(secondManaged, mint, dest, authority, 1000, solana.TokenProgramID),
+	}, feePayer)
+	req := validTransferReq(feePayer, mint, payTo, 1000)
+	req.ManagedSigners = append(req.ManagedSigners, secondManaged)
+	if err := VerifyExactTransaction(tx, req); err == nil {
+		t.Fatal("expected second managed signer used as source to be rejected")
+	}
+}
+
+func TestVerifyExactTransactionRejectsSecondManagedSignerATA(t *testing.T) {
+	feePayer := solana.NewWallet().PublicKey()
+	secondManaged := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	payTo := solana.NewWallet().PublicKey()
+	authority := solana.NewWallet().PublicKey()
+	dest := sourceATA(t, payTo, mint)
+	managedSource := sourceATA(t, secondManaged, mint)
+	tx := buildValidTx(t, []solana.Instruction{
+		makeComputeBudgetIx(2, []byte{200, 0, 0, 0}),
+		makeComputeBudgetIx(3, []byte{0, 0, 0, 0, 0, 0, 0, 0}),
+		makeTransferCheckedIx(managedSource, mint, dest, authority, 1000, solana.TokenProgramID),
+	}, feePayer)
+	req := validTransferReq(feePayer, mint, payTo, 1000)
+	req.ManagedSigners = append(req.ManagedSigners, secondManaged)
+	if err := VerifyExactTransaction(tx, req); err == nil {
+		t.Fatal("expected second managed signer's ATA to be rejected")
 	}
 }
 

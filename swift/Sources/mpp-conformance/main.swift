@@ -716,14 +716,9 @@ private func shapeFromTransaction(_ base64: String) throws -> TransactionShape {
 private func runCanonicalBytes(_ vector: Vector, rawValue: Any?) throws -> ExactBytes {
     var eb = ExactBytes()
     if let value = rawValue {
-        // Canonical JSON via Foundation's sorted-key serializer, the same
-        // canonicalization the SDK wire path relies on
-        // (JSONEncoder.outputFormatting = [.sortedKeys]). RFC 8785 key order
-        // for BMP keys agrees with sorted-key order.
-        let data = try JSONSerialization.data(
-            withJSONObject: value,
-            options: [.sortedKeys, .withoutEscapingSlashes]
-        )
+        // Drive the SDK's MPP wire encoder, not the harness reference or a
+        // Foundation sorted-key approximation.
+        let data = try CanonicalJSON.encode(value)
         eb.canonicalJson = String(decoding: data, as: UTF8.self)
         eb.base64Url = base64Url(data)
     }

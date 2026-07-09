@@ -378,12 +378,26 @@ fn verify_transfer_instruction(
         return invalid("invalid_exact_svm_payload_no_transfer_instruction");
     }
 
+    let source = key_for_account_index(instruction.accounts[0], account_keys)?;
     let mint = key_for_account_index(instruction.accounts[1], account_keys)?;
     let destination = key_for_account_index(instruction.accounts[2], account_keys)?;
-    let authority = key_for_account_index(instruction.accounts[3], account_keys)?;
 
-    if managed_signers.iter().any(|managed| managed == authority) {
-        return invalid("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds");
+    // A transferChecked multisig places its signer accounts after the authority.
+    // Any server-managed signer in that whole tail could authorize the transfer.
+    for account_index in instruction.accounts.iter().skip(3) {
+        let signer = key_for_account_index(*account_index, account_keys)?;
+        if managed_signers.contains(signer) {
+            return invalid("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds");
+        }
+    }
+
+    // The managed key can also be named directly as the source, or own the
+    // source ATA while a customer-controlled delegate signs the transfer.
+    // Derive with the instruction's program: Token and Token-2022 ATAs differ.
+    for managed in managed_signers {
+        if source == managed || source == &get_associated_token_address(managed, mint, program) {
+            return invalid("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds");
+        }
     }
 
     let expected_mint = resolve_expected_mint(requirements);
@@ -753,18 +767,49 @@ mod tests {
         });
         let source = get_associated_token_address(owner, &mint, &token_program);
 
+        transfer_checked_ix_with_accounts(
+            source,
+            mint,
+            destination,
+            *owner,
+            true,
+            token_program,
+            &[],
+            amount,
+            requirements.decimals.unwrap_or(6),
+        )
+    }
+
+    fn transfer_checked_ix_with_accounts(
+        source: Pubkey,
+        mint: Pubkey,
+        destination: Pubkey,
+        authority: Pubkey,
+        authority_is_signer: bool,
+        token_program: Pubkey,
+        additional_signers: &[Pubkey],
+        amount: u64,
+        decimals: u8,
+    ) -> Instruction {
         let mut data = vec![12u8];
         data.extend_from_slice(&amount.to_le_bytes());
-        data.push(requirements.decimals.unwrap_or(6));
+        data.push(decimals);
+
+        let mut accounts = vec![
+            AccountMeta::new(source, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(authority, authority_is_signer),
+        ];
+        accounts.extend(
+            additional_signers
+                .iter()
+                .map(|signer| AccountMeta::new_readonly(*signer, true)),
+        );
 
         Instruction {
             program_id: token_program,
-            accounts: vec![
-                AccountMeta::new(source, false),
-                AccountMeta::new_readonly(mint, false),
-                AccountMeta::new(destination, false),
-                AccountMeta::new_readonly(*owner, true),
-            ],
+            accounts,
             data,
         }
     }
@@ -778,22 +823,27 @@ mod tests {
         destination_override: Option<Pubkey>,
         mint_override: Option<Pubkey>,
     ) -> Transaction {
-        let mut instructions = vec![
-            compute_limit_ix(),
-            compute_price_ix(1),
-            transfer_checked_ix(
-                transfer_owner,
-                requirements,
-                amount,
-                destination_override,
-                mint_override,
-            ),
-        ];
+        let transfer = transfer_checked_ix(
+            transfer_owner,
+            requirements,
+            amount,
+            destination_override,
+            mint_override,
+        );
+        build_exact_transaction_with_transfer(owner, transfer, optional_ixs)
+    }
+
+    fn build_exact_transaction_with_transfer(
+        fee_payer: &Pubkey,
+        transfer: Instruction,
+        optional_ixs: Vec<Instruction>,
+    ) -> Transaction {
+        let mut instructions = vec![compute_limit_ix(), compute_price_ix(1), transfer];
         instructions.extend(optional_ixs);
 
         Transaction::new_unsigned(solana_message::Message::new_with_blockhash(
             &instructions,
-            Some(owner),
+            Some(fee_payer),
             &Hash::new_from_array([9u8; 32]),
         ))
     }
@@ -1130,19 +1180,138 @@ mod tests {
     }
 
     #[test]
-    fn verify_exact_transaction_rejects_managed_fee_payer_transferring_funds() {
+    fn verify_exact_transaction_rejects_managed_signer_as_transfer_authority() {
         let requirements = requirements("1000");
         let fee_payer = Pubkey::new_unique();
-        let tx = build_exact_transaction(
-            &requirements,
-            &fee_payer,
-            &fee_payer,
-            vec![],
-            1000,
-            None,
-            None,
+        let managed_signer = Pubkey::new_unique();
+        let customer = Pubkey::new_unique();
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        let source = get_associated_token_address(&customer, &mint, &token_program);
+        let destination = get_associated_token_address(
+            &Pubkey::from_str(&requirements.recipient).unwrap(),
+            &mint,
+            &token_program,
         );
-        let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        let transfer = transfer_checked_ix_with_accounts(
+            source,
+            mint,
+            destination,
+            managed_signer,
+            true,
+            token_program,
+            &[],
+            1000,
+            requirements.decimals.unwrap_or(6),
+        );
+        let tx = build_exact_transaction_with_transfer(&fee_payer, transfer, vec![]);
+        let err =
+            verify_exact_transaction(&tx, &requirements, &[fee_payer, managed_signer]).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
+        );
+    }
+
+    #[test]
+    fn verify_exact_transaction_rejects_managed_signer_as_direct_source() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let managed_signer = Pubkey::new_unique();
+        let customer = Pubkey::new_unique();
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        let destination = get_associated_token_address(
+            &Pubkey::from_str(&requirements.recipient).unwrap(),
+            &mint,
+            &token_program,
+        );
+        let transfer = transfer_checked_ix_with_accounts(
+            managed_signer,
+            mint,
+            destination,
+            customer,
+            true,
+            token_program,
+            &[],
+            1000,
+            requirements.decimals.unwrap_or(6),
+        );
+        let tx = build_exact_transaction_with_transfer(&fee_payer, transfer, vec![]);
+
+        let err =
+            verify_exact_transaction(&tx, &requirements, &[fee_payer, managed_signer]).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
+        );
+    }
+
+    #[test]
+    fn verify_exact_transaction_rejects_delegated_managed_ata_source_for_actual_program() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let managed_signer = Pubkey::new_unique();
+        let delegate = Pubkey::new_unique();
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let source = get_associated_token_address(&managed_signer, &mint, &token_program);
+        let destination = get_associated_token_address(
+            &Pubkey::from_str(&requirements.recipient).unwrap(),
+            &mint,
+            &token_program,
+        );
+        let transfer = transfer_checked_ix_with_accounts(
+            source,
+            mint,
+            destination,
+            delegate,
+            true,
+            token_program,
+            &[],
+            1000,
+            requirements.decimals.unwrap_or(6),
+        );
+        let tx = build_exact_transaction_with_transfer(&fee_payer, transfer, vec![]);
+
+        let err =
+            verify_exact_transaction(&tx, &requirements, &[fee_payer, managed_signer]).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
+        );
+    }
+
+    #[test]
+    fn verify_exact_transaction_rejects_managed_multisig_signer_tail() {
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let customer = Pubkey::new_unique();
+        let multisig_authority = Pubkey::new_unique();
+        let managed_signer = Pubkey::new_unique();
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        let source = get_associated_token_address(&customer, &mint, &token_program);
+        let destination = get_associated_token_address(
+            &Pubkey::from_str(&requirements.recipient).unwrap(),
+            &mint,
+            &token_program,
+        );
+        let transfer = transfer_checked_ix_with_accounts(
+            source,
+            mint,
+            destination,
+            multisig_authority,
+            false,
+            token_program,
+            &[managed_signer],
+            1000,
+            requirements.decimals.unwrap_or(6),
+        );
+        let tx = build_exact_transaction_with_transfer(&fee_payer, transfer, vec![]);
+
+        let err =
+            verify_exact_transaction(&tx, &requirements, &[fee_payer, managed_signer]).unwrap_err();
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
         );
