@@ -6,7 +6,6 @@ import com.solana.paykit.paycore.PaymentChannels
 import com.solana.paykit.paycore.Programs
 import com.solana.paykit.paycore.PublicKey
 import com.solana.paykit.paycore.SolanaNetwork
-import com.solana.paykit.protocols.x402.upto.UPTO_ASSET_TRANSFER_METHOD
 import com.solana.paykit.protocols.x402.upto.UPTO_SCHEME
 import com.solana.paykit.protocols.x402.upto.UptoExtra
 import com.solana.paykit.protocols.x402.upto.UptoRequiredEnvelope
@@ -33,7 +32,8 @@ class UptoPaymentTest {
     // is deterministic across runs.
     private val signer = MemorySigner.fromSeed(ByteArray(32) { (it + 1).toByte() })
 
-    private val operator = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    private val feePayer = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    private val receiverAuthorizer = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
     private val mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     private val beneficiary = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
     private val network = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
@@ -47,20 +47,18 @@ class UptoPaymentTest {
     private val recentSlot: ULong = 424_242uL
 
     private fun extra(
-        assetTransferMethod: String = UPTO_ASSET_TRANSFER_METHOD,
-        facilitatorAddress: String? = operator,
-        facilitatorFee: Int = 0,
+        feePayer: String? = this.feePayer,
+        receiverAuthorizer: String? = this.receiverAuthorizer,
+        withdrawDelay: Int = 900,
         recentBlockhash: String? = blockhash,
         recentSlot: ULong? = this.recentSlot,
         validAfter: Long? = null,
         tokenProgram: String? = null,
-        channelProgram: String? = null,
     ) = UptoExtra(
-        assetTransferMethod = assetTransferMethod,
         tokenProgram = tokenProgram,
-        facilitatorAddress = facilitatorAddress,
-        facilitatorFee = facilitatorFee,
-        channelProgram = channelProgram,
+        feePayer = feePayer,
+        receiverAuthorizer = receiverAuthorizer,
+        withdrawDelay = withdrawDelay,
         recentBlockhash = recentBlockhash,
         recentSlot = recentSlot,
         validAfter = validAfter,
@@ -122,21 +120,21 @@ class UptoPaymentTest {
     // ── adversarial: build-time errors ──────────────────────────────────────
 
     @Test
-    fun rejects_non_payment_channel_asset_transfer_method() {
-        val req = requirements(extra = extra(assetTransferMethod = "permit2"))
+    fun rejects_missing_fee_payer() {
+        val req = requirements(extra = extra(feePayer = null))
         val error = assertFailsWith<IllegalArgumentException> {
             buildUptoPayload(signer, req, expiresAt = 4_102_444_800L)
         }
-        assertContains(error.message!!, "payment-channel asset transfer method")
+        assertContains(error.message!!, "missing extra.feePayer")
     }
 
     @Test
-    fun rejects_missing_facilitator_address() {
-        val req = requirements(extra = extra(facilitatorAddress = null))
+    fun rejects_missing_receiver_authorizer() {
+        val req = requirements(extra = extra(receiverAuthorizer = null))
         val error = assertFailsWith<IllegalArgumentException> {
             buildUptoPayload(signer, req, expiresAt = 4_102_444_800L)
         }
-        assertContains(error.message!!, "missing extra.facilitatorAddress")
+        assertContains(error.message!!, "missing extra.receiverAuthorizer")
     }
 
     @Test
@@ -158,20 +156,12 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun rejects_facilitator_fee_above_max() {
-        val req = requirements(payTo = beneficiary, extra = extra(facilitatorFee = 10_001))
+    fun rejects_missing_withdraw_delay() {
+        val req = requirements(extra = extra(withdrawDelay = 0))
         val error = assertFailsWith<IllegalArgumentException> {
             buildUptoPayload(signer, req, expiresAt = 4_102_444_800L)
         }
-        assertContains(error.message!!, "facilitatorFee")
-    }
-
-    @Test
-    fun rejects_negative_facilitator_fee() {
-        val req = requirements(extra = extra(facilitatorFee = -1))
-        assertFailsWith<IllegalArgumentException> {
-            buildUptoPayload(signer, req, expiresAt = 4_102_444_800L)
-        }
+        assertContains(error.message!!, "missing extra.withdrawDelay")
     }
 
     @Test
@@ -236,30 +226,25 @@ class UptoPaymentTest {
     fun from_and_authorized_signer_and_expires() {
         val payload = buildUptoPayload(signer, requirements(), expiresAt = 999L)
         assertEquals(signer.address, payload.from)
-        assertEquals(operator, payload.authorizedSigner)
+        assertEquals(receiverAuthorizer, payload.authorizedSigner)
         assertEquals(999L, payload.expiresAt)
         assertTrue(payload.openTransaction != null)
+        assertEquals(payload.openSlot, recentSlot.toString())
     }
 
-    // ── nonce / salt independence ───────────────────────────────────────────
+    // ── nonce / salt binding ────────────────────────────────────────────────
 
     @Test
-    fun default_nonce_is_random_and_independent_of_salt() {
-        // Same fixed salt on both builds; the nonce must still differ, proving
-        // the nonce is not derived from the salt.
+    fun nonce_is_open_salt_decimal() {
         val a = buildUptoPayload(signer, requirements(), 1L, saltProvider = { fixedSalt })
-        val b = buildUptoPayload(signer, requirements(), 1L, saltProvider = { fixedSalt })
-        assertNotEquals(a.nonce, b.nonce)
-        assertEquals(32, a.nonce.length) // 16 bytes hex
-        // channelId is identical (same salt), confirming the salt drove the PDA,
-        // not the nonce.
-        assertEquals(a.channelId, b.channelId)
+        assertEquals(fixedSalt.toString(), a.nonce)
     }
 
     @Test
-    fun explicit_nonce_is_used_verbatim() {
+    fun explicit_nonce_is_ignored() {
         val payload = buildUptoPayload(signer, requirements(), 1L, nonce = "my-nonce")
-        assertEquals("my-nonce", payload.nonce)
+        assertNotEquals("my-nonce", payload.nonce)
+        assertTrue(payload.nonce.toULongOrNull() != null)
     }
 
     // ── channel PDA + recipients ────────────────────────────────────────────
@@ -269,9 +254,9 @@ class UptoPaymentTest {
         val payload = buildUptoPayload(signer, requirements(), 1L, saltProvider = { fixedSalt })
         val expected = PaymentChannels.findChannelPda(
             payer = PublicKey(signer.publicKeyBytes),
-            payee = PublicKey.fromBase58(operator),
+            payee = PublicKey.fromBase58(receiverAuthorizer),
             mint = PublicKey.fromBase58(mint),
-            authorizedSigner = PublicKey.fromBase58(operator),
+            authorizedSigner = PublicKey.fromBase58(receiverAuthorizer),
             salt = fixedSalt,
             openSlot = recentSlot,
             programId = PublicKey.fromBase58(PaymentChannels.PROGRAM_ID),
@@ -280,15 +265,15 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun open_transaction_fee_payer_is_operator() {
+    fun open_transaction_fee_payer_is_advertised_fee_payer() {
         val payload = buildUptoPayload(signer, requirements(), 1L, saltProvider = { fixedSalt })
         val feePayer = firstAccountKey(payload.openTransaction!!)
-        assertTrue(feePayer.contentEquals(PublicKey.fromBase58(operator).bytes))
+        assertTrue(feePayer.contentEquals(PublicKey.fromBase58(this.feePayer).bytes))
     }
 
     @Test
-    fun pay_to_equals_operator_yields_empty_recipients() {
-        val req = requirements(payTo = operator)
+    fun pay_to_equals_receiver_authorizer_yields_empty_recipients() {
+        val req = requirements(payTo = receiverAuthorizer)
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
         // discriminator(1)+salt(8)+deposit(8)+gracePeriod(4)+openSlot(8) = 29,
@@ -298,7 +283,7 @@ class UptoPaymentTest {
 
     @Test
     fun open_args_carry_open_slot_after_grace_period() {
-        val payload = buildUptoPayload(signer, requirements(payTo = operator), 1L, saltProvider = { fixedSalt })
+        val payload = buildUptoPayload(signer, requirements(payTo = receiverAuthorizer), 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
         // The wire recentSlot lands as the borsh openSlot u64 LE at offset 21
         // (after discriminator+salt+deposit+gracePeriod).
@@ -308,8 +293,8 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun pay_to_not_operator_yields_one_distribution_with_bps_complement() {
-        val req = requirements(payTo = beneficiary, extra = extra(facilitatorFee = 250))
+    fun pay_to_not_receiver_authorizer_yields_one_distribution_with_full_bps() {
+        val req = requirements(payTo = beneficiary)
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
         assertEquals(1, u32Le(data, 29))
@@ -317,13 +302,13 @@ class UptoPaymentTest {
         val recipient = data.copyOfRange(33, 65)
         assertTrue(recipient.contentEquals(PublicKey.fromBase58(beneficiary).bytes))
         val bps = (data[65].toInt() and 0xff) or ((data[66].toInt() and 0xff) shl 8)
-        assertEquals(10_000 - 250, bps)
+        assertEquals(10_000, bps)
     }
 
     @Test
     fun recipients_branch_changes_open_transaction() {
         val opAsBeneficiary = buildUptoPayload(
-            signer, requirements(payTo = operator), 1L, saltProvider = { fixedSalt },
+            signer, requirements(payTo = receiverAuthorizer), 1L, saltProvider = { fixedSalt },
         )
         val split = buildUptoPayload(
             signer, requirements(payTo = beneficiary), 1L, saltProvider = { fixedSalt },
@@ -332,38 +317,34 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun honors_custom_token_and_channel_program() {
+    fun honors_custom_token_program() {
         val req = requirements(
             extra = extra(
                 tokenProgram = Programs.TOKEN_2022_PROGRAM,
-                channelProgram = PaymentChannels.PROGRAM_ID,
             ),
         )
-        // Must not throw and must derive a channel under the supplied program id.
+        // Must not throw; channel program is canonical and not supplied on the wire.
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         assertTrue(payload.channelId.isNotEmpty())
     }
 
-    // ── facilitatorFee JSON omission ────────────────────────────────────────
+    // ── extra JSON shape ────────────────────────────────────────────────────
 
     @Test
-    fun facilitator_fee_zero_is_omitted_from_requirement_json() {
+    fun removed_wire_fields_are_omitted_from_requirement_json() {
         val encoded = encoder.encodeToString(UptoRequirements.serializer(), requirements())
         val extraObj = json.parseToJsonElement(encoded).jsonObject["extra"]!!.jsonObject
+        assertTrue(extraObj["feePayer"] != null)
+        assertTrue(extraObj["receiverAuthorizer"] != null)
+        assertTrue(extraObj["withdrawDelay"] != null)
+        assertNull(extraObj["assetTransferMethod"])
         assertNull(extraObj["facilitatorFee"])
+        assertNull(extraObj["channelProgram"])
         // scheme is always emitted.
         assertEquals(
             "upto",
             json.parseToJsonElement(encoded).jsonObject["scheme"]!!.jsonPrimitive.content,
         )
-    }
-
-    @Test
-    fun facilitator_fee_nonzero_is_present_in_requirement_json() {
-        val req = requirements(extra = extra(facilitatorFee = 100))
-        val encoded = encoder.encodeToString(UptoRequirements.serializer(), req)
-        val extraObj = json.parseToJsonElement(encoded).jsonObject["extra"]!!.jsonObject
-        assertEquals(100, extraObj["facilitatorFee"]!!.jsonPrimitive.int)
     }
 
     // ── envelope encoding / round-trip ──────────────────────────────────────
@@ -393,8 +374,8 @@ class UptoPaymentTest {
             {"x402Version":2,"accepts":[{"scheme":"upto","network":"$network",
             "amount":"1000000","asset":"$mint","payTo":"$beneficiary",
             "maxTimeoutSeconds":300,"serverOnlyField":"keep-me",
-            "extra":{"assetTransferMethod":"payment-channel",
-            "facilitatorAddress":"$operator","recentBlockhash":"$blockhash",
+            "extra":{"feePayer":"$feePayer","receiverAuthorizer":"$receiverAuthorizer",
+            "withdrawDelay":900,"recentBlockhash":"$blockhash",
             "recentSlot":"$recentSlot"}}]}
         """.trimIndent().replace("\n", "")
         val req = parseUptoChallenge(mapOf("content-type" to "application/json"), wire)!!
@@ -413,8 +394,8 @@ class UptoPaymentTest {
     private fun uptoEntry(scheme: String = "upto", asset: String = mint): String =
         """{"scheme":"$scheme","network":"$network","amount":"1000000",
             "asset":"$asset","payTo":"$beneficiary","maxTimeoutSeconds":300,
-            "extra":{"assetTransferMethod":"payment-channel",
-            "facilitatorAddress":"$operator","recentBlockhash":"$blockhash",
+            "extra":{"feePayer":"$feePayer","receiverAuthorizer":"$receiverAuthorizer",
+            "withdrawDelay":900,"recentBlockhash":"$blockhash",
             "recentSlot":"$recentSlot"}}"""
             .replace("\n", "").replace("  ", "")
 
@@ -434,7 +415,8 @@ class UptoPaymentTest {
         val headerValue = Base64.getEncoder().encodeToString(body.encodeToByteArray())
         val req = parseUptoChallenge(mapOf("Payment-Required" to headerValue))
         assertEquals("1000000", req!!.amount)
-        assertEquals(operator, req.extra.facilitatorAddress)
+        assertEquals(feePayer, req.extra.feePayer)
+        assertEquals(receiverAuthorizer, req.extra.receiverAuthorizer)
     }
 
     @Test
@@ -491,7 +473,7 @@ class UptoPaymentTest {
             challengeEnvelope(uptoEntry()),
         )
         assertEquals("1000000", req!!.amount)
-        assertEquals(operator, req.extra.facilitatorAddress)
+        assertEquals(feePayer, req.extra.feePayer)
     }
 
     @Test

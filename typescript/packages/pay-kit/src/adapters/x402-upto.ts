@@ -28,7 +28,7 @@ const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
-const UPTO_ASSET_TRANSFER_METHOD = 'payment-channel';
+const DEFAULT_WITHDRAW_DELAY_SECONDS = 900;
 const BASIS_POINTS_DENOMINATOR = 10_000;
 
 /**
@@ -82,9 +82,8 @@ type SettlementWireRpc = Parameters<typeof buildAndSignWireTransaction>[0];
 /**
  * Usage-based (`upto`) x402 engine: the metered counterpart to the `exact`
  * adapter. The client opens a payment channel depositing the authorized ceiling;
- * the in-process `@x402/svm` upto facilitator (signed + fee-paid by the operator)
- * verifies and broadcasts the open, then settles the metered amount with a single
- * voucher, refunding the remainder.
+ * the in-process `@x402/svm` upto handler verifies and broadcasts the open,
+ * then settles the metered amount with a single voucher, refunding the remainder.
  *
  * `upto` does not fit the protocol-uniform {@link import('../adapter.js').ProtocolAdapter}
  * contract (which settles before the handler runs), so it is exposed as a
@@ -94,24 +93,26 @@ type SettlementWireRpc = Parameters<typeof buildAndSignWireTransaction>[0];
 export class X402Upto {
     readonly #facilitator: x402Facilitator;
     readonly #network: Network;
-    readonly #operator: string;
-    readonly #operatorSigner: PayKitConfig['operator']['signer'];
+    readonly #feePayer: string;
+    readonly #receiverAuthorizer: string;
+    readonly #signer: PayKitConfig['operator']['signer'];
     readonly #recipient: string;
-    readonly #facilitatorFee: number;
     readonly #rpcUrl: string;
     readonly #stablecoins: readonly string[];
 
     constructor(config: PayKitConfig) {
         this.#network = caip2(config.network) as Network;
-        this.#operator = config.operator.signer.pubkey;
-        this.#operatorSigner = config.operator.signer;
+        this.#feePayer = config.operator.signer.pubkey;
+        this.#receiverAuthorizer = config.operator.signer.pubkey;
+        this.#signer = config.operator.signer;
         this.#recipient = config.operator.recipient;
-        this.#facilitatorFee = config.x402.facilitatorFee;
         this.#rpcUrl = config.rpcUrl;
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
             this.#network,
-            new UptoSvmFacilitator(config.operator.signer.signer, { rpcUrl: config.rpcUrl }),
+            new UptoSvmFacilitator(config.operator.signer.signer, config.operator.signer.signer, {
+                rpcUrl: config.rpcUrl,
+            }),
         );
     }
 
@@ -174,7 +175,7 @@ export class X402Upto {
 
     /**
      * Settle the metered amount (`actualBaseUnits`, clamped to the ceiling) against
-     * a verified open: operator voucher, settle-and-seal, refund the remainder.
+     * a verified open: receiver-authorizer voucher, settle-and-seal, refund the remainder.
      *
      * @throws {InvalidProofError} when settlement fails.
      */
@@ -200,18 +201,18 @@ export class X402Upto {
                     : undefined;
             const result = await submitSettleAndDistribute({
                 buildAndSignWireTransaction: instructions =>
-                    buildAndSignWireTransaction(wireRpc, this.#operatorSigner.signer, instructions),
+                    buildAndSignWireTransaction(wireRpc, this.#signer.signer, instructions),
                 channelId: payload.channelId,
                 mint: verified.requirements.asset,
                 network: verified.requirements.network,
-                payee: this.#operator,
+                payee: this.#receiverAuthorizer,
                 payer: payload.from,
-                rentPayer: this.#operator,
+                rentPayer: this.#feePayer,
                 rpc: submitRpc,
-                signer: this.#operatorSigner.signer,
+                signer: this.#signer.signer,
                 splits: this.#recipientSplits(verified.requirements.payTo),
                 tokenProgram: tokenProgramFor(verified.requirements),
-                voucher: signed ? { authorizedSigner: this.#operator, signed } : undefined,
+                voucher: signed ? { authorizedSigner: this.#receiverAuthorizer, signed } : undefined,
             });
             signature = result.signature;
             await waitForSignatureConfirmation({
@@ -238,7 +239,7 @@ export class X402Upto {
 
     async #signVoucher(channelId: string, cumulativeAmount: bigint, expiresAt: bigint): Promise<string> {
         const message = encodeVoucherMessageBytes({ channelId, cumulativeAmount, expiresAt });
-        const signature = await this.#operatorSigner.sign(message);
+        const signature = await this.#signer.sign(message);
         return getBase58Decoder().decode(signature);
     }
 
@@ -249,10 +250,10 @@ export class X402Upto {
             amount: maxPrice.baseUnits().toString(),
             asset: mint,
             extra: {
-                assetTransferMethod: UPTO_ASSET_TRANSFER_METHOD,
-                facilitatorAddress: this.#operator,
-                facilitatorFee: this.#facilitatorFee,
-                feePayer: this.#operator,
+                feePayer: this.#feePayer,
+                receiverAuthorizer: this.#receiverAuthorizer,
+                tokenProgram: getStablecoinTokenProgram(mint, this.#network),
+                withdrawDelay: DEFAULT_WITHDRAW_DELAY_SECONDS,
             },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network: this.#network,
@@ -262,9 +263,7 @@ export class X402Upto {
     }
 
     #recipientSplits(recipient: string): readonly { readonly bps: number; readonly recipient: string }[] {
-        return this.#operator === recipient
-            ? []
-            : [{ bps: BASIS_POINTS_DENOMINATOR - this.#facilitatorFee, recipient }];
+        return this.#receiverAuthorizer === recipient ? [] : [{ bps: BASIS_POINTS_DENOMINATOR, recipient }];
     }
 
     /**

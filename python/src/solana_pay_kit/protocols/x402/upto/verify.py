@@ -26,7 +26,6 @@ from solana_pay_kit._paycore.solana import (
 )
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402.upto.types import (
-    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT,
     UptoPayload,
     UptoRequirements,
@@ -46,7 +45,7 @@ _OPEN_INSTRUCTION_DISCRIMINATOR = 1
 #: The program's openSlot freshness window (slots): open requires
 #: ``openSlot <= clock.slot`` and ``clock.slot - openSlot <= 1500``. Applied
 #: here against the challenged ``extra.recentSlot`` so a stale open fails
-#: before the operator co-signs and broadcasts.
+#: before the fee payer co-signs and broadcasts.
 OPEN_SLOT_WINDOW = 1500
 
 # Rent sysvar id (slot 10 of the open instruction account layout).
@@ -67,20 +66,16 @@ def parse_base_units(value: str, label: str) -> int:
 def verify_upto_payload(
     payload: UptoPayload,
     requirements: UptoRequirements,
-    operator: str,
+    receiver_authorizer: str,
     now: int,
 ) -> None:
     """Validate the client payload against the route-pinned requirement.
 
-    Ordered checks (mirroring the Rust/Go spine): ``assetTransferMethod`` is
-    ``payment-channel``; ``maxAmount`` equals the verification ceiling;
-    ``deposit`` equals ``maxAmount``; ``validAfter <= now <= expiresAt``; the
-    ``authorizedSigner`` is the operator (the operator - not the client - signs
-    the settlement voucher).
+    Ordered checks (mirroring the Rust/Go spine): ``maxAmount`` equals the
+    verification ceiling; ``deposit`` equals ``maxAmount``;
+    ``validAfter <= now < expiresAt``; the ``authorizedSigner`` is the advertised
+    receiver authorizer.
     """
-    if requirements["extra"].get("assetTransferMethod") != UPTO_ASSET_TRANSFER_METHOD:
-        raise InvalidProofError(f"assetTransferMethod must be {UPTO_ASSET_TRANSFER_METHOD}", code="payment_invalid")
-
     max_amount = parse_base_units(requirements["amount"], "amount")
     signed_max = parse_base_units(payload.get("maxAmount", ""), "maxAmount")
     if signed_max != max_amount:
@@ -99,12 +94,12 @@ def verify_upto_payload(
         raise InvalidProofError(
             f"authorization not yet active (validAfter {valid_after} > now {now})", code="payment_invalid"
         )
-    if now > expires_at:
+    if expires_at == 0 or now >= expires_at:
         raise InvalidProofError(f"authorization expired (expiresAt {expires_at} < now {now})", code="payment_invalid")
 
-    if payload.get("authorizedSigner") != operator:
+    if payload.get("authorizedSigner") != receiver_authorizer:
         raise InvalidProofError(
-            "voucher authorized_signer must be the operator for the payment-channel asset transfer method",
+            "voucher authorized_signer must be the advertised receiver authorizer",
             code="payment_invalid",
         )
 
@@ -123,22 +118,26 @@ def validate_upto_open_instruction(
     instructions: list[Any],
     *,
     program_id: Pubkey,
-    operator: Pubkey,
+    fee_payer: Pubkey,
+    receiver_authorizer: Pubkey,
     payer: Pubkey,
     payee: Pubkey,
     mint: Pubkey,
     token_program: Pubkey,
     channel_id: Pubkey,
     max_amount: int,
+    withdraw_delay: int,
+    payload_nonce: str,
+    payload_open_slot: str,
     recent_slot: int | None,
 ) -> None:
     """Validate the client-built channel-open instruction byte-for-byte.
 
     The open transaction must contain exactly one instruction targeting the
     payment-channels program with the channel-open discriminator and the 14
-    accounts in the fixed order the program expects. ``operator`` is both the
-    ``rentPayer`` (slot 1) and the ``authorizedSigner`` (slot 4). Mirrors Go's
-    ``validateUptoOpenInstruction``.
+    accounts in the fixed order the program expects. ``fee_payer`` is the
+    ``rentPayer`` (slot 1) and ``receiver_authorizer`` is the
+    ``authorizedSigner`` (slot 4). Mirrors Go's ``validateUptoOpenInstruction``.
 
     The instruction's own ``openArgs`` are decoded and bound too: the channel
     account must equal the PDA re-derived from the args' ``salt``/``openSlot``
@@ -146,7 +145,7 @@ def validate_upto_open_instruction(
     the authorized maximum ``max_amount``, and — when the challenged
     ``extra.recentSlot`` is known — ``openSlot`` must not be in its future and
     must sit inside the program's freshness window, so a stale or forged slot
-    fails before the operator co-signs and broadcasts.
+    fails before the fee payer co-signs and broadcasts.
     """
     if len(instructions) != 1:
         raise InvalidProofError(
@@ -185,10 +184,10 @@ def validate_upto_open_instruction(
     event_authority, _ = find_event_authority_pda(program_id)
 
     expect(0, payer, "payer")
-    expect(1, operator, "rent_payer")
+    expect(1, fee_payer, "rent_payer")
     expect(2, payee, "payee")
     expect(3, mint, "mint")
-    expect(4, operator, "authorized_signer")
+    expect(4, receiver_authorizer, "authorized_signer")
     expect(5, channel_id, "channel")
     expect(6, payer_token, "payer_token_account")
     expect(7, channel_token, "channel_token_account")
@@ -205,12 +204,26 @@ def validate_upto_open_instruction(
         raise InvalidProofError(f"open instruction data too short ({len(data)} bytes)", code="payment_invalid")
     salt = struct.unpack_from("<Q", data, 1)[0]
     deposit = struct.unpack_from("<Q", data, 9)[0]
+    grace_period = struct.unpack_from("<I", data, 17)[0]
     open_slot = struct.unpack_from("<Q", data, 21)[0]
+    if payload_nonce != str(salt):
+        raise InvalidProofError(
+            f"open salt {salt} does not match payload nonce {payload_nonce!r}", code="payment_invalid"
+        )
+    if payload_open_slot != str(open_slot):
+        raise InvalidProofError(
+            f"open slot {open_slot} does not match payload openSlot {payload_open_slot!r}", code="payment_invalid"
+        )
+    if grace_period != withdraw_delay:
+        raise InvalidProofError(
+            f"open withdraw delay {grace_period} must equal the advertised withdrawDelay {withdraw_delay}",
+            code="payment_invalid",
+        )
 
     # Slot-addressed channel invariant: the channel account must be the PDA
     # actually derived with the args' salt + openSlot, not just any account
     # the payload named.
-    derived_channel, _ = find_channel_pda(payer, payee, mint, operator, salt, open_slot, program_id)
+    derived_channel, _ = find_channel_pda(payer, payee, mint, receiver_authorizer, salt, open_slot, program_id)
     if derived_channel != channel_id:
         raise InvalidProofError(f"open channel PDA {channel_id} != derived {derived_channel}", code="payment_invalid")
     if deposit != max_amount:

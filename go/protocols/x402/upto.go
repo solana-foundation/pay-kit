@@ -38,16 +38,16 @@ const (
 	UptoScheme                       = "upto"
 	UptoAssetTransferMethod          = "payment-channel"
 	UptoErrorSettlementExceedsAmount = "invalid_upto_svm_payload_settlement_exceeds_amount"
+	DefaultUptoWithdrawDelaySeconds  = 900
 )
 
 // UptoExtra is the extra object on an x402 upto payment requirement.
 type UptoExtra struct {
-	AssetTransferMethod  string `json:"assetTransferMethod"`
 	Decimals             *uint8 `json:"decimals,omitempty"`
 	TokenProgram         string `json:"tokenProgram,omitempty"`
-	FacilitatorAddress   string `json:"facilitatorAddress"`
-	FacilitatorFee       uint16 `json:"facilitatorFee,omitempty"`
-	ChannelProgram       string `json:"channelProgram,omitempty"`
+	FeePayer             string `json:"feePayer"`
+	ReceiverAuthorizer   string `json:"receiverAuthorizer"`
+	WithdrawDelay        uint32 `json:"withdrawDelay"`
 	RecentBlockhash      string `json:"recentBlockhash,omitempty"`
 	LastValidBlockHeight string `json:"lastValidBlockHeight,omitempty"`
 	// RecentSlot is the current slot pre-fetched by the server alongside
@@ -104,6 +104,7 @@ type UptoPayload struct {
 	ChannelID        string `json:"channelId"`
 	Deposit          string `json:"deposit"`
 	AuthorizedSigner string `json:"authorizedSigner"`
+	OpenSlot         string `json:"openSlot"`
 	OpenTransaction  string `json:"openTransaction,omitempty"`
 	Signature        string `json:"signature,omitempty"`
 }
@@ -146,10 +147,7 @@ type UptoSettlementResponse struct {
 }
 
 // VerifyUptoPayload validates the payload against the route-pinned requirement.
-func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, operator string, now int64) error {
-	if requirements.Extra.AssetTransferMethod != UptoAssetTransferMethod {
-		return fmt.Errorf("assetTransferMethod must be %s", UptoAssetTransferMethod)
-	}
+func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, receiverAuthorizer string, now int64) error {
 	max, err := requirements.MaxAmount()
 	if err != nil {
 		return err
@@ -171,11 +169,11 @@ func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, opera
 	if now < payload.ValidAfter {
 		return fmt.Errorf("authorization not yet active (validAfter %d > now %d)", payload.ValidAfter, now)
 	}
-	if now > payload.ExpiresAt {
+	if payload.ExpiresAt == 0 || now >= payload.ExpiresAt {
 		return fmt.Errorf("authorization expired (expiresAt %d < now %d)", payload.ExpiresAt, now)
 	}
-	if payload.AuthorizedSigner != operator {
-		return errors.New("voucher authorized_signer must be the operator for the payment-channel asset transfer method")
+	if payload.AuthorizedSigner != receiverAuthorizer {
+		return errors.New("voucher authorized_signer must be the advertised receiver authorizer")
 	}
 	return nil
 }
@@ -217,19 +215,20 @@ func (o *UptoVerifiedOpen) Release() {
 
 // UptoConfig configures the x402 upto server engine.
 type UptoConfig struct {
-	Recipient               string
-	Currency                string
-	Decimals                uint8
-	Network                 uptoNetwork
-	RPCURL                  string
-	Resource                string
-	Description             string
-	MaxTimeoutSeconds       uint64
-	TokenProgram            string
-	ChannelProgram          string
-	OperatorSigner          uptoSigner
-	FacilitatorFee          uint16
-	RecentBlockhashProvider func() (string, error)
+	Recipient                string
+	Currency                 string
+	Decimals                 uint8
+	Network                  uptoNetwork
+	RPCURL                   string
+	Resource                 string
+	Description              string
+	MaxTimeoutSeconds        uint64
+	TokenProgram             string
+	ChannelProgram           string
+	FeePayerSigner           uptoSigner
+	ReceiverAuthorizerSigner uptoSigner
+	WithdrawDelay            uint32
+	RecentBlockhashProvider  func() (string, error)
 	// RecentSlotProvider overrides the current-slot fetch for the challenge's
 	// extra.recentSlot (deterministic tests). Nil fetches via the RPC client's
 	// getSlot.
@@ -238,11 +237,12 @@ type UptoConfig struct {
 
 // X402Upto is the server-side x402 upto payment-channel engine.
 type X402Upto struct {
-	cfg      UptoConfig
-	rpc      solanatx.RPCClient
-	operator solana.PublicKey
-	inFlight map[string]struct{}
-	mu       sync.Mutex
+	cfg                UptoConfig
+	rpc                solanatx.RPCClient
+	feePayer           solana.PublicKey
+	receiverAuthorizer solana.PublicKey
+	inFlight           map[string]struct{}
+	mu                 sync.Mutex
 }
 
 type uptoInFlightGuard struct {
@@ -274,24 +274,37 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if cfg.MaxTimeoutSeconds == 0 {
 		cfg.MaxTimeoutSeconds = DefaultMaxTimeoutSeconds
 	}
-	if cfg.OperatorSigner == nil {
-		return nil, errors.New("operator signer is required")
+	if cfg.WithdrawDelay == 0 {
+		cfg.WithdrawDelay = DefaultUptoWithdrawDelaySeconds
 	}
-	operator, err := solana.PublicKeyFromBase58(cfg.OperatorSigner.Pubkey())
+	if cfg.FeePayerSigner == nil {
+		return nil, errors.New("fee payer signer is required")
+	}
+	if cfg.ReceiverAuthorizerSigner == nil {
+		cfg.ReceiverAuthorizerSigner = cfg.FeePayerSigner
+	}
+	feePayer, err := solana.PublicKeyFromBase58(cfg.FeePayerSigner.Pubkey())
 	if err != nil {
-		return nil, fmt.Errorf("operator pubkey: %w", err)
+		return nil, fmt.Errorf("fee payer pubkey: %w", err)
+	}
+	receiverAuthorizer, err := solana.PublicKeyFromBase58(cfg.ReceiverAuthorizerSigner.Pubkey())
+	if err != nil {
+		return nil, fmt.Errorf("receiver authorizer pubkey: %w", err)
 	}
 	if _, err := solana.PublicKeyFromBase58(cfg.Recipient); err != nil {
 		return nil, fmt.Errorf("invalid recipient pubkey: %w", err)
-	}
-	if cfg.FacilitatorFee > 10_000 {
-		return nil, errors.New("facilitatorFee must be <= 10000")
 	}
 	rpcURL := cfg.RPCURL
 	if rpcURL == "" {
 		rpcURL = cfg.Network.DefaultRPCURL()
 	}
-	return &X402Upto{cfg: cfg, rpc: rpc.New(rpcURL), operator: operator, inFlight: map[string]struct{}{}}, nil
+	return &X402Upto{
+		cfg:                cfg,
+		rpc:                rpc.New(rpcURL),
+		feePayer:           feePayer,
+		receiverAuthorizer: receiverAuthorizer,
+		inFlight:           map[string]struct{}{},
+	}, nil
 }
 
 // SetRPCForTests replaces the RPC client for deterministic tests.
@@ -299,8 +312,11 @@ func (u *X402Upto) SetRPCForTests(rpcClient solanatx.RPCClient) {
 	u.rpc = rpcClient
 }
 
-// Operator returns the operator/facilitator public key.
-func (u *X402Upto) Operator() string { return u.operator.String() }
+// FeePayer returns the transaction fee/rent payer public key.
+func (u *X402Upto) FeePayer() string { return u.feePayer.String() }
+
+// ReceiverAuthorizer returns the channel payee and voucher signer public key.
+func (u *X402Upto) ReceiverAuthorizer() string { return u.receiverAuthorizer.String() }
 
 // UptoRequirements builds the route-pinned upto requirement for maxAmount.
 func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) {
@@ -313,10 +329,6 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 	baseUnits, err := parseDecimalUnits(maxAmount, u.cfg.Decimals)
 	if err != nil {
 		return UptoRequirements{}, err
-	}
-	programID := u.cfg.ChannelProgram
-	if programID == "" {
-		programID = paymentchannels.ProgramID
 	}
 	tokenProgram := u.cfg.TokenProgram
 	if tokenProgram == "" {
@@ -331,12 +343,11 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 		PayTo:             u.cfg.Recipient,
 		MaxTimeoutSeconds: u.cfg.MaxTimeoutSeconds,
 		Extra: UptoExtra{
-			AssetTransferMethod: UptoAssetTransferMethod,
-			Decimals:            &decimals,
-			TokenProgram:        tokenProgram,
-			FacilitatorAddress:  u.Operator(),
-			FacilitatorFee:      u.cfg.FacilitatorFee,
-			ChannelProgram:      programID,
+			Decimals:           &decimals,
+			TokenProgram:       tokenProgram,
+			FeePayer:           u.FeePayer(),
+			ReceiverAuthorizer: u.ReceiverAuthorizer(),
+			WithdrawDelay:      u.cfg.WithdrawDelay,
 		},
 	}, nil
 }
@@ -419,26 +430,22 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 		return nil, err
 	}
 	payload := envelope.Payload
-	if err := VerifyUptoPayload(payload, req, u.Operator(), time.Now().Unix()); err != nil {
+	if err := VerifyUptoPayload(payload, req, u.ReceiverAuthorizer(), time.Now().Unix()); err != nil {
 		return nil, err
 	}
 	// Phase 3 step 2: confirm network matches the advertised requirements.
 	if envelope.Network != req.Network {
 		return nil, fmt.Errorf("network mismatch: payload %q, expected %q", envelope.Network, req.Network)
 	}
-	// Phase 3 step 3: confirm facilitatorAddress in extra is this server's key.
-	if req.Extra.FacilitatorAddress != u.Operator() {
-		return nil, errors.New("extra.facilitatorAddress is not this server's key")
-	}
-	programID, err := solana.PublicKeyFromBase58(firstNonEmpty(req.Extra.ChannelProgram, paymentchannels.ProgramID))
+	programID, err := solana.PublicKeyFromBase58(firstNonEmpty(u.cfg.ChannelProgram, paymentchannels.ProgramID))
 	if err != nil {
-		return nil, fmt.Errorf("invalid channelProgram: %w", err)
+		return nil, fmt.Errorf("invalid channel program: %w", err)
 	}
 	expectedMint, err := solana.PublicKeyFromBase58(req.Asset)
 	if err != nil {
 		return nil, fmt.Errorf("invalid mint: %w", err)
 	}
-	expectedPayee := u.operator
+	expectedPayee := u.receiverAuthorizer
 	expectedDistribution, err := u.distribution()
 	if err != nil {
 		return nil, err
@@ -485,13 +492,28 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if _, slot, slotErr := u.recentLifetime(); slotErr == nil {
 		challengedSlot = &slot
 	}
-	if err := validateUptoOpenInstruction(tx, programID, u.operator, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID, max, challengedSlot); err != nil {
+	if err := validateUptoOpenInstruction(
+		tx,
+		programID,
+		u.feePayer,
+		u.receiverAuthorizer,
+		payer,
+		expectedPayee,
+		expectedMint,
+		tokenProgram,
+		channelID,
+		max,
+		u.cfg.WithdrawDelay,
+		payload.Nonce,
+		payload.OpenSlot,
+		challengedSlot,
+	); err != nil {
 		return nil, err
 	}
-	if !transactionFeePayerIs(tx, u.operator) {
-		return nil, errors.New("open transaction fee payer must be the advertised operator")
+	if !transactionFeePayerIs(tx, u.feePayer) {
+		return nil, errors.New("open transaction fee payer must be the advertised fee payer")
 	}
-	if err := signPaykitTransaction(ctx, tx, u.cfg.OperatorSigner); err != nil {
+	if err := signPaykitTransaction(ctx, tx, u.cfg.FeePayerSigner); err != nil {
 		return nil, fmt.Errorf("fee payer signing failed: %w", err)
 	}
 	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
@@ -521,11 +543,14 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if !bytes.Equal(channel.DistributionHash[:], expectedDistributionHash[:]) {
 		return nil, errors.New("channel distribution does not match the expected recipient split")
 	}
-	if !channel.AuthorizedSigner.Equals(u.operator) {
-		return nil, errors.New("channel authorized_signer is not the operator")
+	if !channel.AuthorizedSigner.Equals(u.receiverAuthorizer) {
+		return nil, errors.New("channel authorized_signer is not the receiver authorizer")
 	}
-	if !channel.RentPayer.Equals(u.operator) {
-		return nil, errors.New("channel rent_payer is not the operator")
+	if !channel.RentPayer.Equals(u.feePayer) {
+		return nil, errors.New("channel rent_payer is not the fee payer")
+	}
+	if channel.GracePeriod != u.cfg.WithdrawDelay {
+		return nil, fmt.Errorf("channel withdraw delay %d does not match advertised %d", channel.GracePeriod, u.cfg.WithdrawDelay)
 	}
 	if channel.Deposit != max {
 		return nil, fmt.Errorf("on-chain deposit %d must equal authorized maximum %d", channel.Deposit, max)
@@ -555,7 +580,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if actual == 0 {
 		var err error
 		instructions, err = paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
-			Payee: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
+			Payee: u.receiverAuthorizer, Channel: open.ChannelID, AuthorizedSigner: u.receiverAuthorizer,
 			Signature: nil, CumulativeAmount: 0, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 		})
 		if err != nil {
@@ -566,7 +591,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		if err != nil {
 			return UptoSettlementResponse{}, err
 		}
-		sigBytes, err := u.cfg.OperatorSigner.Sign(ctx, message)
+		sigBytes, err := u.cfg.ReceiverAuthorizerSigner.Sign(ctx, message)
 		if err != nil {
 			return UptoSettlementResponse{}, fmt.Errorf("voucher signing failed: %w", err)
 		}
@@ -576,7 +601,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		var voucherSignature [64]byte
 		copy(voucherSignature[:], sigBytes)
 		instructions, err = paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
-			Payee: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
+			Payee: u.receiverAuthorizer, Channel: open.ChannelID, AuthorizedSigner: u.receiverAuthorizer,
 			Signature: &voucherSignature, CumulativeAmount: actual, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 		})
 		if err != nil {
@@ -585,7 +610,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	}
 	payee := open.Payee
 	if payee.IsZero() {
-		payee = u.operator
+		payee = u.receiverAuthorizer
 	}
 	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
 		Channel: open.ChannelID, Payer: open.Payer, RentPayer: open.RentPayer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
@@ -594,17 +619,17 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if err != nil {
 		return UptoSettlementResponse{}, err
 	}
-	createPayeeATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, payee, open.Mint, open.TokenProgram)
+	createPayeeATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.feePayer, payee, open.Mint, open.TokenProgram)
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("build payee ATA create: %w", err)
 	}
-	createTreasuryATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, paymentchannels.TreasuryOwner(), open.Mint, open.TokenProgram)
+	createTreasuryATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.feePayer, paymentchannels.TreasuryOwner(), open.Mint, open.TokenProgram)
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("build treasury ATA create: %w", err)
 	}
 	instructions = append(instructions, createPayeeATA, createTreasuryATA, distribute)
 	for _, entry := range open.Distribution {
-		createRecipientATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, entry.Recipient, open.Mint, open.TokenProgram)
+		createRecipientATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.feePayer, entry.Recipient, open.Mint, open.TokenProgram)
 		if err != nil {
 			return UptoSettlementResponse{}, fmt.Errorf("build recipient ATA create: %w", err)
 		}
@@ -617,12 +642,15 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if blockhash == nil || blockhash.Value == nil {
 		return UptoSettlementResponse{}, errors.New("blockhash fetch failed: empty response")
 	}
-	tx, err := solana.NewTransaction(instructions, blockhash.Value.Blockhash, solana.TransactionPayer(u.operator))
+	tx, err := solana.NewTransaction(instructions, blockhash.Value.Blockhash, solana.TransactionPayer(u.feePayer))
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("build settlement transaction: %w", err)
 	}
-	if err := signPaykitTransaction(ctx, tx, u.cfg.OperatorSigner); err != nil {
-		return UptoSettlementResponse{}, fmt.Errorf("settle signing failed: %w", err)
+	if err := signPaykitTransaction(ctx, tx, u.cfg.ReceiverAuthorizerSigner); err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("receiver authorizer signing failed: %w", err)
+	}
+	if err := signPaykitTransaction(ctx, tx, u.cfg.FeePayerSigner); err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("fee payer signing failed: %w", err)
 	}
 	signature, err := solanatx.SendTransaction(ctx, u.rpc, tx)
 	if err != nil {
@@ -635,11 +663,8 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 }
 
 func (u *X402Upto) distribution() ([]paymentchannels.Distribution, error) {
-	if u.cfg.Recipient == "" || u.cfg.Recipient == u.Operator() {
+	if u.cfg.Recipient == "" || u.cfg.Recipient == u.ReceiverAuthorizer() {
 		return nil, nil
-	}
-	if u.cfg.FacilitatorFee > 10_000 {
-		return nil, errors.New("facilitatorFee must be <= 10000")
 	}
 	recipient, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
 	if err != nil {
@@ -647,7 +672,7 @@ func (u *X402Upto) distribution() ([]paymentchannels.Distribution, error) {
 	}
 	return []paymentchannels.Distribution{{
 		Recipient: recipient,
-		Bps:       10_000 - u.cfg.FacilitatorFee,
+		Bps:       10_000,
 	}}, nil
 }
 
@@ -715,10 +740,18 @@ func (u *X402Upto) recentLifetime() (string, uint64, error) {
 // openSlotWindow is the program's openSlot freshness window (slots): open
 // requires openSlot <= clock.slot and clock.slot - openSlot <= 1500. Applied
 // pre-broadcast against the challenged extra.recentSlot so a stale or forged
-// slot fails before the operator co-signs.
+// slot fails before the fee payer co-signs.
 const openSlotWindow = 1500
 
-func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey, maxAmount uint64, recentSlot *uint64) error {
+func validateUptoOpenInstruction(
+	tx *solana.Transaction,
+	programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey,
+	maxAmount uint64,
+	withdrawDelay uint32,
+	payloadNonce string,
+	payloadOpenSlot string,
+	recentSlot *uint64,
+) error {
 	keys := tx.Message.AccountKeys
 	instructions := tx.Message.Instructions
 	if len(instructions) != 1 {
@@ -812,7 +845,17 @@ func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, a
 	}
 	salt := binary.LittleEndian.Uint64(ix.Data[1:9])
 	deposit := binary.LittleEndian.Uint64(ix.Data[9:17])
+	gracePeriod := binary.LittleEndian.Uint32(ix.Data[17:21])
 	openSlot := binary.LittleEndian.Uint64(ix.Data[21:29])
+	if payloadNonce != strconv.FormatUint(salt, 10) {
+		return fmt.Errorf("open salt %d does not match payload nonce %q", salt, payloadNonce)
+	}
+	if payloadOpenSlot != strconv.FormatUint(openSlot, 10) {
+		return fmt.Errorf("open slot %d does not match payload openSlot %q", openSlot, payloadOpenSlot)
+	}
+	if gracePeriod != withdrawDelay {
+		return fmt.Errorf("open withdraw delay %d must equal the advertised withdrawDelay %d", gracePeriod, withdrawDelay)
+	}
 
 	// Slot-addressed channel invariant: the channel account must be the PDA
 	// actually derived with the args' salt + openSlot, not just any account

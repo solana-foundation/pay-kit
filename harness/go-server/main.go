@@ -98,7 +98,10 @@ func main() {
 func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	rpcURL := requireEnv("X402_HARNESS_RPC_URL")
 	payTo := requireEnv("X402_HARNESS_PAY_TO")
-	facilitator := requireEnv("X402_HARNESS_FACILITATOR_SECRET_KEY")
+	feePayer := optionalEnv("X402_HARNESS_FEE_PAYER_SECRET_KEY", "")
+	if feePayer == "" {
+		feePayer = requireEnv("X402_HARNESS_FACILITATOR_SECRET_KEY")
+	}
 	amount := optionalEnv("X402_HARNESS_AMOUNT", "1000")
 	// The harness funds the scenario's mint (X402_HARNESS_MINT) and the
 	// client pays in whatever mint the challenge advertises, so the gate
@@ -114,7 +117,7 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		Accept:    []paykit.Protocol{paykit.X402},
 		Operator: paykit.Operator{
 			Recipient: paykit.Address(payTo),
-			Signer:    signer.MustFromJSON(facilitator),
+			Signer:    signer.MustFromJSON(feePayer),
 			FeePayer:  true,
 		},
 		MPP: paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402")},

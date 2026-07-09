@@ -18,7 +18,7 @@ describe('configure', () => {
         expect(config.operator.signer.isDemo).toBe(true);
         expect(config.operator.recipient).toBe(config.operator.signer.pubkey);
         expect(config.rpcUrl).toBe('http://localhost:8899');
-        expect(config.x402.facilitatorFee).toBe(0);
+        expect(config.x402).toEqual({});
     });
 
     it('refuses the demo signer on mainnet', async () => {
@@ -45,15 +45,6 @@ describe('configure', () => {
         );
     });
 
-    it('validates the x402 facilitator fee', async () => {
-        const config = await configure({ ...SECRET, x402: { facilitatorFee: 250 } });
-        expect(config.x402.facilitatorFee).toBe(250);
-
-        await expect(configure({ ...SECRET, x402: { facilitatorFee: -1 } })).rejects.toThrow(ConfigurationError);
-        await expect(configure({ ...SECRET, x402: { facilitatorFee: 10_001 } })).rejects.toThrow(ConfigurationError);
-        await expect(configure({ ...SECRET, x402: { facilitatorFee: 1.5 } })).rejects.toThrow(ConfigurationError);
-    });
-
     it('requires a challenge secret outside localnet', async () => {
         const signer = await Signer.generate();
         delete process.env.PAY_KIT_MPP_SECRET;
@@ -71,21 +62,19 @@ describe('configure', () => {
         process.env.PAY_KIT_MPP_EXPIRES_IN = '60';
         process.env.PAY_KIT_STABLECOINS = '';
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
-        process.env.PAY_KIT_X402_FACILITATOR_FEE = '125';
         try {
             const config = await configureFromEnv();
             expect(config.network).toBe('solana_devnet');
             expect(config.mpp.challengeBindingSecret).toBe('env-secret');
             expect(config.mpp.expiresIn).toBe(60);
             expect(config.rpcUrl).toBe('http://rpc.example');
-            expect(config.x402.facilitatorFee).toBe(125);
+            expect(config.x402).toEqual({});
         } finally {
             delete process.env.PAY_KIT_NETWORK;
             delete process.env.PAY_KIT_MPP_SECRET;
             delete process.env.PAY_KIT_MPP_EXPIRES_IN;
             delete process.env.PAY_KIT_STABLECOINS;
             delete process.env.PAY_KIT_RPC_URL;
-            delete process.env.PAY_KIT_X402_FACILITATOR_FEE;
         }
     });
 });

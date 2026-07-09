@@ -404,6 +404,9 @@ impl X402BatchSettlement {
             // Deposit is validated against the on-chain channel post-broadcast
             // (batch has no single authorized maximum at open time).
             None,
+            None,
+            None,
+            None,
             // The config's recentSlot IS the expected openSlot: the args-derived
             // PDA above already pins it exactly, and the window check keeps the
             // pre-broadcast failure mode explicit.
