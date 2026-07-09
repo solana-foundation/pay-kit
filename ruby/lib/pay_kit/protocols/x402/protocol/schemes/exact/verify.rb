@@ -84,7 +84,6 @@ module PayKit::Protocols::X402
             verify_compute_limit_instruction!(instructions.fetch(0), account_keys)
             verify_compute_price_instruction!(instructions.fetch(1), account_keys)
             transfer = verify_transfer_instruction!(instructions.fetch(2), account_keys, requirement, managed_signers)
-            reject_fee_payer_in_instruction_accounts!(instructions, account_keys, managed_signers)
 
             invalid_reason_by_index = [
               "invalid_exact_svm_payload_unknown_fourth_instruction",
@@ -175,13 +174,20 @@ module PayKit::Protocols::X402
             authority = account_key_for_index(accounts.fetch(3), account_keys)
             source = account_key_for_index(accounts.fetch(0), account_keys)
 
-            # Rule 5: authority guard (spine verify.rs:382).
-            if managed_signers.any? { |managed| managed == authority || managed == source }
-              raise "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+            # Rule 5: managed signers must not fund or authorize the transfer.
+            # The canonical check is intentionally limited to the transfer's
+            # source, authority/tail signer accounts, and the managed ATA for
+            # the actual mint/program. Mint and destination references alone
+            # do not authorize a transfer and must not be rejected.
+            tail_accounts = accounts.drop(3).map do |index|
+              account_key_for_index(index, account_keys)
             end
-
-            if accounts.any? { |index| managed_signers.include?(account_key_for_index(index, account_keys)) }
-              raise "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts"
+            if managed_signers.any? do |managed|
+              managed == source ||
+                  tail_accounts.include?(managed) ||
+                  source == Exact.associated_token_address(managed, program, mint)
+            end
+              raise "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
             end
 
             expected_mint = Exact.base58_decode(requirement.fetch("asset"))
@@ -201,22 +207,6 @@ module PayKit::Protocols::X402
               authority: authority,
               token_program: program
             }
-          end
-
-          # Fee-payer-in-instruction-accounts sweep. Closes the ATA-drain
-          # vector where an extra instruction (TransferChecked, SystemProgram
-          # Transfer, etc.) names the fee payer as a signer or source.
-          # INTENTIONAL_DIVERGENCE from spine: the Rust spine has no such
-          # sweep. The destination ATA must pre-exist (no in-band ATA-create
-          # is allowed), so there is no funding-payer carve-out.
-          def reject_fee_payer_in_instruction_accounts!(instructions, account_keys, managed_signers)
-            instructions.each do |instruction|
-              instruction.fetch(:accounts).each do |index|
-                if managed_signers.include?(account_key_for_index(index, account_keys))
-                  raise "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts"
-                end
-              end
-            end
           end
 
           def instruction_program(instruction, account_keys)

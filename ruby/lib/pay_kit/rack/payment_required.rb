@@ -255,6 +255,7 @@ module PayKit
         rpc = @config.effective_rpc_url
         realm = @config.mpp.realm
         expires_in = @config.mpp.expires_in
+        replay_store = @config.mpp.replay_store
         fee_payer_account = if @config.operator.fee_payer? && @config.operator.signer.respond_to?(:to_pay_core_account)
           @config.operator.signer.to_pay_core_account
         end
@@ -270,12 +271,14 @@ module PayKit
             rpc: rpc,
             fee_payer: fee_payer_account
           )
-          ::PayKit::Protocols::Mpp.create(
+          options = {
             method: method,
             secret_key: secret,
             realm: realm,
             expires_in: expires_in
-          )
+          }
+          options[:replay_store] = replay_store unless replay_store.nil?
+          ::PayKit::Protocols::Mpp.create(**options)
         end
       end
 

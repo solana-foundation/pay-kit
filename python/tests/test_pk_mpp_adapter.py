@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from solana_pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.mpp import MppAdapter, SecretResolver
@@ -81,6 +82,17 @@ def test_accepts_entry_shape():
     assert entry["currency"] == "USDC"
     assert entry["payTo"] == cfg.effective_recipient()
     assert entry["realm"] == cfg.mpp.realm
+
+
+def test_default_replay_store_fails_closed_outside_localnet(monkeypatch):
+    cfg = _cfg(network="solana_devnet")
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        MppAdapter(cfg)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    assert MppAdapter(cfg)._replay_store is not None
 
 
 def test_accepts_entry_includes_splits_when_fees():

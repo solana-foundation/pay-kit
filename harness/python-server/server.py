@@ -376,25 +376,15 @@ class _Adapter:
                 realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
                 modes=["pull"],
                 pull_voucher_strategy="clientVoucher",
-                # Merge resolution: kept main's client-submit model. main (#218)
-                # adopted the epoch-addressed payment-channels program, where the
-                # client derives the channel PDA from the challenge recentSlot
-                # (openSlot). The branch's earlier server-broadcast variant
-                # (open_tx_submitter="server", signer set) targeted the
-                # pre-openSlot program and would emit invalid instruction data
-                # against the adopted one, so it is superseded here. Driving the
-                # session settle on-chain again is a separate effort against the
-                # new program.
-                open_tx_submitter="client",
-                # The session challenge must carry recentBlockhash + recentSlot
-                # (the client derives the channel PDA from the challenge slot
-                # and never fetches it), but this scenario's surfnet runs no
-                # payment-channels program, so the wire-level trust model must
-                # stay intact: rpc=None keeps open verification / broadcast /
-                # settle-at-close off, and the recent-state provider stamps the
-                # challenge fields from one blocking getLatestBlockhash call
-                # (the slot rides in its context).
-                signer=None,
+                # The client builds an open tied to the challenge recentSlot;
+                # the server checks that slot, signs the fee-payer slot, and
+                # broadcasts before it accepts any vouchers. The current
+                # verifier persists the transaction's openSlot, so this path
+                # is compatible with the epoch-addressed program.
+                open_tx_submitter="server",
+                signer=signer,
+                # _handle_session installs a fresh request-scoped RPC client
+                # for both open and settle, avoiding cross-event-loop clients.
                 rpc=None,
                 recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
             )

@@ -13,7 +13,7 @@ import base64
 import struct
 from typing import Any, cast
 
-from solana_pay_kit._paycore.mints import derive_ata
+from solana_pay_kit._paycore.mints import TOKEN_2022_PROGRAM, TOKEN_PROGRAM, derive_ata
 from solana_pay_kit.errors import InvalidProofError
 
 __all__ = [
@@ -51,8 +51,6 @@ MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 #: Must match the rust spine constant ``LIGHTHOUSE_PROGRAM`` in
 #: ``rust/crates/x402/src/protocol/schemes/exact/types.rs``.
 LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
-#: Token-2022 program id (accepted transfer program alongside the route's).
-TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 #: Maximum SetComputeUnitPrice in microlamports. Matches the Rust spine
 #: constant ``MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`` in verify.rs.
 MAX_COMPUTE_UNIT_PRICE = 5_000_000
@@ -202,9 +200,11 @@ class ExactVerifier:
         managed_signers: list[str],
     ) -> dict[str, Any]:
         program = ExactVerifier._program_of(account_keys, ix)
-        # Rule 11: token program strict bind to extra.tokenProgram.
-        token_program_extra = ExactVerifier._string_extra(requirement, "tokenProgram", required=True)
-        if program != token_program_extra and program != TOKEN_2022_PROGRAM:
+        # Rule 11: the transfer itself selects one of the supported SPL token
+        # programs. ``extra.tokenProgram`` describes an offer, not a trust
+        # anchor for this verifier: the actual instruction program determines
+        # both the accepted program and the ATA derivations below.
+        if program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
             raise InvalidProofError(
                 "invalid_exact_svm_payload_no_transfer_instruction",
                 code="invalid_exact_svm_payload_no_transfer_instruction",
@@ -225,23 +225,35 @@ class ExactVerifier:
         destination = ExactVerifier._account_at(account_keys, ix, 2)
         authority = ExactVerifier._account_at(account_keys, ix, 3)
 
-        # Rule 5: authority guard (no managed signer as authority/source/account).
-        for managed in managed_signers:
-            if managed in (authority, source):
+        # Rule 5: a managed signer must not fund this transfer. transferChecked
+        # puts its authority and any multisig signers in accounts[3:], while a
+        # delegated transfer may drain a managed signer's ATA without naming
+        # that signer as the authority. Keep this scoped to the transfer; later
+        # optional instructions have their own program allowlist.
+        managed = set(managed_signers)
+        signer_tail = (ExactVerifier._account_at(account_keys, ix, slot) for slot in range(3, len(accounts)))
+        if any(signer in managed for signer in signer_tail):
+            raise InvalidProofError(
+                "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+                code="invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+            )
+        for signer in managed:
+            if source == signer:
                 raise InvalidProofError(
                     "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
                     code="invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
                 )
-        for idx in accounts:
-            key = account_keys[idx] if 0 <= idx < len(account_keys) else None
-            if key is None:
+            try:
+                managed_ata = derive_ata(signer, mint, program)
+            except ValueError:
+                # An invalid configured signer cannot derive an ATA or match a
+                # decoded transaction account. This mirrors the TS verifier.
                 continue
-            for managed in managed_signers:
-                if managed == key:
-                    raise InvalidProofError(
-                        "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
-                        code="invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts",
-                    )
+            if source == managed_ata:
+                raise InvalidProofError(
+                    "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+                    code="invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+                )
 
         # Rule 6: mint match (offer carries the resolved on-chain mint on `asset`).
         expected_mint = ExactVerifier._b58_field(requirement, "asset")
