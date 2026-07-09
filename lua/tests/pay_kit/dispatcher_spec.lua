@@ -16,10 +16,10 @@ local function setup()
   assert(pay_kit.configure({
     network  = 'solana_devnet',
     operator = {recipient = SELLER},
-    -- Non-localnet MPP now requires an explicit durable replay store; supply a
-    -- process-local one for the 402-shape tests below.
-    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
-                replay_store = mpp_store.memory()},
+    mpp      = {
+      challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
+      replay_store = helper.shared_replay_store(),
+    },
   }))
 end
 
@@ -95,8 +95,8 @@ helper.test('MPP on a non-localnet network fails closed without a durable replay
   local ok, err = pcall(pay_kit.try_payment, 'report', {headers = {}, path = '/report'})
   helper.assert_true(not ok, 'expected MPP build to fail closed without a durable replay store')
   local msg = type(err) == 'table' and err.message or tostring(err)
-  helper.assert_true(msg:find('durable', 1, true) ~= nil and msg:find('replay store', 1, true) ~= nil,
-    'expected a durable-replay-store error, got: ' .. msg)
+  helper.assert_true(msg:find('replay store', 1, true) ~= nil,
+    'expected a replay-store error, got: ' .. msg)
 end)
 
 helper.test('MPP on localnet still permits the volatile in-memory replay fallback', function()
@@ -113,7 +113,7 @@ helper.test('MPP on localnet still permits the volatile in-memory replay fallbac
   helper.assert_true(response ~= nil and #response.body.accepts >= 1)
 end)
 
-helper.test('MPP on a non-localnet network accepts an explicit replay store', function()
+helper.test('MPP on a non-localnet network rejects a process-local replay store', function()
   pay_kit._reset_for_tests()
   assert(pay_kit.configure({
     network  = 'solana_devnet',
@@ -121,6 +121,21 @@ helper.test('MPP on a non-localnet network accepts an explicit replay store', fu
     operator = {recipient = SELLER},
     mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
                 replay_store = mpp_store.memory()},
+  }))
+  assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
+  local ok, err = pcall(pay_kit.try_payment, 'report', {headers = {}, path = '/report'})
+  helper.assert_true(not ok, 'expected a process-local store to fail closed')
+  helper.assert_true(tostring(err):find('shared', 1, true) ~= nil, tostring(err))
+end)
+
+helper.test('MPP on a non-localnet network accepts an explicit shared replay store', function()
+  pay_kit._reset_for_tests()
+  assert(pay_kit.configure({
+    network  = 'solana_devnet',
+    accept   = {'mpp'},
+    operator = {recipient = SELLER},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
+                replay_store = helper.shared_replay_store()},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, err, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -136,8 +151,11 @@ local function reset_and_configure()
     rpc_url = 'https://api.devnet.solana.com',
     accept  = {'x402', 'mpp'},
     operator = {recipient = 'DispatcherRecipient000000000000000000000000'},
-    mpp = {realm = 'TestRealm', challenge_binding_secret = 'disp-test-secret-key-long-32bytes!',
-           replay_store = mpp_store.memory()},
+    mpp = {
+      realm = 'TestRealm',
+      challenge_binding_secret = 'disp-test-secret-key-long-32bytes!',
+      replay_store = helper.shared_replay_store(),
+    },
   })
   pay_kit.gate('paid', {amount = pay_kit.usd('0.001', 'USDC')})
 end

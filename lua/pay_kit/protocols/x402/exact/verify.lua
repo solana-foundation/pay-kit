@@ -12,7 +12,7 @@ Rules:
   2. ix[0] = ComputeBudget SetComputeUnitLimit  (verify.rs:240-248)
   3. ix[1] = ComputeBudget SetComputeUnitPrice <= MAX (verify.rs:250-264)
   4. ix[2] = SPL TransferChecked                (verify.rs:380-410)
-  5. Authority guard (no fee-payer in transfer auth) (verify.rs:382)
+  5. Fund-mover guard (managed source, signer tail, or source ATA)
   6. Mint match                                 (verify.rs:395-400)
   7. Destination ATA match (re-derive)          (verify.rs:402-405)
   8. Amount match                               (verify.rs:407-410)
@@ -159,18 +159,24 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
   local destination = account_at(account_keys, ix, 2)
   local authority   = account_at(account_keys, ix, 3)
 
-  -- Rule 5: fee-payer/managed-signer fund-mover guard. A managed signer
-  -- (the operator's fee payer) must never be the transfer authority, nor the
-  -- funding source: not as its raw key, and not as its own associated token
-  -- account for this mint. This is the complete rule -- an appended
-  -- instruction that merely references the fee-payer (e.g. a Lighthouse
-  -- guard) is NOT a fund move and is accepted, matching the Rust reference
-  -- and the Go/Python/PHP/Ruby verifiers.
+  -- Rule 5: a managed key must never be able to move funds. It may not be
+  -- the direct source, the authority, a multisig signer-tail account, or the
+  -- derived source ATA for this mint and the ACTUAL transfer program. Do not
+  -- sweep every account: destination/mint/program references are not fund
+  -- movers, and optional instructions have their own allowlist rules below.
   for i = 1, #managed_signers do
     local managed = managed_signers[i]
-    if managed == authority
-        or managed == source
-        or source == ata.derive(managed, mint, program) then
+    if managed == authority or managed == source then
+      error('invalid_exact_svm_payload_transaction_fee_payer_transferring_funds')
+    end
+    for account_slot = 4, #ix.accounts do
+      local key = account_at(account_keys, ix, account_slot - 1)
+      if managed == key then
+        error('invalid_exact_svm_payload_transaction_fee_payer_transferring_funds')
+      end
+    end
+    local managed_source_ata = ata.derive(managed, mint, program)
+    if source == managed_source_ata then
       error('invalid_exact_svm_payload_transaction_fee_payer_transferring_funds')
     end
   end
@@ -232,8 +238,9 @@ end
 -- Top-level: verify a base64-encoded transaction against a server
 -- offer. `managed_signers` is the list of base58 keys the server has
 -- authority over (the operator's pubkey at minimum); the verifier
--- refuses to treat any of those as the transfer source / authority
--- so a malicious credential cannot "spend the facilitator's funds".
+-- refuses to treat any of those as a transfer source, authority, signer-tail
+-- account, or source ATA so a malicious credential cannot spend facilitator
+-- funds.
 function M.verify(transaction_b64, requirement, managed_signers)
   local decode_ok, raw = pcall(base64.decode, transaction_b64)
   if not decode_ok or not raw or raw == '' then
