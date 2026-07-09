@@ -42,7 +42,7 @@ package.loaded['pay_kit.solana.rpc'] = {
       end,
       latest_blockhash    = function() return string.rep('0', 32) end,
       simulate_transaction = function() return {err = nil} end,
-      signature_statuses   = function() return {} end,
+      signature_statuses   = function() return {{err = nil, confirmationStatus = 'confirmed'}} end,
     }
   end,
   Rpc                = {},
@@ -59,6 +59,7 @@ package.loaded['pay_kit']                     = nil
 
 local pay_kit = require('pay_kit')
 local signer  = require('pay_kit.signer')
+local x402    = require('pay_kit.protocols.x402')
 
 -- --- helpers (mirror x402_verify_positive_spec) -------------------
 
@@ -195,6 +196,27 @@ helper.test('x402 verify_and_settle: cosigns + broadcasts + reserves signature',
   helper.assert_equal(#broadcast_calls, 1)
 end)
 
+helper.test('x402 confirmation helper rejects missing or failed statuses', function()
+  local queried = false
+  local ok, err = x402._private.await_confirmed_or_finalized({
+    signature_statuses = function(_, signatures)
+      queried = signatures[1] == 'sig-missing'
+      return {nil}
+    end,
+  }, 'sig-missing')
+  helper.assert_equal(ok, nil)
+  helper.assert_true(queried, 'expected signature_statuses to be queried')
+  helper.assert_true(err and err:find('missing', 1, true), err)
+
+  local ok_failed, err_failed = x402._private.await_confirmed_or_finalized({
+    signature_statuses = function()
+      return {{err = 'boom', confirmationStatus = 'confirmed'}}
+    end,
+  }, 'sig-failed')
+  helper.assert_equal(ok_failed, nil)
+  helper.assert_true(err_failed and err_failed:find('settlement failed', 1, true), err_failed)
+end)
+
 helper.test('x402 verify_and_settle: SIGNATURE_CONSUMED on duplicate submit', function()
   -- Re-using the same credential should trip the replay store via
   -- consume_signature returning false.
@@ -206,6 +228,7 @@ helper.test('x402 verify_and_settle: SIGNATURE_CONSUMED on duplicate submit', fu
         send_raw_transaction = function() return 'fakeSignatureBase58' end,
         latest_blockhash    = function() return string.rep('0', 32) end,
         simulate_transaction = function() return {err = nil} end,
+        signature_statuses   = function() return {{err = nil, confirmationStatus = 'confirmed'}} end,
       }
     end,
   }

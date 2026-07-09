@@ -74,6 +74,32 @@ local function utf8_codepoints(value)
   return out
 end
 
+local function utf8_from_codepoint(cp)
+  if cp < 0 or cp > 0x10FFFF then
+    error('unicode codepoint out of range')
+  end
+  if cp >= 0xD800 and cp <= 0xDFFF then
+    error('lone surrogate')
+  end
+  if cp < 128 then
+    return string.char(cp)
+  elseif cp < 2048 then
+    return string.char(192 + math.floor(cp / 64), 128 + (cp % 64))
+  elseif cp < 65536 then
+    return string.char(
+      224 + math.floor(cp / 4096),
+      128 + (math.floor(cp / 64) % 64),
+      128 + (cp % 64)
+    )
+  end
+  return string.char(
+    240 + math.floor(cp / 262144),
+    128 + (math.floor(cp / 4096) % 64),
+    128 + (math.floor(cp / 64) % 64),
+    128 + (cp % 64)
+  )
+end
+
 local function encode_string(value)
   local cps, err = utf8_codepoints(value)
   if not cps then
@@ -329,16 +355,26 @@ function Parser:parse_string()
         end
         self.pos = self.pos + 4
         local code = tonumber(hex, 16)
-        if code < 128 then
-          out[#out + 1] = string.char(code)
-        elseif code < 2048 then
-          out[#out + 1] = string.char(192 + math.floor(code / 64), 128 + (code % 64))
+        if code >= 0xD800 and code <= 0xDBFF then
+          if self.input:sub(self.pos, self.pos + 1) ~= '\\u' then
+            error('invalid unicode surrogate pair at position ' .. self.pos)
+          end
+          self.pos = self.pos + 2
+          local low_hex = self.input:sub(self.pos, self.pos + 3)
+          if #low_hex ~= 4 or not low_hex:match('^[0-9a-fA-F]+$') then
+            error('invalid unicode escape at position ' .. self.pos)
+          end
+          self.pos = self.pos + 4
+          local low = tonumber(low_hex, 16)
+          if low < 0xDC00 or low > 0xDFFF then
+            error('invalid unicode surrogate pair at position ' .. self.pos)
+          end
+          code = 0x10000 + ((code - 0xD800) * 1024) + (low - 0xDC00)
+          out[#out + 1] = utf8_from_codepoint(code)
+        elseif code >= 0xDC00 and code <= 0xDFFF then
+          error('invalid unicode surrogate pair at position ' .. self.pos)
         else
-          out[#out + 1] = string.char(
-            224 + math.floor(code / 4096),
-            128 + (math.floor(code / 64) % 64),
-            128 + (code % 64)
-          )
+          out[#out + 1] = utf8_from_codepoint(code)
         end
       else
         error('invalid escape character at position ' .. self.pos)

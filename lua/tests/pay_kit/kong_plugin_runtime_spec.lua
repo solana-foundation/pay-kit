@@ -108,8 +108,13 @@ end)
 helper.test('Kong handler access(conf) emits 402 on unpaid', function()
   package.loaded['plugins.kong.plugins.pay-kit.handler'] = nil
   require('pay_kit')._reset_for_tests()
+  -- Localnet: the env-based bootstrap has no knob to inject an MPP replay
+  -- store object, and non-localnet MPP now requires a durable one, so this
+  -- 402-emission check runs on localnet where the dev in-memory fallback is
+  -- permitted. (Production Kong on devnet/mainnet must wire a durable MPP
+  -- replay store — see the note in plugins/kong/plugins/pay-kit/init.lua.)
   patch_env({
-    PAY_KIT_NETWORK = 'solana_devnet',
+    PAY_KIT_NETWORK = 'solana_localnet',
     PAY_KIT_OPERATOR_RECIPIENT = 'KongAccessRecipient0000000000000000000000',
     PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 'access-test-key-long-enough-32bytes',
   })

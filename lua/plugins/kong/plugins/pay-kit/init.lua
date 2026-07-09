@@ -22,6 +22,16 @@ Env vars (all optional; defaults boot a localnet demo):
 
 Gates are registered via per-plugin config on the route. Apps wanting
 a catalog-style Pricing class can call pay_kit.gate() after setup().
+
+MPP replay store (production): outside localnet the MPP adapter REQUIRES a
+durable, process-shared replay store (a settled signature is otherwise
+replayable across workers/restarts for a second settlement). The env-driven
+setup() below does not wire one, so on solana_devnet / solana_mainnet an
+operator using MPP must inject a shared store after setup() -- e.g. build
+`pay_kit.protocols.mpp.server.store_shared_dict.new(ngx.shared.<dict>)` and pass
+it as `config.mpp.replay_store` via a custom init block -- or the first MPP
+request will fail closed. x402 replay protection is unaffected (it uses the
+dispatcher's `pay_kit.store` shared-dict backend automatically).
 ]]
 
 local pay_kit = require('pay_kit')

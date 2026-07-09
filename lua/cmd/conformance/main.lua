@@ -82,7 +82,6 @@ end
 -- encoder; key order is canonical, which is fine because the driver parses
 -- the line with JSON.parse and reads fields by name.
 local function emit(result)
-  result.language = 'lua'
   io.write(json.encode(result) .. '\n')
 end
 
@@ -705,10 +704,48 @@ local function run_x402_verify(vector)
   }
 end
 
+-- verify-x402-transaction: drive the real Lua 11-rule exact fund-safety
+-- verifier over the base64 versioned transaction. On reject the canonical
+-- invalid_exact_svm_payload_* string (the raised error message) is surfaced
+-- verbatim as x402ExactRejectCode so the cross-SDK vectors bind the exact code.
+local function run_x402_exact_verify(vector)
+  local x402_exact_verify = require('pay_kit.protocols.x402.exact.verify')
+  local input = vector.input or {}
+  local transaction = input.transaction
+  if type(transaction) ~= 'string' or transaction == '' then
+    error('verify-x402-transaction vector missing input.transaction')
+  end
+  local requirement = input.x402ExactRequirement
+  if type(requirement) ~= 'table' then
+    error('verify-x402-transaction vector missing input.x402ExactRequirement')
+  end
+  local managed_signers = {}
+  for _, key in ipairs(input.x402ExactManagedSigners or {}) do
+    managed_signers[#managed_signers + 1] = key
+  end
+
+  local ok, err = pcall(x402_exact_verify.verify, transaction, requirement, managed_signers)
+  if ok then
+    return { id = vector.id, outcome = 'accept' }
+  end
+  -- The verifier raises the canonical reject string as a plain error; strip
+  -- LuaJIT's "file:line: " prefix so the exact code is surfaced verbatim.
+  local message = tostring(err):gsub('^.-:%d+:%s*', '')
+  return {
+    id = vector.id,
+    outcome = 'reject',
+    error = message,
+    x402ExactRejectCode = message,
+  }
+end
+
 -- x402-exact dispatch. build vectors have no server-only equivalent
 -- (the Lua SDK ships no client builder), so they emit unsupported-mode
 -- and the driver SKIPs them. verify vectors exercise the real verifier.
 local function run_x402_vector(vector)
+  if vector.mode == 'verify-x402-transaction' then
+    return run_x402_exact_verify(vector)
+  end
   if vector.mode == 'build-transaction' then
     return {
       id = vector.id,

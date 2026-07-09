@@ -25,6 +25,7 @@ dispatch shape.
 local cjson_safe = require('cjson.safe')
 local base64_std = require('pay_kit.util.base64_std')
 local errors     = require('pay_kit.errors')
+local json       = require('pay_kit.util.json')
 local rpc_mod    = require('pay_kit.solana.rpc')
 local rpc_transport = require('pay_kit.solana.rpc_transport')
 local tx_cosign  = require('pay_kit.solana.tx_cosign')
@@ -362,10 +363,29 @@ local function build_rpc(config)
 end
 
 local function consume_signature(store, signature)
-  if not store then return true end
   local key = 'x402-svm-exact:consumed:' .. signature
-  if store.put_if_absent then
+  if type(store) ~= 'table' or type(store.put_if_absent) ~= 'function' then
+    return nil, 'x402 replay store with put_if_absent is required'
+  end
+  local ok, inserted = pcall(function()
     return store:put_if_absent(key)
+  end)
+  if not ok then return nil, tostring(inserted) end
+  return inserted == true
+end
+
+local function await_confirmed_or_finalized(rpc, signature)
+  local statuses = rpc:signature_statuses({ signature })
+  local status = statuses[1]
+  if type(status) ~= 'table' then
+    return nil, 'settlement confirmation missing'
+  end
+  if status.err ~= nil and status.err ~= json.null then
+    return nil, 'settlement failed: ' .. tostring(status.err)
+  end
+  local confirmation = status.confirmationStatus
+  if confirmation ~= 'confirmed' and confirmation ~= 'finalized' then
+    return nil, 'settlement not confirmed'
   end
   return true
 end
@@ -376,6 +396,9 @@ function M.new(opts)
   opts = opts or {}
   if not opts.config_resolver then
     return nil, 'pay_kit: protocols.x402.new requires config_resolver'
+  end
+  if type(opts.store) ~= 'table' or type(opts.store.put_if_absent) ~= 'function' then
+    return nil, 'pay_kit: protocols.x402.new requires replay store with put_if_absent'
   end
   return setmetatable({
     _config_resolver = opts.config_resolver,
@@ -577,8 +600,22 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.INVALID_PROOF .. ': empty broadcast result'
   end
 
-  if not consume_signature(self._store, signature) then
+  local inserted, consume_err = consume_signature(self._store, signature)
+  if consume_err then
+    return nil, errors.INVALID_PROOF .. ': ' .. consume_err
+  end
+  if not inserted then
     return nil, errors.SIGNATURE_CONSUMED
+  end
+
+  local confirmed_ok, confirmed, confirm_err = pcall(await_confirmed_or_finalized, rpc, signature)
+  if not confirmed_ok then
+    local raised = confirmed
+    local message = type(raised) == 'table' and raised.message or tostring(raised)
+    return nil, errors.INVALID_PROOF .. ': settlement confirmation failed: ' .. message
+  end
+  if not confirmed then
+    return nil, errors.INVALID_PROOF .. ': ' .. tostring(confirm_err)
   end
 
   -- Settlement response. v1 emits X-PAYMENT-RESPONSE carrying the plain SVM
@@ -630,6 +667,7 @@ M._private = {
   PAYMENT_IDENTIFIER_KEY       = PAYMENT_IDENTIFIER_KEY,
   caip2_network_for_cluster    = caip2_network_for_cluster,
   legacy_network_slug          = legacy_network_slug,
+  await_confirmed_or_finalized = await_confirmed_or_finalized,
   LEGACY_PAYMENT_HEADER          = LEGACY_PAYMENT_HEADER,
   LEGACY_PAYMENT_RESPONSE_HEADER = LEGACY_PAYMENT_RESPONSE_HEADER,
 }

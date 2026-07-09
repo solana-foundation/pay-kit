@@ -258,7 +258,14 @@ local function validate_allowlist(tx, matched, expected_mint, expected_token_pro
   for index, ix in ipairs(tx.message.instructions) do
     local program = instructions.program_id_for(tx, ix)
     if program == COMPUTE_BUDGET_PROGRAM then
-      instructions.parse_compute_budget(ix)
+      -- Audit #25: apply the tight fee-sponsored compute-unit-price cap when the
+      -- server co-signs as fee payer (fee_payer is set precisely then). Mirrors
+      -- the Rust spine (validate_compute_budget_instruction(ix, fee_payer.is_some())
+      -- mpp/server/charge.rs:1960), the Ruby verifier, and the hooks-based
+      -- `solana_verify` path. Without the flag the real verifier accepted a
+      -- 5_000_000 microLamport price on a server-funded charge (~1M lamports /
+      -- charge merchant drain).
+      instructions.parse_compute_budget(ix, fee_payer ~= nil)
     elseif program == MEMO_PROGRAM
       or program == SYSTEM_PROGRAM
       or program == TOKEN_PROGRAM

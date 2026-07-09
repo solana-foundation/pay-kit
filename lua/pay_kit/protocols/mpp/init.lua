@@ -104,11 +104,28 @@ local function build_mpp_server(config, gate, store)
   -- multi-worker / multi-node production deploy where a replay reservation
   -- must be visible across all settlers. Callers wire a shared store
   -- (e.g. an ngx.shared.dict / Redis-backed adapter) via
-  -- `config.mpp.replay_store`; when none is supplied we fall back to the
-  -- volatile in-memory store and warn once so the dev-only nature is
-  -- explicit. Mirrors the Ruby/PHP "default volatile replay store" caveat.
+  -- `config.mpp.replay_store`.
+  --
+  -- Fail CLOSED outside localnet. A volatile in-memory fallback is not a
+  -- durable replay primitive: markers are lost on restart and invisible to
+  -- other workers/hosts, so a settled signature can be replayed against
+  -- another worker for a second on-chain settlement (double-spend). On
+  -- mainnet/devnet we therefore REQUIRE the operator to inject a durable,
+  -- process-shared store rather than silently constructing a volatile one and
+  -- only warning. Localnet keeps the volatile dev fallback (single-worker dev
+  -- is the expected shape there). Mirrors the Ruby `PayKit::Protocols::Mpp`
+  -- durable-store requirement (a caller who supplies ANY store owns that
+  -- choice; only the "no store supplied at all" path is rejected) and the
+  -- TS/PHP/Python shared-replay-store fail-closed posture.
   local replay_store = config.mpp and config.mpp.replay_store
   if not replay_store then
+    if network ~= 'localnet' then
+      error('pay_kit: MPP replay protection requires a durable, process-shared ' ..
+        'replay store on ' .. tostring(network) .. '. Set config.mpp.replay_store ' ..
+        'to a shared store (ngx.shared.dict / Redis-backed); the in-memory ' ..
+        'default is process-local and lost on restart, so a settled signature ' ..
+        'can be replayed against another worker for a second settlement.')
+    end
     replay_store = store_mod.memory()
     warn_volatile_replay_store(network)
   end
