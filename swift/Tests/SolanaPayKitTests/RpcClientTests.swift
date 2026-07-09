@@ -12,17 +12,10 @@ struct RpcClientTests {
     func fetchesConfirmedBlockhashAndAccountOwner() async throws {
         let blockhash = Base58.encode(Data(repeating: 0x4A, count: 32))
         RPCClientURLProtocol.reset()
-        RPCClientURLProtocol.responder = { request in
-            let body = try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-            switch body["method"] as? String {
-            case "getLatestBlockhash":
-                return RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"result":{"value":{"blockhash":"\#(blockhash)"}}}"#)
-            case "getAccountInfo":
-                return RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"result":{"value":{"owner":"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"}}}"#)
-            default:
-                return RPCClientResponse(statusCode: 500, body: "unexpected method")
-            }
-        }
+        RPCClientURLProtocol.responses = [
+            RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"result":{"value":{"blockhash":"\#(blockhash)"}}}"#),
+            RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"result":{"value":{"owner":"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"}}}"#),
+        ]
 
         let rpc = client()
         let latest = try await rpc.getLatestBlockhash()
@@ -34,14 +27,10 @@ struct RpcClientTests {
     @Test
     func sendsTransactionsAndSurfacesRPCFailures() async throws {
         RPCClientURLProtocol.reset()
-        RPCClientURLProtocol.responder = { request in
-            let body = try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-            let method = body["method"] as? String
-            if method == "sendTransaction" {
-                return RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"result":"signature"}"#)
-            }
-            return RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"denied"}}"#)
-        }
+        RPCClientURLProtocol.responses = [
+            RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"result":"signature"}"#),
+            RPCClientResponse(body: #"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"denied"}}"#),
+        ]
 
         let rpc = client()
         #expect(try await rpc.sendTransaction("signed", skipPreflight: true) == "signature")
@@ -49,7 +38,7 @@ struct RpcClientTests {
             _ = try await rpc.getAccountOwner(pubkeyBase58: "mint")
         }
 
-        RPCClientURLProtocol.responder = { _ in RPCClientResponse(statusCode: 503, body: "unavailable") }
+        RPCClientURLProtocol.responses = [RPCClientResponse(statusCode: 503, body: "unavailable")]
         await #expect(throws: PayKitError.rpcFailure("RPC HTTP 503")) {
             _ = try await rpc.sendTransaction("signed")
         }
@@ -67,7 +56,7 @@ private struct RPCClientResponse {
 }
 
 private final class RPCClientURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var responder: ((URLRequest) -> RPCClientResponse)?
+    nonisolated(unsafe) static var responses: [RPCClientResponse] = []
 
     static func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -76,18 +65,18 @@ private final class RPCClientURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     static func reset() {
-        responder = nil
+        responses = []
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let responder = Self.responder else {
+        guard !Self.responses.isEmpty else {
             client?.urlProtocol(self, didFailWithError: NSError(domain: "rpc-client-test", code: 1))
             return
         }
-        let fixture = responder(request)
+        let fixture = Self.responses.removeFirst()
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: fixture.statusCode,
