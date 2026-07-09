@@ -196,25 +196,66 @@ helper.test('x402 verify_and_settle: cosigns + broadcasts + reserves signature',
   helper.assert_equal(#broadcast_calls, 1)
 end)
 
-helper.test('x402 confirmation helper rejects missing or failed statuses', function()
+helper.test('x402 confirmation helper times out on missing status and rejects failure', function()
   local queried = false
   local ok, err = x402._private.await_confirmed_or_finalized({
     signature_statuses = function(_, signatures)
       queried = signatures[1] == 'sig-missing'
       return {nil}
     end,
-  }, 'sig-missing')
+  }, 'sig-missing', {attempts = 1, sleep = function() end})
   helper.assert_equal(ok, nil)
   helper.assert_true(queried, 'expected signature_statuses to be queried')
-  helper.assert_true(err and err:find('missing', 1, true), err)
+  helper.assert_true(err and err:find('timed out after 1 attempts', 1, true), err)
 
   local ok_failed, err_failed = x402._private.await_confirmed_or_finalized({
     signature_statuses = function()
       return {{err = 'boom', confirmationStatus = 'confirmed'}}
     end,
-  }, 'sig-failed')
+  }, 'sig-failed', {attempts = 3, sleep = function() end})
   helper.assert_equal(ok_failed, nil)
   helper.assert_true(err_failed and err_failed:find('settlement failed', 1, true), err_failed)
+end)
+
+helper.test('x402 confirmation helper retries propagation lag and transient RPC errors', function()
+  local calls = 0
+  local sleeps = 0
+  local ok, err = x402._private.await_confirmed_or_finalized({
+    signature_statuses = function()
+      calls = calls + 1
+      if calls == 1 then error('temporary transport failure') end
+      if calls == 2 then return {nil} end
+      if calls == 3 then
+        return {{err = nil, confirmationStatus = 'processed'}}
+      end
+      return {{err = nil, confirmationStatus = 'confirmed'}}
+    end,
+  }, 'sig-eventual', {
+    attempts = 4,
+    delay_seconds = 0.25,
+    sleep = function(delay)
+      helper.assert_equal(delay, 0.25)
+      sleeps = sleeps + 1
+    end,
+  })
+  helper.assert_equal(ok, true)
+  helper.assert_equal(err, nil)
+  helper.assert_equal(calls, 4)
+  helper.assert_equal(sleeps, 3)
+end)
+
+helper.test('x402 confirmation helper reports the last RPC error after exhaustion', function()
+  local calls = 0
+  local ok, err = x402._private.await_confirmed_or_finalized({
+    signature_statuses = function()
+      calls = calls + 1
+      error('rpc unavailable')
+    end,
+  }, 'sig-rpc-down', {attempts = 2, sleep = function() end})
+  helper.assert_equal(ok, nil)
+  helper.assert_equal(calls, 2)
+  helper.assert_true(err and err:find('last RPC error', 1, true), err)
+  helper.assert_true(err and err:find('rpc unavailable', 1, true), err)
 end)
 
 helper.test('x402 verify_and_settle: SIGNATURE_CONSUMED on duplicate submit', function()

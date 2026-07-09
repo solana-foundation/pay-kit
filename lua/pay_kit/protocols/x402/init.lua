@@ -362,6 +362,30 @@ local function build_rpc(config)
   return rpc_mod.new({url = config.rpc_url, transport = rpc_transport.new()})
 end
 
+local DEFAULT_CONFIRMATION_ATTEMPTS = 40
+local DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
+
+local function monotonic_seconds()
+  local ok, socket = pcall(require, 'socket')
+  if ok and socket and type(socket.gettime) == 'function' then
+    return socket.gettime()
+  end
+  return os.time()
+end
+
+local function default_sleep(seconds)
+  local ngx_ref = rawget(_G, 'ngx')
+  if ngx_ref and type(ngx_ref.sleep) == 'function' then
+    return ngx_ref.sleep(seconds)
+  end
+  local ok, socket = pcall(require, 'socket')
+  if ok and socket and type(socket.sleep) == 'function' then
+    return socket.sleep(seconds)
+  end
+  local target = monotonic_seconds() + (seconds or 0)
+  while monotonic_seconds() < target do end
+end
+
 local function consume_signature(store, signature)
   local key = 'x402-svm-exact:consumed:' .. signature
   if type(store) ~= 'table' or type(store.put_if_absent) ~= 'function' then
@@ -374,20 +398,40 @@ local function consume_signature(store, signature)
   return inserted == true
 end
 
-local function await_confirmed_or_finalized(rpc, signature)
-  local statuses = rpc:signature_statuses({ signature })
-  local status = statuses[1]
-  if type(status) ~= 'table' then
-    return nil, 'settlement confirmation missing'
+local function await_confirmed_or_finalized(rpc, signature, options)
+  options = options or {}
+  local attempts = options.attempts or DEFAULT_CONFIRMATION_ATTEMPTS
+  local delay_seconds = options.delay_seconds or DEFAULT_CONFIRMATION_DELAY_SECONDS
+  local sleep = options.sleep or default_sleep
+  local last_rpc_error
+
+  for attempt = 1, attempts do
+    -- A newly broadcast signature may not be visible to the selected RPC node
+    -- yet, and transient transport failures are retryable. Only an explicit
+    -- on-chain transaction error is terminal before the attempt budget ends.
+    local queried, statuses = pcall(function()
+      return rpc:signature_statuses({ signature })
+    end)
+    if queried then
+      local status = statuses and statuses[1]
+      if type(status) == 'table' then
+        if status.err ~= nil and status.err ~= json.null then
+          return nil, 'settlement failed: ' .. tostring(status.err)
+        end
+        local confirmation = status.confirmationStatus
+        if confirmation == 'confirmed' or confirmation == 'finalized' then
+          return true
+        end
+      end
+    else
+      last_rpc_error = type(statuses) == 'table' and statuses.message or tostring(statuses)
+    end
+    if attempt < attempts then sleep(delay_seconds) end
   end
-  if status.err ~= nil and status.err ~= json.null then
-    return nil, 'settlement failed: ' .. tostring(status.err)
-  end
-  local confirmation = status.confirmationStatus
-  if confirmation ~= 'confirmed' and confirmation ~= 'finalized' then
-    return nil, 'settlement not confirmed'
-  end
-  return true
+
+  local detail = last_rpc_error and (': last RPC error: ' .. last_rpc_error) or ''
+  return nil, 'settlement confirmation timed out after ' .. tostring(attempts) ..
+    ' attempts' .. detail
 end
 
 -- --- public API -----------------------------------------------------
@@ -403,6 +447,10 @@ function M.new(opts)
   return setmetatable({
     _config_resolver = opts.config_resolver,
     _store           = opts.store,
+    _confirmation_attempts = opts.confirmation_attempts or DEFAULT_CONFIRMATION_ATTEMPTS,
+    _confirmation_delay_seconds = opts.confirmation_delay_seconds or
+      DEFAULT_CONFIRMATION_DELAY_SECONDS,
+    _sleep = opts.sleep or default_sleep,
   }, Adapter)
 end
 
@@ -586,7 +634,11 @@ function Adapter:verify_and_settle(gate, req)
   end
   local cosigned = cosigned_or_err
 
-  -- Broadcast + consume + confirm.
+  -- Broadcast, wait for confirmed/finalized settlement, then atomically
+  -- consume the signature. Confirmation must happen first: consuming before
+  -- the RPC has observed the transaction turns an ordinary propagation delay
+  -- into a permanently paid-but-uncredited request. Concurrent presentations
+  -- are still safe because put_if_absent is the final atomic winner gate.
   local rpc = build_rpc(config)
   local broadcast_ok, signature_or_err = pcall(function()
     return rpc:send_raw_transaction(cosigned)
@@ -600,15 +652,12 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.INVALID_PROOF .. ': empty broadcast result'
   end
 
-  local inserted, consume_err = consume_signature(self._store, signature)
-  if consume_err then
-    return nil, errors.INVALID_PROOF .. ': ' .. consume_err
-  end
-  if not inserted then
-    return nil, errors.SIGNATURE_CONSUMED
-  end
-
-  local confirmed_ok, confirmed, confirm_err = pcall(await_confirmed_or_finalized, rpc, signature)
+  local confirmed_ok, confirmed, confirm_err = pcall(await_confirmed_or_finalized,
+    rpc, signature, {
+      attempts = self._confirmation_attempts,
+      delay_seconds = self._confirmation_delay_seconds,
+      sleep = self._sleep,
+    })
   if not confirmed_ok then
     local raised = confirmed
     local message = type(raised) == 'table' and raised.message or tostring(raised)
@@ -616,6 +665,14 @@ function Adapter:verify_and_settle(gate, req)
   end
   if not confirmed then
     return nil, errors.INVALID_PROOF .. ': ' .. tostring(confirm_err)
+  end
+
+  local inserted, consume_err = consume_signature(self._store, signature)
+  if consume_err then
+    return nil, errors.INVALID_PROOF .. ': ' .. consume_err
+  end
+  if not inserted then
+    return nil, errors.SIGNATURE_CONSUMED
   end
 
   -- Settlement response. v1 emits X-PAYMENT-RESPONSE carrying the plain SVM
@@ -668,6 +725,8 @@ M._private = {
   caip2_network_for_cluster    = caip2_network_for_cluster,
   legacy_network_slug          = legacy_network_slug,
   await_confirmed_or_finalized = await_confirmed_or_finalized,
+  DEFAULT_CONFIRMATION_ATTEMPTS = DEFAULT_CONFIRMATION_ATTEMPTS,
+  DEFAULT_CONFIRMATION_DELAY_SECONDS = DEFAULT_CONFIRMATION_DELAY_SECONDS,
   LEGACY_PAYMENT_HEADER          = LEGACY_PAYMENT_HEADER,
   LEGACY_PAYMENT_RESPONSE_HEADER = LEGACY_PAYMENT_RESPONSE_HEADER,
 }
