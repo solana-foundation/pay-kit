@@ -237,6 +237,30 @@ func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
 	}
 }
 
+func TestMemoryChannelStoreDeleteChannelKeepsStablePerChannelLock(t *testing.T) {
+	// Regression: DeleteChannel must NOT drop the per-channel lock. If it did,
+	// a concurrent UpdateChannel already holding the old mutex would no longer
+	// serialize against a fresh mutex minted by the next channelLock call for
+	// the same id, silently losing an update. Assert the mutex identity is
+	// stable across a delete + re-observe.
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+	const id = "chan-stable-lock"
+
+	before := store.channelLock(id)
+	if _, err := store.UpdateChannel(ctx, id, func(*ChannelState) (ChannelState, error) {
+		return testChannelState(id, 100), nil
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	if err := store.DeleteChannel(ctx, id); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	if after := store.channelLock(id); before != after {
+		t.Fatal("DeleteChannel replaced the per-channel lock; a concurrent updater on the old lock would race a new one and lose updates")
+	}
+}
+
 func TestMemoryChannelStoreReturnsClones(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()
