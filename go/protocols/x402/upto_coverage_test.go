@@ -103,34 +103,29 @@ func TestUptoInFlightGuardReleaseIsIdempotent(t *testing.T) {
 // ── distribution split derivation ──
 
 func TestUptoDistributionBranches(t *testing.T) {
-	operatorKey := testutil.NewPrivateKey()
+	receiverAuthorizerKey := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 
-	// Recipient == operator collapses to no split.
+	// Recipient == receiver authorizer collapses to no split.
 	same := newCoverageUptoEngine(t, nil)
-	same.cfg.Recipient = same.Operator()
+	same.cfg.Recipient = same.ReceiverAuthorizer()
 	if entries, err := same.distribution(); err != nil || entries != nil {
-		t.Fatalf("distribution(recipient==operator) = %v, %v; want nil, nil", entries, err)
+		t.Fatalf("distribution(recipient==receiverAuthorizer) = %v, %v; want nil, nil", entries, err)
 	}
 
-	// A distinct recipient gets the fee-adjusted single split.
+	// A distinct recipient gets the whole payment as a single split.
 	split := newCoverageUptoEngine(t, nil)
 	split.cfg.Recipient = recipient.String()
-	split.cfg.FacilitatorFee = 250
 	entries, err := split.distribution()
 	if err != nil {
 		t.Fatalf("distribution: %v", err)
 	}
-	if len(entries) != 1 || !entries[0].Recipient.Equals(recipient) || entries[0].Bps != 9_750 {
-		t.Fatalf("distribution = %+v, want single 9750bps split to recipient", entries)
+	if len(entries) != 1 || !entries[0].Recipient.Equals(recipient) || entries[0].Bps != 10_000 {
+		t.Fatalf("distribution = %+v, want single 10000bps split to recipient", entries)
 	}
 
-	// Constructor-bypassing engines exercise the defensive error branches.
-	badFee := &X402Upto{cfg: UptoConfig{Recipient: recipient.String(), FacilitatorFee: 20_000}, operator: operatorKey.PublicKey()}
-	if _, err := badFee.distribution(); err == nil || !strings.Contains(err.Error(), "facilitatorFee") {
-		t.Fatalf("error = %v, want facilitatorFee rejection", err)
-	}
-	badRecipient := &X402Upto{cfg: UptoConfig{Recipient: "not-a-pubkey"}, operator: operatorKey.PublicKey()}
+	// Constructor-bypassing engines exercise the defensive error branch.
+	badRecipient := &X402Upto{cfg: UptoConfig{Recipient: "not-a-pubkey"}, receiverAuthorizer: receiverAuthorizerKey.PublicKey()}
 	if _, err := badRecipient.distribution(); err == nil || !strings.Contains(err.Error(), "invalid recipient") {
 		t.Fatalf("error = %v, want invalid recipient", err)
 	}
@@ -270,7 +265,7 @@ func TestUptoSettleActualErrorPaths(t *testing.T) {
 
 	// Voucher signing failure.
 	signErr := newCoverageUptoEngine(t, nil)
-	signErr.cfg.OperatorSigner = failingSigner{
+	signErr.cfg.ReceiverAuthorizerSigner = failingSigner{
 		pubkey: operatorKey.PublicKey().String(),
 		sign:   func([]byte) ([]byte, error) { return nil, errors.New("kms down") },
 	}
@@ -281,7 +276,7 @@ func TestUptoSettleActualErrorPaths(t *testing.T) {
 
 	// Malformed voucher signature length.
 	shortSig := newCoverageUptoEngine(t, nil)
-	shortSig.cfg.OperatorSigner = failingSigner{
+	shortSig.cfg.ReceiverAuthorizerSigner = failingSigner{
 		pubkey: operatorKey.PublicKey().String(),
 		sign:   func([]byte) ([]byte, error) { return make([]byte, 10), nil },
 	}
@@ -303,18 +298,17 @@ func TestUptoSettleActualErrorPaths(t *testing.T) {
 		t.Fatalf("error = %v, want empty blockhash rejection", err)
 	}
 
-	// Settle-transaction signing failure: the operator key is not a required
-	// signer when the engine's operator differs from the fee payer it signs
-	// for.
+	// Settle-transaction signing failure: the receiver-authorizer key is not a
+	// required signer when the configured signer advertises the wrong pubkey.
 	wrongSigner := newCoverageUptoEngine(t, &operatorKey)
-	wrongSigner.cfg.OperatorSigner = failingSigner{
+	wrongSigner.cfg.ReceiverAuthorizerSigner = failingSigner{
 		pubkey: testutil.NewPrivateKey().PublicKey().String(),
 		sign:   func([]byte) ([]byte, error) { return make([]byte, 64), nil },
 	}
 	wrongSigner.SetRPCForTests(newUptoTestRPC())
 	if _, err := wrongSigner.SettleActual(context.Background(), verifiedOpen(), 1); err == nil ||
-		!strings.Contains(err.Error(), "settle signing failed") {
-		t.Fatalf("error = %v, want settle signing failure", err)
+		!strings.Contains(err.Error(), "receiver authorizer signing failed") {
+		t.Fatalf("error = %v, want receiver authorizer signing failure", err)
 	}
 
 	// Broadcast failure.
@@ -394,10 +388,11 @@ func coverageOpenEnvelope(t *testing.T, operator solana.PublicKey, mutate func(*
 			From:             testutil.NewPrivateKey().PublicKey().String(),
 			MaxAmount:        "1000000",
 			ExpiresAt:        time.Now().Add(time.Hour).Unix(),
-			Nonce:            "n-1",
+			Nonce:            "7",
 			ChannelID:        channel.String(),
 			Deposit:          "1000000",
 			AuthorizedSigner: operator.String(),
+			OpenSlot:         "55555",
 			OpenTransaction:  "ignored",
 		},
 	}
@@ -423,9 +418,9 @@ func TestUptoVerifyOpenRejectsMalformedChallengeBindings(t *testing.T) {
 		{"network mismatch", func(_ *X402Upto, e *UptoSignatureEnvelope) {
 			e.Network = "solana:devnet"
 		}, "network mismatch"},
-		{"invalid channelProgram", func(u *X402Upto, _ *UptoSignatureEnvelope) {
+		{"invalid channel program", func(u *X402Upto, _ *UptoSignatureEnvelope) {
 			u.cfg.ChannelProgram = "not-a-program"
-		}, "invalid channelProgram"},
+		}, "invalid channel program"},
 		{"invalid tokenProgram", func(u *X402Upto, _ *UptoSignatureEnvelope) {
 			u.cfg.TokenProgram = "not-a-token-program"
 		}, "invalid token program"},
@@ -501,7 +496,7 @@ func TestValidateUptoOpenInstructionStructuralRejections(t *testing.T) {
 		return tx
 	}
 	validate := func(tx *solana.Transaction, program solana.PublicKey) error {
-		return validateUptoOpenInstruction(tx, program, operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, nil)
+		return validateUptoOpenInstruction(tx, program, operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", nil)
 	}
 
 	// More than one instruction.
@@ -586,7 +581,7 @@ func newCoverageUptoEngine(t *testing.T, operatorKey *solana.PrivateKey) *X402Up
 		Network:                 paykit.SolanaLocalnet,
 		RPCURL:                  "http://localhost:8899",
 		MaxTimeoutSeconds:       300,
-		OperatorSigner:          signerSigner{key},
+		FeePayerSigner:          signerSigner{key},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})

@@ -390,8 +390,9 @@ framework shims live in optional submodules imported on demand:
 
 - `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), a `@require_payment` view
   decorator plus `is_paid` / `payment` request accessors.
-- `solana_pay_kit.fastapi` (install `solana_pay_kit[fastapi]`), a `RequirePayment`
-  dependency for `Depends(...)` plus `install_exception_handler(app)`.
+- `solana_pay_kit.fastapi` (install `solana_pay_kit[fastapi]`), a Django/DRF-style
+  paywall middleware for route metadata and default policies, plus a
+  `RequirePayment` dependency for `Depends(...)`.
 - `solana_pay_kit.django` (install `solana_pay_kit[django]`), a `require_payment` view
   decorator and an optional `PaymentMiddleware` stack form.
 
@@ -410,6 +411,60 @@ def view(request):
     ...
 ```
 
+FastAPI apps can avoid duplicating paths in a payment allowlist. Mark paid
+routes in the route table, then install one paywall:
+
+```python
+from fastapi import FastAPI, Request
+
+from solana_pay_kit.fastapi import install_paywall, payment
+
+app = FastAPI()
+install_paywall(
+    app,
+    {
+        "enabled": True,
+        "network": "solana_localnet",
+        "price_usd": "0.01",
+        "signer_env": "PAY_OPERATOR_KEY",
+    },
+    paid_tags=("paid",),
+)
+
+@app.post("/v1/chat/completions", tags=["paid"])
+async def chat_completions(request: Request):
+    verified = payment(request)
+    return {"ok": True, "tx": verified.transaction if verified else None}
+```
+
+Use `default_policy="paid"` to mirror Django's `LoginRequiredMiddleware`: all
+matched routes are paid unless marked with `@pay_not_required()` or a public
+route tag. Use `@pay_required(...)` when a route needs a gate other than the
+app default.
+
+`install_paywall()` accepts a `PayConfig` or a plain mapping loaded from
+TOML/YAML/env:
+
+| Field | Env suffix | Default | Purpose |
+| --- | --- | --- | --- |
+| `enabled` | `ENABLED` | `False` | Skip paywall installation unless true. |
+| `network` | `NETWORK` | `solana_localnet` | Solana network for settlement and challenges. |
+| `price_usd` | `PRICE_USD` | `0.01` | Default flat price for paid routes. |
+| `recipient` | `RECIPIENT` | `None` | Settlement recipient; falls back to the operator signer. |
+| `rpc_url` | `RPC_URL` | `None` | Override the network default RPC URL. |
+| `signer_env` | `SIGNER_ENV` | `EXO_PAY_SIGNER` | Env var that contains JSON, hex, or base58 key material. |
+| `protocols` | `PROTOCOLS` | `x402,mpp` | Accepted payment protocols. |
+| `stablecoins` | `STABLECOINS` | `USDC` | Accepted settlement assets. |
+| `preflight` | `PREFLIGHT` | `True` | Run boot-time RPC/config validation. |
+
+`NO_PREFLIGHT=true` is the inverse shortcut for `preflight=False`.
+`NO_PREFLIGHT=false` explicitly re-enables preflight.
+
+For lower-level setup, call `install_paywall_from_config(app, PaywallConfig(...))`
+with a concrete `gate_ref`, `pricing`, or prebuilt `Config`. This is useful when
+you already called `solana_pay_kit.configure(...)` with custom `MppConfig` or
+`X402Config` and want the paywall to use that exact config.
+
 ---
 
 ## Examples
@@ -420,7 +475,7 @@ Runnable examples ship with this package:
   smallest solana_pay_kit server: stdlib `http.server` with one gated endpoint over
   the unified `solana_pay_kit` surface, no web framework.
 - [`examples/fastapi/app.py`](examples/fastapi/app.py), FastAPI server using
-  the `RequirePayment` dependency and `install_exception_handler`.
+  the route-metadata paywall (`install_paywall` plus route tags).
 - [`examples/flask/app.py`](examples/flask/app.py), Flask server gated with
   the unified `solana_pay_kit` surface (`@require_payment` decorator and the
   `Pricing` registry).

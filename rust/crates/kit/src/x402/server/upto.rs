@@ -3,14 +3,14 @@
 //! Flow (single HTTP round-trip, handler-determined amount):
 //!
 //! 1. [`X402Upto::upto`] advertises a 402 with the authorized maximum and the
-//!    operator's facilitator key.
+//!    fee payer plus receiver authorizer keys.
 //! 2. [`X402Upto::verify_open`] validates the client authorization, broadcasts
 //!    the channel `open` (co-signing as fee payer), confirms it, and reads the
 //!    channel state back to bind deposit/payee/mint/signer on-chain.
 //! 3. The route handler runs and determines the actual metered amount.
-//! 4. [`X402Upto::settle_actual`] signs a single operator voucher for the actual
-//!    amount and submits `settle_and_seal` + ATA setup + `distribute`, refunding
-//!    `deposit − actual` to the payer.
+//! 4. [`X402Upto::settle_actual`] signs a single receiver-authorizer voucher for
+//!    the actual amount and submits `settle_and_seal` + ATA setup + `distribute`,
+//!    refunding `deposit - actual` to the payer.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -35,8 +35,7 @@ use crate::x402::protocol::schemes::exact::{
 };
 use crate::x402::protocol::schemes::upto::{
     assert_settlement_within_ceiling, verify_upto_payload, UptoExtra, UptoRequiredEnvelope,
-    UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, UPTO_ASSET_TRANSFER_METHOD,
-    UPTO_SCHEME,
+    UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, UPTO_SCHEME,
 };
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
@@ -51,11 +50,9 @@ const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 /// Server configuration for the Solana x402 `upto` scheme.
 #[derive(Clone)]
 pub struct UptoConfig {
-    /// Where settled funds go. The channel payee is always the operator (the
-    /// only key the server can sign settlement with); this only decides whether
-    /// the operator keeps everything or routes to a beneficiary via a bound
-    /// distribution split. The fee exists only in the `Beneficiary` variant —
-    /// meaningless without one — so the enum makes that unrepresentable.
+    /// Where settled funds go. The channel payee is always the receiver
+    /// authorizer; this only decides whether that key keeps everything or routes
+    /// the settled amount to a beneficiary via a bound distribution split.
     pub payout: UptoPayout,
     /// Non-empty universe of currencies this server offers and accepts. `[0]`
     /// is the primary/default currency. The `upto` challenge advertises one
@@ -75,27 +72,29 @@ pub struct UptoConfig {
     pub max_timeout_seconds: u64,
     /// Channel program id override (defaults to the canonical deployment).
     pub program_id: Option<String>,
-    /// Operator signer - co-signs the open as fee payer and signs settlement
-    /// vouchers + transactions. Its pubkey is the advertised facilitator.
-    pub operator_signer: Arc<dyn SolanaSigner>,
+    /// Channel forced-close delay, in seconds. Defaults to the payment-channel
+    /// program default when set to `0`.
+    pub withdraw_delay: u32,
+    /// Signer that co-signs the open as transaction fee payer and channel rent
+    /// payer.
+    pub fee_payer_signer: Arc<dyn SolanaSigner>,
+    /// Signer that is channel payee, voucher signer, and `settle_and_seal`
+    /// payee signer. Defaults to `fee_payer_signer` when absent.
+    pub receiver_authorizer_signer: Option<Arc<dyn SolanaSigner>>,
 }
 
 /// Where an `upto` channel's settled funds go. The channel payee is always the
-/// operator (the only key the server can sign settlement with); this decides
-/// whether the operator keeps everything or routes to a beneficiary via a bound
-/// distribution split. Modeling the operator fee as a field of the
-/// `Beneficiary` variant makes "a fee with no beneficiary" unrepresentable.
+/// receiver authorizer; this decides whether it keeps everything or routes the
+/// full settled amount to a beneficiary via a bound distribution split.
 #[derive(Clone, Debug)]
 pub enum UptoPayout {
-    /// No separate beneficiary — the operator keeps the full settled amount.
-    OperatorKeepsAll,
-    /// Pay `address` via a `10000 - operator_fee_bps` distribution split; the
-    /// operator keeps `operator_fee_bps` (basis points, 0–10000) as remainder.
+    /// No separate beneficiary — the receiver authorizer keeps the full
+    /// settled amount.
+    ReceiverKeepsAll,
+    /// Pay `address` via a 100% distribution split.
     Beneficiary {
         /// Base58 beneficiary (principal) address.
         address: String,
-        /// Operator/facilitator cut in basis points of the settled amount.
-        operator_fee_bps: u16,
     },
 }
 
@@ -116,8 +115,7 @@ pub struct VerifiedUptoOpen {
     pub max_amount: u64,
     pub expires_at: i64,
     pub network: String,
-    /// The channel's payee — the operator (the only key the server can sign
-    /// `settle_and_seal` with). The real beneficiary is paid via
+    /// The channel's payee — the receiver authorizer. The beneficiary is paid via
     /// `distribution`, not by being the payee. See `verify_open`.
     pub payee: Pubkey,
     /// The bound distribution split validated at open (beneficiary at 100%).
@@ -150,7 +148,8 @@ impl Drop for InFlightGuard {
 pub struct X402Upto {
     rpc: Arc<RpcClient>,
     config: UptoConfig,
-    operator: Pubkey,
+    fee_payer: Pubkey,
+    receiver_authorizer: Pubkey,
     /// Channel ids currently being processed (verify_open → settle_actual), to
     /// reject concurrent replays of the same authorization.
     in_flight: Arc<Mutex<HashSet<Pubkey>>>,
@@ -174,25 +173,25 @@ fn now_unix() -> i64 {
 }
 
 impl X402Upto {
-    pub fn new(config: UptoConfig) -> Result<Self, Error> {
+    pub fn new(mut config: UptoConfig) -> Result<Self, Error> {
         if config.currencies.is_empty() {
             return Err(Error::Other("at least one currency is required".into()));
         }
-        // Validate the beneficiary up front (the fee is intrinsic to the
-        // `Beneficiary` variant, so it can't exist without one).
-        if let UptoPayout::Beneficiary {
-            address,
-            operator_fee_bps,
-        } = &config.payout
-        {
+        if let UptoPayout::Beneficiary { address } = &config.payout {
             Pubkey::from_str(address)
                 .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
-            if *operator_fee_bps > 10_000 {
-                return Err(Error::Other("operator_fee_bps must be <= 10000".into()));
-            }
+        }
+        if config.withdraw_delay == 0 {
+            config.withdraw_delay = pc::DEFAULT_GRACE_PERIOD_SECONDS;
         }
 
-        let operator = config.operator_signer.pubkey();
+        let receiver_authorizer_signer = config
+            .receiver_authorizer_signer
+            .clone()
+            .unwrap_or_else(|| config.fee_payer_signer.clone());
+        config.receiver_authorizer_signer = Some(receiver_authorizer_signer.clone());
+        let fee_payer = config.fee_payer_signer.pubkey();
+        let receiver_authorizer = receiver_authorizer_signer.pubkey();
         let rpc_url = config
             .rpc_url
             .clone()
@@ -206,7 +205,8 @@ impl X402Upto {
                 solana_commitment_config::CommitmentConfig::confirmed(),
             )),
             config,
-            operator,
+            fee_payer,
+            receiver_authorizer,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             blockhash_cache: None,
             settlement_worker: Arc::new(tokio::sync::OnceCell::new()),
@@ -221,9 +221,21 @@ impl X402Upto {
         self
     }
 
-    /// The operator/facilitator public key (base58).
-    pub fn operator(&self) -> String {
-        pc::pubkey_string(&self.operator)
+    /// The transaction fee payer / rent payer public key (base58).
+    pub fn fee_payer(&self) -> String {
+        pc::pubkey_string(&self.fee_payer)
+    }
+
+    /// The channel payee / voucher signer public key (base58).
+    pub fn receiver_authorizer(&self) -> String {
+        pc::pubkey_string(&self.receiver_authorizer)
+    }
+
+    fn receiver_authorizer_signer(&self) -> &Arc<dyn SolanaSigner> {
+        self.config
+            .receiver_authorizer_signer
+            .as_ref()
+            .expect("receiver authorizer signer initialized")
     }
 
     fn program_id(&self) -> Result<Pubkey, Error> {
@@ -265,49 +277,24 @@ impl X402Upto {
         &self.config.currencies
     }
 
-    /// The bound distribution split for a settled channel. The channel payee is
-    /// always the operator (the only key the server can sign settlement with);
-    /// the configured `recipient` (when set) receives `10000 - operator_fee_bps`
-    /// basis points, and the operator keeps `operator_fee_bps` as the payee
-    /// remainder. `None` recipient ⇒ empty distribution (operator keeps 100%).
-    /// Re-derived server-side at verify/settle so a client cannot redirect it.
-    /// EVM-aligned `payTo`: the beneficiary when configured, else the
-    /// facilitator (operator keeps everything).
+    /// The beneficiary when configured, otherwise the receiver authorizer.
     fn pay_to(&self) -> String {
         match &self.config.payout {
-            UptoPayout::Beneficiary { address, .. } => address.clone(),
-            UptoPayout::OperatorKeepsAll => self.operator(),
-        }
-    }
-
-    /// Facilitator's cut in basis points (0 when the operator keeps everything).
-    fn facilitator_fee_bps(&self) -> u16 {
-        match &self.config.payout {
-            UptoPayout::Beneficiary {
-                operator_fee_bps, ..
-            } => *operator_fee_bps,
-            UptoPayout::OperatorKeepsAll => 0,
+            UptoPayout::Beneficiary { address } => address.clone(),
+            UptoPayout::ReceiverKeepsAll => self.receiver_authorizer(),
         }
     }
 
     fn distribution(&self) -> Result<Vec<pc::Distribution>, Error> {
-        let UptoPayout::Beneficiary {
-            address,
-            operator_fee_bps,
-        } = &self.config.payout
-        else {
+        let pay_to = self.pay_to();
+        if pay_to == self.receiver_authorizer() {
             return Ok(Vec::new());
-        };
-        if *operator_fee_bps > 10_000 {
-            return Err(Error::Other(
-                "operator_fee_bps must be <= 10000".to_string(),
-            ));
         }
-        let recipient = Pubkey::from_str(address)
+        let recipient = Pubkey::from_str(&pay_to)
             .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
         Ok(vec![pc::Distribution {
             recipient,
-            bps: 10_000 - operator_fee_bps,
+            bps: 10_000,
         }])
     }
 
@@ -345,17 +332,13 @@ impl X402Upto {
             network: caip2_network_for_cluster(&self.config.cluster).to_string(),
             amount: base_units,
             asset: pc::pubkey_string(&mint),
-            // EVM-aligned: `payTo` is the beneficiary; the facilitator (operator)
-            // is advertised separately. The channel's on-chain payee = the
-            // facilitator is a client-side mapping (see `verify_open`/settle).
             pay_to: self.pay_to(),
             max_timeout_seconds: self.config.max_timeout_seconds,
             extra: UptoExtra {
-                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: Some(pc::pubkey_string(&token_program)),
-                facilitator_address: self.operator(),
-                facilitator_fee: self.facilitator_fee_bps(),
-                channel_program: Some(pc::pubkey_string(&self.program_id()?)),
+                fee_payer: self.fee_payer(),
+                receiver_authorizer: self.receiver_authorizer(),
+                withdraw_delay: self.config.withdraw_delay,
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 recent_slot: None,
@@ -485,7 +468,12 @@ impl X402Upto {
             .collect::<Result<Vec<_>, _>>()?;
         let requirements = match_offered_requirement(&offered, &envelope.accepted)?.clone();
 
-        verify_upto_payload(payload, &requirements, &self.operator(), now_unix())?;
+        verify_upto_payload(
+            payload,
+            &requirements,
+            &self.receiver_authorizer(),
+            now_unix(),
+        )?;
         // x402 v2 spec §5.2: network lives in `accepted` (the chosen
         // PaymentRequirements), not at the envelope level.
         let claimed_network = envelope.accepted.get("network").and_then(|n| n.as_str());
@@ -511,10 +499,7 @@ impl X402Upto {
                 Pubkey::from_str(tp)
                     .map_err(|e| Error::Other(format!("invalid matched token program: {e}")))
             })?;
-        // The channel payee is the operator — the only key that can sign
-        // `settle_and_seal`. The beneficiary is paid via the bound
-        // distribution split (validated below), never by being the payee.
-        let expected_payee = self.operator;
+        let expected_payee = self.receiver_authorizer;
         let expected_distribution = self.distribution()?;
         let channel_id = Pubkey::from_str(&payload.channel_id)
             .map_err(|e| Error::Other(format!("invalid channelId: {e}")))?;
@@ -558,6 +543,8 @@ impl X402Upto {
             &token_program,
             &channel_id,
             max,
+            &payload.nonce,
+            &payload.open_slot,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         self.rpc
@@ -583,20 +570,25 @@ impl X402Upto {
                 actual: pc::pubkey_string(&pc::from_address(&channel.payee)),
             });
         }
-        // The channel must commit to exactly the distribution we expect (the
-        // beneficiary at `10000 - operator_fee_bps`, or empty when no recipient
-        // is configured), so settlement pays the right account and a client
-        // cannot redirect funds. Bound on-chain via the distribution hash.
+        // The channel must commit to exactly the distribution we expect (100%
+        // to the beneficiary, or empty when the receiver authorizer keeps it),
+        // so a client cannot redirect funds.
         validate_distribution_hash(&channel.distribution_hash, &expected_distribution)?;
-        if pc::from_address(&channel.authorized_signer) != self.operator {
+        if pc::from_address(&channel.authorized_signer) != self.receiver_authorizer {
             return Err(Error::Other(
-                "channel authorized_signer is not the operator".to_string(),
+                "channel authorized_signer is not the receiver authorizer".to_string(),
             ));
         }
-        if pc::from_address(&channel.rent_payer) != self.operator {
+        if pc::from_address(&channel.rent_payer) != self.fee_payer {
             return Err(Error::Other(
-                "channel rent_payer is not the operator".to_string(),
+                "channel rent_payer is not the fee payer".to_string(),
             ));
+        }
+        if channel.grace_period != self.config.withdraw_delay {
+            return Err(Error::Other(format!(
+                "channel withdraw delay {} does not match advertised {}",
+                channel.grace_period, self.config.withdraw_delay
+            )));
         }
         if channel.deposit != max {
             return Err(Error::Other(format!(
@@ -656,13 +648,9 @@ impl X402Upto {
             .rpc
             .get_latest_blockhash()
             .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let message = Message::new_with_blockhash(&instructions, Some(&self.operator), &blockhash);
+        let message = Message::new_with_blockhash(&instructions, Some(&self.fee_payer), &blockhash);
         let mut tx = Transaction::new_unsigned(message);
-        self.config
-            .operator_signer
-            .sign_transaction(&mut tx)
-            .await
-            .map_err(|e| Error::Other(format!("settle signing failed: {e}")))?;
+        self.sign_settlement_transaction(&mut tx).await?;
 
         let signature = self
             .rpc
@@ -693,9 +681,9 @@ impl X402Upto {
 
         let mut instructions = if actual == 0 {
             pc::build_settle_and_seal_instructions(
-                &self.operator,
+                &self.receiver_authorizer,
                 &open.channel_id,
-                &self.operator,
+                &self.receiver_authorizer,
                 None,
                 0,
                 open.expires_at,
@@ -706,15 +694,17 @@ impl X402Upto {
                 pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
             let sig_bytes: [u8; 64] = self
                 .config
-                .operator_signer
+                .receiver_authorizer_signer
+                .as_ref()
+                .expect("receiver authorizer signer initialized")
                 .sign_message(&voucher_bytes)
                 .await
                 .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
                 .into();
             pc::build_settle_and_seal_instructions(
-                &self.operator,
+                &self.receiver_authorizer,
                 &open.channel_id,
-                &self.operator,
+                &self.receiver_authorizer,
                 Some(&sig_bytes),
                 actual,
                 open.expires_at,
@@ -722,26 +712,22 @@ impl X402Upto {
             )?
         };
 
-        // The channel payee is the operator (== the settle `payee` signer); the
-        // bound distribution routes the metered amount to the beneficiary split
-        // and the operator keeps the remainder. Create the payee, treasury, and
-        // each beneficiary ATA before distributing.
         let payee = open.payee;
         instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.operator,
+            &self.fee_payer,
             &payee,
             &open.mint,
             &open.token_program,
         ));
         instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.operator,
+            &self.fee_payer,
             &pc::treasury_owner(),
             &open.mint,
             &open.token_program,
         ));
         for entry in &open.distribution {
             instructions.push(pc::build_create_associated_token_account_instruction(
-                &self.operator,
+                &self.fee_payer,
                 &entry.recipient,
                 &open.mint,
                 &open.token_program,
@@ -805,8 +791,15 @@ impl X402Upto {
 
         let instructions = self.settlement_instructions(open, actual).await?;
 
-        let operator = self.operator;
-        let signer = self.config.operator_signer.clone();
+        if self.fee_payer != self.receiver_authorizer {
+            return Err(Error::Other(
+                "deferred upto settlement requires feePayer and receiverAuthorizer to be the same key"
+                    .to_string(),
+            ));
+        }
+
+        let fee_payer = self.fee_payer;
+        let signer = self.config.fee_payer_signer.clone();
         let rpc_url = self
             .config
             .rpc_url
@@ -816,7 +809,7 @@ impl X402Upto {
             .settlement_worker
             .get_or_init(|| async move {
                 spawn(
-                    SettlementConfig::new(operator, signer),
+                    SettlementConfig::new(fee_payer, signer),
                     Arc::new(RpcBroadcaster::new(rpc_url)),
                 )
             })
@@ -837,7 +830,7 @@ impl X402Upto {
     /// instruction (e.g. a SystemProgram transfer draining the operator) and the
     /// operator would blindly sign it. We require a single instruction, on the
     /// payment-channels program, with the `open` discriminator, whose accounts
-    /// bind the expected payer / payee / mint / operator / channel.
+    /// bind the expected payer / payee / mint / fee payer / channel.
     fn validate_open_transaction(
         &self,
         tx: &VersionedTransaction,
@@ -847,6 +840,8 @@ impl X402Upto {
         token_program: &Pubkey,
         channel_id: &Pubkey,
         max_amount: u64,
+        payload_nonce: &str,
+        payload_open_slot: &str,
     ) -> Result<(), Error> {
         let program_id = self.program_id()?;
         // The challenged recentSlot at verify time: freshly fetched (cache
@@ -868,23 +863,40 @@ impl X402Upto {
         validate_open_instruction(
             tx,
             &program_id,
-            // upto is gasless + delegated: the operator funds the rent and signs
-            // the voucher, so it is both the rentPayer and the authorized_signer.
-            &self.operator,
-            &self.operator,
+            // feePayer funds rent while receiverAuthorizer signs vouchers.
+            &self.fee_payer,
+            &self.receiver_authorizer,
             payer,
             payee,
             mint,
             token_program,
             channel_id,
             Some(max_amount),
+            Some(self.config.withdraw_delay),
+            Some(payload_nonce),
+            Some(payload_open_slot),
             challenged_slot,
         )
     }
 
-    /// Co-sign the fee-payer (operator) slot of a partially-signed transaction.
+    /// Co-sign the fee-payer slot of a partially-signed transaction.
     async fn cosign_fee_payer(&self, tx: &mut VersionedTransaction) -> Result<(), Error> {
-        cosign_operator_fee_payer(self.config.operator_signer.as_ref(), &self.operator, tx).await
+        cosign_operator_fee_payer(self.config.fee_payer_signer.as_ref(), &self.fee_payer, tx).await
+    }
+
+    async fn sign_settlement_transaction(&self, tx: &mut Transaction) -> Result<(), Error> {
+        self.receiver_authorizer_signer()
+            .sign_transaction(tx)
+            .await
+            .map_err(|e| Error::Other(format!("receiver authorizer signing failed: {e}")))?;
+        if self.fee_payer != self.receiver_authorizer {
+            self.config
+                .fee_payer_signer
+                .sign_transaction(tx)
+                .await
+                .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
+        }
+        Ok(())
     }
 
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
@@ -1004,6 +1016,9 @@ pub(crate) fn validate_open_instruction(
     token_program: &Pubkey,
     channel_id: &Pubkey,
     max_amount: Option<u64>,
+    expected_grace_period: Option<u32>,
+    payload_nonce: Option<&str>,
+    payload_open_slot: Option<&str>,
     recent_slot: Option<u64>,
 ) -> Result<(), Error> {
     // Reject v0 transactions that pull accounts from address lookup tables.
@@ -1105,7 +1120,29 @@ pub(crate) fn validate_open_instruction(
     }
     let salt = u64::from_le_bytes(ix.data[1..9].try_into().expect("8-byte slice"));
     let deposit = u64::from_le_bytes(ix.data[9..17].try_into().expect("8-byte slice"));
+    let grace_period = u32::from_le_bytes(ix.data[17..21].try_into().expect("4-byte slice"));
     let open_slot = u64::from_le_bytes(ix.data[21..29].try_into().expect("8-byte slice"));
+    if let Some(payload_nonce) = payload_nonce {
+        if payload_nonce != salt.to_string() {
+            return Err(Error::Other(format!(
+                "open salt {salt} does not match payload nonce {payload_nonce:?}"
+            )));
+        }
+    }
+    if let Some(payload_open_slot) = payload_open_slot {
+        if payload_open_slot != open_slot.to_string() {
+            return Err(Error::Other(format!(
+                "open slot {open_slot} does not match payload openSlot {payload_open_slot:?}"
+            )));
+        }
+    }
+    if let Some(expected_grace_period) = expected_grace_period {
+        if grace_period != expected_grace_period {
+            return Err(Error::Other(format!(
+                "open withdraw delay {grace_period} must equal the advertised withdrawDelay {expected_grace_period}"
+            )));
+        }
+    }
 
     // Slot-addressed channel invariant: the channel account must be the PDA
     // actually derived with the args' salt + openSlot, not just any account
@@ -1248,6 +1285,9 @@ mod tests {
             &channel,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .is_ok());
     }
@@ -1293,6 +1333,9 @@ mod tests {
             &channel,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .is_ok());
 
@@ -1308,6 +1351,9 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -1343,6 +1389,9 @@ mod tests {
                 &token_program(),
                 channel,
                 max_amount,
+                None,
+                None,
+                None,
                 recent_slot,
             )
         };
@@ -1369,6 +1418,32 @@ mod tests {
         let other = Pubkey::new_unique();
         let err = check(&other, Some(1_000_000), Some(314)).unwrap_err();
         assert!(err.to_string().contains("channel"), "{err}");
+
+        let strict = |withdraw_delay: u32, payload_nonce: &str, payload_open_slot: &str| {
+            validate_open_instruction(
+                &tx,
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &payee,
+                &mint,
+                &token_program(),
+                &channel,
+                Some(1_000_000),
+                Some(withdraw_delay),
+                Some(payload_nonce),
+                Some(payload_open_slot),
+                Some(314),
+            )
+        };
+        assert!(strict(900, "7", "314").is_ok());
+        let err = strict(901, "7", "314").unwrap_err();
+        assert!(err.to_string().contains("withdraw delay"), "{err}");
+        let err = strict(900, "8", "314").unwrap_err();
+        assert!(err.to_string().contains("payload nonce"), "{err}");
+        let err = strict(900, "7", "315").unwrap_err();
+        assert!(err.to_string().contains("payload openSlot"), "{err}");
     }
 
     #[test]
@@ -1396,6 +1471,9 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -1433,6 +1511,9 @@ mod tests {
             &channel,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .is_err());
 
@@ -1449,6 +1530,9 @@ mod tests {
             &mint,
             &token_program(),
             &channel,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -1481,6 +1565,9 @@ mod tests {
             &channel,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .is_err());
     }
@@ -1507,13 +1594,12 @@ mod tests {
     }
 
     #[test]
-    fn new_accepts_recipient_different_from_operator() {
-        let operator = Pubkey::new_unique();
+    fn new_accepts_recipient_different_from_receiver_authorizer() {
+        let receiver_authorizer = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let engine = X402Upto::new(UptoConfig {
             payout: UptoPayout::Beneficiary {
                 address: pc::pubkey_string(&recipient),
-                operator_fee_bps: 0,
             },
             currencies: vec![CurrencyConfig {
                 currency: "USDC".to_string(),
@@ -1526,54 +1612,55 @@ mod tests {
             description: None,
             max_timeout_seconds: 300,
             program_id: None,
-            operator_signer: std::sync::Arc::new(TestSigner(operator)),
+            withdraw_delay: 900,
+            fee_payer_signer: std::sync::Arc::new(TestSigner(receiver_authorizer)),
+            receiver_authorizer_signer: None,
         })
         .expect("distinct recipient should be accepted");
         let req = engine
             .upto_requirements("1.00")
             .expect("requirements should build");
-        // Channel payee (pay_to) is the operator/settle-signer; the beneficiary
-        // is paid via the bound distribution split, not by being the payee.
-        // EVM-aligned wire: payTo = beneficiary, facilitator advertised separately.
         assert_eq!(req.pay_to, pc::pubkey_string(&recipient));
-        assert_eq!(req.extra.facilitator_address, pc::pubkey_string(&operator));
-        assert_eq!(req.extra.facilitator_fee, 0);
+        assert_eq!(
+            req.extra.receiver_authorizer,
+            pc::pubkey_string(&receiver_authorizer)
+        );
+        assert_eq!(req.extra.fee_payer, pc::pubkey_string(&receiver_authorizer));
+        assert_eq!(req.extra.withdraw_delay, 900);
     }
 
     #[tokio::test]
-    async fn cosign_rejects_operator_when_not_fee_payer() {
-        let operator = Pubkey::new_unique();
+    async fn cosign_rejects_signer_when_not_fee_payer() {
+        let signer = Pubkey::new_unique();
         let fee_payer = Pubkey::new_unique();
         let ix = solana_instruction::Instruction {
             program_id: Pubkey::new_unique(),
-            accounts: vec![solana_instruction::AccountMeta::new_readonly(
-                operator, true,
-            )],
+            accounts: vec![solana_instruction::AccountMeta::new_readonly(signer, true)],
             data: vec![],
         };
         let mut tx = unsigned_tx_with_fee_payer(&[ix], fee_payer);
 
-        let err = cosign_operator_fee_payer(&TestSigner(operator), &operator, &mut tx)
+        let err = cosign_operator_fee_payer(&TestSigner(signer), &signer, &mut tx)
             .await
-            .expect_err("operator signer must not be accepted outside fee-payer slot");
+            .expect_err("signer must not be accepted outside fee-payer slot");
         assert!(err
             .to_string()
-            .contains("fee payer must be the advertised operator"));
+            .contains("fee payer must be the advertised fee payer"));
     }
 
     #[tokio::test]
-    async fn cosign_accepts_operator_fee_payer() {
-        let operator = Pubkey::new_unique();
+    async fn cosign_accepts_fee_payer() {
+        let fee_payer = Pubkey::new_unique();
         let ix = solana_instruction::Instruction {
             program_id: Pubkey::new_unique(),
             accounts: vec![],
             data: vec![],
         };
-        let mut tx = unsigned_tx_with_fee_payer(&[ix], operator);
+        let mut tx = unsigned_tx_with_fee_payer(&[ix], fee_payer);
 
-        cosign_operator_fee_payer(&TestSigner(operator), &operator, &mut tx)
+        cosign_operator_fee_payer(&TestSigner(fee_payer), &fee_payer, &mut tx)
             .await
-            .expect("operator fee-payer transaction should sign");
+            .expect("fee-payer transaction should sign");
         assert_eq!(tx.signatures[0], Signature::from([7u8; 64]));
     }
 
@@ -1625,6 +1712,9 @@ mod tests {
             &channel,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1649,7 +1739,6 @@ mod tests {
         X402Upto::new(UptoConfig {
             payout: UptoPayout::Beneficiary {
                 address: pc::pubkey_string(&Pubkey::new_unique()),
-                operator_fee_bps: 0,
             },
             currencies,
             // Mainnet so PYUSD resolves to its Token-2022 mint (devnet PYUSD also
@@ -1660,7 +1749,9 @@ mod tests {
             description: None,
             max_timeout_seconds: 300,
             program_id: None,
-            operator_signer: std::sync::Arc::new(TestSigner(Pubkey::new_unique())),
+            withdraw_delay: 900,
+            fee_payer_signer: std::sync::Arc::new(TestSigner(Pubkey::new_unique())),
+            receiver_authorizer_signer: None,
         })
         .expect("engine should build")
     }
@@ -1755,38 +1846,37 @@ mod tests {
         );
     }
 
-    // ── Bug 1 (settle `InvalidChannelPayee`, 0x6) — facilitator payee model ──
+    // ── Bug 1 (settle `InvalidChannelPayee`, 0x6) — receiver payee model ──
     //
     // `settle_and_seal` requires its `payee [signer]` account to equal
     // `channel.payee`. The only account the server can sign with is the
-    // operator/authorized-signer, so the channel MUST be opened with
-    // `payee = operator`. When the payout recipient differs from the operator
-    // (the prod split-key config: recipient `Cs2z…`, KMS fee-payer `Bcdw…`),
+    // receiver authorizer, so the channel MUST be opened with
+    // `payee = receiverAuthorizer`. When the payout recipient differs from it,
     // the recipient is paid via a *bound distribution split*, NOT by being the
     // channel payee. Opening with `payee = recipient` is what reverts settle
     // with 0x6.
 
-    /// Regression guard for the correct facilitator open: `payee = operator`
+    /// Regression guard for the correct receiver open: `payee = receiverAuthorizer`
     /// with the real recipient carried as a 100% distribution split. The open
-    /// must validate as operator-payee and must NOT validate as recipient-payee
-    /// (so the operator-signed settle always matches `channel.payee`).
+    /// must validate as receiver-payee and must NOT validate as recipient-payee.
     #[test]
-    fn facilitator_open_binds_channel_payee_to_the_settle_signer() {
+    fn receiver_open_binds_channel_payee_to_the_settle_signer() {
         let payer = Pubkey::new_unique();
-        let operator = Pubkey::new_unique(); // signs settle_and_seal (payee)
-        let recipient = Pubkey::new_unique(); // payout target — NOT a signer
+        let fee_payer = Pubkey::new_unique();
+        let receiver_authorizer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
         assert_ne!(
-            operator, recipient,
-            "models recipient != operator (split keys)"
+            receiver_authorizer, recipient,
+            "models recipient != receiver authorizer"
         );
 
         let params = OpenChannelParams {
             payer,
-            rent_payer: operator,
-            payee: operator, // channel.payee == the settle signer
+            rent_payer: fee_payer,
+            payee: receiver_authorizer,
             mint,
-            authorized_signer: operator,
+            authorized_signer: receiver_authorizer,
             salt: 7,
             open_slot: 314,
             deposit: 1_000_000,
@@ -1802,23 +1892,25 @@ mod tests {
         let channel = derive_channel_addresses(&params).channel;
         let tx = unsigned_tx(&[build_open_instruction(&params)]);
 
-        // verify_open binds the channel payee to the operator (== settle payee signer).
         assert!(
             validate_open_instruction(
                 &tx,
                 &pc::default_program_id(),
-                &operator,
-                &operator,
+                &fee_payer,
+                &receiver_authorizer,
                 &payer,
-                &operator,
+                &receiver_authorizer,
                 &mint,
                 &token_program(),
                 &channel,
                 None,
                 None,
+                None,
+                None,
+                None,
             )
             .is_ok(),
-            "facilitator open (payee = operator) must validate"
+            "receiver-authorizer open must validate"
         );
 
         // The recipient is NOT the channel payee: validating the same open as
@@ -1828,8 +1920,8 @@ mod tests {
             validate_open_instruction(
                 &tx,
                 &pc::default_program_id(),
-                &operator,
-                &operator,
+                &fee_payer,
+                &receiver_authorizer,
                 &payer,
                 &recipient,
                 &mint,
@@ -1837,35 +1929,35 @@ mod tests {
                 &channel,
                 None,
                 None,
+                None,
+                None,
+                None,
             )
             .is_err(),
-            "channel payee must be the operator/signer, never the payout recipient"
+            "channel payee must be the receiver authorizer, never the payout recipient"
         );
     }
 
-    /// TDD spec for Bug 1's fix at the caller (challenge) layer: with
-    /// recipient != operator, the advertised `pay_to` (→ channel payee) must be
-    /// the operator/settle-signer, and the recipient is carried as a split.
-    /// RED until the payee=operator + recipient-as-split wiring lands; remove
-    /// `#[ignore]` then.
     #[test]
-    fn upto_challenge_advertises_facilitator_and_beneficiary() {
-        let engine = multi_currency_engine(&["USDC"]); // beneficiary != operator
+    fn upto_challenge_advertises_receiver_authorizer_and_beneficiary() {
+        let engine = multi_currency_engine(&["USDC"]);
         let req = engine
             .upto_requirements_for(&engine.config.currencies[0], "0.01")
             .expect("requirement builds");
-        // EVM-aligned: facilitator (the settle signer) is advertised separately;
-        // payTo is the beneficiary, distinct from the facilitator.
         assert_eq!(
-            req.extra.facilitator_address,
-            engine.operator(),
-            "facilitator must be the operator/settle-signer"
+            req.extra.receiver_authorizer,
+            engine.receiver_authorizer(),
+            "receiverAuthorizer must be the settle signer"
         );
         assert_ne!(
             req.pay_to,
-            engine.operator(),
-            "payTo is the beneficiary, not the facilitator"
+            engine.receiver_authorizer(),
+            "payTo is the beneficiary, not the receiver authorizer"
         );
-        assert_eq!(req.extra.facilitator_fee, 0, "no fee configured");
+        assert_eq!(req.extra.fee_payer, engine.fee_payer());
+        assert_eq!(req.extra.withdraw_delay, 900);
+        assert!(serde_json::to_value(&req).unwrap()["extra"]
+            .get("facilitatorAddress")
+            .is_none());
     }
 }

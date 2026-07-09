@@ -17,8 +17,10 @@ plus a ``logging`` record per key.
 from __future__ import annotations
 
 import logging
+import os
 import warnings
-from typing import Annotated, Any, Literal
+from collections.abc import Mapping
+from typing import Annotated, Any, Literal, Self
 
 import pydantic
 import pydantic_settings
@@ -29,10 +31,12 @@ from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.stablecoin import Stablecoin
 from solana_pay_kit.errors import ConfigurationError, DemoSignerOnMainnetError
 from solana_pay_kit.operator import Operator
-from solana_pay_kit.signer import LocalSigner
+from solana_pay_kit.price import Price
+from solana_pay_kit.signer import LocalSigner, Signer
 
 __all__ = [
     "Config",
+    "PayConfig",
     "X402Config",
     "MppConfig",
     "configure",
@@ -42,6 +46,9 @@ __all__ = [
 ]
 
 logger = logging.getLogger("solana_pay_kit")
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 # Module-level singleton. ``None`` until the first ``configure``/``config`` call.
 _config: Config | None = None
@@ -124,6 +131,175 @@ class MppConfig(pydantic.BaseModel):
     def with_challenge_binding_secret(self, secret: str) -> MppConfig:
         """Return a copy carrying the resolved HMAC challenge-binding secret."""
         return self.model_copy(update={"challenge_binding_secret": secret})
+
+
+class PayConfig(pydantic.BaseModel):
+    """Host-application Pay settings for configuring a pay-gated route surface.
+
+    This is the dependency-light shape an app can load from TOML/YAML/env before
+    installing framework middleware. It intentionally includes app policy fields
+    such as ``enabled`` and ``price_usd`` alongside the SDK's boot-time config
+    knobs, so integrations do not have to restate supported networks, protocols,
+    stablecoins, or signer handling.
+    """
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    network: Network = Network.SOLANA_LOCALNET
+    price_usd: str = "0.01"
+    recipient: str | None = None
+    rpc_url: str | None = None
+    signer_env: str | None = "EXO_PAY_SIGNER"
+    protocols: tuple[Protocol, ...] = (Protocol.X402, Protocol.MPP)
+    stablecoins: tuple[Stablecoin, ...] = (Stablecoin.USDC,)
+    preflight: bool = True
+
+    @classmethod
+    def from_sources(
+        cls,
+        mapping: PayConfig | Mapping[str, Any] | None = None,
+        *,
+        env_prefix: str | None = None,
+        environ: Mapping[str, str] | None = None,
+        enabled: bool | None = None,
+    ) -> Self:
+        """Build app-level Pay config from a mapping plus optional env overrides.
+
+        ``env_prefix`` reads names such as ``{prefix}NETWORK``,
+        ``{prefix}PROTOCOLS`` and ``{prefix}NO_PREFLIGHT``. ``enabled`` is a
+        final explicit override for host apps with a CLI flag like ``--pay``.
+        """
+        if isinstance(mapping, PayConfig):
+            values: dict[str, Any] = mapping.model_dump(mode="python")
+        elif mapping is None:
+            values = {}
+        else:
+            values = dict(mapping)
+
+        if env_prefix is not None:
+            _apply_pay_config_env(
+                values,
+                env_prefix=env_prefix,
+                environ=os.environ if environ is None else environ,
+            )
+        if enabled is not None:
+            values["enabled"] = enabled
+        return cls.model_validate(values)
+
+    @pydantic.field_validator("protocols", mode="before")
+    @classmethod
+    def _coerce_protocols(cls, value: object) -> object:
+        """Accept a single protocol or list; normalize before enum coercion."""
+        if value is None:
+            return value
+        if isinstance(value, Protocol | str):
+            return (value,)
+        return tuple(value)  # type: ignore[arg-type]
+
+    @pydantic.field_validator("stablecoins", mode="before")
+    @classmethod
+    def _coerce_stablecoins(cls, value: object) -> object:
+        """Accept a single stablecoin or list; normalize before enum coercion."""
+        if value is None:
+            return value
+        if isinstance(value, Stablecoin | str):
+            return (value,)
+        return tuple(value)  # type: ignore[arg-type]
+
+    def build_config(self, *, preserve_global: bool = False) -> Config:
+        """Build a PayKit config without storing it as the global singleton."""
+        base = _config if preserve_global else None
+        signer = Signer.env(self.signer_env) if self.signer_env else None
+        operator = (
+            base.operator
+            if base is not None and self.recipient is None and signer is None
+            else Operator(recipient=self.recipient, signer=signer)
+        )
+        kwargs: dict[str, Any] = {
+            "network": self.network,
+            "accept": self.protocols,
+            "stablecoins": self.stablecoins,
+            "rpc_url": self.rpc_url,
+            "operator": operator,
+            "preflight": self.preflight,
+        }
+        if base is not None:
+            kwargs["mpp"] = base.mpp
+            kwargs["x402"] = base.x402
+        return _build_config(**kwargs)
+
+    def configure(self) -> Config:
+        """Configure solana-pay-kit using this app-level Pay config."""
+        global _config
+        _config = self.build_config()
+        return _config
+
+    def gate_ref(self) -> Price:
+        """Return the default flat-price gate for this Pay config."""
+        return Price.usd(self.price_usd)
+
+
+_PAY_CONFIG_STRING_ENV_FIELDS: dict[str, str] = {
+    "network": "NETWORK",
+    "price_usd": "PRICE_USD",
+    "recipient": "RECIPIENT",
+    "rpc_url": "RPC_URL",
+    "signer_env": "SIGNER_ENV",
+}
+
+_PAY_CONFIG_SEQUENCE_ENV_FIELDS: dict[str, str] = {
+    "protocols": "PROTOCOLS",
+    "stablecoins": "STABLECOINS",
+}
+
+
+def _apply_pay_config_env(
+    values: dict[str, Any],
+    *,
+    env_prefix: str,
+    environ: Mapping[str, str],
+) -> None:
+    """Merge ``PayConfig`` env overrides into an app config mapping."""
+    enabled = environ.get(f"{env_prefix}ENABLED")
+    if enabled is not None:
+        values["enabled"] = _parse_bool_env(f"{env_prefix}ENABLED", enabled)
+
+    for field_name, env_suffix in _PAY_CONFIG_STRING_ENV_FIELDS.items():
+        value = environ.get(f"{env_prefix}{env_suffix}")
+        if value is not None:
+            values[field_name] = value
+
+    for field_name, env_suffix in _PAY_CONFIG_SEQUENCE_ENV_FIELDS.items():
+        value = environ.get(f"{env_prefix}{env_suffix}")
+        if value is not None:
+            values[field_name] = _csv_tuple(value)
+
+    preflight_raw = environ.get(f"{env_prefix}PREFLIGHT")
+    no_preflight_raw = environ.get(f"{env_prefix}NO_PREFLIGHT")
+    if preflight_raw is not None and no_preflight_raw is not None:
+        raise ConfigurationError(
+            f"solana_pay_kit: set only one of {env_prefix}PREFLIGHT or {env_prefix}NO_PREFLIGHT"
+        )
+
+    if preflight_raw is not None:
+        values["preflight"] = _parse_bool_env(f"{env_prefix}PREFLIGHT", preflight_raw)
+
+    if no_preflight_raw is not None:
+        values["preflight"] = not _parse_bool_env(f"{env_prefix}NO_PREFLIGHT", no_preflight_raw)
+
+
+def _parse_bool_env(name: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    raise ConfigurationError(f"solana_pay_kit: {name} must be a boolean value")
+
+
+def _csv_tuple(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 class Config(pydantic.BaseModel):

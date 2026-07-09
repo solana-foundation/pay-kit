@@ -27,8 +27,9 @@ Starlette lowercase header names at the boundary, so canonical casing is safe).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 try:
     from fastapi import HTTPException, Request, Response
@@ -37,6 +38,8 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
 
 import weakref
 
+from starlette.routing import Match
+
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore, payment
 from solana_pay_kit.config import config as _config
 from solana_pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
@@ -44,7 +47,7 @@ from solana_pay_kit.payment import Payment
 from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
 
 if TYPE_CHECKING:
-    from solana_pay_kit.config import Config
+    from solana_pay_kit.config import Config, PayConfig
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
     from solana_pay_kit.pricing import Pricing
@@ -55,7 +58,12 @@ __all__ = [
     "RequirePayment",
     "RequireSession",
     "RequireUsage",
+    "PaywallConfig",
     "install_exception_handler",
+    "install_paywall",
+    "install_paywall_from_config",
+    "pay_not_required",
+    "pay_required",
     "payment",
     "Payment",
     "Charge",
@@ -100,6 +108,73 @@ def _upto_engine(config: Config) -> X402Upto:
 _SETTLEMENT_STATE_ATTR = "paykit_settlement_headers"
 
 GateRef = "Gate | DynamicGate | Price | str | Callable[[Request], Gate]"
+
+PaywallDefaultPolicy = Literal["public", "paid"]
+
+_PAYWALL_REQUIRED_ATTR = "__solana_pay_kit_pay_required__"
+_PAYWALL_NOT_REQUIRED_ATTR = "__solana_pay_kit_pay_not_required__"
+
+
+@dataclass(frozen=True)
+class _PaywallRequirement:
+    """Route-level paywall metadata written by :func:`pay_required`."""
+
+    gate_ref: Gate | DynamicGate | Price | str | Callable[[Request], Gate] | None = None
+    pricing: Pricing | None = None
+    config: Config | None = None
+
+
+@dataclass(frozen=True)
+class PaywallConfig:
+    """Application-level paywall policy for :func:`install_paywall_from_config`.
+
+    ``default_policy="public"`` mirrors DRF's default-open permission model:
+    only endpoints marked with :func:`pay_required` or a paid tag are gated.
+    ``default_policy="paid"`` mirrors Django's ``LoginRequiredMiddleware``:
+    every matched route is gated unless it is marked with :func:`pay_not_required`
+    or a public tag.
+    """
+
+    gate_ref: Gate | DynamicGate | Price | str | Callable[[Request], Gate] | None = None
+    pricing: Pricing | None = None
+    config: Config | None = None
+    default_policy: PaywallDefaultPolicy = "public"
+    paid_tags: tuple[str, ...] = ("paid", "pay")
+    public_tags: tuple[str, ...] = ("public", "free")
+
+
+def pay_required(
+    gate_ref: Gate | DynamicGate | Price | str | Callable[[Request], Gate] | None = None,
+    *,
+    pricing: Pricing | None = None,
+    config: Config | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a FastAPI endpoint as payment-required.
+
+    The route can supply its own gate, or omit ``gate_ref`` to inherit the
+    application default from :class:`PaywallConfig`. This decorator only writes
+    metadata; :func:`install_paywall_from_config` performs the enforcement.
+    """
+
+    def decorator(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+        setattr(
+            endpoint,
+            _PAYWALL_REQUIRED_ATTR,
+            _PaywallRequirement(gate_ref=gate_ref, pricing=pricing, config=config),
+        )
+        return endpoint
+
+    return decorator
+
+
+def pay_not_required() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a FastAPI endpoint as public when the default paywall policy is paid."""
+
+    def decorator(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+        setattr(endpoint, _PAYWALL_NOT_REQUIRED_ATTR, True)
+        return endpoint
+
+    return decorator
 
 
 def RequirePayment(  # noqa: N802 - factory reads as a dependency constructor
@@ -244,6 +319,108 @@ PAYMENT_HEADERS: tuple[str, ...] = (
 )
 
 
+def install_paywall_from_config(
+    app: Any,
+    paywall: PaywallConfig,
+    *,
+    cors_origins: Sequence[str] | None = ("*",),
+) -> None:
+    """Install a Django/DRF-style paywall over an existing FastAPI app.
+
+    The middleware inspects FastAPI's actual route table for the current
+    request, then applies the route metadata from :func:`pay_required`,
+    :func:`pay_not_required`, route tags, and the configured default policy.
+    This avoids duplicating endpoint paths in a separate payment allowlist.
+    """
+    if paywall.default_policy not in ("public", "paid"):
+        raise ValueError("solana_pay_kit.fastapi: default_policy must be 'public' or 'paid'")
+
+    install_exception_handler(app)
+
+    @app.middleware("http")
+    async def _paykit_paywall(  # pyright: ignore[reportUnusedFunction]  # registered via @app.middleware
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        route = _matched_route(app, request)
+        requirement = _paywall_requirement(paywall, route)
+        if requirement is None:
+            return await call_next(request)
+
+        gate_ref = requirement.gate_ref if requirement.gate_ref is not None else paywall.gate_ref
+        if gate_ref is None:
+            raise RuntimeError(
+                "solana_pay_kit.fastapi: a paid route needs a gate_ref; "
+                "set PaywallConfig(gate_ref=...) or pass one to pay_required(...)"
+            )
+        pricing = requirement.pricing if requirement.pricing is not None else paywall.pricing
+        config = requirement.config if requirement.config is not None else paywall.config
+        core = PayCore.for_config(config if config is not None else _config())
+
+        try:
+            verified = await core.process(gate_ref, pricing, request)
+        except PayKitError as exc:
+            http_exc = _http_exception(exc)
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                http_exc.detail,
+                status_code=http_exc.status_code,
+                headers=http_exc.headers,
+            )
+
+        setattr(request.state, PAYMENT_ATTR, verified)
+        if verified.settlement_headers:
+            setattr(request.state, _SETTLEMENT_STATE_ATTR, dict(verified.settlement_headers))
+
+        return await call_next(request)
+
+    if cors_origins is not None:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=list(PAYMENT_HEADERS),
+        )
+
+
+def install_paywall(
+    app: Any,
+    config: PayConfig | Mapping[str, Any],
+    *,
+    env_prefix: str | None = None,
+    default_policy: PaywallDefaultPolicy = "public",
+    paid_tags: tuple[str, ...] = ("paid", "pay"),
+    public_tags: tuple[str, ...] = ("public", "free"),
+    cors_origins: Sequence[str] | None = ("*",),
+) -> None:
+    """Install a route-metadata paywall from app-level Pay settings.
+
+    ``config`` may be a :class:`~solana_pay_kit.config.PayConfig` or a plain
+    mapping loaded from TOML/YAML/env. Disabled configs are a no-op.
+    """
+    from solana_pay_kit.config import PayConfig as _PayConfig
+
+    pay_config = _PayConfig.from_sources(config, env_prefix=env_prefix)
+    if not pay_config.enabled:
+        return
+
+    install_paywall_from_config(
+        app,
+        PaywallConfig(
+            gate_ref=pay_config.gate_ref(),
+            config=pay_config.build_config(preserve_global=True),
+            default_policy=default_policy,
+            paid_tags=paid_tags,
+            public_tags=public_tags,
+        ),
+        cors_origins=cors_origins,
+    )
+
+
 def install(app: Any, *, cors_origins: Sequence[str] | None = ("*",)) -> None:
     """One-call FastAPI setup for a pay-kit server.
 
@@ -363,6 +540,83 @@ def install_exception_handler(app: Any) -> None:
     # Mark the app so RequireUsage knows the settle-after middleware is live.
     if hasattr(app, "state"):
         setattr(app.state, _USAGE_READY_ATTR, True)
+
+
+def _matched_route(app: Any, request: Request) -> object | None:
+    """Return the Starlette route that would handle ``request``, if any."""
+    return _matched_route_in_routes(cast("Iterable[object]", getattr(app, "routes", ())), request.scope)
+
+
+def _matched_route_in_routes(routes: Iterable[object], scope: Mapping[str, Any]) -> object | None:
+    """Return the deepest matched route for ``scope``, including mounted apps."""
+    for route in routes:
+        matcher = getattr(route, "matches", None)
+        if not callable(matcher):
+            continue
+        try:
+            match, child_scope = cast("tuple[Match, dict[str, Any]]", matcher(scope))
+        except Exception:  # pragma: no cover - defensive for third-party routes
+            continue
+        if match is Match.FULL:
+            endpoint = child_scope.get("endpoint")
+            child_routes = getattr(endpoint, "routes", None)
+            if child_routes is not None:
+                child_route = _matched_route_in_routes(
+                    cast("Iterable[object]", child_routes),
+                    {**scope, **child_scope},
+                )
+                return child_route
+            return route
+    return None
+
+
+def _paywall_requirement(
+    paywall: PaywallConfig,
+    route: object | None,
+) -> _PaywallRequirement | None:
+    """Resolve whether a matched route should be pay-gated."""
+    if route is None:
+        return None
+
+    if _endpoint_attr(route, _PAYWALL_NOT_REQUIRED_ATTR) is True:
+        return None
+
+    requirement = _endpoint_attr(route, _PAYWALL_REQUIRED_ATTR)
+    if isinstance(requirement, _PaywallRequirement):
+        return requirement
+
+    tags = _route_tags(route)
+    if any(tag in paywall.public_tags for tag in tags):
+        return None
+    if any(tag in paywall.paid_tags for tag in tags):
+        return _PaywallRequirement()
+
+    if paywall.default_policy == "paid":
+        return _PaywallRequirement()
+    return None
+
+
+def _endpoint_attr(route: object, name: str) -> object:
+    """Read metadata from a route endpoint, including bound methods."""
+    endpoint = getattr(route, "endpoint", None)
+    if endpoint is None:
+        return None
+    value = getattr(endpoint, name, None)
+    if value is not None:
+        return value
+    function = getattr(endpoint, "__func__", None)
+    if function is not None:
+        return getattr(function, name, None)
+    return None
+
+
+def _route_tags(route: object) -> tuple[str, ...]:
+    """Return FastAPI route tags as a string tuple."""
+    raw_tags = getattr(route, "tags", ())
+    if isinstance(raw_tags, (list, tuple, set)):
+        tags = cast("list[object] | tuple[object, ...] | set[object]", raw_tags)
+        return tuple(str(tag) for tag in tags)
+    return ()
 
 
 def _http_exception(exc: PayKitError) -> HTTPException:

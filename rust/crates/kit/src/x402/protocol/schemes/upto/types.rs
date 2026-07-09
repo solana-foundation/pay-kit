@@ -1,10 +1,10 @@
 //! Wire types for the x402 `upto` scheme on Solana.
 //!
 //! `upto` authorizes a **maximum** amount; the server settles for the **actual**
-//! usage (`actual ≤ max`) determined after the resource is consumed. The v1 SVM
-//! backend is the `payment-channel` asset transfer method: the client opens a
-//! channel whose `deposit` is the ceiling, and the operator settles the metered
-//! amount with a single voucher, refunding the remainder. See
+//! usage (`actual <= max`) determined after the resource is consumed. On Solana
+//! the client opens a payment channel whose `deposit` is the ceiling, and the
+//! receiver authorizer settles the metered amount with a single voucher,
+//! refunding the remainder. See
 //! `specs/schemes/upto/scheme_upto_svm.md`.
 
 use serde::{Deserialize, Serialize};
@@ -15,9 +15,6 @@ use crate::x402::protocol::schemes::exact::ResourceInfo;
 /// `upto` scheme identifier.
 pub const UPTO_SCHEME: &str = "upto";
 
-/// Payment-channel asset transfer method (normative v1).
-pub const UPTO_ASSET_TRANSFER_METHOD: &str = "payment-channel";
-
 fn upto_scheme() -> String {
     UPTO_SCHEME.to_string()
 }
@@ -26,26 +23,18 @@ fn upto_scheme() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UptoExtra {
-    /// Asset transfer method for this `upto` requirement — EVM uses `"permit2"`,
-    /// SVM uses `"payment-channel"`.
-    pub asset_transfer_method: String,
-
     /// Token program address (legacy SPL or Token-2022).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_program: Option<String>,
 
-    /// Base58 facilitator/operator key authorized to settle (and the channel's
-    /// on-chain payee + fee payer). Mirrors EVM upto's `extra.facilitatorAddress`.
-    pub facilitator_address: String,
+    /// Base58 key that sponsors the transaction fee and channel rent.
+    pub fee_payer: String,
 
-    /// Facilitator's cut in basis points (0–10000) of the settled amount; the
-    /// beneficiary (`payTo`) receives `10000 - facilitatorFee`. Omitted when 0.
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
-    pub facilitator_fee: u16,
+    /// Base58 channel payee and voucher signer.
+    pub receiver_authorizer: String,
 
-    /// Channel program id; defaults to the canonical deployment when absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel_program: Option<String>,
+    /// Channel forced-close delay, in seconds.
+    pub withdraw_delay: u32,
 
     /// Server-prefetched recent blockhash for building the open transaction.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,10 +56,6 @@ pub struct UptoExtra {
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<i64>,
-}
-
-fn is_zero_u16(v: &u16) -> bool {
-    *v == 0
 }
 
 /// An `upto` payment requirement (the `accepted` object in a 402 challenge).
@@ -135,9 +120,9 @@ pub struct UptoRequiredEnvelope {
 
 /// The client authorization carried in `PAYMENT-SIGNATURE.payload`.
 ///
-/// For the `payment-channel` asset transfer method the channel `open` is the
-/// authorization: the client's signature commits the deposit ceiling, payee,
-/// and mint. The operator settles the actual amount with a voucher it signs.
+/// The channel `open` is the authorization: the client's signature commits the
+/// deposit ceiling, payee, and mint. The receiver authorizer settles the actual
+/// amount with a voucher it signs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UptoPayload {
@@ -153,7 +138,7 @@ pub struct UptoPayload {
     /// Activation time (Unix seconds).
     pub valid_after: i64,
 
-    /// Unique per-authorization identifier.
+    /// Decimal channel salt used by the open instruction.
     pub nonce: String,
 
     /// Channel PDA (base58).
@@ -162,10 +147,13 @@ pub struct UptoPayload {
     /// On-chain escrow ceiling (base units); MUST equal `max_amount`.
     pub deposit: String,
 
-    /// Voucher signer — the operator/facilitator key (base58).
+    /// Voucher signer — the receiver authorizer key (base58).
     pub authorized_signer: String,
 
-    /// Base64 client-signed `open` transaction for the operator to co-sign
+    /// Decimal channel open slot used by the open instruction.
+    pub open_slot: String,
+
+    /// Base64 client-signed `open` transaction for the fee payer to co-sign
     /// (fee payer + `rentPayer`) and broadcast. v1 is **pull-only**: the client
     /// never broadcasts `open` itself, so it needs no SOL.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -241,11 +229,10 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: None,
-                facilitator_address: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
-                facilitator_fee: 0,
-                channel_program: None,
+                fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
+                receiver_authorizer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
+                withdraw_delay: 900,
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 recent_slot: None,
@@ -262,15 +249,21 @@ mod tests {
         assert_eq!(json["payTo"], req.pay_to);
         assert_eq!(json["amount"], "1000000");
         assert_eq!(json["maxTimeoutSeconds"], 300);
-        assert_eq!(json["extra"]["assetTransferMethod"], "payment-channel");
+        assert_eq!(json["extra"]["feePayer"], req.extra.fee_payer);
         assert_eq!(
-            json["extra"]["facilitatorAddress"],
-            req.extra.facilitator_address
+            json["extra"]["receiverAuthorizer"],
+            req.extra.receiver_authorizer
         );
+        assert_eq!(json["extra"]["withdrawDelay"], 900);
+        assert!(json["extra"].get("assetTransferMethod").is_none());
+        assert!(json["extra"].get("facilitatorAddress").is_none());
+        assert!(json["extra"].get("facilitatorFee").is_none());
+        assert!(json["extra"].get("channelProgram").is_none());
 
         let back: UptoRequirements = serde_json::from_value(json).unwrap();
         assert_eq!(back.max_amount().unwrap(), 1_000_000);
         assert_eq!(back.scheme, "upto");
+        assert_eq!(back.extra.withdraw_delay, 900);
     }
 
     #[test]
@@ -284,10 +277,12 @@ mod tests {
             channel_id: "Chan1111111111111111111111111111111111111".to_string(),
             deposit: "1000000".to_string(),
             authorized_signer: "Op11111111111111111111111111111111111111111".to_string(),
+            open_slot: "55555".to_string(),
             open_transaction: Some("base64tx".to_string()),
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("\"openTransaction\":\"base64tx\""));
+        assert!(json.contains("\"openSlot\":\"55555\""));
         assert!(!json.contains("\"signature\""));
         assert_eq!(payload.max_amount().unwrap(), 1_000_000);
         assert_eq!(payload.deposit().unwrap(), 1_000_000);
@@ -311,6 +306,7 @@ mod tests {
                 "channelId": "Chan1111111111111111111111111111111111111",
                 "deposit": "1000000",
                 "authorizedSigner": "Op11111111111111111111111111111111111111111",
+                "openSlot": "55555",
                 "openTransaction": "base64tx",
             },
             // canonical extras we must tolerate (ignored)
@@ -334,6 +330,7 @@ mod tests {
             env.payload.channel_id,
             "Chan1111111111111111111111111111111111111"
         );
+        assert_eq!(env.payload.open_slot, "55555");
 
         // The emitted wire shape carries no envelope-level scheme/network.
         let wire = serde_json::to_value(&env).unwrap();

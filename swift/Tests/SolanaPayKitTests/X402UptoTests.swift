@@ -5,7 +5,8 @@ import Testing
 // MARK: - Fixtures
 
 private enum UptoFixture {
-    static let operatorAddr = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    static let feePayerAddr = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    static let receiverAuthorizerAddr = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
     static let payTo = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
     static let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     static let blockhash = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
@@ -20,21 +21,19 @@ private enum UptoFixture {
     }
 
     static func extra(
-        facilitatorAddress: String = operatorAddr,
-        facilitatorFee: Int = 0,
-        assetTransferMethod: String = X402UptoAssetTransferMethod,
+        feePayer: String = feePayerAddr,
+        receiverAuthorizer: String = receiverAuthorizerAddr,
+        withdrawDelay: UInt32 = 900,
         recentBlockhash: String? = blockhash,
         tokenProgram: String? = nil,
-        channelProgram: String? = nil,
         recentSlot: String? = recentSlot,
         validAfter: Int? = nil
     ) -> X402UptoExtra {
         X402UptoExtra(
-            assetTransferMethod: assetTransferMethod,
             tokenProgram: tokenProgram,
-            facilitatorAddress: facilitatorAddress,
-            facilitatorFee: facilitatorFee,
-            channelProgram: channelProgram,
+            feePayer: feePayer,
+            receiverAuthorizer: receiverAuthorizer,
+            withdrawDelay: withdrawDelay,
             recentBlockhash: recentBlockhash,
             lastValidBlockHeight: nil,
             recentSlot: recentSlot,
@@ -170,10 +169,10 @@ private enum LegacyTxDecoder {
 @Suite("x402 upto build errors")
 struct X402UptoBuildErrorTests {
     @Test
-    func rejectsWrongAssetTransferMethod() async throws {
+    func rejectsMissingFeePayer() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements(
-            extra: UptoFixture.extra(assetTransferMethod: "permit2")
+            extra: UptoFixture.extra(feePayer: "")
         )
         await #expect(throws: (any Error).self) {
             _ = try await buildUptoPayload(signer: signer, requirements: req, expiresAt: 1000)
@@ -181,10 +180,10 @@ struct X402UptoBuildErrorTests {
     }
 
     @Test
-    func rejectsMissingFacilitatorAddress() async throws {
+    func rejectsMissingReceiverAuthorizer() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements(
-            extra: UptoFixture.extra(facilitatorAddress: "")
+            extra: UptoFixture.extra(receiverAuthorizer: "")
         )
         await #expect(throws: (any Error).self) {
             _ = try await buildUptoPayload(signer: signer, requirements: req, expiresAt: 1000)
@@ -203,10 +202,10 @@ struct X402UptoBuildErrorTests {
     }
 
     @Test
-    func rejectsFacilitatorFeeOutOfRange() async throws {
+    func rejectsMissingWithdrawDelay() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements(
-            extra: UptoFixture.extra(facilitatorFee: 10_001)
+            extra: UptoFixture.extra(withdrawDelay: 0)
         )
         await #expect(throws: (any Error).self) {
             _ = try await buildUptoPayload(signer: signer, requirements: req, expiresAt: 1000)
@@ -243,7 +242,7 @@ struct X402UptoBuildErrorTests {
 @Suite("x402 upto build behaviour")
 struct X402UptoBuildTests {
     @Test
-    func depositEqualsMaxAmountAndAuthorizedSignerIsOperator() async throws {
+    func depositEqualsMaxAmountAndAuthorizedSignerIsReceiverAuthorizer() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
         let payload = try await buildUptoPayload(
@@ -252,7 +251,9 @@ struct X402UptoBuildTests {
         #expect(payload.maxAmount == UptoFixture.amount)
         #expect(payload.deposit == UptoFixture.amount)
         #expect(payload.deposit == payload.maxAmount)
-        #expect(payload.authorizedSigner == UptoFixture.operatorAddr)
+        #expect(payload.authorizedSigner == UptoFixture.receiverAuthorizerAddr)
+        #expect(payload.nonce == "42")
+        #expect(payload.openSlot == UptoFixture.recentSlot)
         #expect(payload.from == signer.address)
         #expect(payload.expiresAt == 4_102_444_800)
         #expect(payload.openTransaction != nil)
@@ -285,10 +286,10 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: salt
         )
         let payer = try Pubkey(bytes: signer.publicKey)
-        let op = try Pubkey(base58: UptoFixture.operatorAddr)
+        let receiverAuthorizer = try Pubkey(base58: UptoFixture.receiverAuthorizerAddr)
         let mint = try Pubkey(base58: UptoFixture.mint)
         let expected = try PaymentChannels.findChannelPda(
-            payer: payer, payee: op, mint: mint, authorizedSigner: op,
+            payer: payer, payee: receiverAuthorizer, mint: mint, authorizedSigner: receiverAuthorizer,
             salt: salt, openSlot: UptoFixture.recentSlotValue, programId: PaymentChannels.programId
         )
         #expect(payload.channelId == expected.base58)
@@ -305,13 +306,14 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: salt, openSlot: 2222
         )
         let payer = try Pubkey(bytes: signer.publicKey)
-        let op = try Pubkey(base58: UptoFixture.operatorAddr)
+        let receiverAuthorizer = try Pubkey(base58: UptoFixture.receiverAuthorizerAddr)
         let mint = try Pubkey(base58: UptoFixture.mint)
         let expected = try PaymentChannels.findChannelPda(
-            payer: payer, payee: op, mint: mint, authorizedSigner: op,
+            payer: payer, payee: receiverAuthorizer, mint: mint, authorizedSigner: receiverAuthorizer,
             salt: salt, openSlot: 2222, programId: PaymentChannels.programId
         )
         #expect(payload.channelId == expected.base58)
+        #expect(payload.openSlot == "2222")
         let decoded = try LegacyTxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
@@ -319,9 +321,9 @@ struct X402UptoBuildTests {
     }
 
     @Test
-    func payToEqualsOperatorYieldsEmptyRecipients() async throws {
+    func payToEqualsReceiverAuthorizerYieldsEmptyRecipients() async throws {
         let signer = try UptoFixture.signer()
-        let req = UptoFixture.requirements(payTo: UptoFixture.operatorAddr)
+        let req = UptoFixture.requirements(payTo: UptoFixture.receiverAuthorizerAddr)
         let payload = try await buildUptoPayload(
             signer: signer, requirements: req, expiresAt: 1000, salt: 99
         )
@@ -338,23 +340,7 @@ struct X402UptoBuildTests {
     }
 
     @Test
-    func payToDifferentFromOperatorYieldsOneDistribution() async throws {
-        let signer = try UptoFixture.signer()
-        let req = UptoFixture.requirements(
-            extra: UptoFixture.extra(facilitatorFee: 250)
-        )
-        let payload = try await buildUptoPayload(
-            signer: signer, requirements: req, expiresAt: 1000, salt: 7
-        )
-        let payer = try Pubkey(bytes: signer.publicKey)
-        let decoded = try LegacyTxDecoder.decode(
-            base64: try #require(payload.openTransaction), payer: payer
-        )
-        #expect(decoded.recipientBps == [9_750]) // 10000 - 250
-    }
-
-    @Test
-    func feeZeroYieldsFullBps() async throws {
+    func payToDifferentFromReceiverAuthorizerYieldsOneDistribution() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
         let payload = try await buildUptoPayload(
@@ -368,26 +354,6 @@ struct X402UptoBuildTests {
     }
 
     @Test
-    func feeTenThousandYieldsZeroBpsDistribution() async throws {
-        // A 100% facilitator fee leaves payTo with pay_to_bps = 10000 - 10000 = 0.
-        // The spec requires encoding payTo as a recipient whenever payTo differs
-        // from the operator, and the Rust/Go/Python clients emit the same 0-bps
-        // entry, so the client keeps wire parity rather than eliding it.
-        let signer = try UptoFixture.signer()
-        let req = UptoFixture.requirements(
-            extra: UptoFixture.extra(facilitatorFee: 10_000)
-        )
-        let payload = try await buildUptoPayload(
-            signer: signer, requirements: req, expiresAt: 1000, salt: 7
-        )
-        let payer = try Pubkey(bytes: signer.publicKey)
-        let decoded = try LegacyTxDecoder.decode(
-            base64: try #require(payload.openTransaction), payer: payer
-        )
-        #expect(decoded.recipientBps == [0])
-    }
-
-    @Test
     func openTransactionIsPayerSignedFeePayerUnsigned() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
@@ -398,7 +364,7 @@ struct X402UptoBuildTests {
         let decoded = try LegacyTxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
-        // operator is the fee payer (account index 0) and is unsigned; the
+        // fee payer is account index 0 and is unsigned; the
         // payer slot carries the client's signature.
         #expect(decoded.signatureCount == 2)
         #expect(decoded.payerSlotSigned)
@@ -407,60 +373,36 @@ struct X402UptoBuildTests {
     }
 
     @Test
-    func explicitNonceIsPreserved() async throws {
+    func nonceIsOpenSaltDecimal() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
         let payload = try await buildUptoPayload(
             signer: signer, requirements: req, expiresAt: 1000, nonce: "fixed-nonce", salt: 7
         )
-        #expect(payload.nonce == "fixed-nonce")
+        #expect(payload.nonce == "7")
     }
 
     @Test
-    func defaultNonceIsRandomHexAndIndependentOfSalt() async throws {
+    func differentSaltsYieldDifferentNoncesAndChannels() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
-        // Same fixed salt, default (random) nonce on each call -> nonces differ.
         let a = try await buildUptoPayload(
-            signer: signer, requirements: req, expiresAt: 1000, salt: 5
-        )
-        let b = try await buildUptoPayload(
-            signer: signer, requirements: req, expiresAt: 1000, salt: 5
-        )
-        #expect(a.nonce != b.nonce)
-        #expect(a.nonce.count == 32)
-        #expect(a.nonce.allSatisfy { $0.isHexDigit })
-        // Same channel for the same salt; the nonce is not the salt.
-        #expect(a.channelId == b.channelId)
-
-        // Different salts -> different channels, even with a pinned nonce.
-        let c = try await buildUptoPayload(
             signer: signer, requirements: req, expiresAt: 1000, nonce: "n", salt: 1
         )
-        let d = try await buildUptoPayload(
+        let b = try await buildUptoPayload(
             signer: signer, requirements: req, expiresAt: 1000, nonce: "n", salt: 2
         )
-        #expect(c.channelId != d.channelId)
+        #expect(a.nonce == "1")
+        #expect(b.nonce == "2")
+        #expect(a.channelId != b.channelId)
     }
 
     @Test
-    func defaultNonceUsesInjectedGenerator() async throws {
-        let signer = try UptoFixture.signer()
-        let req = UptoFixture.requirements()
-        let payload = try await buildUptoPayload(
-            signer: signer, requirements: req, expiresAt: 1000,
-            nonceGenerator: { Data(repeating: 0xAB, count: 16) }, salt: 1
-        )
-        #expect(payload.nonce == String(repeating: "ab", count: 16))
-    }
-
-    @Test
-    func tokenProgramAndChannelProgramOverridesAreAccepted() async throws {
+    func tokenProgramOverrideIsAccepted() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements(
             extra: UptoFixture.extra(
-                tokenProgram: Pubkey.token2022Program.base58,
-                channelProgram: PaymentChannels.programId.base58
+                tokenProgram: Pubkey.token2022Program.base58
             )
         )
         let payload = try await buildUptoPayload(
@@ -475,20 +417,17 @@ struct X402UptoBuildTests {
 @Suite("x402 upto encoding")
 struct X402UptoEncodingTests {
     @Test
-    func feeZeroOmittedFromExtraJSON() throws {
-        let extra = UptoFixture.extra(facilitatorFee: 0)
+    func extraJSONUsesRoleFieldsOnly() throws {
+        let extra = UptoFixture.extra()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(extra), as: UTF8.self)
+        #expect(json.contains("feePayer"))
+        #expect(json.contains("receiverAuthorizer"))
+        #expect(json.contains("withdrawDelay"))
+        #expect(!json.contains("assetTransferMethod"))
         #expect(!json.contains("facilitatorFee"))
-    }
-
-    @Test
-    func feeNonZeroPresentInExtraJSON() throws {
-        let extra = UptoFixture.extra(facilitatorFee: 250)
-        let json = String(decoding: try JSONEncoder().encode(extra), as: UTF8.self)
-        #expect(json.contains("facilitatorFee"))
-        #expect(json.contains("250"))
+        #expect(!json.contains("channelProgram"))
     }
 
     @Test
@@ -503,8 +442,9 @@ struct X402UptoEncodingTests {
         #expect(envelope.x402Version == X402Version)
         #expect(envelope.payload.maxAmount == UptoFixture.amount)
         #expect(envelope.payload.deposit == UptoFixture.amount)
-        #expect(envelope.payload.nonce == "n-1")
-        #expect(envelope.payload.authorizedSigner == UptoFixture.operatorAddr)
+        #expect(envelope.payload.nonce == "7")
+        #expect(envelope.payload.openSlot == UptoFixture.recentSlot)
+        #expect(envelope.payload.authorizedSigner == UptoFixture.receiverAuthorizerAddr)
 
         guard case let .object(accepted) = envelope.accepted else {
             Issue.record("accepted is not a JSON object")
@@ -547,9 +487,11 @@ struct X402UptoEncodingTests {
             "maxTimeoutSeconds": 300,
             "resource": "https://example.com/x",
             "extra": {
-              "assetTransferMethod": "payment-channel",
-              "facilitatorAddress": "\(UptoFixture.operatorAddr)",
-              "recentBlockhash": "\(UptoFixture.blockhash)"
+              "feePayer": "\(UptoFixture.feePayerAddr)",
+              "receiverAuthorizer": "\(UptoFixture.receiverAuthorizerAddr)",
+              "withdrawDelay": 900,
+              "recentBlockhash": "\(UptoFixture.blockhash)",
+              "recentSlot": "\(UptoFixture.recentSlot)"
             }
           }]
         }
@@ -589,9 +531,11 @@ struct X402UptoParseTests {
               "payTo": "\(UptoFixture.payTo)",
               "maxTimeoutSeconds": 300,
               "extra": {
-                "assetTransferMethod": "payment-channel",
-                "facilitatorAddress": "\(UptoFixture.operatorAddr)",
-                "recentBlockhash": "\(UptoFixture.blockhash)"
+                "feePayer": "\(UptoFixture.feePayerAddr)",
+                "receiverAuthorizer": "\(UptoFixture.receiverAuthorizerAddr)",
+                "withdrawDelay": 900,
+                "recentBlockhash": "\(UptoFixture.blockhash)",
+                "recentSlot": "\(UptoFixture.recentSlot)"
               }
             }\(extraEntries)
           ]
@@ -606,7 +550,8 @@ struct X402UptoParseTests {
         let req = try #require(parseUptoChallenge(headers: headers, body: nil))
         #expect(req.scheme == X402UptoScheme)
         #expect(req.amount == UptoFixture.amount)
-        #expect(req.extra.facilitatorAddress == UptoFixture.operatorAddr)
+        #expect(req.extra.feePayer == UptoFixture.feePayerAddr)
+        #expect(req.extra.receiverAuthorizer == UptoFixture.receiverAuthorizerAddr)
     }
 
     @Test
@@ -628,9 +573,11 @@ struct X402UptoParseTests {
           "payTo": "\(UptoFixture.payTo)",
           "maxTimeoutSeconds": 60,
           "extra": {
-            "assetTransferMethod": "payment-channel",
-            "facilitatorAddress": "\(UptoFixture.operatorAddr)",
-            "recentBlockhash": "\(UptoFixture.blockhash)"
+            "feePayer": "\(UptoFixture.feePayerAddr)",
+            "receiverAuthorizer": "\(UptoFixture.receiverAuthorizerAddr)",
+            "withdrawDelay": 900,
+            "recentBlockhash": "\(UptoFixture.blockhash)",
+            "recentSlot": "\(UptoFixture.recentSlot)"
           }
         }
         """
@@ -684,7 +631,7 @@ struct X402UptoTypeTests {
     func payloadDecodeRoundTripAndOmitsOpenTransactionWhenNil() throws {
         let payload = X402UptoPayload(
             from: "P", maxAmount: "10", expiresAt: 5, validAfter: 0, nonce: "n",
-            channelId: "C", deposit: "10", authorizedSigner: "Op", openTransaction: nil
+            channelId: "C", deposit: "10", authorizedSigner: "Op", openSlot: "1", openTransaction: nil
         )
         let data = try JSONEncoder().encode(payload)
         let json = String(decoding: data, as: UTF8.self)
@@ -694,13 +641,14 @@ struct X402UptoTypeTests {
     }
 
     @Test
-    func extraDecodesLastValidBlockHeightAndDefaultsFee() throws {
+    func extraDecodesLastValidBlockHeightAndRoles() throws {
         let json = """
-        {"assetTransferMethod":"payment-channel","facilitatorAddress":"\(UptoFixture.operatorAddr)","lastValidBlockHeight":"123","recentBlockhash":"\(UptoFixture.blockhash)"}
+        {"feePayer":"\(UptoFixture.feePayerAddr)","receiverAuthorizer":"\(UptoFixture.receiverAuthorizerAddr)","withdrawDelay":900,"lastValidBlockHeight":"123","recentBlockhash":"\(UptoFixture.blockhash)"}
         """
         let extra = try JSONDecoder().decode(X402UptoExtra.self, from: Data(json.utf8))
         #expect(extra.lastValidBlockHeight == "123")
-        #expect(extra.facilitatorFee == 0)
+        #expect(extra.feePayer == UptoFixture.feePayerAddr)
+        #expect(extra.receiverAuthorizer == UptoFixture.receiverAuthorizerAddr)
         let reencoded = String(decoding: try JSONEncoder().encode(extra), as: UTF8.self)
         #expect(reencoded.contains("lastValidBlockHeight"))
     }
@@ -708,7 +656,7 @@ struct X402UptoTypeTests {
     @Test
     func requirementsSchemeDefaultsToUptoWhenOmitted() throws {
         let json = """
-        {"network":"\(UptoFixture.network)","amount":"1","asset":"\(UptoFixture.mint)","payTo":"\(UptoFixture.payTo)","maxTimeoutSeconds":300,"extra":{"assetTransferMethod":"payment-channel","facilitatorAddress":"\(UptoFixture.operatorAddr)","recentBlockhash":"\(UptoFixture.blockhash)"}}
+        {"network":"\(UptoFixture.network)","amount":"1","asset":"\(UptoFixture.mint)","payTo":"\(UptoFixture.payTo)","maxTimeoutSeconds":300,"extra":{"feePayer":"\(UptoFixture.feePayerAddr)","receiverAuthorizer":"\(UptoFixture.receiverAuthorizerAddr)","withdrawDelay":900,"recentBlockhash":"\(UptoFixture.blockhash)","recentSlot":"\(UptoFixture.recentSlot)"}}
         """
         let req = try JSONDecoder().decode(X402UptoRequirements.self, from: Data(json.utf8))
         #expect(req.scheme == X402UptoScheme)
@@ -730,11 +678,15 @@ struct X402UptoTypeTests {
         }
         #expect(obj["scheme"] == .string(X402UptoScheme))
         #expect(obj["network"] == .string(UptoFixture.network))
-        // facilitatorFee == 0 is omitted from the typed extra encoding.
         guard case let .object(extra)? = obj["extra"] else {
             Issue.record("extra not an object"); return
         }
+        #expect(extra["feePayer"] == .string(UptoFixture.feePayerAddr))
+        #expect(extra["receiverAuthorizer"] == .string(UptoFixture.receiverAuthorizerAddr))
+        #expect(extra["withdrawDelay"] == .int(900))
+        #expect(extra["assetTransferMethod"] == nil)
         #expect(extra["facilitatorFee"] == nil)
+        #expect(extra["channelProgram"] == nil)
     }
 
     @Test
@@ -812,8 +764,9 @@ struct X402UptoTransportTests {
             "payTo": "\(UptoFixture.payTo)",
             "maxTimeoutSeconds": 300,
             "extra": {
-              "assetTransferMethod": "payment-channel",
-              "facilitatorAddress": "\(UptoFixture.operatorAddr)",
+              "feePayer": "\(UptoFixture.feePayerAddr)",
+              "receiverAuthorizer": "\(UptoFixture.receiverAuthorizerAddr)",
+              "withdrawDelay": 900,
               "recentBlockhash": "\(UptoFixture.blockhash)",
               "recentSlot": "\(UptoFixture.recentSlot)"
             }

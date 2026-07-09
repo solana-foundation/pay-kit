@@ -40,23 +40,24 @@ func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
 // buildUptoConfig maps a paykit.Config onto the protocol engine config.
 func buildUptoConfig(cfg paykit.Config) (proto.UptoConfig, error) {
 	if cfg.Operator.Signer == nil {
-		return proto.UptoConfig{}, errors.New("usage adapter requires an operator signer")
+		return proto.UptoConfig{}, errors.New("usage adapter requires a fee payer signer")
 	}
 	coin := "USDC"
 	if len(cfg.Stablecoins) > 0 {
 		coin = string(cfg.Stablecoins[0])
 	}
 	return proto.UptoConfig{
-		Recipient:               string(cfg.Operator.Recipient),
-		Currency:                coin,
-		Decimals:                proto.StablecoinDecimals,
-		Network:                 cfg.Network,
-		RPCURL:                  cfg.RPCURL,
-		ChannelProgram:          cfg.X402.ChannelProgram,
-		MaxTimeoutSeconds:       proto.DefaultMaxTimeoutSeconds,
-		OperatorSigner:          uptoSignerWrapper{signer: cfg.Operator.Signer},
-		RecentBlockhashProvider: cfg.RecentBlockhashProvider,
-		RecentSlotProvider:      cfg.RecentSlotProvider,
+		Recipient:                string(cfg.Operator.Recipient),
+		Currency:                 coin,
+		Decimals:                 proto.StablecoinDecimals,
+		Network:                  cfg.Network,
+		RPCURL:                   cfg.RPCURL,
+		ChannelProgram:           cfg.X402.ChannelProgram,
+		MaxTimeoutSeconds:        proto.DefaultMaxTimeoutSeconds,
+		FeePayerSigner:           uptoSignerWrapper{signer: cfg.Operator.Signer},
+		ReceiverAuthorizerSigner: uptoSignerWrapper{signer: cfg.Operator.Signer},
+		RecentBlockhashProvider:  cfg.RecentBlockhashProvider,
+		RecentSlotProvider:       cfg.RecentSlotProvider,
 	}, nil
 }
 
