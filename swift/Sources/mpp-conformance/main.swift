@@ -1036,7 +1036,7 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
                 return RunnerResult(
                     id: vector.id,
                     outcome: "reject",
-                    error: "unsupported mode \(vector.mode) for x402-exact"
+                    error: "unsupported-mode: swift does not implement x402-exact \(vector.mode)"
                 )
             }
         }
