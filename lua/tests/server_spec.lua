@@ -417,6 +417,40 @@ t.test('security: verifier errors never consume or issue a receipt', function()
   t.assert_true(not present)
 end)
 
+-- A custom replay store historically needed only the atomic put operation.
+-- The verifier may reserve its own marker, so the outer guard must recognize
+-- that write without requiring an unadvertised `get` method or double-consuming
+-- the first valid payment.
+t.test('security: put-only replay store accepts an inner reservation once', function()
+  local values = {}
+  local replay = {
+    put_if_absent = function(_, key, value)
+      if values[key] ~= nil then return false end
+      values[key] = value
+      return true
+    end,
+  }
+  local server = server_with({
+    store = replay,
+    verify_payment = function(context)
+      local reference = context.payload.signature
+      local replay_key = 'solana-charge:consumed:' .. reference
+      local inserted = context.store:put_if_absent(replay_key, true)
+      if not inserted then
+        error('payment already consumed')
+      end
+      return { reference = reference, replay_key = replay_key, consumed = true }
+    end,
+  })
+  local credential = credential_for(server, 'put-only-inner-reservation')
+
+  local receipt = server:verify_credential(credential, 1770000000)
+  t.assert_equal(receipt.reference, 'put-only-inner-reservation')
+  t.assert_error(function()
+    server:verify_credential(credential, 1770000000)
+  end, 'payment already consumed')
+end)
+
 -- Audit #24: weak secret key.
 t.test('audit #24: rejects secret key shorter than 32 bytes', function()
   t.assert_error(function()

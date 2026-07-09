@@ -536,12 +536,31 @@ function Server:_finalize_verification(credential_value, request, payload)
     error('verify_payment callback is required')
   end
 
+  -- Stores historically need only `put_if_absent`. When a verifier reserves a
+  -- marker through such a store, record the successful atomic write in this
+  -- request-local proxy. That proves the inner reservation without trusting a
+  -- bare `consumed = true` result from an arbitrary callback.
+  local verifier_store = self.store
+  local verifier_reservations
+  if type(self.store.get) ~= 'function' then
+    verifier_reservations = {}
+    verifier_store = {
+      put_if_absent = function(_, key, value)
+        local inserted = self.store:put_if_absent(key, value)
+        if inserted then
+          verifier_reservations[key] = true
+        end
+        return inserted
+      end,
+    }
+  end
+
   local result = self.verify_payment({
     payload = payload,
     request = request,
     method_details = method_details,
     credential = credential_value,
-    store = self.store,
+    store = verifier_store,
     server = self,
   })
 
@@ -563,12 +582,13 @@ function Server:_finalize_verification(credential_value, request, payload)
   -- present in this server's replay store. Otherwise a custom callback could
   -- return two receipts for the same signature without recording a replay key.
   local consumed_marker_present = false
-  if result.consumed == true
-     and type(result.replay_key) == 'string'
-     and result.replay_key ~= ''
-     and type(self.store.get) == 'function' then
-    local _marker, present = self.store:get(result.replay_key)
-    consumed_marker_present = present == true
+  if result.consumed == true and type(result.replay_key) == 'string' and result.replay_key ~= '' then
+    if verifier_reservations ~= nil then
+      consumed_marker_present = verifier_reservations[result.replay_key] == true
+    elseif type(self.store.get) == 'function' then
+      local marker, present = self.store:get(result.replay_key)
+      consumed_marker_present = present == true or marker == true
+    end
   end
 
   if not consumed_marker_present then
