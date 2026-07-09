@@ -26,7 +26,21 @@ fail=0
 
 for mod in go harness/go-server harness/go-client; do
   [ -f "$ROOT/$mod/go.mod" ] || continue
-  diff="$(cd "$ROOT/$mod" && go fix -inline=false -diff ./... 2>/dev/null)"
+  # `go fix -diff` exits non-zero merely because it FOUND diffs (like `gofmt -l`),
+  # so the exit code cannot tell "found modernizations" apart from "tool error".
+  # A real load/parse failure is what writes to STDERR. The old form
+  # (`2>/dev/null` plus treat-empty-diff-as-OK) swallowed that, letting a broken
+  # build produce an empty diff and pass the gate green -- a fail-open. Capture
+  # stderr and fail the gate CLOSED on any tool error.
+  gofix_err="$(mktemp)"
+  diff="$(cd "$ROOT/$mod" && go fix -inline=false -diff ./... 2>"$gofix_err")"
+  if [ -s "$gofix_err" ]; then
+    echo "go-fix gate ERROR: 'go fix' reported errors in module '$mod'; an empty diff cannot be trusted as passing:" >&2
+    cat "$gofix_err" >&2
+    rm -f "$gofix_err"
+    exit 2
+  fi
+  rm -f "$gofix_err"
   [ -n "$diff" ] || continue
   mod_fail=0
   # The unified diff names each changed file on a '--- <abs-path> (old)' line.
