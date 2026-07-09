@@ -58,6 +58,12 @@ jobs:
       - name: Repo hygiene guard self-test
         working-directory: .
         run: bash scripts/check-repo-hygiene_test.sh
+      - name: Payment-channels revision guard
+        working-directory: .
+        run: bash scripts/check-payment-channels-revision.sh
+      - name: Payment-channels revision guard self-test
+        working-directory: .
+        run: bash scripts/check-payment-channels-revision_test.sh
       # Exercise the publish-workflow least-privilege / release-gating guard on
       # every PR, not only on a publish dispatch: the guard's "real workflows
       # pass, reverted fixtures fail" proof otherwise ran only on a developer's
