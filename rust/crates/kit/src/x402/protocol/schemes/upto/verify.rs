@@ -1,13 +1,13 @@
 //! Pure (no-RPC) verification for the x402 `upto` scheme.
 //!
 //! These checks run at the envelope level: amounts, time window, advertised
-//! asset transfer method, and operator binding. The on-chain binding (channel
+//! receiver-authorizer binding. The on-chain binding (channel
 //! deposit/payee/mint/status) is confirmed by the server after it broadcasts
 //! and confirms the `open` transaction — see `server::upto`.
 
 use crate::x402::error::Error;
 
-use super::types::{UptoPayload, UptoRequirements, UPTO_ASSET_TRANSFER_METHOD};
+use super::types::{UptoPayload, UptoRequirements};
 
 /// Scheme-specific error string for an over-ceiling settlement.
 pub const ERR_SETTLEMENT_EXCEEDS_AMOUNT: &str =
@@ -15,23 +15,16 @@ pub const ERR_SETTLEMENT_EXCEEDS_AMOUNT: &str =
 
 /// Verify an `upto` payload against the route's pinned requirements.
 ///
-/// `operator` is the server's facilitator key (base58); `now` is the current
-/// Unix time in seconds. Returns `Ok(())` when the authorization is valid for
-/// the ceiling — the actual charge is validated later by
+/// `receiver_authorizer` is the server's voucher signer key (base58); `now` is
+/// the current Unix time in seconds. Returns `Ok(())` when the authorization is
+/// valid for the ceiling — the actual charge is validated later by
 /// [`assert_settlement_within_ceiling`].
 pub fn verify_upto_payload(
     payload: &UptoPayload,
     requirements: &UptoRequirements,
-    operator: &str,
+    receiver_authorizer: &str,
     now: i64,
 ) -> Result<(), Error> {
-    if requirements.extra.asset_transfer_method != UPTO_ASSET_TRANSFER_METHOD {
-        return Err(Error::Other(format!(
-            "assetTransferMethod {} is not supported",
-            requirements.extra.asset_transfer_method
-        )));
-    }
-
     let max = requirements.max_amount()?;
     let signed_max = payload.max_amount()?;
     if signed_max != max {
@@ -56,21 +49,16 @@ pub fn verify_upto_payload(
             payload.valid_after
         )));
     }
-    if now > payload.expires_at {
+    if payload.expires_at == 0 || now >= payload.expires_at {
         return Err(Error::Other(format!(
             "authorization expired (expiresAt {} < now {now})",
             payload.expires_at
         )));
     }
 
-    // The meaningful binding: the client must have authorized *this* operator as
-    // the channel's voucher signer. (We don't re-check `requirements.extra
-    // .fee_payer` — it is always built server-side as `self.operator()`, so the
-    // comparison can never fail; the authorized_signer check is what matters.)
-    if payload.authorized_signer != operator {
+    if payload.authorized_signer != receiver_authorizer {
         return Err(Error::Other(
-            "voucher authorized_signer must be the operator for the payment-channel asset transfer method"
-                .to_string(),
+            "voucher authorized_signer must be the advertised receiver authorizer".to_string(),
         ));
     }
 
@@ -90,7 +78,7 @@ mod tests {
     use super::*;
     use crate::x402::protocol::schemes::upto::types::{UptoExtra, UptoRequirements};
 
-    const OPERATOR: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+    const RECEIVER_AUTHORIZER: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
 
     fn requirements() -> UptoRequirements {
         UptoRequirements {
@@ -101,11 +89,10 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: None,
-                facilitator_address: OPERATOR.to_string(),
-                facilitator_fee: 0,
-                channel_program: None,
+                fee_payer: RECEIVER_AUTHORIZER.to_string(),
+                receiver_authorizer: RECEIVER_AUTHORIZER.to_string(),
+                withdraw_delay: 900,
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 recent_slot: None,
@@ -123,21 +110,17 @@ mod tests {
             nonce: "n-1".to_string(),
             channel_id: "Chan1111111111111111111111111111111111111".to_string(),
             deposit: "1000000".to_string(),
-            authorized_signer: OPERATOR.to_string(),
+            authorized_signer: RECEIVER_AUTHORIZER.to_string(),
+            open_slot: "55555".to_string(),
             open_transaction: Some("tx".to_string()),
         }
     }
 
     #[test]
     fn accepts_valid_payload() {
-        assert!(verify_upto_payload(&payload(), &requirements(), OPERATOR, 1000).is_ok());
-    }
-
-    #[test]
-    fn rejects_wrong_asset_transfer_method() {
-        let mut req = requirements();
-        req.extra.asset_transfer_method = "permit2".to_string();
-        assert!(verify_upto_payload(&payload(), &req, OPERATOR, 1000).is_err());
+        assert!(
+            verify_upto_payload(&payload(), &requirements(), RECEIVER_AUTHORIZER, 1000).is_ok()
+        );
     }
 
     #[test]
@@ -145,7 +128,7 @@ mod tests {
         let mut p = payload();
         p.max_amount = "999999".to_string();
         assert!(matches!(
-            verify_upto_payload(&p, &requirements(), OPERATOR, 1000),
+            verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000),
             Err(Error::AmountMismatch { .. })
         ));
     }
@@ -154,11 +137,11 @@ mod tests {
     fn rejects_deposit_mismatch() {
         let mut p = payload();
         p.deposit = "500000".to_string();
-        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
 
         let mut p = payload();
         p.deposit = "1000001".to_string();
-        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
     }
 
     #[test]
@@ -167,25 +150,29 @@ mod tests {
         // operator settle above the authorized ceiling on-chain.
         let mut p = payload();
         p.deposit = "2000000".to_string();
-        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
     }
 
     #[test]
     fn rejects_expired_and_not_yet_active() {
         let mut p = payload();
         p.expires_at = 500;
-        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
+
+        let mut p = payload();
+        p.expires_at = 1000;
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
 
         let mut p = payload();
         p.valid_after = 2000;
-        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
     }
 
     #[test]
-    fn rejects_non_operator_signer() {
+    fn rejects_wrong_receiver_authorizer() {
         let mut p = payload();
         p.authorized_signer = "Payer1111111111111111111111111111111111111".to_string();
-        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+        assert!(verify_upto_payload(&p, &requirements(), RECEIVER_AUTHORIZER, 1000).is_err());
     }
 
     #[test]

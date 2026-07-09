@@ -76,7 +76,7 @@ describe('x402 exact adapter', () => {
 });
 
 describe('x402 upto engine', () => {
-    it('advertises an upto accepts entry with the facilitator binding', async () => {
+    it('advertises an upto accepts entry with role bindings', async () => {
         const config = await testConfig();
         const upto = new X402Upto(config);
         const [entry] = await upto.accepts(usd('1.00'));
@@ -84,10 +84,14 @@ describe('x402 upto engine', () => {
         expect(entry.scheme).toBe('upto');
         expect(entry.amount).toBe('1000000'); // 1.00 USDC ceiling
         expect(entry.payTo).toBe(config.operator.recipient);
-        expect((entry.extra as { assetTransferMethod?: string }).assetTransferMethod).toBe('payment-channel');
-        expect((entry.extra as { facilitatorAddress?: string }).facilitatorAddress).toBe(config.operator.signer.pubkey);
-        expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(0);
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
+        expect((entry.extra as { receiverAuthorizer?: string }).receiverAuthorizer).toBe(config.operator.signer.pubkey);
+        expect((entry.extra as { withdrawDelay?: number }).withdrawDelay).toBe(900);
+        expect((entry.extra as { tokenProgram?: string }).tokenProgram).toEqual(expect.any(String));
+        expect((entry.extra as { assetTransferMethod?: string }).assetTransferMethod).toBeUndefined();
+        expect((entry.extra as { facilitatorAddress?: string }).facilitatorAddress).toBeUndefined();
+        expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBeUndefined();
+        expect((entry.extra as { channelProgram?: string }).channelProgram).toBeUndefined();
         // The offer is server-enriched: the client derives the channel openSlot
         // from extra.recentSlot and never fetches the slot itself.
         expect((entry.extra as { recentSlot?: string }).recentSlot).toBe('314');
@@ -105,18 +109,6 @@ describe('x402 upto engine', () => {
         } finally {
             rpcState.fail = false;
         }
-    });
-
-    it('advertises the configured facilitator fee', async () => {
-        const config = await configure({
-            mpp: { challengeBindingSecret: 'x402-test-secret' },
-            network: 'solana_localnet',
-            x402: { facilitatorFee: 250 },
-        });
-        const upto = new X402Upto(config);
-        const [entry] = await upto.accepts(usd('1.00'));
-
-        expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(250);
     });
 
     it('detects the payment header and emits a challenge', async () => {

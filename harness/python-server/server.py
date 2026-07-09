@@ -247,7 +247,9 @@ class _Adapter:
     def _build_upto(self) -> None:
         rpc_url = require_env("X402_HARNESS_RPC_URL")
         pay_to = require_env("X402_HARNESS_PAY_TO")
-        facilitator_json = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
+        fee_payer_json = os.environ.get("X402_HARNESS_FEE_PAYER_SECRET_KEY") or require_env(
+            "X402_HARNESS_FACILITATOR_SECRET_KEY"
+        )
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
@@ -260,7 +262,7 @@ class _Adapter:
         self.coin = _coin_for_mint(mint)
         program_id = os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or None
 
-        signer = Signer.json(facilitator_json)
+        signer = Signer.json(fee_payer_json)
         config = Config(
             network=_resolve_network(network_raw),
             accept=(Protocol.X402,),

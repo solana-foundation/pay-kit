@@ -188,9 +188,9 @@ and client — plus SIWX.
 | `batch-settlement` | ✅      | ✅      |
 
 `upto` charges for actual usage up to a ceiling: it settles on a payment channel
-after the handler runs, so it needs a `fee_payer_signer` (the operator signs the
-settlement voucher) and is gated with `paid_upto_get` / `paid_upto_post` rather
-than `paid_get` / `paid_post`.
+after the handler runs, so it needs a `fee_payer_signer` (used as both fee payer
+and receiver authorizer by default) and is gated with `paid_upto_get` /
+`paid_upto_post` rather than `paid_get` / `paid_post`.
 
 `batch-settlement` is for high-throughput APIs: the client opens one channel and
 signs a cumulative voucher per request, which the gate (`paid_batch_get` /

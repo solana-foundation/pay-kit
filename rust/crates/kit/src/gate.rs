@@ -194,13 +194,8 @@ impl PayKit {
             .as_ref()
             .map(|signer| {
                 X402Upto::new(UptoConfig {
-                    // The channel payee is always the operator (the only key
-                    // the gate can sign settlement with); the gate's configured
-                    // recipient is the real beneficiary, paid the full settled
-                    // amount via the bound distribution (operator keeps 0 bps).
                     payout: UptoPayout::Beneficiary {
                         address: config.recipient.clone(),
-                        operator_fee_bps: 0,
                     },
                     currencies: currencies.clone(),
                     cluster: config.network.clone(),
@@ -209,7 +204,9 @@ impl PayKit {
                     description: None,
                     max_timeout_seconds: UPTO_MAX_TIMEOUT_SECONDS,
                     program_id: None,
-                    operator_signer: signer.clone(),
+                    withdraw_delay: 0,
+                    fee_payer_signer: signer.clone(),
+                    receiver_authorizer_signer: None,
                 })
                 .map(Arc::new)
                 .map_err(|e| PayKitError::X402(e.to_string()))

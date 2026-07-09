@@ -114,12 +114,12 @@ def _op_pubkey(cfg: Config) -> str:
     return signer.pubkey()
 
 
-def _expected_distribution_hash(pay_to: str, operator: str, facilitator_fee: int = 0) -> list[int]:
+def _expected_distribution_hash(pay_to: str, operator: str) -> list[int]:
     if pay_to == operator:
         return EMPTY_HASH
     return list(
         upto_mod._distribution_hash(  # noqa: SLF001
-            [Distribution(recipient=Pubkey.from_string(pay_to), bps=10_000 - facilitator_fee)]
+            [Distribution(recipient=Pubkey.from_string(pay_to), bps=10_000)]
         )
     )
 
@@ -180,8 +180,11 @@ def test_accepts_entry_shape(monkeypatch) -> None:
     req = eng.accepts_entry(_gate(cfg), {"path": "/usage"})
     assert req["scheme"] == "upto"
     assert req["amount"] == "100000"
-    assert req["extra"]["assetTransferMethod"] == "payment-channel"
-    assert req["extra"]["facilitatorAddress"] == _op_pubkey(cfg)
+    assert req["extra"]["feePayer"] == _op_pubkey(cfg)
+    assert req["extra"]["receiverAuthorizer"] == _op_pubkey(cfg)
+    assert req["extra"]["withdrawDelay"] == 900
+    assert "assetTransferMethod" not in req["extra"]
+    assert "channelProgram" not in req["extra"]
     assert req["extra"].get("recentBlockhash") == BH
     # recentSlot is stamped as a u64-as-string next to the blockhash.
     assert req["extra"].get("recentSlot") == str(RECENT_SLOT)
@@ -483,7 +486,7 @@ async def test_verify_open_authorized_signer_mismatch(monkeypatch) -> None:
         deposit=100000,
         distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
     )
-    with pytest.raises(InvalidProofError, match="authorized_signer is not the operator"):
+    with pytest.raises(InvalidProofError, match="authorized_signer is not the receiver authorizer"):
         await eng.verify_open(_gate(cfg), _Req(header))
 
 

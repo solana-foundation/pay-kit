@@ -1,31 +1,23 @@
 import Foundation
 
-// MARK: - x402 wire types (upto scheme, payment-channel asset transfer method)
+// MARK: - x402 wire types (upto scheme)
 
 /// `upto` scheme identifier.
 public let X402UptoScheme: String = "upto"
 
-/// Payment-channel asset transfer method (normative SVM backend for `upto`).
-public let X402UptoAssetTransferMethod: String = "payment-channel"
-
 /// The `extra` object on an `upto` requirement.
 ///
-/// Carries the operator binding and the server-prefetched blockhash + slot the
-/// client needs to build the channel `open`. `facilitatorFee` is omitted from
-/// the wire when `0`; every other absent field is `nil`.
+/// Carries the fee payer / receiver authorizer binding and the server-prefetched
+/// blockhash + slot the client needs to build the channel `open`.
 public struct X402UptoExtra: Codable, Sendable, Equatable {
-    /// Asset transfer method; must equal `"payment-channel"` for the SVM backend.
-    public let assetTransferMethod: String
     /// Token program address (legacy SPL or Token-2022); defaults to legacy SPL.
     public let tokenProgram: String?
-    /// Operator/facilitator key: channel payee, fee payer, rent payer, and
-    /// voucher signer. Required.
-    public let facilitatorAddress: String
-    /// Facilitator cut in basis points (0..10000) of the settled amount; the
-    /// beneficiary receives `10000 - facilitatorFee`. Omitted from JSON when `0`.
-    public let facilitatorFee: Int
-    /// Channel program id; defaults to the canonical deployment when absent.
-    public let channelProgram: String?
+    /// Transaction fee payer and channel rent payer.
+    public let feePayer: String
+    /// Channel payee and voucher signer.
+    public let receiverAuthorizer: String
+    /// Forced-close/withdraw delay advertised by the server.
+    public let withdrawDelay: UInt32
     /// Server-prefetched recent blockhash for the open transaction.
     public let recentBlockhash: String?
     /// Last block height at which `recentBlockhash` is valid (decimal string).
@@ -38,21 +30,19 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
     public let validAfter: Int?
 
     public init(
-        assetTransferMethod: String,
         tokenProgram: String? = nil,
-        facilitatorAddress: String,
-        facilitatorFee: Int = 0,
-        channelProgram: String? = nil,
+        feePayer: String,
+        receiverAuthorizer: String,
+        withdrawDelay: UInt32,
         recentBlockhash: String? = nil,
         lastValidBlockHeight: String? = nil,
         recentSlot: String? = nil,
         validAfter: Int? = nil
     ) {
-        self.assetTransferMethod = assetTransferMethod
         self.tokenProgram = tokenProgram
-        self.facilitatorAddress = facilitatorAddress
-        self.facilitatorFee = facilitatorFee
-        self.channelProgram = channelProgram
+        self.feePayer = feePayer
+        self.receiverAuthorizer = receiverAuthorizer
+        self.withdrawDelay = withdrawDelay
         self.recentBlockhash = recentBlockhash
         self.lastValidBlockHeight = lastValidBlockHeight
         self.recentSlot = recentSlot
@@ -60,17 +50,16 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case assetTransferMethod, tokenProgram, facilitatorAddress, facilitatorFee
-        case channelProgram, recentBlockhash, lastValidBlockHeight, recentSlot, validAfter
+        case tokenProgram, feePayer, receiverAuthorizer, withdrawDelay
+        case recentBlockhash, lastValidBlockHeight, recentSlot, validAfter
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        assetTransferMethod = try container.decode(String.self, forKey: .assetTransferMethod)
         tokenProgram = try container.decodeIfPresent(String.self, forKey: .tokenProgram)
-        facilitatorAddress = try container.decode(String.self, forKey: .facilitatorAddress)
-        facilitatorFee = try container.decodeIfPresent(Int.self, forKey: .facilitatorFee) ?? 0
-        channelProgram = try container.decodeIfPresent(String.self, forKey: .channelProgram)
+        feePayer = try container.decode(String.self, forKey: .feePayer)
+        receiverAuthorizer = try container.decode(String.self, forKey: .receiverAuthorizer)
+        withdrawDelay = try container.decode(UInt32.self, forKey: .withdrawDelay)
         recentBlockhash = try container.decodeIfPresent(String.self, forKey: .recentBlockhash)
         lastValidBlockHeight = try container.decodeIfPresent(String.self, forKey: .lastValidBlockHeight)
         recentSlot = try container.decodeIfPresent(String.self, forKey: .recentSlot)
@@ -79,14 +68,10 @@ public struct X402UptoExtra: Codable, Sendable, Equatable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(assetTransferMethod, forKey: .assetTransferMethod)
         try container.encodeIfPresent(tokenProgram, forKey: .tokenProgram)
-        try container.encode(facilitatorAddress, forKey: .facilitatorAddress)
-        // A zero fee is omitted from the wire; only a non-zero cut is emitted.
-        if facilitatorFee != 0 {
-            try container.encode(facilitatorFee, forKey: .facilitatorFee)
-        }
-        try container.encodeIfPresent(channelProgram, forKey: .channelProgram)
+        try container.encode(feePayer, forKey: .feePayer)
+        try container.encode(receiverAuthorizer, forKey: .receiverAuthorizer)
+        try container.encode(withdrawDelay, forKey: .withdrawDelay)
         try container.encodeIfPresent(recentBlockhash, forKey: .recentBlockhash)
         try container.encodeIfPresent(lastValidBlockHeight, forKey: .lastValidBlockHeight)
         try container.encodeIfPresent(recentSlot, forKey: .recentSlot)
@@ -239,14 +224,16 @@ public struct X402UptoPayload: Codable, Sendable, Equatable {
     public let expiresAt: Int
     /// Activation time (Unix seconds).
     public let validAfter: Int
-    /// Unique per-authorization identifier (opaque string).
+    /// Open salt (decimal string).
     public let nonce: String
     /// Channel PDA (base58).
     public let channelId: String
     /// On-chain escrow ceiling (base units); equals `maxAmount`.
     public let deposit: String
-    /// Voucher signer — the operator/facilitator key (base58).
+    /// Voucher signer — the receiver authorizer key (base58).
     public let authorizedSigner: String
+    /// Open slot seed (decimal string).
+    public let openSlot: String
     /// Base64 client-signed `open` transaction for the operator to co-sign and
     /// broadcast. Omitted from JSON when absent.
     public let openTransaction: String?
@@ -260,6 +247,7 @@ public struct X402UptoPayload: Codable, Sendable, Equatable {
         channelId: String,
         deposit: String,
         authorizedSigner: String,
+        openSlot: String,
         openTransaction: String?
     ) {
         self.from = from
@@ -270,12 +258,13 @@ public struct X402UptoPayload: Codable, Sendable, Equatable {
         self.channelId = channelId
         self.deposit = deposit
         self.authorizedSigner = authorizedSigner
+        self.openSlot = openSlot
         self.openTransaction = openTransaction
     }
 
     private enum CodingKeys: String, CodingKey {
         case from, maxAmount, expiresAt, validAfter, nonce, channelId
-        case deposit, authorizedSigner, openTransaction
+        case deposit, authorizedSigner, openSlot, openTransaction
     }
 
     public init(from decoder: Decoder) throws {
@@ -288,6 +277,7 @@ public struct X402UptoPayload: Codable, Sendable, Equatable {
         channelId = try container.decode(String.self, forKey: .channelId)
         deposit = try container.decode(String.self, forKey: .deposit)
         authorizedSigner = try container.decode(String.self, forKey: .authorizedSigner)
+        openSlot = try container.decode(String.self, forKey: .openSlot)
         openTransaction = try container.decodeIfPresent(String.self, forKey: .openTransaction)
     }
 
@@ -301,6 +291,7 @@ public struct X402UptoPayload: Codable, Sendable, Equatable {
         try container.encode(channelId, forKey: .channelId)
         try container.encode(deposit, forKey: .deposit)
         try container.encode(authorizedSigner, forKey: .authorizedSigner)
+        try container.encode(openSlot, forKey: .openSlot)
         try container.encodeIfPresent(openTransaction, forKey: .openTransaction)
     }
 }

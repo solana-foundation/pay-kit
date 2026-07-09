@@ -299,9 +299,8 @@ beforeAll(async () => {
     if (scenario.paymentMode === "push") {
       needsSolFunding = true;
     }
-    // x402-upto opens a payment-channel account. The operator pays the
-    // transaction fee, but the channel program debits rent and escrow ATA
-    // creation from the client payer account.
+    // x402-upto opens a payment-channel account. The fee payer sponsors the
+    // transaction fee and channel rent.
     if (scenario.intent === "x402-upto") {
       needsSolFunding = true;
     }
@@ -338,12 +337,7 @@ beforeAll(async () => {
     );
     surfnet.fundToken(client.publicKey, mintPubkey, 1_000_000, programAddress);
     surfnet.fundToken(payTo.publicKey, mintPubkey, 1, programAddress);
-    surfnet.fundToken(
-      x402UptoPayTo.publicKey,
-      mintPubkey,
-      1,
-      programAddress,
-    );
+    surfnet.fundToken(x402UptoPayTo.publicKey, mintPubkey, 1, programAddress);
   }
 
   splitRecipients = {
@@ -407,7 +401,10 @@ beforeAll(async () => {
       Array.from(surfnet.payerSecretKey),
     ),
     X402_HARNESS_UPTO_PAY_TO: x402UptoPayTo.publicKey,
-    X402_HARNESS_UPTO_FACILITATOR_SECRET_KEY: JSON.stringify(
+    X402_HARNESS_UPTO_FEE_PAYER_SECRET_KEY: JSON.stringify(
+      Array.from(x402UptoPayTo.secretKey),
+    ),
+    X402_HARNESS_UPTO_RECEIVER_AUTHORIZER_SECRET_KEY: JSON.stringify(
       Array.from(x402UptoPayTo.secretKey),
     ),
     PAYMENT_CHANNELS_PROGRAM_ID: PAYMENT_CHANNEL_PROGRAM,
@@ -906,8 +903,14 @@ function environmentForScenario(
     env.X402_HARNESS_SETTLEMENT_HEADER = scenario.settlementHeader;
     if (scenario.intent === "x402-upto") {
       env.X402_HARNESS_PAY_TO = env.X402_HARNESS_UPTO_PAY_TO;
+      env.X402_HARNESS_FEE_PAYER_SECRET_KEY =
+        env.X402_HARNESS_UPTO_FEE_PAYER_SECRET_KEY;
+      env.X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY =
+        env.X402_HARNESS_UPTO_RECEIVER_AUTHORIZER_SECRET_KEY;
+      // Legacy fallback for SDK harness servers that have not renamed this
+      // environment variable yet.
       env.X402_HARNESS_FACILITATOR_SECRET_KEY =
-        env.X402_HARNESS_UPTO_FACILITATOR_SECRET_KEY;
+        env.X402_HARNESS_UPTO_FEE_PAYER_SECRET_KEY;
     }
   } else if (scenario.intent === "session") {
     env.PAY_KIT_HARNESS_PROTOCOL = "session";
@@ -1089,8 +1092,13 @@ function expectPaymentChannelSettlement(
   if (actual === 0n) {
     [settle, createPayee, createTreasury, distribute] = message.instructions;
   } else {
-    const [verify, nonZeroSettle, nonZeroCreatePayee, nonZeroCreateTreasury, nonZeroDistribute] =
-      message.instructions;
+    const [
+      verify,
+      nonZeroSettle,
+      nonZeroCreatePayee,
+      nonZeroCreateTreasury,
+      nonZeroDistribute,
+    ] = message.instructions;
     expect(accountAt(message, verify.programAddressIndex)).toBe(
       ED25519_PROGRAM,
     );
@@ -1167,9 +1175,10 @@ function expectPaymentChannelSettlement(
     accountAt(message, distribute.accountIndices[8]),
     "token program",
   ).toBe(tokenProgram);
-  expect(accountAt(message, distribute.accountIndices[10]), "self program").toBe(
-    PAYMENT_CHANNEL_PROGRAM,
-  );
+  expect(
+    accountAt(message, distribute.accountIndices[10]),
+    "self program",
+  ).toBe(PAYMENT_CHANNEL_PROGRAM);
 }
 
 async function fetchTransactionBase64(

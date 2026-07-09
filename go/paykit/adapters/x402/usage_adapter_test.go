@@ -109,7 +109,7 @@ func TestNewUsageAdapter(t *testing.T) {
 	}
 }
 
-func TestUsageAdapterThreadsChannelProgramOverride(t *testing.T) {
+func TestUsageAdapterDoesNotAdvertiseChannelProgramOverride(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	program := solana.NewWallet().PublicKey()
 	cfg := paykit.Config{
@@ -129,8 +129,17 @@ func TestUsageAdapterThreadsChannelProgramOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal accepts entry: %v", err)
 	}
-	if !strings.Contains(string(raw), `"channelProgram":"`+program.String()+`"`) {
-		t.Fatalf("channelProgram override missing from accepts entry: %s", raw)
+	if strings.Contains(string(raw), "channelProgram") {
+		t.Fatalf("channelProgram must not be advertised in accepts entry: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"feePayer":"`+signer.PublicKey().String()+`"`) {
+		t.Fatalf("feePayer missing from accepts entry: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"receiverAuthorizer":"`+signer.PublicKey().String()+`"`) {
+		t.Fatalf("receiverAuthorizer missing from accepts entry: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"withdrawDelay":`) {
+		t.Fatalf("withdrawDelay missing from accepts entry: %s", raw)
 	}
 }
 
@@ -343,9 +352,10 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 			MaxAmount:        "1000000",
 			ExpiresAt:        time.Now().Add(time.Hour).Unix(),
 			ValidAfter:       0,
-			Nonce:            "n-1",
+			Nonce:            "7",
 			ChannelID:        channel.String(),
 			Deposit:          "1000000",
+			OpenSlot:         "55555",
 			AuthorizedSigner: operatorKey.PublicKey().String(),
 			OpenTransaction:  txBase64,
 		},

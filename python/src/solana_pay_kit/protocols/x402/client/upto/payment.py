@@ -1,10 +1,10 @@
 """x402 ``upto`` client builder - ``payment-channel`` asset transfer method.
 
 Parses an ``upto`` 402 challenge and builds the client authorization: a signed
-channel ``open`` transaction (the deposit is the ceiling, the operator is the
-fee payer and authorized signer) plus the ``PAYMENT-SIGNATURE`` envelope. The
-client signs only its own (payer) slot in the pull-style open; the facilitator
-completes the fee-payer signature and broadcasts. Mirrors the Go reference
+channel ``open`` transaction (the deposit is the ceiling) plus the
+``PAYMENT-SIGNATURE`` envelope. The client signs only its own (payer) slot in the
+pull-style open; the advertised fee payer completes the fee-payer signature and
+broadcasts. Mirrors the Go reference
 (``go/protocols/x402/client/upto.go``).
 """
 
@@ -30,7 +30,6 @@ from solana_pay_kit._paycore.paymentchannels import (
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
 from solana_pay_kit.protocols.x402.upto.types import (
-    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_SCHEME,
     UptoPayload,
     UptoRequirements,
@@ -45,10 +44,6 @@ __all__ = [
     "encode_upto_header",
     "build_upto_header",
 ]
-
-#: Default channel grace period (seconds) the client requests at open; mirrors
-#: the Go client's defaultGracePeriodSeconds.
-_DEFAULT_GRACE_PERIOD_SECONDS = 900
 
 _U64_MAX = (1 << 64) - 1
 
@@ -114,30 +109,30 @@ def build_upto_payload(
 ) -> UptoPayload:
     """Build the ``upto`` payload: a partially-signed channel ``open`` + metadata.
 
-    The client (``signer``) is the channel payer; the operator
-    (``extra.facilitatorAddress``) is the channel payee, fee payer, rent payer,
-    and authorized signer. The open transaction is built with the operator as fee
-    payer and signed only in the client's payer slot (pull-style); the operator
-    slot is left empty for the facilitator.
+    The client (``signer``) is the channel payer. ``extra.feePayer`` is the
+    transaction fee payer and rent payer; ``extra.receiverAuthorizer`` is the
+    channel payee and voucher signer. The open transaction is signed only in the
+    client's payer slot (pull-style); the fee-payer slot is completed server-side.
     """
     extra = requirements["extra"]
-    if extra.get("assetTransferMethod") != UPTO_ASSET_TRANSFER_METHOD:
-        raise ValueError("x402 client: requirement does not use the payment-channel asset transfer method")
-
     max_amount = int(requirements["amount"], 10)
     beneficiary = Pubkey.from_string(requirements["payTo"])
     mint = Pubkey.from_string(requirements["asset"])
-    operator_str = extra.get("facilitatorAddress")
-    if not operator_str:
-        raise ValueError("x402 client: requirement missing extra.facilitatorAddress")
-    operator = Pubkey.from_string(operator_str)
-    facilitator_fee = int(extra.get("facilitatorFee", 0))
-    if not 0 <= facilitator_fee <= 10_000:
-        raise ValueError("x402 client: facilitatorFee must be between 0 and 10000 basis points")
+    fee_payer_str = extra.get("feePayer")
+    if not fee_payer_str:
+        raise ValueError("x402 client: requirement missing extra.feePayer")
+    fee_payer = Pubkey.from_string(fee_payer_str)
+    receiver_authorizer_str = extra.get("receiverAuthorizer")
+    if not receiver_authorizer_str:
+        raise ValueError("x402 client: requirement missing extra.receiverAuthorizer")
+    receiver_authorizer = Pubkey.from_string(receiver_authorizer_str)
+    withdraw_delay = int(extra.get("withdrawDelay", 0))
+    if withdraw_delay <= 0:
+        raise ValueError("x402 client: requirement missing extra.withdrawDelay")
     recipients: list[Distribution] = []
-    if beneficiary != operator:
-        recipients.append(Distribution(recipient=beneficiary, bps=10_000 - facilitator_fee))
-    program_id = Pubkey.from_string(extra.get("channelProgram") or PAYMENT_CHANNELS_PROGRAM_ID)
+    if beneficiary != receiver_authorizer:
+        recipients.append(Distribution(recipient=beneficiary, bps=10_000))
+    program_id = Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID)
     token_program = Pubkey.from_string(extra.get("tokenProgram") or TOKEN_PROGRAM)
 
     blockhash_str = extra.get("recentBlockhash")
@@ -151,24 +146,24 @@ def build_upto_payload(
 
     payer = Pubkey.from_string(signer.pubkey())
     salt = secrets.randbits(64)
-    channel, _ = find_channel_pda(payer, operator, mint, operator, salt, open_slot, program_id)
+    channel, _ = find_channel_pda(payer, receiver_authorizer, mint, receiver_authorizer, salt, open_slot, program_id)
     open_ix = build_open_instruction(
         OpenChannelParams(
             payer=payer,
-            rent_payer=operator,
-            payee=operator,
+            rent_payer=fee_payer,
+            payee=receiver_authorizer,
             mint=mint,
-            authorized_signer=operator,
+            authorized_signer=receiver_authorizer,
             salt=salt,
             deposit=max_amount,
-            grace_period=_DEFAULT_GRACE_PERIOD_SECONDS,
+            grace_period=withdraw_delay,
             open_slot=open_slot,
             recipients=recipients,
             token_program=token_program,
             program_id=program_id,
         )
     )
-    open_tx = _build_payer_signed_open(open_ix, operator, payer, blockhash, signer)
+    open_tx = _build_payer_signed_open(open_ix, fee_payer, payer, blockhash, signer)
 
     valid_after = int(extra.get("validAfter", 0))
     payload: UptoPayload = {
@@ -176,10 +171,11 @@ def build_upto_payload(
         "maxAmount": str(max_amount),
         "expiresAt": expires_at,
         "validAfter": valid_after,
-        "nonce": nonce if nonce is not None else secrets.token_hex(16),
+        "nonce": str(salt),
         "channelId": str(channel),
         "deposit": str(max_amount),
-        "authorizedSigner": operator_str,
+        "authorizedSigner": receiver_authorizer_str,
+        "openSlot": str(open_slot),
         "openTransaction": open_tx,
     }
     return payload
@@ -209,14 +205,14 @@ def build_upto_header(
 
 def _build_payer_signed_open(
     open_ix: Any,
-    operator: Pubkey,
+    fee_payer: Pubkey,
     payer: Pubkey,
     blockhash: Hash,
     signer: LocalSigner,
 ) -> str:
-    """Assemble the open transaction with the operator as fee payer, signed only
+    """Assemble the open transaction with the advertised fee payer, signed only
     in the client's (payer) slot. Returns base64 wire."""
-    message = Message.new_with_blockhash([open_ix], operator, blockhash)
+    message = Message.new_with_blockhash([open_ix], fee_payer, blockhash)
     account_keys = list(message.account_keys)
     num_required = int(message.header.num_required_signatures)
     try:

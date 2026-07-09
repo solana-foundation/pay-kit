@@ -6,7 +6,6 @@ import com.solana.paykit.paycore.Programs
 import com.solana.paykit.paycore.PublicKey
 import com.solana.paykit.paycore.SolanaSigner
 import com.solana.paykit.protocols.x402.X402_VERSION
-import com.solana.paykit.protocols.x402.upto.UPTO_ASSET_TRANSFER_METHOD
 import com.solana.paykit.protocols.x402.upto.UPTO_SCHEME
 import com.solana.paykit.protocols.x402.upto.UptoPayload
 import com.solana.paykit.protocols.x402.upto.UptoRequirements
@@ -18,7 +17,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.security.SecureRandom
 import java.util.Base64
 
 /**
@@ -26,10 +24,10 @@ import java.util.Base64
  * parsing and authorization building.
  *
  * The client opens a channel whose deposit is the authorized maximum, with the
- * operator (``extra.facilitatorAddress``) as payee, authorized signer, fee
- * payer, and rent payer, so the operator can settle the metered amount with a
- * single voucher. The client signs only its payer slot of the ``open``
- * transaction; the operator co-signs the fee-payer slot and broadcasts. The
+ * advertised receiver authorizer as payee/authorized signer and the advertised
+ * fee payer as transaction/rent payer. The client signs only its payer slot of
+ * the ``open`` transaction; the server co-signs the fee-payer slot and
+ * broadcasts. The
  * client never signs a voucher and never needs SOL.
  *
  * The envelope is the canonical x402 v2 shape ``{ x402Version, accepted,
@@ -38,9 +36,6 @@ import java.util.Base64
  * carried in the ``Payment-Signature`` header.
  */
 
-/** Nonce length in bytes when the caller passes no explicit nonce. */
-private const val NONCE_BYTES = 16
-
 /** Header carrying the 402 challenge. */
 private const val PAYMENT_REQUIRED_HEADER = "payment-required"
 
@@ -48,24 +43,6 @@ private val json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = false
     explicitNulls = false
-}
-
-/**
- * Process-wide secure RNG used to mint the default per-authorization nonce.
- * [SecureRandom] is thread-safe.
- */
-private val secureRandom = SecureRandom()
-
-/**
- * Default nonce: 16 secure-random bytes hex-encoded to a 32-character string.
- *
- * The nonce is an opaque payload identifier and is independent of the channel
- * salt, which [PaymentChannels.uniqueSalt] mints separately.
- */
-private fun randomNonceHex(): String {
-    val bytes = ByteArray(NONCE_BYTES)
-    secureRandom.nextBytes(bytes)
-    return bytes.joinToString("") { "%02x".format(it) }
 }
 
 // ── Challenge parsing ─────────────────────────────────────────────────────────
@@ -145,12 +122,12 @@ private fun acceptsFrom(text: String): List<UptoRequirements>? {
 /**
  * Builds an ``upto`` payload for a payment-channel requirement.
  *
- * [expiresAt] is the voucher/authorization deadline (Unix seconds); [nonce]
- * uniquely identifies this authorization (default: a random 32-character hex
- * string, independent of the channel salt). [saltProvider] mints the channel
- * salt (default: a random u64); it is injectable so deterministic tests can pin
- * it. The requirement MUST carry ``extra.recentBlockhash`` and
- * ``extra.recentSlot`` (the operator prefetches both into the 402 challenge);
+ * [expiresAt] is the voucher/authorization deadline (Unix seconds); [nonce] is
+ * kept for source compatibility but ignored because the payload nonce is the
+ * channel salt decimal string. [saltProvider] mints the channel salt (default:
+ * a random u64); it is injectable so deterministic tests can pin it. The
+ * requirement MUST carry ``extra.recentBlockhash`` and
+ * ``extra.recentSlot`` (the server prefetches both into the 402 challenge);
  * ``recentSlot`` becomes the program's ``open_slot`` channel PDA seed and the
  * program rejects future slots and slots older than the 1500-slot open window.
  */
@@ -162,39 +139,30 @@ fun buildUptoPayload(
     saltProvider: () -> ULong = PaymentChannels::uniqueSalt,
 ): UptoPayload {
     val extra = requirements.extra
-    if (extra.assetTransferMethod != UPTO_ASSET_TRANSFER_METHOD) {
-        throw IllegalArgumentException(
-            "x402 client: requirement does not use the payment-channel asset transfer method",
-        )
-    }
 
     val max = requirements.amount.toULongOrNull()
         ?: throw IllegalArgumentException("x402 client: invalid upto amount: ${requirements.amount}")
 
     val mint = parsePubkey(requirements.asset, "asset mint")
 
-    val operatorStr = extra.facilitatorAddress
-        ?: throw IllegalArgumentException("x402 client: requirement missing extra.facilitatorAddress")
-    val operator = parsePubkey(operatorStr, "facilitatorAddress")
+    val feePayerStr = extra.feePayer
+        ?: throw IllegalArgumentException("x402 client: requirement missing extra.feePayer")
+    val feePayer = parsePubkey(feePayerStr, "feePayer")
+    val receiverAuthorizerStr = extra.receiverAuthorizer
+        ?: throw IllegalArgumentException("x402 client: requirement missing extra.receiverAuthorizer")
+    val receiverAuthorizer = parsePubkey(receiverAuthorizerStr, "receiverAuthorizer")
+    if (extra.withdrawDelay <= 0) {
+        throw IllegalArgumentException("x402 client: requirement missing extra.withdrawDelay")
+    }
     val beneficiary = parsePubkey(requirements.payTo, "payTo")
 
-    val fee = extra.facilitatorFee
-    if (fee !in 0..10_000) {
-        throw IllegalArgumentException(
-            "x402 client: facilitatorFee must be between 0 and 10000 basis points",
-        )
-    }
-    // The channel payee is the operator (the program requires payee == settle
-    // signer), so the beneficiary is paid via a derived distribution split.
-    // When the beneficiary IS the operator no split is needed: it keeps 100%.
-    val recipients = if (beneficiary == operator) {
+    val recipients = if (beneficiary == receiverAuthorizer) {
         emptyList()
     } else {
-        listOf(PaymentChannels.Distribution(recipient = beneficiary, bps = 10_000 - fee))
+        listOf(PaymentChannels.Distribution(recipient = beneficiary, bps = 10_000))
     }
 
-    val programId = extra.channelProgram?.let { parsePubkey(it, "channelProgram") }
-        ?: PublicKey.fromBase58(PaymentChannels.PROGRAM_ID)
+    val programId = PublicKey.fromBase58(PaymentChannels.PROGRAM_ID)
     val tokenProgram = extra.tokenProgram?.let { parsePubkey(it, "tokenProgram") }
         ?: PublicKey.fromBase58(Programs.TOKEN_PROGRAM)
 
@@ -205,21 +173,21 @@ fun buildUptoPayload(
     val openSlot = extra.recentSlot
         ?: throw IllegalArgumentException("x402 client: requirement missing extra.recentSlot")
 
-    // The channel salt is an independent random u64, NOT the payload nonce.
+    // The channel salt is also the payload nonce, encoded as decimal.
     val salt = saltProvider()
     val open = PaymentChannels.buildOpenTransaction(
         payer = signer,
-        payee = operator,
+        payee = receiverAuthorizer,
         mint = mint,
-        authorizedSigner = operator,
+        authorizedSigner = receiverAuthorizer,
         salt = salt,
         deposit = max,
-        gracePeriod = PaymentChannels.DEFAULT_GRACE_PERIOD_SECONDS,
+        gracePeriod = extra.withdrawDelay.toUInt(),
         openSlot = openSlot,
         recipients = recipients,
         tokenProgram = tokenProgram,
         programId = programId,
-        feePayer = operator,
+        feePayer = feePayer,
         recentBlockhash = blockhash,
     )
 
@@ -228,10 +196,11 @@ fun buildUptoPayload(
         maxAmount = max.toString(),
         expiresAt = expiresAt,
         validAfter = extra.validAfter ?: 0L,
-        nonce = nonce ?: randomNonceHex(),
+        nonce = salt.toString(),
         channelId = open.channelId.toBase58(),
         deposit = max.toString(),
-        authorizedSigner = operatorStr,
+        authorizedSigner = receiverAuthorizerStr,
+        openSlot = openSlot.toString(),
         openTransaction = open.transaction,
     )
 }
