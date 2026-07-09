@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 func newHTMLTestMpp(t *testing.T) *Mpp {
@@ -15,6 +17,7 @@ func newHTMLTestMpp(t *testing.T) *Mpp {
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		Network:   "devnet",
 		HTML:      true,
+		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -126,6 +129,7 @@ func TestHTMLEnabled(t *testing.T) {
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
 		Network:   "devnet",
 		HTML:      false,
+		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)

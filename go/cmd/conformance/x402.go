@@ -144,8 +144,8 @@ func rejectedX402Exact(id string, err error) RunnerResult {
 
 // verifyX402ExactTransaction drives the real Go exact structural verifier
 // (x402.VerifyExactTransaction) over the signed transaction. It decodes the
-// pinned base64 transaction and parses the advertised requirement plus the
-// managed fee payer, defaulting the token program to the SPL Token program,
+// pinned base64 transaction and parses the advertised requirement plus every
+// managed signer, defaulting the token program to the SPL Token program,
 // exactly as the shared harness reference (harness/src/conformance/x402.ts).
 func verifyX402ExactTransaction(vector Vector) error {
 	in := vector.Input
@@ -187,18 +187,22 @@ func verifyX402ExactTransaction(vector Vector) error {
 	if err != nil {
 		return fmt.Errorf("invalid payload: x402ExactRequirement.extra.tokenProgram: %w", err)
 	}
-	feePayer, err := solana.PublicKeyFromBase58(in.X402ExactManagedSigners[0])
-	if err != nil {
-		return fmt.Errorf("invalid payload: x402ExactManagedSigners[0]: %w", err)
+	managedSigners := make([]solana.PublicKey, len(in.X402ExactManagedSigners))
+	for i, encoded := range in.X402ExactManagedSigners {
+		managed, err := solana.PublicKeyFromBase58(encoded)
+		if err != nil {
+			return fmt.Errorf("invalid payload: x402ExactManagedSigners[%d]: %w", i, err)
+		}
+		managedSigners[i] = managed
 	}
 
 	return x402.VerifyExactTransaction(tx, x402.TransferRequirements{
-		PayTo:        payTo,
-		Mint:         mint,
-		TokenProgram: tokenProgramKey,
-		Amount:       amount,
-		FeePayer:     feePayer,
-		ExpectedMemo: reqIn.Extra.Memo,
+		PayTo:          payTo,
+		Mint:           mint,
+		TokenProgram:   tokenProgramKey,
+		Amount:         amount,
+		ManagedSigners: managedSigners,
+		ExpectedMemo:   reqIn.Extra.Memo,
 	})
 }
 

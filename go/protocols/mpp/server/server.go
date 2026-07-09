@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	secretKeyEnvVar = "MPP_SECRET_KEY"
-	consumedPrefix  = "solana-charge:consumed:"
+	secretKeyEnvVar                = "MPP_SECRET_KEY"
+	allowInMemoryReplayStoreEnvVar = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
+	consumedPrefix                 = "solana-charge:consumed:"
 
 	// minSecretKeyBytes is the minimum length of the HMAC-SHA256 secret
 	// that binds challenge IDs. 32 bytes matches NIST SP 800-107 guidance
@@ -70,8 +71,11 @@ type Config struct {
 	Realm          string
 	HTML           bool
 	FeePayerSigner solanatx.Signer
-	Store          core.Store
-	RPC            solanatx.RPCClient
+	// Store holds replay markers. It is required outside localnet unless
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly permits the
+	// process-local development store.
+	Store core.Store
+	RPC   solanatx.RPCClient
 
 	// AcceptPushMode opts in to accepting type="signature" (push mode)
 	// credentials, where the client broadcasts the transaction itself and
@@ -155,6 +159,14 @@ func New(config Config) (*Mpp, error) {
 		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid network", err)
 	}
 	config.Network = string(canonicalNetwork)
+	if config.Store == nil {
+		if canonicalNetwork != paycore.NetworkLocalnet && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
+			return nil, core.NewError(core.ErrCodeInvalidConfig,
+				fmt.Sprintf("no shared replay store configured for %s; configure Store or set %s=1 to allow a process-local development store",
+					config.Network, allowInMemoryReplayStoreEnvVar))
+		}
+		config.Store = core.NewMemoryStore()
+	}
 	// Derive a per-recipient default realm when none is configured (and reject
 	// an explicitly-empty realm). A shared literal default would let two
 	// servers sharing MPP_SECRET_KEY participate in one credential namespace.
@@ -167,9 +179,6 @@ func New(config Config) (*Mpp, error) {
 	}
 	if config.RPC == nil {
 		config.RPC = rpc.New(rpcURL)
-	}
-	if config.Store == nil {
-		config.Store = core.NewMemoryStore()
 	}
 	// Resolve the token program once at boot. Known stablecoins answer from
 	// the static table; an arbitrary mint address is looked up on-chain and

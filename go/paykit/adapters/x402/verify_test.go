@@ -81,7 +81,9 @@ func newFixture(t *testing.T) fixture {
 			Mint:         mint,
 			TokenProgram: tokenProgram,
 			Amount:       amount,
-			FeePayer:     feePayer,
+			ManagedSigners: []solana.PublicKey{
+				feePayer,
+			},
 		},
 	}
 }
@@ -238,7 +240,7 @@ func TestVerifyRejectsWrongDestination(t *testing.T) {
 
 func TestVerifyRejectsFeePayerAsAuthority(t *testing.T) {
 	f := newFixture(t)
-	f.keys[4] = f.req.FeePayer // fee-payer moving the funds
+	f.keys[4] = f.req.ManagedSigners[0] // fee-payer moving the funds
 	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when fee-payer is the transfer authority")
 	}
@@ -628,6 +630,36 @@ func TestCosignPassthroughWhenOperatorAbsent(t *testing.T) {
 	}
 	if !bytes.Equal(out, raw) {
 		t.Error("cosign should pass the wire through untouched when the operator is not a missing signer")
+	}
+}
+
+func TestCosignDoesNotSignOperatorInLaterSignerSlot(t *testing.T) {
+	a, _, _ := settleFixture(t, &fakeRPC{})
+	operator := solana.MustPublicKeyFromBase58(string(a.signer.Pubkey()))
+	payer := testutil.NewPrivateKey().PublicKey()
+	memo := solana.NewInstruction(
+		solana.MemoProgramID,
+		solana.AccountMetaSlice{solana.Meta(operator).SIGNER()},
+		[]byte("hi"),
+	)
+	bh := solana.MustHashFromBase58(testutil.NewPrivateKey().PublicKey().String())
+	tx, err := solana.NewTransaction([]solana.Instruction{memo}, bh, solana.TransactionPayer(payer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.Message.AccountKeys) < 2 || !tx.Message.AccountKeys[1].Equals(operator) {
+		t.Fatalf("expected operator in later signer slot, got %v", tx.Message.AccountKeys)
+	}
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := a.cosign(context.Background(), tx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out, raw) {
+		t.Error("cosign must not sign an operator key outside fee-payer slot 0")
 	}
 }
 
