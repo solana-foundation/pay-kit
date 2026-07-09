@@ -302,8 +302,8 @@ export function session(parameters: session.Parameters) {
                         challengeId: cred.challenge.id,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
-                        programId: resolvedProgramId,
                         payload: cred.payload,
+                        programId: resolvedProgramId,
                         rpc,
                         store,
                     });
@@ -707,13 +707,13 @@ interface HandleTopUpArgs {
     readonly challengeId: string | undefined;
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
-    readonly programId: Address;
     readonly payload: {
         readonly action: 'topUp';
         readonly channelId: string;
         readonly newDeposit: string;
         readonly signature: string;
     };
+    readonly programId: Address;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
 }
