@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	solana "github.com/solana-foundation/solana-go/v2"
 
@@ -139,8 +138,6 @@ func rejectedX402Exact(id string, err error) RunnerResult {
 	var verifyErr *x402.VerifyError
 	if errors.As(err, &verifyErr) {
 		result.X402ExactRejectCode = verifyErr.Code
-	} else if strings.HasPrefix(result.Error, "invalid_exact_svm_payload_") {
-		result.X402ExactRejectCode = result.Error
 	}
 	return result
 }

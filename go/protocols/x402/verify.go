@@ -212,7 +212,12 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 			"transfer authority or source is the fee-payer")
 	}
 	feePayerATA, err := solanatx.FindAssociatedTokenAddressWithProgram(req.FeePayer, mint, prog)
-	if err == nil && source.Equals(feePayerATA) {
+	if err != nil {
+		// Fail closed on a security-critical derivation rather than skipping
+		// the ATA check, mirroring the recipient-ATA derivation below.
+		return fmt.Errorf("x402: derive fee-payer ATA: %w", err)
+	}
+	if source.Equals(feePayerATA) {
 		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
 			"transfer source is the fee-payer's ATA for the mint")
 	}
