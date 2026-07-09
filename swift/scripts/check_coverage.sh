@@ -36,18 +36,30 @@ fi
 
 awk -v threshold="$threshold" '
   /^SF:/ {
+    file = substr($0, 4)
     shipped = ($0 ~ /(^|\/)swift\/Sources\//)
+    file_lines = 0
+    file_covered = 0
     next
   }
   /^LF:/ && shipped {
     split($0, parts, ":")
     lines += parts[2]
+    file_lines += parts[2]
     saw_lines = 1
     next
   }
   /^LH:/ && shipped {
     split($0, parts, ":")
     covered += parts[2]
+    file_covered += parts[2]
+    next
+  }
+  /^end_of_record/ && shipped {
+    if (file_lines > 0) {
+      printf("Swift source coverage: %.2f%% %s\n", 100 * file_covered / file_lines, file)
+    }
+    shipped = 0
   }
   END {
     if (!saw_lines || lines <= 0) {
