@@ -1,0 +1,47 @@
+[
+  {
+    "tag": "below-min-delta",
+    "reason": "below-min-delta",
+    "description": "The voucher delta is below the configured minimum."
+  },
+  {
+    "tag": "channel-close-pending",
+    "reason": "channel-close-pending",
+    "description": "A cooperative close was already requested; no further vouchers are accepted."
+  },
+  {
+    "tag": "channel-finalized",
+    "reason": "channel-finalized",
+    "description": "The channel is already finalized on-chain."
+  },
+  {
+    "tag": "cumulative-not-monotonic",
+    "reason": "cumulative-not-monotonic",
+    "description": "The voucher cumulative does not strictly exceed the watermark."
+  },
+  {
+    "tag": "exceeds-deposit",
+    "reason": "exceeds-deposit",
+    "description": "The voucher cumulative exceeds the deposit cap."
+  },
+  {
+    "tag": "expired",
+    "reason": "expired",
+    "description": "A non-zero voucher expiry is not in the future."
+  },
+  {
+    "tag": "expires-within-settlement-window",
+    "reason": "expires-within-settlement-window",
+    "description": "A non-zero voucher expiry is in the future but does not outlast the settlement window, so the async settle transaction could be rejected on-chain after the server has served."
+  },
+  {
+    "tag": "invalid-cumulative",
+    "reason": "invalid-cumulative",
+    "description": "The voucher cumulative does not parse as a canonical u64."
+  },
+  {
+    "tag": "invalid-signature",
+    "reason": "invalid-signature",
+    "description": "The Ed25519 signature check failed."
+  }
+]

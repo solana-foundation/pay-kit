@@ -58,7 +58,10 @@ if (!fs.existsSync(path.join(cacheDir, 'package.json'))) {
     run('git', ['clone', '--quiet', CODAMA_PY_REPO, cacheDir], __dirname);
 }
 run('git', ['checkout', '--quiet', CODAMA_PY_COMMIT], cacheDir);
-run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--silent'], cacheDir);
+// --ignore-workspace: the clone lives inside this codegen package's own pnpm
+// workspace, and without the flag pnpm hoists the install to the codegen root
+// instead of materializing .codama-py/node_modules.
+run('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-workspace', '--silent'], cacheDir);
 
 console.log(`[codegen] Rendering Python client from ${path.relative(repoRoot, idlPath)}`);
 console.log(`[codegen]   → ${path.relative(repoRoot, pyClientDir)}/`);

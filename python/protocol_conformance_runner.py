@@ -273,9 +273,12 @@ def main() -> int:
     try:
         request = json.loads(raw)
     except Exception as exc:  # noqa: BLE001
-        sys.stdout.write(json.dumps(_fail(f"invalid request JSON: {exc}", "unknown_error")))
+        response = _fail(f"invalid request JSON: {exc}", "unknown_error")
+        response["language"] = "python"
+        sys.stdout.write(json.dumps(response))
         return 1
     response = dispatch(request)
+    response["language"] = "python"
     sys.stdout.write(json.dumps(response))
     return 0
 

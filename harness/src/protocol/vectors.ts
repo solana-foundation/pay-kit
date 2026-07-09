@@ -9,22 +9,30 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { assertJsonResourceBudget } from "../conformance/schema";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const VECTORS_DIR = join(here, "..", "..", "vectors", "mpp-protocol");
+const MAX_PROTOCOL_VECTOR_FILE_BYTES = 2_000_000;
+const MAX_CONSTRUCTED_WIRE_REPEAT_COUNT = 100_000;
+const MAX_MATERIALIZED_WIRE_LENGTH = 1_000_000;
+const MAX_PROTOCOL_SCENARIOS_PER_FILE = 5_000;
 
 // Canonical adapter-ABI operation identifiers. These match
 // `conformance/operations.json` in mpp-tools verbatim.
-export type ProtocolOperation =
-  | "challenge.parse"
-  | "challenge.format"
-  | "credential.parse"
-  | "credential.format"
-  | "receipt.parse"
-  | "receipt.format"
-  | "base64url.encode"
-  | "base64url.decode"
-  | "challenge.id";
+export const PROTOCOL_OPERATIONS = [
+  "challenge.parse",
+  "challenge.format",
+  "credential.parse",
+  "credential.format",
+  "receipt.parse",
+  "receipt.format",
+  "base64url.encode",
+  "base64url.decode",
+  "challenge.id",
+] as const;
+
+export type ProtocolOperation = (typeof PROTOCOL_OPERATIONS)[number];
 
 // Comparison discipline per operation, taken from operations.json:
 //   exact    -> result string/object must equal the golden byte-for-byte
@@ -85,6 +93,20 @@ export function materializeWire(wire: string | ConstructedWire): string {
   const repeat = wire.repeat ?? "";
   const count = wire.count ?? 0;
   const suffix = wire.suffix ?? "";
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error(`resource-bound: constructed wire repeat count must be a non-negative safe integer`);
+  }
+  if (count > MAX_CONSTRUCTED_WIRE_REPEAT_COUNT) {
+    throw new Error(
+      `resource-bound: constructed wire repeat count ${count} exceeds ${MAX_CONSTRUCTED_WIRE_REPEAT_COUNT}`,
+    );
+  }
+  const length = prefix.length + repeat.length * count + suffix.length;
+  if (length > MAX_MATERIALIZED_WIRE_LENGTH) {
+    throw new Error(
+      `resource-bound: constructed wire materialized length ${length} exceeds ${MAX_MATERIALIZED_WIRE_LENGTH}`,
+    );
+  }
   return `${prefix}${repeat.repeat(count)}${suffix}`;
 }
 
@@ -141,7 +163,23 @@ type VectorFile<S> = {
 };
 
 function load<S>(file: string): VectorFile<S> {
-  return JSON.parse(readFileSync(join(VECTORS_DIR, file), "utf8")) as VectorFile<S>;
+  const text = readFileSync(join(VECTORS_DIR, file), "utf8");
+  if (Buffer.byteLength(text, "utf8") > MAX_PROTOCOL_VECTOR_FILE_BYTES) {
+    throw new Error(
+      `resource-bound: ${file} exceeds ${MAX_PROTOCOL_VECTOR_FILE_BYTES} bytes`,
+    );
+  }
+  const parsed = JSON.parse(text) as VectorFile<S>;
+  assertJsonResourceBudget(parsed, file);
+  if (!Array.isArray(parsed.scenarios)) {
+    throw new Error(`protocol vector ${file} must contain a scenarios array`);
+  }
+  if (parsed.scenarios.length > MAX_PROTOCOL_SCENARIOS_PER_FILE) {
+    throw new Error(
+      `resource-bound: ${file} scenario count ${parsed.scenarios.length} exceeds ${MAX_PROTOCOL_SCENARIOS_PER_FILE}`,
+    );
+  }
+  return parsed;
 }
 
 export function loadWwwAuthenticate(): VectorFile<HeaderScenario> {

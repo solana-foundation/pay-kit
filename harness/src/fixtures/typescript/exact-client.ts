@@ -102,45 +102,38 @@ async function readResponseBody(response: Response): Promise<unknown> {
 
 async function main() {
   const env = readX402ClientEnvironment();
+  const resubmitUrl = process.env.MPP_HARNESS_RESUBMIT_URL;
+  if (resubmitUrl) {
+    await runResubmitFlow(env.targetUrl, resubmitUrl, env);
+    return;
+  }
 
-  const firstResponse = await fetch(env.targetUrl);
+  const paidResponse = process.env.MPP_HARNESS_REPLAY_SOURCE_PATH
+    ? await runCrossRouteReplay(env.targetUrl, env)
+    : await payTarget(env.targetUrl, env);
+
+  await reportResult(paidResponse, env.settlementHeader);
+}
+
+async function buildCredentialHeader(
+  targetUrl: string,
+  env: ReturnType<typeof readX402ClientEnvironment>,
+): Promise<string> {
+  const firstResponse = await fetch(targetUrl);
   const envelope = decodePaymentRequired(
     firstResponse.headers.get(PAYMENT_REQUIRED_HEADER),
   );
 
   if (!envelope) {
-    console.log(
-      JSON.stringify({
-        type: "result",
-        implementation: "typescript",
-        role: "client",
-        ok: false,
-        status: firstResponse.status,
-        responseHeaders: Object.fromEntries(firstResponse.headers.entries()),
-        responseBody: await readResponseBody(firstResponse),
-        settlement: null,
-        error: "missing or unparseable PAYMENT-REQUIRED header",
-      }),
+    throw new Error(
+      `missing or unparseable PAYMENT-REQUIRED header (status ${firstResponse.status}): ` +
+        JSON.stringify(await readResponseBody(firstResponse)),
     );
-    return;
   }
 
   const offer = pickOffer(envelope, env.preferredCurrencies, env.network);
   if (!offer) {
-    console.log(
-      JSON.stringify({
-        type: "result",
-        implementation: "typescript",
-        role: "client",
-        ok: false,
-        status: firstResponse.status,
-        responseHeaders: Object.fromEntries(firstResponse.headers.entries()),
-        responseBody: await readResponseBody(firstResponse),
-        settlement: null,
-        error: `no offer matched network ${env.network}`,
-      }),
-    );
-    return;
+    throw new Error(`no offer matched network ${env.network}`);
   }
 
   // Credential payload mirrors the canonical x402 `exact` shape: an
@@ -180,30 +173,100 @@ async function main() {
     },
     resource: offer.resource ?? envelope.resource,
   };
-  const credentialHeader = Buffer.from(JSON.stringify(credential), "utf8").toString(
+  return Buffer.from(JSON.stringify(credential), "utf8").toString(
     "base64",
   );
+}
 
-  const paidResponse = await fetch(env.targetUrl, {
+async function payTarget(
+  targetUrl: string,
+  env: ReturnType<typeof readX402ClientEnvironment>,
+): Promise<Response> {
+  const credentialHeader = await buildCredentialHeader(targetUrl, env);
+  const paidResponse = await fetch(targetUrl, {
     headers: { [PAYMENT_SIGNATURE_HEADER]: credentialHeader },
   });
+  return withSentHeader(paidResponse, credentialHeader);
+}
 
-  const responseHeaders = Object.fromEntries(paidResponse.headers.entries());
-  // Echo the credential the client sent so the harness can replay it in
-  // cross-server portability + idempotent-resubmit scenarios. The credential
-  // is a request header so it is never reflected in the response on its own.
-  responseHeaders[`${PAYMENT_SIGNATURE_HEADER}-sent`] = credentialHeader;
+async function runCrossRouteReplay(
+  targetUrl: string,
+  env: ReturnType<typeof readX402ClientEnvironment>,
+): Promise<Response> {
+  const replaySourcePath = process.env.MPP_HARNESS_REPLAY_SOURCE_PATH;
+  if (!replaySourcePath) {
+    throw new Error("MPP_HARNESS_REPLAY_SOURCE_PATH is required");
+  }
+
+  const sourceUrl = new URL(replaySourcePath, targetUrl).toString();
+  const credentialHeader = await buildCredentialHeader(sourceUrl, env);
+  const replayResponse = await fetch(targetUrl, {
+    headers: { [PAYMENT_SIGNATURE_HEADER]: credentialHeader },
+  });
+  return withSentHeader(replayResponse, credentialHeader);
+}
+
+async function runResubmitFlow(
+  targetUrl: string,
+  resubmitUrl: string,
+  env: ReturnType<typeof readX402ClientEnvironment>,
+): Promise<void> {
+  const credentialHeader = await buildCredentialHeader(targetUrl, env);
+
+  const firstResponse = await fetch(targetUrl, {
+    headers: { [PAYMENT_SIGNATURE_HEADER]: credentialHeader },
+  });
+  const firstBody = await readResponseBody(firstResponse);
+
+  const secondResponse = await fetch(resubmitUrl, {
+    headers: { [PAYMENT_SIGNATURE_HEADER]: credentialHeader },
+  });
+  const secondHeaders = Object.fromEntries(secondResponse.headers.entries());
+  secondHeaders[`${PAYMENT_SIGNATURE_HEADER}-sent`] = credentialHeader;
 
   console.log(
     JSON.stringify({
       type: "result",
       implementation: "typescript",
       role: "client",
-      ok: paidResponse.ok,
-      status: paidResponse.status,
-      responseHeaders,
-      responseBody: await readResponseBody(paidResponse),
-      settlement: paidResponse.headers.get(env.settlementHeader),
+      ok: secondResponse.ok,
+      status: secondResponse.status,
+      responseHeaders: secondHeaders,
+      responseBody: await readResponseBody(secondResponse),
+      settlement: secondResponse.headers.get(env.settlementHeader),
+      firstStatus: firstResponse.status,
+      firstBody,
+    }),
+  );
+}
+
+function withSentHeader(response: Response, credentialHeader: string): Response {
+  const headers = new Headers(response.headers);
+  // Echo the credential the client sent so the harness can replay it in
+  // cross-server portability + idempotent-resubmit scenarios. The credential
+  // is a request header so it is never reflected in the response on its own.
+  headers.set(`${PAYMENT_SIGNATURE_HEADER}-sent`, credentialHeader);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+async function reportResult(
+  response: Response,
+  settlementHeader: string,
+): Promise<void> {
+  console.log(
+    JSON.stringify({
+      type: "result",
+      implementation: "typescript",
+      role: "client",
+      ok: response.ok,
+      status: response.status,
+      responseHeaders: Object.fromEntries(response.headers.entries()),
+      responseBody: await readResponseBody(response),
+      settlement: response.headers.get(settlementHeader),
     }),
   );
 }

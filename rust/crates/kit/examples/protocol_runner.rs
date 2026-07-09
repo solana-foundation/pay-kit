@@ -382,9 +382,9 @@ fn opt_str(obj: &Map<String, Value>, key: &str) -> Option<String> {
 
 fn emit(outcome: Outcome) {
     let value = match outcome {
-        Outcome::Ok(result) => json!({ "success": true, "result": result }),
+        Outcome::Ok(result) => json!({ "language": "rust", "success": true, "result": result }),
         Outcome::Err(error, error_type) => {
-            json!({ "success": false, "error": error, "error_type": error_type })
+            json!({ "language": "rust", "success": false, "error": error, "error_type": error_type })
         }
     };
     println!("{value}");

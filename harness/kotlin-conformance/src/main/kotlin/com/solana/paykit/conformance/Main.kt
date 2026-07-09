@@ -38,6 +38,7 @@ private data class ExactBytes(val bytes: List<Int>? = null, val base64Url: Strin
 
 @Serializable
 private data class RunnerResult(
+    val language: String = "kotlin",
     val id: String,
     val outcome: String,
     val exactBytes: ExactBytes? = null,
@@ -64,17 +65,17 @@ fun main() {
 private fun runVector(vector: Vector): RunnerResult {
     if (vector.mode != "canonical-bytes") {
         return RunnerResult(
-            vector.id, "reject",
+            id = vector.id, outcome = "reject",
             error = "unsupported-mode: kotlin conformance runner only implements canonical-bytes session vectors",
         )
     }
     val preimage = vector.input.voucherPreimage
         ?: return RunnerResult(
-            vector.id, "reject",
+            id = vector.id, outcome = "reject",
             error = "kotlin conformance runner only supports the session voucherPreimage canonical-bytes vector",
         )
     val cumulative = preimage.cumulativeAmount.toULongOrNull()
-        ?: return RunnerResult(vector.id, "reject", error = "invalid cumulativeAmount ${preimage.cumulativeAmount}")
+        ?: return RunnerResult(id = vector.id, outcome = "reject", error = "invalid cumulativeAmount ${preimage.cumulativeAmount}")
 
     // Drive the real SDK encoder so the byte assertion exercises the same path
     // the session voucher signer uses.

@@ -1,0 +1,9 @@
+# Dependency overrides for the single-package harness. pnpm v10 reads them
+# from THIS file only; it no longer reads package.json's `pnpm` field, so the
+# security pin below has to live here to actually take effect.
+#
+# `ws` reaches the harness transitively via @solana/kit >
+# @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket
+# (GHSA-58qx-3vcg-4xpx, uninitialized memory disclosure, patched in 8.20.1).
+overrides:
+  ws: '^8.20.1'

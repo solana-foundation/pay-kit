@@ -323,6 +323,8 @@ type ExactBytes struct {
 type RunnerResult struct {
 	// ID echoes the vector's id so the harness can pair result to vector.
 	ID string `json:"id"`
+	// Language proves the spawned process identity against the manifest.
+	Language string `json:"language"`
 	// Outcome is "accept" or "reject".
 	Outcome string `json:"outcome"`
 	// TransactionShape is the decoded semantic shape for accepted MPP
@@ -440,6 +442,7 @@ func run() error {
 	}
 
 	result := runVector(vector)
+	result.Language = "go"
 	out, err := json.Marshal(result)
 	if err != nil {
 		return err

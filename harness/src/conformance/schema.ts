@@ -11,7 +11,16 @@
 //
 // See harness/vectors/README.md for authoring guidance.
 
-export type VectorMode = "build-transaction" | "verify-transaction" | "canonical-bytes";
+export type VectorMode =
+  | "build-transaction"
+  | "verify-transaction"
+  | "canonical-bytes"
+  // x402-exact only: decode the base64 versioned transaction in
+  // `input.transaction` and run the SDK's REAL 11-rule exact verifier over it
+  // (NOT the envelope oracle). The oracle is the exact canonical
+  // `invalid_exact_svm_payload_*` reject string, byte-identical to the Rust
+  // spine, so the six hand-rolled fund-safety verifiers cannot drift.
+  | "verify-x402-transaction";
 
 export type VectorOutcome = "accept" | "reject";
 
@@ -175,6 +184,11 @@ export type VectorExpect = {
   // no-matching-transfer fallback) is flagged. Runners map their native
   // error taxonomy onto this shared vocabulary.
   rejectCode?: RejectCode;
+  // verify-x402-transaction reject vectors: the EXACT canonical
+  // `invalid_exact_svm_payload_*` reject string every SDK must emit,
+  // byte-identical to the Rust spine. Unlike `rejectCode` this is not a
+  // normalized category — a drift in the raw string turns the vector red.
+  x402ExactRejectCode?: string;
 };
 
 // Shared reject vocabulary. Each runner maps its native error onto one of
@@ -202,6 +216,88 @@ export type RejectCode =
   // id (missing, empty, or pattern-violating). The coinbase spec maps
   // this to HTTP 400; the conformance oracle pins it as a reject category.
   | "payment-identifier-required";
+
+export const REQUIRED_REJECT_CODES = [
+  "compute-price-over-cap",
+  "compute-limit-over-cap",
+  "fee-payer-not-authority",
+  "fee-payer-is-funds-source",
+  "decimals-mismatch",
+  "splits-exceed-amount",
+  "too-many-splits",
+  "unexpected-instruction",
+  "no-matching-transfer",
+  "amount-mismatch",
+  "invalid-payload",
+  "unsupported-version",
+  "wrong-network",
+  "payment-identifier-required",
+] as const satisfies readonly RejectCode[];
+
+export type JsonResourceBudgets = {
+  maxDepth: number;
+  maxObjectKeys: number;
+  maxArrayLength: number;
+  maxStringLength: number;
+  maxNodes: number;
+};
+
+export const JSON_RESOURCE_BUDGETS: JsonResourceBudgets = {
+  maxDepth: 40,
+  maxObjectKeys: 256,
+  maxArrayLength: 5_000,
+  maxStringLength: 1_000_000,
+  maxNodes: 50_000,
+};
+
+export function assertJsonResourceBudget(
+  value: unknown,
+  context: string,
+  budgets: JsonResourceBudgets = JSON_RESOURCE_BUDGETS,
+): void {
+  let nodes = 0;
+
+  const visit = (node: unknown, depth: number): void => {
+    nodes += 1;
+    if (nodes > budgets.maxNodes) {
+      throw new Error(
+        `resource-bound: ${context} exceeds max JSON node budget ${budgets.maxNodes}`,
+      );
+    }
+    if (depth > budgets.maxDepth) {
+      throw new Error(
+        `resource-bound: ${context} exceeds max JSON depth ${budgets.maxDepth}`,
+      );
+    }
+    if (typeof node === "string" && node.length > budgets.maxStringLength) {
+      throw new Error(
+        `resource-bound: ${context} string length ${node.length} exceeds ${budgets.maxStringLength}`,
+      );
+    }
+    if (Array.isArray(node)) {
+      if (node.length > budgets.maxArrayLength) {
+        throw new Error(
+          `resource-bound: ${context} array length ${node.length} exceeds ${budgets.maxArrayLength}`,
+        );
+      }
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    if (node && typeof node === "object") {
+      const keys = Object.keys(node as Record<string, unknown>);
+      if (keys.length > budgets.maxObjectKeys) {
+        throw new Error(
+          `resource-bound: ${context} object width ${keys.length} exceeds ${budgets.maxObjectKeys}`,
+        );
+      }
+      for (const key of keys) {
+        visit((node as Record<string, unknown>)[key], depth + 1);
+      }
+    }
+  };
+
+  visit(value, 0);
+}
 
 export type VectorInput = {
   // build-transaction / verify-transaction
@@ -271,6 +367,20 @@ export type VectorInput = {
   // header value the server must verify. Pinned so verify needs no build.
   x402PaymentHeader?: string;
 
+  // ── verify-x402-transaction inputs (the exact fund-safety verifier) ──
+  // The offer the SDK's real 11-rule exact verifier checks `input.transaction`
+  // against. `extra.tokenProgram` is required by the strict SDKs; `extra.memo`
+  // pins the memo binding when present.
+  x402ExactRequirement?: {
+    asset: string;
+    payTo: string;
+    amount: string;
+    extra?: { tokenProgram?: string; memo?: string };
+  };
+  // The server-managed pubkeys (base58) — typically the facilitator fee payer.
+  // A managed signer must never be the transfer authority or funding source.
+  x402ExactManagedSigners?: string[];
+
   // ── x402-exact extensions inputs (rust PaymentExtensions) ────────────
   // build-transaction (x402): the `extensions` object the server
   // advertised on the inbound PAYMENT-REQUIRED. The client echoes it,
@@ -305,6 +415,11 @@ export type ConformanceVector = {
 // The result a runner emits to stdout for one vector.
 export type RunnerResult = {
   id: string;
+  // Required on spawned stdout. The harness validates this against the runner
+  // manifest language, or manifest reportsAs when a runner intentionally
+  // reports a shared implementation identity.
+  language?: string;
+  implementation?: string;
   // "accept" | "reject" assert against the vector's expect block;
   // "unsupported-mode" tells the driver to SKIP this vector for the runner.
   outcome: RunnerOutcome;
@@ -323,4 +438,8 @@ export type RunnerResult = {
   // Present on reject: the normalized category the runner mapped its native
   // error onto. Asserted against VectorExpect.rejectCode when both are set.
   rejectCode?: RejectCode;
+  // Present on verify-x402-transaction reject: the exact canonical
+  // `invalid_exact_svm_payload_*` string the SDK's real exact verifier raised.
+  // Asserted verbatim against VectorExpect.x402ExactRejectCode.
+  x402ExactRejectCode?: string;
 };

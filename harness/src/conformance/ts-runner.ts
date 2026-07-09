@@ -28,9 +28,11 @@ import {
   echoExtensions,
   generatePaymentIdentifierId,
   requiresPaymentIdentifier,
+  verifyExactTransaction,
   verifyPaymentHeader,
   withPaymentIdentifierId,
   type PaymentExtensions,
+  type X402ExactRequirement,
 } from "./x402";
 import type {
   ConformanceVector,
@@ -142,8 +144,30 @@ function shapeFromDecoded(transactionBase64: string): RunnerResult["transactionS
 // x402-exact: the oracle is the decoded envelope shape, not a tx shape.
 // build -> wrap the selected offer into a v1/v2 payment header, decode the
 // shape. verify -> run the envelope-level verify against the server route.
-function runX402Vector(vector: ConformanceVector): RunnerResult {
+async function runX402Vector(vector: ConformanceVector): Promise<RunnerResult> {
   const input = vector.input;
+  // verify-x402-transaction: decode payload.transaction and run the REAL
+  // 11-rule exact fund-safety verifier (not the envelope oracle). On reject
+  // the runner surfaces the canonical `invalid_exact_svm_payload_*` string
+  // as x402ExactRejectCode, asserted verbatim across every SDK.
+  if (vector.mode === "verify-x402-transaction") {
+    if (!input.transaction) {
+      throw new Error(
+        "invalid payload: verify-x402-transaction vector missing input.transaction",
+      );
+    }
+    if (!input.x402ExactRequirement) {
+      throw new Error(
+        "invalid payload: verify-x402-transaction vector missing input.x402ExactRequirement",
+      );
+    }
+    await verifyExactTransaction(
+      input.transaction,
+      input.x402ExactRequirement as X402ExactRequirement,
+      input.x402ExactManagedSigners ?? [],
+    );
+    return { id: vector.id, outcome: "accept" };
+  }
   if (vector.mode === "build-transaction") {
     if (!input.x402Offer) {
       throw new Error("invalid payload: x402 build vector missing input.x402Offer");
@@ -303,8 +327,14 @@ async function main(): Promise<void> {
       outcome: "reject",
       rejectCode: classifyReject(message),
     };
+    // The exact fund-safety verifier throws the canonical
+    // `invalid_exact_svm_payload_*` string verbatim as its message; surface
+    // it as x402ExactRejectCode so the cross-SDK vectors bind the exact code.
+    if (message.startsWith("invalid_exact_svm_payload_")) {
+      result.x402ExactRejectCode = message;
+    }
   }
-  process.stdout.write(JSON.stringify(result) + "\n");
+  process.stdout.write(JSON.stringify({ language: "typescript", ...result }) + "\n");
 }
 
 void main();

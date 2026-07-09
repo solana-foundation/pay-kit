@@ -47,5 +47,53 @@
         "base64Url": "bXBwLWNvbmZvcm1hbmNl"
       }
     }
+  },
+  {
+    "id": "canonical-json-astral-key-utf16-sort",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Divergence class: JCS key sort (RFC 8785 3.2.3). Keys must sort by UTF-16 code unit, NOT by Unicode code point / UTF-8 byte order. The astral key U+1F600 encodes in UTF-16 as the surrogate pair D83D DE00, so its FIRST code unit (0xD83D=55357) sorts BEFORE the BMP key U+FB03 (0xFB03=64259); under code-point/UTF-8 order U+1F600 (128512) sorts AFTER U+FB03, flipping the two keys. Any SDK that sorts by code point / raw UTF-8 bytes emits the astral key last and fails RED. Expected bytes computed per RFC 8785 with the JS reference (harness/src/conformance/jcs.ts), which is canonical.",
+    "input": {
+      "value": { "z": 1, "€": 2, "😀": 3, "ﬃ": 4, "é": 5 }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"z\":1,\"é\":5,\"€\":2,\"😀\":3,\"ﬃ\":4}",
+        "base64Url": "eyJ6IjoxLCLDqSI6NSwi4oKsIjoyLCLwn5iAIjozLCLvrIMiOjR9"
+      }
+    }
+  },
+  {
+    "id": "canonical-json-line-paragraph-separators",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Divergence class: JCS string escaping (RFC 8785 3.2.2.2). U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH SEPARATOR) are NOT in JSON's escape set (they are >= U+0020 and neither backslash nor quote), so canonical JSON MUST emit them as literal UTF-8 (E2 80 A8 / E2 80 A9), never as \\u2028 / \\u2029. Serializers that escape them for JS-embedding safety (legacy JSON.stringify polyfills, some PHP/JSON defaults) emit different bytes and fail RED. Expected bytes computed per RFC 8785 with the JS reference (jcs.ts), which is canonical.",
+    "input": {
+      "value": { "sep": "a b c" }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"sep\":\"a b c\"}",
+        "base64Url": "eyJzZXAiOiJh4oCoYuKAqWMifQ"
+      }
+    }
+  },
+  {
+    "id": "canonical-json-number-normalization",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Divergence class: JCS number canonicalization (RFC 8785 3.2.2.3 / ECMAScript Number-to-String). Non-normalized numeric literals must serialize to their shortest canonical form: 1.0 -> 1, 1E2 -> 100, 100.00 -> 100, 1.50 -> 1.5. An SDK whose JSON stack preserves the raw number token (Go json.Number, Python Decimal, arbitrary-precision decoders) re-emits 1.0/1E2/100.00 verbatim and fails RED. Expected bytes computed per RFC 8785 with the JS reference (jcs.ts), which is canonical.",
+    "input": {
+      "value": { "a": 1.0, "b": 1E2, "c": 100.00, "d": 1.50 }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"a\":1,\"b\":100,\"c\":100,\"d\":1.5}",
+        "base64Url": "eyJhIjoxLCJiIjoxMDAsImMiOjEwMCwiZCI6MS41fQ"
+      }
+    }
   }
 ]

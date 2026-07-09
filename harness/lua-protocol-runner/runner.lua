@@ -495,6 +495,7 @@ local function run()
   local decoded_ok, request = pcall(J.decode, raw)
   if not decoded_ok then
     io.write(J.encode(mark_object({
+      language = 'lua',
       success = false,
       error = 'invalid request JSON: ' .. tostring(request),
       error_type = 'unknown_error',
@@ -506,12 +507,14 @@ local function run()
   local ok, response = pcall(dispatch, op, input)
   if not ok then
     io.write(J.encode(mark_object({
+      language = 'lua',
       success = false,
       error = tostring(response),
       error_type = error_type_for(tostring(op)),
     })))
     return
   end
+  response.language = 'lua'
   io.write(J.encode(mark_object(response)))
 end
 

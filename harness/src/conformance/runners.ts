@@ -28,6 +28,9 @@ export type RunnerManifest = {
   // This lets a new intent (e.g. "session") land with only the SDKs that
   // implement it, without editing every other language's runner.
   intents?: string[];
+  // Optional explicit identity when the spawned process intentionally reports
+  // a shared implementation name instead of the manifest language.
+  reportsAs?: string;
 };
 
 // The intents every runner is assumed to support when its manifest does not
@@ -51,6 +54,7 @@ function isRunnerManifest(value: unknown): value is RunnerManifest {
   ) {
     return false;
   }
+  if (m.reportsAs !== undefined && typeof m.reportsAs !== "string") return false;
   return true;
 }
 
@@ -61,6 +65,7 @@ export type DiscoveredRunner = {
   cwd: string;
   // Resolved intent capabilities (manifest `intents` or the default set).
   intents: string[];
+  reportsAs?: string;
 };
 
 // Discover every runner manifest under harness/runners/, validate it, and
@@ -83,6 +88,7 @@ export function discoverRunners(): DiscoveredRunner[] {
       command: parsed.command,
       cwd: parsed.cwd ? join(repoRoot, parsed.cwd) : repoRoot,
       intents: parsed.intents ?? DEFAULT_INTENTS,
+      ...(parsed.reportsAs ? { reportsAs: parsed.reportsAs } : {}),
     });
   }
   return runners;

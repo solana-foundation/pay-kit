@@ -1,5 +1,8 @@
 name: Go
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -11,8 +14,8 @@ jobs:
     name: Go tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
@@ -40,15 +43,29 @@ jobs:
             github.com/solana-foundation/pay-kit/go/protocols/x402/client \
             -coverprofile=coverage.out \
             -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 91
-      - name: Run all Go packages
+          # Args: <profile> <aggregate floor> <per-file floor>. The per-file
+          # floor sits just under the current lowest shipped file so a single
+          # weak file cannot hide behind inflated easy ones (mirrors the
+          # Rust/TS per-file gates). Raise a file's coverage rather than
+          # lowering this floor.
+          ./scripts/check_coverage.sh coverage.out 91 75
+      - name: Check coverage gate enforces the per-file floor
+        working-directory: go
+        run: ./scripts/check_coverage_test.sh
+      # Run the whole suite under the race detector. Replay/TOCTOU data races
+      # (concurrent claim/reserve/voucher paths, lock-map lifecycle) are the
+      # single largest class of bug that escaped review, and `-race` is the
+      # zero-false-positive detector for them — so it is mandatory here, not
+      # optional. Verified race-clean on this tree.
+      - name: Run all Go packages (race detector)
         working-directory: go
         env:
           GOCACHE: /tmp/go-build-cache
-        run: go test ./...
+          CGO_ENABLED: '1'
+        run: go test -race ./...
       - name: Upload Go coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: go-coverage
           path: go/coverage.out
@@ -57,8 +74,8 @@ jobs:
     name: Go lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
@@ -72,7 +89,7 @@ jobs:
             exit 1
           fi
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           working-directory: go
           version: v2.12.2
@@ -92,8 +109,8 @@ jobs:
     needs: test-go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
@@ -101,17 +118,54 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: go
+      # Cross-SDK conformance vectors for Go: the REAL Go structural exact
+      # verifier (go/protocols/x402/verify.go, driven via
+      # go/cmd/conformance/x402.go -> x402.VerifyExactTransaction) must execute
+      # the x402 exact-reject fund-safety vectors, mirroring the ruby/python
+      # legs. Without this leg the only conformance run in CI pinned
+      # MPP_CONFORMANCE_LANGUAGES=typescript (ci.yml), so the fund-safety
+      # vectors — including x402-exact-fee-payer-as-source-ata, the
+      # fee-payer-owns-the-source-ATA drain guard (verify.go:209-217) — never
+      # reached the Go verifier and its guard could silently regress. The
+      # runner (harness/runners/go.json) launches `go run ./cmd/conformance`
+      # from go/. RPC-free and deterministic. A RED here is a real Go verifier
+      # divergence — fix it in go/protocols/x402, do not skip.
+      - name: Run Go cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: go
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK mpp-PROTOCOL conformance: the canonical challenge / receipt /
+      # base64url / challenge-id vectors (incl. the adversarial reject cases)
+      # driven through the real Go protocol codec via the spawned runner. Known Go
+      # divergences (CRLF-in-description, uppercase-method) are tracked in
+      # KNOWN_RUNNER_DIVERGENCES[go]; a RED here is a NEW Go protocol divergence.
+      - name: Run Go protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: go
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Checkout payment channels program
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: Moonsong-Labs/solana-payment-channels
           ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
           path: _payment-channels
           fetch-depth: 1
+      # Pinned Agave release, fetched as a tarball and checksum-verified —
+      # `curl https://release.anza.xyz/stable/install | sh` executed whatever
+      # script and toolchain the mutable "stable" channel served that day.
+      # Bump AGAVE_VERSION + AGAVE_SHA256 together to take upgrades.
       - name: Install Anza CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          AGAVE_VERSION="v4.1.1"
+          AGAVE_SHA256="a5c8e74b8ffa9ce906872b812849057c7fb21cf036ba08f219eb335e20fa4fb3"
+          curl -sSfL -o /tmp/solana-release.tar.bz2 \
+            "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          echo "${AGAVE_SHA256}  /tmp/solana-release.tar.bz2" | sha256sum -c -
+          mkdir -p "$HOME/.local/share/solana/install"
+          tar -xjf /tmp/solana-release.tar.bz2 -C "$HOME/.local/share/solana/install"
+          echo "$HOME/.local/share/solana/install/solana-release/bin" >> "$GITHUB_PATH"
       - name: Patch payment channels localnet artifact
         working-directory: _payment-channels
         run: |
@@ -172,22 +226,28 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           # Fallback datasource if the artifact path is intentionally omitted.
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          # Kill selector drift false greens: the selected charge + x402 exact +
+          # x402 upto shard must execute exactly the current 18 settlement pair
+          # tests. A missing x402-upto slice would otherwise still satisfy the
+          # older 12-pair charge/exact floor.
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 18
 
   playground-go:
     name: "Payment links E2E: Playground (Go)"
     needs: test-go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -234,7 +294,10 @@ jobs:
           done
       - name: Install HTML dependencies & Playwright
         working-directory: html
-        run: npm install && npx playwright install chromium
+        # Frozen, script-free install: the browser download runs via the
+        # explicit `npx playwright install`, and esbuild resolves its platform
+        # binary from @esbuild/<platform> without a postinstall script.
+        run: npm ci --ignore-scripts && npx playwright install chromium
       - name: Run Playwright tests (Go playground)
         working-directory: html
         run: FORTUNE_PATH=/api/v1/fortune npm run test:e2e:go

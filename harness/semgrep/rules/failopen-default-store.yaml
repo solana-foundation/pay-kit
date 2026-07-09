@@ -1,0 +1,142 @@
+# Class 1 — FAIL-OPEN DEFAULT STORE
+#
+# A replay / session / nonce / dedupe / consumed-signature store that silently
+# falls back to an in-memory (or no-op) implementation when its shared /
+# persistent backing is not configured. On a multi-instance deploy each process
+# gets its own Map, so replay-protection state is never shared and the guard
+# fails OPEN — a credential rejected by instance A sails through instance B.
+#
+# Real constructs this is tuned against (pay-kit repo, 2026-07):
+#   go/protocols/mpp/server/server.go:171   if config.Store == nil { config.Store = core.NewMemoryStore() }
+#   go/protocols/mpp/server/session_method.go:218  store := options.Store; if store == nil { store = NewMemoryChannelStore() }
+#   typescript/.../pay-kit/src/adapters/mpp-session.ts:68  const store = createMemorySessionStore()  (no injectable shared store)
+rules:
+  - id: failopen-default-store-go
+    languages: [go]
+    severity: WARNING
+    message: >
+      Fail-open default store: a store/session/replay field defaults to an
+      in-memory or no-op implementation when its configured (shared/persistent)
+      backing is nil. On a multi-instance deploy every process gets a private
+      map, so replay/nonce/session state is never shared and the guard fails
+      OPEN. Require a shared store outside single-process, or make the default
+      an explicit, logged opt-in.
+    metadata:
+      class: fail-open-default-store
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $X == nil {
+                $X = $CTOR(...)
+              }
+          - pattern: |
+              if $X == nil {
+                $X = $PKG.$CTOR(...)
+              }
+      - metavariable-regex:
+          metavariable: $X
+          regex: (?i).*(store|session|replay|nonce|dedup|cache|backend)
+      - metavariable-regex:
+          metavariable: $CTOR
+          regex: (?i)(new)?(memory|inmemory|inmem|noop|null|nop|ephemeral).*
+
+  - id: failopen-default-store-go-shortvar
+    languages: [go]
+    severity: WARNING
+    message: >
+      Fail-open default store: a store/session variable is assigned an in-memory
+      or no-op backing when the configured one is nil. See
+      failopen-default-store-go — require a shared store outside single-process.
+    metadata:
+      class: fail-open-default-store
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $X := $CONF
+              ...
+              if $X == nil {
+                $X = $CTOR(...)
+              }
+          - pattern: |
+              $X := $CONF
+              ...
+              if $X == nil {
+                $X = $PKG.$CTOR(...)
+              }
+      - metavariable-regex:
+          metavariable: $X
+          regex: (?i).*(store|session|replay|nonce|dedup)
+      - metavariable-regex:
+          metavariable: $CTOR
+          regex: (?i)(new)?(memory|inmemory|inmem|noop|null|nop|ephemeral).*
+
+  - id: failopen-default-store-ts-nullish
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Fail-open default store: a store/session/replay binding defaults to an
+      in-memory or no-op implementation via ?? / || when the configured backing
+      is absent. On a multi-instance deploy each process gets its own store, so
+      replay/session/nonce protection fails OPEN. Require a shared store outside
+      single-process.
+    metadata:
+      class: fail-open-default-store
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: const $S = $CONF ?? $CTOR(...)
+          - pattern: const $S = $CONF || $CTOR(...)
+          - pattern: let $S = $CONF ?? $CTOR(...)
+          - pattern: let $S = $CONF || $CTOR(...)
+          - pattern: $OBJ.$PROP = $CONF ?? $CTOR(...)
+          - pattern: $OBJ.$PROP = $CONF || $CTOR(...)
+      - metavariable-regex:
+          metavariable: $CTOR
+          regex: (?i)(create|new|make)?(memory|inmemory|inmem|noop|null|nop|ephemeral).*(store|session|cache|map)?
+
+  - id: failopen-default-store-ts-unconditional
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >
+      Store is hard-wired to an in-memory implementation with no injectable
+      shared/persistent alternative. If this store backs replay / session /
+      nonce / consumed-signature protection, a multi-instance deploy fails OPEN
+      because state is never shared. Expose a config hook for a shared store.
+    metadata:
+      class: fail-open-default-store
+      radar: L7
+    patterns:
+      - pattern: const $S = $CTOR(...)
+      - metavariable-regex:
+          metavariable: $S
+          regex: (?i)^(store|sessionstore|replaystore|noncestore)$
+      - metavariable-regex:
+          metavariable: $CTOR
+          regex: (?i)(create|new|make)(memory|inmemory|inmem).*(store|session|channel)
+
+  - id: failopen-default-store-python
+    languages: [python]
+    severity: WARNING
+    message: >
+      Fail-open default store: a store/session/replay binding defaults to an
+      in-memory or no-op implementation when the configured backing is absent.
+      On a multi-instance deploy each process gets its own store, so
+      replay/session/nonce protection fails OPEN. Require a shared store
+      outside single-process, or make the default an explicit logged opt-in.
+    metadata:
+      class: fail-open-default-store
+      radar: L7
+    patterns:
+      - pattern-either:
+          - pattern: $S = $CONF or $CTOR(...)
+          - pattern: $S = $CONF if $CONF is not None else $CTOR(...)
+          - pattern: return $CONF or $CTOR(...)
+          - pattern: return $CONF if $CONF is not None else $CTOR(...)
+          - pattern: |
+              def $F(..., $S=$CTOR(...), ...):
+                ...
+      - metavariable-regex:
+          metavariable: $CTOR
+          regex: (?i)(memory|inmemory|inmem|noop|null|nop|ephemeral).*(store|session|cache|map)?

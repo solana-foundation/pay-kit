@@ -1,0 +1,71 @@
+name: Release gate
+
+# Reusable aggregator every publish workflow must pass. Publishing used to
+# gate on a single workflow (npm on ci.yml, pypi on python.yml), so a release
+# could ship even when the cross-language harness, the on-chain legs (the
+# payment-channels program built against a pinned Agave release inside the
+# go/python workflows), or another SDK's matrix was red on the same commit.
+# This workflow fans out to every CI surface and exposes one `gate` job for
+# publishers to depend on.
+
+on:
+  workflow_call:
+
+jobs:
+  ci:
+    name: Core CI
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  harness:
+    name: Cross-language harness
+    uses: ./.github/workflows/harness.yml
+    secrets: inherit
+
+  go:
+    name: Go
+    uses: ./.github/workflows/go.yml
+    secrets: inherit
+
+  go-consumer:
+    name: Go consumer guard
+    uses: ./.github/workflows/go-consumer.yml
+    secrets: inherit
+
+  python:
+    name: Python
+    uses: ./.github/workflows/python.yml
+    secrets: inherit
+
+  ruby:
+    name: Ruby
+    uses: ./.github/workflows/ruby.yml
+    secrets: inherit
+
+  lua:
+    name: Lua
+    uses: ./.github/workflows/lua.yml
+    secrets: inherit
+
+  php:
+    name: PHP
+    uses: ./.github/workflows/php.yml
+    secrets: inherit
+
+  swift:
+    name: Swift
+    uses: ./.github/workflows/swift.yml
+    secrets: inherit
+
+  kotlin:
+    name: Kotlin
+    uses: ./.github/workflows/kotlin.yml
+    secrets: inherit
+
+  gate:
+    name: All release gates green
+    runs-on: ubuntu-latest
+    needs: [ci, harness, go, go-consumer, python, ruby, lua, php, swift, kotlin]
+    steps:
+      - name: Confirm
+        run: echo "core CI, harness, on-chain legs, and every SDK matrix passed"

@@ -22,8 +22,8 @@ export type AdapterRequest = {
 };
 
 export type AdapterResponse =
-  | { success: true; result: unknown }
-  | { success: false; error: string; error_type: string };
+  | { success: true; result: unknown; language?: string; implementation?: string }
+  | { success: false; error: string; error_type: string; language?: string; implementation?: string };
 
 // A protocol adapter is anything that can answer a single ABI request.
 // `runProtocolRequest` may be sync (in-process runner) or async (spawned

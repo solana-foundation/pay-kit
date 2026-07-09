@@ -704,4 +704,5 @@ result =
     reject_result(vector["id"], error.message)
   end
 
+result["language"] = "ruby"
 $stdout.puts(JSON.generate(result))

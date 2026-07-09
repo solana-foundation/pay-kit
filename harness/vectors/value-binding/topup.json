@@ -1,0 +1,66 @@
+{
+  "schema": "value-binding/v1",
+  "verifier": "session-topup",
+  "entrypoints": {
+    "typescript": "@solana/mpp/server → session().verify({ payload: { action: 'topUp' } }) → handleTopUp",
+    "go": "go/protocols/mpp/server/session_onchain.go → NewTopUpTxVerifier",
+    "python": "python/src/solana_pay_kit/protocols/mpp/server/session_onchain.py → new_top_up_tx_verifier"
+  },
+  "doc": [
+    "VALUE-BINDING radar for the session TOP-UP verifiers. These cases exist",
+    "because every SDK's top-up verifier only asks the RPC 'did this signature",
+    "confirm?' and never asks 'does the confirmed transaction actually raise",
+    "THIS channel's deposit by newDeposit-oldDeposit?'. The Go verifier comment",
+    "says it outright: 'the new deposit is trusted as provided'. So a confirmed",
+    "but UNRELATED signature (a real transaction that landed on-chain but is not",
+    "a top-up of this channel for this delta) is accepted, and the merchant",
+    "raises the deposit / credit line on no on-chain proof at all. This is the",
+    "CRITICAL top-up fabricated-deposit finding.",
+    "",
+    "The mock RPC in the executable driver models 'confirmed but unrelated': it",
+    "reports a fixed set of real landed signatures as confirmed and everything",
+    "else as not-found. It has NO notion of channel/delta binding — exactly the",
+    "shape a production RPC's getSignatureStatuses has. A verifier that passes",
+    "these cases is conflating 'signature confirmed' with 'signature proves this",
+    "deposit', which is the whole hole."
+  ],
+  "cases": [
+    {
+      "id": "topup-a-unrelated-confirmed-inflated-deposit",
+      "attack": "unrelated-confirmed-signature-with-inflated-deposit",
+      "description": "A confirmed but UNRELATED signature (a real landed transaction that is not a top-up of this channel) is paired with an inflated newDeposit that is still <= cap. The signature confirms on-chain, so a confirmation-only verifier accepts and raises the deposit with zero proof the funds landed.",
+      "channel": { "oldDeposit": "1000000", "cap": "5000000" },
+      "payload": { "action": "topUp", "newDeposit": "5000000", "signature": "UNRELATED_CONFIRMED" },
+      "rpc": { "confirmed": ["UNRELATED_CONFIRMED"] },
+      "expect": "reject",
+      "rejectClass": "top-up-signature-not-bound-to-deposit",
+      "status": { "typescript": "RED (verified)", "go": "RED", "python": "RED" },
+      "pendingFix": "top-up verifier must fetch the confirmed transaction and assert its channel top_up instruction raises THIS channel's deposit to newDeposit (delta binding), not merely that the signature confirmed."
+    },
+    {
+      "id": "topup-c-onchain-delta-mismatch",
+      "attack": "confirmed-topup-signature-with-wrong-delta",
+      "description": "The signature belongs to a REAL, confirmed top-up transaction, but its on-chain deposit delta is small (e.g. +1) while the payload claims a large newDeposit (delta +3999999). A verifier that only confirms the signature cannot see the mismatch and accepts the inflated deposit.",
+      "channel": { "oldDeposit": "1000000", "cap": "5000000" },
+      "payload": { "action": "topUp", "newDeposit": "4999999", "signature": "REAL_TOPUP_DELTA_1" },
+      "rpc": { "confirmed": ["REAL_TOPUP_DELTA_1"], "onChainDelta": { "REAL_TOPUP_DELTA_1": "1" } },
+      "expect": "reject",
+      "rejectClass": "top-up-onchain-delta-not-equal-claimed-delta",
+      "status": { "typescript": "RED (verified)", "go": "RED", "python": "RED" },
+      "pendingFix": "top-up verifier must compare the confirmed transaction's on-chain deposit delta against newDeposit-oldDeposit and reject on mismatch."
+    },
+    {
+      "id": "topup-b-placeholder-signature-with-rpc",
+      "attack": "placeholder-or-empty-signature-with-rpc-configured",
+      "description": "The C1 shape applied to top-up: a placeholder/empty signature submitted while an RPC IS configured. With an RPC present the verifier is asserting it can prove the top-up on-chain, so a signature that carries no such proof must be rejected fleet-wide — the same way verifyOpenTx rejects the placeholder open under the C1 guard.",
+      "channel": { "oldDeposit": "1000000", "cap": "5000000" },
+      "payload": { "action": "topUp", "newDeposit": "2000000", "signature": "" },
+      "rpc": { "confirmed": [] },
+      "expect": "reject",
+      "rejectClass": "top-up-placeholder-signature-under-rpc",
+      "status": { "typescript": "GREEN (via not-found)", "go": "verify-in-runner", "python": "verify-in-runner" },
+      "note": "VERIFIED GREEN on TS src: the empty signature is fed to getSignatureStatuses, which returns no status, so handleTopUp rejects with 'not found'. The rejection is incidental (not-found), not an explicit placeholder guard — kept as a regression guard so a future change that short-circuits the RPC on a placeholder does not silently accept.",
+      "pendingFix": "none for TS; a dedicated placeholder guard mirroring the verifyOpenTx C1 guard would make the intent explicit. Confirm Go/Python behave the same in-runner."
+    }
+  ]
+}

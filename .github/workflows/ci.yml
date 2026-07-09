@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -15,11 +18,11 @@ jobs:
     name: Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -31,11 +34,11 @@ jobs:
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -46,23 +49,39 @@ jobs:
       - run: pnpm --filter @solana/mpp build
       - run: pnpm lint
       - run: pnpm format:check
+      # Repo-hygiene guards for two audit-class regressions no other gate
+      # catches: audit finding IDs left in shipped source, and dependency
+      # overrides stranded in package.json's pnpm field (ignored by pnpm v10).
+      - name: Repo hygiene guards
+        working-directory: .
+        run: bash scripts/check-repo-hygiene.sh
+      - name: Repo hygiene guard self-test
+        working-directory: .
+        run: bash scripts/check-repo-hygiene_test.sh
+      # Exercise the publish-workflow least-privilege / release-gating guard on
+      # every PR, not only on a publish dispatch: the guard's "real workflows
+      # pass, reverted fixtures fail" proof otherwise ran only on a developer's
+      # machine.
+      - name: Publish workflow guard self-test
+        working-directory: .
+        run: bash scripts/check-publish-workflow-guards_test.sh
 
   typecheck:
     name: Typecheck
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
       - run: pnpm install --frozen-lockfile
@@ -75,17 +94,17 @@ jobs:
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
       - run: pnpm install --frozen-lockfile
@@ -102,14 +121,14 @@ jobs:
 
       - name: Upload TS coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ts-coverage
           path: typescript/coverage/coverage-summary.json
 
       - name: Upload TS surfpool report data
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: surfpool-reports-ts
           path: typescript/target/surfpool-reports/
@@ -119,15 +138,18 @@ jobs:
     name: Build HTML payment link assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           package-manager-cache: false
       - name: Install and build
         working-directory: html
+        # Frozen, script-free install: esbuild (used by the build via tsx)
+        # resolves its platform binary from @esbuild/<platform> without a
+        # postinstall script, so --ignore-scripts leaves the build working.
         run: |
-          npm install
+          npm ci --ignore-scripts
           npm run build
       - name: Verify committed gen files are up to date
         working-directory: .
@@ -138,7 +160,7 @@ jobs:
             exit 1
           fi
       - name: Upload HTML build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: html-assets
           path: |
@@ -149,17 +171,59 @@ jobs:
             python/src/pay_kit/protocols/mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
 
+  # Codama regen-diff gate: re-render every payment-channels client (Rust,
+  # Go, TypeScript, Python) from the pinned IDL + pinned renderers and fail
+  # if the committed trees differ. Catches hand-edits to generated code and
+  # renderer/IDL drift that would silently desynchronize the SDKs' view of
+  # the on-chain program.
+  payment-channels-regen:
+    name: Payment-channels generated clients in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          package_json_file: skills/pay-sdk-implementation/codegen/package.json
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: taiki-e/install-action@c6d51ded7cde3c421f6cd6046cd601f2248f3710
+        with:
+          tool: just
+      # The TS recipe formats the rendered client with the repo prettier.
+      - name: Install typescript workspace deps
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Regenerate payment-channels clients from the pinned IDL
+        run: just payment-channels-sync
+      - name: Verify committed generated clients match the renderer output
+        run: |
+          TREES=(
+            idl/payment-channels.json
+            rust/crates/kit/src/generated/payment_channels/
+            typescript/packages/mpp/src/generated/payment-channels/
+            go/protocols/programs/paymentchannels/
+            python/src/solana_pay_kit/protocols/programs/paymentchannels/
+          )
+          if [ -n "$(git status --porcelain -- "${TREES[@]}")" ]; then
+            echo "::error::Generated payment-channels clients are out of date or hand-edited. Run 'just payment-channels-sync' and commit the results."
+            git status --porcelain -- "${TREES[@]}"
+            git diff --stat -- "${TREES[@]}"
+            exit 1
+          fi
+
   test-rust:
     name: Rust tests
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: actions/cache@v5
+      - uses: taiki-e/install-action@c6d51ded7cde3c421f6cd6046cd601f2248f3710 # cargo-llvm-cov
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -168,7 +232,7 @@ jobs:
           key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rust-
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
 
@@ -179,61 +243,96 @@ jobs:
           # surfpool integration tests clone from the public mainnet-beta RPC,
           # which rate-limits and crashes surfnet mid-test in CI.
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
-        # Lock to library scope: the inlined `mpp` module of solana-pay-kit
-        # (x402 has its own coverage budget tracked separately), exclude
-        # on-chain program adapters under src/mpp/program/, the
-        # multi_delegate client which only drives the on-chain program, and
-        # the Codama-autogenerated program clients under src/generated/
-        # (instruction/account builders, "DO NOT EDIT" — not hand-tested,
-        # same rationale as the src/mpp/program/ exclusion).
-        # Reported coverage reflects the SDK surface downstream users link
-        # against. The harness bins now live in the unpublished
-        # `paykit-harness-bins` crate and the surfpool/litesvm integration
-        # tests in `paykit-integration-tests`, so neither skews this number.
-        run: cargo llvm-cov -p solana-pay-kit -p paykit-integration-tests --ignore-filename-regex 'crates/integration-tests/|crates/harness-bins/|src/mpp/program/|client/multi_delegate|src/x402/|src/generated/' --json --output-path coverage.json
+        # One instrumented run; the gate below enforces both aggregate AND
+        # per-file line + region floors from its per-file data. Excluded: the
+        # surfpool/litesvm integration tests (`paykit-integration-tests`), the
+        # unpublished harness bins, the multi_delegate client (drives only the
+        # on-chain program), the Codama-autogenerated clients under src/generated/
+        # ("DO NOT EDIT"), and the test-only mock JSON-RPC server used to cover the
+        # settlement broadcast paths. src/mpp/program/ and src/x402/ are BOTH
+        # inside the floor now (x402 was previously excluded/under-covered); the
+        # settle-family account layout is additionally pinned by
+        # settle_family_account_layout_golden.
+        run: cargo llvm-cov --locked -p solana-pay-kit -p paykit-integration-tests --ignore-filename-regex 'crates/integration-tests/|crates/harness-bins/|client/multi_delegate|src/generated/|x402/server/mock_rpc.rs' --json --output-path coverage.json
 
-      # Library tests for the x402 module of solana-pay-kit. Separate from the
-      # llvm-cov step above because x402 doesn't share mpp's 90% coverage floor
-      # yet, but its tests still gate PRs — in particular the loose-402
-      # challenge regression suite (`to_accepted_value_patches_loose_*`)
-      # that catches resource servers emitting non-canonical Solana x402
-      # `accepted` blocks (missing `scheme`, bare network slug, missing
-      # `maxTimeoutSeconds`).
+      # Library tests for the x402 module — a fast targeted run for the loose-402
+      # challenge regression suite (`to_accepted_value_patches_loose_*`) that
+      # catches resource servers emitting non-canonical Solana x402 `accepted`
+      # blocks (missing `scheme`, bare network slug, missing `maxTimeoutSeconds`).
       - name: Run solana-pay-kit x402 library tests
         working-directory: rust
-        run: cargo test -p solana-pay-kit --lib x402
+        run: cargo test --locked -p solana-pay-kit --lib x402 --features server,client
 
-      - name: Enforce Rust coverage floor (>=90 cross-SDK baseline)
+      - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
         run: |
           python3 - <<'PY'
           import json, sys
           with open('coverage.json') as f:
-              data = json.load(f)
-          totals = data['data'][0]['totals']
-          lines = totals['lines']
-          pct = lines['percent']
-          floor = 90.0
-          print(f"Rust line coverage: {pct:.2f}% (floor {floor})")
-          if pct < floor:
-              print(f"FAIL: {pct:.2f}% < {floor}")
+              files = json.load(f)['data'][0]['files']
+          # Both surfaces are gated at 90% on LINE and REGION (region is llvm-cov's
+          # branch-like metric). Enforced both in AGGREGATE and PER-FILE, so a weak
+          # file cannot hide behind inflated easy ones and no branch class can
+          # silently regress.
+          FLOOR = 90.0
+          is_x402 = lambda n: '/src/x402/' in n
+          def rate(f, m):
+              M = f['summary'][m]
+              return 100.0 * M['covered'] / M['count'] if M['count'] else 100.0
+          def agg(pred, m):
+              tot = cov = 0
+              for f in files:
+                  if pred(f['filename']):
+                      M = f['summary'][m]; tot += M['count']; cov += M['covered']
+              return 100.0 * cov / tot if tot else 100.0
+          fails = []
+          for label, pred in [('mpp', lambda n: not is_x402(n)), ('x402', is_x402)]:
+              for metric in ('lines', 'regions'):
+                  v = agg(pred, metric)
+                  print(f"{label} {metric}: {v:.2f}% (floor {FLOOR})")
+                  if v < FLOOR:
+                      fails.append(f"{label} aggregate {metric} {v:.2f}% < {FLOOR}")
+          for f in files:
+              n = f['filename']
+              if '/src/' not in n:
+                  continue
+              for metric in ('lines', 'regions'):
+                  v = rate(f, metric)
+                  if v < FLOOR:
+                      fails.append(f"per-file {metric} {v:.1f}% < {FLOOR}: {n.split('/src/')[-1]}")
+          if fails:
+              print("COVERAGE GATE FAILURES:")
+              for x in fails:
+                  print("  " + x)
               sys.exit(1)
+          print("coverage gate passed (line + region >= 90, aggregate + per-file)")
           PY
 
       - name: Rust format check
         working-directory: rust
         run: cargo fmt --check
 
+      # Deny-warnings clippy over all targets and every kit feature except
+      # litesvm-tests, which deliberately requires an undeclared
+      # dev-dependency and therefore cannot build (see the feature's
+      # comment in crates/kit/Cargo.toml) — the one reason this is not
+      # simply --all-features.
+      - name: Rust clippy (deny warnings)
+        working-directory: rust
+        run: |
+          cargo clippy --locked -p solana-pay-kit --all-targets --features mpp,x402,server,client,axum,gcp_kms,confidential,worker,testkit,fetch,otel -- -D warnings
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+
       - name: Upload Rust coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-coverage
           path: rust/coverage.json
 
       - name: Upload Rust surfpool report data
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: surfpool-reports-rust
           path: rust/target/surfpool-reports/
@@ -248,17 +347,17 @@ jobs:
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
       - name: Install Surfnet helper dependencies
@@ -288,17 +387,17 @@ jobs:
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
       - name: Install Surfnet helper dependencies
@@ -331,7 +430,10 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install HTML dependencies & Playwright
         working-directory: html
-        run: npm install && npx playwright install chromium
+        # Frozen, script-free install: the browser download runs via the
+        # explicit `npx playwright install`, and esbuild resolves its platform
+        # binary from @esbuild/<platform> without a postinstall script.
+        run: npm ci --ignore-scripts && npx playwright install chromium
       - name: Start playground API
         working-directory: typescript/examples/playground-api
         run: npx tsx index.ts &
@@ -354,9 +456,9 @@ jobs:
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -364,16 +466,16 @@ jobs:
             rust/target
           key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rust-
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
       - name: Install Surfnet helper dependencies
@@ -397,13 +499,16 @@ jobs:
           test "$ready" -eq 1
       - name: Install HTML dependencies & Playwright
         working-directory: html
-        run: npm install && npx playwright install chromium
+        # Frozen, script-free install: the browser download runs via the
+        # explicit `npx playwright install`, and esbuild resolves its platform
+        # binary from @esbuild/<platform> without a postinstall script.
+        run: npm ci --ignore-scripts && npx playwright install chromium
       - name: Build Rust test server
         working-directory: rust
-        run: cargo build --example payment_link_server --features axum
+        run: cargo build --locked --example payment_link_server --features axum
       - name: Start Rust test server
         working-directory: rust
-        run: cargo run --example payment_link_server --features axum &
+        run: cargo run --locked --example payment_link_server --features axum &
       - name: Wait for Rust server
         working-directory: .
         run: |
@@ -420,12 +525,12 @@ jobs:
     needs: build-html
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Download HTML assets
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: html-assets
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1
         with:
           ruby-version: "3.3"
           bundler-cache: true
@@ -434,33 +539,151 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server"
           cargo-cache-key: ts
+      # Always-on TypeScript conformance leg: the TS reference verifier in
+      # harness/src/conformance/x402.ts is the oracle every other SDK's exact
+      # verifier is pinned against, but no other workflow allowlists typescript,
+      # so its x402 exact-reject fund-safety vectors never executed in CI. Run
+      # them here on every push/PR so a drift or revert in the reference verifier
+      # ships red.
+      - name: Run TypeScript cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK conformance vectors for Rust: the REAL Rust structural exact
+      # verifier (rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs,
+      # driven via the conformance_runner example ->
+      # verify_exact_versioned_transaction) must execute the x402 exact-reject
+      # fund-safety vectors, mirroring the go/ruby/python legs. This setup-harness
+      # job already provisions the Rust stable toolchain + target cache (it builds
+      # the cargo harness bins and runs the Rust e2e smoke below), so the example
+      # compiles here without extra setup. Before this leg the only conformance
+      # run in CI pinned MPP_CONFORMANCE_LANGUAGES=typescript, so the fund-safety
+      # vectors -- including x402-exact-fee-payer-as-source-ata, the
+      # fee-payer-owns-the-source-ATA drain guard (verify.rs:429-434) -- never
+      # reached the Rust verifier and its guard could silently regress. RPC-free
+      # and deterministic. A RED here is a real Rust verifier divergence -- fix it
+      # in the x402 spine, do not skip.
+      - name: Run Rust cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+        run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK mpp-PROTOCOL conformance through the real Rust protocol codec.
+      # Known Rust divergences (empty-realm / empty-intent not rejected) are
+      # tracked in KNOWN_RUNNER_DIVERGENCES[rust]; a RED is a NEW divergence.
+      - name: Run Rust protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
+      # protocol-conformance drives the canonical mpp-protocol vectors (challenge
+      # WWW-Authenticate quoting, receipt parse, challenge parse) through the REAL
+      # TS reference codec surface (@solana/mpp + mppx). It was CI-exempt, which hid
+      # 6 real TS divergences (serialize quote/backslash truncation, missing CRLF /
+      # empty-realm / empty-intent rejection, out-of-range receipt timestamps), all
+      # now fixed at the @solana/mpp boundary. Pinned to typescript so the Node-only
+      # job does not spawn absent uv/cargo/php runners; the in-process TS-reference
+      # blocks run regardless of the pin. A RED here is a real canonical-protocol
+      # divergence -- fix the codec at the boundary, do not skip.
+      - name: Run TypeScript protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
+      # Guard self-tests for the harness release-gate false-green killers
+      # (assert-run-count run-count assertion, the on-chain gate, and the
+      # passWithNoTests config). No other workflow runs the bare harness suite,
+      # so a regression in the machinery that turns a zero-assertion run RED
+      # would otherwise ship undetected.
+      - name: Run harness gate self-tests
+        working-directory: harness
+        run: pnpm exec vitest run test/harness-gates.test.ts
+      # The harness carries ~20 unit + defect-verifier suites that assert the
+      # cross-SDK contract (x402 exact fund-safety defect vectors, session
+      # voucher reject reasons, compute-budget caps, canonical bytes, the
+      # enforced-coverage ledger, capability declarations) — but until now only
+      # e2e / conformance / harness-gates ran by explicit path, so every one of
+      # these guards was DEAD in CI: the safety net existed and never plugged in.
+      # Run the self-contained suites on every push/PR. A RED here is the radar
+      # catching a real SDK divergence (e.g. compute-budget-caps flags a verifier
+      # that dropped a cap) — fix it in the owning SDK; do not skip the test.
+      - name: Run harness unit + defect-verifier suites
+        working-directory: harness
+        run: |
+          pnpm exec vitest run \
+            test/x402-exact-defect-verify.test.ts \
+            test/session-voucher-verify.test.ts \
+            test/session-close-settle-verify.test.ts \
+            test/coverage-shape.test.ts \
+            test/vector-accounting.test.ts \
+            test/regression-bank-coverage.test.ts \
+            test/regression-bank.test.ts \
+            test/compute-budget-caps.test.ts \
+            test/canonical-json.test.ts \
+            test/capabilities.test.ts \
+            test/guards.test.ts \
+            test/intent-selection.test.ts \
+            test/adapter-identity.test.ts \
+            test/x402-amount-base-units.test.ts \
+            test/x402-v1-exact.test.ts \
+            test/x402-upto-verify-open.test.ts \
+            test/x402-upto-over-ceiling.test.ts \
+            test/value-binding-verify.test.ts \
+            test/boot-policy.test.ts \
+            test/process.test.ts \
+            test/flow-conformance.test.ts \
+            test/ci-coverage-gate.test.ts \
+            test/matrix-coverage-gate.test.ts
+      # value-binding-verify drives the real @solana/mpp session verifier with
+      # adversarial on-chain-binding vectors (unrelated-sig + inflated deposit +
+      # recipients-vs-splits) — the integration radar for the fabricated-deposit
+      # class. boot-policy asserts every SDK's server/adapter fails CLOSED when it
+      # would default to an in-memory replay store off-localnet without the
+      # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in; it self-skips any SDK whose
+      # toolchain is absent in this Node job (Go/Python get full coverage in the
+      # multi-toolchain harness.yml legs), so it degrades rather than false-greens.
+      # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
+      # --testNamePattern matched every one of these pairs, so it was redundant).
+      # assert-run-count pins the executed pair count so a title rename or a
+      # selector typo that runs fewer/zero payment tests fails loud.
       - name: Run Rust client harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: typescript
       - name: Run Rust server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 11
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: rust
       - name: Run Rust end-to-end harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 5
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: rust
       - name: Run Ruby server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 14
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: ruby
       - name: Run Rust client to Ruby server harness smoke
         working-directory: harness
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 7
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: ruby

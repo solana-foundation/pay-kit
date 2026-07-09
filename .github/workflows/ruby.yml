@@ -1,5 +1,8 @@
 name: Ruby
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -11,8 +14,8 @@ jobs:
     name: Ruby tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1
         with:
           ruby-version: "3.3"
           bundler-cache: true
@@ -33,13 +36,13 @@ jobs:
         run: COVERAGE=1 bundle exec ruby -Itest test/run.rb
       - name: Upload Ruby coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ruby-coverage
           path: ruby/coverage/.resultset.json
       - name: Upload Ruby surfpool report data
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: surfpool-reports-ruby
           path: ruby/target/surfpool-reports/
@@ -50,13 +53,40 @@ jobs:
     needs: test-ruby
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9 # v1
         with:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: ruby
       - uses: ./.github/actions/setup-harness
+      # IO-cap regression tests for the hand-rolled Ruby harness HTTP server
+      # (harness/ruby-server/server.rb): a header value / count past the cap
+      # returns 431 and an oversized declared body returns 413. Run from ruby/
+      # so the spawned server resolves the SDK via bundler, exactly as the file
+      # header documents. Reverting the caps in server.rb flips this red.
+      - name: Run Ruby harness server IO-cap tests
+        working-directory: ruby
+        run: bundle exec ruby ../harness/ruby-server/test_server_io_caps.rb
+      # Cross-SDK conformance vectors for Ruby: the Ruby exact verifier must
+      # execute the x402 exact-reject fund-safety vectors, mirroring the python
+      # leg. The conformance runner (harness/runners/ruby.json) launches
+      # `bundle exec ruby exe/conformance` from ruby/ against the bundler
+      # environment set up above.
+      - name: Run Ruby cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: ruby
+        run: pnpm exec vitest run test/conformance.test.ts
+      # NOTE: the Ruby mpp-PROTOCOL conformance leg is intentionally deferred (not
+      # wired) pending verification on ruby 3.3. The local probe (ruby 4.0.5)
+      # crashed the runner on the challenge.id unicode case (a US-ASCII/UTF-8 stdin
+      # encoding mismatch in protocol_runner.rb), and an independent second-model
+      # run had ruby conforming, so the observed divergences were environment-
+      # contaminated. Fix the runner's stdin UTF-8 encoding, confirm the real
+      # ruby-3.3 matrix, then wire it like the other SDK legs:
+      #   MPP_CONFORMANCE_LANGUAGES=ruby vitest run test/protocol-conformance.test.ts
+      # and add the corresponding KNOWN_RUNNER_DIVERGENCES[ruby] entry.
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
       # the same ruby adapter binary. The harness's harnessEnv exposes
@@ -76,4 +106,10 @@ jobs:
           MPP_HARNESS_INTENTS: charge,x402-exact
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000
+        # The ruby dual-protocol server is exercised via the "ruby" title filter
+        # (the matrix also enables the typescript / x402 servers this leg does not
+        # build). assert-run-count pins the ruby-server pair count so a rename of
+        # the pair title silently running zero ruby tests fails loud.
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 17
