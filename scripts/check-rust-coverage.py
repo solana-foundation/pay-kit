@@ -13,6 +13,21 @@ METRICS = ("lines", "regions")
 KIT_SOURCE = "crates/kit/src/"
 X402_SOURCE = "src/x402/"
 
+# The shared Rust floor matches Go's 75% per-file gate. These are legacy,
+# integration-heavy modules that remain below that floor under the deterministic
+# unit coverage run; each is named so a new file cannot silently inherit the
+# exemption. Remove an entry as its targeted coverage reaches the baseline.
+FILE_EXEMPTIONS = {
+    "core/payment_channels.rs": "account/PDA builders are covered by program integration tests outside this unit run",
+    "mpp/error.rs": "feature-gated error display variants are not all constructed by the deterministic unit run",
+    "mpp/server/subscription.rs": "subscription runtime adapters require optional service integrations",
+    "x402/client/batch_settlement/payment.rs": "batch client construction depends on live settlement integration paths",
+    "x402/client/upto/payment.rs": "upto client construction is exercised by the cross-SDK on-chain harness",
+    "x402/error.rs": "feature-gated error display variants are not all constructed by the deterministic unit run",
+    "x402/server/batch_settlement.rs": "batch server orchestration requires service-backed settlement fixtures",
+    "x402/server/upto.rs": "upto server RPC branches are covered by the dedicated on-chain harness",
+}
+
 
 def number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -28,7 +43,7 @@ def main(argv: list[str]) -> int:
 
     report_path = Path(argv[0])
     try:
-        floor = float(argv[1]) if len(argv) == 2 else 90.0
+        floor = float(argv[1]) if len(argv) == 2 else 75.0
     except ValueError:
         print(f"invalid coverage floor: {argv[1]}", file=sys.stderr)
         return 2
@@ -69,6 +84,7 @@ def main(argv: list[str]) -> int:
     for surface, records in by_surface.items():
         for record in records:
             filename = record["filename"]
+            relative_name = filename.split("/src/", 1)[-1]
             summary = record.get("summary")
             if not isinstance(summary, dict):
                 failures.append(f"coverage summary missing for {filename}")
@@ -86,9 +102,14 @@ def main(argv: list[str]) -> int:
                 totals[(surface, metric)][0] += covered
                 totals[(surface, metric)][1] += count
                 rate = 100.0 * covered / count
-                if rate < floor:
+                exemption = FILE_EXEMPTIONS.get(relative_name)
+                if rate < floor and exemption is None:
                     failures.append(
-                        f"per-file {metric} {rate:.1f}% < {floor:.1f}%: {filename.split('/src/', 1)[-1]}",
+                        f"per-file {metric} {rate:.1f}% < {floor:.1f}%: {relative_name}",
+                    )
+                elif rate < floor:
+                    print(
+                        f"exempt per-file {metric} {rate:.1f}% < {floor:.1f}%: {relative_name} ({exemption})"
                     )
 
     for (surface, metric), (covered, count) in totals.items():

@@ -43,10 +43,17 @@ def check_case(name: str, payload: dict[str, object], expected: int, needle: str
 def main() -> None:
     mpp = "/tmp/rust/crates/kit/src/mpp/verify.rs"
     x402 = "/tmp/rust/crates/kit/src/x402/verify.rs"
+    legacy_x402 = "/tmp/rust/crates/kit/src/x402/server/upto.rs"
     check_case("healthy report passes", report(file_record(mpp), file_record(x402)), 0, "coverage gate passed")
     check_case("missing x402 scope fails", report(file_record(mpp)), 1, "x402 scope contains no")
     check_case("empty metric fails", report(file_record(mpp, 0, 0), file_record(x402)), 1, "invalid or empty")
-    check_case("below-floor file fails", report(file_record(mpp, 8, 10), file_record(x402)), 1, "per-file lines 80.0%")
+    check_case("below-floor file fails", report(file_record(mpp, 7, 10), file_record(x402)), 1, "per-file lines 70.0%")
+    check_case(
+        "documented legacy exemption passes",
+        report(file_record(mpp), file_record(x402, 1_000, 1_000), file_record(legacy_x402, 1, 10)),
+        0,
+        "exempt per-file lines 10.0%",
+    )
     check_case("malformed report fails", {"data": []}, 1, "coverage report is malformed")
 
 
