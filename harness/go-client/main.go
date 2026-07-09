@@ -262,21 +262,11 @@ func readPrivateKeyEnv(name string) (solana.PrivateKey, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("%s is required", name)
 	}
-	var values []int
-	if err := json.Unmarshal([]byte(raw), &values); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", name, err)
+	key, err := solana.PrivateKeyFromSolanaKeygenFileBytes([]byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s configuration: %w", name, err)
 	}
-	if len(values) != 64 {
-		return nil, fmt.Errorf("%s must contain 64 private key bytes, got %d", name, len(values))
-	}
-	key := make([]byte, len(values))
-	for i, value := range values {
-		if value < 0 || value > 255 {
-			return nil, fmt.Errorf("%s byte %d is outside uint8 range", name, i)
-		}
-		key[i] = byte(value)
-	}
-	return solana.PrivateKey(key), nil
+	return key, nil
 }
 
 func responseHeaders(headers http.Header) map[string]string {

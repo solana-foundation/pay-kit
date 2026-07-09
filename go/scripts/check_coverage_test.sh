@@ -58,4 +58,12 @@ if ! "$check" "$tmp/gen.out" 0 90 >/dev/null 2>&1; then
 fi
 pass "per-file floor excludes generated trees"
 
+# 6. A profile with only the mode header has no instrumented statements and
+# must fail closed instead of being treated as 100% covered.
+printf '%s\n' 'mode: atomic' > "$tmp/empty.out"
+if "$check" "$tmp/empty.out" 0 0 >/dev/null 2>&1; then
+  die "empty coverage profile passed as fully covered"
+fi
+pass "empty coverage profile fails closed"
+
 echo "check_coverage.sh self-test passed"

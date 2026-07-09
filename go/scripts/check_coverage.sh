@@ -21,7 +21,11 @@ awk -v threshold="$threshold" -v floor="$per_file_floor" '
   }
   END {
     rc = 0
-    agg = g_total > 0 ? 100 * g_cov / g_total : 100
+    if (g_total == 0) {
+      print "coverage profile contains no instrumented statements"
+      exit 1
+    }
+    agg = 100 * g_cov / g_total
     if (agg + 0 < threshold + 0) {
       printf("aggregate coverage FAILED: %.1f%% < %.1f%%\n", agg, threshold + 0); rc = 1
     } else {

@@ -1262,7 +1262,7 @@ describe("mpp harness", () => {
     // The x402-upto settle path prepends idempotent createPayee + createTreasury
     // ATA instructions (see expectPaymentChannelSettlement); the SDK session
     // close path builds exactly [ed25519, settle, distribute] with NO create-ATA
-    // (see expectSessionChannelSettlement). Against the pinned d1dee6b program a
+    // (see expectSessionChannelSettlement). Against the pinned 0c07d575 program a
     // session close to a payee with no ATA does not revert — it returns 200 with
     // a settledSignature — but the on-chain distribute neither creates the payee
     // ATA nor delivers the payout: the recipient receives 0 and no ATA is
@@ -1733,10 +1733,13 @@ function expectSessionChannelSettlement(
   expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
   expect(verify.data[0], "Ed25519 signature count").toBe(1);
   expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
-  expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
-  expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
-    primaryDelta(scenario),
-  );
+  expect(readU16Le(verify.data, 12), "voucher message length").toBe(50);
+  expect(verify.data[112], "voucher magic tag").toBe(0x56);
+  expect(verify.data[113], "voucher magic version").toBe(0x01);
+  expect(
+    readU64Le(verify.data, 112 + 2 + 32),
+    "voucher cumulative amount",
+  ).toBe(primaryDelta(scenario));
 
   // settle_and_finalize (discriminator 4), hasVoucher = 1.
   expect(accountAt(message, settle.programAddressIndex)).toBe(

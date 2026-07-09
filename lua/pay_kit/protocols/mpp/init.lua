@@ -31,27 +31,32 @@ local M = {}
 local Adapter = {}
 Adapter.__index = Adapter
 
--- Emit a one-shot warning when the MPP replay store falls back to the
--- volatile in-memory default. Localnet is exempt (single-worker dev is the
--- expected shape there); mainnet/devnet warn so an operator who forgot to
--- wire a shared store is told at first server build rather than after a
--- cross-worker double-spend.
+-- Emit a one-shot warning for the localnet-only volatile fallback. Mainnet
+-- and devnet fail at construction without an explicit shared replay store.
 local _warned_volatile_replay_store = false
 local function warn_volatile_replay_store(network)
-  if network == 'localnet' then return end
+  if network ~= 'localnet' then return end
   if _warned_volatile_replay_store then return end
   _warned_volatile_replay_store = true
   local msg = 'pay_kit: MPP replay protection is using the default in-memory ' ..
-    'store, which is process-local and lost on restart. On a multi-worker or ' ..
-    'multi-node deploy a settled signature can be replayed against another ' ..
-    'worker. Supply config.mpp.replay_store with a shared (ngx.shared.dict / ' ..
-    'Redis-backed) store in production.'
+    'store for localnet. It is process-local and must not be used for devnet ' ..
+    'or mainnet; configure config.mpp.replay_store there.'
   local ngx_ref = rawget(_G, 'ngx')
   if ngx_ref and ngx_ref.log and ngx_ref.WARN then
     ngx_ref.log(ngx_ref.WARN, msg)
   else
     io.stderr:write('[pay_kit] WARN: ' .. msg .. '\n')
   end
+end
+
+local function replay_store_is_shared(replay_store)
+  if type(replay_store) ~= 'table' then return false end
+  if type(replay_store.is_shared) == 'function' then
+    return replay_store:is_shared() == true
+  end
+  -- Custom Redis/Postgres adapters can declare the capability without
+  -- inheriting this package's shared-dict implementation.
+  return replay_store.shared == true or replay_store.durable == true
 end
 
 local function map_pay_kit_network(network)
@@ -83,14 +88,7 @@ local function build_mpp_server(config, gate, store)
     fee_payer_signer = mpp_signer.from_bytes(sgn:_secret_key_bytes())
   end
 
-  local rpc_mod = require('pay_kit.solana.rpc')
-  local rpc_transport_mod = require('pay_kit.solana.rpc_transport')
-  local charge_handler = require('pay_kit.protocols.mpp.server.charge_handler')
-  local solana_verify  = require('pay_kit.protocols.mpp.server.solana_verify')
   local store_mod      = require('pay_kit.protocols.mpp.store')
-
-  local rpc = rpc_mod.new({url = config.rpc_url, transport = rpc_transport_mod.new()})
-  local verifier_bundle = solana_verify.new_real_verifier({pull_signer = fee_payer_signer})
   -- The legacy mpp.store expects (key, value) semantics on
   -- put_if_absent (it stores arbitrary values keyed by signature).
   -- pay_kit.store uses (key, ttl) for the x402 replay path, so
@@ -98,20 +96,30 @@ local function build_mpp_server(config, gate, store)
   -- store. The `store` argument from the dispatcher is reserved for
   -- the x402 adapter.
   local _ = store
-  -- Replay store. The default `store.memory()` is process-local and lost
-  -- on worker restart, so it only protects against replays seen by the
-  -- SAME worker since boot - acceptable for single-worker dev, NOT for a
-  -- multi-worker / multi-node production deploy where a replay reservation
-  -- must be visible across all settlers. Callers wire a shared store
-  -- (e.g. an ngx.shared.dict / Redis-backed adapter) via
-  -- `config.mpp.replay_store`; when none is supplied we fall back to the
-  -- volatile in-memory store and warn once so the dev-only nature is
-  -- explicit. Mirrors the Ruby/PHP "default volatile replay store" caveat.
+  -- Replay reservations must be shared outside localnet. A process-local
+  -- fallback is retained only for explicitly local development, with a
+  -- one-shot warning so it cannot be mistaken for deployable protection.
   local replay_store = config.mpp and config.mpp.replay_store
   if not replay_store then
+    if network ~= 'localnet' then
+      error('MPP replay store is required outside localnet; set config.mpp.replay_store')
+    end
     replay_store = store_mod.memory()
     warn_volatile_replay_store(network)
   end
+  if network ~= 'localnet' and not replay_store_is_shared(replay_store) then
+    error('MPP replay store must be shared outside localnet; process-local stores are unsafe')
+  end
+
+  -- Enforce the replay-store policy before loading or initializing transport
+  -- dependencies. A production configuration error must fail deterministically
+  -- even in a minimal environment that has not installed LuaSocket yet.
+  local rpc_mod = require('pay_kit.solana.rpc')
+  local rpc_transport_mod = require('pay_kit.solana.rpc_transport')
+  local charge_handler = require('pay_kit.protocols.mpp.server.charge_handler')
+  local solana_verify  = require('pay_kit.protocols.mpp.server.solana_verify')
+  local rpc = rpc_mod.new({url = config.rpc_url, transport = rpc_transport_mod.new()})
+  local verifier_bundle = solana_verify.new_real_verifier({pull_signer = fee_payer_signer})
   local handler = charge_handler.new({
     rpc                       = rpc,
     network                   = network,
@@ -129,6 +137,7 @@ local function build_mpp_server(config, gate, store)
     realm          = config.mpp.realm,
     network        = network,
     rpc_url        = config.rpc_url,
+    store          = replay_store,
     verify_payment = handler:as_callback(),
   }
   if fee_payer_signer then

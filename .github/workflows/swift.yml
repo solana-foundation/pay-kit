@@ -22,6 +22,8 @@ jobs:
       - name: Enforce Swift coverage floor (>=90)
         # Sources line coverage is ~95%. Gated at 90 to match the other SDKs.
         run: bash swift/scripts/check_coverage.sh 90
+      - name: Check Swift coverage gate fails closed
+        run: bash swift/scripts/check_coverage_test.sh
       - name: Upload Swift coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
