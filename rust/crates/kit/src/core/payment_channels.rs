@@ -210,16 +210,16 @@ pub async fn cosign_fee_payer(
     let account_keys = tx.message.static_account_keys();
     if account_keys.first() != Some(operator) {
         return Err(Error::Other(
-            "open transaction fee payer must be the advertised operator".into(),
+            "open transaction fee payer must be the advertised fee payer".into(),
         ));
     }
     let idx = account_keys
         .iter()
         .position(|k| k == operator)
-        .ok_or_else(|| Error::Other("operator (fee payer) not in transaction".into()))?;
+        .ok_or_else(|| Error::Other("fee payer not in transaction".into()))?;
     if idx >= tx.signatures.len() {
         return Err(Error::Other(
-            "operator is not a required signer in the transaction".into(),
+            "fee payer is not a required signer in the transaction".into(),
         ));
     }
     let msg_data = tx.message.serialize();

@@ -4,7 +4,7 @@ Self-hosted usage-based authorization. Unlike ``exact`` (one inline transfer
 settled before the handler runs), ``upto`` is two-phase: :meth:`X402Upto.verify_open`
 broadcasts the client's channel ``open`` (the signed deposit is the ceiling) and
 binds the on-chain channel state *before* the resource is served;
-:meth:`X402Upto.settle_actual` signs a single operator voucher for the metered
+:meth:`X402Upto.settle_actual` signs a receiver-authorizer voucher for the metered
 amount and submits ``settle_and_seal`` + ATA setup + ``distribute``,
 refunding ``deposit − actual`` *after* the resource is served.
 
@@ -50,7 +50,7 @@ from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
 from solana_pay_kit.protocols.x402.upto.types import (
-    UPTO_ASSET_TRANSFER_METHOD,
+    DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS,
     UPTO_SCHEME,
     UptoPayload,
     UptoRequirements,
@@ -169,7 +169,8 @@ class X402Upto:
 
     def accepts_entry(self, gate: Gate, request: Any) -> UptoRequirements:
         """Build the route-pinned ``upto`` requirement (the server's offer)."""
-        operator = self._signer().pubkey()
+        fee_payer = self._signer().pubkey()
+        receiver_authorizer = fee_payer
         coin = gate.amount.primary_coin()
         coin_value = coin.value if coin is not None else self._config.stablecoins[0].value
         label = self._config.network.mints_label()
@@ -196,11 +197,11 @@ class X402Upto:
             "payTo": pay_to,
             "maxTimeoutSeconds": _DEFAULT_MAX_TIMEOUT_SECONDS,
             "extra": {
-                "assetTransferMethod": UPTO_ASSET_TRANSFER_METHOD,
                 "decimals": 6,
                 "tokenProgram": token_program,
-                "facilitatorAddress": operator,
-                "channelProgram": self._channel_program,
+                "feePayer": fee_payer,
+                "receiverAuthorizer": receiver_authorizer,
+                "withdrawDelay": DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS,
             },
         }
         blockhash, recent_slot = self._fetch_recent_state()
@@ -238,7 +239,8 @@ class X402Upto:
         import time
 
         signer = self._signer()
-        operator = signer.pubkey()
+        fee_payer = signer.pubkey()
+        receiver_authorizer = fee_payer
 
         header = _payment_signature_header(request)
         if not header:
@@ -253,22 +255,25 @@ class X402Upto:
 
         requirements = self.accepts_entry(gate, request)
         payload = _parse_payload(envelope.get("payload"))
-        verify_upto_payload(payload, requirements, operator, int(time.time()))
+        verify_upto_payload(payload, requirements, receiver_authorizer, int(time.time()))
 
-        # Phase 3: network + facilitatorAddress bound to this server's offer. Network is
+        # Phase 3: network + role keys bound to this server's offer. Network is
         # read from `accepted` (the canonical PaymentRequirements), per spec.
         if accepted.get("network") != requirements["network"]:
             raise InvalidProofError(
                 f"network mismatch: payload {accepted.get('network')!r}, expected {requirements['network']!r}",
                 code="payment_invalid",
             )
-        if requirements["extra"].get("facilitatorAddress") != operator:
-            raise InvalidProofError("extra.facilitatorAddress is not this server's key", code="payment_invalid")
+        if requirements["extra"].get("feePayer") != fee_payer:
+            raise InvalidProofError("extra.feePayer is not this server's key", code="payment_invalid")
+        if requirements["extra"].get("receiverAuthorizer") != receiver_authorizer:
+            raise InvalidProofError("extra.receiverAuthorizer is not this server's key", code="payment_invalid")
 
-        program_id = Pubkey.from_string(requirements["extra"].get("channelProgram") or PAYMENT_CHANNELS_PROGRAM_ID)
+        program_id = Pubkey.from_string(self._channel_program or PAYMENT_CHANNELS_PROGRAM_ID)
         mint = Pubkey.from_string(requirements["asset"])
-        operator_pubkey = Pubkey.from_string(operator)
-        payee = operator_pubkey
+        fee_payer_pubkey = Pubkey.from_string(fee_payer)
+        receiver_authorizer_pubkey = Pubkey.from_string(receiver_authorizer)
+        payee = receiver_authorizer_pubkey
         distribution = self._distribution(requirements)
         token_program = Pubkey.from_string(requirements["extra"]["tokenProgram"])
         channel_id = Pubkey.from_string(payload["channelId"])
@@ -304,18 +309,22 @@ class X402Upto:
                 account_keys,
                 instructions,
                 program_id=program_id,
-                operator=operator_pubkey,
+                fee_payer=fee_payer_pubkey,
+                receiver_authorizer=receiver_authorizer_pubkey,
                 payer=payer,
                 payee=payee,
                 mint=mint,
                 token_program=token_program,
                 channel_id=channel_id,
                 max_amount=max_amount,
+                withdraw_delay=int(requirements["extra"]["withdrawDelay"]),
+                payload_nonce=payload["nonce"],
+                payload_open_slot=payload["openSlot"],
                 recent_slot=challenged_slot,
             )
-            if not account_keys or account_keys[0] != operator:
+            if not account_keys or account_keys[0] != fee_payer:
                 raise InvalidProofError(
-                    "open transaction fee payer must be the advertised operator", code="payment_invalid"
+                    "open transaction fee payer must be the advertised fee payer", code="payment_invalid"
                 )
 
             cosigned = _cosign_fee_payer(open_tx, signer)
@@ -323,7 +332,17 @@ class X402Upto:
             await rpc.await_confirmation(str(sent.value))
 
             channel = await self._fetch_channel(rpc, channel_id, program_id)
-            self._validate_channel_state(channel, operator_pubkey, payer, payee, mint, max_amount, distribution)
+            self._validate_channel_state(
+                channel,
+                fee_payer_pubkey,
+                receiver_authorizer_pubkey,
+                payer,
+                payee,
+                mint,
+                max_amount,
+                int(requirements["extra"]["withdrawDelay"]),
+                distribution,
+            )
 
             verified = VerifiedUptoOpen(
                 channel_id=channel_id,
@@ -357,15 +376,16 @@ class X402Upto:
         hence the no-voucher path.
         """
         signer = self._signer()
-        operator = Pubkey.from_string(signer.pubkey())
+        fee_payer = Pubkey.from_string(signer.pubkey())
+        receiver_authorizer = fee_payer
         try:
             assert_settlement_within_ceiling(actual, verified.max_amount)
 
             if actual == 0:
                 instructions: list[Instruction] = build_settle_and_seal_instructions(
-                    payee=operator,
+                    payee=receiver_authorizer,
                     channel=verified.channel_id,
-                    authorized_signer=operator,
+                    authorized_signer=receiver_authorizer,
                     signature=None,
                     cumulative=0,
                     expires_at=verified.expires_at,
@@ -379,9 +399,9 @@ class X402Upto:
                         f"voucher signature length {len(sig_bytes)}, want 64", code="payment_invalid"
                     )
                 instructions = build_settle_and_seal_instructions(
-                    payee=operator,
+                    payee=receiver_authorizer,
                     channel=verified.channel_id,
-                    authorized_signer=operator,
+                    authorized_signer=receiver_authorizer,
                     signature=sig_bytes,
                     cumulative=actual,
                     expires_at=verified.expires_at,
@@ -405,14 +425,14 @@ class X402Upto:
                 rent_payer=verified.rent_payer,
             )
             create_payee_ata = create_idempotent_associated_token_account(
-                operator, payee, verified.mint, verified.token_program
+                fee_payer, payee, verified.mint, verified.token_program
             )
             create_treasury_ata = create_idempotent_associated_token_account(
-                operator, treasury, verified.mint, verified.token_program
+                fee_payer, treasury, verified.mint, verified.token_program
             )
             create_recipient_atas = [
                 create_idempotent_associated_token_account(
-                    operator, entry.recipient, verified.mint, verified.token_program
+                    fee_payer, entry.recipient, verified.mint, verified.token_program
                 )
                 for entry in verified.distribution
             ]
@@ -421,7 +441,7 @@ class X402Upto:
             rpc = SolanaRpc(self._config.effective_rpc_url())
             try:
                 blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-                wire = _sign_legacy_transaction(instructions, operator, blockhash, signer)
+                wire = _sign_legacy_transaction(instructions, fee_payer, blockhash, signer)
                 sent = await rpc.send_raw_transaction(wire)
                 signature = str(sent.value)
                 await rpc.await_confirmation(signature)
@@ -443,7 +463,7 @@ class X402Upto:
     def _signer(self) -> LocalSigner:
         signer = self._config.effective_x402_signer()
         if signer is None:
-            raise InvalidProofError("solana_pay_kit: x402 upto requires operator.signer", code="payment_invalid")
+            raise InvalidProofError("solana_pay_kit: x402 upto requires a fee payer signer", code="payment_invalid")
         return signer
 
     def _reserve_channel(self, channel_id: str) -> None:
@@ -486,14 +506,11 @@ class X402Upto:
         return value if isinstance(value, str) and value != "" else None
 
     def _distribution(self, requirements: UptoRequirements) -> list[Distribution]:
-        operator = Pubkey.from_string(self._signer().pubkey())
+        receiver_authorizer = Pubkey.from_string(requirements["extra"]["receiverAuthorizer"])
         beneficiary = Pubkey.from_string(requirements["payTo"])
-        if beneficiary == operator:
+        if beneficiary == receiver_authorizer:
             return []
-        fee_bps = int(requirements["extra"].get("facilitatorFee", 0))
-        if not 0 <= fee_bps <= 10_000:
-            raise InvalidProofError("facilitatorFee must be between 0 and 10000 basis points", code="payment_invalid")
-        return [Distribution(recipient=beneficiary, bps=10_000 - fee_bps)]
+        return [Distribution(recipient=beneficiary, bps=10_000)]
 
     async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Any:
         account = await rpc.get_account_info(str(channel_id))
@@ -514,11 +531,13 @@ class X402Upto:
     def _validate_channel_state(
         self,
         channel: Any,
-        operator: Pubkey,
+        fee_payer: Pubkey,
+        receiver_authorizer: Pubkey,
         payer: Pubkey,
         payee: Pubkey,
         mint: Pubkey,
         max_amount: int,
+        withdraw_delay: int,
         distribution: list[Distribution],
     ) -> None:
         if int(channel.status) != _CHANNEL_STATUS_OPEN:
@@ -534,10 +553,15 @@ class X402Upto:
             raise InvalidProofError(
                 "channel distribution does not match the expected recipient split", code="payment_invalid"
             )
-        if str(channel.authorizedSigner) != str(operator):
-            raise InvalidProofError("channel authorized_signer is not the operator", code="payment_invalid")
-        if str(channel.rentPayer) != str(operator):
-            raise InvalidProofError("channel rent_payer is not the operator", code="payment_invalid")
+        if str(channel.authorizedSigner) != str(receiver_authorizer):
+            raise InvalidProofError("channel authorized_signer is not the receiver authorizer", code="payment_invalid")
+        if str(channel.rentPayer) != str(fee_payer):
+            raise InvalidProofError("channel rent_payer is not the fee payer", code="payment_invalid")
+        if int(channel.gracePeriod) != withdraw_delay:
+            raise InvalidProofError(
+                f"channel withdraw delay {channel.gracePeriod} does not match advertised {withdraw_delay}",
+                code="payment_invalid",
+            )
         if int(channel.deposit) != max_amount:
             raise InvalidProofError(
                 f"on-chain deposit {channel.deposit} must equal authorized maximum {max_amount}",
@@ -571,7 +595,7 @@ def _parse_payload(raw: Any) -> UptoPayload:
     if not isinstance(raw, dict):
         raise InvalidProofError("upto payload missing or malformed", code="payment_invalid")
     payload = cast("dict[str, Any]", raw)
-    for key in ("from", "maxAmount", "channelId", "deposit", "authorizedSigner"):
+    for key in ("from", "maxAmount", "channelId", "deposit", "authorizedSigner", "nonce", "openSlot"):
         if not isinstance(payload.get(key), str) or not payload[key]:
             raise InvalidProofError(f"upto payload missing {key}", code="payment_invalid")
     return cast("UptoPayload", payload)
@@ -608,10 +632,10 @@ def _decode_transaction(transaction_b64: str) -> tuple[list[str], list[Any]]:
 
 
 def _cosign_fee_payer(transaction_b64: str, signer: LocalSigner) -> bytes:
-    """Splice the operator/fee-payer signature into the client-built open tx.
+    """Splice the fee-payer signature into the client-built open tx.
 
-    The client built the open with the operator as fee payer (slot 0) and signed
-    only its own (payer) slot; the operator completes the fee-payer signature and
+    The client built the open with the advertised fee payer (slot 0) and signed
+    only its own (payer) slot; the server completes the fee-payer signature and
     the result is broadcastable. Mirrors the exact-scheme cosign.
     """
     from solders.message import to_bytes_versioned
@@ -654,10 +678,10 @@ def _sign_legacy_transaction(
     blockhash: Hash,
     signer: LocalSigner,
 ) -> bytes:
-    """Build a single-signer legacy transaction, sign with the operator, return wire.
+    """Build a single-signer legacy transaction, sign with the fee payer, return wire.
 
-    The operator is the only required signer across settle_and_seal, the ATA
-    creates, and distribute, so the wire is ``[1][sig64][message]``. Building the
+    The current Python config uses one signer for both advertised roles, so the
+    wire is ``[1][sig64][message]``. Building the
     message + signing via the abstract signer keeps the path KMS-agnostic.
     """
     message = Message.new_with_blockhash(instructions, fee_payer, blockhash)

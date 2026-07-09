@@ -39,7 +39,7 @@
         "@solana/mpp": "workspace:^",
         "@types/node": "^25.5.0",
         "@x402/core": "file:../../.x402-vendor/x402-core-2.16.0.tgz",
-        "@x402/svm": "file:../../.x402-vendor/x402-svm-2.16.0.tgz",
+        "@x402/svm": "file:../../.x402-vendor/x402-svm-2.16.0-paykit.1.tgz",
         "tsup": "^8.5.0"
     }
 }

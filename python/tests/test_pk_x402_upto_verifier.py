@@ -25,7 +25,6 @@ from solana_pay_kit.protocols.x402.client.upto import (
 )
 from solana_pay_kit.protocols.x402.upto import _decode_transaction
 from solana_pay_kit.protocols.x402.upto.types import (
-    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT,
     UPTO_SCHEME,
     UptoPayload,
@@ -57,10 +56,11 @@ def _requirements(operator: str, payee: str, *, amount: int = MAX) -> UptoRequir
         "payTo": payee,
         "maxTimeoutSeconds": 300,
         "extra": {
-            "assetTransferMethod": UPTO_ASSET_TRANSFER_METHOD,
             "decimals": 6,
             "tokenProgram": TOKEN_PROGRAM,
-            "facilitatorAddress": operator,
+            "feePayer": operator,
+            "receiverAuthorizer": operator,
+            "withdrawDelay": 900,
             "recentBlockhash": BH,
             "recentSlot": "4242",
         },
@@ -74,10 +74,11 @@ def _payload(operator: str, *, channel_id: str = "111111111111111111111111111111
         "maxAmount": str(MAX),
         "expiresAt": now + 300,
         "validAfter": now - 10,
-        "nonce": "n1",
+        "nonce": "7",
         "channelId": channel_id,
         "deposit": str(MAX),
         "authorizedSigner": operator,
+        "openSlot": "4242",
     }
 
 
@@ -100,14 +101,6 @@ def test_parse_base_units_rejects(bad: str) -> None:
 def test_verify_payload_happy() -> None:
     _, op = _operator()
     verify_upto_payload(_payload(op), _requirements(op, str(Keypair().pubkey())), op, int(time.time()))
-
-
-def test_verify_payload_wrong_asset_transfer_method() -> None:
-    _, op = _operator()
-    req = _requirements(op, str(Keypair().pubkey()))
-    req["extra"]["assetTransferMethod"] = "permit"
-    with pytest.raises(InvalidProofError, match="assetTransferMethod"):
-        verify_upto_payload(_payload(op), req, op, int(time.time()))
 
 
 def test_verify_payload_amount_mismatch() -> None:
@@ -145,11 +138,23 @@ def test_verify_payload_expired() -> None:
         verify_upto_payload(p, _requirements(op, str(Keypair().pubkey())), op, now)
 
 
-def test_verify_payload_authorized_signer_not_operator() -> None:
+def test_verify_payload_rejects_zero_or_boundary_expiry() -> None:
+    _, op = _operator()
+    p = _payload(op)
+    now = int(time.time())
+    p["expiresAt"] = 0
+    with pytest.raises(InvalidProofError, match="expired"):
+        verify_upto_payload(p, _requirements(op, str(Keypair().pubkey())), op, now)
+    p["expiresAt"] = now
+    with pytest.raises(InvalidProofError, match="expired"):
+        verify_upto_payload(p, _requirements(op, str(Keypair().pubkey())), op, now)
+
+
+def test_verify_payload_authorized_signer_not_receiver_authorizer() -> None:
     _, op = _operator()
     p = _payload(op)
     p["authorizedSigner"] = str(Keypair().pubkey())
-    with pytest.raises(InvalidProofError, match="authorized_signer must be the operator"):
+    with pytest.raises(InvalidProofError, match="receiver authorizer"):
         verify_upto_payload(p, _requirements(op, str(Keypair().pubkey())), op, int(time.time()))
 
 
@@ -201,15 +206,6 @@ def test_parse_upto_challenge_none_when_absent() -> None:
     assert parse_upto_challenge({}, "{}") is None
 
 
-def test_build_payload_requires_asset_transfer_method() -> None:
-    _, op = _operator()
-    client = LocalSigner.from_keypair(Keypair())
-    req = _requirements(op, str(Keypair().pubkey()))
-    req["extra"]["assetTransferMethod"] = "permit"
-    with pytest.raises(ValueError, match="payment-channel asset transfer method"):
-        build_upto_payload(client, req, int(time.time()) + 300)
-
-
 def test_build_payload_requires_blockhash() -> None:
     _, op = _operator()
     client = LocalSigner.from_keypair(Keypair())
@@ -231,19 +227,26 @@ def test_client_open_tx_passes_engine_validator() -> None:
 
     open_tx = payload.get("openTransaction", "")
     account_keys, instructions = _decode_transaction(open_tx)
-    # Fee payer slot 0 is the operator; the client signed only its own slot.
+    # Fee payer slot 0 is the advertised fee payer; the client signed only its own slot.
     assert account_keys[0] == op
+    assert payload["nonce"] != "n"
+    assert payload["nonce"].isdigit()
+    assert payload["openSlot"] == "4242"
     validate_upto_open_instruction(
         account_keys,
         instructions,
         program_id=_default_program(),
-        operator=Pubkey.from_string(op),
+        fee_payer=Pubkey.from_string(op),
+        receiver_authorizer=Pubkey.from_string(op),
         payer=Pubkey.from_string(client.pubkey()),
         payee=Pubkey.from_string(op),
         mint=Pubkey.from_string(MINT),
         token_program=Pubkey.from_string(TOKEN_PROGRAM),
         channel_id=Pubkey.from_string(payload["channelId"]),
         max_amount=MAX,
+        withdraw_delay=900,
+        payload_nonce=payload["nonce"],
+        payload_open_slot=payload["openSlot"],
         recent_slot=4242,  # the challenged extra.recentSlot the client built against
     )
 
@@ -272,13 +275,17 @@ def test_client_open_tx_validator_rejects_wrong_payee() -> None:
             account_keys,
             instructions,
             program_id=_default_program(),
-            operator=Pubkey.from_string(op),
+            fee_payer=Pubkey.from_string(op),
+            receiver_authorizer=Pubkey.from_string(op),
             payer=Pubkey.from_string(client.pubkey()),
             payee=Pubkey.from_string(str(Keypair().pubkey())),  # wrong payee
             mint=Pubkey.from_string(MINT),
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
             channel_id=Pubkey.from_string(payload["channelId"]),
             max_amount=MAX,
+            withdraw_delay=900,
+            payload_nonce=payload["nonce"],
+            payload_open_slot=payload["openSlot"],
             recent_slot=4242,
         )
 
@@ -298,19 +305,29 @@ def test_client_open_tx_validator_binds_open_args() -> None:
     def check(**overrides):
         kwargs = {
             "program_id": _default_program(),
-            "operator": Pubkey.from_string(op),
+            "fee_payer": Pubkey.from_string(op),
+            "receiver_authorizer": Pubkey.from_string(op),
             "payer": Pubkey.from_string(client.pubkey()),
             "payee": Pubkey.from_string(op),
             "mint": Pubkey.from_string(MINT),
             "token_program": Pubkey.from_string(TOKEN_PROGRAM),
             "channel_id": Pubkey.from_string(payload["channelId"]),
             "max_amount": MAX,
+            "withdraw_delay": 900,
+            "payload_nonce": payload["nonce"],
+            "payload_open_slot": payload["openSlot"],
             "recent_slot": 4242,
         }
         kwargs.update(overrides)
         validate_upto_open_instruction(account_keys, instructions, **kwargs)
 
     # Deposit must equal the authorized maximum.
+    with pytest.raises(InvalidProofError, match="payload nonce"):
+        check(payload_nonce="8")
+    with pytest.raises(InvalidProofError, match="payload openSlot"):
+        check(payload_open_slot="4243")
+    with pytest.raises(InvalidProofError, match="withdraw delay"):
+        check(withdraw_delay=901)
     with pytest.raises(InvalidProofError, match="authorized maximum"):
         check(max_amount=MAX + 1)
     # A channel id that is not the PDA derived from the args fails the bind
