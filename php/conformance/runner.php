@@ -24,10 +24,9 @@ declare(strict_types=1);
  *                               first, which a server-only SDK cannot do.
  *   - build-transaction      -> unsupported (no client build path)
  *
- * x402-exact (intent === "x402-exact"): the cross-SDK oracle is the decoded
- * ENVELOPE shape, not the signed Solana transaction inside
- * payload.transaction (that is the harness matrix's job). PHP is server-only,
- * so:
+ * x402-exact (intent === "x402-exact"): PHP verifies payment envelopes and
+ * directly exercises the signed transaction's exact structural verifier.
+ * PHP is server-only, so:
  *
  *   - build-transaction (x402)  -> unsupported (no client envelope builder)
  *   - verify-transaction (x402) -> supported: drive the x402 envelope verify
@@ -40,6 +39,9 @@ declare(strict_types=1);
  *                                  and the rust spine line-for-line. The
  *                                  inner-transaction 11-rule structural check
  *                                  and broadcast are out of scope here.
+ *   - verify-x402-transaction   -> supported: run the real 11-rule exact
+ *                                  verifier and expose canonical rejects as
+ *                                  x402ExactRejectCode.
  *
  * For any mode this SDK cannot exercise, the runner emits a RunnerResult with
  * outcome "unsupported-mode" so the driver SKIPs that vector for PHP rather
@@ -63,6 +65,7 @@ use PayKit\Protocols\Mpp\Core\ChallengeEcho;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;
+use PayKit\Protocols\X402\Exact\Verifier;
 use PayKit\Protocols\X402\Exact\PaymentExtensions;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
@@ -753,9 +756,8 @@ function verify_x402_header(string $header, array $route): array
 }
 
 /**
- * Drive the x402-exact intent. PHP is server-only, so build vectors are
- * unsupported (no client envelope builder) and verify vectors run the
- * envelope-level verify against the vector's server route.
+ * Drive the x402-exact intent. Exact-transaction vectors call the production
+ * structural verifier; the envelope modes retain the server-only behavior.
  *
  * @param array<string, mixed> $vector
  * @return array<string, mixed>
@@ -765,6 +767,42 @@ function run_x402_vector(array $vector): array
     $id = Json::optionalString($vector['id'] ?? null, 'id');
     $mode = Json::optionalString($vector['mode'] ?? null, 'mode');
     $input = is_array($vector['input'] ?? null) ? Json::object($vector['input'], 'input') : [];
+
+    if ($mode === 'verify-x402-transaction') {
+        $transaction = $input['transaction'] ?? null;
+        if (!is_string($transaction) || $transaction === '') {
+            throw new InvalidArgumentException(
+                'invalid payload: verify-x402-transaction vector missing input.transaction',
+            );
+        }
+        $requirement = $input['x402ExactRequirement'] ?? null;
+        if (!is_array($requirement)) {
+            throw new InvalidArgumentException(
+                'invalid payload: verify-x402-transaction vector missing input.x402ExactRequirement',
+            );
+        }
+        $managed = $input['x402ExactManagedSigners'] ?? [];
+        if (!is_array($managed)) {
+            throw new InvalidArgumentException(
+                'invalid payload: x402ExactManagedSigners must be an array',
+            );
+        }
+        $managedSigners = [];
+        foreach ($managed as $signer) {
+            if (!is_string($signer) || $signer === '') {
+                throw new InvalidArgumentException(
+                    'invalid payload: x402ExactManagedSigners must contain non-empty strings',
+                );
+            }
+            $managedSigners[] = $signer;
+        }
+
+        Verifier::verify($transaction, $requirement, $managedSigners);
+        return [
+            'id' => $id,
+            'outcome' => 'accept',
+        ];
+    }
 
     if ($mode === 'build-transaction') {
         // PHP ships no client-side x402 envelope builder; build vectors are
@@ -952,6 +990,9 @@ try {
         $rejectCode = classify_reject($message);
         if ($rejectCode !== null) {
             $result['rejectCode'] = $rejectCode;
+        }
+        if (str_starts_with($message, 'invalid_exact_svm_payload_')) {
+            $result['x402ExactRejectCode'] = $message;
         }
         emit($result);
     }
