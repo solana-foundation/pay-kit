@@ -216,6 +216,5 @@ end
 if $PROGRAM_NAME == __FILE__
   raw = $stdin.read.to_s.strip
   response = ConformanceRunner.run(raw)
-  response["language"] = "ruby"
   $stdout.write(JSON.generate(response))
 end

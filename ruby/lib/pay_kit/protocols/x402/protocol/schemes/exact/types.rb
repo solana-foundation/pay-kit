@@ -91,21 +91,16 @@ module PayKit::Protocols::X402
           signed
         end
 
-        # Match on identifying fields only (scheme/network/asset/payTo
-        # and the canonical `extra` knobs feePayer/tokenProgram/memo).
-        # Amount and maxTimeoutSeconds are intentionally excluded: the
-        # TS reference server (harness/src/fixtures/typescript/
-        # exact-server.ts:141-143) only matches scheme/network/asset
-        # and the v2 client leaves `amount` out of `accepted` to allow
-        # a per-request facilitator to fill it in. Comparing them
-        # strictly broke cross-language harness ("No matching payment
-        # requirements" against structurally compatible payloads).
-        REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo].freeze
+        # Match on binding fields. Amount may be carried either as `amount`
+        # or `maxAmountRequired`; when a credential echoes either key it must
+        # match the route requirement, mirroring the Rust server's v2 accepted
+        # binding check.
+        REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo amount maxAmountRequired].freeze
         REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer tokenProgram memo].freeze
 
         def accepted_requirement_matches?(left, right)
           return false unless left.is_a?(Hash) && right.is_a?(Hash)
-          return false unless REQUIREMENT_IDENTITY_KEYS.all? { |key| left[key] == right[key] }
+          return false unless REQUIREMENT_IDENTITY_KEYS.all? { |key| !right.key?(key) || left[key] == right[key] }
 
           left_extra = left["extra"] || {}
           right_extra = right["extra"] || {}

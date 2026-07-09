@@ -14,6 +14,11 @@ class PayKitDispatcherTest < Minitest::Test
     yield middleware, env[::PayKit::Rack::PaymentRequired::ENV_DISPATCHER_KEY]
   end
 
+  def with_mpp_cache_config(**overrides, &block)
+    store = ::PayKit::Protocols::Mpp::MemoryStore.new
+    PayKitTestHelpers.with_config(**overrides.merge(mpp_replay_store: store), &block)
+  end
+
   def make_gate(name:, pay_to:)
     amount = ::PayKit::Helpers::Pricing.build_price(:USD, "0.10", [:USDC])
     ::PayKit::Gate.new(
@@ -57,7 +62,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_returns_same_server_for_identical_gates
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       with_dispatcher do |_middleware, dispatcher|
         gate_a = make_gate(name: :report_a, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         gate_b = make_gate(name: :report_b, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
@@ -71,7 +76,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_separates_servers_for_distinct_recipients
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       with_dispatcher do |_middleware, dispatcher|
         gate_a = make_gate(name: :a, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         gate_b = make_gate(name: :b, pay_to: "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
@@ -86,7 +91,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_operator_fee_payer_true_wires_signer_account_into_mpp_method
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       with_dispatcher do |_middleware, dispatcher|
         gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         server = dispatcher.send(:mpp_server_for, gate)
@@ -100,7 +105,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_operator_fee_payer_false_leaves_mpp_method_fee_payer_nil
-    PayKitTestHelpers.with_config(fee_payer: false) do
+    with_mpp_cache_config(fee_payer: false) do
       with_dispatcher do |_middleware, dispatcher|
         gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         server = dispatcher.send(:mpp_server_for, gate)
@@ -111,7 +116,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_threads_expires_in_into_challenge_store
-    PayKitTestHelpers.with_config(mpp_expires_in: 42) do
+    with_mpp_cache_config(mpp_expires_in: 42) do
       with_dispatcher do |_middleware, dispatcher|
         gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         server = dispatcher.send(:mpp_server_for, gate)
@@ -122,7 +127,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_survives_across_dispatchers_on_the_same_middleware
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       middleware = ::PayKit::Rack::PaymentRequired.new(->(_env) { [200, {}, [""]] }, config: PayKit.config)
       env1 = {"PATH_INFO" => "/", "REQUEST_METHOD" => "GET", "rack.input" => StringIO.new}
       env2 = {"PATH_INFO" => "/", "REQUEST_METHOD" => "GET", "rack.input" => StringIO.new}

@@ -48,18 +48,21 @@ module PayKit::Protocols::Mpp
   #   )
   #
   # PRODUCTION NOTE: `replay_store` defaults to a volatile in-memory store
-  # that is NOT safe for production use. It loses all replay markers on
-  # process restart and is not shared across workers or hosts. Supply a
-  # durable, process-shared store (e.g. Redis or Postgres-backed) in
-  # production to prevent same-signature replay across restarts.
+  # on localnet only. Non-localnet servers must supply a durable,
+  # process-shared store (e.g. Redis or Postgres-backed) to prevent
+  # same-signature replay across restarts.
   def self.create(method:, secret_key:, realm: DEFAULT_REALM, replay_store: DEV_ONLY_MEMORY_STORE,
     settlement_header: Server::Charge::Handler::DEFAULT_SETTLEMENT_HEADER,
     expires_in: Protocol::Core::ChallengeStore::DEFAULT_EXPIRES_SECONDS)
-    if replay_store == DEV_ONLY_MEMORY_STORE
+    if replay_store == DEV_ONLY_MEMORY_STORE || replay_store.nil?
+      unless method.respond_to?(:network) && method.network.to_s == Protocol::Solana::NETWORK_LOCALNET
+        raise ::PayKit::ConfigurationError,
+          "PayKit::Protocols::Mpp.create requires replay_store for #{method.respond_to?(:network) ? method.network : "non-localnet"}"
+      end
       warn "[Mpp] WARNING: no replay_store supplied to PayKit::Protocols::Mpp.create — " \
            "defaulting to volatile MemoryStore. Replay markers are lost on " \
            "process restart and are NOT shared across workers or hosts. " \
-           "Supply a durable shared store in production."
+           "Supply a durable shared store outside localnet."
       replay_store = MemoryStore.new
     end
     Server::Charge.new(

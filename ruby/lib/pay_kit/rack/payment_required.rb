@@ -255,12 +255,13 @@ module PayKit
         rpc = @config.effective_rpc_url
         realm = @config.mpp.realm
         expires_in = @config.mpp.expires_in
+        replay_store = @config.mpp.replay_store
         fee_payer_account = if @config.operator.fee_payer? && @config.operator.signer.respond_to?(:to_pay_core_account)
           @config.operator.signer.to_pay_core_account
         end
         fee_payer_pubkey = fee_payer_account&.public_key&.to_s
 
-        key = [recipient, currency, network, rpc, secret, realm, expires_in, fee_payer_pubkey].freeze
+        key = [recipient, currency, network, rpc, secret, realm, expires_in, fee_payer_pubkey, replay_store.object_id].freeze
 
         @mpp_method_cache.fetch(key) do
           method = ::PayKit::Protocols::Mpp::Protocol::Solana.charge(
@@ -274,6 +275,7 @@ module PayKit
             method: method,
             secret_key: secret,
             realm: realm,
+            replay_store: replay_store,
             expires_in: expires_in
           )
         end

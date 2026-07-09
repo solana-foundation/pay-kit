@@ -8,16 +8,16 @@ require_relative "../../../test_helper"
 class DevStoreWarningTest < Minitest::Test
   include RubyMppTestHelpers
 
-  def method_fixture
+  def method_fixture(network: "localnet")
     PayKit::Protocols::Mpp::Protocol::Solana.charge(
       recipient: pubkey(2),
       currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      network: "localnet",
+      network: network,
       rpc: "http://127.0.0.1:8899"
     )
   end
 
-  # When no replay_store is passed, PayKit::Protocols::Mpp.create must:
+  # When no replay_store is passed on localnet, PayKit::Protocols::Mpp.create must:
   #   (a) emit a warning to stderr that includes "MemoryStore" and "no replay_store"
   #   (b) still return a working PayKit::Protocols::Mpp::Server::Charge instance
   def test_no_store_argument_emits_dev_warning
@@ -32,7 +32,19 @@ class DevStoreWarningTest < Minitest::Test
     refute_nil warned, "expected a warning to be emitted"
     assert_match(/no replay_store/i, warned)
     assert_match(/MemoryStore/i, warned)
-    assert_match(/production/i, warned)
+    assert_match(/outside localnet/i, warned)
+  end
+
+  def test_no_store_argument_rejects_non_localnet
+    error = assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "devnet"),
+        secret_key: ("test-secret-" + ("0" * 32))
+      )
+    end
+
+    assert_match(/requires replay_store/i, error.message)
+    assert_match(/devnet/, error.message)
   end
 
   # When an explicit replay_store is passed (even a MemoryStore), no
