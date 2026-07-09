@@ -50,10 +50,10 @@ type X402Offer struct {
 // advertised offer fields the real x402 exact structural verifier checks the
 // signed transaction against.
 type X402ExactRequirement struct {
-	Asset string `json:"asset"`
-	PayTo string `json:"payTo"`
+	Asset  string `json:"asset"`
+	PayTo  string `json:"payTo"`
 	Amount string `json:"amount"`
-	Extra struct {
+	Extra  struct {
 		TokenProgram string `json:"tokenProgram"`
 		Memo         string `json:"memo"`
 	} `json:"extra"`
