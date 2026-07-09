@@ -188,14 +188,13 @@ module PayKit
     end
 
     class MppConfig
-      attr_accessor :realm, :expires_in, :replay_store
+      attr_accessor :realm, :expires_in
       attr_reader :challenge_binding_secret
 
       def initialize
         @realm = "App"
         @challenge_binding_secret = nil
         @expires_in = 300
-        @replay_store = nil
       end
 
       # Server-side HMAC secret used for stateless challenge binding

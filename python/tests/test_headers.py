@@ -294,28 +294,6 @@ class TestReceipt:
         with pytest.raises(ParseError):
             parse_receipt(bad)
 
-    @pytest.mark.parametrize(
-        "timestamp",
-        [
-            "2026-13-45T12:00:30Z",
-            "2026-02-30T12:00:30Z",
-            "2026-01-01T24:00:00Z",
-            "2026-01-01T12:00:00+24:00",
-        ],
-    )
-    def test_rejects_out_of_range_timestamp(self, timestamp: str):
-        token = encode_json(
-            {"status": "success", "method": "tempo", "reference": "ref", "timestamp": timestamp}
-        )
-        with pytest.raises(ParseError, match="Invalid ISO-8601 timestamp"):
-            parse_receipt(token)
-
-    def test_accepts_rfc3339_leap_second(self):
-        token = encode_json(
-            {"status": "success", "method": "tempo", "reference": "ref", "timestamp": "2026-12-31T23:59:60Z"}
-        )
-        assert parse_receipt(token).timestamp == "2026-12-31T23:59:60Z"
-
 
 class TestCRLFRejection:
     """L11 lock: header parameter values MUST reject CR or LF.

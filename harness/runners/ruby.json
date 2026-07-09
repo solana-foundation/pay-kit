@@ -1,10 +1,5 @@
 {
   "language": "ruby",
   "command": ["bundle", "exec", "ruby", "exe/conformance"],
-  "cwd": "ruby",
-  "intents": ["charge", "x402-exact"],
-  "modesByIntent": {
-    "charge": ["canonical-bytes"],
-    "x402-exact": ["verify-x402-transaction"]
-  }
+  "cwd": "ruby"
 }

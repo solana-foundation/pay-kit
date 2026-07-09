@@ -31,12 +31,6 @@ function MemoryStore:put_if_absent(key, value)
   return true
 end
 
--- A process-local table cannot prevent a replay that lands on another worker.
--- It is localnet-only, even when an application passes it explicitly.
-function MemoryStore:is_shared()
-  return false
-end
-
 local M = {}
 
 function M.memory()

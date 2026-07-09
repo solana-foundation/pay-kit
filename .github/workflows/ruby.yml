@@ -59,13 +59,7 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: ruby
-      # The dual-protocol smoke launches the Rust x402 client. Compile it before
-      # the harness's 120-second adapter-output deadline, as the other Rust
-      # client legs do.
       - uses: ./.github/actions/setup-harness
-        with:
-          cargo-bins: "paykit-harness-bins:x402_harness_client"
-          cargo-cache-key: ruby
       # IO-cap regression tests for the hand-rolled Ruby harness HTTP server
       # (harness/ruby-server/server.rb): a header value / count past the cap
       # returns 431 and an oversized declared body returns 413. Run from ruby/

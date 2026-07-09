@@ -109,12 +109,6 @@ function SharedDictStore:put_if_absent(key, value)
   error('shared dict put_if_absent failed: ' .. tostring(err))
 end
 
--- The underlying `ngx.shared.DICT:add` operation is atomic across workers.
--- This marker lets callers reject process-local stores outside localnet.
-function SharedDictStore:is_shared()
-  return true
-end
-
 M.SharedDictStore = SharedDictStore
 
 return M

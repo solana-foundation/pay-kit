@@ -35,7 +35,7 @@ fn main() {
     let message_bytes = tx.message_data();
     use ed25519_dalek::Signer;
     let sig_bytes = sk.sign(&message_bytes).to_bytes();
-    tx.signatures[0] = Signature::from(sig_bytes);
+    tx.signatures[0] = Signature::from(<[u8; 64]>::from(sig_bytes));
 
     let serialized = bincode::serialize(&tx).unwrap();
     println!("PUBKEY_HEX: {}", to_hex(&pubkey_bytes));

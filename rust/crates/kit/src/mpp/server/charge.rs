@@ -3195,7 +3195,6 @@ impl std::fmt::Display for VerificationError {
 impl std::error::Error for VerificationError {}
 
 #[cfg(test)]
-#[allow(clippy::err_expect)]
 mod tests {
     use super::*;
 
@@ -6138,7 +6137,7 @@ mod tests {
             .verify_credential_with_expected(&cred, &expected)
             .await
             .unwrap_err();
-        let msg = err.message.to_string();
+        let msg = format!("{}", err.message);
         assert!(
             !msg.contains("recentBlockhash mismatch") && !msg.contains("recent_blockhash mismatch"),
             "comparison should not reject on blockhash, got: {err:?}"

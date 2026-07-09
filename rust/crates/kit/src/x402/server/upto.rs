@@ -165,17 +165,6 @@ pub struct X402Upto {
         Arc<tokio::sync::OnceCell<crate::core::settlement::worker::SettlementHandle>>,
 }
 
-struct OpenTransactionExpectation<'a> {
-    payer: &'a Pubkey,
-    payee: &'a Pubkey,
-    mint: &'a Pubkey,
-    token_program: &'a Pubkey,
-    channel_id: &'a Pubkey,
-    max_amount: u64,
-    payload_nonce: &'a str,
-    payload_open_slot: &'a str,
-}
-
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -548,16 +537,14 @@ impl X402Upto {
         // drains the operator). Validate before co-signing/broadcasting.
         self.validate_open_transaction(
             &tx,
-            OpenTransactionExpectation {
-                payer: &payer,
-                payee: &expected_payee,
-                mint: &expected_mint,
-                token_program: &token_program,
-                channel_id: &channel_id,
-                max_amount: max,
-                payload_nonce: &payload.nonce,
-                payload_open_slot: &payload.open_slot,
-            },
+            &payer,
+            &expected_payee,
+            &expected_mint,
+            &token_program,
+            &channel_id,
+            max,
+            &payload.nonce,
+            &payload.open_slot,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
         self.rpc
@@ -847,7 +834,14 @@ impl X402Upto {
     fn validate_open_transaction(
         &self,
         tx: &VersionedTransaction,
-        expected: OpenTransactionExpectation<'_>,
+        payer: &Pubkey,
+        payee: &Pubkey,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+        channel_id: &Pubkey,
+        max_amount: u64,
+        payload_nonce: &str,
+        payload_open_slot: &str,
     ) -> Result<(), Error> {
         let program_id = self.program_id()?;
         // The challenged recentSlot at verify time: freshly fetched (cache
@@ -872,15 +866,15 @@ impl X402Upto {
             // feePayer funds rent while receiverAuthorizer signs vouchers.
             &self.fee_payer,
             &self.receiver_authorizer,
-            expected.payer,
-            expected.payee,
-            expected.mint,
-            expected.token_program,
-            expected.channel_id,
-            Some(expected.max_amount),
+            payer,
+            payee,
+            mint,
+            token_program,
+            channel_id,
+            Some(max_amount),
             Some(self.config.withdraw_delay),
-            Some(expected.payload_nonce),
-            Some(expected.payload_open_slot),
+            Some(payload_nonce),
+            Some(payload_open_slot),
             challenged_slot,
         )
     }

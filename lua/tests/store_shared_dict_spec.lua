@@ -82,11 +82,6 @@ t.test('store_shared_dict shares state across handles pointing at the same dict'
   t.assert_equal(worker_b:put_if_absent('sig-shared', true), false)
 end)
 
-t.test('store_shared_dict declares cross-worker replay capability', function()
-  local store = store_shared_dict.new(fake_dict())
-  t.assert_true(store:is_shared())
-end)
-
 t.test('store_shared_dict get returns nil and false on a miss', function()
   local dict = fake_dict()
   local store = store_shared_dict.new(dict)

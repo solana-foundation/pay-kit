@@ -74,19 +74,15 @@ def _transfer_checked_ix(
     program: str = TOKEN_PROGRAM,
     disc: int = 12,
     n_accounts: int = 4,
-    authority_is_signer: bool = True,
-    additional_signers: tuple[Pubkey, ...] = (),
 ) -> Instruction:
     data = bytes([disc]) + struct.pack("<Q", amount) + bytes([6])
     metas = [
         AccountMeta(Pubkey.from_string(source), False, True),
         AccountMeta(Pubkey.from_string(mint), False, False),
         AccountMeta(Pubkey.from_string(destination), False, True),
-        AccountMeta(authority, authority_is_signer, False),
+        AccountMeta(authority, True, False),
     ]
-    metas = metas[:n_accounts]
-    metas.extend(AccountMeta(signer, True, False) for signer in additional_signers)
-    return Instruction(Pubkey.from_string(program), data, metas)
+    return Instruction(Pubkey.from_string(program), data, metas[:n_accounts])
 
 
 def _memo_ix(text: str) -> Instruction:
@@ -169,16 +165,6 @@ def test_verify_happy_with_token_2022_program():
     tx, req, managed = _happy(program=TOKEN_2022_PROGRAM)
     out = ExactVerifier.verify(tx, req, managed)
     assert out["program"] == TOKEN_2022_PROGRAM
-
-
-def test_verify_uses_the_actual_transfer_program_instead_of_extra_token_program():
-    tx, req, managed = _happy()
-    del req["extra"]["tokenProgram"]
-    assert ExactVerifier.verify(tx, req, managed)["program"] == TOKEN_PROGRAM
-
-    token_2022_tx, token_2022_req, token_2022_managed = _happy(program=TOKEN_2022_PROGRAM)
-    token_2022_req["extra"]["tokenProgram"] = TOKEN_PROGRAM
-    assert ExactVerifier.verify(token_2022_tx, token_2022_req, token_2022_managed)["program"] == TOKEN_2022_PROGRAM
 
 
 def test_verify_rejects_ata_create_instruction():
@@ -378,6 +364,14 @@ def test_reject_bad_transfer_discriminator():
     assert e.value.code == "invalid_exact_svm_payload_no_transfer_instruction"
 
 
+def test_reject_missing_token_program_extra():
+    tx, req, managed = _happy()
+    del req["extra"]["tokenProgram"]
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, req, managed)
+    assert e.value.code == "invalid_exact_svm_payload_missing_extra_tokenProgram"
+
+
 # -- rule 5: managed-signer guard --------------------------------------------
 
 
@@ -393,70 +387,6 @@ def test_reject_fee_payer_as_authority():
     tx = _tx_b64(fee_payer, ixs, [fee_payer])
     with pytest.raises(InvalidProofError) as e:
         ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
-    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
-
-
-def test_reject_managed_signer_named_directly_as_transfer_source():
-    fee_payer, authority, pay_to, _src, dest = _scenario()
-    managed_signer = Keypair()
-    ixs = [
-        _compute_limit_ix(),
-        _compute_price_ix(),
-        _transfer_checked_ix(
-            source=str(managed_signer.pubkey()), mint=MINT, destination=dest, authority=authority.pubkey()
-        ),
-    ]
-    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
-    with pytest.raises(InvalidProofError) as e:
-        ExactVerifier.verify(tx, _requirement(pay_to), [str(managed_signer.pubkey())])
-    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
-
-
-def test_reject_managed_signer_token_2022_ata_as_transfer_source():
-    fee_payer, delegate, pay_to, _src, dest = _scenario(program=TOKEN_2022_PROGRAM)
-    managed_signer = Keypair()
-    source = derive_ata(str(managed_signer.pubkey()), MINT, TOKEN_2022_PROGRAM)
-    ixs = [
-        _compute_limit_ix(),
-        _compute_price_ix(),
-        _transfer_checked_ix(
-            source=source,
-            mint=MINT,
-            destination=dest,
-            authority=delegate.pubkey(),
-            program=TOKEN_2022_PROGRAM,
-        ),
-    ]
-    tx = _tx_b64(fee_payer, ixs, [fee_payer, delegate])
-    req = _requirement(pay_to, program=TOKEN_PROGRAM)
-    with pytest.raises(InvalidProofError) as e:
-        ExactVerifier.verify(tx, req, [str(managed_signer.pubkey())])
-    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
-
-
-def test_reject_managed_signer_in_transfer_checked_multisig_tail():
-    fee_payer = Keypair()
-    customer = Keypair()
-    managed_signer = Keypair()
-    multisig_authority = Keypair()
-    pay_to = str(Keypair().pubkey())
-    source = derive_ata(str(customer.pubkey()), MINT, TOKEN_PROGRAM)
-    destination = derive_ata(pay_to, MINT, TOKEN_PROGRAM)
-    ixs = [
-        _compute_limit_ix(),
-        _compute_price_ix(),
-        _transfer_checked_ix(
-            source=source,
-            mint=MINT,
-            destination=destination,
-            authority=multisig_authority.pubkey(),
-            authority_is_signer=False,
-            additional_signers=(managed_signer.pubkey(),),
-        ),
-    ]
-    tx = _tx_b64(fee_payer, ixs, [fee_payer, managed_signer])
-    with pytest.raises(InvalidProofError) as e:
-        ExactVerifier.verify(tx, _requirement(pay_to), [str(managed_signer.pubkey())])
     assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
 
 

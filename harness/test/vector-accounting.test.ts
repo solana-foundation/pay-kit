@@ -99,7 +99,11 @@ describe("vector corpus accounting", () => {
     // so validate it as one and pin the security-critical voucher reject reasons
     // so the bank cannot silently drop them. Executing these against the runners
     // (as x402-exact-reject.json is executed) is the tracked follow-up.
-    const catalogPath = join(vectorsDir, "session-voucher", "session-voucher-reject.json");
+    const catalogPath = join(
+      vectorsDir,
+      "session-voucher",
+      "session-voucher-reject.json",
+    );
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as Array<{
       tag: string;
       reason: string;
@@ -117,7 +121,9 @@ describe("vector corpus accounting", () => {
       tags.add(entry.tag);
       expect(entry.reason, `${entry.tag}.reason`).toBe(entry.tag);
       expect(typeof entry.description, `${entry.tag}.description`).toBe("string");
-      expect(entry.description.trim(), `${entry.tag}.description non-empty`).not.toBe("");
+      expect(entry.description.trim(), `${entry.tag}.description non-empty`).not.toBe(
+        "",
+      );
     }
 
     // The voucher trust model turns on these classes; a reject bank that drops
@@ -129,7 +135,7 @@ describe("vector corpus accounting", () => {
       "expired",
       "expires-within-settlement-window",
       "invalid-signature",
-      "channel-sealed",
+      "channel-finalized",
       "channel-close-pending",
     ];
     for (const reason of REQUIRED_REJECT_REASONS) {

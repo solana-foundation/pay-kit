@@ -4,14 +4,13 @@ local html = require('pay_kit.protocols.mpp.server.html')
 
 local function new_server(overrides)
   overrides = overrides or {}
-  local network = overrides.network or 'localnet'
   return mpp.server.new({
     recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
     currency = 'USDC',
     decimals = 6,
-    network = network,
+    network = overrides.network or 'localnet',
     secret_key = 'test-secret-key-long-enough-for-hmac',
-    store = network == 'localnet' and mpp.store.memory() or t.shared_replay_store(),
+    store = mpp.store.memory(),
     html = overrides.html,
     verify_payment = function(context)
       return { reference = context.payload.signature or context.payload.transaction }

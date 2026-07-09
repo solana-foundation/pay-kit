@@ -13,15 +13,14 @@ local TEST_SECRET = 'mpp-test-secret-key-long-enough-32b'
 
 local function build_server(opts)
   opts = opts or {}
-  local network = opts.network or 'mainnet'
   return mpp.server.new({
     recipient = opts.recipient or TEST_RECIPIENT,
     currency = opts.currency or 'USDC',
     decimals = 6,
-    network = network,
+    network = opts.network or 'mainnet',
     secret_key = opts.secret_key or TEST_SECRET,
     realm = opts.realm or 'MPP Test',
-    store = opts.store or (network == 'localnet' and mpp.store.memory() or helper.shared_replay_store()),
+    store = mpp.store.memory(),
     verify_payment = opts.verify_payment or function()
       return { reference = 'stub-reference' }
     end,

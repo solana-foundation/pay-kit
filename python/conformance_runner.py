@@ -62,7 +62,6 @@ from solana_pay_kit.protocols.x402.exact.verify import (
     EXACT_SCHEME,
     X402_VERSION_V1,
     X402_VERSION_V2,
-    ExactVerifier,
 )
 from solana_pay_kit.signer import LocalSigner
 
@@ -581,20 +580,6 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     vector_id = vector.get("id", "")
     mode = vector.get("mode")
 
-    if mode == "verify-x402-transaction":
-        inp = vector.get("input") or {}
-        transaction = inp.get("transaction")
-        if not isinstance(transaction, str) or transaction == "":
-            raise ValueError("invalid payload: verify-x402-transaction vector missing input.transaction")
-        requirement = inp.get("x402ExactRequirement")
-        if not isinstance(requirement, dict):
-            raise ValueError("invalid payload: verify-x402-transaction vector missing input.x402ExactRequirement")
-        managed_signers = inp.get("x402ExactManagedSigners", [])
-        if not isinstance(managed_signers, list) or not all(isinstance(signer, str) for signer in managed_signers):
-            raise ValueError("invalid payload: x402ExactManagedSigners must be an array of strings")
-        ExactVerifier.verify(transaction, requirement, managed_signers)
-        return {"id": vector_id, "outcome": "accept"}
-
     if mode == "build-transaction":
         header = asyncio.run(_x402_build_header(vector))
         return {
@@ -689,8 +674,6 @@ def main() -> None:
         code = _classify_reject(message)
         if code is not None:
             result["rejectCode"] = code
-        if message.startswith("invalid_exact_svm_payload_"):
-            result["x402ExactRejectCode"] = message
 
     result["language"] = "python"
     sys.stdout.write(json.dumps(result) + "\n")

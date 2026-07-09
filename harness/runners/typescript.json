@@ -1,10 +1,5 @@
 {
   "language": "typescript",
   "command": ["pnpm", "exec", "node", "--import", "tsx", "src/conformance/ts-runner.ts"],
-  "cwd": "harness",
-  "intents": ["charge", "x402-exact"],
-  "modesByIntent": {
-    "charge": ["canonical-bytes"],
-    "x402-exact": ["verify-x402-transaction"]
-  }
+  "cwd": "harness"
 }

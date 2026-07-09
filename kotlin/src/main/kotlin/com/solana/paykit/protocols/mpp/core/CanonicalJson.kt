@@ -15,8 +15,10 @@ import kotlinx.serialization.json.JsonPrimitive
  *  - Sorting object keys lexicographically by UTF-16 code unit order
  *    (Array.prototype.sort semantics, per RFC 8785 sect. 3.2.3).
  *  - Emitting strings using the ES2017 / RFC 8785 escape rules.
- *  - Emitting numbers with ECMAScript/IEEE-754 semantics, including negative
- *    zero, exponent thresholds, and integers above the exact 53-bit range.
+ *  - Emitting numbers in their literal source form. Authorization
+ *    credentials only carry string and structural values, so non
+ *    integer numerics are intentionally rejected to keep the encoder
+ *    aligned with the Rust `serde_json_canonicalizer` golden output.
  *  - Inserting no insignificant whitespace.
  *
  * This matches the Rust client's `format_authorization` output and the
@@ -72,49 +74,18 @@ internal object CanonicalJson {
             builder.append(content)
             return
         }
-        builder.append(formatEcmaNumber(content))
-    }
-
-    private fun formatEcmaNumber(literal: String): String {
-        val value = literal.toDoubleOrNull()
-            ?: throw IllegalArgumentException("CanonicalJson has an invalid numeric primitive: $literal")
-        require(value.isFinite()) { "CanonicalJson requires a finite numeric primitive: $literal" }
-        if (value == 0.0) return "0"
-
-        val source = value.toString().lowercase()
-        val sign = if (source.startsWith('-')) "-" else ""
-        val unsigned = if (sign.isEmpty()) source else source.drop(1)
-        val parts = unsigned.split('e', limit = 2)
-        val exponent = if (parts.size == 2) parts[1].toIntOrNull() else 0
-        require(exponent != null) { "CanonicalJson has an invalid numeric primitive: $literal" }
-
-        val mantissa = parts[0]
-        val point = mantissa.indexOf('.')
-        val beforePoint = if (point >= 0) mantissa.substring(0, point) else mantissa
-        val afterPoint = if (point >= 0) mantissa.substring(point + 1) else ""
-        val allDigits = beforePoint + afterPoint
-        val firstSignificant = allDigits.indexOfFirst { it != '0' }
-        if (firstSignificant < 0) return "0"
-
-        var digits = allDigits.substring(firstSignificant).trimEnd('0')
-        val scientificExponent = exponent + beforePoint.length - 1 - firstSignificant
-        if (scientificExponent in 0..20) {
-            val integerDigits = scientificExponent + 1
-            return if (digits.length <= integerDigits) {
-                sign + digits + "0".repeat(integerDigits - digits.length)
-            } else {
-                sign + digits.substring(0, integerDigits) + "." + digits.substring(integerDigits)
-            }
+        // Numbers: PaymentCredential only ever emits integer numerics
+        // through kotlinx.serialization, so accept Long-shaped values
+        // and reject anything else to avoid implementing the full
+        // ES2017 number-to-string algorithm.
+        val asLong = content.toLongOrNull()
+        if (asLong != null) {
+            builder.append(asLong.toString())
+            return
         }
-        if (scientificExponent in -6..-1) {
-            return sign + "0." + "0".repeat(-scientificExponent - 1) + digits
-        }
-
-        val first = digits.first()
-        digits = digits.drop(1)
-        val normalizedMantissa = if (digits.isEmpty()) first.toString() else "$first.$digits"
-        val normalizedExponent = if (scientificExponent >= 0) "+$scientificExponent" else scientificExponent.toString()
-        return sign + normalizedMantissa + "e" + normalizedExponent
+        throw IllegalArgumentException(
+            "CanonicalJson does not support non-integer numeric primitive: $content",
+        )
     }
 
     private fun writeString(value: String, builder: StringBuilder) {

@@ -383,7 +383,6 @@ fn parse_auth_params(params_str: &str) -> Result<HashMap<String, String>, Error>
 }
 
 #[cfg(test)]
-#[allow(clippy::err_expect)]
 mod tests {
     use super::*;
     use crate::mpp::protocol::core::types::ReceiptStatus;

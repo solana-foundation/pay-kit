@@ -462,23 +462,31 @@ class X402ServerExactTest < Minitest::Test
     assert_empty sent
   end
 
-  def test_settlement_allows_fee_payer_in_a_memo_account
+  def test_settlement_rejects_fee_payer_in_any_instruction_account_before_sending
     sent = []
     state = build_state(sender: ->(_state, transaction) {
       sent << transaction
       "unit-settlement"
     })
-    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
       add_fee_payer_to_memo_accounts(transaction)
     end
 
-    assert_equal "unit-settlement",
+    error = assert_raises(RuntimeError) do
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
-    assert_equal 1, sent.length
+    end
+
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_empty sent
   end
 
-  # Extra Token instructions remain invalid under the optional-instruction
-  # allowlist, regardless of the accounts they mention.
+  # Attack regression: fee-payer ATA drain via extra SPL TransferChecked.
+  # A malicious client appends a TransferChecked in the optional-instruction
+  # slot that names the fee payer as an additional account (e.g. authority).
+  # The instruction-list sweep runs before the optional-program allowlist,
+  # so the canonical reject token is the fee-payer-in-instruction-accounts
+  # reason — proving the sweep (not the program-allowlist fallback) is the
+  # gate that closes this drain.
   def test_settlement_rejects_extra_token_transfer_naming_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -493,12 +501,14 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
     assert_empty sent
   end
 
-  # Extra System instructions are likewise rejected by the optional-instruction
-  # allowlist before any transaction can be broadcast.
+  # Attack regression: fee-payer SOL drain via SystemProgram::Transfer.
+  # The classic "facilitator drain" shape — instead of an SPL transfer,
+  # the attacker appends a native lamport transfer whose source is the
+  # fee payer. The instruction-list sweep is the responsible gate.
   def test_settlement_rejects_extra_system_transfer_from_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -513,25 +523,30 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
     assert_empty sent
   end
 
-  # Memo accounts do not authorize the TransferChecked instruction and are
-  # therefore outside the managed-signer transfer-role guard.
-  def test_settlement_allows_fee_payer_at_a_memo_account_slot
+  # Attack regression: fee-payer pubkey appears at instruction-account
+  # position 1 (not the carve-out slot 0) of an extra memo instruction.
+  # Mirrors the "SLOT attack" shape: fee payer named at a non-payer slot.
+  # The sweep must reject regardless of position.
+  def test_settlement_rejects_fee_payer_at_instruction_slot_one
     sent = []
     state = build_state(sender: ->(_state, transaction) {
       sent << transaction
       "unit-settlement"
     })
-    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
       append_memo_with_fee_payer_at_slot_one(transaction)
     end
 
-    assert_equal "unit-settlement",
+    error = assert_raises(RuntimeError) do
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
-    assert_equal 1, sent.length
+    end
+
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_empty sent
   end
 
   # Positive control: the same envelope minus the attack mutation must be

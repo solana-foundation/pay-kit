@@ -1093,7 +1093,7 @@ describe('session() verify() topUp hardening', () => {
         ).rejects.toThrow(/sealed/);
     });
 
-    test('topUp requires transaction bytes when rpc is configured', async () => {
+    test('topUp verifies the signature on-chain when rpc is configured', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const rpc = mockStatusRpc({ 'open-sig': { err: null }, 'topup-sig': { err: null } });
@@ -1110,14 +1110,13 @@ describe('session() verify() topUp hardening', () => {
         });
         await openChannel(method, signer);
 
-        await expect(
-            method.verify({
-                credential: makeCred({ action: 'topUp', channelId, newDeposit: '5000', signature: 'topup-sig' }),
-                request: {} as never,
-            }),
-        ).rejects.toThrow(/getTransaction/);
+        const receipt = await method.verify({
+            credential: makeCred({ action: 'topUp', channelId, newDeposit: '5000', signature: 'topup-sig' }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
         expect(rpc.calls).toContain('topup-sig');
-        expect((await store.getChannel(channelId))?.deposit).toBe(1_000n);
+        expect((await store.getChannel(channelId))?.deposit).toBe(5_000n);
     });
 
     test('topUp rejects when the signature is unknown on-chain', async () => {

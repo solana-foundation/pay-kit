@@ -1,14 +1,18 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getBase58Decoder } from "@solana/kit";
+import {
+  getBase58Decoder,
+  getBase58Encoder,
+  getI64Encoder,
+  getU64Encoder,
+} from "@solana/kit";
 import {
   type ChannelState,
   type VoucherRejectReason,
   verifyVoucherForChannel,
 } from "@solana/mpp/server";
 import { beforeAll, describe, expect, it } from "vitest";
-import { encodeVoucherMessage } from "../../typescript/packages/mpp/src/shared/voucher.js";
 
 // Executed adversarial coverage for the session-voucher trust logic.
 //
@@ -30,20 +34,18 @@ import { encodeVoucherMessage } from "../../typescript/packages/mpp/src/shared/v
 const CHANNEL_ID = "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN";
 const NOW = 1_000_000n;
 
-// Use the SDK's canonical 50-byte encoder so the signed test voucher cannot
-// drift from the on-chain wire layout; the frozen bytes below still pin it.
+// Rebuild the 48-byte Ed25519 preimage: channelId(32, base58) ||
+// cumulativeAmount LE u64 || expiresAt LE i64. Self-checked against the frozen
+// canonical-bytes vector in beforeAll so a layout drift fails loudly here.
 function encodeVoucherPreimage(
   channelId: string,
   cumulative: bigint,
   expiresAt: bigint,
 ): Uint8Array<ArrayBuffer> {
-  const encoded = encodeVoucherMessage({
-    channelId,
-    cumulativeAmount: cumulative.toString(),
-    expiresAt: Number(expiresAt),
-  });
-  const out = new Uint8Array(new ArrayBuffer(encoded.byteLength));
-  out.set(encoded);
+  const out = new Uint8Array(new ArrayBuffer(48));
+  out.set(new Uint8Array(getBase58Encoder().encode(channelId)), 0);
+  out.set(new Uint8Array(getU64Encoder().encode(cumulative)), 32);
+  out.set(new Uint8Array(getI64Encoder().encode(expiresAt)), 40);
   return out;
 }
 
@@ -118,8 +120,8 @@ describe("session voucher verifier — adversarial", () => {
     // cumulative 42, expiresAt 1234 → the pinned session-voucher-preimage-frozen bytes.
     const bytes = Array.from(encodeVoucherPreimage(CHANNEL_ID, 42n, 1234n));
     const frozen = [
-      86, 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
-      9, 9, 9, 9, 9, 9, 9, 9, 9, 42, 0, 0, 0, 0, 0, 0, 0, 210, 4, 0, 0, 0, 0, 0, 0,
+      9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+      9, 9, 9, 9, 9, 9, 9, 42, 0, 0, 0, 0, 0, 0, 0, 210, 4, 0, 0, 0, 0, 0, 0,
     ];
     expect(bytes).toEqual(frozen);
   });

@@ -130,8 +130,7 @@ jobs:
 
       - uses: ./.github/actions/setup-harness
         with:
-          # The dual-protocol smoke below also runs the Rust x402 client.
-          cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client"
           cargo-cache-key: lua
 
       # Cross-SDK conformance vectors for Lua: the server-only Lua exact verifier

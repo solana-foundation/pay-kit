@@ -38,7 +38,7 @@ helper.test('402 response carries Cache-Control: no-store', function()
   assert(pay_kit.configure({
     network  = 'solana_devnet',
     operator = {recipient = SELLER},
-    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', replay_store = helper.shared_replay_store()},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes'},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -53,10 +53,7 @@ helper.test('MPP 402 challenge carries an expiry from config.mpp.expires_in', fu
     network  = 'solana_devnet',
     accept   = {'mpp'},
     operator = {recipient = SELLER},
-    mpp      = {
-      challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
-      expires_in = 120, replay_store = helper.shared_replay_store(),
-    },
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = 120},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -75,10 +72,7 @@ helper.test('MPP 402 challenge omits expiry when expires_in = false (dev opt-out
     network  = 'solana_devnet',
     accept   = {'mpp'},
     operator = {recipient = SELLER},
-    mpp      = {
-      challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
-      expires_in = false, replay_store = helper.shared_replay_store(),
-    },
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = false},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -119,10 +113,7 @@ helper.test('adapter expected methodDetails matches the issued challenge', funct
     network  = 'solana_devnet',
     accept   = {'mpp'},
     operator = {recipient = SELLER},
-    mpp      = {
-      challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
-      expires_in = 120, replay_store = helper.shared_replay_store(),
-    },
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = 120},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})

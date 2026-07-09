@@ -2,9 +2,5 @@
   "language": "kotlin",
   "command": ["sh", "-c", "exec build/install/mpp-kotlin-conformance/bin/mpp-kotlin-conformance"],
   "cwd": "harness/kotlin-conformance",
-  "intents": ["charge", "session"],
-  "modesByIntent": {
-    "charge": ["canonical-bytes"],
-    "session": ["canonical-bytes"]
-  }
+  "intents": ["session"]
 }

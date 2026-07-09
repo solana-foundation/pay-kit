@@ -16,30 +16,6 @@ local M = {}
 local MIN_SECRET_KEY_BYTES = 32
 local CONSUMED_PREFIX = 'solana-charge:consumed:'
 
-local warned_volatile_replay_store = false
-
-local function warn_volatile_replay_store()
-  if warned_volatile_replay_store then return end
-  warned_volatile_replay_store = true
-  local message = 'pay_kit: MPP replay protection is using a process-local ' ..
-    'in-memory store. This fallback is supported only on localnet; configure ' ..
-    'a shared replay store before deploying elsewhere.'
-  local ngx_ref = rawget(_G, 'ngx')
-  if ngx_ref and ngx_ref.log and ngx_ref.WARN then
-    ngx_ref.log(ngx_ref.WARN, message)
-  else
-    io.stderr:write('[pay_kit] WARN: ' .. message .. '\n')
-  end
-end
-
-local function replay_store_is_shared(replay_store)
-  if type(replay_store) ~= 'table' then return false end
-  if type(replay_store.is_shared) == 'function' then
-    return replay_store:is_shared() == true
-  end
-  return replay_store.shared == true or replay_store.durable == true
-end
-
 -- Audit #15: derive a per-recipient default realm instead of the static
 -- shared `"MPP Payment"`. Two servers that share a secret but front
 -- different recipients now land in different HMAC credential namespaces, so a
@@ -122,20 +98,6 @@ function M.new(config)
   if not net_ok then
     error(net_err)
   end
-  local replay_store = config.store
-  if replay_store == nil then
-    if network ~= 'localnet' then
-      error('replay store is required outside localnet; pass config.store')
-    end
-    replay_store = store.memory()
-    warn_volatile_replay_store()
-  end
-  if network ~= 'localnet' and not replay_store_is_shared(replay_store) then
-    error('replay store must be shared outside localnet; process-local stores are unsafe')
-  end
-  if type(replay_store) ~= 'table' or type(replay_store.put_if_absent) ~= 'function' then
-    error('replay store must implement put_if_absent(key, value)')
-  end
   -- Audit #15: explicit empty realm is rejected (an operator typo must not
   -- silently re-introduce the shared-namespace threat). When unset, derive a
   -- per-recipient default.
@@ -189,7 +151,7 @@ function M.new(config)
     rpc_url = config.rpc_url or protocol.default_rpc_url(network),
     fee_payer = fee_payer,
     fee_payer_key = config.fee_payer_key,
-    store = replay_store,
+    store = config.store or store.memory(),
     verify_payment = config.verify_payment,
     recent_blockhash = config.recent_blockhash,
     html = config.html or false,
@@ -536,63 +498,36 @@ function Server:_finalize_verification(credential_value, request, payload)
     error('verify_payment callback is required')
   end
 
-  -- Stores historically need only `put_if_absent`. When a verifier reserves a
-  -- marker through such a store, record the successful atomic write in this
-  -- request-local proxy. That proves the inner reservation without trusting a
-  -- bare `consumed = true` result from an arbitrary callback.
-  local verifier_store = self.store
-  local verifier_reservations
-  if type(self.store.get) ~= 'function' then
-    verifier_reservations = {}
-    verifier_store = {
-      put_if_absent = function(_, key, value)
-        local inserted = self.store:put_if_absent(key, value)
-        if inserted then
-          verifier_reservations[key] = true
-        end
-        return inserted
-      end,
-    }
-  end
-
   local result = self.verify_payment({
     payload = payload,
     request = request,
     method_details = method_details,
     credential = credential_value,
-    store = verifier_store,
+    store = self.store,
     server = self,
-  })
+  }) or {}
 
-  if type(result) ~= 'table' then
+  local reference = result.reference or payload.signature or payload.transaction
+  if reference == nil or reference == '' then
     error_codes.raise(error_codes.PAYMENT_INVALID,
-      'verification result must be a table')
+      'verification result must include a reference')
   end
 
-  local reference = result.reference
-  if type(reference) ~= 'string' or reference == '' then
-    error_codes.raise(error_codes.PAYMENT_INVALID,
-      'verification result must include a non-empty reference')
-  end
-
-  -- An inner settlement path may reserve the signature before returning (the
-  -- charge handler and bundled Solana verifier do this around broadcast). A
-  -- bare `consumed = true` is not proof of that reservation: only skip the
-  -- outer atomic guard when the callback identifies a marker that is actually
-  -- present in this server's replay store. Otherwise a custom callback could
-  -- return two receipts for the same signature without recording a replay key.
-  local consumed_marker_present = false
-  if result.consumed == true and type(result.replay_key) == 'string' and result.replay_key ~= '' then
-    if verifier_reservations ~= nil then
-      consumed_marker_present = verifier_reservations[result.replay_key] == true
-    elseif type(self.store.get) == 'function' then
-      local marker, present = self.store:get(result.replay_key)
-      consumed_marker_present = present == true or marker == true
-    end
-  end
-
-  if not consumed_marker_present then
-    local replay_key = CONSUMED_PREFIX .. reference
+  -- Settlement layers that already consumed the replay marker themselves
+  -- (e.g. `charge_handler:as_callback()` which writes
+  -- `solana-charge:consumed:<sig>` inside `settle_pull` before await, and
+  -- `solana_verify.verify_transaction` which writes the same key between
+  -- broadcast and await for the L8 ordering fix) signal back via
+  -- `result.consumed = true`. Skip the outer put_if_absent in that case so
+  -- the same marker is not re-asserted against the shared store. When the
+  -- verifier supplies its own `replay_key` we also know the consume already
+  -- happened, so honoring `consumed` here keeps the Kong / OpenResty
+  -- wiring (shared replay store between charge_handler and Server) from
+  -- double-asserting and returning a spurious `signature_consumed` on the
+  -- first valid payment. Push-mode signature verifiers that do not consume
+  -- themselves fall through to the outer guard.
+  if result.consumed ~= true then
+    local replay_key = result.replay_key or (CONSUMED_PREFIX .. reference)
     local inserted = self.store:put_if_absent(replay_key, true)
     if not inserted then
       error_codes.raise(error_codes.SIGNATURE_CONSUMED, 'payment already consumed')

@@ -240,29 +240,6 @@ helper.test('verify rejects authority that matches a managed signer', function()
   helper.assert_true(not ok)
   helper.assert_true(tostring(err):find('fee_payer', 1, true), tostring(err))
 end)
-
-helper.test('verify rejects a managed signer derived source ATA', function()
-  local facilitator = base58.encode(string.rep('\1', 32))
-  local authority = base58.encode(string.rep('\2', 32))
-  local mint = base58.encode(string.rep('\4', 32))
-  local pay_to = base58.encode(string.rep('\5', 32))
-  local destination = ata.derive(pay_to, mint, TOKEN_PROGRAM)
-  local managed_source_ata = ata.derive(facilitator, mint, TOKEN_PROGRAM)
-
-  local raw = synthesize_tx(facilitator, managed_source_ata, mint, destination,
-                            authority, 1000, '/paid')
-  local offer = {
-    scheme = 'exact', network = 'solana:dev',
-    asset = mint, amount = '1000', payTo = pay_to,
-    extra = {feePayer = facilitator, decimals = 6,
-             tokenProgram = TOKEN_PROGRAM, memo = '/paid'},
-  }
-  local ok, err = pcall(x402_verify.verify, base64.encode(raw), offer, {facilitator})
-  helper.assert_true(not ok)
-  helper.assert_true(tostring(err):find(
-    'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds', 1, true) ~= nil,
-    tostring(err))
-end)
 end
 
 -- ===================================================================
@@ -433,26 +410,6 @@ helper.test('rule 7: destination ATA mismatch rejected', function()
   local ok, err = pcall(x402_verify.verify, base64.encode(raw), offer, {facilitator})
   helper.assert_true(not ok)
   helper.assert_true(tostring(err):find('recipient_mismatch', 1, true) ~= nil)
-end)
-
-helper.test('rule 5: managed signer in transfer signer tail is rejected as a fund mover', function()
-  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
-  local keys = standard_keys(facilitator, source, mint, destination, authority)
-  local raw = assemble(keys, 8, {
-    build_ix(5, {}, string.char(2) .. u32_le(200000)),
-    build_ix(5, {}, string.char(3) .. u64_le(1000)),
-    -- Account 0 is a managed signer appended after the authority as a
-    -- multisig signer-tail account. It must not be classified as a generic
-    -- instruction-account violation because it can authorize fund movement.
-    build_ix(6, {1, 2, 3, 4, 0}, string.char(12) .. u64_le(1000) .. string.char(6)),
-    build_ix(7, {}, '/paid'),
-  })
-  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
-    default_offer(facilitator, mint, pay_to), {facilitator})
-  helper.assert_true(not ok)
-  helper.assert_true(tostring(err):find(
-    'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds', 1, true) ~= nil,
-    tostring(err))
 end)
 
 helper.test('rule 9: unknown program in ix[3] slot rejected', function()

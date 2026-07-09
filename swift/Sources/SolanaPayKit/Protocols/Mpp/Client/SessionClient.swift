@@ -438,9 +438,9 @@ private struct SessionCredential: Encodable {
 /// Build an `Authorization: Payment <base64url(credential)>` value for a session
 /// action, echoing the challenge. Mirrors Go `SerializeSessionCredential`.
 public func serializeSessionCredential(challenge: ChallengeEcho, action: SessionAction) throws -> String {
-    let data = try CanonicalJSON.encode(
-        json: JSONEncoder().encode(SessionCredential(challenge: challenge, payload: action))
-    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(SessionCredential(challenge: challenge, payload: action))
     return "\(MppHeaders.paymentScheme) \(Base64URL.encode(data))"
 }
 

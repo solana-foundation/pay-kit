@@ -41,17 +41,11 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
-import { getOpenInstructionDataDecoder } from '../../generated/payment-channels/instructions/open.js';
 import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
 import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
-import {
-    getTopUpInstruction,
-    getTopUpInstructionDataDecoder,
-    TOP_UP_DISCRIMINATOR,
-} from '../../generated/payment-channels/instructions/topUp.js';
+import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
-import type { OpenArgs } from '../../generated/payment-channels/types/openArgs.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { VOUCHER_MAGIC } from '../../shared/voucher.js';
 import { coSignBase64Transaction } from '../../utils/transactions.js';
@@ -450,8 +444,6 @@ export interface VerifyOpenTxExpected {
     readonly programId?: string | undefined;
     /** Primary recipient (challenge `recipient`). */
     readonly recipient: string;
-    /** Exact payment-channel distribution advertised by the challenge. */
-    readonly splits?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
     /** Optional explicit token program (otherwise derived from currency/network). */
     readonly tokenProgram?: string | undefined;
 }
@@ -628,13 +620,15 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected operator ${expected.operator}`);
     }
 
-    let openArgs: OpenArgs;
-    try {
-        openArgs = getOpenInstructionDataDecoder().decode(openIx.data).openArgs;
-    } catch (error) {
-        throw new Error(`verifyOpenTx: invalid open instruction data: ${errorMessage(error)}`);
+    // ix data: [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients array]
+    if (openIx.data.length < 1 + 8 + 8 + 4 + 8) {
+        throw new Error('verifyOpenTx: open instruction data too short');
     }
-    const { deposit, gracePeriod, openSlot, recipients, salt } = openArgs;
+    const view = new DataView(openIx.data.buffer, openIx.data.byteOffset, openIx.data.byteLength);
+    const salt = view.getBigUint64(1, true);
+    const deposit = view.getBigUint64(9, true);
+    const gracePeriod = view.getUint32(17, true);
+    const openSlot = view.getBigUint64(21, true);
 
     if (deposit === 0n) {
         throw new Error('verifyOpenTx: deposit must be greater than zero');
@@ -644,25 +638,6 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     }
     if (expected.openSlot !== undefined && openSlot !== expected.openSlot) {
         throw new Error(`verifyOpenTx: openSlot ${openSlot} != challenge-issued openSlot ${expected.openSlot}`);
-    }
-    if (expected.splits !== undefined) {
-        if (recipients.length !== expected.splits.length) {
-            throw new Error(
-                `verifyOpenTx: recipient split count ${recipients.length} != expected ${expected.splits.length}`,
-            );
-        }
-        for (let index = 0; index < recipients.length; index += 1) {
-            const actual = recipients[index];
-            const expectedSplit = expected.splits[index];
-            if (
-                !actual ||
-                !expectedSplit ||
-                actual.recipient !== expectedSplit.recipient ||
-                actual.bps !== expectedSplit.bps
-            ) {
-                throw new Error(`verifyOpenTx: recipient split at index ${index} does not match the challenge`);
-            }
-        }
     }
 
     // Re-derive the channel PDA and assert it matches.
@@ -702,89 +677,6 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     }
 
     return { channelId: channelAddr, deposit, gracePeriod, openSlot, payer: payerAddr, salt };
-}
-
-/** Minimal RPC shape required to bind a top-up signature to its transaction. */
-export interface TopUpTransactionRpc {
-    getTransaction(
-        signature: Signature,
-        config: { readonly encoding: 'base64'; readonly maxSupportedTransactionVersion: 0 },
-    ): {
-        send(): Promise<{
-            meta: { err: unknown } | null;
-            transaction: readonly [string, string];
-        } | null>;
-    };
-}
-
-/**
- * Confirms that a landed transaction contains exactly the required payment-channel
- * top-up: same program, same channel account, and the precise deposit delta.
- */
-export async function verifyTopUpTransaction(args: {
-    readonly amount: bigint;
-    readonly channelId: string;
-    readonly programId: string;
-    readonly rpc: TopUpTransactionRpc;
-    readonly signature: Signature;
-}): Promise<void> {
-    const fetched = await args.rpc
-        .getTransaction(args.signature, { encoding: 'base64', maxSupportedTransactionVersion: 0 })
-        .send();
-    if (!fetched) {
-        throw new Error(`verifyTopUpTransaction: tx ${args.signature} not found on-chain`);
-    }
-    if (fetched.meta?.err) {
-        throw new Error(
-            `verifyTopUpTransaction: tx ${args.signature} failed on-chain: ${JSON.stringify(fetched.meta.err)}`,
-        );
-    }
-    const [wire, encoding] = fetched.transaction;
-    if (encoding !== 'base64') {
-        throw new Error(`verifyTopUpTransaction: expected base64 transaction data, got ${encoding}`);
-    }
-
-    let message: {
-        instructions: readonly {
-            accountIndices?: readonly number[];
-            data?: Uint8Array | undefined;
-            programAddressIndex: number;
-        }[];
-        staticAccounts: readonly string[];
-    };
-    try {
-        const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
-        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as typeof message;
-    } catch (error) {
-        throw new Error(`verifyTopUpTransaction: invalid transaction data: ${errorMessage(error)}`);
-    }
-
-    let topUpCount = 0;
-    let topUpTotal = 0n;
-    for (const instruction of message.instructions) {
-        if (message.staticAccounts[instruction.programAddressIndex] !== args.programId) continue;
-        if (!instruction.data || instruction.data[0] !== TOP_UP_DISCRIMINATOR) continue;
-        const channelIndex = instruction.accountIndices?.[1];
-        if (channelIndex === undefined || message.staticAccounts[channelIndex] !== args.channelId) continue;
-
-        try {
-            topUpCount += 1;
-            topUpTotal += getTopUpInstructionDataDecoder().decode(instruction.data).topUpArgs.amount;
-        } catch (error) {
-            throw new Error(`verifyTopUpTransaction: invalid top-up instruction: ${errorMessage(error)}`);
-        }
-    }
-
-    if (topUpCount === 0) {
-        throw new Error(`verifyTopUpTransaction: no top-up for channel ${args.channelId} found in ${args.signature}`);
-    }
-    if (topUpTotal !== args.amount) {
-        throw new Error(`verifyTopUpTransaction: on-chain top-up total ${topUpTotal} != expected delta ${args.amount}`);
-    }
-}
-
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */

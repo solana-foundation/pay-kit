@@ -2,10 +2,5 @@
   "language": "swift",
   "command": ["swift", "run", "-c", "release", "mpp-conformance"],
   "cwd": "swift",
-  "intents": ["charge", "x402-exact", "session"],
-  "modesByIntent": {
-    "charge": ["canonical-bytes"],
-    "x402-exact": ["verify-x402-transaction"],
-    "session": ["canonical-bytes"]
-  }
+  "intents": ["charge", "x402-exact", "session"]
 }

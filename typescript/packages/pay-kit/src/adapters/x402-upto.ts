@@ -174,19 +174,13 @@ export class X402Upto {
     }
 
     /**
-     * Settle the metered amount (`actualBaseUnits`) against a verified open:
-     * receiver-authorizer voucher, settle-and-seal, refunding the remainder.
+     * Settle the metered amount (`actualBaseUnits`, clamped to the ceiling) against
+     * a verified open: receiver-authorizer voucher, settle-and-seal, refund the remainder.
      *
-     * @throws {InvalidProofError} when the meter exceeds its authorized ceiling or settlement fails.
+     * @throws {InvalidProofError} when settlement fails.
      */
     async settle(verified: UptoVerified, actualBaseUnits: bigint): Promise<UptoSettlement> {
-        if (actualBaseUnits > verified.maxBaseUnits) {
-            throw new InvalidProofError(
-                'invalid_upto_svm_payload_settlement_exceeds_amount',
-                `settlement amount ${actualBaseUnits} exceeds authorized ceiling ${verified.maxBaseUnits}`,
-            );
-        }
-        const actual = actualBaseUnits < 0n ? 0n : actualBaseUnits;
+        const actual = actualBaseUnits > verified.maxBaseUnits ? verified.maxBaseUnits : actualBaseUnits;
         const payload = parseUptoPayload(verified.payload);
         const rpc = createSolanaRpc(this.#rpcUrl);
         const confirmRpc = rpc as unknown as SettlementConfirmRpc;

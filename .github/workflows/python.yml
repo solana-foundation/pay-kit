@@ -86,7 +86,7 @@ jobs:
       - name: Checkout payment channels program
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          repository: solana-foundation/payment-channels
+          repository: Moonsong-Labs/solana-payment-channels
           ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
           path: _payment-channels
           fetch-depth: 1

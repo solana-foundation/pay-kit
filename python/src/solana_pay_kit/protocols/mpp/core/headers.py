@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
-from datetime import datetime
 from typing import Any
 
 from solana_pay_kit.protocols.mpp.core.base64url import decode, decode_json, encode_json
@@ -31,30 +30,6 @@ class ParseError(Exception):
 # Matches the canonical mpp-tools receipt timestamp validation; rejects loose
 # forms like "Jan 29 2026 12:00".
 _ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
-
-
-def _validate_receipt_timestamp(timestamp: str) -> None:
-    """Reject RFC 3339-shaped timestamps with invalid calendar components."""
-    second = int(timestamp[17:19])
-    if second > 60:
-        raise ValueError("second is out of range")
-
-    try:
-        # RFC 3339 permits a positive leap second. datetime does not represent
-        # it, so validate the calendar and other clock fields against :59.
-        datetime(
-            year=int(timestamp[0:4]),
-            month=int(timestamp[5:7]),
-            day=int(timestamp[8:10]),
-            hour=int(timestamp[11:13]),
-            minute=int(timestamp[14:16]),
-            second=min(second, 59),
-        )
-    except ValueError as exc:
-        raise ValueError("date or time component is out of range") from exc
-
-    if timestamp[-1] != "Z" and (int(timestamp[-5:-3]) > 23 or int(timestamp[-2:]) > 59):
-        raise ValueError("UTC offset is out of range")
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +228,6 @@ def parse_receipt(header: str) -> Receipt:
     timestamp = str(data["timestamp"])
     if not _ISO8601_RE.match(timestamp):
         raise ParseError(f"Invalid ISO-8601 timestamp in receipt: {timestamp!r}")
-    try:
-        _validate_receipt_timestamp(timestamp)
-    except ValueError as exc:
-        raise ParseError(f"Invalid ISO-8601 timestamp in receipt: {timestamp!r}") from exc
 
     return Receipt(
         status=str(data["status"]),

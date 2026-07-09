@@ -19,7 +19,6 @@ require "json"
 require "rack"
 require "socket"
 require "stringio"
-require "tmpdir"
 
 require_relative "../../ruby/lib/solana_pay_kit"
 
@@ -144,20 +143,10 @@ else
     decimals: Integer(decimals_raw, 10)
   )
 
-  # Devnet/mainnet MPP creation intentionally fails closed without durable
-  # replay storage. The harness is single-process, so a per-process FileStore
-  # provides restart-persistent replay markers without weakening that policy.
-  replay_store_path = optional_env(
-    "MPP_HARNESS_REPLAY_STORE_PATH",
-    File.join(Dir.tmpdir, "pay-kit-harness-mpp-replay-#{Process.pid}.json")
-  )
-  replay_store = ::PayKit::Protocols::Mpp::FileStore.new(replay_store_path)
-
   mpp_server = ::PayKit::Protocols::Mpp.create(
     method: method,
     secret_key: mpp_secret,
     realm: "PayKit Harness",
-    replay_store: replay_store,
     settlement_header: settlement_header
   )
 

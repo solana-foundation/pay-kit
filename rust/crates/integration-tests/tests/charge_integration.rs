@@ -449,7 +449,8 @@ async fn sol_charge_expired_challenge_rejected() {
     // challenges; server-side rejection is the defense-in-depth backstop.
     let err = build_credential_header(&*signer, &rpc, &challenge)
         .await
-        .expect_err("expired challenge should be rejected before signing");
+        .err()
+        .expect("expired challenge should be rejected before signing");
     assert!(
         err.to_string().contains("expired"),
         "Expected expired rejection, got: {err}"

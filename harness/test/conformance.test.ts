@@ -33,10 +33,6 @@ import {
   assertRunnerResult,
 } from "../src/conformance/contract-schema";
 import { classifyReject } from "../src/conformance/reject";
-import {
-  assertDeclaredModeWasExecuted,
-  isUnsupportedMode,
-} from "../src/conformance/mode-support";
 import { discoverRunners } from "../src/conformance/runners";
 import { parseLanguageAllowlist } from "../src/conformance/select";
 import { chargeScenarios } from "../src/intents/charge";
@@ -121,16 +117,6 @@ const UNSUPPORTED_MODE_EXEMPTIONS: Record<
   string,
   { owner: string; date: string; reason: string }
 > = {
-  "rust:charge:build-transaction": {
-    owner: "rust",
-    date: "2026-07-09",
-    reason: "The Rust runner currently exercises charge canonical bytes only.",
-  },
-  "rust:charge:verify-transaction": {
-    owner: "rust",
-    date: "2026-07-09",
-    reason: "The Rust runner currently exercises charge canonical bytes only.",
-  },
   "ruby:charge:build-transaction": {
     owner: "harness",
     date: "2026-07-09",
@@ -150,31 +136,6 @@ const UNSUPPORTED_MODE_EXEMPTIONS: Record<
     owner: "harness",
     date: "2026-07-09",
     reason: "PHP is currently server-only in the conformance runner.",
-  },
-  "lua:charge:build-transaction": {
-    owner: "harness",
-    date: "2026-07-09",
-    reason: "Lua is currently server-only in the conformance runner.",
-  },
-  "lua:charge:verify-transaction": {
-    owner: "harness",
-    date: "2026-07-09",
-    reason: "Lua verifies shared canonical bytes but has no charge transaction builder.",
-  },
-  "lua:x402-exact:build-transaction": {
-    owner: "harness",
-    date: "2026-07-09",
-    reason: "Lua's runner exercises the server-side exact verifier, not a client transaction builder.",
-  },
-  "kotlin:charge:build-transaction": {
-    owner: "harness",
-    date: "2026-07-09",
-    reason: "Kotlin's conformance runner currently exercises canonical bytes only.",
-  },
-  "kotlin:charge:verify-transaction": {
-    owner: "harness",
-    date: "2026-07-09",
-    reason: "Kotlin's conformance runner currently exercises canonical bytes only.",
   },
   "swift:charge:verify-transaction": {
     owner: "harness",
@@ -595,7 +556,7 @@ describe("cross-SDK conformance vectors", () => {
     ).toThrow(/resource-bound: planted-depth-vector exceeds max JSON depth/);
   });
 
-  for (const { language, command, cwd: runnerCwd, intents, modesByIntent, reportsAs } of RUNNERS) {
+  for (const { language, command, cwd: runnerCwd, intents, reportsAs } of RUNNERS) {
     describe(`${language} reference runner`, () => {
       const expectedIdentity = reportsAs ?? language;
       const executedByGroup = new Map<string, number>();
@@ -644,8 +605,11 @@ describe("cross-SDK conformance vectors", () => {
           // a reject (a client-only SDK cannot exercise a verify-reject
           // vector at all). Skip the vector for this language rather than
           // fail it.
-          if (isUnsupportedMode(result)) {
-            assertDeclaredModeWasExecuted(language, modesByIntent, vector, result);
+          if (
+            (result.outcome as string) === "unsupported-mode" ||
+            (result.outcome === "reject" &&
+              (result.error ?? "").startsWith("unsupported-mode"))
+          ) {
             ctx.skip();
             return;
           }

@@ -145,7 +145,6 @@ pub fn default_token_program_for_currency(currency: &str, network: Option<&str>)
 }
 
 #[cfg(test)]
-#[allow(clippy::err_expect)]
 mod tests {
     use super::*;
 

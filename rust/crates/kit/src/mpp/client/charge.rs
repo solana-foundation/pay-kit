@@ -820,7 +820,6 @@ fn currencies_match(
 }
 
 #[cfg(test)]
-#[allow(clippy::err_expect)]
 mod tests {
     use super::*;
     use crate::mpp::protocol::core::Base64UrlJson;

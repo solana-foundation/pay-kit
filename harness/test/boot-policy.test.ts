@@ -103,9 +103,7 @@ afterEach(async () => {
 function commandExists(cmd: string): boolean {
   try {
     // Pass cmd as $1 so it is never interpolated into the shell script.
-    execFileSync("sh", ["-c", 'command -v "$1"', "sh", cmd], {
-      stdio: "ignore",
-    });
+    execFileSync("sh", ["-c", 'command -v "$1"', "sh", cmd], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -199,19 +197,19 @@ const coveredProbes: CoveredProbe[] = [
   },
   {
     id: "typescript",
-    label: "TypeScript Pay Kit configure() server",
+    label: "TypeScript Mppx.create / solana.charge server",
     available: commandExists("pnpm"),
     unavailableReason: commandExists("pnpm") ? undefined : "pnpm missing",
     implementation: serverImpl(
       "typescript",
-      "TypeScript Pay Kit configure() server",
+      "TypeScript Mppx.create / solana.charge server",
       [
         "pnpm",
         "exec",
         "node",
         "--import",
         "tsx",
-        "src/fixtures/typescript/pay-kit-adapter-boot.ts",
+        "src/fixtures/typescript/charge-server.ts",
       ],
       "typescript",
     ),
@@ -232,14 +230,7 @@ const coveredProbes: CoveredProbe[] = [
     implementation: serverImpl(
       "python",
       "Python solana_pay_kit high-level MppAdapter (MppAdapter.__init__)",
-      [
-        "uv",
-        "run",
-        "--project",
-        "../python",
-        "python",
-        "python-server/mpp-adapter-boot.py",
-      ],
+      ["uv", "run", "--project", "../python", "python", "python-server/mpp-adapter-boot.py"],
       "python",
     ),
     // Python MPP runs in pubkey mode: the literal mint pubkey is the currency.
@@ -271,8 +262,7 @@ const unimplementedProbes: Array<{ id: string; reason: string }> = [
   },
   {
     id: "lua",
-    reason:
-      "Lua resty.pay_kit exposes no in-memory-store fail-closed boot guard",
+    reason: "Lua resty.pay_kit exposes no in-memory-store fail-closed boot guard",
   },
   {
     id: "kotlin",
@@ -369,7 +359,9 @@ describe("boot-policy conformance: boots with the opt-in", () => {
 describe("boot-policy conformance: SDKs without the store fail-closed contract", () => {
   for (const probe of unimplementedProbes) {
     // eslint-disable-next-line no-console
-    console.warn(`[boot-policy] ASSERT-SKIP ${probe.id}: ${probe.reason}`);
+    console.warn(
+      `[boot-policy] ASSERT-SKIP ${probe.id}: ${probe.reason}`,
+    );
     it.skip(`${probe.id}: ${probe.reason}`, () => {
       // Intentionally skipped: no boot-policy contract to conform to yet.
     });

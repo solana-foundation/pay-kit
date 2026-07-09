@@ -1077,9 +1077,7 @@ mod tests {
 
     #[test]
     fn rejects_each_missing_required_field() {
-        type ConfigMutation = Box<dyn Fn(&mut SubscriptionConfig)>;
-
-        let cases: Vec<(&str, ConfigMutation)> = vec![
+        let cases: Vec<(&str, Box<dyn Fn(&mut SubscriptionConfig)>)> = vec![
             ("mint", Box::new(|c| c.mint = String::new())),
             (
                 "token_program",

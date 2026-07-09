@@ -6,17 +6,14 @@
 // vector as JSON on stdin, drive the real SolanaPayKit client paths for the
 // requested intent + mode, and emit one RunnerResult line as JSON on stdout.
 //
-// Swift is a CLIENT SDK. It implements:
+// Swift is a CLIENT-only SDK. It implements:
 //   - charge build-transaction        (Charge.buildChargeTransaction)
 //   - x402-exact build-transaction    (X402 v2 PAYMENT-SIGNATURE envelope,
 //                                       incl. the v2 extensions echo-and-append)
 //   - canonical-bytes                 (JCS / base64url / challenge-id HMAC)
-//   - x402-exact verify-x402-transaction (the exact structural verifier used
-//                                         by the conformance runner)
-// The public Swift package does not expose a server adapter, so its exact
-// verifier is intentionally scoped to this runner. It uses the package's real
-// wire, Pubkey, and associated-token-account primitives rather than a decoded
-// envelope-shape shortcut.
+// It does NOT implement the server pre-broadcast verifier, so every
+// verify-transaction vector (charge or x402) emits an "unsupported-mode"
+// reject the driver SKIPs for this language.
 //
 // The oracle for charge build vectors is the DECODED SEMANTIC SHAPE of the
 // transaction (fee payer, transfer set, compute caps, memos); for x402 build
@@ -40,8 +37,6 @@ private let token2022ProgramId = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 private let systemProgramId = "11111111111111111111111111111111"
 private let computeBudgetProgramId = "ComputeBudget111111111111111111111111111111"
 private let memoProgramId = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-private let lighthouseProgramId = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
-private let maxComputeUnitPriceMicroLamports: UInt64 = 5_000_000
 private let defaultNetwork = "mainnet"
 private let defaultSPLDecimals = 6
 private let x402DefaultPinnedTransaction = "AA=="
@@ -72,20 +67,6 @@ private struct VectorInput: Decodable {
     let x402PinnedTransaction: String?
     let x402AdvertisedExtensions: JSONValue?
     let x402PaymentIdentifierId: String?
-    let x402ExactRequirement: X402ExactRequirement?
-    let x402ExactManagedSigners: [String]?
-}
-
-private struct X402ExactRequirement: Decodable {
-    let asset: String
-    let payTo: String
-    let amount: String
-    let extra: X402ExactExtra?
-}
-
-private struct X402ExactExtra: Decodable {
-    let tokenProgram: String?
-    let memo: String?
 }
 
 private struct VectorChargeRequest: Decodable {
@@ -267,10 +248,9 @@ private struct RunnerResult: Encodable {
     var x402EnvelopeShape: X402EnvelopeShape?
     var error: String?
     var rejectCode: String?
-    var x402ExactRejectCode: String?
 
     enum CodingKeys: String, CodingKey {
-        case language, id, outcome, transactionShape, exactBytes, x402EnvelopeShape, error, rejectCode, x402ExactRejectCode
+        case language, id, outcome, transactionShape, exactBytes, x402EnvelopeShape, error, rejectCode
     }
 
     func encode(to encoder: Encoder) throws {
@@ -283,7 +263,6 @@ private struct RunnerResult: Encodable {
         if let x402EnvelopeShape { try c.encode(x402EnvelopeShape, forKey: .x402EnvelopeShape) }
         if let error { try c.encode(error, forKey: .error) }
         if let rejectCode { try c.encode(rejectCode, forKey: .rejectCode) }
-        if let x402ExactRejectCode { try c.encode(x402ExactRejectCode, forKey: .x402ExactRejectCode) }
     }
 }
 
@@ -639,211 +618,6 @@ private func u64LE(_ d: [UInt8], _ at: Int) -> UInt64 {
     return v
 }
 
-// MARK: - x402 exact structural verifier
-
-private struct ExactInstruction {
-    let programIndex: Int
-    let accountIndices: [UInt8]
-    let data: [UInt8]
-}
-
-private struct ExactTransaction {
-    let accountKeys: [Pubkey]
-    let instructions: [ExactInstruction]
-}
-
-private struct ExactVerificationError: Error, CustomStringConvertible {
-    let code: String
-    var description: String { code }
-}
-
-private func exactFailure(_ code: String) -> ExactVerificationError {
-    ExactVerificationError(code: code)
-}
-
-private func decodeExactTransaction(_ base64: String) throws -> ExactTransaction {
-    guard let txData = Data(base64Encoded: base64) else {
-        throw RunnerError.message("transaction is not valid base64")
-    }
-    var cur = DecodeCursor(txData)
-    let signatureCount = try cur.shortVecLength()
-    guard signatureCount <= (cur.data.count - cur.offset) / 64 else {
-        throw RunnerError.message("transaction signatures are truncated")
-    }
-    _ = try cur.take(signatureCount * 64)
-
-    let firstMessageByte = try cur.byte()
-    let isVersioned = (firstMessageByte & 0x80) != 0
-    if isVersioned {
-        guard firstMessageByte == 0x80 else {
-            throw RunnerError.message("unsupported transaction message version")
-        }
-        _ = try cur.take(3) // message header follows the v0 prefix
-    } else {
-        _ = try cur.take(2) // first byte is the legacy header's first field
-    }
-
-    let keyCount = try cur.shortVecLength()
-    var keys: [Pubkey] = []
-    keys.reserveCapacity(keyCount)
-    for _ in 0..<keyCount {
-        keys.append(try Pubkey(bytes: Data(try cur.take(32))))
-    }
-    _ = try cur.take(32) // recent blockhash
-
-    let instructionCount = try cur.shortVecLength()
-    var instructions: [ExactInstruction] = []
-    instructions.reserveCapacity(instructionCount)
-    for _ in 0..<instructionCount {
-        let programIndex = Int(try cur.byte())
-        let accountCount = try cur.shortVecLength()
-        let accounts = try cur.take(accountCount)
-        let dataLength = try cur.shortVecLength()
-        let data = try cur.take(dataLength)
-        instructions.append(ExactInstruction(
-            programIndex: programIndex,
-            accountIndices: accounts,
-            data: data
-        ))
-    }
-
-    // Address-table lookups are not part of the seeded exact vectors. Parse
-    // them so malformed v0 messages fail during decode rather than allowing
-    // trailing bytes to masquerade as a valid structural transaction.
-    if isVersioned {
-        let lookupCount = try cur.shortVecLength()
-        for _ in 0..<lookupCount {
-            _ = try cur.take(32)
-            let writableCount = try cur.shortVecLength()
-            _ = try cur.take(writableCount)
-            let readonlyCount = try cur.shortVecLength()
-            _ = try cur.take(readonlyCount)
-        }
-    }
-    guard cur.offset == cur.data.count else {
-        throw RunnerError.message("transaction has trailing bytes")
-    }
-    return ExactTransaction(accountKeys: keys, instructions: instructions)
-}
-
-private func verifyExactTransaction(_ base64: String, requirement: X402ExactRequirement, managedSignerStrings: [String]) throws {
-    let transaction = try decodeExactTransaction(base64)
-    let instructions = transaction.instructions
-    let keys = transaction.accountKeys
-
-    func keyAt(_ index: Int) throws -> Pubkey {
-        guard index >= 0, index < keys.count else {
-            throw exactFailure("invalid_exact_svm_payload_no_transfer_instruction")
-        }
-        return keys[index]
-    }
-
-    func program(of instruction: ExactInstruction) throws -> String {
-        try keyAt(instruction.programIndex).base58
-    }
-
-    guard instructions.count >= 3, instructions.count <= 6 else {
-        throw exactFailure("invalid_exact_svm_payload_transaction_instructions_length")
-    }
-
-    let computeLimit = instructions[0]
-    guard try program(of: computeLimit) == computeBudgetProgramId,
-          computeLimit.data.count == 5,
-          computeLimit.data[0] == 2 else {
-        throw exactFailure("invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction")
-    }
-
-    let computePrice = instructions[1]
-    guard try program(of: computePrice) == computeBudgetProgramId,
-          computePrice.data.count == 9,
-          computePrice.data[0] == 3 else {
-        throw exactFailure("invalid_exact_svm_payload_transaction_instructions_compute_price_instruction")
-    }
-    guard u64LE(computePrice.data, 1) <= maxComputeUnitPriceMicroLamports else {
-        throw exactFailure("invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high")
-    }
-
-    let transfer = instructions[2]
-    let transferProgram = try program(of: transfer)
-    guard transferProgram == tokenProgramId || transferProgram == token2022ProgramId,
-          transfer.accountIndices.count >= 4,
-          transfer.data.count == 10,
-          transfer.data[0] == 12 else {
-        throw exactFailure("invalid_exact_svm_payload_no_transfer_instruction")
-    }
-
-    let source = try keyAt(Int(transfer.accountIndices[0]))
-    let mint = try keyAt(Int(transfer.accountIndices[1]))
-    let destination = try keyAt(Int(transfer.accountIndices[2]))
-    let managedSigners = try managedSignerStrings.map { try Pubkey(base58: $0) }
-
-    for accountIndex in transfer.accountIndices.dropFirst(3) {
-        let account = try keyAt(Int(accountIndex))
-        if managedSigners.contains(account) {
-            throw exactFailure("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
-        }
-    }
-
-    let actualTokenProgram = try Pubkey(base58: transferProgram)
-    for managed in managedSigners {
-        if source == managed {
-            throw exactFailure("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
-        }
-        let managedATA = try AssociatedTokenAccount.address(
-            owner: managed,
-            mint: mint,
-            tokenProgram: actualTokenProgram
-        )
-        if source == managedATA {
-            throw exactFailure("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds")
-        }
-    }
-
-    guard mint.base58 == requirement.asset else {
-        throw exactFailure("invalid_exact_svm_payload_mint_mismatch")
-    }
-    let recipient = try Pubkey(base58: requirement.payTo)
-    let expectedDestination = try AssociatedTokenAccount.address(
-        owner: recipient,
-        mint: mint,
-        tokenProgram: actualTokenProgram
-    )
-    guard destination == expectedDestination else {
-        throw exactFailure("invalid_exact_svm_payload_recipient_mismatch")
-    }
-    guard let expectedAmount = UInt64(requirement.amount),
-          u64LE(transfer.data, 1) == expectedAmount else {
-        throw exactFailure("invalid_exact_svm_payload_amount_mismatch")
-    }
-
-    var memoCount = 0
-    var lastMemo: String?
-    for index in 3..<instructions.count {
-        let optional = instructions[index]
-        let optionalProgram = try program(of: optional)
-        guard optionalProgram == memoProgramId || optionalProgram == lighthouseProgramId else {
-            let codes = [
-                "invalid_exact_svm_payload_unknown_fourth_instruction",
-                "invalid_exact_svm_payload_unknown_fifth_instruction",
-                "invalid_exact_svm_payload_unknown_sixth_instruction",
-            ]
-            throw exactFailure(codes[index - 3])
-        }
-        if optionalProgram == memoProgramId {
-            memoCount += 1
-            lastMemo = String(decoding: optional.data, as: UTF8.self)
-        }
-    }
-    if let expectedMemo = requirement.extra?.memo, !expectedMemo.isEmpty {
-        guard memoCount == 1 else {
-            throw exactFailure("invalid_exact_svm_payload_memo_count")
-        }
-        guard lastMemo == expectedMemo else {
-            throw exactFailure("invalid_exact_svm_payload_memo_mismatch")
-        }
-    }
-}
-
 private func shapeFromTransaction(_ base64: String) throws -> TransactionShape {
     guard let txData = Data(base64Encoded: base64) else {
         throw RunnerError.message("transaction is not valid base64")
@@ -942,9 +716,14 @@ private func shapeFromTransaction(_ base64: String) throws -> TransactionShape {
 private func runCanonicalBytes(_ vector: Vector, rawValue: Any?) throws -> ExactBytes {
     var eb = ExactBytes()
     if let value = rawValue {
-        // Drive the SDK's MPP wire encoder, not the harness reference or a
-        // Foundation sorted-key approximation.
-        let data = try CanonicalJSON.encode(value)
+        // Canonical JSON via Foundation's sorted-key serializer, the same
+        // canonicalization the SDK wire path relies on
+        // (JSONEncoder.outputFormatting = [.sortedKeys]). RFC 8785 key order
+        // for BMP keys agrees with sorted-key order.
+        let data = try JSONSerialization.data(
+            withJSONObject: value,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
         eb.canonicalJson = String(decoding: data, as: UTF8.self)
         eb.base64Url = base64Url(data)
     }
@@ -1013,30 +792,25 @@ private func hexDecode(_ hex: String) throws -> [UInt8] {
 
 private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
     do {
-        // x402-exact build vectors assert the decoded envelope shape. Verify
-        // vectors execute the runner's exact structural pass over the signed
-        // transaction, including managed-source ATA protection.
+        // x402-exact: the oracle is the decoded envelope shape. Swift builds
+        // the v2 PAYMENT-SIGNATURE envelope (incl. extensions echo-and-append)
+        // but has no server verifier, so verify vectors are unsupported.
         if vector.intent == "x402-exact" {
             switch vector.mode {
             case "build-transaction":
                 let shape = try buildX402Envelope(vector)
                 return RunnerResult(id: vector.id, outcome: "accept", x402EnvelopeShape: shape)
-            case "verify-x402-transaction":
-                guard let transaction = vector.input.transaction,
-                      let requirement = vector.input.x402ExactRequirement else {
-                    throw RunnerError.message("invalid payload: x402 exact vector requires transaction and x402ExactRequirement")
-                }
-                try verifyExactTransaction(
-                    transaction,
-                    requirement: requirement,
-                    managedSignerStrings: vector.input.x402ExactManagedSigners ?? []
+            case "verify-transaction":
+                return RunnerResult(
+                    id: vector.id,
+                    outcome: "reject",
+                    error: "unsupported-mode: swift is a client-only SDK and does not implement x402 verify-transaction"
                 )
-                return RunnerResult(id: vector.id, outcome: "accept")
             default:
                 return RunnerResult(
                     id: vector.id,
                     outcome: "reject",
-                    error: "unsupported-mode: swift does not implement x402-exact \(vector.mode)"
+                    error: "unsupported mode \(vector.mode) for x402-exact"
                 )
             }
         }
@@ -1065,13 +839,6 @@ private func runVector(_ vector: Vector, rawValue: Any?) async -> RunnerResult {
                 error: "unsupported mode \(vector.mode)"
             )
         }
-    } catch let error as ExactVerificationError {
-        return RunnerResult(
-            id: vector.id,
-            outcome: "reject",
-            error: error.code,
-            x402ExactRejectCode: error.code
-        )
     } catch {
         let message = String(describing: error)
         return RunnerResult(

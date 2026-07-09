@@ -56,10 +56,11 @@ const payKitPackageJson = join(
 const requireFromPayKit = createRequire(payKitPackageJson);
 // The class is exported as `UptoSvmScheme`; the pay-kit adapter imports it
 // aliased as `UptoSvmFacilitator` and drives its `.verify(...)`.
-const { UptoSvmScheme } = requireFromPayKit("@x402/svm/upto/facilitator") as {
+const { UptoSvmScheme } = requireFromPayKit(
+  "@x402/svm/upto/facilitator",
+) as {
   UptoSvmScheme: new (
     operator: unknown,
-    receiverAuthorizer?: unknown,
     config?: { rpcUrl?: string },
   ) => {
     verify(
@@ -119,9 +120,7 @@ function requirements() {
       facilitatorAddress: operator.address,
       facilitatorFee: 0,
       feePayer: operator.address,
-      receiverAuthorizer: operator.address,
       tokenProgram: TOKEN_PROGRAM,
-      withdrawDelay: 900,
     },
   };
 }
@@ -145,7 +144,6 @@ function payload(authorizedSigner: string) {
       expiresAt: now + 3600,
       validAfter: now - 60,
       nonce: "01",
-      openSlot: "1",
     },
   };
 }
@@ -154,12 +152,9 @@ describe("x402-upto verify-open: authorized-signer binding (real @x402/svm facil
   const AUTHORIZED_SIGNER_REJECT = "invalid_upto_svm_payload_authorized_signer";
 
   it("rejects a payload whose authorizedSigner is not the operator", async () => {
-    const scheme = new UptoSvmScheme(operator, operator, {});
+    const scheme = new UptoSvmScheme(operator, {});
 
-    const result = await scheme.verify(
-      payload(attacker.address),
-      requirements(),
-    );
+    const result = await scheme.verify(payload(attacker.address), requirements());
 
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(AUTHORIZED_SIGNER_REJECT);
@@ -173,18 +168,13 @@ describe("x402-upto verify-open: authorized-signer binding (real @x402/svm facil
   // the rejection above is caused specifically by the wrong signer and is not an
   // incidental failure that would fire for any input.
   it("accepts the operator as authorized signer (reject above is signer-specific)", async () => {
-    const scheme = new UptoSvmScheme(operator, operator, {});
+    const scheme = new UptoSvmScheme(operator, {});
 
-    const result = await scheme.verify(
-      payload(operator.address),
-      requirements(),
-    );
+    const result = await scheme.verify(payload(operator.address), requirements());
 
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).not.toBe(AUTHORIZED_SIGNER_REJECT);
-    expect(result.invalidReason).toBe(
-      "invalid_upto_svm_payload_open_transaction",
-    );
+    expect(result.invalidReason).toBe("invalid_upto_svm_payload_open_transaction");
   });
 });
 
@@ -204,8 +194,7 @@ describe("x402-upto verify-open: authorized-signer binding (real @x402/svm facil
 // and BEFORE the open-transaction/RPC work, so this stays RPC-free like the
 // signer radar above.
 describe("x402-upto verify-open: deposit must equal the authorized ceiling (real @x402/svm facilitator)", () => {
-  const DEPOSIT_NOT_CEILING_REJECT =
-    "invalid_upto_svm_payload_deposit_not_ceiling";
+  const DEPOSIT_NOT_CEILING_REJECT = "invalid_upto_svm_payload_deposit_not_ceiling";
 
   /** The valid signer-and-amount payload, varying ONLY `deposit` so the verifier
    *  reaches the deposit==ceiling guard: `authorizedSigner` == operator (passes
@@ -217,13 +206,10 @@ describe("x402-upto verify-open: deposit must equal the authorized ceiling (real
   }
 
   it("rejects an under-deposit whose deposit is below the signed maxAmount ceiling", async () => {
-    const scheme = new UptoSvmScheme(operator, operator, {});
+    const scheme = new UptoSvmScheme(operator, {});
 
     // deposit 999_999 < ceiling 1_000_000: the escrow does not back the ceiling.
-    const result = await scheme.verify(
-      depositPayload("999999"),
-      requirements(),
-    );
+    const result = await scheme.verify(depositPayload("999999"), requirements());
 
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(DEPOSIT_NOT_CEILING_REJECT);
@@ -232,14 +218,11 @@ describe("x402-upto verify-open: deposit must equal the authorized ceiling (real
   });
 
   it("rejects an over-deposit whose deposit exceeds the signed maxAmount ceiling", async () => {
-    const scheme = new UptoSvmScheme(operator, operator, {});
+    const scheme = new UptoSvmScheme(operator, {});
 
     // The guard is a strict equality (deposit !== maxAmount), so an over-deposit
     // is refused too — the escrow must be EXACTLY the signed ceiling.
-    const result = await scheme.verify(
-      depositPayload("1000001"),
-      requirements(),
-    );
+    const result = await scheme.verify(depositPayload("1000001"), requirements());
 
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(DEPOSIT_NOT_CEILING_REJECT);
@@ -251,14 +234,12 @@ describe("x402-upto verify-open: deposit must equal the authorized ceiling (real
   // above are caused specifically by deposit != ceiling and are not an incidental
   // failure that would fire for any input.
   it("accepts deposit == ceiling (reject above is deposit-specific)", async () => {
-    const scheme = new UptoSvmScheme(operator, operator, {});
+    const scheme = new UptoSvmScheme(operator, {});
 
     const result = await scheme.verify(depositPayload(CEILING), requirements());
 
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).not.toBe(DEPOSIT_NOT_CEILING_REJECT);
-    expect(result.invalidReason).toBe(
-      "invalid_upto_svm_payload_open_transaction",
-    );
+    expect(result.invalidReason).toBe("invalid_upto_svm_payload_open_transaction");
   });
 });

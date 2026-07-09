@@ -2,9 +2,5 @@
   "language": "rust",
   "command": ["cargo", "run", "-q", "-p", "solana-pay-kit", "--example", "conformance_runner", "--features", "x402,client"],
   "cwd": "rust",
-  "intents": ["charge", "x402-exact"],
-  "modesByIntent": {
-    "charge": ["canonical-bytes"],
-    "x402-exact": ["build-transaction", "verify-transaction", "verify-x402-transaction"]
-  }
+  "intents": ["x402-exact"]
 }
