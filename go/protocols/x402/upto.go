@@ -437,12 +437,6 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if envelope.Network != req.Network {
 		return nil, fmt.Errorf("network mismatch: payload %q, expected %q", envelope.Network, req.Network)
 	}
-	if req.Extra.FeePayer != u.FeePayer() {
-		return nil, errors.New("extra.feePayer is not this server's key")
-	}
-	if req.Extra.ReceiverAuthorizer != u.ReceiverAuthorizer() {
-		return nil, errors.New("extra.receiverAuthorizer is not this server's key")
-	}
 	programID, err := solana.PublicKeyFromBase58(firstNonEmpty(u.cfg.ChannelProgram, paymentchannels.ProgramID))
 	if err != nil {
 		return nil, fmt.Errorf("invalid channel program: %w", err)

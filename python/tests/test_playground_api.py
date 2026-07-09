@@ -67,12 +67,16 @@ def test_summarize_route_challenges_with_upto(client: TestClient) -> None:
     """The x402 ``upto`` summarize route returns a 402 with the upto challenge.
 
     x402-only, so it advertises the ``payment-required`` header (not the MPP
-    ``www-authenticate``) and an ``upto`` / ``payment-channel`` accepts entry.
+    ``www-authenticate``) and an ``upto`` accepts entry.
     """
     resp = client.post("/api/v1/summarize", content="summarize this text please")
     assert resp.status_code == 402
     assert any(k.lower() == "payment-required" for k in resp.headers)
     accepts = resp.json()["accepts"]
     assert accepts[0]["scheme"] == "upto"
-    assert accepts[0]["extra"]["assetTransferMethod"] == "payment-channel"
-    assert accepts[0]["extra"]["facilitatorAddress"]
+    extra = accepts[0]["extra"]
+    assert extra["feePayer"]
+    assert extra["receiverAuthorizer"]
+    assert extra["withdrawDelay"] == 900
+    assert "assetTransferMethod" not in extra
+    assert "facilitatorAddress" not in extra

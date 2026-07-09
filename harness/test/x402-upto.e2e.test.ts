@@ -36,13 +36,8 @@ function missingEnvs(): string[] {
   const missing = requiredEnvs.filter(
     (name) => !process.env[name] || process.env[name]?.trim() === "",
   );
-  if (
-    !process.env.X402_HARNESS_FEE_PAYER_SECRET_KEY?.trim() &&
-    !process.env.X402_HARNESS_FACILITATOR_SECRET_KEY?.trim()
-  ) {
-    missing.push(
-      "X402_HARNESS_FEE_PAYER_SECRET_KEY (or X402_HARNESS_FACILITATOR_SECRET_KEY)",
-    );
+  if (!process.env.X402_HARNESS_FEE_PAYER_SECRET_KEY?.trim()) {
+    missing.push("X402_HARNESS_FEE_PAYER_SECRET_KEY");
   }
   return missing;
 }
@@ -104,9 +99,7 @@ describe("x402 upto intent — cross-language matrix", () => {
     for (const server of scenarioServers) {
       for (const client of scenarioClients) {
         it(`${client.id} client <-> ${server.id} server: ${scenario.id}`, async () => {
-          const feePayerSecret =
-            process.env.X402_HARNESS_FEE_PAYER_SECRET_KEY ??
-            process.env.X402_HARNESS_FACILITATOR_SECRET_KEY!;
+          const feePayerSecret = process.env.X402_HARNESS_FEE_PAYER_SECRET_KEY!;
           const env = {
             X402_HARNESS_NETWORK: scenario.network,
             X402_HARNESS_PRICE: scenario.price,
@@ -117,7 +110,6 @@ describe("x402 upto intent — cross-language matrix", () => {
             X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY:
               process.env.X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY ??
               feePayerSecret,
-            X402_HARNESS_FACILITATOR_SECRET_KEY: feePayerSecret,
             PAY_KIT_HARNESS_PROTOCOL: "x402-upto",
           } satisfies Record<string, string>;
 

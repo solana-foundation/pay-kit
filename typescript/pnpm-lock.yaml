@@ -119,8 +119,8 @@ importers:
         specifier: file:../../.x402-vendor/x402-core-2.16.0.tgz
         version: file:.x402-vendor/x402-core-2.16.0.tgz
       '@x402/svm':
-        specifier: file:../../.x402-vendor/x402-svm-2.16.0.tgz
-        version: file:.x402-vendor/x402-svm-2.16.0.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
+        specifier: file:../../.x402-vendor/x402-svm-2.16.0-paykit.1.tgz
+        version: file:.x402-vendor/x402-svm-2.16.0-paykit.1.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -1788,8 +1788,8 @@ packages:
     resolution: {integrity: sha512-McPBK1RK7CF3IgOygrz9pkBbBeL8b7rGEkjmaVhOsV/NOG3R4Zwvw60AaIO9nsFUgiVrU6fri0bAiOo/gKacww==, tarball: file:.x402-vendor/x402-core-2.16.0.tgz}
     version: 2.16.0
 
-  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0.tgz':
-    resolution: {integrity: sha512-6LY/4fVY9M9cGL/HShfSCIEwPEptakXoSvb/W5ComrLGn+4Upbpt1cockvJ2qMqpK4o8xDkasBNO59Ms5usdZA==, tarball: file:.x402-vendor/x402-svm-2.16.0.tgz}
+  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0-paykit.1.tgz':
+    resolution: {integrity: sha512-4yDGP2VN1hvB0NhG7NZcdRTlQaKLyV7GKYASX3S8WNTN6adE8dsRBW7VxUmp031PuTWDoRnU2+kiaeGZLR+FDQ==, tarball: file:.x402-vendor/x402-svm-2.16.0-paykit.1.tgz}
     version: 2.16.0
     peerDependencies:
       '@solana/kit': '>=5.1.0'
@@ -5592,7 +5592,7 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))':
+  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0-paykit.1.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))':
     dependencies:
       '@solana-program/compute-budget': 0.11.0(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana-program/token': 0.9.0(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))

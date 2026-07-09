@@ -110,7 +110,9 @@ export class X402Upto {
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
             this.#network,
-            new UptoSvmFacilitator(config.operator.signer.signer, { rpcUrl: config.rpcUrl }),
+            new UptoSvmFacilitator(config.operator.signer.signer, config.operator.signer.signer, {
+                rpcUrl: config.rpcUrl,
+            }),
         );
     }
 
