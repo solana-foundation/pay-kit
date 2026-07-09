@@ -36,4 +36,31 @@ struct CanonicalJSONTests {
         #expect(result == #"{"a":1,"b":100,"c":100,"d":1.5,"zero":0}"#)
         #expect(try Base64URL.encode(canonicalData(#"{"a":1.0,"b":1E2,"c":100.00,"d":1.50,"zero":-0}"#)) == "eyJhIjoxLCJiIjoxMDAsImMiOjEwMCwiZCI6MS41LCJ6ZXJvIjowfQ")
     }
+
+    @Test
+    func canonicalizesEveryFoundationJSONShapeAndNumberBoundary() throws {
+        let value: [String: Any] = [
+            "small": NSNumber(value: 1e-7),
+            "big": NSNumber(value: 1e21),
+            "negative": NSNumber(value: -12.5),
+            "array": [NSNull(), true, false, "line\n\t", NSNumber(value: 1e-6)],
+        ]
+
+        let result = String(decoding: try CanonicalJSON.encode(value), as: UTF8.self)
+        #expect(result == #"{"array":[null,true,false,"line\n\t",0.000001],"big":1e+21,"negative":-12.5,"small":1e-7}"#)
+    }
+
+    @Test
+    func escapesControlsAndRejectsInvalidFoundationValues() throws {
+        let controls = "\u{0000}\u{0008}\u{0009}\u{000A}\u{000C}\u{000D}\\\"\u{001F}"
+        let result = String(decoding: try CanonicalJSON.encode(["controls": controls]), as: UTF8.self)
+        #expect(result == #"{"controls":"\u0000\b\t\n\f\r\\\"\u001f"}"#)
+
+        #expect(throws: PayKitError.self) {
+            _ = try CanonicalJSON.encode(NSNumber(value: Double.nan))
+        }
+        #expect(throws: PayKitError.self) {
+            _ = try CanonicalJSON.encode(["unsupported": Date()])
+        }
+    }
 }
