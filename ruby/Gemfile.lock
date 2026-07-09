@@ -11,7 +11,6 @@ PATH
       rack (~> 3.1)
       rackup (~> 2.2)
       sinatra (~> 4.2)
-      webrick (~> 1.8)
 
 GEM
   remote: https://rubygems.org/
@@ -121,6 +120,7 @@ DEPENDENCIES
   simplecov (~> 0.22)
   solana-pay-kit!
   standard (~> 1.43)
+  webrick (~> 1.8)
   yard (~> 0.9)
 
 CHECKSUMS

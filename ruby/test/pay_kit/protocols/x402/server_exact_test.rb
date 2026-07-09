@@ -969,6 +969,30 @@ class X402ServerExactTest < Minitest::Test
     assert retried
   end
 
+  def test_signature_confirmer_with_kwargs_receives_last_valid_block_height
+    # A confirmer that accepts a **kwargs splat (Method#parameters reports
+    # :keyrest) must still receive the definitive-expiry `last_valid_block_height:`,
+    # not only confirmers that declare the keyword by name. Regression for the
+    # introspection that previously matched only :key/:keyreq -- a **kwargs
+    # confirmer was silently called without the block height.
+    received = {}
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "kwargs-confirmer-sig" },
+      settlement_cache: cache,
+      signature_confirmer: ->(_state, signature, **opts) {
+        received[:last_valid_block_height] = opts[:last_valid_block_height]
+        signature
+      }
+    )
+
+    PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+
+    assert_equal 1000, received[:last_valid_block_height],
+      "a **kwargs confirmer must receive last_valid_block_height (the :keyrest path)"
+  end
+
   # The DEFAULT confirmer (not an injected test lambda) must be able to prove a
   # transaction never landed and release the reservation. Broadcast is accepted,
   # the confirmation poll is exhausted, then the definitive check runs:

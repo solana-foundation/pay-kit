@@ -624,8 +624,12 @@ module PayKit::Protocols::X402
         # exactly `(config, signature)`.
         def invoke_signature_confirmer(config, signature, last_valid_block_height)
           confirmer = config.signature_confirmer
+          # A confirmer receives the definitive-expiry block height if it can
+          # accept the keyword: either declared directly (:key/:keyreq named
+          # last_valid_block_height) or via a splat (**kwargs, i.e. :keyrest).
+          # Anything else keeps the 2-arg (config, signature) contract.
           if confirmer.respond_to?(:parameters) &&
-              confirmer.parameters.any? { |type, name| (type == :key || type == :keyreq) && name == :last_valid_block_height }
+              confirmer.parameters.any? { |type, name| type == :keyrest || ((type == :key || type == :keyreq) && name == :last_valid_block_height) }
             confirmer.call(config, signature, last_valid_block_height: last_valid_block_height)
           else
             confirmer.call(config, signature)

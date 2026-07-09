@@ -22,8 +22,11 @@ Gem::Specification.new do |spec|
   spec.add_dependency "rackup", "~> 2.2"
   spec.add_dependency "puma", "~> 7.1"
   spec.add_dependency "sinatra", "~> 4.2"
-  spec.add_dependency "webrick", "~> 1.8"
 
+  # webrick is an optional Rack server backend the SDK does not require at
+  # runtime (puma is the production server). Kept as a dev-only dependency so
+  # downstream consumers are not exposed to CVE-2026-38969 (see .bundler-audit.yml).
+  spec.add_development_dependency "webrick", "~> 1.8"
   spec.add_development_dependency "bundler-audit", "~> 0.9"
   spec.add_development_dependency "minitest", "~> 5.25"
   spec.add_development_dependency "rack-test", "~> 2.1"
