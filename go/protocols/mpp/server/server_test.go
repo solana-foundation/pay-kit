@@ -621,7 +621,7 @@ func TestNewSecretKeyFromEnv(t *testing.T) {
 	t.Setenv("MPP_SECRET_KEY", envSecret)
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	rpcClient := testutil.NewFakeRPC()
-	handler, err := New(Config{Recipient: recipient, RPC: rpcClient})
+	handler, err := New(Config{Recipient: recipient, RPC: rpcClient, Store: core.NewMemoryStore()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -637,6 +637,72 @@ func TestNewRejectsShortEnvSecretKey(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	if _, err := New(Config{Recipient: recipient, RPC: rpcClient}); err == nil {
 		t.Fatal("expected error for short env secret key")
+	}
+}
+
+func TestNewDefaultReplayStorePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		network string
+		optIn   string
+		wantErr bool
+	}{
+		{name: "default mainnet", wantErr: true},
+		{name: "mainnet", network: "mainnet", wantErr: true},
+		{name: "devnet", network: "devnet", wantErr: true},
+		{name: "invalid opt-in", network: "mainnet", optIn: "true", wantErr: true},
+		{name: "localnet", network: "localnet"},
+		{name: "mainnet development opt-in", network: "mainnet", optIn: "1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(allowInMemoryReplayStoreEnvVar, tt.optIn)
+			handler, err := New(Config{
+				Recipient: testutil.NewPrivateKey().PublicKey().String(),
+				Currency:  "sol",
+				Decimals:  9,
+				Network:   tt.network,
+				SecretKey: "test-secret-key-0123456789abcdef",
+				RPC:       testutil.NewFakeRPC(),
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected replay store policy error")
+				}
+				var mppErr *core.Error
+				if !errors.As(err, &mppErr) || mppErr.Code != core.ErrCodeInvalidConfig {
+					t.Fatalf("expected invalid-config error, got %v", err)
+				}
+				if !strings.Contains(err.Error(), allowInMemoryReplayStoreEnvVar) {
+					t.Fatalf("expected error to name %s, got %v", allowInMemoryReplayStoreEnvVar, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if _, ok := handler.store.(*core.MemoryStore); !ok {
+				t.Fatalf("default store = %T, want *core.MemoryStore", handler.store)
+			}
+		})
+	}
+}
+
+func TestNewKeepsExplicitReplayStoreOutsideLocalnet(t *testing.T) {
+	store := core.NewMemoryStore()
+	handler, err := New(Config{
+		Recipient: testutil.NewPrivateKey().PublicKey().String(),
+		Currency:  "sol",
+		Decimals:  9,
+		Network:   "mainnet",
+		SecretKey: "test-secret-key-0123456789abcdef",
+		RPC:       testutil.NewFakeRPC(),
+		Store:     store,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if handler.store != store {
+		t.Fatalf("store = %T, want supplied store", handler.store)
 	}
 }
 
@@ -891,6 +957,7 @@ func TestNewWithDefaultValues(t *testing.T) {
 		Recipient: recipient,
 		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
+		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -1010,6 +1077,7 @@ func TestRPCURL(t *testing.T) {
 		SecretKey: "test-secret-key-0123456789abcdef",
 		Network:   "devnet",
 		RPC:       rpcClient,
+		Store:     core.NewMemoryStore(),
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)

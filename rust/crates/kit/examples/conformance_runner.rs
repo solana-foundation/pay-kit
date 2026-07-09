@@ -457,7 +457,7 @@ fn canonical_bytes(input: &VectorInput) -> Result<Value, RunnerError> {
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, RunnerError> {
     let bytes = hex.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(RunnerError::rejected("hexBytes must have an even length"));
     }
 

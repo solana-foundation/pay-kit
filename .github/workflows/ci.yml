@@ -597,8 +597,10 @@ jobs:
             test/adapter-identity.test.ts \
             test/x402-amount-base-units.test.ts \
             test/x402-v1-exact.test.ts \
+            test/x402-exact-managed-signer.test.ts \
             test/x402-upto-verify-open.test.ts \
             test/x402-upto-over-ceiling.test.ts \
+            test/mode-support.test.ts \
             test/value-binding-verify.test.ts \
             test/boot-policy.test.ts \
             test/process.test.ts \

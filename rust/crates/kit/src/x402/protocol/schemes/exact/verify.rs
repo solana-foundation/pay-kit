@@ -780,6 +780,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn transfer_checked_ix_with_accounts(
         source: Pubkey,
         mint: Pubkey,

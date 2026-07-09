@@ -62,7 +62,7 @@ const DISTRIBUTE_HEADER_ACCOUNTS = 11;
 const PAYEE_TOKEN_ACCOUNT_INDEX = 5;
 // Ed25519 precompile message offset (16-byte header + 32 pubkey + 64 sig = 112).
 const ED25519_MESSAGE_OFFSET = 112;
-const VOUCHER_MESSAGE_BYTES = 48;
+const VOUCHER_MESSAGE_BYTES = 50;
 
 const CUMULATIVE = 900_000n; // highest accepted voucher (base units)
 const EXPIRES_AT = 4_000_000_000n; // far-future expiry (outlasts the window)
