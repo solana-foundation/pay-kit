@@ -16,8 +16,7 @@ module PayKitTestHelpers
   #   :signer              PayKit::Signer (anything responding to
   #                        #pubkey/#sign/#fee_payer?)
   #   :fee_payer           explicit true/false override
-  #   :realm, :mpp_secret  MPP knobs (challenge_binding_secret)
-  #   :mpp_replay_store    explicit MPP replay store
+  #   :realm, :mpp_secret, :mpp_replay_store  MPP knobs
   #   :x402_signer         advanced c.x402.signer override
   #   :x402_facilitator_url  delegated facilitator URL (left nil = self-hosted)
   def self.with_config(overrides = {})

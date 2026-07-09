@@ -16,7 +16,7 @@ class PayKitDispatcherTest < Minitest::Test
 
   def with_mpp_cache_config(**overrides, &block)
     store = ::PayKit::Protocols::Mpp::MemoryStore.new
-    PayKitTestHelpers.with_config(**overrides.merge(mpp_replay_store: store), &block)
+    PayKitTestHelpers.with_config(network: :solana_localnet, **overrides, mpp_replay_store: store, &block)
   end
 
   def make_gate(name:, pay_to:)
@@ -41,7 +41,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_self_hosted_x402_mode_does_not_raise
-    PayKitTestHelpers.with_config do
+    PayKitTestHelpers.with_config(network: :solana_localnet) do
       with_dispatcher do |_middleware, dispatcher|
         refute_nil dispatcher.send(:x402_adapter)
       end
@@ -49,7 +49,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_x402_settlement_cache_is_shared_across_requests
-    PayKitTestHelpers.with_config do
+    PayKitTestHelpers.with_config(network: :solana_localnet) do
       with_dispatcher do |middleware, _dispatcher|
         cache = middleware.instance_variable_get(:@x402_settlement_cache)
         refute_nil cache
@@ -142,6 +142,19 @@ class PayKitDispatcherTest < Minitest::Test
       s1 = dispatcher1.send(:mpp_server_for, gate)
       s2 = dispatcher2.send(:mpp_server_for, gate)
       assert_same s1, s2, "method cache is per-middleware, so two dispatchers must hit the same cached server"
+    end
+  end
+
+  def test_mpp_dispatcher_uses_a_configured_durable_replay_store
+    Dir.mktmpdir do |dir|
+      store = PayKit::Protocols::Mpp::FileStore.new(File.join(dir, "replay.json"))
+      PayKitTestHelpers.with_config(mpp_replay_store: store) do
+        with_dispatcher do |_middleware, dispatcher|
+          gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+          server = dispatcher.send(:mpp_server_for, gate)
+          assert_same store, server.instance_variable_get(:@handler).instance_variable_get(:@replay_store)
+        end
+      end
     end
   end
 end

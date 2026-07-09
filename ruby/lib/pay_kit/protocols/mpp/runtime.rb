@@ -47,23 +47,33 @@ module PayKit::Protocols::Mpp
   #     realm:      "My App",
   #   )
   #
-  # PRODUCTION NOTE: `replay_store` defaults to a volatile in-memory store
-  # on localnet only. Non-localnet servers must supply a durable,
-  # process-shared store (e.g. Redis or Postgres-backed) to prevent
-  # same-signature replay across restarts.
+  # PRODUCTION NOTE: `replay_store` defaults to a volatile in-memory store on
+  # localnet only. Non-localnet servers must supply a durable, process-shared
+  # store to retain replay markers across restarts and workers.
   def self.create(method:, secret_key:, realm: DEFAULT_REALM, replay_store: DEV_ONLY_MEMORY_STORE,
     settlement_header: Server::Charge::Handler::DEFAULT_SETTLEMENT_HEADER,
     expires_in: Protocol::Core::ChallengeStore::DEFAULT_EXPIRES_SECONDS)
-    if replay_store == DEV_ONLY_MEMORY_STORE || replay_store.nil?
-      unless method.respond_to?(:network) && method.network.to_s == Protocol::Solana::NETWORK_LOCALNET
+    if replay_store == DEV_ONLY_MEMORY_STORE
+      unless localnet?(method)
         raise ::PayKit::ConfigurationError,
-          "PayKit::Protocols::Mpp.create requires replay_store for #{method.respond_to?(:network) ? method.network : "non-localnet"}"
+          "PayKit::Protocols::Mpp.create requires a durable replay_store for #{network_name(method)}"
       end
+
       warn "[Mpp] WARNING: no replay_store supplied to PayKit::Protocols::Mpp.create — " \
            "defaulting to volatile MemoryStore. Replay markers are lost on " \
            "process restart and are NOT shared across workers or hosts. " \
            "Supply a durable shared store outside localnet."
       replay_store = MemoryStore.new
+    end
+
+    if replay_store.nil?
+      raise ::PayKit::ConfigurationError,
+        "PayKit::Protocols::Mpp.create requires a replay_store; nil is not a valid store"
+    end
+
+    unless localnet?(method) || durable_replay_store?(replay_store)
+      raise ::PayKit::ConfigurationError,
+        "PayKit::Protocols::Mpp.create requires a durable replay_store for #{network_name(method)}"
     end
     Server::Charge.new(
       method: method,
@@ -74,4 +84,19 @@ module PayKit::Protocols::Mpp
       expires_in: expires_in
     )
   end
+
+  def self.localnet?(method)
+    method.respond_to?(:network) && method.network.to_s == Protocol::Solana::NETWORK_LOCALNET
+  end
+  private_class_method :localnet?
+
+  def self.network_name(method)
+    method.respond_to?(:network) ? method.network : "non-localnet"
+  end
+  private_class_method :network_name
+
+  def self.durable_replay_store?(store)
+    store.respond_to?(:durable?) && store.durable?
+  end
+  private_class_method :durable_replay_store?
 end

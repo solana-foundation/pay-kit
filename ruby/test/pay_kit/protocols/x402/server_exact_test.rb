@@ -511,13 +511,8 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "unit-settlement", PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
   end
 
-  # Attack regression: fee-payer ATA drain via extra SPL TransferChecked.
-  # A malicious client appends a TransferChecked in the optional-instruction
-  # slot. Only Memo and Lighthouse are permitted in the optional slots, so
-  # the SPL token program in slot ix[4] is rejected by the optional-program
-  # allowlist — the canonical gate that closes this drain now that the
-  # over-broad fee-payer-in-any-instruction sweep is gone (the sweep also
-  # rejected benign fee-payer references the other five SDKs accept).
+  # Extra Token instructions remain invalid under the optional-instruction
+  # allowlist, regardless of the accounts they mention.
   def test_settlement_rejects_extra_token_transfer_naming_fee_payer
     sent = []
     state = build_state(sender: ->(_state, transaction) {

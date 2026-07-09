@@ -174,20 +174,19 @@ module PayKit::Protocols::X402
             authority = account_key_for_index(accounts.fetch(3), account_keys)
             source = account_key_for_index(accounts.fetch(0), account_keys)
 
-            # Rule 5: fee-payer/managed-signer fund-mover guard. A managed
-            # signer (the operator's fee payer) must never be the transfer
-            # authority, nor the funding source: not as its raw key, and not
-            # as its own associated token account for this mint. This is the
-            # complete rule — an appended instruction that merely references
-            # the fee-payer (e.g. a Lighthouse guard) is NOT a fund move and
-            # is accepted, matching the Rust reference and the Go/Python/PHP/
-            # Lua verifiers.
-            fund_mover = managed_signers.any? do |managed|
-              managed == authority ||
-                managed == source ||
-                source == Exact.associated_token_address(managed, program, mint)
+            # Rule 5: managed signers must not fund or authorize the transfer.
+            # The canonical check is intentionally limited to the transfer's
+            # source, authority/tail signer accounts, and the managed ATA for
+            # the actual mint/program. Mint and destination references alone
+            # do not authorize a transfer and must not be rejected.
+            tail_accounts = accounts.drop(3).map do |index|
+              account_key_for_index(index, account_keys)
             end
-            if fund_mover
+            if managed_signers.any? do |managed|
+              managed == source ||
+                  tail_accounts.include?(managed) ||
+                  source == Exact.associated_token_address(managed, program, mint)
+            end
               raise "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
             end
 

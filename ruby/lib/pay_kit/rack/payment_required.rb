@@ -271,13 +271,15 @@ module PayKit
             rpc: rpc,
             fee_payer: fee_payer_account
           )
-          ::PayKit::Protocols::Mpp.create(
+          options = {
             method: method,
             secret_key: secret,
             realm: realm,
             replay_store: replay_store,
             expires_in: expires_in
-          )
+          }
+          options[:replay_store] = replay_store unless replay_store.nil?
+          ::PayKit::Protocols::Mpp.create(**options)
         end
       end
 
