@@ -675,6 +675,7 @@ def main() -> None:
         if code is not None:
             result["rejectCode"] = code
 
+    result["language"] = "python"
     sys.stdout.write(json.dumps(result) + "\n")
 
 

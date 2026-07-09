@@ -217,6 +217,88 @@ export type RejectCode =
   // this to HTTP 400; the conformance oracle pins it as a reject category.
   | "payment-identifier-required";
 
+export const REQUIRED_REJECT_CODES = [
+  "compute-price-over-cap",
+  "compute-limit-over-cap",
+  "fee-payer-not-authority",
+  "fee-payer-is-funds-source",
+  "decimals-mismatch",
+  "splits-exceed-amount",
+  "too-many-splits",
+  "unexpected-instruction",
+  "no-matching-transfer",
+  "amount-mismatch",
+  "invalid-payload",
+  "unsupported-version",
+  "wrong-network",
+  "payment-identifier-required",
+] as const satisfies readonly RejectCode[];
+
+export type JsonResourceBudgets = {
+  maxDepth: number;
+  maxObjectKeys: number;
+  maxArrayLength: number;
+  maxStringLength: number;
+  maxNodes: number;
+};
+
+export const JSON_RESOURCE_BUDGETS: JsonResourceBudgets = {
+  maxDepth: 40,
+  maxObjectKeys: 256,
+  maxArrayLength: 5_000,
+  maxStringLength: 1_000_000,
+  maxNodes: 50_000,
+};
+
+export function assertJsonResourceBudget(
+  value: unknown,
+  context: string,
+  budgets: JsonResourceBudgets = JSON_RESOURCE_BUDGETS,
+): void {
+  let nodes = 0;
+
+  const visit = (node: unknown, depth: number): void => {
+    nodes += 1;
+    if (nodes > budgets.maxNodes) {
+      throw new Error(
+        `resource-bound: ${context} exceeds max JSON node budget ${budgets.maxNodes}`,
+      );
+    }
+    if (depth > budgets.maxDepth) {
+      throw new Error(
+        `resource-bound: ${context} exceeds max JSON depth ${budgets.maxDepth}`,
+      );
+    }
+    if (typeof node === "string" && node.length > budgets.maxStringLength) {
+      throw new Error(
+        `resource-bound: ${context} string length ${node.length} exceeds ${budgets.maxStringLength}`,
+      );
+    }
+    if (Array.isArray(node)) {
+      if (node.length > budgets.maxArrayLength) {
+        throw new Error(
+          `resource-bound: ${context} array length ${node.length} exceeds ${budgets.maxArrayLength}`,
+        );
+      }
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+    if (node && typeof node === "object") {
+      const keys = Object.keys(node as Record<string, unknown>);
+      if (keys.length > budgets.maxObjectKeys) {
+        throw new Error(
+          `resource-bound: ${context} object width ${keys.length} exceeds ${budgets.maxObjectKeys}`,
+        );
+      }
+      for (const key of keys) {
+        visit((node as Record<string, unknown>)[key], depth + 1);
+      }
+    }
+  };
+
+  visit(value, 0);
+}
+
 export type VectorInput = {
   // build-transaction / verify-transaction
   request?: VectorChargeRequest;
@@ -333,6 +415,11 @@ export type ConformanceVector = {
 // The result a runner emits to stdout for one vector.
 export type RunnerResult = {
   id: string;
+  // Required on spawned stdout. The harness validates this against the runner
+  // manifest language, or manifest reportsAs when a runner intentionally
+  // reports a shared implementation identity.
+  language?: string;
+  implementation?: string;
   // "accept" | "reject" assert against the vector's expect block;
   // "unsupported-mode" tells the driver to SKIP this vector for the runner.
   outcome: RunnerOutcome;

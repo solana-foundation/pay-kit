@@ -9,12 +9,12 @@
 
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
-import { Challenge as MppxChallenge, Credential, PaymentRequest } from "mppx";
+import { Challenge as MppxChallenge, Credential, PaymentRequest, Receipt } from "mppx";
 // `Challenge` comes from pay-kit's `@solana/mpp` boundary, which wraps mppx's
 // challenge codec with the canonical empty-id parse guard. This is the surface
 // pay-kit's TypeScript SDK actually exposes, so the conformance run reflects
 // pay-kit behaviour, not raw mppx.
-import { Challenge, Receipt } from "@solana/mpp/client";
+import { Challenge } from "@solana/mpp/client";
 import type { AdapterRequest, AdapterResponse, ProtocolAdapter } from "../driver";
 
 function ok(result: unknown): AdapterResponse {
@@ -199,12 +199,17 @@ if (isMain) {
     .then((raw) => {
       const request = JSON.parse(raw) as AdapterRequest;
       const response = dispatch(request);
-      process.stdout.write(JSON.stringify(response));
+      process.stdout.write(JSON.stringify({ language: "typescript", ...response }));
     })
     .catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       process.stdout.write(
-        JSON.stringify({ success: false, error: message, error_type: "unknown_error" }),
+        JSON.stringify({
+          language: "typescript",
+          success: false,
+          error: message,
+          error_type: "unknown_error",
+        }),
       );
       process.exitCode = 1;
     });

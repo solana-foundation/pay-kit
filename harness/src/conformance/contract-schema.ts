@@ -109,8 +109,11 @@ export const runnerResultSchema = {
   type: "object",
   additionalProperties: false,
   required: ["id", "outcome"],
+  anyOf: [{ required: ["language"] }, { required: ["implementation"] }],
   properties: {
     id: { type: "string" },
+    language: { type: "string", minLength: 1 },
+    implementation: { type: "string", minLength: 1 },
     outcome: { enum: ["accept", "reject", "unsupported-mode"] },
     transactionShape: transactionShapeSchema,
     x402EnvelopeShape: x402EnvelopeShapeSchema,

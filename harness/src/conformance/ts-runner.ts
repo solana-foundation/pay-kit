@@ -334,7 +334,7 @@ async function main(): Promise<void> {
       result.x402ExactRejectCode = message;
     }
   }
-  process.stdout.write(JSON.stringify(result) + "\n");
+  process.stdout.write(JSON.stringify({ language: "typescript", ...result }) + "\n");
 }
 
 void main();

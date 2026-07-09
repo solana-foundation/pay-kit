@@ -28,12 +28,14 @@ export type ProtocolRunnerManifest = {
   language: string;
   command: string[];
   cwd?: string;
+  reportsAs?: string;
 };
 
 export type DiscoveredProtocolRunner = {
   language: string;
   command: string[];
   cwd: string;
+  reportsAs?: string;
 };
 
 function isManifest(value: unknown): value is ProtocolRunnerManifest {
@@ -43,6 +45,7 @@ function isManifest(value: unknown): value is ProtocolRunnerManifest {
   if (!Array.isArray(m.command) || m.command.length === 0) return false;
   if (!m.command.every((c) => typeof c === "string")) return false;
   if (m.cwd !== undefined && typeof m.cwd !== "string") return false;
+  if (m.reportsAs !== undefined && typeof m.reportsAs !== "string") return false;
   return true;
 }
 
@@ -61,9 +64,33 @@ export function discoverProtocolRunners(): DiscoveredProtocolRunner[] {
       language: parsed.language,
       command: parsed.command,
       cwd: parsed.cwd ? join(repoRoot, parsed.cwd) : repoRoot,
+      ...(parsed.reportsAs ? { reportsAs: parsed.reportsAs } : {}),
     });
   }
   return runners;
+}
+
+function validateRunnerIdentity(
+  response: AdapterResponse,
+  runner: DiscoveredProtocolRunner,
+): AdapterResponse {
+  const reported = response.language ?? response.implementation;
+  const expected = runner.reportsAs ?? runner.language;
+  if (reported === undefined || reported === "") {
+    return {
+      success: false,
+      error: `runner identity missing: expected language or implementation ${expected}`,
+      error_type: "runner_error",
+    };
+  }
+  if (reported !== expected) {
+    return {
+      success: false,
+      error: `runner identity mismatch: manifest ${runner.language} expected ${expected}, got ${reported}`,
+      error_type: "runner_error",
+    };
+  }
+  return response;
 }
 
 // Wrap a discovered runner as a ProtocolAdapter that spawns one process per
@@ -114,7 +141,7 @@ export function spawnedProtocolAdapter(runner: DiscoveredProtocolRunner): Protoc
             return;
           }
           try {
-            finish(JSON.parse(line) as AdapterResponse);
+            finish(validateRunnerIdentity(JSON.parse(line) as AdapterResponse, runner));
           } catch (err) {
             finish({
               success: false,

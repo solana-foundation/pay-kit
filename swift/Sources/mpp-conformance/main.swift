@@ -240,6 +240,7 @@ private struct X402EnvelopeShape: Encodable {
 }
 
 private struct RunnerResult: Encodable {
+    let language = "swift"
     let id: String
     let outcome: String
     var transactionShape: TransactionShape?
@@ -249,11 +250,12 @@ private struct RunnerResult: Encodable {
     var rejectCode: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, outcome, transactionShape, exactBytes, x402EnvelopeShape, error, rejectCode
+        case language, id, outcome, transactionShape, exactBytes, x402EnvelopeShape, error, rejectCode
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(language, forKey: .language)
         try c.encode(id, forKey: .id)
         try c.encode(outcome, forKey: .outcome)
         if let transactionShape { try c.encode(transactionShape, forKey: .transactionShape) }

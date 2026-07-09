@@ -16,6 +16,9 @@ name: Harness
 # duplicated pnpm/node + build-mpp + build-rust + install + typecheck lives once
 # in the build job (see .github/actions/setup-harness and setup-harness-leg).
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

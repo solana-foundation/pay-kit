@@ -57,6 +57,21 @@ const workflowText = readdirSync(workflowsDir)
   .map((name) => stripYamlComments(readFileSync(join(workflowsDir, name), "utf8")))
   .join("\n");
 
+const DIRECT_NON_PUBLISH_WORKFLOWS = [
+  "android-demo.yml",
+  "ci.yml",
+  "go-consumer.yml",
+  "go.yml",
+  "harness.yml",
+  "ios-demo.yml",
+  "kotlin.yml",
+  "lua.yml",
+  "php.yml",
+  "python.yml",
+  "ruby.yml",
+  "swift.yml",
+] as const;
+
 const allTests = readdirSync(testDir)
   .filter((name) => name.endsWith(".test.ts"))
   .sort();
@@ -96,4 +111,28 @@ describe("CI coverage gate: every harness test runs in CI (or is documented-exem
       }
     });
   }
+});
+
+describe("workflow hygiene gate: direct non-publish workflows are read-only by default", () => {
+  for (const workflow of DIRECT_NON_PUBLISH_WORKFLOWS) {
+    it(`${workflow} declares top-level contents: read permissions`, () => {
+      const text = stripYamlComments(readFileSync(join(workflowsDir, workflow), "utf8"));
+      expect(
+        /^permissions:\n(?:[ \t]+[A-Za-z-]+:[^\n]*\n)+/m.test(text),
+        `${workflow} has no top-level permissions block; PR CI would inherit repository defaults`,
+      ).toBe(true);
+      const block = text.match(/^permissions:\n((?:[ \t]+[A-Za-z-]+:[^\n]*\n)+)/m)?.[1] ?? "";
+      expect(block, `${workflow} top-level permissions must include contents: read`).toMatch(
+        /^[ \t]+contents:[ \t]*read[ \t]*$/m,
+      );
+      expect(
+        block,
+        `${workflow} top-level permissions must not grant write scopes; use job-level permissions only where needed`,
+      ).not.toMatch(/:[ \t]*write\b|write-all|read-all/);
+    });
+  }
+
+  it("does not accidentally inspect publish workflows in the direct-workflow guard", () => {
+    expect([...DIRECT_NON_PUBLISH_WORKFLOWS].some((name) => name.includes("publish"))).toBe(false);
+  });
 });

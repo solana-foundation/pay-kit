@@ -51,6 +51,7 @@ type request struct {
 
 // response is the canonical adapter-ABI output envelope.
 type response struct {
+	Language  string      `json:"language"`
 	Success   bool        `json:"success"`
 	Result    interface{} `json:"result,omitempty"`
 	Error     string      `json:"error,omitempty"`
@@ -403,9 +404,10 @@ func main() {
 }
 
 func emit(resp response) {
+	resp.Language = "go"
 	out, err := json.Marshal(resp)
 	if err != nil {
-		fmt.Printf(`{"success":false,"error":%q,"error_type":"runner_error"}`, err.Error())
+		fmt.Printf(`{"language":"go","success":false,"error":%q,"error_type":"runner_error"}`, err.Error())
 		return
 	}
 	fmt.Println(string(out))

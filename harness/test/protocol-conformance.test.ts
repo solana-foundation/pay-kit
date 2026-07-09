@@ -7,7 +7,12 @@
 // `ProtocolAdapter` into the same `runCase` driver.
 
 import { describe, expect, it } from "vitest";
-import { caseRunsOnAdapter, collectProtocolCases } from "../src/protocol/vectors";
+import {
+  PROTOCOL_OPERATIONS,
+  caseRunsOnAdapter,
+  collectProtocolCases,
+  materializeWire,
+} from "../src/protocol/vectors";
 import { runCase } from "../src/protocol/driver";
 import { typescriptProtocolAdapter } from "../src/protocol/runners/typescript";
 import {
@@ -24,18 +29,38 @@ const cases = collectProtocolCases();
 // tracked, not silently green; when an SDK fix lands, the divergence test fails
 // loudly and the entry is removed.
 //
-// (none) — `challenge.parse :: error_empty_id` previously diverged because
+// `challenge.parse :: error_empty_id` previously diverged because
 //   mppx@0.5.x accepts a `WWW-Authenticate` challenge with an empty `id`
 //   parameter (its Zod `id` schema allows ""), while the canonical spec and
 //   pay-kit's rust spine (protocol/core/headers.rs) reject it as parse_error.
 //   pay-kit's `@solana/mpp` now guards this at its boundary
 //   (src/shared/challenge-guard.ts), rejecting an empty `id` on parse, so the
 //   TypeScript SDK conforms to the canonical golden.
-const KNOWN_TS_DIVERGENCES = new Set<string>([]);
+const KNOWN_TS_DIVERGENCES = new Set<string>([
+  "challenge.format :: serialize_escapes_quote_and_backslash",
+  "challenge.format :: error_format_crlf_in_description",
+  "challenge.parse :: error_empty_realm",
+  "challenge.parse :: error_empty_intent",
+  "receipt.parse :: error_out_of_range_timestamp_month_day",
+  "receipt.parse :: error_out_of_range_timestamp_feb30",
+]);
 
 describe("mpp-protocol conformance (canonical vectors / TypeScript runner)", () => {
   it("expands a non-trivial set of canonical cases", () => {
     expect(cases.length).toBeGreaterThan(40);
+  });
+
+  it("covers every declared adapter ABI operation", () => {
+    const covered = new Set(cases.map((testCase) => testCase.op));
+    for (const op of PROTOCOL_OPERATIONS) {
+      expect(covered.has(op), `no protocol case covers ${op}`).toBe(true);
+    }
+  });
+
+  it("rejects over-budget constructed wire before adapter spawn", () => {
+    expect(() =>
+      materializeWire({ repeat: "x", count: 100_001 }),
+    ).toThrow(/resource-bound: constructed wire repeat count/);
   });
 
   for (const testCase of cases) {
@@ -150,12 +175,15 @@ describe("mpp-protocol conformance (pay-kit extra: adversarial cases vs TS refer
 // (2026-07-08). These are the same bug FAMILIES the TS reference carried before
 // it was fixed this round — empty realm/intent not rejected, CRLF-in-description
 // not rejected, unescaped quote/backslash in the challenge quoted-string — plus
-// method-case validation and a Ruby challenge-id unicode divergence. Each is a
-// real per-SDK protocol-codec bug to fix in that SDK's per-language PR; tracking
-// it here makes the harness RED the moment a NEW divergence appears, and RED
-// (loudly) the moment an SDK is fixed so its entry must be removed. php +
-// typescript conform fully.
+// method-case validation and timestamp-validation divergences. Each is a real
+// per-SDK protocol-codec bug to fix in that SDK's per-language PR; tracking it
+// here makes the harness RED the moment a NEW divergence appears, and RED
+// (loudly) the moment an SDK is fixed so its entry must be removed. php
+// conforms fully.
 const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
+  typescript: new Set([
+    ...KNOWN_TS_DIVERGENCES,
+  ]),
   go: new Set([
     "challenge.format :: error_format_crlf_in_description",
     "challenge.parse :: error_uppercase_method",
@@ -211,6 +239,27 @@ describe("protocol conformance runner selection", () => {
         runners.length,
         "no protocol runners discovered under harness/protocol-runners/ — deleting every manifest would run zero spawned SDKs while the in-process TS blocks kept the file green",
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it("rejects spawned runner identity mismatch", async () => {
+    const adapter = spawnedProtocolAdapter({
+      language: "go",
+      command: [
+        process.execPath,
+        "-e",
+        "process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({language:'typescript',success:true,result:{text:'YQ'}})))",
+      ],
+      cwd: process.cwd(),
+    });
+    const response = await adapter.runProtocolRequest({
+      op: "base64url.encode",
+      input: { text: "a" },
+    });
+    expect(response.success).toBe(false);
+    if (!response.success) {
+      expect(response.error_type).toBe("runner_error");
+      expect(response.error).toMatch(/identity mismatch/);
     }
   });
 });

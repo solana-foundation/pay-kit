@@ -1,5 +1,8 @@
 name: Go consumer guard
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]

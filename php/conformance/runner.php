@@ -96,6 +96,7 @@ function read_stdin(): string
  */
 function emit(array $result): void
 {
+    $result['language'] = 'php';
     fwrite(STDOUT, json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
 }
 
