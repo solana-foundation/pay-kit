@@ -5,6 +5,7 @@ require "open3"
 require "socket"
 require "net/http"
 require "timeout"
+require "tmpdir"
 
 # Drives `harness/ruby-server/server.rb` as a subprocess to prove the
 # dual-protocol adapter boots correctly under both env namespaces.
@@ -42,6 +43,19 @@ class PayKitHarnessAdapterTest < Minitest::Test
   def test_mpp_mode_ready_payload_and_health
     with_adapter(mpp_env) do |port|
       assert_equal true, JSON.parse(Net::HTTP.get(URI("http://127.0.0.1:#{port}/health")))["ok"]
+    end
+  end
+
+  def test_mpp_devnet_mode_boots_with_the_harness_replay_store
+    Dir.mktmpdir do |dir|
+      env = mpp_env.merge(
+        "MPP_HARNESS_NETWORK" => "devnet",
+        "MPP_HARNESS_REPLAY_STORE_PATH" => File.join(dir, "replay.json")
+      )
+
+      with_adapter(env) do |port|
+        assert_equal true, JSON.parse(Net::HTTP.get(URI("http://127.0.0.1:#{port}/health")))["ok"]
+      end
     end
   end
 

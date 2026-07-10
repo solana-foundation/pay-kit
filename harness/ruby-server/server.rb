@@ -16,6 +16,7 @@
 # harness builds the method + server with explicit knobs from env.
 
 require "json"
+require "fileutils"
 require "rack"
 require "socket"
 require "stringio"
@@ -37,6 +38,45 @@ end
 def optional_env(name, default)
   value = ENV[name]
   value.nil? || value.empty? ? default : value
+end
+
+# The harness runs one adapter process by default but can be configured with
+# the same path for multiple local workers. Unlike the SDK's FileStore, this
+# test-only store serializes read-modify-write operations with an OS file lock
+# and fsyncs successful reservations, so its durability and sharing capability
+# declarations are true for that harness deployment. Production callers still
+# need to provide their own durable, shared replay store.
+class HarnessReplayStore < ::PayKit::Protocols::Mpp::Store
+  def initialize(path)
+    @path = path
+    FileUtils.mkdir_p(File.dirname(path))
+  end
+
+  def durable?
+    true
+  end
+
+  def shared?
+    true
+  end
+
+  def put_if_absent(key, value)
+    File.open(@path, File::RDWR | File::CREAT, 0o600) do |file|
+      file.flock(File::LOCK_EX)
+      file.rewind
+      entries = file.read
+      values = (entries.empty? ? {} : JSON.parse(entries))
+      return false if values.key?(key)
+
+      values[key] = value
+      file.rewind
+      file.truncate(0)
+      file.write(JSON.generate(values))
+      file.flush
+      file.fsync
+      true
+    end
+  end
 end
 
 # --- detect intent -----------------------------------------------------
@@ -144,14 +184,14 @@ else
     decimals: Integer(decimals_raw, 10)
   )
 
-  # Devnet/mainnet MPP creation intentionally fails closed without durable
-  # replay storage. The harness is single-process, so a per-process FileStore
-  # provides restart-persistent replay markers without weakening that policy.
+  # Devnet/mainnet MPP creation intentionally fails closed without durable,
+  # cross-worker replay storage. This harness-only store provides those
+  # capabilities when workers share MPP_HARNESS_REPLAY_STORE_PATH.
   replay_store_path = optional_env(
     "MPP_HARNESS_REPLAY_STORE_PATH",
     File.join(Dir.tmpdir, "pay-kit-harness-mpp-replay-#{Process.pid}.json")
   )
-  replay_store = ::PayKit::Protocols::Mpp::FileStore.new(replay_store_path)
+  replay_store = HarnessReplayStore.new(replay_store_path)
 
   mpp_server = ::PayKit::Protocols::Mpp.create(
     method: method,
