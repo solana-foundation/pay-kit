@@ -6,10 +6,11 @@ import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
 import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { InvalidProofError } from '../errors.js';
+import { ConfigurationError, InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2, toSolanaNetwork } from '../protocol.js';
+import type { AtomicSubscriptionReplayStore } from '../subscription-replay-store.js';
 
 /** Settlement header mirrored by every PayKit SDK. */
 const SETTLEMENT_SIGNATURE_HEADER = 'x-payment-settlement-signature';
@@ -38,6 +39,12 @@ function totalAmount(gate: Gate): bigint {
     return gate.total().baseUnits();
 }
 
+function handlerCacheKey(parts: readonly unknown[]): string {
+    return JSON.stringify(parts, (_key, value: unknown) =>
+        typeof value === 'bigint' ? `pay-kit:bigint:${value.toString()}` : value,
+    );
+}
+
 /** The MPP scheme a gate settles through: `subscription` for recurring gates, else `charge`. */
 function schemeFor(gate: Gate): 'charge' | 'subscription' {
     return gate.kind === 'subscription' ? 'subscription' : 'charge';
@@ -58,7 +65,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         const splits = splitsFor(gate);
         // Key on every field a built handler captures, so gates differing only
         // in amount, description, or externalId get distinct handlers.
-        const key = JSON.stringify([
+        const key = handlerCacheKey([
             gate.kind,
             gate.payTo,
             mint,
@@ -72,21 +79,46 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         if (!handler) {
             const signer = config.operator.feePayer ? { signer: config.operator.signer.signer } : {};
             if (gate.subscription) {
-                const { periodCount, periodUnit, planId, puller } = gate.subscription;
+                const { merchant, periodCount, periodUnit, planBump, planCreatedAt, planId, planIdNumeric, puller } =
+                    gate.subscription;
+                if (!config.operator.feePayer) {
+                    throw new ConfigurationError('Subscription gates require an operator fee payer.');
+                }
+                if (
+                    !config.replayStore ||
+                    typeof (config.replayStore as { reserve?: unknown }).reserve !== 'function'
+                ) {
+                    throw new ConfigurationError('Subscription gates require a replay store with atomic reserve().');
+                }
+                const replayStore = config.replayStore as AtomicSubscriptionReplayStore;
+                if (
+                    config.network !== 'solana_localnet' &&
+                    replayStore.isShared !== true &&
+                    replayStore.isDurable !== true
+                ) {
+                    throw new ConfigurationError(
+                        'Non-local subscription gates require a replay store with isShared=true or isDurable=true.',
+                    );
+                }
                 const mppx = Mppx.create({
                     methods: [
                         solana.subscription({
                             decimals: 6,
+                            merchant,
                             mint,
                             network,
                             periodCount,
                             periodUnit,
+                            planBump,
+                            planCreatedAt,
                             planId,
+                            planIdNumeric,
                             puller,
                             recipient: gate.payTo,
                             rpcUrl: config.rpcUrl,
+                            signer: config.operator.signer.signer,
+                            store: replayStore,
                             tokenProgram: TOKEN_PROGRAM,
-                            ...signer,
                         }),
                     ],
                     realm: config.mpp.realm,

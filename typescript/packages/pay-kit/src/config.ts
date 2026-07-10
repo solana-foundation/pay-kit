@@ -5,6 +5,7 @@ import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError
 import { type Stablecoin, STABLECOINS } from './price.js';
 import { type Network, type NetworkSlug, type Protocol, toNetwork, toSolanaNetwork } from './protocol.js';
 import { type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
+import type { AtomicSubscriptionReplayStore } from './subscription-replay-store.js';
 
 /** MPP protocol options. */
 export type MppOptions = {
@@ -59,8 +60,12 @@ export type ConfigureParams = {
     readonly operator?: OperatorParams;
     /** Run boot-time safety checks. */
     readonly preflight?: boolean;
-    /** Replay-protection store. Use a persistent backend in production. */
-    readonly replayStore?: Store.Store;
+    /**
+     * Replay-protection store. Subscription gates require the atomic
+     * {@link AtomicSubscriptionReplayStore} contract; use a shared or durable
+     * implementation in production.
+     */
+    readonly replayStore?: AtomicSubscriptionReplayStore | Store.Store;
     /** Defaults to the public RPC endpoint for the network. */
     readonly rpcUrl?: string;
     /** Ordered settlement preference. */
@@ -80,7 +85,7 @@ export type PayKitConfig = {
     readonly network: Network;
     readonly operator: Operator;
     readonly preflight: boolean;
-    readonly replayStore: Store.Store | undefined;
+    readonly replayStore: AtomicSubscriptionReplayStore | Store.Store | undefined;
     readonly rpcUrl: string;
     readonly stablecoins: readonly Stablecoin[];
     readonly x402: Record<string, never>;

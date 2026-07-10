@@ -4,7 +4,9 @@ import { createMppAdapter } from '../adapters/mpp.js';
 import { configure } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
+import { subscription } from '../pricing.js';
 import { Signer } from '../signer.js';
+import { createUnsafeMemorySubscriptionReplayStore } from '../subscription-replay-store.js';
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
 const PLATFORM = 'CXG3Pq3DwZb1HVckhPQbVxiwoNGM3jNGYvC2BSdkj1pK';
@@ -25,6 +27,37 @@ function gate(params: Parameters<typeof Gate.create>[0]['feeWithin'] = undefined
 }
 
 describe('createMppAdapter', () => {
+    it('rejects a process-local subscription replay store outside localnet', async () => {
+        const config = await configure({
+            accept: ['mpp'],
+            mpp: { challengeBindingSecret: 'adapter-test-secret' },
+            network: 'solana_devnet',
+            operator: { feePayer: true, recipient: SELLER, signer: await Signer.generate() },
+            replayStore: createUnsafeMemorySubscriptionReplayStore(),
+        });
+        const subscriptionGate = Gate.create(
+            {
+                ...subscription(usd('0.10'), {
+                    merchant: SELLER,
+                    periodCount: 1,
+                    periodUnit: 'day',
+                    planBump: 255,
+                    planCreatedAt: 1_700_000_000n,
+                    planId: PLATFORM,
+                    planIdNumeric: 1n,
+                    puller: config.operator.signer.pubkey,
+                }),
+                name: 'feed',
+                payTo: SELLER,
+            },
+            { accept: ['mpp'], payTo: SELLER },
+        );
+
+        await expect(
+            createMppAdapter(config).challengeHeaders(subscriptionGate, new Request('http://t/feed')),
+        ).rejects.toThrow(/isShared=true or isDurable=true/);
+    });
+
     it('detects MPP payment credentials', async () => {
         const { adapter } = await setup();
         expect(adapter.detect(new Request('http://t/', { headers: { authorization: 'Payment abc' } }))).toBe(true);

@@ -2,8 +2,8 @@
 //!
 //! Builds the activation transaction defined by `draft-solana-subscription-00`:
 //!
-//!   `[compute_budget_*, initialize_subscription_authority?, subscribe,
-//!     transfer_subscription, memo(externalId)?]`
+//!   `[compute_budget_*, create_subscriber_ata, create_recipient_ata,
+//!     subscribe, transfer_subscription, memo(externalId)?]`
 //!
 //! The transaction is signed (or partially signed when the server is fee
 //! payer) and returned as a `CredentialPayload::Transaction` ready to send
@@ -34,20 +34,24 @@ const SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET: usize = 1 + 32 + 32 + 32 + 1;
 
 pub use crate::mpp::protocol::intents::SubscriptionMethodDetails;
 
+/// The documented safe compute budget accepted by fee-sponsored activation
+/// servers. Keep the client default at or below that cap so a no-options
+/// public activation is always co-signable.
+const DEFAULT_ACTIVATION_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+
 /// Options for building a Solana subscription activation transaction.
 #[derive(Debug, Clone, Default)]
 pub struct BuildSubscriptionActivationOptions {
     /// Optional memo with the merchant's external reference, embedded as a
     /// trailing memo instruction.
     pub external_id: Option<String>,
-    /// Compute unit limit. Defaults to 400,000 (activation includes up to
-    /// three subscriptions-program instructions plus token transfers).
+    /// Compute unit limit. Defaults to the documented safe sponsored cap of
+    /// 200,000 compute units.
     pub compute_unit_limit: Option<u32>,
     /// Compute unit price in microlamports. Defaults to 1.
     pub compute_unit_price: Option<u64>,
-    /// Pre-resolved `SubscriptionAuthority::init_id`. When set, the builder
-    /// skips the on-chain SA lookup and the init-tx broadcast — useful for
-    /// tests, and for callers that have already resolved the SA state.
+    /// Pre-resolved `SubscriptionAuthority::init_id`. When omitted, the legacy
+    /// compatibility path initializes or reads the authority before building.
     pub subscription_authority_init_id: Option<i64>,
 }
 
@@ -67,6 +71,30 @@ pub async fn build_subscription_activation_transaction(
         rpc,
         method_details,
         BuildSubscriptionActivationOptions::default(),
+    )
+    .await
+}
+
+/// Build an activation transaction from an explicitly resolved authority init id.
+///
+/// Unlike the compatibility wrapper, this function never broadcasts an
+/// initialization transaction.
+pub async fn build_subscription_activation_transaction_with_init_id(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    method_details: &SubscriptionMethodDetails,
+    subscription_authority_init_id: i64,
+) -> Result<CredentialPayload, Error> {
+    build_subscription_activation_transaction_with_options(
+        signer,
+        rpc,
+        method_details,
+        BuildSubscriptionActivationOptions {
+            external_id: None,
+            compute_unit_limit: None,
+            compute_unit_price: None,
+            subscription_authority_init_id: Some(subscription_authority_init_id),
+        },
     )
     .await
 }
@@ -160,7 +188,9 @@ pub async fn build_subscription_activation_transaction_with_options(
         options.compute_unit_price.unwrap_or(1),
     ));
     instructions.push(compute_unit_limit_ix(
-        options.compute_unit_limit.unwrap_or(400_000),
+        options
+            .compute_unit_limit
+            .unwrap_or(DEFAULT_ACTIVATION_COMPUTE_UNIT_LIMIT),
     ));
 
     // ATA bootstrap. The on-chain `init_subscription_authority` (and
@@ -186,14 +216,18 @@ pub async fn build_subscription_activation_transaction_with_options(
         token_program,
         associated_token_program,
     ));
+    instructions.push(build_create_idempotent_ata_ix(
+        ata_funder,
+        recipient_ata,
+        recipient,
+        mint,
+        token_program,
+        associated_token_program,
+    ));
 
     // The on-chain `Subscribe` instruction binds the subscriber's signature
-    // to a specific `SubscriptionAuthority::init_id`, set from `Clock::slot`
-    // at SA creation. If the SA is created in the same tx as `Subscribe`,
-    // the client can't predict the landing slot — so SA must exist (and
-    // we must read its `init_id`) before signing the activation tx. When
-    // missing, broadcast a one-off init tx as the subscriber, paid by the
-    // subscriber (~0.002 SOL rent + ~5k lamports fee).
+    // to a specific `SubscriptionAuthority::init_id`. Callers must explicitly
+    // initialize/read that authority before asking this pure builder to run.
     let blockhash_str = method_details.recent_blockhash.as_deref().ok_or_else(|| {
         Error::Other(
             "Challenge is missing methodDetails.recentBlockhash — the server failed \
@@ -206,21 +240,8 @@ pub async fn build_subscription_activation_transaction_with_options(
         .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?;
 
     let expected_subscription_authority_init_id = match options.subscription_authority_init_id {
-        Some(id) => id,
-        None => {
-            ensure_subscription_authority_init_id(
-                signer,
-                rpc,
-                program_id,
-                subscriber,
-                mint,
-                subscriber_ata,
-                subscription_authority,
-                token_program,
-                &blockhash,
-            )
-            .await?
-        }
+        Some(init_id) => init_id,
+        None => initialize_subscription_authority(signer, rpc, method_details).await?,
     };
 
     // Optional rent payer for the subscribe ix: fee_payer when
@@ -329,30 +350,43 @@ pub async fn build_subscription_activation_transaction_with_options(
     Ok(CredentialPayload::Transaction { transaction: b64 })
 }
 
-/// Resolve the `SubscriptionAuthority::init_id` the activation tx must
-/// reference, broadcasting a one-off subscriber-signed init tx when the SA
-/// PDA hasn't been created yet.
+/// Explicitly initialize the subscriber's subscription authority when absent,
+/// then return the live `init_id` required by the activation builder.
 ///
 /// The init tx is intentionally paid by the subscriber (no fee-payer
 /// trailing account): the on-chain `init` records the funder as the rent
 /// recipient on close, and we want that to be the subscriber so they get
 /// their rent back when they tear the SA down later. Subscribers must
 /// hold ~0.002 SOL the first time they subscribe with a given mint.
-#[allow(clippy::too_many_arguments)]
-async fn ensure_subscription_authority_init_id(
+pub async fn initialize_subscription_authority(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
-    program_id: Pubkey,
-    subscriber: Pubkey,
-    mint: Pubkey,
-    subscriber_ata: Pubkey,
-    subscription_authority: Pubkey,
-    token_program: Pubkey,
-    blockhash: &solana_hash::Hash,
+    method_details: &SubscriptionMethodDetails,
 ) -> Result<i64, Error> {
+    let program_id = match method_details.program_id.as_deref() {
+        Some(p) => parse_pubkey(p, "programId")?,
+        None => default_program_id(),
+    };
+    let subscriber = signer.pubkey();
+    let mint = parse_pubkey(&method_details.mint, "mint")?;
+    let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
+    let associated_token_program = parse_pubkey(
+        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        "associated_token_program",
+    )?;
+    let (subscriber_ata, _) = Pubkey::find_program_address(
+        &[subscriber.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &associated_token_program,
+    );
+    let (subscription_authority, _) =
+        find_subscription_authority_pda(&subscriber, &mint, &program_id);
     if let Ok(account) = rpc.get_account(&subscription_authority) {
         return parse_subscription_authority_init_id(&account.data);
     }
+
+    let blockhash = rpc
+        .get_latest_blockhash()
+        .map_err(|e| Error::Other(format!("Failed to fetch SA init blockhash: {e}")))?;
 
     // SA doesn't exist — broadcast a subscriber-only-signed init tx so the
     // SA lands on-chain (and its `init_id` is recorded) before we sign the
@@ -368,7 +402,16 @@ async fn ensure_subscription_authority_init_id(
         },
     );
 
-    let message = Message::new_with_blockhash(&[init_ix], Some(&subscriber), blockhash);
+    let create_ata_ix = build_create_idempotent_ata_ix(
+        subscriber,
+        subscriber_ata,
+        subscriber,
+        mint,
+        token_program,
+        associated_token_program,
+    );
+    let message =
+        Message::new_with_blockhash(&[create_ata_ix, init_ix], Some(&subscriber), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
     let sig_bytes = signer
         .sign_message(&tx.message_data())
@@ -551,35 +594,51 @@ mod tests {
         }
     }
 
-    /// Build helper for tests: pins `subscription_authority_init_id` to 0
-    /// so the activation builder skips the on-chain SA lookup (the RPC mock
-    /// would otherwise try to broadcast an init tx and panic on the second
-    /// `getAccountInfo` returning AccountNotFound).
-    fn pinned_options(
-        extras: BuildSubscriptionActivationOptions,
-    ) -> BuildSubscriptionActivationOptions {
+    fn test_options() -> BuildSubscriptionActivationOptions {
         BuildSubscriptionActivationOptions {
+            external_id: None,
+            compute_unit_limit: None,
+            compute_unit_price: None,
             subscription_authority_init_id: Some(0),
-            ..extras
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn builds_activation_tx_with_pinned_init_id() {
+    #[test]
+    fn legacy_builder_signature_and_default_options_remain_available() {
         let signer = make_signer();
         let rpc = RpcClient::new_mock("succeeds".to_string());
         let md = make_method_details(false, None);
-        let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect("activation tx");
+        let future = build_subscription_activation_transaction(&*signer, &rpc, &md);
+        drop(future);
+        assert!(BuildSubscriptionActivationOptions::default()
+            .subscription_authority_init_id
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn public_activation_default_uses_server_safe_compute_limit() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let md = make_method_details(false, None);
+        let payload =
+            build_subscription_activation_transaction_with_init_id(&*signer, &rpc, &md, 0)
+                .await
+                .expect("activation tx");
         match payload {
             CredentialPayload::Transaction { transaction } => {
                 assert!(!transaction.is_empty());
+                let raw = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &transaction,
+                )
+                .expect("base64 decode");
+                let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
+                let limit_ix = &tx.message.instructions[1];
+                assert_eq!(limit_ix.data[0], 2);
+                assert_eq!(
+                    u32::from_le_bytes(limit_ix.data[1..5].try_into().expect("limit bytes")),
+                    DEFAULT_ACTIVATION_COMPUTE_UNIT_LIMIT
+                );
             }
             _ => panic!("expected Transaction payload"),
         }
@@ -594,12 +653,12 @@ mod tests {
             &*signer,
             &rpc,
             &md,
-            pinned_options(BuildSubscriptionActivationOptions {
+            BuildSubscriptionActivationOptions {
                 external_id: Some("order-42".into()),
                 compute_unit_limit: Some(123_456),
                 compute_unit_price: Some(1_000),
-                ..Default::default()
-            }),
+                subscription_authority_init_id: Some(0),
+            },
         )
         .await
         .expect("activation tx");
@@ -611,12 +670,11 @@ mod tests {
                 )
                 .expect("base64 decode");
                 let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
-                // [compute_price, compute_limit, ata_create_idempotent,
-                //  subscribe, transfer, memo] = 6. Init runs as a separate
-                // pre-broadcast tx, not bundled into the activation.
-                assert_eq!(tx.message.instructions.len(), 6);
+                // [compute_price, compute_limit, subscriber ATA, recipient
+                // ATA, subscribe, transfer, memo] = 7.
+                assert_eq!(tx.message.instructions.len(), 7);
                 // Last instruction must be the memo.
-                let last = &tx.message.instructions[5];
+                let last = &tx.message.instructions[6];
                 let memo_program_id =
                     Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
                 let last_program = tx.message.account_keys[last.program_id_index as usize];
@@ -636,7 +694,7 @@ mod tests {
             &*signer,
             &rpc,
             &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+            test_options(),
         )
         .await
         .expect_err("missing feePayerKey");
@@ -653,7 +711,7 @@ mod tests {
             &*signer,
             &rpc,
             &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+            test_options(),
         )
         .await
         .expect("activation tx");
@@ -683,7 +741,7 @@ mod tests {
             &*signer,
             &rpc,
             &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+            test_options(),
         )
         .await
         .expect_err("invalid mint");
@@ -700,7 +758,7 @@ mod tests {
             &*signer,
             &rpc,
             &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+            test_options(),
         )
         .await
         .expect("activation tx");
@@ -717,7 +775,7 @@ mod tests {
             &*signer,
             &rpc,
             &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
+            test_options(),
         )
         .await
         .expect_err("bad blockhash");
