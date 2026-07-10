@@ -374,7 +374,7 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
 
     vp = inp.get("voucherPreimage")
     if vp:
-        # The 48-byte session voucher preimage,
+        # The 50-byte session voucher preimage: magic([0x56, 0x01]) ||
         # channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64,
         # computed by the production SDK packer (VoucherData.message_bytes ->
         # _paymentchannels.voucher_message_bytes) so a byte mismatch is caught

@@ -51,7 +51,7 @@ SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
 
 
 class _TestVoucherSigner:
-    """An Ed25519 keypair signing canonical 48-byte vouchers. Mirrors
+    """An Ed25519 keypair signing canonical 50-byte vouchers. Mirrors
     ``testVoucherSigner`` in the Go suite."""
 
     def __init__(self, seed: int) -> None:
