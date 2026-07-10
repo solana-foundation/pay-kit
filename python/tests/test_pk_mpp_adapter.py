@@ -12,6 +12,7 @@ import pytest
 
 from solana_pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.mpp import MppAdapter, SecretResolver
@@ -84,15 +85,36 @@ def test_accepts_entry_shape():
     assert entry["realm"] == cfg.mpp.realm
 
 
-def test_default_replay_store_fails_closed_outside_localnet(monkeypatch):
+@pytest.mark.parametrize("replay_store", [None, MemoryStore()])
+def test_inmemory_replay_store_fails_closed_outside_localnet(monkeypatch, replay_store):
     cfg = _cfg(network="solana_devnet")
     monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
 
     with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
-        MppAdapter(cfg)
+        MppAdapter(cfg, replay_store=replay_store)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        MppAdapter(cfg, replay_store=replay_store)
 
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
-    assert MppAdapter(cfg)._replay_store is not None
+    adapter = MppAdapter(cfg, replay_store=replay_store)
+    assert isinstance(adapter._replay_store, MemoryStore)
+
+
+def test_localnet_allows_default_and_explicit_memory_replay_stores():
+    cfg = _cfg()
+    explicit_store = MemoryStore()
+
+    assert isinstance(MppAdapter(cfg)._replay_store, MemoryStore)
+    assert MppAdapter(cfg, replay_store=explicit_store)._replay_store is explicit_store
+
+
+def test_durable_replay_store_is_allowed_outside_localnet(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    replay_store = FileReplayStore(tmp_path / "replay.json")
+
+    assert MppAdapter(_cfg(network="solana_devnet"), replay_store=replay_store)._replay_store is replay_store
 
 
 def test_accepts_entry_includes_splits_when_fees():

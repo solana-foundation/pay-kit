@@ -184,16 +184,16 @@ class MppAdapter:
         recent_blockhash_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._config = config
-        if replay_store is None:
-            if str(config.network) != "solana_localnet" and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) != "1":
-                raise PaymentError(
-                    "no shared replay store configured outside localnet; pass replay_store or set "
-                    f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to allow a process-local development store",
-                    code="invalid-config",
-                )
-            self._replay_store = MemoryStore()
-        else:
-            self._replay_store = replay_store
+        uses_memory_store = replay_store is None or isinstance(replay_store, MemoryStore)
+        is_localnet = config.network.mints_label() == "localnet"
+        if uses_memory_store and not is_localnet and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) != "1":
+            raise PaymentError(
+                "a durable replay_store is required outside localnet; set "
+                f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
+                "MemoryStore for development",
+                code="invalid-config",
+            )
+        self._replay_store = replay_store if replay_store is not None else MemoryStore()
         self._recent_blockhash_provider = recent_blockhash_provider
         # Cache one solana_pay_kit.protocols.mpp.Mpp per (payTo|coin) key, like the PHP
         # handlerCache, so the HMAC secret and RPC client are reused.

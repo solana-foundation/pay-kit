@@ -24,6 +24,7 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
@@ -84,6 +85,7 @@ class _FakeRpc:
 
     def __init__(self, blockhash: str = "FakeBlockhash1111111111111111111111111111111") -> None:
         self.statuses: dict[str, dict | None] = {}
+        self.transactions: dict[str, dict] = {}
         self.blockhash = blockhash
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
@@ -105,6 +107,36 @@ class _FakeRpc:
                 self.value = _Value(blockhash)
 
         return _Resp(self.blockhash)
+
+    async def get_transaction(self, signature: str, **_kwargs):
+        return self.transactions.get(str(signature))
+
+
+def _base58_encode(data: bytes) -> str:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    number = int.from_bytes(data, "big")
+    encoded = ""
+    while number:
+        number, remainder = divmod(number, 58)
+        encoded = alphabet[remainder] + encoded
+    return encoded or "1"
+
+
+def _confirmed_top_up_transaction(channel_id: str, delta: int) -> dict:
+    return {
+        "meta": {"err": None},
+        "transaction": {
+            "message": {
+                "instructions": [
+                    {
+                        "programId": str(PROGRAM_ID),
+                        "accounts": [_new_wallet(), channel_id],
+                        "data": _base58_encode(b"\x03" + delta.to_bytes(8, "little")),
+                    }
+                ]
+            }
+        },
+    }
 
 
 def _new_test_session(**overrides) -> Session:
@@ -181,6 +213,15 @@ def test_new_session_validation_too_many_splits() -> None:
         new_session(
             SessionOptions(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=SESSION_METHOD_SECRET, splits=splits)
         )
+
+
+def test_open_tx_expected_binds_configured_splits() -> None:
+    split = Split(recipient=_new_wallet(), bps=3_333)
+    session = _new_test_session(splits=[split])
+    expected = session._open_tx_expected(
+        OpenPayload.push(_new_wallet(), "1000", _new_wallet(), _confirmed_signature(0x24))
+    )
+    assert expected.recipients == [(split.recipient, split.bps)]
 
 
 def test_new_session_validation_pull_requires_strategy() -> None:
@@ -662,6 +703,7 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
     signer = _TestVoucherSigner(1)
     channel_id = _new_wallet()
     await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
+    fake.transactions[topup_sig] = _confirmed_top_up_transaction(channel_id, 4_000)
 
     receipt = await _verify_session_action(
         session,

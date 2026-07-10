@@ -13,6 +13,7 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 from solana_pay_kit.signer import LocalSigner
@@ -55,11 +56,13 @@ class _SettleRpc:
         return _Resp(_SENT_SIGNATURE)
 
 
-def _session(rpc: _SettleRpc, operator: Keypair):
+def _session(rpc: _SettleRpc, operator: Keypair, recipient: str | None = None):
+    if recipient is None:
+        recipient = str(operator.pubkey())
     return new_session(
         SessionOptions(
             operator=str(operator.pubkey()),
-            recipient=str(operator.pubkey()),
+            recipient=recipient,
             cap=1_000_000,
             currency="USDC",
             decimals=6,
@@ -80,6 +83,20 @@ async def _seed(session, state: ChannelState) -> None:
 def _instruction_discriminators(raw_tx: bytes) -> list[int]:
     msg = Transaction.from_bytes(raw_tx).message
     return [bytes(ix.data)[0] for ix in msg.instructions]
+
+
+def _associated_token_account_owners(raw_tx: bytes) -> list[str]:
+    message = Transaction.from_bytes(raw_tx).message
+    account_keys = list(message.account_keys)
+    owners: list[str] = []
+    for instruction in message.instructions:
+        if str(account_keys[instruction.program_id_index]) != ASSOCIATED_TOKEN_PROGRAM:
+            continue
+        # Idempotent ATA account layout: payer, ATA, owner, mint, system,
+        # token program. The owner is the delivery destination this setup
+        # instruction protects.
+        owners.append(str(account_keys[instruction.accounts[2]]))
+    return owners
 
 
 @pytest.mark.asyncio
@@ -111,9 +128,36 @@ async def test_close_settles_with_voucher_and_records_signature() -> None:
     assert final is not None
     assert final.sealed is True
     assert final.settled_signature == settled
-    # Exactly one tx, instructions [ed25519(1), settleAndSeal(4), distribute(7)].
+    # Exactly one tx, instructions [ed25519(1), settleAndSeal(4),
+    # idempotent payee/treasury ATA setup(1,1), distribute(7)].
     assert len(rpc.sent) == 1
-    assert _instruction_discriminators(rpc.sent[0]) == [1, 4, 7]
+    assert _instruction_discriminators(rpc.sent[0]) == [1, 4, 1, 1, 7]
+
+
+@pytest.mark.asyncio
+async def test_settle_creates_missing_primary_recipient_ata_before_distribute() -> None:
+    """Regression for MPP_HARNESS_SESSION_RED_FAULTS: the close transaction must
+    create the configured payee ATA in-band, so a recipient without an ATA
+    cannot receive a successful settlement receipt while getting no funds."""
+    operator = Keypair.from_seed(bytes([40] * 32))
+    recipient = Keypair.from_seed(bytes([41] * 32)).pubkey()
+    channel = str(Keypair.from_seed(bytes([42] * 32)).pubkey())
+    rpc = _SettleRpc()
+    session = _session(rpc, operator, str(recipient))
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    await session._settle_channel(channel)
+
+    assert str(recipient) in _associated_token_account_owners(rpc.sent[0])
 
 
 @pytest.mark.asyncio
@@ -173,8 +217,9 @@ async def test_close_without_voucher_omits_ed25519_precompile() -> None:
 
     await session._settle_channel(channel)
 
-    # No voucher recorded: just [settleAndSeal(4), distribute(7)].
-    assert _instruction_discriminators(rpc.sent[0]) == [4, 7]
+    # No voucher recorded: settleAndSeal plus idempotent payee/treasury ATA
+    # setup, then distribute.
+    assert _instruction_discriminators(rpc.sent[0]) == [4, 1, 1, 7]
 
 
 @pytest.mark.asyncio

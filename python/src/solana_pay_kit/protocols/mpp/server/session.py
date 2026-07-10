@@ -63,6 +63,7 @@ from solana_pay_kit.protocols.mpp.server.session_voucher import (
 __all__ = [
     "Split",
     "SessionTxVerifier",
+    "TopUpTxVerifier",
     "SessionConfig",
     "DeliveryRequest",
     "SessionServer",
@@ -78,6 +79,12 @@ _P = TypeVar("_P")
 # signature on-chain. This is the seam the on-chain layer plugs into; ``None``
 # skips verification. Raising signals a verification failure.
 SessionTxVerifier = Callable[[_P], Awaitable[None]]
+
+# A top-up verifier receives the immutable channel snapshot that the payload
+# will be applied to. The core rechecks that snapshot's deposit in the atomic
+# mutator after the verifier's RPC work returns, closing the verify-then-write
+# race for a transaction whose amount only matches the old deposit.
+TopUpTxVerifier = Callable[[TopUpPayload, ChannelState], Awaitable[None]]
 
 
 @dataclass
@@ -150,9 +157,9 @@ class SessionConfig:
     # mode) before process_open persists channel state.
     verify_open_tx: SessionTxVerifier[OpenPayload] | None = None
 
-    # VerifyTopUpTx, when set, confirms the top-up transaction on-chain before
-    # process_top_up raises the deposit.
-    verify_top_up_tx: SessionTxVerifier[TopUpPayload] | None = None
+    # VerifyTopUpTx, when set, confirms and value-binds the top-up transaction
+    # against the channel snapshot before process_top_up raises the deposit.
+    verify_top_up_tx: TopUpTxVerifier | None = None
 
 
 @dataclass
@@ -447,15 +454,33 @@ class SessionServer:
         except ValueError as exc:
             raise ValueError(f"invalid newDeposit: {payload.new_deposit}") from exc
 
-        # On-chain verification seam (same shape as process_open).
+        channel_id = payload.channel_id
+        # Snapshot the channel before RPC verification. The verifier receives
+        # this exact deposit to bind the on-chain topUp amount; the mutator
+        # below rejects if another top-up changed it while verification was in
+        # flight, rather than silently applying the old transaction's delta to
+        # a new base deposit.
+        snapshot = await self._store.get_channel(channel_id)
+        if snapshot is None:
+            raise ValueError(f"channel {channel_id} not found")
+        if snapshot.sealed:
+            raise ValueError(f"channel {channel_id} is already sealed")
+        if snapshot.close_requested_at is not None:
+            raise ValueError(f"channel {channel_id} close is pending; no further top-ups accepted")
+        if new_deposit <= snapshot.deposit:
+            raise ValueError(f"new deposit {new_deposit} must exceed current deposit {snapshot.deposit}")
+        if new_deposit > self._config.max_cap:
+            raise ValueError(f"new deposit {new_deposit} exceeds max cap {self._config.max_cap}")
+
+        verified_snapshot_deposit: int | None = None
         if self._config.verify_top_up_tx is not None:
             try:
-                await self._config.verify_top_up_tx(payload)
+                await self._config.verify_top_up_tx(payload, snapshot)
             except Exception as exc:
                 raise _wrap("top-up tx verification failed", exc) from exc
+            verified_snapshot_deposit = snapshot.deposit
 
         max_cap = self._config.max_cap
-        channel_id = payload.channel_id
 
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
@@ -464,6 +489,8 @@ class SessionServer:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further top-ups accepted")
+            if verified_snapshot_deposit is not None and current.deposit != verified_snapshot_deposit:
+                raise ValueError("concurrent top-up: stored deposit changed during transaction verification")
             if new_deposit <= current.deposit:
                 raise ValueError(f"new deposit {new_deposit} must exceed current deposit {current.deposit}")
             if new_deposit > max_cap:

@@ -8,6 +8,7 @@ building. Each test mirrors a single Go ``Test...`` behavior through the public
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import replace
 
@@ -30,7 +31,7 @@ from solana_pay_kit.protocols.mpp.server.session import (
     SessionServer,
     Split,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, MemoryChannelStore
 
 SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
@@ -451,8 +452,9 @@ async def test_process_top_up_rejects_when_sealed_or_close_pending() -> None:
 async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
     """Mirrors TestProcessTopUpInvokesVerifyTopUpTxSeam."""
 
-    async def verifier(payload: TopUpPayload) -> None:
+    async def verifier(payload: TopUpPayload, state) -> None:
         assert payload.signature == "topup_sig"
+        assert state.deposit == 1_000_000
         raise ValueError("topup tx unknown")
 
     config = session_test_config()
@@ -465,6 +467,43 @@ async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
     state = await server.store().get_channel(channel_id)
     assert state is not None
     assert state.deposit == 1_000_000
+
+
+async def test_process_top_up_rejects_deposit_change_during_verification() -> None:
+    """The verified transaction's amount is bound to the pre-RPC deposit.
+    Another top-up cannot change that deposit and have the stale transaction
+    applied against the new base value after the verifier resumes."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def verifier(_payload: TopUpPayload, state) -> None:
+        assert state.deposit == 1_000
+        entered.set()
+        await release.wait()
+
+    config = session_test_config()
+    config.verify_top_up_tx = verifier
+    server = new_session_test_server(config)
+    _, channel_id = await _open_test_channel(server, 1_000)
+
+    pending = asyncio.create_task(
+        server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000", signature="topup_sig"))
+    )
+    await entered.wait()
+
+    def advance_deposit(current: ChannelState | None) -> ChannelState:
+        if current is None:
+            raise AssertionError("channel disappeared during test")
+        return replace(current, deposit=1_500)
+
+    await server.store().update_channel(channel_id, advance_deposit)
+    release.set()
+
+    with pytest.raises(ValueError, match="concurrent top-up"):
+        await pending
+    state = await server.store().get_channel(channel_id)
+    assert state is not None
+    assert state.deposit == 1_500
 
 
 async def test_voucher_accepted_after_top_up_raises_deposit() -> None:

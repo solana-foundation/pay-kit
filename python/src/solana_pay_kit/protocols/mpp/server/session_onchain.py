@@ -9,20 +9,20 @@ signatures and deposit amounts are trusted as provided. :func:`verify_open_tx`
 always validates an attached open transaction structurally (decode, bind the
 payload signature, check the open instruction against the challenge, re-derive
 the channel PDA); confirming that the transaction actually landed additionally
-requires an RPC client. :func:`new_top_up_tx_verifier` is purely RPC-backed (the
-top-up payload carries only a signature, no transaction), so without an RPC
-client the top-up seam stays ``None`` and the new deposit is trusted as
-provided.
+requires an RPC client. :func:`new_top_up_tx_verifier` fetches the confirmed
+transaction because a top-up payload carries only a signature: it binds the
+configured program, channel, and Borsh-decoded amount to the stored deposit.
+Without an RPC client the top-up seam stays ``None`` and the new deposit is
+trusted as provided.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
-import struct
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -30,6 +30,7 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
+from spl.token.instructions import create_idempotent_associated_token_account  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
@@ -39,11 +40,15 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     build_distribute_instruction,
     build_settle_and_seal_instructions,
     find_channel_pda,
+    treasury_owner,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+from solana_pay_kit.protocols.mpp.server._tx_decode import _transaction_dict
+from solana_pay_kit.protocols.programs.paymentchannels.types.openArgs import OpenArgs
+from solana_pay_kit.protocols.programs.paymentchannels.types.topUpArgs import TopUpArgs
 
 if TYPE_CHECKING:
-    from solana_pay_kit.protocols.mpp.server.session import SessionConfig
+    from solana_pay_kit.protocols.mpp.server.session import SessionConfig, Split
     from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 
 __all__ = [
@@ -61,6 +66,8 @@ __all__ = [
 # Payment-channel open instruction discriminator (single-byte Anchor-numeric
 # form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
+_TOP_UP_INSTRUCTION_DISCRIMINATOR = 3
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
 class RpcClient(Protocol):
@@ -69,7 +76,9 @@ class RpcClient(Protocol):
 
     ``get_signature_statuses`` returns the per-signature status list (each entry
     is a status dict with an ``err`` field, or ``None`` when unknown);
-    ``get_latest_blockhash`` / ``send_raw_transaction`` back the settle path."""
+    ``get_latest_blockhash`` / ``send_raw_transaction`` back the settle path.
+    The top-up verifier additionally requires a duck-typed ``get_transaction``
+    method and fails closed when it is absent."""
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]: ...
 
@@ -81,7 +90,7 @@ class RpcClient(Protocol):
 #: A verifier seam installed on the session config: validates a payload (open
 #: or top-up) and raises on rejection.
 OpenTxVerifier = Callable[[OpenPayload], Awaitable[None]]
-TopUpTxVerifier = Callable[[TopUpPayload], Awaitable[None]]
+TopUpTxVerifier = Callable[[TopUpPayload, "ChannelState"], Awaitable[None]]
 
 
 class OpenVerifierConfig(Protocol):
@@ -94,7 +103,17 @@ class OpenVerifierConfig(Protocol):
     recipient: str
     max_cap: int
     operator: str
-    program_id: Pubkey | None
+    splits: list[Split]
+
+    @property
+    def program_id(self) -> Pubkey | str | None: ...
+
+
+class TopUpVerifierConfig(Protocol):
+    """The subset of session config used to bind a confirmed top-up."""
+
+    @property
+    def program_id(self) -> Pubkey | str | None: ...
 
 
 @dataclass
@@ -114,13 +133,16 @@ class VerifyOpenTxExpected:
     # verify_open_tx rejects an empty/None operator rather than skipping the
     # slot-1 check.
     operator: str = ""
-    program_id: Pubkey | None = None
+    program_id: Pubkey | str | None = None
     # The challenge-issued recentSlot, when the caller has it. The open
     # instruction's own openSlot must equal it: without this bind, a payload
     # that omits recentSlot would let a transaction built against a different
     # slot through (and the decoded slot would then overwrite the payload).
     # None skips the check (offline/trust-mode challenges carry no slot).
     recent_slot: int | None = None
+    # Ordered payout distribution encoded into the open instruction. An empty
+    # vector is meaningful: it commits the channel to the implicit payee only.
+    recipients: list[tuple[str, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -270,7 +292,7 @@ async def verify_open_tx(
                 code="invalid-payload",
             )
 
-    program_id = expected.program_id if expected.program_id is not None else PROGRAM_ID
+    program_id = _configured_program_id(expected.program_id)
     expected_mint = expected.mint or resolve_mint(expected.currency, expected.network)
     if not expected_mint:
         raise PaymentError(
@@ -331,15 +353,28 @@ async def verify_open_tx(
             code="invalid-payload",
         )
 
-    # Instruction data:
-    # [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+    # Decode the complete Borsh payload, including every recipient. The first
+    # fields used to be decoded manually, which left the recipient distribution
+    # decorative: a client could open a channel whose later distribute step
+    # routed funds differently from the challenge. Re-encoding proves Borsh
+    # consumed the complete payload rather than accepting a valid prefix.
     data = bytes(open_ix.data)
-    if len(data) < 1 + 8 + 8 + 4 + 8:
-        raise PaymentError(f"open instruction data too short ({len(data)} bytes)", code="invalid-payload")
-    salt = struct.unpack_from("<Q", data, 1)[0]
-    deposit = struct.unpack_from("<Q", data, 9)[0]
-    grace_period = struct.unpack_from("<I", data, 17)[0]
-    open_slot = struct.unpack_from("<Q", data, 21)[0]
+    try:
+        decoded_args = OpenArgs.from_decoded(OpenArgs.layout.parse(data[1:]))
+        if OpenArgs.layout.build(decoded_args.to_encodable()) != data[1:]:
+            raise ValueError("open instruction has trailing or non-canonical Borsh data")
+    except Exception as exc:
+        raise PaymentError(f"decode open instruction args: {exc}", code="invalid-payload") from exc
+    salt = decoded_args.salt
+    deposit = decoded_args.deposit
+    grace_period = decoded_args.gracePeriod
+    open_slot = decoded_args.openSlot
+    recipients = [(str(entry.recipient), entry.bps) for entry in decoded_args.recipients]
+    if recipients != expected.recipients:
+        raise PaymentError(
+            f"open recipients {recipients!r} != expected configured splits {expected.recipients!r}",
+            code="invalid-payload",
+        )
 
     if deposit == 0:
         raise PaymentError("open deposit must be greater than zero", code="invalid-payload")
@@ -401,6 +436,7 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
                 operator=config.operator,
                 program_id=config.program_id,
                 recipient=config.recipient,
+                recipients=[(split.recipient, split.bps) for split in config.splits],
             )
             await verify_open_tx(expected, payload, rpc_client)
             return
@@ -414,22 +450,147 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
     return verifier
 
 
-def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
-    """Return the on-chain top-up verifier to install on the session config: it
-    confirms the top-up transaction signature on-chain via
-    ``getSignatureStatuses``.
+def new_top_up_tx_verifier(
+    config: TopUpVerifierConfig,
+    rpc_client: RpcClient | None,
+) -> TopUpTxVerifier | None:
+    """Return the top-up verifier bound to a configured payment-channel program.
 
-    A ``None`` ``rpc_client`` returns ``None`` so the seam stays unset, and the
-    new deposit is trusted as provided; suitable only for unit tests or
-    deployments that verify transactions out of band.
+    A top-up payload contains only a signature and target total, so confirming
+    that signature alone proves neither that it targeted this channel nor that
+    it added the claimed delta. The verifier fetches the confirmed transaction,
+    locates exactly one Borsh-decoded ``topUp`` instruction for the configured
+    program, binds its channel account, and compares its amount to
+    ``newDeposit - state.deposit``. ``SessionServer.process_top_up`` then
+    rechecks that ``state.deposit`` is unchanged in its atomic mutator after
+    this network await.
+
+    A ``None`` ``rpc_client`` returns ``None`` so the seam stays unset; that is
+    suitable only for tests or deployments that verify top-ups out of band.
     """
     if rpc_client is None:
         return None
+    program_id = _configured_program_id(config.program_id)
 
-    async def verifier(payload: TopUpPayload) -> None:
+    async def verifier(payload: TopUpPayload, state: ChannelState) -> None:
         await confirm_transaction_signature(rpc_client, payload.signature, "top-up")
+        get_transaction: Any = getattr(rpc_client, "get_transaction", None)
+        if not callable(get_transaction):
+            raise PaymentError(
+                "top-up verification requires an RPC client with get_transaction",
+                code="invalid-config",
+            )
+        try:
+            pending: Any = get_transaction(
+                payload.signature,
+                encoding="jsonParsed",
+                max_supported_transaction_version=0,
+            )
+            response: Any = await pending
+        except Exception as exc:
+            raise PaymentError(f"RPC error fetching top-up tx: {exc}", code="transaction-not-found") from exc
+        transaction = _transaction_dict(response)
+        if transaction is None:
+            raise PaymentError("top-up transaction not found or not yet confirmed", code="transaction-not-found")
+        _verify_confirmed_top_up(transaction, payload, state, program_id)
 
     return verifier
+
+
+def _configured_program_id(value: Pubkey | str | None) -> Pubkey:
+    if value is None:
+        return PROGRAM_ID
+    if isinstance(value, Pubkey):
+        return value
+    try:
+        return Pubkey.from_string(value)
+    except (TypeError, ValueError) as exc:
+        raise PaymentError(f"invalid payment-channels program id {value!r}", code="invalid-config") from exc
+
+
+def _verify_confirmed_top_up(
+    transaction: dict[str, Any],
+    payload: TopUpPayload,
+    state: ChannelState,
+    program_id: Pubkey,
+) -> None:
+    """Bind a confirmed transaction's sole ``topUp`` to the session state."""
+    meta = transaction.get("meta")
+    if not isinstance(meta, dict) or meta.get("err") is not None:
+        raise PaymentError("top-up transaction failed on-chain", code="transaction-failed")
+    message = (transaction.get("transaction") or {}).get("message")
+    instructions = message.get("instructions") if isinstance(message, dict) else None
+    if not isinstance(instructions, list):
+        raise PaymentError("confirmed top-up transaction has no instructions", code="invalid-payload")
+
+    top_up_instructions: list[dict[str, Any]] = []
+    for instruction in instructions:
+        if not isinstance(instruction, dict) or instruction.get("programId") != str(program_id):
+            continue
+        data = instruction.get("data")
+        if not isinstance(data, str):
+            continue
+        try:
+            decoded = _base58_decode(data)
+        except ValueError:
+            continue
+        if decoded and decoded[0] == _TOP_UP_INSTRUCTION_DISCRIMINATOR:
+            top_up_instructions.append(instruction)
+
+    if len(top_up_instructions) != 1:
+        raise PaymentError(
+            "confirmed transaction must contain exactly one configured topUp instruction, "
+            f"found {len(top_up_instructions)}",
+            code="invalid-payload",
+        )
+
+    instruction = top_up_instructions[0]
+    accounts = instruction.get("accounts")
+    if not isinstance(accounts, list) or len(accounts) < 2 or not all(isinstance(account, str) for account in accounts):
+        raise PaymentError("top-up instruction has invalid account layout", code="invalid-payload")
+    if accounts[1] != payload.channel_id or state.channel_id != payload.channel_id:
+        raise PaymentError("top-up instruction channel does not match the session", code="invalid-payload")
+
+    try:
+        raw_data = _base58_decode(instruction["data"])
+        decoded_args = TopUpArgs.from_decoded(TopUpArgs.layout.parse(raw_data[1:]))
+        if TopUpArgs.layout.build(decoded_args.to_encodable()) != raw_data[1:]:
+            raise ValueError("top-up instruction has trailing or non-canonical Borsh data")
+        new_deposit = _parse_u64(payload.new_deposit, "newDeposit")
+    except Exception as exc:
+        raise PaymentError(f"decode top-up instruction: {exc}", code="invalid-payload") from exc
+
+    if new_deposit <= state.deposit:
+        raise PaymentError("top-up newDeposit must exceed the stored deposit", code="invalid-payload")
+    if decoded_args.amount != new_deposit - state.deposit:
+        raise PaymentError(
+            f"top-up amount {decoded_args.amount} != newDeposit delta {new_deposit - state.deposit}",
+            code="invalid-payload",
+        )
+
+
+def _parse_u64(value: str, label: str) -> int:
+    if not isinstance(value, str) or not (value.isascii() and value.isdigit()):
+        raise ValueError(f"{label} must be an unsigned integer string")
+    parsed = int(value, 10)
+    if parsed > (1 << 64) - 1:
+        raise ValueError(f"{label} exceeds u64")
+    return parsed
+
+
+def _base58_decode(value: str) -> bytes:
+    """Decode Solana's base58 RPC instruction data without a new dependency."""
+    if value == "":
+        raise ValueError("empty base58 data")
+    number = 0
+    for char in value:
+        digit = _BASE58_ALPHABET.find(char)
+        if digit < 0:
+            raise ValueError("invalid base58 data")
+        number = number * 58 + digit
+    leading_zeros = len(value) - len(value.lstrip("1"))
+    encoded = b"" if number == 0 else number.to_bytes((number.bit_length() + 7) // 8, "big")
+    return b"\0" * leading_zeros + encoded
 
 
 async def confirm_transaction_signature(
@@ -506,7 +667,10 @@ async def settle_and_seal_channel(
     config: SessionConfig,
 ) -> str:
     """Build, sign, broadcast, and confirm the close settlement transaction;
-    return the confirmed on-chain signature.
+    return the confirmed on-chain signature. Idempotent ATA creation for the
+    payee, treasury, and configured split recipients is included before
+    ``distribute`` so a missing recipient ATA cannot produce a settled-looking
+    close without delivering the payout.
 
     Mirrors the Rust/Go close path: a settle_and_seal instruction (preceded
     by the Ed25519 precompile when a voucher was recorded) plus a distribute
@@ -558,21 +722,45 @@ async def settle_and_seal_channel(
         raise PaymentError(
             f"channel {state.channel_id} payer is unknown; cannot derive the refund account", code="invalid-config"
         )
+    payee = Pubkey.from_string(config.recipient)
+    mint = Pubkey.from_string(mint_address)
+    token_program = Pubkey.from_string(default_token_program_for_currency(config.currency, config.network))
+    recipients = [Distribution(recipient=Pubkey.from_string(split.recipient), bps=split.bps) for split in config.splits]
+    treasury = treasury_owner()
     distribute = build_distribute_instruction(
         channel=channel,
         payer=Pubkey.from_string(payer_address),
-        payee=Pubkey.from_string(config.recipient),
-        mint=Pubkey.from_string(mint_address),
-        recipients=[Distribution(recipient=Pubkey.from_string(s.recipient), bps=s.bps) for s in config.splits],
-        token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
+        payee=payee,
+        mint=mint,
+        recipients=recipients,
+        token_program=token_program,
         program_id=program_id,
+        treasury=treasury,
         # rentPayer recovers the channel/escrow rent at distribute (or via
         # reclaim); it is the operator recorded as rentPayer at open.
         rent_payer=Pubkey.from_string(config.operator) if config.operator else None,
     )
 
+    # The payment-channels program does not create payout ATAs itself. Without
+    # these idempotent setup instructions a missing payee ATA can turn a close
+    # into a confirmed transaction whose receipt claims settlement but leaves
+    # the recipient unpaid. Mirror the x402-up-to settlement path and create
+    # every distribution destination in the same atomic transaction.
+    ata_owners = [payee, treasury, *(entry.recipient for entry in recipients)]
+    seen_owners: set[str] = set()
+    create_destination_atas = []
+    for owner in ata_owners:
+        if str(owner) in seen_owners:
+            continue
+        seen_owners.add(str(owner))
+        create_destination_atas.append(
+            create_idempotent_associated_token_account(merchant_pubkey, owner, mint, token_program)
+        )
+
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-    tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
+    tx = Transaction.new_signed_with_payer(
+        [*settle, *create_destination_atas, distribute], merchant_pubkey, [merchant], blockhash
+    )
     sent = await rpc.send_raw_transaction(bytes(tx))
     signature = str(sent.value)
     # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped

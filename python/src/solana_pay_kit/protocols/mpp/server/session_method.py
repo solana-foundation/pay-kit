@@ -12,8 +12,9 @@ the idle-close watchdog.
 Trust model / on-chain seam: the RPC client is optional. With no RPC client the
 transaction signature and deposit amount are trusted as provided (offline
 core); with an RPC client an open's confirmation signature is checked on-chain
-before the channel is persisted, and a top-up signature is confirmed before the
-deposit is raised. The on-chain check is wired through the
+before the channel is persisted, and a top-up's confirmed instruction is bound
+to its exact channel and deposit delta before the deposit is raised. The
+on-chain check is wired through the
 :class:`SessionServer` config seams
 (:func:`~solana_pay_kit.protocols.mpp.server.session_onchain.new_open_tx_verifier` /
 :func:`~solana_pay_kit.protocols.mpp.server.session_onchain.new_top_up_tx_verifier`).
@@ -72,6 +73,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
     confirm_transaction_signature,
     cosign_and_broadcast_open,
+    new_top_up_tx_verifier,
     settle_and_seal_channel,
     verify_open_tx,
 )
@@ -560,6 +562,7 @@ class Session:
             operator=self._core.config.operator,
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
             recent_slot=challenge_recent_slot,
+            recipients=[(split.recipient, split.bps) for split in self._core.config.splits],
         )
 
     async def _handle_open(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> str:
@@ -715,9 +718,8 @@ class Session:
         return f"{receipt.session_id}:{receipt.delivery_id}:{receipt.cumulative}"
 
     async def _handle_top_up(self, payload: TopUpPayload) -> str:
-        """Raise a channel's deposit after optional on-chain confirmation of the
-        top-up signature. The receipt reference is the top-up transaction
-        signature."""
+        """Raise a channel's deposit after optional confirmed-transaction
+        value binding. The receipt reference is the top-up transaction signature."""
         try:
             new_deposit = _parse_session_u64(payload.new_deposit, "newDeposit")
         except ValueError as exc:
@@ -736,8 +738,6 @@ class Session:
                 f"channel {payload.channel_id} close is pending; no further top-ups accepted",
                 code="invalid-payload",
             )
-        if self._rpc is not None:
-            await confirm_transaction_signature(self._rpc, payload.signature, "topUp")
         try:
             await self._core.process_top_up(payload)
         except ValueError as exc:
@@ -994,11 +994,11 @@ def new_session(options: SessionOptions) -> Session:
         modes=options.modes,
         pull_voucher_strategy=options.pull_voucher_strategy,
     )
-    # The method layer performs the optional on-chain liveness confirm inline in
-    # its open / topUp handlers, leaving the core SessionConfig verifier seams
-    # unset and confirming in the method, so the core is left to trust payload
-    # claims; the seam stays available for hosts that drive the lower-level
-    # SessionServer directly.
+    # Open verification remains in the method layer because server-broadcast
+    # opens need request-specific signing. Top-ups use the core seam so it can
+    # bind the confirmed transaction's delta to the exact channel snapshot and
+    # recheck that snapshot atomically after the RPC await.
+    config.verify_top_up_tx = new_top_up_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(
         core=core,
