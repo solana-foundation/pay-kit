@@ -132,14 +132,20 @@ describe('Charge meter', () => {
         expect(charge.settledBaseUnits()).toBe(400_000n);
     });
 
-    it('preserves overages for settlement rejection and floors negatives', () => {
+    it('preserves overages for settlement rejection and rejects negatives', () => {
         const overCharge = new Charge(1_000_000n);
         overCharge.charge(2_000_000n);
         expect(overCharge.settledBaseUnits()).toBe(2_000_000n);
 
         const negative = new Charge(1_000_000n);
-        negative.charge(-5);
-        expect(negative.settledBaseUnits()).toBe(0n);
+        expect(() => negative.charge(-5)).toThrow(/must be non-negative/);
+    });
+
+    it('rejects a direct negative settlement before touching the network', async () => {
+        const upto = new X402Upto(await testConfig());
+        await expect(upto.settle({} as never, -1n)).rejects.toMatchObject({
+            code: 'invalid_upto_svm_payload_settlement_negative_amount',
+        });
     });
 
     it('accepts a plain number', () => {

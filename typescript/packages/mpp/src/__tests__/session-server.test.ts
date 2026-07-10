@@ -427,6 +427,58 @@ describe('session() verify() topUp', () => {
         expect(receipt.reference).toBe('topup-sig');
         const state = await store.getChannel(channelId);
         expect(state?.deposit).toBe(5_000n);
+        expect(state?.usedTopUpSignatures).toEqual(['topup-sig']);
+
+        await expect(
+            method.verify({
+                credential: makeCred({
+                    action: 'topUp',
+                    channelId,
+                    newDeposit: '9000',
+                    signature: 'topup-sig',
+                }),
+                request: {} as never,
+            }),
+        ).rejects.toThrow(/already accepted/);
+        expect((await store.getChannel(channelId))?.deposit).toBe(5_000n);
+    });
+
+    test('topUp atomically rejects a concurrent duplicate signature', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const method = session({
+            cap: 5_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'devnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            store,
+        });
+        const channelId = '11111111111111111111111111111111';
+        await method.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+
+        const topUp = () =>
+            method.verify({
+                credential: makeCred({ action: 'topUp', channelId, newDeposit: '5000', signature: 'topup-sig' }),
+                request: {} as never,
+            });
+        const results = await Promise.allSettled([topUp(), topUp()]);
+
+        expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+        expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+        expect((await store.getChannel(channelId))?.deposit).toBe(5_000n);
     });
 
     test('topUp rejects when below current deposit', async () => {

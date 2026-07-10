@@ -48,10 +48,16 @@ export class Charge {
         this.maxBaseUnits = maxBaseUnits;
     }
 
-    /** Record the actual amount consumed (base units). Negatives floor to 0; overages reach settlement and reject. */
+    /** Record the actual amount consumed (base units). Invalid negative values and overages reject at settlement. */
     charge(baseUnits: bigint | number): void {
         const value = typeof baseUnits === 'bigint' ? baseUnits : BigInt(Math.trunc(baseUnits));
-        this.#amount = value < 0n ? 0n : value;
+        if (value < 0n) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_settlement_negative_amount',
+                `settlement amount ${value} must be non-negative`,
+            );
+        }
+        this.#amount = value;
     }
 
     /** The amount to settle (base units): the recorded charge, or `0` if never set. */
@@ -180,13 +186,19 @@ export class X402Upto {
      * @throws {InvalidProofError} when the meter exceeds its authorized ceiling or settlement fails.
      */
     async settle(verified: UptoVerified, actualBaseUnits: bigint): Promise<UptoSettlement> {
+        if (actualBaseUnits < 0n) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_settlement_negative_amount',
+                `settlement amount ${actualBaseUnits} must be non-negative`,
+            );
+        }
         if (actualBaseUnits > verified.maxBaseUnits) {
             throw new InvalidProofError(
                 'invalid_upto_svm_payload_settlement_exceeds_amount',
                 `settlement amount ${actualBaseUnits} exceeds authorized ceiling ${verified.maxBaseUnits}`,
             );
         }
-        const actual = actualBaseUnits < 0n ? 0n : actualBaseUnits;
+        const actual = actualBaseUnits;
         const payload = parseUptoPayload(verified.payload);
         const rpc = createSolanaRpc(this.#rpcUrl);
         const confirmRpc = rpc as unknown as SettlementConfirmRpc;
