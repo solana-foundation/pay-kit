@@ -20,6 +20,20 @@ module PayKit::Protocols::Mpp
         # of the per-signature base fee — room for honest priority bumps.
         # Mirrors the Rust spine MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED.
         MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000
+        TOKEN_PROGRAMS = [
+          ::PayCore::Solana::Mints::TOKEN_PROGRAM,
+          ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM
+        ].freeze
+        ALLOWED_PAYMENT_PROGRAMS = [
+          ::PayCore::Solana::Mints::MEMO_PROGRAM,
+          ::PayCore::Solana::Mints::SYSTEM_PROGRAM,
+          ::PayCore::Solana::Mints::TOKEN_PROGRAM,
+          ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM
+        ].freeze
+
+        TransferExpectation = Struct.new(:recipient, :amount, keyword_init: true)
+        SplTransferExpectation = Struct.new(:recipient, :mint, :token_program, :amount, :decimals, keyword_init: true)
+        AtaCreationPolicy = Struct.new(:expected_mint, :allowed_owners, :expected_token_program, :expected_payer, keyword_init: true)
 
         # Verify a credential payload against a charge challenge.
         def verify(credential, challenge, expected_request: nil)
@@ -90,8 +104,9 @@ module PayKit::Protocols::Mpp
           if request.currency.casecmp("SOL").zero?
             raise VerificationError, "ataCreationRequired requires an SPL token charge" if splits.any? { |split| split["ataCreationRequired"] == true }
 
-            match_sol_transfer(transaction, request.recipient, primary, fee_payer, matched)
-            splits.each { |split| match_sol_transfer(transaction, split.fetch("recipient"), amount_from(split, "split.amount"), fee_payer, matched) }
+            sol_transfer_expectations(request, splits, primary).each do |transfer|
+              match_sol_transfer(transaction, transfer, fee_payer: fee_payer, matched: matched)
+            end
             verify_memos(transaction, request, splits, matched)
             validate_allowlist(transaction, matched, expected_mint: nil, expected_token_program: nil, fee_payer: fee_payer, splits: splits)
           else
@@ -102,8 +117,9 @@ module PayKit::Protocols::Mpp
             if splits.any? { |split| split["ataCreationRequired"] == true } && mint != request.currency
               raise VerificationError, "ataCreationRequired requires currency to be an SPL token mint address"
             end
-            match_spl_transfer(transaction, request.recipient, mint, token_program, primary, details["decimals"], fee_payer, matched)
-            splits.each { |split| match_spl_transfer(transaction, split.fetch("recipient"), mint, token_program, amount_from(split, "split.amount"), details["decimals"], fee_payer, matched) }
+            spl_transfer_expectations(request, splits, primary, mint, token_program, details["decimals"]).each do |transfer|
+              match_spl_transfer(transaction, transfer, fee_payer: fee_payer, matched: matched)
+            end
             verify_memos(transaction, request, splits, matched)
             validate_allowlist(transaction, matched, expected_mint: mint, expected_token_program: token_program, fee_payer: fee_payer, splits: splits)
           end
@@ -134,18 +150,48 @@ module PayKit::Protocols::Mpp
           raise VerificationError, "#{label} must be an integer string"
         end
 
-        def match_sol_transfer(transaction, recipient, amount, fee_payer, matched)
+        def sol_transfer_expectations(request, splits, primary)
+          [
+            TransferExpectation.new(recipient: request.recipient, amount: primary),
+            *splits.map do |split|
+              TransferExpectation.new(recipient: split.fetch("recipient"), amount: amount_from(split, "split.amount"))
+            end
+          ]
+        end
+
+        def spl_transfer_expectations(request, splits, primary, mint, token_program, decimals)
+          [
+            SplTransferExpectation.new(
+              recipient: request.recipient,
+              mint: mint,
+              token_program: token_program,
+              amount: primary,
+              decimals: decimals
+            ),
+            *splits.map do |split|
+              SplTransferExpectation.new(
+                recipient: split.fetch("recipient"),
+                mint: mint,
+                token_program: token_program,
+                amount: amount_from(split, "split.amount"),
+                decimals: decimals
+              )
+            end
+          ]
+        end
+
+        def match_sol_transfer(transaction, transfer, fee_payer:, matched:)
           found = false
           transaction.message.instructions.each_with_index do |ix, index|
             next if matched[index]
             next unless program_id(transaction, ix) == ::PayCore::Solana::Mints::SYSTEM_PROGRAM
             next unless ix.data.bytesize >= 12
             next unless u32_le(ix.data.byteslice(0, 4)) == 2
-            next unless u64_le(ix.data.byteslice(4, 8)) == amount
+            next unless u64_le(ix.data.byteslice(4, 8)) == transfer.amount
 
             source = account_key(transaction, ix.accounts[0], "source")
             destination = account_key(transaction, ix.accounts[1], "destination")
-            next unless destination == recipient
+            next unless destination == transfer.recipient
             raise VerificationError, "fee payer cannot fund the SOL payment transfer" if fee_payer && source == fee_payer
 
             matched[index] = true
@@ -154,31 +200,31 @@ module PayKit::Protocols::Mpp
           end
           return if found
 
-          raise VerificationError, "No matching SOL transfer of #{amount} lamports to #{recipient}"
+          raise VerificationError, "No matching SOL transfer of #{transfer.amount} lamports to #{transfer.recipient}"
         end
 
-        def match_spl_transfer(transaction, recipient, mint, token_program, amount, decimals, fee_payer, matched)
+        def match_spl_transfer(transaction, transfer, fee_payer:, matched:)
           found = false
           transaction.message.instructions.each_with_index do |ix, index|
             next if matched[index]
 
             instruction_program = program_id(transaction, ix)
-            next unless [::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(instruction_program)
-            next unless instruction_program == token_program
+            next unless TOKEN_PROGRAMS.include?(instruction_program)
+            next unless instruction_program == transfer.token_program
             next unless ix.data.bytesize >= 10 && ix.data.getbyte(0) == 12
-            next unless u64_le(ix.data.byteslice(1, 8)) == amount
-            next if !decimals.nil? && ix.data.getbyte(9) != Integer(decimals)
-            next unless account_key(transaction, ix.accounts[1], "mint") == mint
+            next unless u64_le(ix.data.byteslice(1, 8)) == transfer.amount
+            next if !transfer.decimals.nil? && ix.data.getbyte(9) != Integer(transfer.decimals)
+            next unless account_key(transaction, ix.accounts[1], "mint") == transfer.mint
 
             source_ata = account_key(transaction, ix.accounts[0], "source")
             destination_ata = account_key(transaction, ix.accounts[2], "destination")
             authority = account_key(transaction, ix.accounts[3], "authority")
             if fee_payer
               raise VerificationError, "fee payer cannot authorize the SPL payment transfer" if authority == fee_payer
-              fee_payer_ata = ::PayCore::Solana::ATA.derive(owner: fee_payer, mint: mint, token_program: token_program)
+              fee_payer_ata = ::PayCore::Solana::ATA.derive(owner: fee_payer, mint: transfer.mint, token_program: transfer.token_program)
               raise VerificationError, "fee payer token account cannot fund the SPL payment transfer" if source_ata == fee_payer_ata
             end
-            expected_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: token_program)
+            expected_ata = ::PayCore::Solana::ATA.derive(owner: transfer.recipient, mint: transfer.mint, token_program: transfer.token_program)
             next unless destination_ata == expected_ata
 
             matched[index] = true
@@ -187,7 +233,7 @@ module PayKit::Protocols::Mpp
           end
           return if found
 
-          raise VerificationError, "No matching SPL transferChecked of #{amount} to #{recipient}"
+          raise VerificationError, "No matching SPL transferChecked of #{transfer.amount} to #{transfer.recipient}"
         end
 
         def verify_memos(transaction, request, splits, matched)
@@ -213,16 +259,21 @@ module PayKit::Protocols::Mpp
           created_owners = {}
           required_owners = splits.select { |split| split["ataCreationRequired"] == true }.map { |split| split.fetch("recipient") }
           allowed_owners = fee_payer ? required_owners : splits.map { |split| split.fetch("recipient") }
-          expected_ata_payer = fee_payer || transaction.message.account_keys.first
+          ata_creation_policy = AtaCreationPolicy.new(
+            expected_mint: expected_mint,
+            allowed_owners: allowed_owners,
+            expected_token_program: expected_token_program,
+            expected_payer: fee_payer || transaction.message.account_keys.first
+          )
 
           transaction.message.instructions.each_with_index do |ix, index|
             program = program_id(transaction, ix)
             if program == ::PayCore::Solana::Mints::COMPUTE_BUDGET_PROGRAM
               validate_compute_budget(ix, fee_payer: fee_payer)
-            elsif [::PayCore::Solana::Mints::MEMO_PROGRAM, ::PayCore::Solana::Mints::SYSTEM_PROGRAM, ::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(program)
+            elsif ALLOWED_PAYMENT_PROGRAMS.include?(program)
               raise VerificationError, "Unexpected program instruction in payment transaction: #{program}" unless matched[index]
             elsif program == ::PayCore::Solana::Mints::ASSOCIATED_TOKEN_PROGRAM
-              owner = validate_ata_create(transaction, ix, expected_mint, allowed_owners, expected_token_program, expected_ata_payer)
+              owner = validate_ata_create(transaction, ix, ata_creation_policy)
               created_owners[owner] = true
             else
               raise VerificationError, "Unexpected program instruction in payment transaction: #{program}"
@@ -233,8 +284,8 @@ module PayKit::Protocols::Mpp
           end
         end
 
-        def validate_ata_create(transaction, ix, expected_mint, allowed_owners, expected_token_program, expected_payer)
-          raise VerificationError, "ATA creation is not allowed for native SOL payments" if expected_mint.nil?
+        def validate_ata_create(transaction, ix, policy)
+          raise VerificationError, "ATA creation is not allowed for native SOL payments" if policy.expected_mint.nil?
           raise VerificationError, "Only idempotent ATA creation is allowed" unless ix.data == "\x01".b
           raise VerificationError, "Unexpected ATA creation account layout" unless ix.accounts.length == 6
 
@@ -244,12 +295,12 @@ module PayKit::Protocols::Mpp
           mint = account_key(transaction, ix.accounts[3], "ATA mint")
           system_program = account_key(transaction, ix.accounts[4], "ATA system program")
           token_program = account_key(transaction, ix.accounts[5], "ATA token program")
-          raise VerificationError, "ATA payer must match the transaction fee payer" unless payer == expected_payer
-          raise VerificationError, "ATA creation mint does not match the charge currency" unless mint == expected_mint
-          raise VerificationError, "ATA creation owner is not authorized by the challenge" unless allowed_owners.include?(owner)
+          raise VerificationError, "ATA payer must match the transaction fee payer" unless payer == policy.expected_payer
+          raise VerificationError, "ATA creation mint does not match the charge currency" unless mint == policy.expected_mint
+          raise VerificationError, "ATA creation owner is not authorized by the challenge" unless policy.allowed_owners.include?(owner)
           raise VerificationError, "ATA creation must reference the System Program" unless system_program == ::PayCore::Solana::Mints::SYSTEM_PROGRAM
-          raise VerificationError, "ATA creation uses an unsupported token program" unless [::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(token_program)
-          raise VerificationError, "ATA creation token program does not match methodDetails.tokenProgram" if expected_token_program && token_program != expected_token_program
+          raise VerificationError, "ATA creation uses an unsupported token program" unless TOKEN_PROGRAMS.include?(token_program)
+          raise VerificationError, "ATA creation token program does not match methodDetails.tokenProgram" if policy.expected_token_program && token_program != policy.expected_token_program
 
           expected_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: token_program)
           raise VerificationError, "ATA creation address does not match owner/mint/token program" unless ata == expected_ata

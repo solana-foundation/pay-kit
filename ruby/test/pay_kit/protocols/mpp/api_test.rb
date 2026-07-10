@@ -89,7 +89,7 @@ end
 class MppCreateTest < Minitest::Test
   def test_create_returns_a_server_instance
     server = PayKit::Protocols::Mpp.create(
-      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new),
+      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", network: "localnet", rpc: StubRpc.new),
       secret_key: TEST_SECRET,
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
     )
@@ -136,6 +136,7 @@ class MppCreateTest < Minitest::Test
       method: PayKit::Protocols::Mpp::Protocol::Solana.charge(
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         currency: "USDC",
+        network: "localnet",
         rpc: StubRpc.new
       ),
       secret_key: TEST_SECRET,
@@ -170,7 +171,7 @@ class MppCreateTest < Minitest::Test
 
   def build_server
     PayKit::Protocols::Mpp.create(
-      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
+      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", network: "localnet", rpc: StubRpc.new),
       secret_key: TEST_SECRET,
       realm: "Test",
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
@@ -263,7 +264,7 @@ class MiddlewareTest < Minitest::Test
 
   def build_server
     PayKit::Protocols::Mpp.create(
-      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
+      method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", network: "localnet", rpc: StubRpc.new),
       secret_key: TEST_SECRET,
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
     )
@@ -289,7 +290,7 @@ end
 
 class SinatraHelperTest < Minitest::Test
   def test_mpp_charge_halts_with_402_when_auth_missing
-    server = PayKit::Protocols::Mpp.create(method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: TEST_SECRET, realm: "T", replay_store: PayKit::Protocols::Mpp::MemoryStore.new)
+    server = PayKit::Protocols::Mpp.create(method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", network: "localnet", rpc: StubRpc.new), secret_key: TEST_SECRET, realm: "T", replay_store: PayKit::Protocols::Mpp::MemoryStore.new)
     app = Class.new(Sinatra::Base) do
       helpers PayKit::Protocols::Mpp::Sinatra::Helpers
       set :mpp_server, server

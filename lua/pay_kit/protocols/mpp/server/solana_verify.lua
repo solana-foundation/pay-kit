@@ -195,7 +195,18 @@ function verify_sol_transfers(instructions, request)
     local found = false
     for idx, ix in ipairs(transfers) do
       local info = instruction_info(ix)
-      if info and info.destination == want.recipient and uint.compare(info.lamports, want.amount) == 0 then
+      -- M1: the jsonParsed RPC path decodes `info.lamports` as a Lua number,
+      -- which on LuaJIT / Lua 5.1 is a double. A u64 lamports value >= 2^53 is
+      -- lossy and serializes as scientific notation, so comparing it directly
+      -- via uint.compare would raise "invalid unsigned integer" (or, worse,
+      -- silently match a truncated amount). uint.exact coerces to an exact
+      -- decimal string and rejects any lossy / non-integral number. A rejected
+      -- candidate simply does not match this `want`; if no exact-integer
+      -- transfer matches, the loop falls through to the canonical
+      -- `no matching SOL transfer` rejection below.
+      local lamports_ok, lamports = pcall(uint.exact, info and info.lamports)
+      if info and info.destination == want.recipient and lamports_ok
+         and uint.compare(lamports, want.amount) == 0 then
         remove_at(transfers, idx)
         found = true
         break
@@ -240,8 +251,15 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
       local decimals_ok = expected_decimals == nil
         or (info and info.tokenAmount
             and tonumber(info.tokenAmount.decimals) == tonumber(expected_decimals))
-      if info and decimals_ok and info.mint == mint
-         and uint.compare(info.tokenAmount.amount, want.amount) == 0 then
+      -- M1 (parity with the native-SOL path): jsonParsed returns
+      -- tokenAmount.amount as a string per the Solana spec, but a non-standard
+      -- adapter could hand back a Lua number. Coerce through uint.exact so a
+      -- lossy / scientific-notation double is rejected rather than raising or
+      -- matching a truncated amount.
+      local amount_ok, token_amount =
+        pcall(uint.exact, info and info.tokenAmount and info.tokenAmount.amount)
+      if info and decimals_ok and info.mint == mint and amount_ok
+         and uint.compare(token_amount, want.amount) == 0 then
         local account = hooks.fetch_token_account(info.destination)
         if account and account.owner == want.recipient and account.mint == mint then
           remove_at(transfers, idx)
