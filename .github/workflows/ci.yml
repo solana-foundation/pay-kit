@@ -31,7 +31,7 @@ defaults:
 jobs:
   audit:
     name: Audit
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -48,7 +48,7 @@ jobs:
 
   lint:
     name: Lint & Format
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -85,7 +85,7 @@ jobs:
 
   typecheck:
     name: Typecheck
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -109,7 +109,7 @@ jobs:
 
   test-ts:
     name: TypeScript tests
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -155,7 +155,7 @@ jobs:
 
   typescript-conformance:
     name: TypeScript real verifier conformance
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -173,7 +173,7 @@ jobs:
 
   rust-conformance:
     name: Rust real verifier conformance
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_rust }}
+    if: ${{ github.event_name == 'push' || inputs.run_rust }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -192,7 +192,7 @@ jobs:
 
   build-html:
     name: Build HTML payment link assets
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_rust || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_rust || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -235,7 +235,7 @@ jobs:
   # the on-chain program.
   payment-channels-regen:
     name: Payment-channels generated clients in sync
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_rust || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_rust || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -273,7 +273,7 @@ jobs:
 
   test-rust:
     name: Rust tests
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_rust }}
+    if: ${{ github.event_name == 'push' || inputs.run_rust }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -398,12 +398,12 @@ jobs:
           if-no-files-found: ignore
 
   # Go tests, lint, coverage, and harness live in the dedicated go.yml
-  # workflow (triggered on pull_request and workflow_call). Kept out of
+  # workflow (called by the PR router or release gate). Kept out of
   # ci.yml so there is a single "Go tests" check rather than two.
 
   integration:
     name: Integration tests
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -444,7 +444,7 @@ jobs:
 
   test-payment-links-demo:
     name: "Payment links E2E: Playground (TypeScript)"
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -514,7 +514,7 @@ jobs:
 
   test-payment-links-rust:
     name: "Payment links E2E: Rust"
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_rust }}
+    if: ${{ github.event_name == 'push' || inputs.run_rust }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -584,7 +584,7 @@ jobs:
 
   harness:
     name: "Harness: TypeScript harness"
-    if: ${{ github.event_name != 'workflow_call' || inputs.run_harness }}
+    if: ${{ github.event_name == 'push' || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
