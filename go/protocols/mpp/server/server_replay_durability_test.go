@@ -25,6 +25,12 @@ type confirmTimeoutRPC struct {
 	*testutil.FakeRPC
 }
 
+type sharedReplayStore struct {
+	*core.MemoryStore
+}
+
+func (*sharedReplayStore) IsShared() bool { return true }
+
 func (c *confirmTimeoutRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
 	return nil, errors.New("rpc unavailable: confirmation status temporarily unknown")
 }
@@ -47,7 +53,7 @@ func TestReplayMarkerRetainedOnConfirmationTimeout(t *testing.T) {
 		Network:   "localnet",
 		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
+		Store:     &sharedReplayStore{MemoryStore: core.NewMemoryStore()},
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -101,7 +107,7 @@ func TestBroadcastPathConcurrentReplayRejected(t *testing.T) {
 		Network:   "localnet",
 		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       fake,
-		Store:     core.NewMemoryStore(),
+		Store:     &sharedReplayStore{MemoryStore: core.NewMemoryStore()},
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
