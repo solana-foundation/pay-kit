@@ -198,16 +198,20 @@ fn store_io_error(error: io::Error) -> StoreError {
 #[cfg(test)]
 mod replay_store_tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn file_store_persists_atomic_reservations_across_instances() {
+    fn temporary_root() -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock is after the Unix epoch")
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("pay-kit-harness-replay-{}-{nonce}", process::id()));
+        std::env::temp_dir().join(format!("pay-kit-harness-replay-{}-{nonce}", process::id()))
+    }
+
+    #[test]
+    fn file_store_persists_atomic_reservations_across_instances() {
+        let root = temporary_root();
         let first = HarnessReplayStore::open(&root).expect("create first store");
         let second = HarnessReplayStore::open(&root).expect("open shared store");
         let runtime = tokio::runtime::Runtime::new().expect("create runtime");
@@ -230,6 +234,35 @@ mod replay_store_tests {
                 Some(json!({ "reserved": true }))
             );
         });
+
+        fs::remove_dir_all(root).expect("remove temporary replay store");
+    }
+
+    #[test]
+    fn file_store_allows_only_one_concurrent_reservation() {
+        let root = temporary_root();
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let root = root.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(thread::spawn(move || {
+                let store = HarnessReplayStore::open(root).expect("open shared store");
+                let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+                barrier.wait();
+                runtime
+                    .block_on(store.put_if_absent("payment:race", json!({ "reserved": true })))
+                    .expect("reserve payment")
+            }));
+        }
+
+        barrier.wait();
+        let winners = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker panicked") as usize)
+            .sum::<usize>();
+        assert_eq!(winners, 1, "exactly one worker must reserve the payment");
 
         fs::remove_dir_all(root).expect("remove temporary replay store");
     }
