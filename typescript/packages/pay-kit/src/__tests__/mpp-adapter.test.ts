@@ -18,6 +18,10 @@ async function setup() {
     return { adapter: createMppAdapter(config), config };
 }
 
+function createSharedTestReplayStore() {
+    return { ...createUnsafeMemoryReplayStore(), isDurable: true as const, isShared: true as const };
+}
+
 function gate(params: Parameters<typeof Gate.create>[0]['feeWithin'] = undefined) {
     return Gate.create(
         { amount: usd('10.00'), feeWithin: params, name: 'marketplace', payTo: SELLER },
@@ -93,8 +97,9 @@ describe('createMppAdapter', () => {
     it('round-trips a quote/backslash-bearing realm', async () => {
         const realm = 'ac"me\\corp';
         const config = await configure({
-            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'adapter-test-secret', realm },
+            mpp: { challengeBindingSecret: 'adapter-test-secret', realm },
             operator: { recipient: SELLER, signer: await Signer.generate() },
+            replayStore: createSharedTestReplayStore(),
         });
         const adapter = createMppAdapter(config);
         const headers = await adapter.challengeHeaders(gate(), new Request('http://t/marketplace'));
@@ -118,11 +123,11 @@ describe('createMppAdapter', () => {
     it('rejects a realm containing CRLF', async () => {
         const config = await configure({
             mpp: {
-                allowUnsafeMemoryStore: true,
                 challengeBindingSecret: 'adapter-test-secret',
                 realm: 'api.example.com\r\nInjected: evil',
             },
             operator: { recipient: SELLER, signer: await Signer.generate() },
+            replayStore: createSharedTestReplayStore(),
         });
         const adapter = createMppAdapter(config);
         await expect(adapter.challengeHeaders(gate(), new Request('http://t/marketplace'))).rejects.toThrow(
