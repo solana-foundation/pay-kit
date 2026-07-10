@@ -93,7 +93,7 @@ describe('createMppAdapter', () => {
     it('round-trips a quote/backslash-bearing realm', async () => {
         const realm = 'ac"me\\corp';
         const config = await configure({
-            mpp: { challengeBindingSecret: 'adapter-test-secret', realm },
+            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'adapter-test-secret', realm },
             operator: { recipient: SELLER, signer: await Signer.generate() },
         });
         const adapter = createMppAdapter(config);
@@ -117,7 +117,11 @@ describe('createMppAdapter', () => {
 
     it('rejects a realm containing CRLF', async () => {
         const config = await configure({
-            mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'api.example.com\r\nInjected: evil' },
+            mpp: {
+                allowUnsafeMemoryStore: true,
+                challengeBindingSecret: 'adapter-test-secret',
+                realm: 'api.example.com\r\nInjected: evil',
+            },
             operator: { recipient: SELLER, signer: await Signer.generate() },
         });
         const adapter = createMppAdapter(config);

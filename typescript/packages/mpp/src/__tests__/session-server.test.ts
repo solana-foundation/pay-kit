@@ -444,7 +444,10 @@ describe('session() verify() topUp', () => {
     });
 
     test('topUp atomically rejects a concurrent duplicate signature', async () => {
-        const store = createMemorySessionStore();
+        const store = {
+            ...createMemorySessionStore(),
+            sessionStoreDurability: 'durable-shared' as const,
+        };
         const signer = await generateKeyPairSigner();
         const method = session({
             cap: 5_000_000n,
