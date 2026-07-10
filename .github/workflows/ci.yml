@@ -6,8 +6,23 @@ permissions:
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_call:
+    inputs:
+      run_typescript:
+        description: Run TypeScript and Node-based core verification.
+        required: false
+        type: boolean
+        default: true
+      run_rust:
+        description: Run Rust core verification.
+        required: false
+        type: boolean
+        default: true
+      run_harness:
+        description: Run the broad cross-SDK harness verification.
+        required: false
+        type: boolean
+        default: true
 
 defaults:
   run:
@@ -16,6 +31,7 @@ defaults:
 jobs:
   audit:
     name: Audit
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -32,6 +48,7 @@ jobs:
 
   lint:
     name: Lint & Format
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -68,6 +85,7 @@ jobs:
 
   typecheck:
     name: Typecheck
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -91,6 +109,7 @@ jobs:
 
   test-ts:
     name: TypeScript tests
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -134,8 +153,46 @@ jobs:
           path: typescript/target/surfpool-reports/
           if-no-files-found: ignore
 
+  typescript-conformance:
+    name: TypeScript real verifier conformance
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: ./.github/actions/setup-harness
+      - name: Run TypeScript cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+        run: pnpm exec vitest run test/conformance.test.ts
+      - name: Run TypeScript protocol conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: typescript
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
+
+  rust-conformance:
+    name: Rust real verifier conformance
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_rust }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: ./.github/actions/setup-harness
+      - name: Run Rust cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+        run: pnpm exec vitest run test/conformance.test.ts
+      - name: Run Rust protocol conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: rust
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
+
   build-html:
     name: Build HTML payment link assets
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_rust || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -178,6 +235,7 @@ jobs:
   # the on-chain program.
   payment-channels-regen:
     name: Payment-channels generated clients in sync
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_rust || inputs.run_harness }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -215,6 +273,7 @@ jobs:
 
   test-rust:
     name: Rust tests
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_rust }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -344,6 +403,7 @@ jobs:
 
   integration:
     name: Integration tests
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -384,6 +444,7 @@ jobs:
 
   test-payment-links-demo:
     name: "Payment links E2E: Playground (TypeScript)"
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_typescript || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -453,6 +514,7 @@ jobs:
 
   test-payment-links-rust:
     name: "Payment links E2E: Rust"
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_rust }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -522,6 +584,7 @@ jobs:
 
   harness:
     name: "Harness: TypeScript harness"
+    if: ${{ github.event_name != 'workflow_call' || inputs.run_harness }}
     needs: build-html
     runs-on: ubuntu-latest
     steps:
