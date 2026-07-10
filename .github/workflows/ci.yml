@@ -179,6 +179,11 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - uses: ./.github/actions/setup-harness
+      - name: Build Rust conformance runner once
+        working-directory: rust
+        run: |
+          cargo build --locked -p solana-pay-kit --example conformance_runner --features x402,client
+          cargo build --locked -p solana-pay-kit --example protocol_runner --features mpp
       - name: Run Rust cross-SDK conformance vectors
         working-directory: harness
         env:
@@ -561,6 +566,11 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server"
           cargo-cache-key: ts
+      - name: Build Rust conformance runner once
+        working-directory: rust
+        run: |
+          cargo build --locked -p solana-pay-kit --example conformance_runner --features x402,client
+          cargo build --locked -p solana-pay-kit --example protocol_runner --features mpp
       # Always-on TypeScript conformance leg: the TS reference verifier in
       # harness/src/conformance/x402.ts is the oracle every other SDK's exact
       # verifier is pinned against, but no other workflow allowlists typescript,
