@@ -157,4 +157,44 @@ class PayKitDispatcherTest < Minitest::Test
       end
     end
   end
+
+  # P1 regression: a dev running on localnet with NO durable replay_store
+  # configured must NOT trip Mpp.create's explicit-nil guard. mpp_server_for
+  # omits the replay_store option entirely when none is configured, so
+  # Mpp.create sees its DEV_ONLY_MEMORY_STORE sentinel and falls back to a
+  # volatile MemoryStore instead of raising on an explicit `replay_store: nil`.
+  def test_mpp_dispatcher_falls_back_to_memory_store_on_localnet_without_replay_store
+    PayKitTestHelpers.with_config(network: :solana_localnet) do
+      with_dispatcher do |_middleware, dispatcher|
+        assert_nil PayKit.config.mpp.replay_store, "precondition: no replay_store configured"
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+
+        server = nil
+        _out, _err = capture_io do
+          server = dispatcher.send(:mpp_server_for, gate)
+        end
+
+        store = server.instance_variable_get(:@handler).instance_variable_get(:@replay_store)
+        assert_kind_of PayKit::Protocols::Mpp::MemoryStore, store,
+          "localnet with no configured store must fall back to the dev MemoryStore"
+      end
+    end
+  end
+
+  # Companion: the localnet fallback must NOT leak off localnet. With no
+  # replay_store configured on devnet, mpp_server_for must still raise
+  # ConfigurationError — the fix only relaxes the explicit-nil footgun, it does
+  # not weaken the durable-store requirement for non-localnet networks.
+  def test_mpp_dispatcher_still_requires_durable_store_off_localnet
+    PayKitTestHelpers.with_config(network: :solana_devnet) do
+      with_dispatcher do |_middleware, dispatcher|
+        assert_nil PayKit.config.mpp.replay_store, "precondition: no replay_store configured"
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        err = assert_raises(PayKit::ConfigurationError) do
+          dispatcher.send(:mpp_server_for, gate)
+        end
+        assert_match(/durable replay_store/, err.message)
+      end
+    end
+  end
 end

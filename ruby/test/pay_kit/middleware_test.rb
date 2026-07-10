@@ -184,7 +184,11 @@ class PayKitMiddlewareTest < Minitest::Test
       dispatcher.challenge_for(mpp_gate, request)
     end
 
-    assert_match(/requires (?:a )?replay_store/i, error.message)
+    # With the auto-wiring fix, an unconfigured store no longer reaches
+    # Mpp.create as an explicit `replay_store: nil` (which raised the generic
+    # "nil is not a valid store"); it now hits the durable-store requirement
+    # for the non-localnet network, the more precise off-localnet message.
+    assert_match(/requires a durable replay_store/i, error.message)
   end
 
   def test_mpp_auto_wiring_threads_configured_replay_store

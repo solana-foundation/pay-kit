@@ -930,6 +930,9 @@ class X402ServerExactTest < Minitest::Test
     # A confirmer that determines the transaction definitively never landed
     # (blockhash expired / dropped, surfaced as TransactionNotFound) releases
     # the reservation so a corrected resubmission is free to broadcast again.
+    # The release is now additionally gated on the transaction's OWN signed
+    # blockhash being corroborated as expired (isBlockhashValid -> false) by the
+    # trusted validator, so the confirmer verdict alone cannot free the slot.
     cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
     state = build_state(
       sender: ->(_state, _transaction) { "dropped-sig" },
@@ -938,7 +941,8 @@ class X402ServerExactTest < Minitest::Test
           "transaction #{signature} never landed"
         )
       },
-      settlement_cache: cache
+      settlement_cache: cache,
+      blockhash_validator: ->(_state, _blockhash) { {"value" => false} }
     )
 
     assert_raises(PayKit::Protocols::X402::Error::TransactionNotFound) do
@@ -962,6 +966,101 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "corrected-sig",
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
     assert retried
+  end
+
+  # SECURITY (Greptile P1): the settlement release must never fire on a value
+  # the client controls. The confirmer's `TransactionNotFound` can be provoked
+  # by a maliciously-low echoed `accepted.extra.lastValidBlockHeight`, so the
+  # release is gated on the transaction's OWN signed blockhash being
+  # corroborated as expired by the trusted validator. Here the confirmer raises
+  # `TransactionNotFound` (the echoed-height path) but `isBlockhashValid`
+  # reports the blockhash STILL valid, so the reservation must NOT be released:
+  # a plain ambiguous timeout is raised and the marker survives, keeping the
+  # double-serve window closed.
+  def test_settlement_keeps_reservation_when_never_found_but_blockhash_still_valid
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { "still-valid-sig" },
+      signature_confirmer: ->(_state, signature) {
+        raise PayKit::Protocols::X402::Error::TransactionNotFound.new(
+          "transaction #{signature} never landed"
+        )
+      },
+      settlement_cache: cache,
+      blockhash_validator: ->(_state, _blockhash) { {"value" => true} }
+    )
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+    refute_instance_of PayKit::Protocols::X402::Error::TransactionNotFound, error,
+      "a still-valid blockhash must not surface as a definitive never-landed release"
+    assert_match(/timed out awaiting confirmation/, error.message)
+
+    # The reservation is intact: a resubmit resolving the same signature is
+    # rejected as a replay rather than silently re-broadcast.
+    assert cache.duplicate?("x402-svm-exact:consumed:still-valid-sig"),
+      "an unexpired blockhash must keep the reservation (no premature release)"
+    replay = build_state(
+      sender: ->(_state, _transaction) { "still-valid-sig" },
+      signature_confirmer: ->(_state, signature) { signature },
+      settlement_cache: cache
+    )
+    err = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(replay, build_payment_header(replay))
+    end
+    assert_equal "signature_consumed", err.message
+  end
+
+  # Companion to the premature-release guard: when the transaction's OWN signed
+  # blockhash is corroborated as expired (`isBlockhashValid` -> false), a
+  # confirmer `TransactionNotFound` IS a genuine never-landed outcome, so the
+  # reservation is released and `TransactionNotFound` propagates — keeping the
+  # legitimate corrected-resubmission path open.
+  def test_settlement_releases_reservation_when_blockhash_provably_expired
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { "expired-sig" },
+      signature_confirmer: ->(_state, signature) {
+        raise PayKit::Protocols::X402::Error::TransactionNotFound.new(
+          "transaction #{signature} never landed"
+        )
+      },
+      settlement_cache: cache,
+      blockhash_validator: ->(_state, _blockhash) { {"value" => false} }
+    )
+
+    assert_raises(PayKit::Protocols::X402::Error::TransactionNotFound) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+
+    refute cache.duplicate?("x402-svm-exact:consumed:expired-sig"),
+      "a provably-expired blockhash must release the reservation"
+  end
+
+  # Fail-closed: if the trusted blockhash validator itself errors (RPC/
+  # transport failure) we cannot prove non-landing, so the reservation is KEPT
+  # rather than released on an ambiguous outcome, and the plain timeout surfaces.
+  def test_settlement_keeps_reservation_when_blockhash_validator_errors
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { "validator-error-sig" },
+      signature_confirmer: ->(_state, signature) {
+        raise PayKit::Protocols::X402::Error::TransactionNotFound.new(
+          "transaction #{signature} never landed"
+        )
+      },
+      settlement_cache: cache,
+      blockhash_validator: ->(_state, _blockhash) { raise "rpc down" }
+    )
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+    refute_instance_of PayKit::Protocols::X402::Error::TransactionNotFound, error
+    assert_match(/timed out awaiting confirmation/, error.message)
+    assert cache.duplicate?("x402-svm-exact:consumed:validator-error-sig"),
+      "a validator error must keep the reservation (fail-closed)"
   end
 
   def test_signature_confirmer_with_kwargs_receives_last_valid_block_height
@@ -1008,9 +1107,12 @@ class X402ServerExactTest < Minitest::Test
 
     # RPC transport: the signature is never found (poll + definitive check),
     # and the chain has advanced past lastValidBlockHeight -> blockhash expired.
+    # The trusted release gate then corroborates the confirmer's never-landed
+    # verdict against the tx's own signed blockhash before releasing.
     router = rpc_router(
       "getSignatureStatuses" => {"result" => {"value" => [nil]}},
-      "getBlockHeight" => {"result" => 1001}
+      "getBlockHeight" => {"result" => 1001},
+      "isBlockhashValid" => {"result" => {"value" => false}}
     )
 
     error = with_stubbed_rpc(router) do
@@ -1502,6 +1604,7 @@ class X402ServerExactTest < Minitest::Test
     signature_confirmer: ->(_state, signature) { signature },
     settlement_cache: nil,
     recent_blockhash_provider: -> {},
+    blockhash_validator: nil,
     payment_identifier_required: false
   )
     kwargs = {
@@ -1516,6 +1619,7 @@ class X402ServerExactTest < Minitest::Test
       signature_confirmer: signature_confirmer,
       settlement_cache: settlement_cache,
       recent_blockhash_provider: recent_blockhash_provider,
+      blockhash_validator: blockhash_validator,
       payment_identifier_required: payment_identifier_required
     }
     unless extra_offered_mints.nil?
