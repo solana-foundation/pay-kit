@@ -63,6 +63,52 @@ func newTestSession(t *testing.T, mutate func(*SessionOptions)) *Session {
 	return session
 }
 
+func TestNewSessionMemoryChannelStorePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		network string
+		store   ChannelStore
+		optIn   string
+		wantErr bool
+	}{
+		{name: "default mainnet rejects absent store", wantErr: true},
+		{name: "mainnet rejects memory store", network: "mainnet", store: NewMemoryChannelStore(), wantErr: true},
+		{name: "devnet rejects memory store", network: "devnet", store: NewMemoryChannelStore(), wantErr: true},
+		{name: "invalid opt-in remains rejected", network: "mainnet", optIn: "true", wantErr: true},
+		{name: "localnet defaults to memory store", network: "localnet"},
+		{name: "localnet permits supplied memory store", network: "localnet", store: NewMemoryChannelStore()},
+		{name: "mainnet opt-in permits absent store", network: "mainnet", optIn: "1"},
+		{name: "mainnet opt-in permits memory store", network: "mainnet", store: NewMemoryChannelStore(), optIn: "1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(allowInMemoryReplayStoreEnvVar, tt.optIn)
+			session, err := NewSession(SessionOptions{
+				Recipient: testutil.NewPrivateKey().PublicKey().String(),
+				Cap:       1_000_000,
+				Currency:  "USDC",
+				Network:   tt.network,
+				SecretKey: sessionMethodSecret,
+				Store:     tt.store,
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected session-store policy error")
+				}
+				if !strings.Contains(err.Error(), allowInMemoryReplayStoreEnvVar) {
+					t.Fatalf("error = %v, want %s policy error", err, allowInMemoryReplayStoreEnvVar)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			if _, ok := session.Core().Store().(*MemoryChannelStore); !ok {
+				t.Fatalf("store = %T, want *MemoryChannelStore", session.Core().Store())
+			}
+		})
+	}
+}
+
 // sessionActionCredential issues a fresh challenge and wraps action into the
 // credential a client would send.
 func sessionActionCredential(t *testing.T, session *Session, action any) core.PaymentCredential {
@@ -178,6 +224,7 @@ func TestNewSessionValidation(t *testing.T) {
 }
 
 func TestNewSessionDefaults(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Currency = ""
 		o.Decimals = 0

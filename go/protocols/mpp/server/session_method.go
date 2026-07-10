@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"time"
 
@@ -107,7 +108,10 @@ type SessionOptions struct {
 	// server broadcasts a client-built open (OpenTxSubmitterServer).
 	PaymentChannelPayerSigner solanatx.Signer
 
-	// Store is the pluggable channel store. Defaults to in-memory.
+	// Store is the pluggable channel store. Outside localnet it must not be
+	// absent or a process-local *MemoryChannelStore unless
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly opts into development
+	// replay protection. Localnet defaults to MemoryChannelStore.
 	Store ChannelStore
 
 	// RPC is the optional RPC client used for on-chain checks, the
@@ -225,6 +229,19 @@ func NewSession(options SessionOptions) (*Session, error) {
 			"pullVoucherStrategy is required when modes includes pull")
 	}
 	store := options.Store
+	usesMemoryChannelStore := false
+	if store != nil {
+		_, usesMemoryChannelStore = store.(*MemoryChannelStore)
+	}
+	if options.Network != "localnet" && (store == nil || usesMemoryChannelStore) && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
+		storeDescription := "no session store"
+		if usesMemoryChannelStore {
+			storeDescription = "process-local *MemoryChannelStore"
+		}
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("%s configured for %s; configure a shared session ChannelStore or set %s=1 to allow a process-local development store",
+				storeDescription, options.Network, allowInMemoryReplayStoreEnvVar))
+	}
 	if store == nil {
 		store = NewMemoryChannelStore()
 	}
