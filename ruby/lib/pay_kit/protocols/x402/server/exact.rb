@@ -127,7 +127,7 @@ module PayKit::Protocols::X402
           :payment_identifier_required
 
         attr_accessor :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer,
-          :recent_blockhash_provider
+          :recent_blockhash_provider, :blockhash_validator
 
         def initialize(
           rpc_url:,
@@ -144,7 +144,8 @@ module PayKit::Protocols::X402
           settlement_cache: nil,
           account_checker: nil,
           signature_confirmer: nil,
-          recent_blockhash_provider: nil
+          recent_blockhash_provider: nil,
+          blockhash_validator: nil
         )
           raise ArgumentError, "rpc_url is required" if rpc_url.nil? || rpc_url.empty?
           raise ArgumentError, "pay_to is required" if pay_to.nil? || pay_to.empty?
@@ -166,6 +167,11 @@ module PayKit::Protocols::X402
           @account_checker = account_checker || Exact.method(:account_exists?)
           @signature_confirmer = signature_confirmer || Exact.method(:await_confirmation)
           @recent_blockhash_provider = recent_blockhash_provider
+          # Trusted on-chain blockhash-expiry validator for the settlement
+          # release gate. `nil` uses the real RPC path (`isBlockhashValid`).
+          # Injected in tests to drive the release deterministically. Mirrors
+          # the `signature_confirmer` injection contract.
+          @blockhash_validator = blockhash_validator
         end
 
         # Fetch a recent blockhash from the server's RPC for embedding
@@ -577,26 +583,34 @@ module PayKit::Protocols::X402
 
           # The transaction's expiry watermark, echoed by a compliant client in
           # `accepted.extra.lastValidBlockHeight` (the server advertised it on
-          # the challenge). Threaded to the default confirmer so it can run the
-          # definitive `getBlockHeight` expiry check. `nil` when the credential
-          # carries no height — the confirmer then cannot prove non-landing and
-          # keeps the reservation (fail-closed).
+          # the challenge). Threaded to the default confirmer as a NON-
+          # AUTHORITATIVE hint so it can run its `getBlockHeight` check. It can
+          # NO LONGER, by itself, release a reservation: a maliciously-low echoed
+          # height can drive the confirmer to `TransactionNotFound`, but the
+          # release below is gated on the transaction's OWN signed blockhash
+          # being provably expired per the server's trusted RPC, which this
+          # client-supplied value cannot forge. `nil` when the credential carries
+          # no height.
           last_valid_block_height = credential_last_valid_block_height(decoded)
 
           begin
             invoke_signature_confirmer(config, signature, last_valid_block_height)
           rescue ::PayKit::Protocols::X402::Error::TransactionNotFound
-            # Definitively never landed: the signature is provably absent from
-            # the node's recent history AND the blockhash has expired (chain
-            # height passed `lastValidBlockHeight`). Release the reservation so a
-            # corrected resubmission can broadcast again. Any OTHER confirmation
-            # failure (a poll timeout where the tx may still land, or an
-            # indeterminate RPC error) propagates with the marker intact:
-            # releasing it would open a double-serve window. With the default
-            # confirmer this release path is now reachable in production, not
-            # only for injected test confirmers.
-            config.settlement_cache.delete(consumed_key)
-            raise
+            # TRUSTED release gate. `TransactionNotFound` alone is only a hint —
+            # the default confirmer derives it partly from the client-echoed
+            # `lastValidBlockHeight`, so a maliciously-low echo could otherwise
+            # force a premature release and reopen a replay window. Release the
+            # reservation ONLY when the transaction's own signed blockhash is
+            # independently corroborated as expired by the server's trusted RPC
+            # (`isBlockhashValid == false`). Otherwise the echoed hint was not
+            # backed by on-chain state: keep the reservation (fail-closed) and
+            # surface the same ambiguous timeout `await_confirmation` raises, so
+            # client data can never, by itself, free a replay slot.
+            if transaction_blockhash_expired?(config, transaction)
+              config.settlement_cache.delete(consumed_key)
+              raise
+            end
+            raise "timed out awaiting confirmation for #{signature}"
           end
 
           signature
@@ -740,6 +754,34 @@ module PayKit::Protocols::X402
           false
         end
 
+        # TRUSTED settlement-release gate. Answers "is this transaction's own
+        # signed blockhash provably expired?" using ONLY server-side data — the
+        # blockhash bound into the client-signed message plus the server's RPC —
+        # never a client-echoed hint. Returns `true` ONLY when the node
+        # definitively reports the blockhash no longer valid; every other outcome
+        # (missing blockhash, node cannot answer / `nil`, still valid / `true`,
+        # or any error) returns `false` so the reservation is KEPT (fail-closed).
+        # This is what stops a maliciously-low echoed `lastValidBlockHeight` from
+        # releasing a replay reservation.
+        def transaction_blockhash_expired?(config, transaction)
+          # `transaction` is the raw signed-message bytes (the settle local).
+          # Parse it into a PayCore::Solana::Transaction and read the base58
+          # blockhash bound into the client-signed message — this is the
+          # on-chain value, independent of any client-echoed hint.
+          parsed = transaction && Types::TransactionCodec.from_bytes(transaction)
+          blockhash = parsed&.message&.recent_blockhash
+          return false if blockhash.nil? || blockhash.empty?
+
+          validator = config.blockhash_validator || method(:fetch_blockhash_valid)
+          valid = validator.call(config, blockhash)
+          # Accept either the raw `isBlockhashValid` result (`{"value" => bool}`)
+          # or the already-extracted boolean the default helper returns.
+          valid = valid["value"] if valid.is_a?(Hash)
+          valid == false
+        rescue
+          false
+        end
+
         def fetch_signature_statuses(config, signatures, search_transaction_history: false)
           uri = URI(config.rpc_url)
           request = Net::HTTP::Post.new(uri)
@@ -785,6 +827,34 @@ module PayKit::Protocols::X402
 
           result = payload["result"]
           result.is_a?(Integer) ? result : nil
+        end
+
+        # Whether `blockhash` is still a valid (unexpired) recent blockhash on
+        # the server's chain, via `isBlockhashValid`. Returns the node's boolean
+        # `result.value`, or `nil` when the node cannot answer; raises on
+        # HTTP/RPC error (caught by `transaction_blockhash_expired?`, which then
+        # keeps the reservation fail-closed). Trusted server-side input for the
+        # settlement release gate — never derived from client data.
+        def fetch_blockhash_valid(config, blockhash)
+          uri = URI(config.rpc_url)
+          request = Net::HTTP::Post.new(uri)
+          request["content-type"] = "application/json"
+          request.body = JSON.generate(
+            jsonrpc: "2.0",
+            id: 1,
+            method: "isBlockhashValid",
+            params: [blockhash, {commitment: "confirmed"}]
+          )
+          response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") do |http|
+            http.request(request)
+          end
+          raise "isBlockhashValid HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+          payload = JSON.parse(response.body)
+          raise "isBlockhashValid RPC error: #{rpc_error_message(payload["error"])}" if payload["error"]
+
+          result = payload["result"]
+          result.is_a?(Hash) ? result["value"] : nil
         end
 
         def account_exists?(config, account)

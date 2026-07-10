@@ -275,9 +275,12 @@ module PayKit
             method: method,
             secret_key: secret,
             realm: realm,
-            replay_store: replay_store,
             expires_in: expires_in
           }
+          # Only forward replay_store when the caller actually configured one.
+          # Passing an explicit `replay_store: nil` makes Mpp.create treat it as
+          # "no durable store supplied" and raise on non-localnet, and it also
+          # defeats the localnet MemoryStore fallback for a dev with no store.
           options[:replay_store] = replay_store unless replay_store.nil?
           ::PayKit::Protocols::Mpp.create(**options)
         end
