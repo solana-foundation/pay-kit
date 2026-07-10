@@ -28,8 +28,8 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-v2-
+          key: ${{ runner.os }}-luarocks-dev-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-dev-v3-
 
       - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec + lua-resty-openssl + cjson)
         if: steps.cache-rocks.outputs.cache-hit != 'true'
@@ -113,8 +113,8 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-v2-
+          key: ${{ runner.os }}-luarocks-runtime-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-runtime-v3-
 
       - name: Install runtime rocks
         if: steps.cache-rocks.outputs.cache-hit != 'true'
