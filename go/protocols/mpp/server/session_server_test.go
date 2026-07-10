@@ -579,11 +579,14 @@ func TestProcessTopUpRejectsWhenSealedOrClosePending(t *testing.T) {
 func TestProcessTopUpInvokesVerifyTopUpTxSeam(t *testing.T) {
 	wantErr := errors.New("topup tx unknown")
 	config := sessionTestConfig()
-	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload) (string, error) {
+	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error {
 		if payload.Signature != "topup_sig" {
 			t.Fatalf("verifier got signature %q", payload.Signature)
 		}
-		return "", wantErr
+		if currentDeposit != 1_000_000 {
+			t.Fatalf("verifier got deposit %d, want 1000000", currentDeposit)
+		}
+		return wantErr
 	}
 	server := newSessionTestServer(config)
 	_, channelID := openTestChannel(t, server, 1_000_000)

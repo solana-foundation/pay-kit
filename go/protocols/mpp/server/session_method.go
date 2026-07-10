@@ -245,6 +245,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		Modes:               options.Modes,
 		PullVoucherStrategy: options.PullVoucherStrategy,
 	}
+	config.VerifyTopUpTx = NewTopUpTxVerifier(config, options.RPC)
 	session := &Session{
 		core:            NewSessionServer(config, store),
 		secretKey:       options.SecretKey,
@@ -527,6 +528,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
 			Recipient:        s.recipient,
+			Splits:           s.core.config.Splits,
 		}
 		if s.openTxSubmitter == OpenTxSubmitterServer {
 			if s.rpc == nil {
@@ -672,9 +674,9 @@ func (s *Session) handleCommit(ctx context.Context, payload *intents.CommitPaylo
 	return fmt.Sprintf("%s:%s:%s", receipt.SessionID, receipt.DeliveryID, receipt.Cumulative), nil
 }
 
-// handleTopUp raises a channel's deposit after optional on-chain
-// confirmation of the top-up signature. The receipt reference is the top-up
-// transaction signature.
+// handleTopUp raises a channel's deposit after the core binds the confirmed
+// top-up transaction to the channel and claimed deposit delta. The receipt
+// reference is the top-up transaction signature.
 func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
 	newDeposit, err := parseSessionU64(payload.NewDeposit, "newDeposit")
 	if err != nil {
@@ -684,25 +686,6 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, s.cap)
 	}
 
-	// Cheap store pre-checks before touching the network.
-	existing, err := s.core.store.GetChannel(ctx, payload.ChannelID)
-	if err != nil {
-		return "", err
-	}
-	if existing == nil {
-		return "", fmt.Errorf("channel %s not found", payload.ChannelID)
-	}
-	if existing.Sealed {
-		return "", fmt.Errorf("channel %s is already sealed", payload.ChannelID)
-	}
-	if existing.CloseRequestedAt != nil {
-		return "", fmt.Errorf("channel %s close is pending; no further top-ups accepted", payload.ChannelID)
-	}
-	if s.rpc != nil {
-		if err := confirmTransactionSignature(ctx, s.rpc, payload.Signature, "topUp"); err != nil {
-			return "", err
-		}
-	}
 	if _, err := s.core.ProcessTopUp(ctx, payload); err != nil {
 		return "", err
 	}

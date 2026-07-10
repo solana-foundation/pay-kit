@@ -72,6 +72,7 @@ func TestNewAcceptsSecretKeyAtMinimumLength(t *testing.T) {
 // --- #37 network allowlist ---
 
 func TestNewAcceptsCanonicalNetworks(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	for _, network := range []string{"mainnet", "devnet", "localnet"} {
 		cfg := validConfig(t)
 		cfg.Network = network

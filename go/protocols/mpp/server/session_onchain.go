@@ -17,20 +17,27 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
+	ag_binary "github.com/gagliardetto/binary"
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
 // openInstructionDiscriminator is the payment-channel open instruction
 // discriminator (single-byte Anchor-numeric form, not the 8-byte sha256
 // convention). Matches OPEN_DISCRIMINATOR in the vendored Codama clients.
-const openInstructionDiscriminator = 1
+const (
+	openInstructionDiscriminator  = 1
+	topUpInstructionDiscriminator = 3
+)
 
 // VerifyOpenTxExpected carries the challenge-side values a client-submitted
 // open transaction is validated against.
@@ -66,6 +73,10 @@ type VerifyOpenTxExpected struct {
 	// Recipient is the primary payment recipient (challenge recipient,
 	// base58); the transaction's payee account must match it.
 	Recipient string
+
+	// Splits is the ordered payment distribution committed by the challenge.
+	// The open instruction must carry the same recipients and basis points.
+	Splits []Split
 }
 
 // VerifyOpenTxResult carries the channel facts extracted from a verified open
@@ -233,13 +244,26 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 
 	// Instruction data:
 	// [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
-	if len(openIx.Data) < 1+8+8+4+8 {
+	if len(openIx.Data) < 1+8+8+4+8+4 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open instruction data too short (%d bytes)", len(openIx.Data))
 	}
-	salt := binary.LittleEndian.Uint64(openIx.Data[1:9])
-	deposit := binary.LittleEndian.Uint64(openIx.Data[9:17])
-	gracePeriod := binary.LittleEndian.Uint32(openIx.Data[17:21])
-	openSlot := binary.LittleEndian.Uint64(openIx.Data[21:29])
+	var openArgs generated.OpenArgs
+	if err := ag_binary.NewBorshDecoder(openIx.Data[1:]).Decode(&openArgs); err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("decode open instruction args: %w", err)
+	}
+	salt := openArgs.Salt
+	deposit := openArgs.Deposit
+	gracePeriod := openArgs.GracePeriod
+	openSlot := openArgs.OpenSlot
+	if len(openArgs.Recipients) != len(expected.Splits) {
+		return VerifyOpenTxResult{}, fmt.Errorf("open recipients length %d != expected splits length %d", len(openArgs.Recipients), len(expected.Splits))
+	}
+	for i, recipient := range openArgs.Recipients {
+		expectedSplit := expected.Splits[i]
+		if !recipient.Recipient.Equals(expectedSplit.Recipient) || recipient.Bps != expectedSplit.BPS {
+			return VerifyOpenTxResult{}, fmt.Errorf("open recipient[%d] does not match expected split", i)
+		}
+	}
 
 	if deposit == 0 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open deposit must be greater than zero")
@@ -298,6 +322,7 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 				Operator:         config.Operator,
 				ProgramID:        config.ProgramID,
 				Recipient:        config.Recipient,
+				Splits:           config.Splits,
 			}
 			result, err := VerifyOpenTx(ctx, expected, payload, rpcClient)
 			return result.Payer, err
@@ -310,20 +335,92 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 }
 
 // NewTopUpTxVerifier returns the on-chain top-up verifier to install on
-// SessionConfig.VerifyTopUpTx: it confirms the top-up transaction signature
-// on-chain via getSignatureStatuses.
+// SessionConfig.VerifyTopUpTx. It fetches the confirmed transaction and
+// requires a payment-channels top_up instruction for the payload channel with
+// an amount exactly equal to the claimed deposit delta.
 // A nil rpcClient returns nil so the seam stays unset, and the new deposit is
 // trusted as provided; suitable only for unit tests or deployments that
 // verify transactions out of band.
-func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.TopUpPayload] {
+func NewTopUpTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) TopUpTxVerifier {
 	if rpcClient == nil {
 		return nil
 	}
-	return func(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
-		// A top-up carries only a signature, not an open transaction, so it
-		// never establishes the channel payer.
-		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
+	programID := paymentchannels.ProgramPubkey()
+	if config.ProgramID != nil {
+		programID = *config.ProgramID
 	}
+	return func(ctx context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error {
+		return verifyTopUpTx(ctx, rpcClient, programID, payload, currentDeposit)
+	}
+}
+
+func verifyTopUpTx(ctx context.Context, rpcClient solanatx.RPCClient, programID solana.PublicKey, payload *intents.TopUpPayload, currentDeposit uint64) error {
+	if payload == nil {
+		return fmt.Errorf("top-up payload is required")
+	}
+	newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid newDeposit: %s", payload.NewDeposit)
+	}
+	if newDeposit <= currentDeposit {
+		return fmt.Errorf("new deposit %d must exceed current deposit %d", newDeposit, currentDeposit)
+	}
+	channel, err := solana.PublicKeyFromBase58(payload.ChannelID)
+	if err != nil {
+		return fmt.Errorf("invalid top-up channel id %q: %w", payload.ChannelID, err)
+	}
+	signature, err := solana.SignatureFromBase58(payload.Signature)
+	if err != nil {
+		return fmt.Errorf("invalid top-up tx signature %q: %w", payload.Signature, err)
+	}
+	if err := confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up"); err != nil {
+		return err
+	}
+	tx, _, err := solanatx.FetchTransaction(ctx, rpcClient, signature)
+	if err != nil {
+		return fmt.Errorf("fetch top-up transaction: %w", err)
+	}
+	if len(tx.Message.AddressTableLookups) > 0 {
+		return fmt.Errorf("top-up transaction uses address lookup tables, which are not supported")
+	}
+	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() || tx.Signatures[0] != signature {
+		return fmt.Errorf("top-up transaction signature does not match payload signature")
+	}
+
+	var funded uint64
+	var topUpCount int
+	for i := range tx.Message.Instructions {
+		ix := &tx.Message.Instructions[i]
+		if int(ix.ProgramIDIndex) >= len(tx.Message.AccountKeys) || !tx.Message.AccountKeys[ix.ProgramIDIndex].Equals(programID) {
+			continue
+		}
+		if len(ix.Data) == 0 || ix.Data[0] != topUpInstructionDiscriminator {
+			continue
+		}
+		if len(ix.Data) != 1+8 {
+			return fmt.Errorf("top-up instruction data has invalid length %d", len(ix.Data))
+		}
+		if len(ix.Accounts) < 2 || int(ix.Accounts[1]) >= len(tx.Message.AccountKeys) {
+			return fmt.Errorf("top-up instruction is missing the channel account")
+		}
+		if !tx.Message.AccountKeys[ix.Accounts[1]].Equals(channel) {
+			continue
+		}
+		amount := binary.LittleEndian.Uint64(ix.Data[1:])
+		if amount > math.MaxUint64-funded {
+			return fmt.Errorf("top-up instruction amount overflows total")
+		}
+		funded += amount
+		topUpCount++
+	}
+	if topUpCount == 0 {
+		return fmt.Errorf("no payment-channels top_up instruction found for channel %s", channel)
+	}
+	wantDelta := newDeposit - currentDeposit
+	if funded != wantDelta {
+		return fmt.Errorf("top-up amount %d != claimed deposit delta %d", funded, wantDelta)
+	}
+	return nil
 }
 
 // SettlementInstructions builds the on-chain settlement sequence for a

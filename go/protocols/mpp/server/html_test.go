@@ -12,6 +12,7 @@ import (
 
 func newHTMLTestMpp(t *testing.T) *Mpp {
 	t.Helper()
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	handler, err := New(Config{
 		Recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",

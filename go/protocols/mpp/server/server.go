@@ -71,8 +71,9 @@ type Config struct {
 	Realm          string
 	HTML           bool
 	FeePayerSigner solanatx.Signer
-	// Store holds replay markers. It is required outside localnet unless
-	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly permits the
+	// Store holds replay markers. Outside localnet it must be shared and
+	// durable: an absent store or *core.MemoryStore is rejected unless
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly permits a
 	// process-local development store.
 	Store core.Store
 	RPC   solanatx.RPCClient
@@ -159,12 +160,20 @@ func New(config Config) (*Mpp, error) {
 		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid network", err)
 	}
 	config.Network = string(canonicalNetwork)
-	if config.Store == nil {
-		if canonicalNetwork != paycore.NetworkLocalnet && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
-			return nil, core.NewError(core.ErrCodeInvalidConfig,
-				fmt.Sprintf("no shared replay store configured for %s; configure Store or set %s=1 to allow a process-local development store",
-					config.Network, allowInMemoryReplayStoreEnvVar))
+	usesMemoryReplayStore := false
+	if config.Store != nil {
+		_, usesMemoryReplayStore = config.Store.(*core.MemoryStore)
+	}
+	if canonicalNetwork != paycore.NetworkLocalnet && (config.Store == nil || usesMemoryReplayStore) && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
+		storeDescription := "no replay store"
+		if usesMemoryReplayStore {
+			storeDescription = "process-local *core.MemoryStore"
 		}
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("%s configured for %s; configure a shared replay Store or set %s=1 to allow a process-local development store",
+				storeDescription, config.Network, allowInMemoryReplayStoreEnvVar))
+	}
+	if config.Store == nil {
 		config.Store = core.NewMemoryStore()
 	}
 	// Derive a per-recipient default realm when none is configured (and reject

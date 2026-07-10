@@ -721,7 +721,6 @@ func TestSessionTopUpHardening(t *testing.T) {
 func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	fake := testutil.NewFakeRPC()
 	openSig := confirmedSignature(0x44)
-	topupSig := confirmedSignature(0x55)
 	ghostSig := confirmedSignature(0x66)
 	fake.Statuses[ghostSig] = nil
 
@@ -729,14 +728,15 @@ func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 	channelID := solana.NewWallet().PublicKey().String()
 	openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
+	channel := solana.MustPublicKeyFromBase58(channelID)
+	topupTx, topupPayload := buildTopUpTx(t, channel, 1_000, 4_000)
+	fake.BySig[topupPayload.Signature] = topupTx
 
-	receipt, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
-		ChannelID: channelID, NewDeposit: "5000", Signature: topupSig,
-	}))
+	receipt, err := verifySessionAction(t, session, intents.NewTopUpAction(*topupPayload))
 	if err != nil {
 		t.Fatalf("topUp: %v", err)
 	}
-	if receipt.Reference != topupSig {
+	if receipt.Reference != topupPayload.Signature {
 		t.Fatalf("reference = %q", receipt.Reference)
 	}
 	if mustGetChannel(t, session, channelID).Deposit != 5_000 {

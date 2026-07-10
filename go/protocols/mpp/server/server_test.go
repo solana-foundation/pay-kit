@@ -619,6 +619,7 @@ func TestNewMissingSecretKey(t *testing.T) {
 func TestNewSecretKeyFromEnv(t *testing.T) {
 	const envSecret = "env-secret-key-0123456789abcdef012345"
 	t.Setenv("MPP_SECRET_KEY", envSecret)
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	rpcClient := testutil.NewFakeRPC()
 	handler, err := New(Config{Recipient: recipient, RPC: rpcClient, Store: core.NewMemoryStore()})
@@ -687,22 +688,46 @@ func TestNewDefaultReplayStorePolicy(t *testing.T) {
 	}
 }
 
-func TestNewKeepsExplicitReplayStoreOutsideLocalnet(t *testing.T) {
-	store := core.NewMemoryStore()
-	handler, err := New(Config{
-		Recipient: testutil.NewPrivateKey().PublicKey().String(),
-		Currency:  "sol",
-		Decimals:  9,
-		Network:   "mainnet",
-		SecretKey: "test-secret-key-0123456789abcdef",
-		RPC:       testutil.NewFakeRPC(),
-		Store:     store,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if handler.store != store {
-		t.Fatalf("store = %T, want supplied store", handler.store)
+func TestNewExplicitMemoryReplayStorePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		network string
+		optIn   string
+		wantErr bool
+	}{
+		{name: "mainnet rejects memory store", network: "mainnet", wantErr: true},
+		{name: "devnet rejects memory store", network: "devnet", wantErr: true},
+		{name: "localnet permits memory store", network: "localnet"},
+		{name: "mainnet opt-in permits memory store", network: "mainnet", optIn: "1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(allowInMemoryReplayStoreEnvVar, tt.optIn)
+			store := core.NewMemoryStore()
+			handler, err := New(Config{
+				Recipient: testutil.NewPrivateKey().PublicKey().String(),
+				Currency:  "sol",
+				Decimals:  9,
+				Network:   tt.network,
+				SecretKey: "test-secret-key-0123456789abcdef",
+				RPC:       testutil.NewFakeRPC(),
+				Store:     store,
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected replay store policy error")
+				}
+				if !strings.Contains(err.Error(), allowInMemoryReplayStoreEnvVar) || !strings.Contains(err.Error(), "MemoryStore") {
+					t.Fatalf("error = %v, want memory-store policy error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if handler.store != store {
+				t.Fatalf("store = %T, want supplied store", handler.store)
+			}
+		})
 	}
 }
 
@@ -951,6 +976,7 @@ func TestChargeWithFeePayer(t *testing.T) {
 }
 
 func TestNewWithDefaultValues(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	rpcClient := testutil.NewFakeRPC()
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	handler, err := New(Config{
@@ -974,6 +1000,7 @@ func TestNewWithDefaultValues(t *testing.T) {
 }
 
 func TestChargeKnownStablecoinTokenPrograms(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	for _, tt := range []struct {
 		currency string
 		want     string
@@ -1070,6 +1097,7 @@ func TestVerifyCredentialSignatureSuccess(t *testing.T) {
 }
 
 func TestRPCURL(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	rpcClient := testutil.NewFakeRPC()
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	handler, err := New(Config{
@@ -1821,6 +1849,7 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 }
 
 func TestVerifyTransactionWrongNetworkBlockhash(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	rpcClient := testutil.NewFakeRPC()
 	recipient := testutil.NewPrivateKey()
 	handler, err := New(Config{
