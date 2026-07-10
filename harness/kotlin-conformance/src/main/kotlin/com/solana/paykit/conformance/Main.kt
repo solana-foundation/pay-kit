@@ -58,6 +58,8 @@ private val json = Json {
     explicitNulls = false
 }
 
+private val vectorIdPattern = Regex("\\\"id\\\"\\s*:\\s*\\\"([A-Za-z0-9._-]+)\\\"")
+
 fun main() {
     val raw = System.`in`.readBytes().decodeToString()
     val result = try {
@@ -67,7 +69,8 @@ fun main() {
         runVector(vector, input)
     } catch (error: Throwable) {
         System.err.println("kotlin conformance runner error: ${error.message}")
-        RunnerResult(id = "unknown", outcome = "reject", error = error.message ?: "unknown error")
+        val id = vectorIdPattern.find(raw)?.groupValues?.get(1) ?: "unknown"
+        RunnerResult(id = id, outcome = "reject", error = error.message ?: "unknown error")
     }
     println(json.encodeToString(RunnerResult.serializer(), result))
 }
