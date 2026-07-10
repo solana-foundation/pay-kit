@@ -55,8 +55,9 @@ local function replay_store_is_shared(replay_store)
     return replay_store:is_shared() == true
   end
   -- Custom Redis/Postgres adapters can declare the capability without
-  -- inheriting this package's shared-dict implementation.
-  return replay_store.shared == true or replay_store.durable == true
+  -- inheriting this package's shared-dict implementation. Durability alone
+  -- only proves restart survival, not an atomic cross-worker reservation.
+  return replay_store.shared == true
 end
 
 local function map_pay_kit_network(network)

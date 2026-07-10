@@ -91,7 +91,7 @@ local function replay_store_is_shared(replay_store)
   if type(replay_store.is_shared) == 'function' then
     return replay_store:is_shared() == true
   end
-  return replay_store.shared == true or replay_store.durable == true
+  return replay_store.shared == true
 end
 
 --- Construct a new charge handler.

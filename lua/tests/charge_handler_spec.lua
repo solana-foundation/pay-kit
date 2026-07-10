@@ -105,6 +105,20 @@ t.test('handler constructor rejects a process-local replay store outside localne
   end, 'replay_store must be shared outside localnet')
 end)
 
+t.test('handler constructor rejects a durable-only replay store outside localnet', function()
+  t.assert_error(function()
+    charge_handler.new({
+      rpc = fake_rpc({}),
+      network = 'devnet',
+      replay_store = {
+        durable = true,
+        put_if_absent = function() return true end,
+      },
+      transaction_verifier = function() end,
+    })
+  end, 'replay_store must be shared outside localnet')
+end)
+
 -- ─── Pull mode ────────────────────────────────────────────────────────────
 
 t.test('settle_pull happy path: verify → simulate → send → consume → await', function()
