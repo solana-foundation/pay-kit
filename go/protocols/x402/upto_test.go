@@ -515,7 +515,8 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	}
 }
 
-func uint64Ptr(v uint64) *uint64 { return &v }
+//go:fix inline
+func uint64Ptr(v uint64) *uint64 { return new(v) }
 
 func TestValidateUptoOpenInstructionBindsOpenArgs(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
