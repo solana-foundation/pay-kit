@@ -1,0 +1,138 @@
+name: PR verification router
+
+# GitHub path filters inspect only a bounded PR diff. Classify the complete
+# three-dot diff ourselves so an unrecognized source change fails closed into
+# the full SDK matrix instead of silently skipping a relevant verifier.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    name: Classify verification surfaces
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.select.outputs.go }}
+      python: ${{ steps.select.outputs.python }}
+      ruby: ${{ steps.select.outputs.ruby }}
+      lua: ${{ steps.select.outputs.lua }}
+      php: ${{ steps.select.outputs.php }}
+      swift: ${{ steps.select.outputs.swift }}
+      kotlin: ${{ steps.select.outputs.kotlin }}
+      harness: ${{ steps.select.outputs.harness }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          # The router and its tests live on the base branch. The synthetic
+          # merge SHA contains both those files and the PR's source changes.
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Test path classifier
+        run: node scripts/select-pr-workflows_test.mjs
+      - id: select
+        name: Select SDK workflows
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only "FETCH_HEAD...HEAD" | \
+            node scripts/select-pr-workflows.mjs --github-output "$GITHUB_OUTPUT"
+
+  go:
+    needs: classify
+    if: ${{ needs.classify.outputs.go == 'true' }}
+    uses: ./.github/workflows/go.yml
+    secrets: inherit
+
+  go_consumer:
+    needs: classify
+    if: ${{ needs.classify.outputs.go == 'true' }}
+    uses: ./.github/workflows/go-consumer.yml
+    secrets: inherit
+
+  python:
+    needs: classify
+    if: ${{ needs.classify.outputs.python == 'true' }}
+    uses: ./.github/workflows/python.yml
+    secrets: inherit
+
+  ruby:
+    needs: classify
+    if: ${{ needs.classify.outputs.ruby == 'true' }}
+    uses: ./.github/workflows/ruby.yml
+    secrets: inherit
+
+  lua:
+    needs: classify
+    if: ${{ needs.classify.outputs.lua == 'true' }}
+    uses: ./.github/workflows/lua.yml
+    secrets: inherit
+
+  php:
+    needs: classify
+    if: ${{ needs.classify.outputs.php == 'true' }}
+    uses: ./.github/workflows/php.yml
+    secrets: inherit
+
+  swift:
+    needs: classify
+    if: ${{ needs.classify.outputs.swift == 'true' }}
+    uses: ./.github/workflows/swift.yml
+    secrets: inherit
+
+  kotlin:
+    needs: classify
+    if: ${{ needs.classify.outputs.kotlin == 'true' }}
+    uses: ./.github/workflows/kotlin.yml
+    secrets: inherit
+
+  harness:
+    needs: classify
+    if: ${{ needs.classify.outputs.harness == 'true' }}
+    uses: ./.github/workflows/harness.yml
+    secrets: inherit
+
+  routed_sdk_gate:
+    name: Routed SDK gate
+    if: ${{ always() }}
+    needs: [classify, go, go_consumer, python, ruby, lua, php, swift, kotlin, harness]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected workflow to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          node <<'NODE'
+          const needs = JSON.parse(process.env.NEEDS);
+          if (needs.classify.result !== "success") {
+            throw new Error(`classifier did not pass: ${needs.classify.result}`);
+          }
+
+          const selected = needs.classify.outputs;
+          const required = {
+            go: ["go", "go_consumer"],
+            python: ["python"],
+            ruby: ["ruby"],
+            lua: ["lua"],
+            php: ["php"],
+            swift: ["swift"],
+            kotlin: ["kotlin"],
+            harness: ["harness"],
+          };
+
+          for (const [surface, jobs] of Object.entries(required)) {
+            if (selected[surface] !== "true") continue;
+            for (const job of jobs) {
+              if (needs[job].result !== "success") {
+                throw new Error(`${surface} selected ${job}, which finished ${needs[job].result}`);
+              }
+            }
+          }
+          console.log("all selected SDK workflows passed");
+          NODE
