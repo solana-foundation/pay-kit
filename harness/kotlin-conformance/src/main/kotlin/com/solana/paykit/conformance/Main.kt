@@ -46,6 +46,7 @@ private data class ExactBytes(
 @Serializable
 private data class RunnerResult(
     val language: String = "kotlin",
+    val implementation: String = "kotlin",
     val id: String,
     val outcome: String,
     val exactBytes: ExactBytes? = null,
@@ -62,6 +63,10 @@ private val vectorIdPattern = Regex("\\\"id\\\"\\s*:\\s*\\\"([A-Za-z0-9._-]+)\\\
 
 fun main() {
     val raw = System.`in`.readBytes().decodeToString()
+    println(renderVectorResult(raw))
+}
+
+internal fun renderVectorResult(raw: String): String {
     val result = try {
         val vector = json.decodeFromString(Vector.serializer(), raw)
         val input = json.parseToJsonElement(raw).jsonObject["input"]?.jsonObject
@@ -72,7 +77,7 @@ fun main() {
         val id = vectorIdPattern.find(raw)?.groupValues?.get(1) ?: "unknown"
         RunnerResult(id = id, outcome = "reject", error = error.message ?: "unknown error")
     }
-    println(json.encodeToString(RunnerResult.serializer(), result))
+    return json.encodeToString(RunnerResult.serializer(), result)
 }
 
 private fun runVector(vector: Vector, rawInput: Map<String, JsonElement>): RunnerResult {
