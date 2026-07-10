@@ -124,6 +124,25 @@ def test_cosign_v0_unsigned_happy_path_fills_signature_slot():
     assert reparsed.message.account_keys[0] == fee_payer.pubkey()
 
 
+def test_cosign_signed_v0_two_signer_transaction_uses_versioned_decoder():
+    """Signed v0 bytes must never pass through solders' lenient legacy parser."""
+    for _ in range(50):
+        fee_payer = Keypair()
+        transfer_authority = Keypair()
+        recipient = Keypair()
+        ix = transfer(
+            TransferParams(
+                from_pubkey=transfer_authority.pubkey(),
+                to_pubkey=recipient.pubkey(),
+                lamports=1000,
+            )
+        )
+        tx_b64 = _v0_tx_b64(fee_payer, [ix], signers=[fee_payer, transfer_authority])
+
+        signed = VersionedTransaction.from_bytes(base64.b64decode(M._co_sign_with_fee_payer(tx_b64, fee_payer)))
+        assert signed.message.account_keys[0] == fee_payer.pubkey()
+
+
 def test_cosign_v0_fee_payer_at_non_zero_slot_rejected():
     """V0 with the rogue fee-payer pubkey at slot 1: rejected.
 
