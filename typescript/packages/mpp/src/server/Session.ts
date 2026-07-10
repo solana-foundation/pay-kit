@@ -735,10 +735,10 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // Confirm the top-up transaction on-chain before raising the deposit
     // (parity with the open-signature verification).
     if (args.rpc) {
-        await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, args.payload.signature, 'topUp');
         if (!isTopUpTransactionRpc(args.rpc)) {
             throw new Error('topUp requires an rpc client with getTransaction to bind the deposit delta');
         }
+        await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, args.payload.signature, 'topUp');
         await verifyTopUpTransaction({
             amount: newDeposit - existing.deposit,
             channelId: args.payload.channelId,

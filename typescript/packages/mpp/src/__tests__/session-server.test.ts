@@ -1116,14 +1116,19 @@ describe('session() verify() topUp hardening', () => {
                 request: {} as never,
             }),
         ).rejects.toThrow(/getTransaction/);
-        expect(rpc.calls).toContain('topup-sig');
+        expect(rpc.calls).not.toContain('topup-sig');
         expect((await store.getChannel(channelId))?.deposit).toBe(1_000n);
     });
 
     test('topUp rejects when the signature is unknown on-chain', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
-        const rpc = mockStatusRpc({ 'open-sig': { err: null } });
+        const rpc = {
+            ...mockStatusRpc({ 'open-sig': { err: null } }),
+            getTransaction: () => {
+                throw new Error('getTransaction should not run for an unknown signature');
+            },
+        };
         const method = session({
             cap: 5_000_000n,
             currency: 'USDC',
