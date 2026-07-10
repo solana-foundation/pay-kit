@@ -1,10 +1,15 @@
 use std::{
     collections::HashMap,
     env,
+    fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
+    path::{Path, PathBuf},
     process,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     thread,
 };
 
@@ -49,8 +54,8 @@ use solana_pay_kit::mpp::protocol::solana::Split;
 use solana_pay_kit::mpp::server::{ChargeOptions, Config, Mpp};
 use solana_pay_kit::mpp::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::mpp::{
-    format_www_authenticate, parse_authorization, AUTHORIZATION_HEADER, PAYMENT_RECEIPT_HEADER,
-    WWW_AUTHENTICATE_HEADER,
+    format_www_authenticate, parse_authorization, ReplayStoreCapability, Store, StoreError,
+    AUTHORIZATION_HEADER, PAYMENT_RECEIPT_HEADER, WWW_AUTHENTICATE_HEADER,
 };
 
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
@@ -61,6 +66,174 @@ const DEFAULT_PRICE: &str = "0.001";
 const DEFAULT_SECRET_KEY: &str = "mpp-harness-secret-key-with-32b-pad";
 const DEFAULT_SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 const DEFAULT_TOKEN_DECIMALS: u8 = 6;
+static NEXT_STORE_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+// The harness normally uses localnet and the SDK's ephemeral MemoryStore
+// fallback. A small number of negative vectors deliberately advertise devnet
+// while still using Surfnet as their transaction source; those cases need an
+// explicitly configured store that satisfies the same persistence and
+// cross-process contract as a production replay store. This implementation is
+// intentionally file-backed and is activated only by MPP_HARNESS_REPLAY_STORE_DIR.
+struct HarnessReplayStore {
+    root: PathBuf,
+}
+
+impl HarnessReplayStore {
+    fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        let root = root.into();
+        fs::create_dir_all(&root).map_err(store_io_error)?;
+        Ok(Self { root })
+    }
+
+    fn key_path(&self, key: &str) -> PathBuf {
+        let mut encoded = String::with_capacity(key.len() * 2);
+        for byte in key.as_bytes() {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "{byte:02x}");
+        }
+        self.root.join(encoded)
+    }
+
+    fn write_atomically(path: &Path, value: &str) -> Result<(), StoreError> {
+        let temporary = path.with_extension(format!(
+            "{}.{}.tmp",
+            process::id(),
+            NEXT_STORE_TEMP_ID.fetch_add(1, Ordering::Relaxed),
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(store_io_error)?;
+        file.write_all(value.as_bytes()).map_err(store_io_error)?;
+        file.sync_all().map_err(store_io_error)?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(store_io_error)
+    }
+}
+
+impl Store for HarnessReplayStore {
+    fn replay_store_capability(&self) -> ReplayStoreCapability {
+        ReplayStoreCapability::DurableShared
+    }
+
+    fn get(
+        &self,
+        key: &str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<serde_json::Value>, StoreError>>
+                + Send
+                + '_,
+        >,
+    > {
+        let path = self.key_path(key);
+        Box::pin(async move {
+            match fs::read_to_string(path) {
+                Ok(value) => serde_json::from_str(&value)
+                    .map(Some)
+                    .map_err(|error| StoreError::Serialization(error.to_string())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(store_io_error(error)),
+            }
+        })
+    }
+
+    fn put(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StoreError>> + Send + '_>>
+    {
+        let path = self.key_path(key);
+        Box::pin(async move {
+            let value = serde_json::to_string(&value)
+                .map_err(|error| StoreError::Serialization(error.to_string()))?;
+            Self::write_atomically(&path, &value)
+        })
+    }
+
+    fn delete(
+        &self,
+        key: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StoreError>> + Send + '_>>
+    {
+        let path = self.key_path(key);
+        Box::pin(async move {
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(store_io_error(error)),
+            }
+        })
+    }
+
+    fn put_if_absent(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, StoreError>> + Send + '_>>
+    {
+        let path = self.key_path(key);
+        Box::pin(async move {
+            let value = serde_json::to_string(&value)
+                .map_err(|error| StoreError::Serialization(error.to_string()))?;
+            match OpenOptions::new().write(true).create_new(true).open(path) {
+                Ok(mut file) => {
+                    file.write_all(value.as_bytes()).map_err(store_io_error)?;
+                    file.sync_all().map_err(store_io_error)?;
+                    Ok(true)
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+                Err(error) => Err(store_io_error(error)),
+            }
+        })
+    }
+}
+
+fn store_io_error(error: io::Error) -> StoreError {
+    StoreError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod replay_store_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn file_store_persists_atomic_reservations_across_instances() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("pay-kit-harness-replay-{}-{nonce}", process::id()));
+        let first = HarnessReplayStore::open(&root).expect("create first store");
+        let second = HarnessReplayStore::open(&root).expect("open shared store");
+        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
+
+        runtime.block_on(async {
+            assert_eq!(
+                first.replay_store_capability(),
+                ReplayStoreCapability::DurableShared
+            );
+            assert!(first
+                .put_if_absent("payment:one", json!({ "reserved": true }))
+                .await
+                .expect("first reservation"));
+            assert!(!second
+                .put_if_absent("payment:one", json!({ "reserved": false }))
+                .await
+                .expect("second reservation"));
+            assert_eq!(
+                second.get("payment:one").await.expect("read reservation"),
+                Some(json!({ "reserved": true }))
+            );
+        });
+
+        fs::remove_dir_all(root).expect("remove temporary replay store");
+    }
+}
 
 #[derive(Clone)]
 struct HarnessState {
@@ -151,6 +324,12 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
     // reject the misconfig consistently, and refusing to start is the
     // earliest possible signal.
     solana_pay_kit::mpp::protocol::solana::validate_splits(&splits)?;
+    let store = if network == "localnet" {
+        None
+    } else {
+        let root = read_required_env("MPP_HARNESS_REPLAY_STORE_DIR")?;
+        Some(Arc::new(HarnessReplayStore::open(root)?) as Arc<dyn Store>)
+    };
 
     Ok(HarnessState {
         mpp: Mpp::new(Config {
@@ -167,7 +346,7 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             // bundle settlement (which needs the recipient ElGamal key) is not
             // exercised here, so leave it unset.
             recipient_signer: None,
-            store: None,
+            store,
             html: false,
             // Interop tests exercise push mode end-to-end; the gate is
             // opt-in (audit #5) so we set it explicitly here.

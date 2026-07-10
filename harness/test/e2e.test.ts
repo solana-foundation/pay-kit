@@ -1,5 +1,8 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createSolanaRpc,
@@ -1383,6 +1386,20 @@ function environmentForScenario(
         }
       : {}),
     MPP_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
+    // Negative network vectors advertise devnet while using Surfnet to build
+    // their transaction. Rust correctly refuses an implicit in-memory store
+    // for that non-localnet configuration, so give the harness an explicit,
+    // per-run file-backed replay-store root. The Rust fixture persists atomic
+    // reservations there and can share it with another process when needed.
+    ...(scenario.network !== "localnet"
+      ? {
+          MPP_HARNESS_REPLAY_STORE_DIR: join(
+            tmpdir(),
+            "pay-kit-harness-replay",
+            randomUUID(),
+          ),
+        }
+      : {}),
     MPP_HARNESS_SPLITS: JSON.stringify(
       (scenario.splits ?? []).map((split) => ({
         recipient: splitRecipients[split.recipientKey],
