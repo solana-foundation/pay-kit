@@ -49,5 +49,7 @@ assert.match(routerWorkflow, /set -o pipefail/);
 assert.match(routerWorkflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
 assert.match(coreWorkflow, /^  workflow_call:/m);
 assert.doesNotMatch(coreWorkflow, /^  pull_request:/m);
+assert.doesNotMatch(coreWorkflow, /github\.event_name != 'workflow_call'/);
+assert.match(coreWorkflow, /github\.event_name == 'push' \|\| inputs\.run_typescript/);
 
 console.log("select-pr-workflows_test: PASS");
