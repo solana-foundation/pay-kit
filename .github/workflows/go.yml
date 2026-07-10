@@ -118,6 +118,9 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: go
+      - name: Verify Go harness replay-store opt-in wiring
+        working-directory: harness
+        run: pnpm exec vitest run test/go-harness-replay-store.test.ts
       # Cross-SDK conformance vectors for Go: the REAL Go structural exact
       # verifier (go/protocols/x402/verify.go, driven via
       # go/cmd/conformance/x402.go -> x402.VerifyExactTransaction) must execute
