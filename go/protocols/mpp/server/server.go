@@ -174,7 +174,6 @@ func New(config Config) (*Mpp, error) {
 				storeDescription, config.Network, allowInMemoryReplayStoreEnvVar))
 	}
 	if config.Store == nil {
-		// nosemgrep: harness.semgrep.rules.failopen-default-store-go -- the preceding non-localnet/MemoryStore policy permits this fallback only on localnet or explicit PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1.
 		config.Store = core.NewMemoryStore()
 	}
 	// Derive a per-recipient default realm when none is configured (and reject
