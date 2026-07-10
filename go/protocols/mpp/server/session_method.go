@@ -243,6 +243,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 				storeDescription, options.Network, allowInMemoryReplayStoreEnvVar))
 	}
 	if store == nil {
+		// nosemgrep: harness.semgrep.rules.failopen-default-store-go,harness.semgrep.rules.failopen-default-store-go-shortvar -- the preceding non-localnet/MemoryChannelStore policy permits this fallback only on localnet or explicit PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1.
 		store = NewMemoryChannelStore()
 	}
 	if options.Logger == nil {
