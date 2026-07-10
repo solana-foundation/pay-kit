@@ -6,6 +6,12 @@ require "json"
 module PayKit::Protocols::Mpp
   # Atomic replay-protection store interface.
   class Store
+    # Whether replay markers survive a process restart. Non-localnet servers
+    # must use a store that explicitly opts into this capability.
+    def durable?
+      false
+    end
+
     # Insert `value` only if `key` does not exist.
     def put_if_absent(_key, _value)
       raise NotImplementedError
@@ -14,6 +20,10 @@ module PayKit::Protocols::Mpp
 
   # Thread-safe in-memory replay store for tests and local development.
   class MemoryStore < Store
+    def durable?
+      false
+    end
+
     def initialize
       @mutex = Mutex.new
       @values = {}
@@ -36,6 +46,12 @@ module PayKit::Protocols::Mpp
   # is not a cross-process file lock. Production multi-worker servers should
   # provide a shared atomic store such as Redis, Postgres, or DynamoDB.
   class FileStore < Store
+    # File-backed markers survive a process restart, although this store is
+    # still suitable only for a single-process deployment.
+    def durable?
+      true
+    end
+
     def initialize(path)
       @path = path
       FileUtils.mkdir_p(File.dirname(path))

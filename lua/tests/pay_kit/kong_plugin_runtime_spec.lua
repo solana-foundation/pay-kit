@@ -47,7 +47,12 @@ local kong_stub = {
 }
 _G.kong = kong_stub
 
+local function install_shared_replay_dict()
+  _G.ngx = { shared = { mpp_replay = helper.shared_dict() } }
+end
+
 helper.test('Kong bootstrap configures pay_kit from env without posix', function()
+  install_shared_replay_dict()
   package.loaded['plugins.kong.plugins.pay-kit.init'] = nil
   local pay_kit = require('pay_kit')
   pay_kit._reset_for_tests()
@@ -70,6 +75,7 @@ helper.test('Kong bootstrap configures pay_kit from env without posix', function
 end)
 
 helper.test('Kong bootstrap honours empty / blank env defaults', function()
+  install_shared_replay_dict()
   package.loaded['plugins.kong.plugins.pay-kit.init'] = nil
   local pay_kit = require('pay_kit')
   pay_kit._reset_for_tests()
@@ -90,6 +96,7 @@ helper.test('Kong bootstrap honours empty / blank env defaults', function()
 end)
 
 helper.test('Kong bootstrap surfaces configure() error via error()', function()
+  install_shared_replay_dict()
   package.loaded['plugins.kong.plugins.pay-kit.init'] = nil
   require('pay_kit')._reset_for_tests()
   patch_env({
@@ -106,10 +113,16 @@ helper.test('Kong bootstrap surfaces configure() error via error()', function()
 end)
 
 helper.test('Kong handler access(conf) emits 402 on unpaid', function()
+  install_shared_replay_dict()
   package.loaded['plugins.kong.plugins.pay-kit.handler'] = nil
   require('pay_kit')._reset_for_tests()
+  -- Localnet: the env-based bootstrap has no knob to inject an MPP replay
+  -- store object, and non-localnet MPP now requires a durable one, so this
+  -- 402-emission check runs on localnet where the dev in-memory fallback is
+  -- permitted. (Production Kong on devnet/mainnet must wire a durable MPP
+  -- replay store — see the note in plugins/kong/plugins/pay-kit/init.lua.)
   patch_env({
-    PAY_KIT_NETWORK = 'solana_devnet',
+    PAY_KIT_NETWORK = 'solana_localnet',
     PAY_KIT_OPERATOR_RECIPIENT = 'KongAccessRecipient0000000000000000000000',
     PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 'access-test-key-long-enough-32bytes',
   })
@@ -124,6 +137,7 @@ helper.test('Kong handler access(conf) emits 402 on unpaid', function()
 end)
 
 helper.test('Kong handler access rejects invalid plugin config with 500', function()
+  install_shared_replay_dict()
   package.loaded['plugins.kong.plugins.pay-kit.handler'] = nil
   require('pay_kit')._reset_for_tests()
   patch_env({

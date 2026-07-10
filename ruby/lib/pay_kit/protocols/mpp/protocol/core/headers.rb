@@ -17,6 +17,13 @@ module PayKit::Protocols::Mpp
         PAYMENT_RECEIPT = "payment-receipt"
         PAYMENT_SCHEME = ::PayCore::Headers::PAYMENT_SCHEME
 
+        # Cap on any base64url token this parser decodes, enforced BEFORE
+        # `Base64Url.decode` + JSON parse so an oversized attacker-controlled
+        # header value cannot drive unbounded decode/parse work. Matches
+        # `Credential::MAX_TOKEN_LENGTH` and the 16 KiB `MAX_TOKEN_LEN` caps
+        # in the Rust/Python/PHP/Go/Lua MPP header parsers.
+        MAX_TOKEN_LENGTH = 16 * 1024
+
         module_function
 
         # Format a challenge for `WWW-Authenticate`.
@@ -55,6 +62,10 @@ module PayKit::Protocols::Mpp
         def parse_www_authenticate(header)
           params = ::PayCore::Headers.parse_auth_params(::PayCore::Headers.strip_payment(header))
           request = params.fetch("request")
+          if request.bytesize > MAX_TOKEN_LENGTH
+            raise ArgumentError, "Challenge request parameter exceeds maximum length of #{MAX_TOKEN_LENGTH} bytes"
+          end
+
           _decoded_request = ::PayCore::Json.parse(::PayCore::Base64Url.decode(request))
           Core::Challenge.new(
             id: params.fetch("id"),
@@ -80,6 +91,10 @@ module PayKit::Protocols::Mpp
         # is advisory and not part of the canonical receipt shape, so it is
         # accepted when present but never required.
         def parse_receipt(header)
+          if header.bytesize > MAX_TOKEN_LENGTH
+            raise ArgumentError, "Receipt exceeds maximum length of #{MAX_TOKEN_LENGTH} bytes"
+          end
+
           value = ::PayCore::Json.parse(::PayCore::Base64Url.decode(header))
           timestamp = value.fetch("timestamp")
           raise ArgumentError, "receipt timestamp must be ISO-8601" if ::PayCore::Rfc3339Parser.parse(timestamp).nil?
