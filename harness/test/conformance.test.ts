@@ -137,6 +137,18 @@ const UNSUPPORTED_MODE_EXEMPTIONS: Record<
     date: "2026-07-09",
     reason: "PHP is currently server-only in the conformance runner.",
   },
+  "lua:charge:build-transaction": {
+    owner: "harness",
+    date: "2026-07-10",
+    reason:
+      "Lua is currently server-only; its real charge verifier remains required.",
+  },
+  "lua:x402-exact:build-transaction": {
+    owner: "harness",
+    date: "2026-07-10",
+    reason:
+      "Lua is currently server-only; its real exact verifier remains required.",
+  },
   "swift:charge:verify-transaction": {
     owner: "harness",
     date: "2026-07-09",

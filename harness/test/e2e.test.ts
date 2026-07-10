@@ -1709,13 +1709,10 @@ function expectPaymentChannelSettlement(
   ).toBe(PAYMENT_CHANNEL_PROGRAM);
 }
 
-// Session settle-at-close on-chain shape. Unlike x402-upto (which prepends
-// idempotent create-ATA instructions for the payee and treasury), the SDK
-// session close path builds exactly [ed25519 verify, settle_and_finalize,
-// distribute] — the payee and treasury ATAs are assumed to already exist (the
-// harness pre-creates the treasury ATA; the payee ATA is created by the
-// recipient's pre-funding). A session always settles a recorded voucher, so
-// the Ed25519 precompile is always present and hasVoucher is always 1.
+// Session settle-at-close includes idempotent ATA creation for the payee and
+// treasury. Otherwise a missing destination ATA can leave a confirmed close
+// with a receipt but no delivered payout. A session always settles a recorded
+// voucher, so the Ed25519 precompile is present and hasVoucher is always 1.
 function expectSessionChannelSettlement(
   surfnet: Surfnet,
   message: CompiledMessage,
@@ -1725,9 +1722,10 @@ function expectSessionChannelSettlement(
   expect(
     message.instructions,
     "session settle instruction count",
-  ).toHaveLength(3);
+  ).toHaveLength(5);
 
-  const [verify, settle, distribute] = message.instructions;
+  const [verify, settle, createPayee, createTreasury, distribute] =
+    message.instructions;
 
   // Ed25519 precompile verifying the final voucher.
   expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
@@ -1760,6 +1758,19 @@ function expectSessionChannelSettlement(
     mint,
     tokenProgram,
   );
+
+  expectIdempotentAtaCreationInstruction(message, createPayee, {
+    ata: payeeAta,
+    owner: primaryRecipientForScenario(scenario, scenarioEnv),
+    mint,
+    tokenProgram,
+  });
+  expectIdempotentAtaCreationInstruction(message, createTreasury, {
+    ata: treasuryAta,
+    owner: PAYMENT_CHANNEL_TREASURY_OWNER,
+    mint,
+    tokenProgram,
+  });
 
   // distribute (discriminator 7): 11-account header, channel matches the
   // settled channel, payee/treasury ATAs + mint + token program + self program

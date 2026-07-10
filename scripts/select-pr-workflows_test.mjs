@@ -17,6 +17,9 @@ function expect(files, enabled) {
 }
 
 expect(["go/protocols/x402/verify.go"], ["go"]);
+expect(["typescript/packages/mpp/src/index.ts"], ["typescript"]);
+expect(["html/src/index.ts"], ["typescript"]);
+expect(["rust/crates/kit/src/mpp/lib.rs"], ["rust"]);
 expect(["harness/go-server/main.go"], ["go"]);
 expect(["python/src/solana_pay_kit/protocols/mpp/server/session.py"], ["python"]);
 expect(["harness/python-server/server.py"], ["python"]);
@@ -35,9 +38,16 @@ const routerWorkflow = readFileSync(
   join(repoRoot, ".github", "workflows", "pr-routing.yml"),
   "utf8",
 );
+const coreWorkflow = readFileSync(
+  join(repoRoot, ".github", "workflows", "ci.yml"),
+  "utf8",
+);
 assert.match(routerWorkflow, /ref: \$\{\{ github\.sha \}\}/);
 assert.doesNotMatch(routerWorkflow, /github\.event\.pull_request\.head\.sha/);
 assert.match(routerWorkflow, /fetch-depth: 2/);
 assert.match(routerWorkflow, /set -o pipefail/);
+assert.match(routerWorkflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
+assert.match(coreWorkflow, /^  workflow_call:/m);
+assert.doesNotMatch(coreWorkflow, /^  pull_request:/m);
 
 console.log("select-pr-workflows_test: PASS");
