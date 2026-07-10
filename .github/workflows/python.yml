@@ -126,7 +126,7 @@ jobs:
         run: cargo build-sbf --tools-version v1.52 --arch v1
       # Sync the uv environment the conformance runner (runners/python.json:
       # ``uv run python conformance_runner.py``) executes in, so the cross-SDK
-      # vectors - including the frozen 48-byte session voucher preimage - run
+      # vectors - including the canonical 50-byte session voucher preimage - run
       # without a per-vector cold install.
       - name: Sync Python uv environment
         working-directory: python
