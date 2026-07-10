@@ -37,5 +37,7 @@ const routerWorkflow = readFileSync(
 );
 assert.match(routerWorkflow, /ref: \$\{\{ github\.sha \}\}/);
 assert.doesNotMatch(routerWorkflow, /github\.event\.pull_request\.head\.sha/);
+assert.match(routerWorkflow, /fetch-depth: 2/);
+assert.match(routerWorkflow, /set -o pipefail/);
 
 console.log("select-pr-workflows_test: PASS");
