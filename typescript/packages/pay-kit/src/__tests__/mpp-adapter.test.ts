@@ -5,7 +5,6 @@ import { createMppAdapter } from '../adapters/mpp.js';
 import { configure } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
-import { createUnsafeMemoryReplayStore } from '../replay-store.js';
 import { Signer } from '../signer.js';
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
@@ -20,7 +19,23 @@ async function setup() {
 }
 
 function createSharedTestReplayStore() {
-    return { ...createUnsafeMemoryReplayStore(), isDurable: true as const, isShared: true as const };
+    const entries = new Map<string, unknown>();
+    return {
+        delete: async (key: string) => {
+            entries.delete(key);
+        },
+        get: async (key: string) => entries.get(key) ?? null,
+        isDurable: true as const,
+        isShared: true as const,
+        put: async (key: string, value: unknown) => {
+            entries.set(key, value);
+        },
+        putIfAbsent: async (key: string, value: unknown) => {
+            if (entries.has(key)) return false;
+            entries.set(key, value);
+            return true;
+        },
+    };
 }
 
 function gate(params: Parameters<typeof Gate.create>[0]['feeWithin'] = undefined) {
