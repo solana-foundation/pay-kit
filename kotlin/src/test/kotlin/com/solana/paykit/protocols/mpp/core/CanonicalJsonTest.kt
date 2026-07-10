@@ -3,8 +3,11 @@ package com.solana.paykit.protocols.mpp.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 
 /**
@@ -63,6 +66,17 @@ class CanonicalJsonTest {
         // RFC 8785 sect. 3.2.2.2: control character escapes use the
         // lowercase \u00xx form.
         assertEquals("\"\\u0001\\u001f\"", CanonicalJson.encode(element))
+    }
+
+    @Test
+    fun preservesValidSurrogatePairsAndRejectsLoneSurrogates() {
+        assertEquals("\"😀\"", CanonicalJson.encode(JsonPrimitive("\uD83D\uDE00")))
+        assertFailsWith<IllegalArgumentException> {
+            CanonicalJson.encode(JsonPrimitive("\uD800"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            CanonicalJson.encode(buildJsonObject { put("\uDC00", JsonPrimitive(true)) })
+        }
     }
 
     @Test

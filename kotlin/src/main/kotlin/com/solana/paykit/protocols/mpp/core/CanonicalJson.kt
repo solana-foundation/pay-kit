@@ -122,6 +122,16 @@ internal object CanonicalJson {
         var index = 0
         while (index < value.length) {
             val char = value[index]
+            if (char.isHighSurrogate()) {
+                require(index + 1 < value.length && value[index + 1].isLowSurrogate()) {
+                    "CanonicalJson rejects a lone UTF-16 surrogate"
+                }
+                builder.append(char)
+                builder.append(value[index + 1])
+                index += 2
+                continue
+            }
+            require(!char.isLowSurrogate()) { "CanonicalJson rejects a lone UTF-16 surrogate" }
             when (char) {
                 '"' -> builder.append("\\\"")
                 '\\' -> builder.append("\\\\")
