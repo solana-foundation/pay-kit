@@ -51,7 +51,7 @@ use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
     default_rpc_url, programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
 };
-use crate::mpp::store::{MemoryStore, Store};
+use crate::mpp::store::{MemoryStore, ReplayStoreCapability, Store};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
@@ -225,7 +225,11 @@ pub struct Config {
     ///
     /// Not used for non-confidential flows.
     pub recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
-    /// Replay protection store (defaults to in-memory).
+    /// Replay-protection store.
+    ///
+    /// Localnet defaults to [`MemoryStore`]. Mainnet and devnet require an
+    /// explicitly [`ReplayStoreCapability::DurableShared`] store so replay
+    /// reservations survive restarts and worker pools.
     pub store: Option<Arc<dyn Store>>,
     /// Enable HTML payment link pages for browser requests.
     pub html: bool,
@@ -358,7 +362,26 @@ impl Mpp {
             Some(r) => r,
             None => derive_default_realm(&config.recipient),
         };
-        let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
+        let store: Arc<dyn Store> = match config.store {
+            Some(store) => {
+                if config.network != "localnet"
+                    && store.replay_store_capability() != ReplayStoreCapability::DurableShared
+                {
+                    return Err(Error::InvalidConfig(
+                        "Config.store must explicitly declare durable shared replay protection outside localnet"
+                            .into(),
+                    ));
+                }
+                store
+            }
+            None if config.network == "localnet" => Arc::new(MemoryStore::new()),
+            None => {
+                return Err(Error::InvalidConfig(
+                    "Config.store is required outside localnet; inject a durable shared replay store"
+                        .into(),
+                ));
+            }
+        };
 
         let rpc = Arc::new(RpcClient::new(rpc_url.clone()));
         let token_program =
@@ -3199,6 +3222,136 @@ impl std::error::Error for VerificationError {}
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct UnspecifiedTestStore {
+        inner: MemoryStore,
+    }
+
+    impl Store for UnspecifiedTestStore {
+        fn get(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Option<serde_json::Value>, crate::mpp::store::StoreError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            self.inner.get(key)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.inner.put(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.inner.delete(key)
+        }
+
+        fn put_if_absent(
+            &self,
+            key: &str,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<bool, crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.inner.put_if_absent(key, value)
+        }
+    }
+
+    #[derive(Default)]
+    struct DurableSharedTestStore(UnspecifiedTestStore);
+
+    impl Store for DurableSharedTestStore {
+        fn replay_store_capability(&self) -> ReplayStoreCapability {
+            ReplayStoreCapability::DurableShared
+        }
+
+        fn get(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Option<serde_json::Value>, crate::mpp::store::StoreError>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            self.0.get(key)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.0.put(key, value)
+        }
+
+        fn delete(
+            &self,
+            key: &str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<(), crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.0.delete(key)
+        }
+
+        fn put_if_absent(
+            &self,
+            key: &str,
+            value: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<bool, crate::mpp::store::StoreError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.0.put_if_absent(key, value)
+        }
+    }
+
+    fn durable_store() -> Arc<dyn Store> {
+        Arc::new(DurableSharedTestStore::default())
+    }
+
     // Confidential bundle verification + orphan-guard moved to `server::confidential`;
     // the unit tests below stay here (they reuse this module's `dummy_tx` helper).
     #[cfg(feature = "worker")]
@@ -4635,6 +4788,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap()
@@ -4647,6 +4801,7 @@ mod tests {
             currency: "SOL".to_string(),
             decimals: 9,
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap()
@@ -4705,6 +4860,7 @@ mod tests {
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
+            store: Some(durable_store()),
             ..Default::default()
         })
         .err()
@@ -4731,6 +4887,7 @@ mod tests {
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
+            store: Some(durable_store()),
             ..Default::default()
         });
 
@@ -4783,6 +4940,7 @@ mod tests {
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(exact),
+            store: Some(durable_store()),
             ..Default::default()
         });
         assert!(result.is_ok());
@@ -4798,6 +4956,7 @@ mod tests {
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: None,
+            store: Some(durable_store()),
             ..Default::default()
         });
 
@@ -4830,6 +4989,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             realm: Some("Custom Realm".to_string()),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -4901,6 +5061,7 @@ mod tests {
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: net.to_string(),
+                store: Some(durable_store()),
                 ..Default::default()
             })
             .unwrap_or_else(|e| panic!("{net} should be accepted: {e}"));
@@ -4958,21 +5119,87 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             rpc_url: Some("http://custom:8899".to_string()),
+            store: Some(durable_store()),
             ..Default::default()
         });
         assert!(mpp.is_ok());
     }
 
     #[test]
-    fn new_custom_store() {
-        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    fn new_accepts_explicit_durable_shared_store() {
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
-            store: Some(store),
+            store: Some(durable_store()),
             ..Default::default()
         });
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn new_localnet_allows_implicit_memory_store() {
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "localnet".to_string(),
+            ..Default::default()
+        })
+        .expect("localnet may use the memory-store fallback");
+
+        assert_eq!(
+            mpp.store.replay_store_capability(),
+            ReplayStoreCapability::Ephemeral
+        );
+    }
+
+    #[test]
+    fn new_non_localnet_rejects_missing_replay_store() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .err()
+        .expect("devnet must not fall back to MemoryStore");
+
+        assert!(err
+            .to_string()
+            .contains("Config.store is required outside localnet"));
+    }
+
+    #[test]
+    fn new_non_localnet_rejects_memory_store() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            store: Some(Arc::new(MemoryStore::new())),
+            ..Default::default()
+        })
+        .err()
+        .expect("devnet MemoryStore is process-local");
+
+        assert!(err
+            .to_string()
+            .contains("must explicitly declare durable shared replay protection"));
+    }
+
+    #[test]
+    fn new_non_localnet_rejects_store_without_capability_declaration() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            store: Some(Arc::new(UnspecifiedTestStore::default())),
+            ..Default::default()
+        })
+        .err()
+        .expect("custom stores are unsafe until they explicitly declare the capability");
+
+        assert!(err
+            .to_string()
+            .contains("must explicitly declare durable shared replay protection"));
     }
 
     // ── resolve_server_token_program tests (sync branches only) ──
@@ -4984,6 +5211,7 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
             decimals: 9,
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -5006,6 +5234,7 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "PYUSD".to_string(),
             network: "mainnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -5020,6 +5249,7 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "not-a-symbol-or-mint!!".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .err()
@@ -5075,6 +5305,7 @@ mod tests {
             fee_payer: false,
             fee_payer_signer: None,
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .expect("default fee_payer=false should be accepted");
@@ -5091,6 +5322,7 @@ mod tests {
             fee_payer: false,
             fee_payer_signer: None,
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -5119,6 +5351,7 @@ mod tests {
             fee_payer: false,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -6379,6 +6612,7 @@ mod tests {
             currency: crate::mpp::protocol::solana::mints::USDC_DEVNET.to_string(),
             network: "devnet".to_string(),
             accept_push_mode: true,
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -6424,6 +6658,7 @@ mod tests {
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
             accept_push_mode: true,
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -6462,6 +6697,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -6489,7 +6725,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_protection_marks_and_detects_consumed() {
-        let store = Arc::new(MemoryStore::new());
+        let store = Arc::new(DurableSharedTestStore::default());
         let _mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
@@ -6526,7 +6762,7 @@ mod tests {
             Mpp::new(Config {
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
-                store: Some(Arc::new(MemoryStore::new())),
+                store: Some(durable_store()),
                 network: "devnet".to_string(),
                 ..Default::default()
             })
@@ -7986,6 +8222,7 @@ mod tests {
             // Audit #16: signer is now required alongside fee_payer = true.
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -8006,6 +8243,7 @@ mod tests {
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -8034,6 +8272,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -8077,6 +8316,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();
@@ -8109,6 +8349,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            store: Some(durable_store()),
             ..Default::default()
         })
         .unwrap();

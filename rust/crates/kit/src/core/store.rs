@@ -10,8 +10,32 @@
 use std::future::Future;
 use std::pin::Pin;
 
+/// Declared replay-protection properties of a [`Store`].
+///
+/// Non-local MPP servers require [`ReplayStoreCapability::DurableShared`].
+/// The trait default is deliberately [`ReplayStoreCapability::Unspecified`]
+/// so custom stores cannot accidentally opt into production replay protection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayStoreCapability {
+    /// The store did not make an explicit replay-protection declaration.
+    Unspecified,
+    /// The store is process-local or otherwise unsuitable for production replay protection.
+    Ephemeral,
+    /// The store durably persists atomic reservations and shares them across workers.
+    DurableShared,
+}
+
 /// Async key-value store interface.
 pub trait Store: Send + Sync {
+    /// Declare whether this store is safe for production replay protection.
+    ///
+    /// Custom implementations default to [`ReplayStoreCapability::Unspecified`]
+    /// and are rejected outside localnet until they explicitly declare
+    /// [`ReplayStoreCapability::DurableShared`].
+    fn replay_store_capability(&self) -> ReplayStoreCapability {
+        ReplayStoreCapability::Unspecified
+    }
+
     fn get(
         &self,
         key: &str,
@@ -65,6 +89,10 @@ impl MemoryStore {
 }
 
 impl Store for MemoryStore {
+    fn replay_store_capability(&self) -> ReplayStoreCapability {
+        ReplayStoreCapability::Ephemeral
+    }
+
     fn get(
         &self,
         key: &str,
