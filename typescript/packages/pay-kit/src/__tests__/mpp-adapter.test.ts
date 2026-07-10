@@ -5,6 +5,7 @@ import { createMppAdapter } from '../adapters/mpp.js';
 import { configure } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
+import { createUnsafeMemoryReplayStore } from '../replay-store.js';
 import { Signer } from '../signer.js';
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
