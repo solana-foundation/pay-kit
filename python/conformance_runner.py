@@ -42,6 +42,7 @@ from solana_pay_kit._paycore.solana import (
     is_native_sol,
     resolve_mint,
 )
+from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.mpp.client.charge import build_charge_transaction
 from solana_pay_kit.protocols.mpp.core import json as wire_json
 from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
@@ -689,8 +690,8 @@ def main() -> None:
         code = _classify_reject(message)
         if code is not None:
             result["rejectCode"] = code
-        if message.startswith("invalid_exact_svm_payload_"):
-            result["x402ExactRejectCode"] = message
+        if isinstance(exc, InvalidProofError) and exc.code.startswith("invalid_exact_svm_payload_"):
+            result["x402ExactRejectCode"] = exc.code
 
     result["language"] = "python"
     sys.stdout.write(json.dumps(result) + "\n")

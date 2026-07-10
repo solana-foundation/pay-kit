@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 import conformance_runner
+from solana_pay_kit.errors import InvalidProofError
 
 _VECTOR_PATH = Path(__file__).resolve().parents[2] / "harness" / "vectors" / "x402-exact-reject.json"
 _VECTORS: list[dict[str, Any]] = json.loads(_VECTOR_PATH.read_text())
@@ -45,3 +46,17 @@ def test_runner_surfaces_exact_managed_source_reject_code(
     result = _run_vector(_vector("x402-exact-fee-payer-as-source-ata"), monkeypatch, capsys)
     assert result["outcome"] == "reject"
     assert result["x402ExactRejectCode"] == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+
+def test_runner_uses_exact_error_code_not_diagnostic_text(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+    def reject_with_diagnostic(_vector: dict[str, Any]) -> dict[str, Any]:
+        raise InvalidProofError("managed account appears in transfer", code=code)
+
+    monkeypatch.setattr(conformance_runner, "_run_vector", reject_with_diagnostic)
+    result = _run_vector({"id": "typed-exact-reject"}, monkeypatch, capsys)
+
+    assert result["x402ExactRejectCode"] == code

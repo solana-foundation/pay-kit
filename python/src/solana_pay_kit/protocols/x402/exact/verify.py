@@ -220,10 +220,10 @@ class ExactVerifier:
                 code="invalid_exact_svm_payload_no_transfer_instruction",
             )
 
-        source = ExactVerifier._account_at(account_keys, ix, 0)
-        mint = ExactVerifier._account_at(account_keys, ix, 1)
-        destination = ExactVerifier._account_at(account_keys, ix, 2)
-        authority = ExactVerifier._account_at(account_keys, ix, 3)
+        source = ExactVerifier._account_at(account_keys, accounts, 0)
+        mint = ExactVerifier._account_at(account_keys, accounts, 1)
+        destination = ExactVerifier._account_at(account_keys, accounts, 2)
+        authority = ExactVerifier._account_at(account_keys, accounts, 3)
 
         # Rule 5: a managed signer must not fund this transfer. transferChecked
         # puts its authority and any multisig signers in accounts[3:], while a
@@ -231,7 +231,7 @@ class ExactVerifier:
         # that signer as the authority. Keep this scoped to the transfer; later
         # optional instructions have their own program allowlist.
         managed = set(managed_signers)
-        signer_tail = (ExactVerifier._account_at(account_keys, ix, slot) for slot in range(3, len(accounts)))
+        signer_tail = (ExactVerifier._account_at(account_keys, accounts, slot) for slot in range(3, len(accounts)))
         if any(signer in managed for signer in signer_tail):
             raise InvalidProofError(
                 "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
@@ -316,8 +316,7 @@ class ExactVerifier:
         return account_keys[idx] if 0 <= idx < len(account_keys) else ""
 
     @staticmethod
-    def _account_at(account_keys: list[str], ix: Any, slot: int) -> str:
-        accounts = list(ix.accounts)
+    def _account_at(account_keys: list[str], accounts: list[int], slot: int) -> str:
         if slot >= len(accounts):
             raise InvalidProofError(
                 "invalid_exact_svm_payload_no_transfer_instruction",
