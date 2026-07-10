@@ -23,4 +23,6 @@ jobs:
         working-directory: go
         env:
           GOCACHE: /tmp/go-build-cache
-        run: ./scripts/check_module_consumer.sh
+        run: |
+          ./scripts/check_module_consumer_test.sh
+          ./scripts/check_module_consumer.sh
