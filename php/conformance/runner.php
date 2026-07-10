@@ -971,13 +971,42 @@ function run_vector(array $vector): array
     }
 }
 
+/** Extract the ASCII vector id before decoding so a PHP UTF-16 parser reject can
+ * still be reported through the runner ABI instead of terminating the process. */
+function vector_id_from_raw(string $raw): ?string
+{
+    if (preg_match('/"id"\s*:\s*"([A-Za-z0-9._-]+)"/', $raw, $matches) !== 1) {
+        return null;
+    }
+    return $matches[1];
+}
+
+$rawVector = read_stdin();
+$rawVectorId = vector_id_from_raw($rawVector);
+
 try {
-    $vector = json_decode(read_stdin(), true, flags: JSON_THROW_ON_ERROR);
+    $vector = json_decode($rawVector, true, flags: JSON_THROW_ON_ERROR);
     if (!is_array($vector)) {
         throw new InvalidArgumentException('vector must be a JSON object');
     }
     $vector = Json::object($vector, 'vector');
     $id = Json::optionalString($vector['id'] ?? null, 'id');
+
+    // Associative decoding collapses both `{}` and `[]` into an empty PHP
+    // array. Preserve the canonical-bytes value's JSON object/list identity by
+    // taking that subtree from a stdClass decode instead.
+    if (($vector['mode'] ?? null) === 'canonical-bytes') {
+        $objectVector = json_decode($rawVector, false, flags: JSON_THROW_ON_ERROR);
+        if (
+            $objectVector instanceof stdClass
+            && isset($objectVector->input)
+            && $objectVector->input instanceof stdClass
+            && property_exists($objectVector->input, 'value')
+            && is_array($vector['input'] ?? null)
+        ) {
+            $vector['input']['value'] = $objectVector->input->value;
+        }
+    }
     try {
         emit(run_vector($vector));
     } catch (Throwable $error) {
@@ -996,6 +1025,17 @@ try {
         }
         emit($result);
     }
+} catch (JsonException $fatal) {
+    if ($fatal->getCode() === JSON_ERROR_UTF16 && $rawVectorId !== null) {
+        emit([
+            'id' => $rawVectorId,
+            'outcome' => 'reject',
+            'error' => $fatal->getMessage(),
+        ]);
+        exit(0);
+    }
+    fwrite(STDERR, 'php conformance runner fatal: ' . $fatal->getMessage() . "\n");
+    exit(1);
 } catch (Throwable $fatal) {
     fwrite(STDERR, 'php conformance runner fatal: ' . $fatal->getMessage() . "\n");
     exit(1);
