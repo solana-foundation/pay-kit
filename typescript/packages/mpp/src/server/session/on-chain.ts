@@ -226,6 +226,7 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
     let expiresAt = 0n;
     let hasVoucher = 0;
 
+    // nosemgrep: security-check-gated-on-optional-field-ts -- Voucher-less settlement intentionally emits hasVoucher=0 and requires no Ed25519 precompile.
     if (args.voucher) {
         const { signed, authorizedSigner } = args.voucher;
         cumulativeAmount = parseU64String(signed.data.cumulativeAmount, 'voucher.cumulativeAmount');

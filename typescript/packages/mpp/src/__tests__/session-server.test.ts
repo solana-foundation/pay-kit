@@ -1215,6 +1215,20 @@ describe('session() verify() close monotonicity', () => {
         expect(state?.closeRequestedAt).toBeDefined();
         expect(state?.cumulative).toBe(250n);
     });
+
+    test('close without a final voucher preserves the current watermark', async () => {
+        const { method, store } = await setupWithWatermark();
+
+        const receipt = await method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
+
+        const state = await store.getChannel(channelId);
+        expect(state?.closeRequestedAt).toBeDefined();
+        expect(state?.cumulative).toBe(250n);
+    });
 });
 
 // ── verify() — close retry after a failed settlement ────────────────────

@@ -813,6 +813,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             throw new Error('Close already requested');
         }
 
+        // nosemgrep: security-check-gated-on-optional-field-ts -- A missing final voucher intentionally closes at the persisted watermark.
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
             // Route the final voucher (replay AND advancing) through the verifier
