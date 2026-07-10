@@ -744,7 +744,17 @@ end
 
 raw = $stdin.read.to_s.strip
 abort "ruby conformance runner received empty stdin" if raw.empty?
-vector = JSON.parse(raw)
+
+vector =
+  begin
+    JSON.parse(raw)
+  rescue JSON::ParserError => error
+    id = raw[/"id"\s*:\s*"([A-Za-z0-9._-]+)"/, 1]
+    raise unless id
+
+    $stdout.puts(JSON.generate({"id" => id, "outcome" => "reject", "error" => error.message, "language" => "ruby"}))
+    exit 0
+  end
 
 result =
   begin
@@ -753,4 +763,5 @@ result =
     reject_result(vector["id"], error.message)
   end
 
+result["language"] = "ruby"
 $stdout.puts(JSON.generate(result))
