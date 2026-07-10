@@ -48,13 +48,13 @@ export class Charge {
         this.maxBaseUnits = maxBaseUnits;
     }
 
-    /** Record the actual amount consumed (base units). Values above the ceiling are clamped; negatives floor to 0. */
+    /** Record the actual amount consumed (base units). Negatives floor to 0; overages reach settlement and reject. */
     charge(baseUnits: bigint | number): void {
         const value = typeof baseUnits === 'bigint' ? baseUnits : BigInt(Math.trunc(baseUnits));
-        this.#amount = value < 0n ? 0n : value > this.maxBaseUnits ? this.maxBaseUnits : value;
+        this.#amount = value < 0n ? 0n : value;
     }
 
-    /** The amount to settle (base units): the clamped charge, or `0` if never set. */
+    /** The amount to settle (base units): the recorded charge, or `0` if never set. */
     settledBaseUnits(): bigint {
         return this.#amount ?? 0n;
     }

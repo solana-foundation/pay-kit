@@ -132,10 +132,10 @@ describe('Charge meter', () => {
         expect(charge.settledBaseUnits()).toBe(400_000n);
     });
 
-    it('clamps above the ceiling and floors negatives', () => {
+    it('preserves overages for settlement rejection and floors negatives', () => {
         const overCharge = new Charge(1_000_000n);
         overCharge.charge(2_000_000n);
-        expect(overCharge.settledBaseUnits()).toBe(1_000_000n);
+        expect(overCharge.settledBaseUnits()).toBe(2_000_000n);
 
         const negative = new Charge(1_000_000n);
         negative.charge(-5);
