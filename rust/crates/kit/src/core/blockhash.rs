@@ -111,3 +111,65 @@ pub fn fetch_blockhash_with_slot(
         slot: response.context.slot,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn get_is_none_when_empty() {
+        assert!(BlockhashCache::new().get().is_none());
+        assert!(BlockhashCache::default().get().is_none());
+    }
+
+    #[test]
+    fn set_then_get_returns_the_fresh_entry() {
+        let cache = BlockhashCache::new();
+        cache.set("hash-1".to_string(), 42, 7);
+        let got = cache.get().expect("a fresh entry is present");
+        assert_eq!(got.blockhash, "hash-1");
+        assert_eq!(got.last_valid_block_height, 42);
+        assert_eq!(got.slot, 7);
+
+        // A later set replaces the entry.
+        cache.set("hash-2".to_string(), 99, 8);
+        assert_eq!(cache.get().unwrap().blockhash, "hash-2");
+    }
+
+    #[test]
+    fn stale_entry_is_ignored() {
+        // Directly seed an entry stamped older than MAX_AGE so the age check's
+        // false arm is exercised without a real 45s wait.
+        let cache = BlockhashCache::new();
+        {
+            let mut guard = cache.inner.write().unwrap();
+            *guard = Some((
+                CachedBlockhash {
+                    blockhash: "old".to_string(),
+                    last_valid_block_height: 1,
+                    slot: 1,
+                },
+                Instant::now() - (MAX_AGE + Duration::from_secs(1)),
+            ));
+        }
+        assert!(
+            cache.get().is_none(),
+            "an entry older than MAX_AGE is not served"
+        );
+    }
+
+    #[test]
+    fn recovers_from_a_poisoned_lock() {
+        let cache = BlockhashCache::new();
+        // Poison the inner lock by panicking while holding the write guard.
+        let poisoner = cache.clone();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = poisoner.inner.write().unwrap();
+            panic!("poison the lock");
+        }));
+        // Both set() and get() must recover the poisoned guard rather than panic.
+        cache.set("after-poison".to_string(), 7, 11);
+        assert_eq!(cache.get().expect("recovered").blockhash, "after-poison");
+    }
+}

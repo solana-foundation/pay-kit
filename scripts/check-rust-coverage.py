@@ -18,8 +18,6 @@ X402_SOURCE = "src/x402/"
 # unit coverage run; each is named so a new file cannot silently inherit the
 # exemption. Remove an entry as its targeted coverage reaches the baseline.
 FILE_EXEMPTIONS = {
-    "core/payment_channels.rs": "account/PDA builders are covered by program integration tests outside this unit run",
-    "mpp/error.rs": "feature-gated error display variants are not all constructed by the deterministic unit run",
     "mpp/server/subscription.rs": "subscription runtime adapters require optional service integrations",
     "x402/client/batch_settlement/payment.rs": "batch client construction depends on live settlement integration paths",
     "x402/client/upto/payment.rs": "upto client construction is exercised by the cross-SDK on-chain harness",

@@ -1012,4 +1012,273 @@ Issued At: 2026-04-27T00:00:00Z"
         // Round-trips back to the same nested wire shape.
         assert_eq!(parsed.as_extensions_value().unwrap(), extensions);
     }
+
+    #[test]
+    fn message_validation_options_default_uses_max_age_and_no_nonce() {
+        let options = SiwxMessageValidationOptions::default();
+        assert_eq!(
+            options.max_age,
+            Duration::from_secs(DEFAULT_MAX_AGE_SECONDS)
+        );
+        assert!(options.expected_nonce.is_none());
+        // `now` is populated from the system clock, so it must be at or after
+        // the Unix epoch.
+        assert!(options.now >= UNIX_EPOCH);
+    }
+
+    #[test]
+    fn selects_chain_from_supported_ids_and_falls_back_to_first() {
+        // No preferred chain: the first entry in `supported_chain_ids` that is
+        // advertised by the challenge wins (exercises the preference loop).
+        let chain = select_siwx_chain(
+            &challenge(),
+            &SiwxChainSelectionOptions {
+                preferred_chain_id: None,
+                supported_chain_ids: vec!["solana:unadvertised".to_string(), "testnet".to_string()],
+            },
+        )
+        .unwrap();
+        assert_eq!(chain.chain_id, SOLANA_TESTNET);
+
+        // No preferred chain and none of the supported ids match: fall back to
+        // the first compatible chain the challenge advertised.
+        let chain = select_siwx_chain(
+            &challenge(),
+            &SiwxChainSelectionOptions {
+                preferred_chain_id: None,
+                supported_chain_ids: vec!["solana:not-advertised".to_string()],
+            },
+        )
+        .unwrap();
+        assert_eq!(chain.chain_id, SOLANA_MAINNET);
+
+        // Empty options also fall back to the first compatible chain.
+        let chain = select_siwx_chain(&challenge(), &SiwxChainSelectionOptions::default()).unwrap();
+        assert_eq!(chain.chain_id, SOLANA_MAINNET);
+    }
+
+    #[test]
+    fn chain_selection_rejects_unsupported_chain_ids() {
+        // A preferred chain id that is neither a known legacy alias nor a
+        // `solana:` CAIP-2 identifier is rejected during normalization.
+        let error = select_siwx_chain(
+            &challenge(),
+            &SiwxChainSelectionOptions {
+                preferred_chain_id: Some("ethereum".to_string()),
+                supported_chain_ids: vec![],
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("siwx_unsupported_chain"));
+
+        // Same rejection when the unsupported id appears in the preference list.
+        let error = select_siwx_chain(
+            &challenge(),
+            &SiwxChainSelectionOptions {
+                preferred_chain_id: None,
+                supported_chain_ids: vec!["ethereum".to_string()],
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("siwx_unsupported_chain"));
+    }
+
+    #[test]
+    fn formats_message_with_not_before_and_resources() {
+        // Exercises the optional `Not Before` line and the `Resources:` block.
+        let info = CompleteSiwxInfo {
+            domain: "example.com".to_string(),
+            address: "4BuiY9QUUfPoAGNJBja3JapAuVWMc9c7in6UCgyC2zPR".to_string(),
+            uri: "https://example.com/reports".to_string(),
+            statement: None,
+            version: "1".to_string(),
+            chain_id: SOLANA_DEVNET.to_string(),
+            nonce: "nonce-123".to_string(),
+            issued_at: "2026-04-27T00:00:00Z".to_string(),
+            expiration_time: Some("2026-04-27T00:10:00Z".to_string()),
+            not_before: Some("2026-04-27T00:00:00Z".to_string()),
+            request_id: Some("request-123".to_string()),
+            resources: Some(vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ]),
+            signature_type: SIWX_SIGNATURE_TYPE_ED25519.to_string(),
+            signature_scheme: Some(SIWX_SIGNATURE_SCHEME_SIWS.to_string()),
+        };
+
+        let message = format_siws_message(&info).unwrap();
+        assert!(message.contains("Not Before: 2026-04-27T00:00:00Z"));
+        assert!(message.contains("Request ID: request-123"));
+        assert!(message.contains("Resources:\n- https://example.com/a\n- https://example.com/b"));
+    }
+
+    #[tokio::test]
+    async fn create_siwx_header_signs_and_round_trips() {
+        let signer = MemorySigner::from_bytes(&TEST_KEYPAIR_BYTES).unwrap();
+        let challenge = challenge();
+        let chain = select_siwx_chain(
+            &challenge,
+            &SiwxChainSelectionOptions {
+                preferred_chain_id: Some(SOLANA_DEVNET.to_string()),
+                supported_chain_ids: vec![],
+            },
+        )
+        .unwrap();
+
+        // `create_siwx_header` composes `create_siwx_payload` + `encode_siwx_header`.
+        let header = create_siwx_header(&challenge, &chain, &signer)
+            .await
+            .unwrap();
+        let parsed = parse_siwx_header(&header).unwrap();
+        assert_eq!(parsed.chain_id, SOLANA_DEVNET);
+        assert!(verify_siwx_payload(&parsed).unwrap());
+
+        // The header equals encoding the standalone payload for the same inputs.
+        let payload = create_siwx_payload(&challenge, &chain, &signer)
+            .await
+            .unwrap();
+        assert_eq!(header, encode_siwx_header(&payload).unwrap());
+    }
+
+    #[test]
+    fn verify_rejects_wrong_length_address() {
+        // Compatible Solana payload with a 64-byte signature but an address that
+        // decodes to fewer than 32 bytes: hits the `siwx_invalid_address` guard.
+        let payload = SiwxPayload {
+            domain: "example.com".to_string(),
+            address: bs58::encode([7_u8; 16]).into_string(),
+            uri: "https://example.com/reports".to_string(),
+            statement: None,
+            version: "1".to_string(),
+            chain_id: SOLANA_DEVNET.to_string(),
+            nonce: "nonce-123".to_string(),
+            issued_at: "2026-04-27T00:00:00Z".to_string(),
+            expiration_time: None,
+            not_before: None,
+            request_id: None,
+            resources: None,
+            signature_type: SIWX_SIGNATURE_TYPE_ED25519.to_string(),
+            signature_scheme: Some(SIWX_SIGNATURE_SCHEME_SIWS.to_string()),
+            signature: bs58::encode([1_u8; 64]).into_string(),
+        };
+        let error = verify_siwx_payload(&payload).unwrap_err();
+        assert!(error.to_string().contains("siwx_invalid_address"));
+    }
+
+    #[test]
+    fn validate_message_nonce_mismatch_and_too_old() {
+        let payload = SiwxPayload {
+            domain: "example.com".to_string(),
+            address: "4BuiY9QUUfPoAGNJBja3JapAuVWMc9c7in6UCgyC2zPR".to_string(),
+            uri: "https://example.com/reports".to_string(),
+            statement: None,
+            version: "1".to_string(),
+            chain_id: SOLANA_DEVNET.to_string(),
+            nonce: "nonce-123".to_string(),
+            issued_at: "2026-04-27T00:00:00Z".to_string(),
+            expiration_time: None,
+            not_before: None,
+            request_id: None,
+            resources: None,
+            signature_type: SIWX_SIGNATURE_TYPE_ED25519.to_string(),
+            signature_scheme: Some(SIWX_SIGNATURE_SCHEME_SIWS.to_string()),
+            signature: bs58::encode([1_u8; 64]).into_string(),
+        };
+
+        // Nonce that does not match the expected nonce is rejected.
+        let options = SiwxMessageValidationOptions {
+            now: parse_rfc3339_z("2026-04-27T00:01:00Z").unwrap(),
+            max_age: Duration::from_secs(300),
+            expected_nonce: Some("different-nonce".to_string()),
+        };
+        let error =
+            validate_siwx_message(&payload, "https://example.com/reports", &options).unwrap_err();
+        assert!(error.to_string().contains("siwx_nonce_mismatch"));
+
+        // Matching (or absent) nonce plus an issuance older than `max_age` is
+        // rejected as too old.
+        let options = SiwxMessageValidationOptions {
+            now: parse_rfc3339_z("2026-04-27T01:00:00Z").unwrap(),
+            max_age: Duration::from_secs(300),
+            expected_nonce: Some("nonce-123".to_string()),
+        };
+        let error =
+            validate_siwx_message(&payload, "https://example.com/reports", &options).unwrap_err();
+        assert!(error.to_string().contains("siwx_issued_at_too_old"));
+    }
+
+    #[test]
+    fn validate_message_passes_all_optional_bounds() {
+        // A payload with expiration and not-before set that all validate: this
+        // walks the success fall-through of every time-bound branch.
+        let payload = SiwxPayload {
+            domain: "example.com".to_string(),
+            address: "4BuiY9QUUfPoAGNJBja3JapAuVWMc9c7in6UCgyC2zPR".to_string(),
+            uri: "https://example.com/reports".to_string(),
+            statement: None,
+            version: "1".to_string(),
+            chain_id: SOLANA_DEVNET.to_string(),
+            nonce: "nonce-123".to_string(),
+            issued_at: "2026-04-27T00:00:00Z".to_string(),
+            expiration_time: Some("2026-04-27T00:10:00Z".to_string()),
+            not_before: Some("2026-04-27T00:00:00Z".to_string()),
+            request_id: None,
+            resources: None,
+            signature_type: SIWX_SIGNATURE_TYPE_ED25519.to_string(),
+            signature_scheme: Some(SIWX_SIGNATURE_SCHEME_SIWS.to_string()),
+            signature: bs58::encode([1_u8; 64]).into_string(),
+        };
+        let options = SiwxMessageValidationOptions {
+            now: parse_rfc3339_z("2026-04-27T00:05:00Z").unwrap(),
+            max_age: Duration::from_secs(600),
+            expected_nonce: None,
+        };
+        validate_siwx_message(&payload, "https://example.com/reports", &options).unwrap();
+    }
+
+    #[test]
+    fn parse_rfc3339_rejects_malformed_timestamps() {
+        // Extra date component after year-month-day.
+        assert!(parse_rfc3339_z("2026-04-27-01T00:00:00Z").is_err());
+        // Extra time component after hour:minute:second.
+        assert!(parse_rfc3339_z("2026-04-27T00:00:00:00Z").is_err());
+        // Out-of-range time field (hour > 23).
+        assert!(parse_rfc3339_z("2026-04-27T24:00:00Z").is_err());
+        // Missing trailing `Z`.
+        assert!(parse_rfc3339_z("2026-04-27T00:00:00").is_err());
+        // Missing `T` date/time separator.
+        assert!(parse_rfc3339_z("2026-04-27 00:00:00Z").is_err());
+
+        for bad in [
+            "2026-04-27T24:00:00Z",
+            "2026-04-27T00:60:00Z",
+            "2026-04-27T00:00:61Z",
+            "2026-13-01T00:00:00Z",
+            "2026-00-01T00:00:00Z",
+            "2026-04-32T00:00:00Z",
+        ] {
+            let error = parse_rfc3339_z(bad).unwrap_err();
+            assert!(error.to_string().contains("siwx_invalid_timestamp"));
+        }
+    }
+
+    #[test]
+    fn parse_rfc3339_handles_pre_epoch_and_epoch() {
+        // A pre-1970 timestamp yields a `SystemTime` before the Unix epoch.
+        let before = parse_rfc3339_z("1969-12-31T23:59:59Z").unwrap();
+        assert!(before < UNIX_EPOCH);
+        assert_eq!(
+            UNIX_EPOCH.duration_since(before).unwrap(),
+            Duration::from_secs(1)
+        );
+
+        // The epoch itself parses to exactly `UNIX_EPOCH`.
+        assert_eq!(parse_rfc3339_z("1970-01-01T00:00:00Z").unwrap(), UNIX_EPOCH);
+
+        // Fractional seconds are truncated, not rejected.
+        assert_eq!(
+            parse_rfc3339_z("1970-01-01T00:00:00.999Z").unwrap(),
+            UNIX_EPOCH
+        );
+    }
 }
