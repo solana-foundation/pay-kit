@@ -175,7 +175,68 @@ class PayKitMiddlewareTest < Minitest::Test
       "render_invalid must include Cache-Control: no-store"
   end
 
+  def test_mpp_auto_wiring_requires_replay_store_off_localnet
+    configure_for_mpp_dispatcher(network: :solana_devnet, replay_store: nil)
+    dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: nil)
+    request = Rack::Request.new(Rack::MockRequest.env_for("/report"))
+
+    error = assert_raises(PayKit::ConfigurationError) do
+      dispatcher.challenge_for(mpp_gate, request)
+    end
+
+    # With the auto-wiring fix, an unconfigured store no longer reaches
+    # Mpp.create as an explicit `replay_store: nil` (which raised the generic
+    # "nil is not a valid store"); it now hits the durable-store requirement
+    # for the non-localnet network, the more precise off-localnet message.
+    assert_match(/requires a durable replay_store/i, error.message)
+  end
+
+  def test_mpp_auto_wiring_threads_configured_replay_store
+    Dir.mktmpdir do |dir|
+      store = PayKit::Protocols::Mpp::FileStore.new(File.join(dir, "replay.json"))
+      configure_for_mpp_dispatcher(network: :solana_devnet, replay_store: store)
+      dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: nil)
+      request = Rack::Request.new(Rack::MockRequest.env_for("/report"))
+      rpc = Object.new
+      rpc.define_singleton_method(:latest_blockhash) { "TestBlockhashAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+
+      challenge = nil
+      PayCore::Solana::Rpc.stub(:new, rpc) do
+        challenge = dispatcher.challenge_for(mpp_gate, request)
+      end
+
+      assert challenge.headers.key?(PayKit::Protocols::Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
+      assert store.put_if_absent("sig:shared", true)
+      refute store.put_if_absent("sig:shared", true)
+    end
+  end
+
   private
+
+  def configure_for_mpp_dispatcher(network:, replay_store:)
+    PayKit.reset!
+    PayKit.configure do |c|
+      c.operator { |op| op.recipient = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj" }
+      c.network = network
+      c.accept = %i[mpp]
+      c.stablecoins = %i[USDC]
+      c.rpc_url = "https://example.test"
+      c.mpp.realm = "Test"
+      c.mpp.challenge_binding_secret = "test-secret-" + ("0" * 32)
+      c.mpp.replay_store = replay_store
+    end
+  end
+
+  def mpp_gate
+    ::PayKit::Gate.new(
+      name: :report,
+      pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj",
+      amount: ::PayKit::Helpers::Pricing.build_price(:USD, "0.10", [:USDC]),
+      fees: [],
+      accept: %i[mpp],
+      description: "Test report"
+    )
+  end
 
   def build_app
     Class.new(Sinatra::Base) do

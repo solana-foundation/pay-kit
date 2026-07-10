@@ -91,21 +91,23 @@ module PayKit::Protocols::X402
           signed
         end
 
-        # Match on identifying fields only (scheme/network/asset/payTo
-        # and the canonical `extra` knobs feePayer/tokenProgram/memo).
-        # Amount and maxTimeoutSeconds are intentionally excluded: the
-        # TS reference server (harness/src/fixtures/typescript/
-        # exact-server.ts:141-143) only matches scheme/network/asset
-        # and the v2 client leaves `amount` out of `accepted` to allow
-        # a per-request facilitator to fill it in. Comparing them
-        # strictly broke cross-language harness ("No matching payment
-        # requirements" against structurally compatible payloads).
+        # scheme/network/asset/payTo must always match. The amount is BINDING but
+        # a v2 credential may omit it (the facilitator fills it in); if the
+        # credential echoes an amount it must match the route requirement, which
+        # rejects a drifted/tampered value. `left` is the credential's `accepted`,
+        # `right` is the server's candidate requirement (call site exact.rb:433),
+        # so the omission tolerance is keyed on the credential (`left`). The amount
+        # may be carried as `amount` or `maxAmountRequired`, so it is compared by
+        # value across either key. Mirrors the Rust verifier (x402/server/exact.rs).
         REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo].freeze
         REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer tokenProgram memo].freeze
 
         def accepted_requirement_matches?(left, right)
           return false unless left.is_a?(Hash) && right.is_a?(Hash)
           return false unless REQUIREMENT_IDENTITY_KEYS.all? { |key| left[key] == right[key] }
+
+          left_amount = left["amount"] || left["maxAmountRequired"]
+          return false unless left_amount.nil? || left_amount == (right["amount"] || right["maxAmountRequired"])
 
           left_extra = left["extra"] || {}
           right_extra = right["extra"] || {}
