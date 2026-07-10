@@ -56,6 +56,27 @@ function M.assert_error(fn, pattern)
   end
 end
 
+-- A small `ngx.shared.DICT` stand-in for tests that need the real
+-- cross-worker replay-store wrapper. Keeping it here prevents test fixtures
+-- from accidentally blessing the process-local MemoryStore for devnet.
+function M.shared_dict()
+  local values = {}
+  return {
+    add = function(self, key, value)
+      if values[key] ~= nil then return nil, 'exists' end
+      values[key] = value
+      return true
+    end,
+    get = function(self, key) return values[key] end,
+    set = function(self, key, value) values[key] = value end,
+    delete = function(self, key) values[key] = nil end,
+  }
+end
+
+function M.shared_replay_store()
+  return require('pay_kit.protocols.mpp.server.store_shared_dict').new(M.shared_dict())
+end
+
 -- Tests listed here are known-failing and tracked outside this PR. Skipping
 -- them keeps the runner moving so unrelated regressions still surface. Each
 -- entry must carry a tracking note in code review.
@@ -109,9 +130,10 @@ function M.run()
     end
   end
   io.stdout:write(string.format('%d tests passed, %d skipped, %d failed\n', passed, skipped, failed))
-  if failed > 0 then
-    os.exit(1)
-  end
+  -- LuaCov flushes its line-hit table through its os.exit wrapper. Explicitly
+  -- exit on success too, otherwise a green LuaJIT run leaves no stats file and
+  -- the coverage gate cannot exercise the suite it claims to enforce.
+  os.exit(failed > 0 and 1 or 0)
 end
 
 return M

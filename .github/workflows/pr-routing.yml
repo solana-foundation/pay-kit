@@ -31,8 +31,9 @@ jobs:
           # merge SHA contains both those files and the PR's source changes.
           ref: ${{ github.sha }}
           # A PR merge commit has both base and head parents. Preserve them so
-          # the three-dot diff below has a merge base rather than an empty,
-          # silently misclassified input.
+          # the router can diff the checked-out base parent directly. The event
+          # payload's base SHA can be stale when the base branch advances while
+          # a PR run is queued.
           fetch-depth: 2
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -42,12 +43,13 @@ jobs:
         run: node scripts/select-pr-workflows_test.mjs
       - id: select
         name: Select SDK workflows
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -o pipefail
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          git diff --name-only "FETCH_HEAD...HEAD" | \
+          if ! git rev-parse --verify HEAD^1 >/dev/null; then
+            echo "::error::PR verification router requires a synthetic merge commit with a base parent"
+            exit 1
+          fi
+          git diff --name-only HEAD^1 HEAD | \
             node scripts/select-pr-workflows.mjs --github-output "$GITHUB_OUTPUT"
 
   go:

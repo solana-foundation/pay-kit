@@ -120,8 +120,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-          cache: pip
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # uv owns the frozen dependency cache; a pip cache is absent after uv sync.
+          cache-dependency-glob: python/uv.lock
+          enable-cache: true
       - name: Verify uv.lock is up to date
         working-directory: python
         run: uv lock --check
