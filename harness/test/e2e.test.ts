@@ -1383,6 +1383,12 @@ function environmentForScenario(
         }
       : {}),
     MPP_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
+    // Python's x402 fixture exercises a single local development process for
+    // non-localnet negative vectors. Make that exceptional process-local replay
+    // store explicit; production construction still requires a durable store.
+    ...(scenario.network !== "localnet"
+      ? { PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE: "1" }
+      : {}),
     MPP_HARNESS_SPLITS: JSON.stringify(
       (scenario.splits ?? []).map((split) => ({
         recipient: splitRecipients[split.recipientKey],
