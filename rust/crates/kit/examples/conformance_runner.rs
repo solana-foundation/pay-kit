@@ -103,7 +103,8 @@ impl RunnerError {
 }
 
 fn main() {
-    let result = match read_vector() {
+    let (fallback_id, vector) = read_vector();
+    let result = match vector {
         Ok(vector) => {
             let id = vector.id.clone();
             match run_vector(vector) {
@@ -111,18 +112,38 @@ fn main() {
                 Err(error) => reject(&id, error),
             }
         }
-        Err(error) => reject("", error),
+        Err(error) => reject(&fallback_id, error),
     };
     println!("{result}");
 }
 
-fn read_vector() -> Result<Vector, RunnerError> {
+fn read_vector() -> (String, Result<Vector, RunnerError>) {
     let mut stdin = String::new();
-    std::io::stdin()
-        .read_to_string(&mut stdin)
-        .map_err(|error| RunnerError::rejected(format!("failed to read stdin: {error}")))?;
-    serde_json::from_str(&stdin)
-        .map_err(|error| RunnerError::rejected(format!("invalid conformance vector: {error}")))
+    if let Err(error) = std::io::stdin().read_to_string(&mut stdin) {
+        return (
+            String::new(),
+            Err(RunnerError::rejected(format!(
+                "failed to read stdin: {error}"
+            ))),
+        );
+    }
+    let fallback_id = extract_vector_id(&stdin).unwrap_or_default();
+    let vector = serde_json::from_str(&stdin)
+        .map_err(|error| RunnerError::rejected(format!("invalid conformance vector: {error}")));
+    (fallback_id, vector)
+}
+
+fn extract_vector_id(input: &str) -> Option<String> {
+    let after_key = input.split_once("\"id\"")?.1.trim_start();
+    let after_colon = after_key.strip_prefix(':')?.trim_start();
+    let value = after_colon.strip_prefix('"')?;
+    let end = value.find('"')?;
+    let id = &value[..end];
+    (!id.is_empty()
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
+    .then(|| id.to_string())
 }
 
 fn run_vector(vector: Vector) -> Result<Value, RunnerError> {
@@ -646,4 +667,24 @@ fn valid_payment_identifier(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::extract_vector_id;
+
+    #[test]
+    fn extracts_id_before_an_invalid_nested_string() {
+        let input =
+            r#"{"id":"canonical-json-rejects-lone-surrogate-value","input":{"bad":"\uD800"}}"#;
+        assert_eq!(
+            extract_vector_id(input).as_deref(),
+            Some("canonical-json-rejects-lone-surrogate-value")
+        );
+    }
+
+    #[test]
+    fn rejects_non_schema_ids() {
+        assert_eq!(extract_vector_id(r#"{"id":"bad/id"}"#), None);
+    }
 }
