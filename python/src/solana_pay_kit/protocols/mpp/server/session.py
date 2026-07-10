@@ -479,6 +479,8 @@ class SessionServer:
         if self._config.verify_top_up_tx is not None:
             try:
                 await self._config.verify_top_up_tx(payload, snapshot)
+            except PaymentError:
+                raise
             except Exception as exc:
                 raise _wrap("top-up tx verification failed", exc) from exc
             verified_snapshot_deposit = snapshot.deposit

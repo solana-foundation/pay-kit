@@ -484,6 +484,20 @@ async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
     assert state.deposit == 1_000_000
 
 
+async def test_process_top_up_preserves_verifier_payment_error_code() -> None:
+    async def verifier(_payload: TopUpPayload, _state) -> None:
+        raise PaymentError("confirmation unavailable", code="transaction-failed")
+
+    config = session_test_config()
+    config.verify_top_up_tx = verifier
+    server = new_session_test_server(config)
+    _, channel_id = await _open_test_channel(server, 1_000_000)
+
+    with pytest.raises(PaymentError) as excinfo:
+        await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="topup_sig"))
+    assert excinfo.value.code == "transaction-failed"
+
+
 async def test_process_top_up_rejects_deposit_change_during_verification() -> None:
     """The verified transaction's amount is bound to the pre-RPC deposit.
     Another top-up cannot change that deposit and have the stale transaction
