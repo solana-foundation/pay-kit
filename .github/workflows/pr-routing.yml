@@ -28,7 +28,10 @@ jobs:
           # The router and its tests live on the base branch. The synthetic
           # merge SHA contains both those files and the PR's source changes.
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          # A PR merge commit has both base and head parents. Preserve them so
+          # the three-dot diff below has a merge base rather than an empty,
+          # silently misclassified input.
+          fetch-depth: 2
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
@@ -40,6 +43,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          set -o pipefail
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           git diff --name-only "FETCH_HEAD...HEAD" | \
             node scripts/select-pr-workflows.mjs --github-output "$GITHUB_OUTPUT"
