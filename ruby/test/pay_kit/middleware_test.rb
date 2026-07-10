@@ -192,23 +192,24 @@ class PayKitMiddlewareTest < Minitest::Test
   end
 
   def test_mpp_auto_wiring_threads_configured_replay_store
-    Dir.mktmpdir do |dir|
-      store = PayKit::Protocols::Mpp::FileStore.new(File.join(dir, "replay.json"))
-      configure_for_mpp_dispatcher(network: :solana_devnet, replay_store: store)
-      dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: nil)
-      request = Rack::Request.new(Rack::MockRequest.env_for("/report"))
-      rpc = Object.new
-      rpc.define_singleton_method(:latest_blockhash) { "TestBlockhashAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    store.define_singleton_method(:durable?) { true }
+    store.define_singleton_method(:shared?) { true }
 
-      challenge = nil
-      PayCore::Solana::Rpc.stub(:new, rpc) do
-        challenge = dispatcher.challenge_for(mpp_gate, request)
-      end
+    configure_for_mpp_dispatcher(network: :solana_devnet, replay_store: store)
+    dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: nil)
+    request = Rack::Request.new(Rack::MockRequest.env_for("/report"))
+    rpc = Object.new
+    rpc.define_singleton_method(:latest_blockhash) { "TestBlockhashAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
 
-      assert challenge.headers.key?(PayKit::Protocols::Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
-      assert store.put_if_absent("sig:shared", true)
-      refute store.put_if_absent("sig:shared", true)
+    challenge = nil
+    PayCore::Solana::Rpc.stub(:new, rpc) do
+      challenge = dispatcher.challenge_for(mpp_gate, request)
     end
+
+    assert challenge.headers.key?(PayKit::Protocols::Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
+    assert store.put_if_absent("sig:shared", true)
+    refute store.put_if_absent("sig:shared", true)
   end
 
   private
