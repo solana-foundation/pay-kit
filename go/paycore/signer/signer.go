@@ -7,6 +7,7 @@
 package signer
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -90,6 +91,12 @@ func FromBytes(b []byte) (paykit.Signer, error) {
 		return nil, &InvalidKeyError{
 			Source: "bytes",
 			Reason: fmt.Sprintf("expected %d bytes, got %d", ed25519.PrivateKeySize, len(b)),
+		}
+	}
+	if !bytes.Equal(b, ed25519.NewKeyFromSeed(b[:ed25519.SeedSize])) {
+		return nil, &InvalidKeyError{
+			Source: "bytes",
+			Reason: "public key does not match the private-key seed",
 		}
 	}
 	priv := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
