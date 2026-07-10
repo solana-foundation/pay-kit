@@ -93,6 +93,18 @@ helpers.test('json.decode: unicode escape 3-byte UTF-8', function()
   helpers.assert_equal(json.decode('"\\u20AC"'), string.char(0xE2, 0x82, 0xAC))
 end)
 
+helpers.test('json.decode: unicode surrogate pair', function()
+  local emoji = string.char(0xF0, 0x9F, 0x98, 0x80)
+  helpers.assert_equal(json.decode('"\\uD83D\\uDE00"'), emoji)
+  helpers.assert_equal(json.encode({k = json.decode('"\\uD83D\\uDE00"')}), '{"k":"' .. emoji .. '"}')
+end)
+
+helpers.test('json.decode: invalid unicode surrogate pairs error', function()
+  assert_throws(function() json.decode('"\\uD83D"') end, 'surrogate')
+  assert_throws(function() json.decode('"\\uDE00"') end, 'surrogate')
+  assert_throws(function() json.decode('"\\uD83D\\u0041"') end, 'surrogate')
+end)
+
 helpers.test('json.decode: invalid unicode escape errors', function()
   assert_throws(function() json.decode('"\\uZZZZ"') end, 'invalid unicode')
 end)
@@ -108,6 +120,7 @@ end)
 helpers.test('json.decode: empty array', function()
   local arr = json.decode('[]')
   helpers.assert_equal(#arr, 0)
+  helpers.assert_equal(json.encode(arr), '[]')
 end)
 
 helpers.test('json.decode: array with elements', function()
@@ -123,8 +136,13 @@ end)
 
 helpers.test('json.decode: empty object', function()
   local obj = json.decode('{}')
-  -- Lua doesn't distinguish empty array vs empty object — both are empty tables.
   helpers.assert_true(type(obj) == 'table')
+  helpers.assert_equal(json.encode(obj), '{}')
+end)
+
+helpers.test('json.decode: preserves nested empty container types', function()
+  local value = json.decode('{"array":[],"object":{}}')
+  helpers.assert_equal(json.encode(value), '{"array":[],"object":{}}')
 end)
 
 helpers.test('json.decode: object with entries', function()

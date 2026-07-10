@@ -27,6 +27,13 @@ local SELLER = 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY'
 local MINT   = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
 local PIN_ID = 'pay_abcdef1234567890abcdef1234567890'
 
+-- x402.new requires a replay store with put_if_absent (residual-bulk-fix
+-- REQUIRED-LUA-2). These gate-path tests reject before the consume path, so
+-- an always-first-insert stub is sufficient; mirrors schemes_x402_spec.
+local function test_store()
+  return { put_if_absent = function() return true end }
+end
+
 local function setup(requires_payment_identifier)
   pay_kit._reset_for_tests()
   assert(pay_kit.configure({
@@ -122,7 +129,7 @@ helper.test('ext: verify_and_settle rejects when required id is missing', functi
   setup(true)
   local config = pay_kit.config()
   local gate = make_gate()
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({config_resolver = pay_kit.config, store = test_store()}))
   -- Echo the extension WITHOUT an id (the server advertised info.required).
   local headers = credential(config, gate,
     {['payment-identifier'] = {info = {required = true}}})
@@ -134,7 +141,7 @@ helper.test('ext: verify_and_settle rejects a pattern-violating id', function()
   setup(true)
   local config = pay_kit.config()
   local gate = make_gate()
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({config_resolver = pay_kit.config, store = test_store()}))
   local headers = credential(config, gate,
     {['payment-identifier'] = {info = {required = true, id = 'too short'}}})
   local _, err = adapter:verify_and_settle(gate, {headers = headers, path = '/paid'})
@@ -145,7 +152,7 @@ helper.test('ext: verify_and_settle passes the gate for a valid echoed id', func
   setup(true)
   local config = pay_kit.config()
   local gate = make_gate()
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({config_resolver = pay_kit.config, store = test_store()}))
   local headers = credential(config, gate,
     {['payment-identifier'] = {info = {required = true, id = PIN_ID}}})
   local _, err = adapter:verify_and_settle(gate, {headers = headers, path = '/paid'})
@@ -163,7 +170,7 @@ helper.test('ext: no gate when route does not require a payment-identifier', fun
   setup(false)
   local config = pay_kit.config()
   local gate = make_gate()
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({config_resolver = pay_kit.config, store = test_store()}))
   -- No extensions echoed at all; the gate must not fire.
   local headers = credential(config, gate, nil)
   local _, err = adapter:verify_and_settle(gate, {headers = headers, path = '/paid'})
