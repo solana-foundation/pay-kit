@@ -25,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # The router and its tests live on the base branch. The synthetic
+          # merge SHA contains both those files and the PR's source changes.
+          ref: ${{ github.sha }}
           fetch-depth: 1
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:

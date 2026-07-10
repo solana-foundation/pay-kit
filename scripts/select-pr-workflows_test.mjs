@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WORKFLOWS, selectWorkflows } from "./select-pr-workflows.mjs";
 
 const none = Object.fromEntries(WORKFLOWS.map((name) => [name, false]));
@@ -26,5 +29,13 @@ expect(["harness/vectors/canonical-bytes.json"], ["harness"]);
 expect(["docs/security.md"], []);
 assert.deepEqual(selectWorkflows(["scripts/unclassified-security-check.sh"]), all);
 assert.deepEqual(selectWorkflows([]), all);
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const routerWorkflow = readFileSync(
+  join(repoRoot, ".github", "workflows", "pr-routing.yml"),
+  "utf8",
+);
+assert.match(routerWorkflow, /ref: \$\{\{ github\.sha \}\}/);
+assert.doesNotMatch(routerWorkflow, /github\.event\.pull_request\.head\.sha/);
 
 console.log("select-pr-workflows_test: PASS");
