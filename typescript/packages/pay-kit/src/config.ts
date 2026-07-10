@@ -1,4 +1,5 @@
 import { DEFAULT_RPC_URLS } from '@solana/mpp';
+import type { SessionStore } from '@solana/mpp/server';
 import type { Store } from 'mppx';
 
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
@@ -24,6 +25,11 @@ export type MppOptions = {
      */
     readonly html?: boolean;
     readonly realm?: string;
+    /**
+     * Shared store for MPP session channel state. Required for session gates
+     * outside localnet; localnet may use the adapter's ephemeral memory store.
+     */
+    readonly sessionStore?: SessionStore;
 };
 
 /** x402 protocol options. Reserved for future scheme-specific settings. */
@@ -76,6 +82,7 @@ export type PayKitConfig = {
         readonly expiresIn: number;
         readonly html: boolean;
         readonly realm: string;
+        readonly sessionStore: SessionStore | undefined;
     };
     readonly network: Network;
     readonly operator: Operator;
@@ -177,6 +184,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
             expiresIn,
             html: params.mpp?.html ?? false,
             realm: params.mpp?.realm ?? 'App',
+            sessionStore: params.mpp?.sessionStore,
         }),
         network,
         operator: Object.freeze(operator),

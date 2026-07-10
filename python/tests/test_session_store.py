@@ -273,6 +273,21 @@ def test_to_dict_emits_null_for_empty_delivery_lists() -> None:
     assert d["committed_deliveries"] is None
 
 
+def test_round_trips_authoritative_open_identity() -> None:
+    state = ChannelState(
+        channel_id="c1",
+        authorized_signer="signer1",
+        open_signature="broadcast-signature",
+        open_slot=42,
+        salt=7,
+    )
+
+    restored = ChannelState.from_dict(state.to_dict())
+    assert restored.open_signature == "broadcast-signature"
+    assert restored.open_slot == 42
+    assert restored.salt == 7
+
+
 def test_to_dict_emits_lists_when_deliveries_present() -> None:
     """Non-empty delivery lists still serialize as JSON arrays."""
     state = ChannelState(

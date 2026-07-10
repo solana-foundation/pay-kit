@@ -8,7 +8,8 @@
  *
  * pay-kit does NOT auto-mount the side-channel routes (mppx-consistent): the
  * instance exposes `handler` / `deliveries` / `commit` / `receipt` and the app
- * mounts them. All four share one in-memory session store per gate.
+ * mounts them. All four share the injected session store (or an explicitly
+ * localnet-only in-memory store) per gate.
  */
 import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
@@ -19,6 +20,10 @@ import type { PayKitConfig } from '../config.js';
 import { ConfigurationError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import { toSolanaNetwork } from '../protocol.js';
+
+type SessionStoreCapability = {
+    readonly sessionStoreDurability?: 'durable-shared' | 'ephemeral';
+};
 
 /** Outcome of running the session method on the gated route. */
 export type SessionResult =
@@ -47,9 +52,9 @@ export type SessionEngine = {
 };
 
 /**
- * Build the session engine for a `session` gate. One in-memory store is shared
- * across the gated handler and the side-channel routes so the receipt poll can
- * read whichever channel a request opened.
+ * Build the session engine for a `session` gate. One store is shared across the
+ * gated handler and the side-channel routes so the receipt poll can read
+ * whichever channel a request opened.
  */
 export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEngine {
     if (!gate.session) {
@@ -65,7 +70,23 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
     const mint = requireMint(coin, resolveStablecoinMint(coin, network), config.network);
 
     const signer = config.operator.signer.signer;
-    const store = createMemorySessionStore();
+    const store =
+        config.mpp.sessionStore ??
+        (config.network === 'solana_localnet'
+            ? createMemorySessionStore()
+            : (() => {
+                  throw new ConfigurationError(
+                      `Gate "${gate.name}": mpp.sessionStore is required outside localnet; inject a durable shared store.`,
+                  );
+              })());
+    if (
+        config.network !== 'solana_localnet' &&
+        (store as SessionStoreCapability & typeof store).sessionStoreDurability !== 'durable-shared'
+    ) {
+        throw new ConfigurationError(
+            `Gate "${gate.name}": session store must explicitly declare durable shared capability outside localnet.`,
+        );
+    }
     const params = {
         cap: gate.amount.baseUnits(),
         ...(gate.session.closeDelayMs !== undefined ? { closeDelayMs: gate.session.closeDelayMs } : {}),

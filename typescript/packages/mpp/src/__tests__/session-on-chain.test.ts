@@ -549,7 +549,7 @@ describe('verifyOpenTx', () => {
             getSignatureStatuses: (sigs: readonly Signature[]) => ({
                 send: async () => {
                     calls.push([...sigs]);
-                    return { value: [{ err: null }] };
+                    return { context: { slot: 42 }, value: [{ confirmationStatus: 'confirmed', err: null }] };
                 },
             }),
         };

@@ -76,6 +76,13 @@ type ChannelState struct {
 	// for opens that never carried it.
 	OpenSlot uint64 `json:"open_slot"`
 
+	// Salt is the authoritative channel PDA salt read from on-chain state.
+	Salt uint64 `json:"salt"`
+
+	// OpenSignature is the confirmed signature of a server-broadcast open.
+	// Retries reuse it instead of confirming a newly signed, unbroadcast tx.
+	OpenSignature string `json:"open_signature,omitempty"`
+
 	// Cumulative is the highest cumulative amount accepted by the server (the
 	// settled watermark).
 	Cumulative uint64 `json:"cumulative"`
@@ -230,6 +237,28 @@ type ChannelStore interface {
 	MarkSealed(ctx context.Context, channelID string) (ChannelState, error)
 }
 
+// SessionStoreDurability is a store's explicitly declared session-state
+// capability. Unknown stores are not safe for production session handling.
+type SessionStoreDurability uint8
+
+const (
+	// SessionStoreDurabilityUnknown is the safe default for custom stores that
+	// have not explicitly declared whether their state is durable and shared.
+	SessionStoreDurabilityUnknown SessionStoreDurability = iota
+	// SessionStoreDurabilityEphemeral identifies process-local state.
+	SessionStoreDurabilityEphemeral
+	// SessionStoreDurabilityDurableShared identifies state that survives restarts
+	// and is shared by every serving process.
+	SessionStoreDurabilityDurableShared
+)
+
+// SessionStoreCapabilities lets stores affirmatively declare their
+// session-state durability. Production session construction accepts only
+// SessionStoreDurabilityDurableShared.
+type SessionStoreCapabilities interface {
+	SessionStoreDurability() SessionStoreDurability
+}
+
 // MemoryChannelStore is an in-memory ChannelStore with per-channel locking:
 // UpdateChannel calls for the same channel id run strictly sequentially while
 // calls for different ids run concurrently.
@@ -252,6 +281,24 @@ func NewMemoryChannelStore() *MemoryChannelStore {
 		data:  map[string]ChannelState{},
 		locks: map[string]*sync.Mutex{},
 	}
+}
+
+// SessionStoreDurability marks the built-in memory store as process-local.
+func (*MemoryChannelStore) SessionStoreDurability() SessionStoreDurability {
+	return SessionStoreDurabilityEphemeral
+}
+
+func sessionStoreSafetyMessage(store ChannelStore) string {
+	if capabilities, ok := store.(SessionStoreCapabilities); ok &&
+		capabilities.SessionStoreDurability() == SessionStoreDurabilityEphemeral {
+		return "ephemeral session store is unsafe off localnet; inject a durable shared ChannelStore"
+	}
+	return "session store must explicitly declare durable shared capability off localnet; inject a durable shared ChannelStore"
+}
+
+func isDurableSharedSessionStore(store ChannelStore) bool {
+	capabilities, ok := store.(SessionStoreCapabilities)
+	return ok && capabilities.SessionStoreDurability() == SessionStoreDurabilityDurableShared
 }
 
 // channelLock returns the mutex serializing updates for channelID.

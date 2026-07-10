@@ -40,10 +40,15 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
+import { type Channel, getChannelDecoder } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
 import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
 import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
-import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
+import {
+    getTopUpInstruction,
+    getTopUpInstructionDataDecoder,
+    TOP_UP_DISCRIMINATOR,
+} from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
@@ -457,7 +462,10 @@ export interface SignatureStatus {
 /** Minimal RPC shape needed to check transaction signature statuses. */
 export interface SignatureStatusRpc {
     getSignatureStatuses(signatures: readonly Signature[]): {
-        send(): Promise<{ value: ReadonlyArray<SignatureStatus | null> }>;
+        send(): Promise<{
+            context?: { slot?: bigint | number };
+            value: ReadonlyArray<SignatureStatus | null>;
+        }>;
     };
 }
 
@@ -674,9 +682,217 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         if (status.err) {
             throw new Error(`verifyOpenTx: tx ${openPayload.signature} failed on-chain: ${JSON.stringify(status.err)}`);
         }
+        if (status.confirmationStatus !== 'confirmed' && status.confirmationStatus !== 'finalized') {
+            throw new Error(
+                `verifyOpenTx: tx ${openPayload.signature} is only ${String(status.confirmationStatus)}; confirmed required`,
+            );
+        }
     }
 
     return { channelId: channelAddr, deposit, gracePeriod, openSlot, payer: payerAddr, salt };
+}
+
+export interface GetAccountInfoRpc {
+    getAccountInfo(
+        address: Address,
+        config?: unknown,
+    ): {
+        send(): Promise<{ value: { readonly data?: unknown; readonly owner?: string } | null }>;
+    };
+}
+
+export interface TopUpTransactionRpc {
+    getTransaction(
+        signature: Signature,
+        config: { readonly encoding: 'base64'; readonly maxSupportedTransactionVersion: 0 },
+    ): {
+        send(): Promise<{
+            meta: { err: unknown } | null;
+            transaction: readonly [string, string];
+        } | null>;
+    };
+}
+
+export function isGetAccountInfoRpc(rpc: unknown): rpc is GetAccountInfoRpc {
+    return typeof rpc === 'object' && rpc !== null && typeof (rpc as GetAccountInfoRpc).getAccountInfo === 'function';
+}
+
+export interface VerifyChannelStateExpected {
+    readonly authorizedSigner: string;
+    readonly deposit?: bigint | undefined;
+    readonly gracePeriod?: number | undefined;
+    readonly mint: string;
+    readonly payee: string;
+    readonly payer?: string | undefined;
+    readonly programId?: string | undefined;
+    readonly rentPayer: string;
+    readonly requireFresh?: boolean | undefined;
+    readonly splits?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
+}
+
+async function sessionDistributionHash(
+    splits: readonly { readonly bps: number; readonly recipient: string }[],
+): Promise<Uint8Array> {
+    const preimage = new Uint8Array(4 + splits.length * 34);
+    new DataView(preimage.buffer).setUint32(0, splits.length, true);
+    let offset = 4;
+    for (const split of splits) {
+        preimage.set(getAddressEncoder().encode(address(split.recipient)), offset);
+        offset += 32;
+        new DataView(preimage.buffer).setUint16(offset, split.bps, true);
+        offset += 2;
+    }
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+}
+
+/** Fetch and bind the authoritative on-chain payment-channel state. */
+export async function verifyChannelAccountState(args: {
+    readonly channelId: string;
+    readonly expected: VerifyChannelStateExpected;
+    readonly minContextSlot?: bigint | number | undefined;
+    readonly rpc: GetAccountInfoRpc;
+}): Promise<Channel> {
+    const info = await args.rpc
+        .getAccountInfo(address(args.channelId), {
+            commitment: 'confirmed',
+            encoding: 'base64',
+            ...(args.minContextSlot !== undefined ? { minContextSlot: args.minContextSlot } : {}),
+        })
+        .send();
+    const value = info.value;
+    if (!value) {
+        throw new Error(`verifyChannelAccountState: channel ${args.channelId} not found on-chain`);
+    }
+    const programId = args.expected.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
+    if (value.owner !== programId) {
+        throw new Error(
+            `verifyChannelAccountState: channel ${args.channelId} is owned by ${String(value.owner)} != payment-channels program ${programId}`,
+        );
+    }
+    const raw = value.data;
+    const dataBase64 = Array.isArray(raw) ? (raw[0] as unknown) : raw;
+    if (typeof dataBase64 !== 'string' || dataBase64 === '') {
+        throw new Error('verifyChannelAccountState: unsupported getAccountInfo encoding (expected base64)');
+    }
+    const bytes = getBase64Codec().encode(dataBase64);
+    if (bytes.length !== 256) {
+        throw new Error(`verifyChannelAccountState: invalid Channel account length ${bytes.length}`);
+    }
+    const channel = getChannelDecoder().decode(bytes);
+    if (channel.discriminator !== 1) {
+        throw new Error(`verifyChannelAccountState: invalid Channel discriminator ${channel.discriminator}`);
+    }
+    if (channel.version !== 1) {
+        throw new Error(`verifyChannelAccountState: unsupported Channel version ${channel.version}`);
+    }
+    if (channel.status !== 0) {
+        throw new Error(
+            `verifyChannelAccountState: channel ${args.channelId} is not open on-chain (status ${channel.status})`,
+        );
+    }
+    if (channel.mint !== args.expected.mint) {
+        throw new Error(`verifyChannelAccountState: on-chain mint ${channel.mint} != expected ${args.expected.mint}`);
+    }
+    if (channel.payee !== args.expected.payee) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain payee ${channel.payee} != expected ${args.expected.payee}`,
+        );
+    }
+    if (channel.rentPayer !== args.expected.rentPayer) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain rentPayer ${channel.rentPayer} != expected operator ${args.expected.rentPayer}`,
+        );
+    }
+    if (
+        args.expected.requireFresh !== false &&
+        (channel.settlement.settled !== 0n || channel.settlement.payoutWatermark !== 0n)
+    ) {
+        throw new Error(`verifyChannelAccountState: channel ${args.channelId} has nonzero settlement watermarks`);
+    }
+    const expectedGracePeriod = args.expected.gracePeriod ?? 900;
+    if (channel.gracePeriod !== expectedGracePeriod) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain gracePeriod ${channel.gracePeriod} != expected ${expectedGracePeriod}`,
+        );
+    }
+    const expectedDistributionHash = await sessionDistributionHash(args.expected.splits ?? []);
+    if (!channel.distributionHash.every((byte, index) => byte === expectedDistributionHash[index])) {
+        throw new Error('verifyChannelAccountState: on-chain distributionHash does not match session splits');
+    }
+    if (channel.authorizedSigner !== args.expected.authorizedSigner) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain authorizedSigner ${channel.authorizedSigner} != expected ${args.expected.authorizedSigner}`,
+        );
+    }
+    if (args.expected.payer !== undefined && channel.payer !== args.expected.payer) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain payer ${channel.payer} != expected ${args.expected.payer}`,
+        );
+    }
+    if (args.expected.deposit !== undefined && channel.deposit !== args.expected.deposit) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain deposit ${channel.deposit} != expected ${args.expected.deposit}`,
+        );
+    }
+    const [derivedChannel] = await getProgramDerivedAddress({
+        programAddress: address(programId),
+        seeds: [
+            getUtf8Encoder().encode('channel'),
+            getAddressEncoder().encode(channel.payer),
+            getAddressEncoder().encode(channel.payee),
+            getAddressEncoder().encode(channel.mint),
+            getAddressEncoder().encode(channel.authorizedSigner),
+            getU64Encoder().encode(channel.salt),
+            getU64Encoder().encode(channel.openSlot),
+        ],
+    });
+    if (derivedChannel !== args.channelId) {
+        throw new Error(
+            `verifyChannelAccountState: channel account ${args.channelId} != PDA derived from authoritative state ${derivedChannel}`,
+        );
+    }
+    return channel;
+}
+
+export async function verifyTopUpTransaction(args: {
+    readonly amount: bigint;
+    readonly channelId: string;
+    readonly programId: string;
+    readonly rpc: TopUpTransactionRpc;
+    readonly signature: Signature;
+}): Promise<void> {
+    const fetched = await args.rpc
+        .getTransaction(args.signature, { encoding: 'base64', maxSupportedTransactionVersion: 0 })
+        .send();
+    if (!fetched) throw new Error(`verifyTopUpTransaction: tx ${args.signature} not found on-chain`);
+    if (fetched.meta?.err) {
+        throw new Error(`verifyTopUpTransaction: tx failed on-chain: ${JSON.stringify(fetched.meta.err)}`);
+    }
+    const [wire, encoding] = fetched.transaction;
+    if (encoding !== 'base64') throw new Error(`verifyTopUpTransaction: expected base64, got ${encoding}`);
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        instructions: readonly {
+            accountIndices?: readonly number[];
+            data?: Uint8Array;
+            programAddressIndex: number;
+        }[];
+        staticAccounts: readonly string[];
+    };
+    let count = 0;
+    let total = 0n;
+    for (const instruction of message.instructions) {
+        if (message.staticAccounts[instruction.programAddressIndex] !== args.programId) continue;
+        if (!instruction.data || instruction.data[0] !== TOP_UP_DISCRIMINATOR) continue;
+        const channelIndex = instruction.accountIndices?.[1];
+        if (channelIndex === undefined || message.staticAccounts[channelIndex] !== args.channelId) continue;
+        count += 1;
+        total += getTopUpInstructionDataDecoder().decode(instruction.data).topUpArgs.amount;
+    }
+    if (count !== 1) throw new Error(`verifyTopUpTransaction: expected exactly one top-up, found ${count}`);
+    if (total !== args.amount) {
+        throw new Error(`verifyTopUpTransaction: on-chain top-up total ${total} != expected delta ${args.amount}`);
+    }
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */

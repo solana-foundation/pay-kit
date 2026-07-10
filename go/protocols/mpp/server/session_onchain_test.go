@@ -21,6 +21,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
 // openTxFixture bundles a freshly built and signed payment-channel open
@@ -522,9 +523,22 @@ func TestNewTopUpTxVerifierConfirmsSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	verifier := NewTopUpTxVerifier(testutil.NewFakeRPC())
-	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: signature.String()}
-	if _, err := verifier(context.Background(), payload); err != nil {
+	config := sessionTestConfig()
+	fake := testutil.NewFakeRPC()
+	channelID := solana.NewWallet().PublicKey()
+	payer := solana.NewWallet().PublicKey()
+	authorizedSigner := solana.NewWallet().PublicKey()
+	seedSessionChannelAccount(
+		t, fake, channelID, 2_000_000, payer,
+		solana.MustPublicKeyFromBase58(config.Recipient), authorizedSigner,
+		solana.MustPublicKeyFromBase58(paycore.ResolveMint(config.Currency, config.Network)),
+		pcgen.ChannelStatus_Open,
+	)
+	verifier := NewTopUpStateTxVerifier(config, fake)
+	payload := &intents.TopUpPayload{ChannelID: channelID.String(), NewDeposit: "2000000", Signature: signature.String()}
+	storedPayer := payer.String()
+	current := ChannelState{AuthorizedSigner: authorizedSigner.String(), Operator: &storedPayer}
+	if err := verifier(context.Background(), payload, current); err != nil {
 		t.Fatalf("verifier with confirmed signature: %v", err)
 	}
 }
@@ -537,18 +551,18 @@ func TestNewTopUpTxVerifierSurfacesFailureAndNotFound(t *testing.T) {
 	}
 	fakeRPC := testutil.NewFakeRPC()
 	fakeRPC.Statuses[signature.String()] = &rpc.SignatureStatusesResult{Err: "InstructionError"}
-	verifier := NewTopUpTxVerifier(fakeRPC)
+	verifier := NewTopUpStateTxVerifier(sessionTestConfig(), fakeRPC)
 	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: signature.String()}
-	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "top-up") {
+	if err := verifier(context.Background(), payload, ChannelState{}); err == nil || !strings.Contains(err.Error(), "top-up") {
 		t.Fatalf("err = %v, want top-up failure rejection", err)
 	}
 
 	fakeRPC.Statuses[signature.String()] = nil
-	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "not found") {
+	if err := verifier(context.Background(), payload, ChannelState{}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err = %v, want not-found rejection", err)
 	}
 
-	if _, err := verifier(context.Background(), &intents.TopUpPayload{Signature: "not-base58!"}); err == nil || !strings.Contains(err.Error(), "invalid top-up tx signature") {
+	if err := verifier(context.Background(), &intents.TopUpPayload{Signature: "not-base58!"}, ChannelState{}); err == nil || !strings.Contains(err.Error(), "invalid top-up tx signature") {
 		t.Fatalf("err = %v, want invalid-signature rejection", err)
 	}
 }
@@ -696,6 +710,10 @@ func TestSettlementInstructionsResolvesToken2022FromCurrency(t *testing.T) {
 	config := sessionTestConfig()
 	config.Currency = "PYUSD"
 	config.Network = "mainnet"
+	config.AllowUnsafeEphemeralStoreOffLocalnet = true
+	config.VerifyOpenTx = func(_ context.Context, payload *intents.OpenPayload) (string, error) {
+		return *payload.Payer, nil
+	}
 	server := newSessionTestServer(config)
 	payer := testutil.NewPrivateKey().PublicKey()
 	merchant := testutil.NewPrivateKey().PublicKey()

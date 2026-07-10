@@ -63,6 +63,11 @@ export interface ChannelState {
     /** Next server-side metered delivery sequence. */
     readonly nextDeliverySequence: bigint;
     /**
+     * Confirmed signature of a server-broadcast open transaction. Replays use
+     * this instead of trusting the client payload's pre-signing placeholder.
+     */
+    readonly openSignature?: string | undefined;
+    /**
      * Slot the channel was opened at (a channel PDA seed). Needed to
      * re-derive the PDA and to gate reclaim (`slot > openSlot + 1500`).
      * `undefined` for pull sessions and bare push opens that never carried it.
@@ -72,6 +77,8 @@ export interface ChannelState {
     readonly operator?: string | undefined;
     /** Deliveries reserved but not yet committed. */
     readonly pendingDeliveries: readonly PendingDelivery[];
+    /** Authoritative channel PDA salt read from on-chain state. */
+    readonly salt?: bigint | undefined;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
     /** On-chain settle_and_seal transaction signature (base58), once submitted. */
@@ -116,6 +123,11 @@ export interface SessionStore {
      * not found, matching the Rust behavior.
      */
     markSealed(channelId: string): Promise<ChannelState>;
+    /**
+     * Explicit safety capability. Off localnet, only `durable-shared` is
+     * accepted; an omitted marker is unsafe by default.
+     */
+    readonly sessionStoreDurability?: 'durable-shared' | 'ephemeral' | undefined;
     /** Atomically read-modify-write a channel's state. */
     updateChannel(channelId: string, mutator: ChannelMutator): Promise<ChannelState>;
 }
@@ -150,7 +162,6 @@ export function createMemorySessionStore(): SessionStore {
             data.delete(channelId);
             return Promise.resolve();
         },
-
         getChannel(channelId) {
             return Promise.resolve(data.get(channelId));
         },
@@ -183,6 +194,8 @@ export function createMemorySessionStore(): SessionStore {
                 return Promise.resolve(next);
             });
         },
+
+        sessionStoreDurability: 'ephemeral',
 
         async updateChannel(channelId, mutator) {
             return await withLock(channelId, async () => {

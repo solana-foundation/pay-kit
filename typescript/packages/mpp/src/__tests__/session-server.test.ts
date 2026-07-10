@@ -30,7 +30,13 @@ function mockStatusRpc(statuses: Record<string, { err: unknown } | null | undefi
         getSignatureStatuses: (sigs: readonly string[]) => ({
             send: async () => {
                 calls.push(...sigs);
-                return { value: sigs.map(sig => statuses[sig] ?? null) };
+                return {
+                    context: { slot: 42 },
+                    value: sigs.map(sig => {
+                        const status = statuses[sig];
+                        return status ? { ...status, confirmationStatus: 'confirmed' } : null;
+                    }),
+                };
             },
         }),
     };
@@ -109,6 +115,7 @@ describe('session() request()', () => {
 
     test('builds a SessionRequest that satisfies the canonical schema', async () => {
         const method = session({
+            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 10_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -137,6 +144,7 @@ describe('session() request()', () => {
 
     test('clamps requested cap to the server max', async () => {
         const method = session({
+            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -154,6 +162,7 @@ describe('session() request()', () => {
 
     test('includes modes + pullVoucherStrategy when pull is advertised', async () => {
         const method = session({
+            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -175,6 +184,7 @@ describe('session() request()', () => {
 
     test('skips blockhash/slot prefetch when a credential is present', async () => {
         const method = session({
+            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -202,7 +212,7 @@ describe('session() verify() open', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -235,7 +245,7 @@ describe('session() verify() open', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -261,7 +271,7 @@ describe('session() verify() open', () => {
             cap: 1_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -293,7 +303,7 @@ describe('session() verify() voucher', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -330,7 +340,7 @@ describe('session() verify() voucher', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -352,7 +362,7 @@ describe('session() verify() voucher', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -395,7 +405,7 @@ describe('session() verify() topUp', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -436,7 +446,7 @@ describe('session() verify() topUp', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -476,7 +486,7 @@ describe('session() verify() close', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -514,7 +524,7 @@ describe('session() verify() close', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -553,7 +563,7 @@ describe('session() verify() commit', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -575,6 +585,7 @@ describe('session() verify() commit', () => {
         const routes = session.routes({
             cap: 1_000_000n,
             currency: 'USDC',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -610,6 +621,7 @@ describe('session.routes()', () => {
         const routes = session.routes({
             cap: 1_000n,
             currency: 'USDC',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -631,7 +643,7 @@ describe('session.routes()', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -653,6 +665,7 @@ describe('session.routes()', () => {
         const routes = session.routes({
             cap: 1_000_000n,
             currency: 'USDC',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -701,7 +714,7 @@ describe('session() verify() open replay', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -779,7 +792,7 @@ describe('session() verify() open signature verification', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -811,7 +824,7 @@ describe('session() verify() open signature verification', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -843,7 +856,7 @@ describe('session() verify() open signature verification', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -878,7 +891,7 @@ describe('session() verify() pull open keying', () => {
             currency: 'USDC',
             decimals: 6,
             modes: ['pull'],
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             pullVoucherStrategy: 'clientVoucher',
@@ -916,7 +929,7 @@ describe('session() verify() voucher wire compatibility', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -994,7 +1007,7 @@ describe('session() verify() voucher wire compatibility', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1052,7 +1065,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1076,7 +1089,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1101,7 +1114,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1127,7 +1140,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1163,7 +1176,7 @@ describe('session() verify() close monotonicity', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1237,7 +1250,10 @@ describe('session() verify() close retry', () => {
                 }),
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
-                send: async () => ({ value: sigs.map(() => ({ err: null })) }),
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
             }),
             sendTransaction: (wire: string) => ({
                 send: async () => {
@@ -1255,7 +1271,7 @@ describe('session() verify() close retry', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1315,7 +1331,10 @@ describe('session() verify() close retry', () => {
                 }),
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
-                send: async () => ({ value: sigs.map(() => ({ err: null })) }),
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
             }),
             sendTransaction: () => ({ send: async () => 'Sig' }),
         };
@@ -1323,7 +1342,7 @@ describe('session() verify() close retry', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1360,7 +1379,7 @@ describe('session() verify() commit replay', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1411,7 +1430,7 @@ describe('session() default store sharing', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,

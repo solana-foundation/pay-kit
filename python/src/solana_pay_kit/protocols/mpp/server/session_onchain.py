@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import struct
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
@@ -41,26 +42,34 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     find_channel_pda,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+from solana_pay_kit.protocols.mpp.server._tx_decode import _transaction_dict
+from solana_pay_kit.protocols.programs.paymentchannels.types.topUpArgs import TopUpArgs
 
 if TYPE_CHECKING:
     from solana_pay_kit.protocols.mpp.server.session import SessionConfig
     from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 
 __all__ = [
+    "BoundChannel",
     "VerifyOpenTxExpected",
     "VerifyOpenTxResult",
     "cosign_and_broadcast_open",
     "settle_and_seal_channel",
     "verify_open_tx",
     "new_open_tx_verifier",
+    "new_top_up_state_tx_verifier",
     "new_top_up_tx_verifier",
     "confirm_transaction_signature",
+    "fetch_and_bind_channel_account",
     "is_placeholder_signature",
 ]
 
 # Payment-channel open instruction discriminator (single-byte Anchor-numeric
 # form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
+_CHANNEL_STATUS_OPEN = 0
+_TOP_UP_INSTRUCTION_DISCRIMINATOR = 3
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
 class RpcClient(Protocol):
@@ -78,10 +87,17 @@ class RpcClient(Protocol):
     async def send_raw_transaction(self, raw_tx: bytes) -> Any: ...
 
 
+class AccountInfoRpc(Protocol):
+    async def get_account_info(
+        self, address: str, commitment: str = ..., min_context_slot: int | None = ...
+    ) -> tuple[bytes, str] | None: ...
+
+
 #: A verifier seam installed on the session config: validates a payload (open
 #: or top-up) and raises on rejection.
 OpenTxVerifier = Callable[[OpenPayload], Awaitable[None]]
 TopUpTxVerifier = Callable[[TopUpPayload], Awaitable[None]]
+TopUpStateTxVerifier = Callable[[TopUpPayload, "ChannelState"], Awaitable[None]]
 
 
 class OpenVerifierConfig(Protocol):
@@ -94,7 +110,9 @@ class OpenVerifierConfig(Protocol):
     recipient: str
     max_cap: int
     operator: str
-    program_id: Pubkey | None
+
+    @property
+    def program_id(self) -> Pubkey | str | None: ...
 
 
 @dataclass
@@ -141,6 +159,19 @@ class VerifyOpenTxResult:
     payer: str
 
 
+@dataclass
+class BoundChannel:
+    """Authoritative facts decoded from an on-chain Channel account."""
+
+    deposit: int
+    payer: str
+    authorized_signer: str
+    payee: str
+    mint: str
+    salt: int
+    open_slot: int
+
+
 def is_placeholder_signature(signature: str) -> bool:
     """Report whether ``signature`` is the pending placeholder produced by the
     server-completed open flow (an empty string or a run of 40+ ``'1'``
@@ -182,7 +213,7 @@ def _decode_transaction(transaction_b64: str) -> tuple[list[str], list, list[str
     open verifier only sees the static account keys, so an ALT could hide the
     accounts it validates. See :func:`_reject_address_lookup_tables`.
     """
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import Transaction, VersionedTransaction  # type: ignore[import-untyped]
 
     from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
 
@@ -399,7 +430,9 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
                 max_cap=config.max_cap,
                 network=config.network,
                 operator=config.operator,
-                program_id=config.program_id,
+                program_id=(
+                    Pubkey.from_string(config.program_id) if isinstance(config.program_id, str) else config.program_id
+                ),
                 recipient=config.recipient,
             )
             await verify_open_tx(expected, payload, rpc_client)
@@ -414,14 +447,189 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
     return verifier
 
 
-def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
-    """Return the on-chain top-up verifier to install on the session config: it
-    confirms the top-up transaction signature on-chain via
-    ``getSignatureStatuses``.
+def _require_account_info_rpc(rpc_client: RpcClient) -> AccountInfoRpc:
+    if not callable(getattr(rpc_client, "get_account_info", None)):
+        raise PaymentError(
+            "payment-channel account binding requires an RPC client with get_account_info",
+            code="invalid-config",
+        )
+    return cast(AccountInfoRpc, rpc_client)
 
-    A ``None`` ``rpc_client`` returns ``None`` so the seam stays unset, and the
-    new deposit is trusted as provided; suitable only for unit tests or
-    deployments that verify transactions out of band.
+
+async def _fetch_and_validate_channel(
+    rpc_client: RpcClient,
+    channel_id: str,
+    *,
+    program_id: Pubkey | str | None,
+    expected_payee: str,
+    expected_mint: str,
+    expected_operator: str,
+    expected_grace_period: int,
+    expected_distribution_hash: bytes,
+    require_fresh: bool,
+    min_context_slot: int,
+) -> Any:
+    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    if program_id is None:
+        resolved_program = PROGRAM_ID
+    elif isinstance(program_id, str):
+        resolved_program = Pubkey.from_string(program_id)
+    else:
+        resolved_program = program_id
+    account = await _require_account_info_rpc(rpc_client).get_account_info(
+        channel_id, commitment="confirmed", min_context_slot=min_context_slot
+    )
+    if account is None:
+        raise PaymentError(f"channel {channel_id} account not found on-chain", code="invalid-payload")
+    data, owner = account
+    if owner != str(resolved_program):
+        raise PaymentError(
+            f"channel {channel_id} is not owned by the payment-channels program",
+            code="invalid-payload",
+        )
+    if len(data) != 256:
+        raise PaymentError(f"channel {channel_id} account data has invalid length {len(data)}", code="invalid-payload")
+    if data[0] != 1:
+        raise PaymentError(f"channel {channel_id} has invalid discriminator {data[0]}", code="invalid-payload")
+    try:
+        channel = Channel.decode(data)
+    except Exception as exc:
+        raise PaymentError(f"channel {channel_id} account decode failed: {exc}", code="invalid-payload") from exc
+    if int(channel.version) != 1:
+        raise PaymentError(f"channel {channel_id} has unsupported version {channel.version}", code="invalid-payload")
+    if int(channel.status) != _CHANNEL_STATUS_OPEN:
+        raise PaymentError(
+            f"channel {channel_id} is not open on-chain (status {channel.status})",
+            code="invalid-payload",
+        )
+    if str(channel.mint) != expected_mint:
+        raise PaymentError(
+            f"on-chain channel mint {channel.mint} != expected mint {expected_mint}",
+            code="invalid-payload",
+        )
+    if str(channel.payee) != expected_payee:
+        raise PaymentError(
+            f"on-chain channel payee {channel.payee} != expected recipient {expected_payee}",
+            code="invalid-payload",
+        )
+    if not expected_operator or str(channel.rentPayer) != expected_operator:
+        raise PaymentError(
+            f"on-chain channel rentPayer {channel.rentPayer} != expected operator {expected_operator}",
+            code="invalid-payload",
+        )
+    if require_fresh and (int(channel.settlement.settled) != 0 or int(channel.settlement.payoutWatermark) != 0):
+        raise PaymentError(f"channel {channel_id} has nonzero settlement watermarks", code="invalid-payload")
+    if int(channel.gracePeriod) != expected_grace_period:
+        raise PaymentError(
+            f"on-chain channel gracePeriod {channel.gracePeriod} != expected {expected_grace_period}",
+            code="invalid-payload",
+        )
+    if bytes(channel.distributionHash) != expected_distribution_hash:
+        raise PaymentError("on-chain channel distributionHash does not match session splits", code="invalid-payload")
+    return channel
+
+
+def _session_distribution_hash(splits: list[Any]) -> bytes:
+    hasher = hashlib.sha256()
+    hasher.update(struct.pack("<I", len(splits)))
+    for split in splits:
+        hasher.update(bytes(Pubkey.from_string(split.recipient)))
+        hasher.update(struct.pack("<H", split.bps))
+    return hasher.digest()
+
+
+def _expected_session_grace_period(settlement_window: int | None) -> int:
+    return settlement_window if settlement_window is not None and settlement_window > 0 else 900
+
+
+async def fetch_and_bind_channel_account(
+    rpc_client: RpcClient,
+    channel_id: str,
+    *,
+    program_id: Pubkey | str | None,
+    max_cap: int,
+    expected_authorized_signer: str,
+    expected_payee: str,
+    expected_mint: str,
+    expected_operator: str,
+    min_context_slot: int,
+    expected_grace_period: int = 900,
+    expected_splits: list[Any] | None = None,
+    require_fresh: bool = True,
+) -> BoundChannel:
+    channel = await _fetch_and_validate_channel(
+        rpc_client,
+        channel_id,
+        program_id=program_id,
+        expected_payee=expected_payee,
+        expected_mint=expected_mint,
+        expected_operator=expected_operator,
+        expected_grace_period=expected_grace_period,
+        expected_distribution_hash=_session_distribution_hash(expected_splits or []),
+        require_fresh=require_fresh,
+        min_context_slot=min_context_slot,
+    )
+    if str(channel.authorizedSigner) != expected_authorized_signer:
+        raise PaymentError(
+            f"on-chain channel authorized_signer {channel.authorizedSigner} != expected {expected_authorized_signer}",
+            code="invalid-payload",
+        )
+    resolved_program = (
+        PROGRAM_ID
+        if program_id is None
+        else Pubkey.from_string(program_id)
+        if isinstance(program_id, str)
+        else program_id
+    )
+    derived_channel, _ = find_channel_pda(
+        channel.payer,
+        channel.payee,
+        channel.mint,
+        channel.authorizedSigner,
+        int(channel.salt),
+        int(channel.openSlot),
+        resolved_program,
+    )
+    if str(derived_channel) != channel_id:
+        raise PaymentError(
+            f"channel account {channel_id} != PDA derived from authoritative state {derived_channel}",
+            code="invalid-payload",
+        )
+    deposit = int(channel.deposit)
+    if deposit == 0:
+        raise PaymentError(f"on-chain channel {channel_id} deposit is zero", code="invalid-payload")
+    if deposit > max_cap:
+        raise PaymentError(f"on-chain channel deposit {deposit} exceeds max cap {max_cap}", code="invalid-payload")
+    return BoundChannel(
+        deposit=deposit,
+        payer=str(channel.payer),
+        authorized_signer=str(channel.authorizedSigner),
+        payee=str(channel.payee),
+        mint=str(channel.mint),
+        salt=int(channel.salt),
+        open_slot=int(channel.openSlot),
+    )
+
+
+class TopUpVerifierConfig(Protocol):
+    currency: str
+    network: str
+    recipient: str
+    operator: str
+    settlement_window: int
+    splits: list[Any]
+
+    @property
+    def program_id(self) -> Pubkey | str | None: ...
+
+
+def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
+    """Return the legacy payload-only top-up confirmation callback.
+
+    This factory remains compatible with integrations that install
+    ``SessionConfig.verify_top_up_tx`` themselves. The session method uses
+    :func:`new_top_up_state_tx_verifier` for account-state binding.
     """
     if rpc_client is None:
         return None
@@ -432,6 +640,135 @@ def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | No
     return verifier
 
 
+def new_top_up_state_tx_verifier(
+    config: TopUpVerifierConfig, rpc_client: RpcClient | None
+) -> TopUpStateTxVerifier | None:
+    """Confirm and bind a top-up to the resulting on-chain Channel state."""
+    if rpc_client is None:
+        if config.network == "localnet":
+            return None
+
+        async def fail_closed(_payload: TopUpPayload, _current: ChannelState) -> None:
+            raise PaymentError(
+                "payment-channel top-up requires an rpc client to bind the on-chain channel off localnet",
+                code="invalid-config",
+            )
+
+        return fail_closed
+
+    async def verifier(payload: TopUpPayload, current: ChannelState) -> None:
+        try:
+            new_deposit = int(payload.new_deposit)
+        except (TypeError, ValueError) as exc:
+            raise PaymentError(f"invalid newDeposit: {payload.new_deposit}", code="invalid-payload") from exc
+        expected_mint = resolve_mint(config.currency, config.network)
+        if not expected_mint:
+            raise PaymentError(
+                f"payment-channel top-up requires an SPL token, got currency {config.currency!r}",
+                code="invalid-config",
+            )
+        confirmed_slot = await confirm_transaction_signature(rpc_client, payload.signature, "top-up")
+        get_transaction: Any = getattr(rpc_client, "get_transaction", None)
+        if config.network != "localnet":
+            if not callable(get_transaction):
+                raise PaymentError(
+                    "top-up verification requires an RPC client with get_transaction",
+                    code="invalid-config",
+                )
+            pending: Any = get_transaction(
+                payload.signature,
+                encoding="jsonParsed",
+                max_supported_transaction_version=0,
+            )
+            response: Any = await pending
+            transaction = _transaction_dict(response)
+            if transaction is None:
+                raise PaymentError("top-up transaction not found or not yet confirmed", code="transaction-not-found")
+            _verify_confirmed_top_up(transaction, payload, current, config.program_id)
+        channel = await _fetch_and_validate_channel(
+            rpc_client,
+            payload.channel_id,
+            program_id=config.program_id,
+            expected_payee=config.recipient,
+            expected_mint=expected_mint,
+            expected_operator=config.operator,
+            expected_grace_period=_expected_session_grace_period(getattr(config, "settlement_window", None)),
+            expected_distribution_hash=_session_distribution_hash(getattr(config, "splits", [])),
+            require_fresh=False,
+            min_context_slot=confirmed_slot,
+        )
+        if str(channel.authorizedSigner) != current.authorized_signer:
+            raise PaymentError(
+                "on-chain channel authorized signer does not match stored channel", code="invalid-payload"
+            )
+        if current.operator is None or str(channel.payer) != current.operator:
+            raise PaymentError("on-chain channel payer does not match stored channel", code="invalid-payload")
+        if int(channel.deposit) != new_deposit:
+            raise PaymentError(
+                f"on-chain channel deposit {channel.deposit} != asserted newDeposit {new_deposit}",
+                code="invalid-payload",
+            )
+
+    return verifier
+
+
+def _verify_confirmed_top_up(
+    transaction: dict[str, Any],
+    payload: TopUpPayload,
+    state: ChannelState,
+    configured_program_id: Pubkey | str | None,
+) -> None:
+    program_id = str(PROGRAM_ID if configured_program_id is None else configured_program_id)
+    meta = transaction.get("meta")
+    if not isinstance(meta, dict) or meta.get("err") is not None:
+        raise PaymentError("top-up transaction failed on-chain", code="transaction-failed")
+    message = (transaction.get("transaction") or {}).get("message")
+    instructions = message.get("instructions") if isinstance(message, dict) else None
+    if not isinstance(instructions, list):
+        raise PaymentError("confirmed top-up transaction has no instructions", code="invalid-payload")
+    matches: list[dict[str, Any]] = []
+    for instruction in instructions:
+        if not isinstance(instruction, dict) or instruction.get("programId") != program_id:
+            continue
+        raw = instruction.get("data")
+        if not isinstance(raw, str):
+            continue
+        decoded = _base58_decode(raw)
+        if decoded and decoded[0] == _TOP_UP_INSTRUCTION_DISCRIMINATOR:
+            matches.append(instruction)
+    if len(matches) != 1:
+        raise PaymentError(
+            f"confirmed transaction must contain exactly one configured topUp instruction, found {len(matches)}",
+            code="invalid-payload",
+        )
+    instruction = matches[0]
+    accounts = instruction.get("accounts")
+    if not isinstance(accounts, list) or len(accounts) < 2 or accounts[1] != payload.channel_id:
+        raise PaymentError("top-up instruction channel does not match the session", code="invalid-payload")
+    raw_data = _base58_decode(instruction["data"])
+    decoded_args = TopUpArgs.from_decoded(TopUpArgs.layout.parse(raw_data[1:]))
+    if TopUpArgs.layout.build(decoded_args.to_encodable()) != raw_data[1:]:
+        raise PaymentError("top-up instruction has trailing data", code="invalid-payload")
+    new_deposit = int(payload.new_deposit)
+    if new_deposit <= state.deposit or decoded_args.amount != new_deposit - state.deposit:
+        raise PaymentError(
+            f"top-up amount {decoded_args.amount} != newDeposit delta {new_deposit - state.deposit}",
+            code="invalid-payload",
+        )
+
+
+def _base58_decode(value: str) -> bytes:
+    number = 0
+    for char in value:
+        digit = _BASE58_ALPHABET.find(char)
+        if digit < 0:
+            raise PaymentError("invalid base58 instruction data", code="invalid-payload")
+        number = number * 58 + digit
+    leading_zeros = len(value) - len(value.lstrip("1"))
+    encoded = b"" if number == 0 else number.to_bytes((number.bit_length() + 7) // 8, "big")
+    return b"\0" * leading_zeros + encoded
+
+
 async def confirm_transaction_signature(
     rpc_client: RpcClient,
     signature: str,
@@ -439,7 +776,7 @@ async def confirm_transaction_signature(
     *,
     timeout_seconds: float = 30.0,
     poll_interval_seconds: float = 1.0,
-) -> None:
+) -> int:
     """Poll ``getSignatureStatuses`` until ``signature`` reaches at least
     ``confirmed`` commitment, or raise.
 
@@ -478,11 +815,9 @@ async def confirm_transaction_signature(
                     f"{label} tx {signature!r} failed on-chain: {status['err']}", code="transaction-failed"
                 )
             level = status.get("confirmationStatus")
-            # RPC endpoints that omit ``confirmationStatus`` only report a
-            # status once the transaction has landed; treat that as
-            # confirmed, mirroring the TS helper.
-            if level is None or level in ("confirmed", "finalized"):
-                return
+            if level in ("confirmed", "finalized"):
+                slot = status.get("slot")
+                return slot if isinstance(slot, int) and slot >= 0 else 0
 
         now = time.monotonic()
         if now >= deadline:
@@ -592,6 +927,22 @@ async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc
     signature, broadcasts, and confirms. Returns the confirmed open signature.
     Mirrors Go SubmitOpenTx (and reuses the charge fee-payer co-sign).
     """
+    wire, expected_signature = _complete_open_transaction(payload, fee_payer)
+    sent = await rpc.send_raw_transaction(wire)
+    signature = str(sent.value)
+    if signature != expected_signature:
+        raise PaymentError(
+            f"broadcast open signature {signature} != completed transaction signature {expected_signature}",
+            code="invalid-payload",
+        )
+    await confirm_transaction_signature(rpc, signature, "open")
+    return signature
+
+
+def _complete_open_transaction(payload: OpenPayload, fee_payer: Any) -> tuple[bytes, str]:
+    """Complete the fee-payer signature without broadcasting the transaction."""
+    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
+
     from solana_pay_kit.protocols.mpp.server._verify import _co_sign_with_fee_payer
 
     if not payload.transaction:
@@ -599,8 +950,11 @@ async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc
             "openTxSubmitter=server requires the client-built open transaction in the payload",
             code="invalid-payload",
         )
-    cosigned = _co_sign_with_fee_payer(payload.transaction, fee_payer)
-    sent = await rpc.send_raw_transaction(base64.b64decode(cosigned))
-    signature = str(sent.value)
-    await confirm_transaction_signature(rpc, signature, "open")
-    return signature
+    wire = base64.b64decode(_co_sign_with_fee_payer(payload.transaction, fee_payer))
+    try:
+        signatures = Transaction.from_bytes(wire).signatures
+    except Exception:
+        signatures = VersionedTransaction.from_bytes(wire).signatures
+    if not signatures:
+        raise PaymentError("open transaction is missing the fee-payer signature", code="invalid-payload")
+    return wire, str(signatures[0])

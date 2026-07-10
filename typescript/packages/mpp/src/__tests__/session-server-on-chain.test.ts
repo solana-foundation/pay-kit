@@ -213,10 +213,12 @@ interface MockStatus {
 
 function makeSubmitRpc(statusSequence: (MockStatus | null)[]) {
     const sends: string[] = [];
+    const statusSignatures: string[] = [];
     let statusCalls = 0;
     return {
-        getSignatureStatuses: (_sigs: readonly Signature[]) => ({
+        getSignatureStatuses: (sigs: readonly Signature[]) => ({
             send: async () => {
+                statusSignatures.push(...sigs);
                 const status =
                     statusCalls < statusSequence.length
                         ? statusSequence[statusCalls]
@@ -233,6 +235,7 @@ function makeSubmitRpc(statusSequence: (MockStatus | null)[]) {
         }),
         sends,
         statusCallCount: () => statusCalls,
+        statusSignatures,
     };
 }
 
@@ -381,6 +384,8 @@ describe("session() openTxSubmitter='server' replay", () => {
         const state = await store.getChannel(open.channelId);
         expect(state?.deposit).toBe(1_000_000n);
         expect(state?.cumulative).toBe(0n);
+        expect(state?.openSignature).toBe('OpenSig1111111111111111111111111111111111111111111111111111111');
+        expect(rpc.statusSignatures).not.toContain(PLACEHOLDER_SIG);
     });
 });
 
