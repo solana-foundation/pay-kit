@@ -1383,6 +1383,12 @@ function environmentForScenario(
         }
       : {}),
     MPP_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
+    // Python's x402 fixture exercises a single local development process for
+    // non-localnet negative vectors. Make that exceptional process-local replay
+    // store explicit; production construction still requires a durable store.
+    ...(scenario.network !== "localnet"
+      ? { PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE: "1" }
+      : {}),
     MPP_HARNESS_SPLITS: JSON.stringify(
       (scenario.splits ?? []).map((split) => ({
         recipient: splitRecipients[split.recipientKey],
@@ -1731,10 +1737,13 @@ function expectSessionChannelSettlement(
   expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
   expect(verify.data[0], "Ed25519 signature count").toBe(1);
   expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
-  expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
-  expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
-    primaryDelta(scenario),
-  );
+  expect(readU16Le(verify.data, 12), "voucher message length").toBe(50);
+  expect(verify.data[112], "voucher magic tag").toBe(0x56);
+  expect(verify.data[113], "voucher magic version").toBe(0x01);
+  expect(
+    readU64Le(verify.data, 112 + 2 + 32),
+    "voucher cumulative amount",
+  ).toBe(primaryDelta(scenario));
 
   // settle_and_finalize (discriminator 4), hasVoucher = 1.
   expect(accountAt(message, settle.programAddressIndex)).toBe(
