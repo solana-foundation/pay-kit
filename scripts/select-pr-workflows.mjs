@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
 export const WORKFLOWS = [
+  "typescript",
+  "rust",
   "go",
   "python",
   "ruby",
@@ -16,6 +18,8 @@ export const WORKFLOWS = [
 ];
 
 const LANGUAGE_PATHS = {
+  typescript: ["typescript/", "html/"],
+  rust: ["rust/"],
   go: [
     "go/",
     "harness/go-client/",
