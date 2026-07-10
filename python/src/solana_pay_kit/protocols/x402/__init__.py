@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -61,6 +62,7 @@ _RESPONSE_HEADER = "payment-response"
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
 _REPLAY_PREFIX = "x402-svm-exact:consumed:"
+_ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 
 
 class X402Adapter:
@@ -79,7 +81,17 @@ class X402Adapter:
                 "leave X402Config.facilitator_url None for self-hosted"
             )
         self._config = config
-        self._store: Store = replay_store if replay_store is not None else MemoryStore()
+        uses_memory_store = replay_store is None or isinstance(replay_store, MemoryStore)
+        is_localnet = config.network.mints_label() == "localnet"
+        if uses_memory_store and not is_localnet and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) != "1":
+            raise ConfigurationError(
+                "solana_pay_kit: a durable replay_store is required outside localnet; set "
+                f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
+                "MemoryStore for development"
+            )
+        # nosemgrep: harness.semgrep.rules.failopen-default-store-python
+        # The preceding policy permits this fallback only on localnet or an explicit development override.
+        self._store = replay_store if replay_store is not None else MemoryStore()
         self._recent_blockhash_provider = recent_blockhash_provider
 
     def accepts_entry(self, gate: Gate, request: Any) -> X402AcceptsEntry:

@@ -43,6 +43,7 @@ from solana_pay_kit.protocols.mpp.server.session_method import (
     SessionOptions,
     new_session,
 )
+from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
@@ -254,10 +255,40 @@ def test_new_session_validation_missing_secret(monkeypatch: pytest.MonkeyPatch) 
         new_session(SessionOptions(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=""))
 
 
+@pytest.mark.parametrize("store", [None, MemoryChannelStore()])
+def test_new_session_inmemory_store_fails_closed_outside_localnet(monkeypatch: pytest.MonkeyPatch, store) -> None:
+    options = SessionOptions(
+        recipient=SESSION_TEST_RECIPIENT,
+        cap=1_000,
+        network="devnet",
+        secret_key=SESSION_METHOD_SECRET,
+        store=store,
+    )
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        new_session(options)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        new_session(options)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    assert isinstance(new_session(options).core().store(), MemoryChannelStore)
+
+
+def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None:
+    assert isinstance(_new_test_session().core().store(), MemoryChannelStore)
+
+    store = MemoryChannelStore()
+    assert _new_test_session(store=store).core().store() is store
+
+
 # ── new_session defaults (TestNewSessionDefaults) ──
 
 
-def test_new_session_defaults() -> None:
+def test_new_session_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
     session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="")
     assert session._currency == "USDC"
     assert session._network == "mainnet"

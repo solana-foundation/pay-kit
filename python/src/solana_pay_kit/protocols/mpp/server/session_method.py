@@ -34,6 +34,7 @@ dispatch.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -83,6 +84,7 @@ from solana_pay_kit.signer import LocalSigner
 logger = logging.getLogger(__name__)
 
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
+_ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 _U64_MAX = (1 << 64) - 1
 
 
@@ -162,7 +164,9 @@ class SessionOptions:
     # OpenTxSubmitter selects who broadcasts push-mode open transactions.
     # Default "client".
     open_tx_submitter: OpenTxSubmitter = ""
-    # Store is the pluggable channel store. Defaults to in-memory.
+    # Store is the pluggable channel store. Localnet defaults to in-memory;
+    # off-localnet requires a durable store unless the development escape hatch
+    # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 is set explicitly.
     store: ChannelStore | None = None
     # RPC is the optional RPC client used for on-chain checks. None skips every
     # on-chain check and trusts payload claims as provided.
@@ -951,8 +955,6 @@ def new_session(options: SessionOptions) -> Session:
 
     secret_key = options.secret_key
     if secret_key == "":
-        import os
-
         secret_key = os.environ.get(_SECRET_KEY_ENV_VAR, "")
     if secret_key == "":
         raise PaymentError("missing secret key", code="invalid-config")
@@ -979,6 +981,18 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
+    uses_memory_store = options.store is None or isinstance(options.store, MemoryChannelStore)
+    is_localnet = network in ("localnet", "solana_localnet")
+    if uses_memory_store and not is_localnet and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) != "1":
+        raise PaymentError(
+            "a durable channel store is required outside localnet; set "
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
+            "MemoryChannelStore for development",
+            code="invalid-config",
+        )
+
+    # nosemgrep: harness.semgrep.rules.failopen-default-store-python
+    # The preceding policy permits this fallback only on localnet or an explicit development override.
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(

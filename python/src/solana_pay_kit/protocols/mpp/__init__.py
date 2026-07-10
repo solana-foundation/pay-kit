@@ -193,6 +193,8 @@ class MppAdapter:
                 "MemoryStore for development",
                 code="invalid-config",
             )
+        # nosemgrep: harness.semgrep.rules.failopen-default-store-python
+        # The preceding policy permits this fallback only on localnet or an explicit development override.
         self._replay_store = replay_store if replay_store is not None else MemoryStore()
         self._recent_blockhash_provider = recent_blockhash_provider
         # Cache one solana_pay_kit.protocols.mpp.Mpp per (payTo|coin) key, like the PHP
