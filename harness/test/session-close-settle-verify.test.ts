@@ -23,7 +23,7 @@
 //      receipt ref without submitting, the regression this cell tracks, would
 //      never reach sendTransaction;
 //   2. the transaction settles THE HIGHEST VOUCHER — the Ed25519 precompile at
-//      instruction 0 embeds the canonical 48-byte voucher message binding the
+//      instruction 0 embeds the canonical 50-byte voucher message binding the
 //      channel + cumulative + expiry we signed;
 //   3. the distribute instruction encodes the DISTRIBUTE BALANCE DELTAS PER
 //      RECIPIENT SPLIT — its `distributeArgs.recipients` are exactly the
@@ -62,7 +62,7 @@ const DISTRIBUTE_HEADER_ACCOUNTS = 11;
 const PAYEE_TOKEN_ACCOUNT_INDEX = 5;
 // Ed25519 precompile message offset (16-byte header + 32 pubkey + 64 sig = 112).
 const ED25519_MESSAGE_OFFSET = 112;
-const VOUCHER_MESSAGE_BYTES = 48;
+const VOUCHER_MESSAGE_BYTES = 50;
 
 const CUMULATIVE = 900_000n; // highest accepted voucher (base units)
 const EXPIRES_AT = 4_000_000_000n; // far-future expiry (outlasts the window)
@@ -83,7 +83,7 @@ async function makeVoucherSigner(): Promise<VoucherSigner> {
   return { pubkeyBase58: getBase58Decoder().decode(raw), keyPair };
 }
 
-/** Sign the canonical 48-byte voucher message so the precompile the composer
+/** Sign the canonical 50-byte voucher message so the precompile the composer
  *  emits carries exactly this channel + cumulative + expiry. */
 async function signHighestVoucher(
   voucherSigner: VoucherSigner,
