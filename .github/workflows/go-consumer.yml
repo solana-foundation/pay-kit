@@ -6,9 +6,6 @@ permissions:
 on:
   push:
     branches: [main]
-  pull_request:
-    paths:
-      - "go/**"
   workflow_call:
 
 jobs:
