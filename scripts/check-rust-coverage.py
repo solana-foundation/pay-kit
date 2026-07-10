@@ -84,7 +84,8 @@ def main(argv: list[str]) -> int:
     for surface, records in by_surface.items():
         for record in records:
             filename = record["filename"]
-            relative_name = filename.split("/src/", 1)[-1]
+            source_index = filename.find(KIT_SOURCE)
+            relative_name = filename[source_index + len(KIT_SOURCE) :]
             summary = record.get("summary")
             if not isinstance(summary, dict):
                 failures.append(f"coverage summary missing for {filename}")

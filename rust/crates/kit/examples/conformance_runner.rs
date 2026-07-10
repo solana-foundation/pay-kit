@@ -380,14 +380,7 @@ fn verify_exact_transaction(input: &VectorInput) -> Result<(), RunnerError> {
         .map_err(|_| {
             RunnerError::Exact("invalid_exact_svm_payload_no_transfer_instruction".to_string())
         })?;
-    let managed_signers = input
-        .x402_exact_managed_signers
-        .iter()
-        .map(|signer| Pubkey::from_str(signer))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| {
-            RunnerError::Exact("invalid_exact_svm_payload_no_transfer_instruction".to_string())
-        })?;
+    let managed_signers = parse_managed_signers(&input.x402_exact_managed_signers)?;
     let transaction = decode_transaction(transaction).map_err(|_| {
         RunnerError::Exact("invalid_exact_svm_payload_transaction_could_not_be_decoded".to_string())
     })?;
@@ -395,6 +388,16 @@ fn verify_exact_transaction(input: &VectorInput) -> Result<(), RunnerError> {
     verify_exact_versioned_transaction(&transaction, &requirement, &managed_signers)
         .map_err(exact_error)?;
     Ok(())
+}
+
+fn parse_managed_signers(signers: &[String]) -> Result<Vec<Pubkey>, RunnerError> {
+    signers
+        .iter()
+        .map(|signer| Pubkey::from_str(signer))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| {
+            RunnerError::rejected("x402ExactManagedSigners contains an invalid public key")
+        })
 }
 
 fn exact_error(error: Error) -> RunnerError {
@@ -671,7 +674,7 @@ fn valid_payment_identifier(id: &str) -> bool {
 
 #[cfg(test)]
 mod runner_tests {
-    use super::extract_vector_id;
+    use super::{extract_vector_id, parse_managed_signers, RunnerError};
 
     #[test]
     fn extracts_id_before_an_invalid_nested_string() {
@@ -686,5 +689,18 @@ mod runner_tests {
     #[test]
     fn rejects_non_schema_ids() {
         assert_eq!(extract_vector_id(r#"{"id":"bad/id"}"#), None);
+    }
+
+    #[test]
+    fn reports_invalid_managed_signers_as_invalid_input() {
+        let error = parse_managed_signers(&["not-a-pubkey".to_string()])
+            .expect_err("invalid managed signer must be rejected");
+        assert!(matches!(
+            error,
+            RunnerError::Rejected {
+                reject_code: Some("invalid-payload"),
+                ..
+            }
+        ));
     }
 }
