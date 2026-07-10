@@ -14,6 +14,8 @@ jobs:
     name: Classify verification surfaces
     runs-on: ubuntu-latest
     outputs:
+      typescript: ${{ steps.select.outputs.typescript }}
+      rust: ${{ steps.select.outputs.rust }}
       go: ${{ steps.select.outputs.go }}
       python: ${{ steps.select.outputs.python }}
       ruby: ${{ steps.select.outputs.ruby }}
@@ -52,6 +54,16 @@ jobs:
     needs: classify
     if: ${{ needs.classify.outputs.go == 'true' }}
     uses: ./.github/workflows/go.yml
+    secrets: inherit
+
+  core:
+    needs: classify
+    if: ${{ needs.classify.outputs.typescript == 'true' || needs.classify.outputs.rust == 'true' || needs.classify.outputs.harness == 'true' }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      run_typescript: ${{ needs.classify.outputs.typescript == 'true' }}
+      run_rust: ${{ needs.classify.outputs.rust == 'true' }}
+      run_harness: ${{ needs.classify.outputs.harness == 'true' }}
     secrets: inherit
 
   go_consumer:
@@ -105,7 +117,7 @@ jobs:
   routed_sdk_gate:
     name: Routed SDK gate
     if: ${{ always() }}
-    needs: [classify, go, go_consumer, python, ruby, lua, php, swift, kotlin, harness]
+    needs: [classify, core, go, go_consumer, python, ruby, lua, php, swift, kotlin, harness]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected workflow to pass
@@ -120,6 +132,8 @@ jobs:
 
           const selected = needs.classify.outputs;
           const required = {
+            typescript: ["core"],
+            rust: ["core"],
             go: ["go", "go_consumer"],
             python: ["python"],
             ruby: ["ruby"],
@@ -127,7 +141,7 @@ jobs:
             php: ["php"],
             swift: ["swift"],
             kotlin: ["kotlin"],
-            harness: ["harness"],
+            harness: ["core", "harness"],
           };
 
           for (const [surface, jobs] of Object.entries(required)) {
