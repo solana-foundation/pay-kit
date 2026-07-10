@@ -3306,7 +3306,8 @@ mod tests {
             bs58::encode([9u8; 64]).into_string(),
         );
 
-        let cases: Vec<(&str, Box<dyn Fn(&mut Channel)>)> = vec![
+        type ChannelMutation = Box<dyn Fn(&mut Channel)>;
+        let cases: Vec<(&str, ChannelMutation)> = vec![
             (
                 "settled",
                 Box::new(|channel| channel.settlement.settled = 1),
