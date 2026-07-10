@@ -991,8 +991,6 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
-    # nosemgrep: harness.semgrep.rules.failopen-default-store-python
-    # The preceding policy permits this fallback only on localnet or an explicit development override.
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(

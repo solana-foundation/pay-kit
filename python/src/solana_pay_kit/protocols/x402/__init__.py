@@ -89,8 +89,6 @@ class X402Adapter:
                 f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
                 "MemoryStore for development"
             )
-        # nosemgrep: harness.semgrep.rules.failopen-default-store-python
-        # The preceding policy permits this fallback only on localnet or an explicit development override.
         self._store = replay_store if replay_store is not None else MemoryStore()
         self._recent_blockhash_provider = recent_blockhash_provider
 
