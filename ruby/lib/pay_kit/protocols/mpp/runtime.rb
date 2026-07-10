@@ -71,9 +71,9 @@ module PayKit::Protocols::Mpp
         "PayKit::Protocols::Mpp.create requires a replay_store; nil is not a valid store"
     end
 
-    unless localnet?(method) || durable_replay_store?(replay_store)
+    unless localnet?(method) || durable_shared_replay_store?(replay_store)
       raise ::PayKit::ConfigurationError,
-        "PayKit::Protocols::Mpp.create requires a durable replay_store for #{network_name(method)}"
+        "PayKit::Protocols::Mpp.create requires a durable replay_store shared across workers for #{network_name(method)}"
     end
     Server::Charge.new(
       method: method,
@@ -95,8 +95,9 @@ module PayKit::Protocols::Mpp
   end
   private_class_method :network_name
 
-  def self.durable_replay_store?(store)
-    store.respond_to?(:durable?) && store.durable?
+  def self.durable_shared_replay_store?(store)
+    store.respond_to?(:durable?) && store.durable? &&
+      store.respond_to?(:shared?) && store.shared?
   end
-  private_class_method :durable_replay_store?
+  private_class_method :durable_shared_replay_store?
 end
