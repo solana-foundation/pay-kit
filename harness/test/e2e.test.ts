@@ -1,5 +1,7 @@
 import http from "node:http";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createSolanaRpc,
@@ -40,6 +42,9 @@ const DEFAULT_SPL_DECIMALS = 6;
 const CLIENT_SOL_FUND_LAMPORTS = 5_000_000_000;
 const DEFAULT_SURFPOOL_DATASOURCE_RPC_URL =
   "https://api.mainnet-beta.solana.com";
+const REPLAY_STORE_RUN_ID = `${process.pid}-${Date.now()}-${Math.random()
+  .toString(16)
+  .slice(2)}`;
 
 function tokenProgramAddress(
   variant: "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM" | undefined,
@@ -1373,6 +1378,13 @@ function environmentForScenario(
     MPP_HARNESS_PAYMENT_MODE: scenario.paymentMode ?? "pull",
     MPP_HARNESS_PRICE: scenario.price,
     MPP_HARNESS_RESOURCE_PATH: scenario.resourcePath,
+    // Non-localnet Ruby harness workers must share one atomically locked replay
+    // file. The run id prevents stale markers from another Vitest invocation;
+    // the scenario id keeps unrelated matrix rows isolated.
+    MPP_HARNESS_REPLAY_STORE_PATH: join(
+      tmpdir(),
+      `pay-kit-harness-mpp-replay-${REPLAY_STORE_RUN_ID}-${scenario.id}.json`,
+    ),
     MPP_HARNESS_DECIMALS: String(scenarioDecimals(scenario)),
     MPP_HARNESS_ASSET_KIND: isSolNative(scenario) ? "sol" : "spl",
     ...(scenario.replaySource

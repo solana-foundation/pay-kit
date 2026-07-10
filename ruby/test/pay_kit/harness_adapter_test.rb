@@ -59,6 +59,14 @@ class PayKitHarnessAdapterTest < Minitest::Test
     end
   end
 
+  def test_mpp_devnet_mode_requires_an_explicit_shared_store_path
+    env = mpp_env.merge("MPP_HARNESS_NETWORK" => "devnet")
+    _stdout, stderr, status = Open3.capture3(env, "ruby", "-I", lib_path, ADAPTER)
+
+    refute status.success?
+    assert_match(/MPP_HARNESS_REPLAY_STORE_PATH/, stderr)
+  end
+
   def test_dual_env_set_is_rejected
     env = mpp_env.merge(x402_env)
     _, stderr, status = Open3.capture3(env, "ruby", "-I", lib_path, ADAPTER)

@@ -185,13 +185,19 @@ else
   )
 
   # Devnet/mainnet MPP creation intentionally fails closed without durable,
-  # cross-worker replay storage. This harness-only store provides those
-  # capabilities when workers share MPP_HARNESS_REPLAY_STORE_PATH.
-  replay_store_path = optional_env(
-    "MPP_HARNESS_REPLAY_STORE_PATH",
-    File.join(Dir.tmpdir, "pay-kit-harness-mpp-replay-#{Process.pid}.json")
-  )
-  replay_store = HarnessReplayStore.new(replay_store_path)
+  # cross-worker replay storage. The harness runner supplies one explicit path
+  # per scenario so every worker that serves it shares the same reservation
+  # state; a process-specific default would make `shared?` untrue.
+  replay_store = if network_label == "localnet"
+    ::PayKit::Protocols::Mpp::MemoryStore.new
+  else
+    replay_store_path = ENV.fetch("MPP_HARNESS_REPLAY_STORE_PATH", "").strip
+    if replay_store_path.empty?
+      warn "ruby-server: MPP_HARNESS_REPLAY_STORE_PATH is required for non-localnet MPP harness runs"
+      exit 2
+    end
+    HarnessReplayStore.new(replay_store_path)
+  end
 
   mpp_server = ::PayKit::Protocols::Mpp.create(
     method: method,
