@@ -178,6 +178,47 @@ async def test_delete_and_mark_sealed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_lock_waiter_does_not_pin_entry() -> None:
+    store = MemoryChannelStore()
+    holder = await store._acquire_channel_lock("c1")
+
+    waiter = asyncio.create_task(store._acquire_channel_lock("c1"))
+    while store._locks["c1"].refs != 2:
+        await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    await store._release_channel_lock("c1", holder)
+    assert "c1" not in store._locks
+
+
+@pytest.mark.asyncio
+async def test_cancelled_release_still_evicts_entry() -> None:
+    store = MemoryChannelStore()
+    entry = await store._acquire_channel_lock("c1")
+    mu_acquired = asyncio.Event()
+    release_mu = asyncio.Event()
+
+    async def hold_mu() -> None:
+        async with store._mu:
+            mu_acquired.set()
+            await release_mu.wait()
+
+    blocker = asyncio.create_task(hold_mu())
+    await mu_acquired.wait()
+    release = asyncio.create_task(store._release_channel_lock("c1", entry))
+    await asyncio.sleep(0)
+    release.cancel()
+    release_mu.set()
+    await blocker
+    with pytest.raises(asyncio.CancelledError):
+        await release
+    await asyncio.sleep(0)
+    assert "c1" not in store._locks
+
+
+@pytest.mark.asyncio
 async def test_returns_clones() -> None:
     """Mirrors TestMemoryChannelStoreReturnsClones.
 

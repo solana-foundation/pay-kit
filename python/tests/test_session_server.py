@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
@@ -277,6 +278,20 @@ async def test_process_open_verify_open_tx_error_rejects_without_persisting() ->
         await server.process_open(session_open_payload("chan1", 1_000, "signer1"))
     state = await server.store().get_channel("chan1")
     assert state is None
+
+
+async def test_process_open_preserves_verifier_payment_error_code() -> None:
+    async def verifier(_: OpenPayload) -> None:
+        raise PaymentError("rpc client required", code="invalid-config")
+
+    config = session_test_config()
+    config.verify_open_tx = verifier
+    server = new_session_test_server(config)
+
+    with pytest.raises(PaymentError) as excinfo:
+        await server.process_open(session_open_payload("chan1", 1_000, "signer1"))
+    assert excinfo.value.code == "invalid-config"
+    assert await server.store().get_channel("chan1") is None
 
 
 async def test_process_open_skips_verify_open_tx_for_pull() -> None:

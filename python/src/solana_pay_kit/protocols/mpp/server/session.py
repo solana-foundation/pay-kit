@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
@@ -342,6 +343,8 @@ class SessionServer:
         if payload.mode == "push" and self._config.verify_open_tx is not None:
             try:
                 await self._config.verify_open_tx(payload)
+            except PaymentError:
+                raise
             except Exception as exc:
                 raise _wrap("open tx verification failed", exc) from exc
 

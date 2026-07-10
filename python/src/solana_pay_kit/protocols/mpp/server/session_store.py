@@ -317,6 +317,12 @@ class ChannelStore:
         raise NotImplementedError
 
 
+@dataclass
+class _ChannelLockEntry:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    refs: int = 0
+
+
 class MemoryChannelStore(ChannelStore):
     """In-memory :class:`ChannelStore` with per-channel locking.
 
@@ -328,20 +334,34 @@ class MemoryChannelStore(ChannelStore):
     def __init__(self) -> None:
         # _data maps channel id to stored state.
         self._data: dict[str, ChannelState] = {}
-        # _locks holds the per-channel lock serializing update_channel calls
-        # for the same channel id.
-        self._locks: dict[str, asyncio.Lock] = {}
+        # Active holders and waiters keep entries alive; idle entries are evicted.
+        self._locks: dict[str, _ChannelLockEntry] = {}
         # _mu guards _data and _locks.
         self._mu = asyncio.Lock()
 
-    async def _channel_lock(self, channel_id: str) -> asyncio.Lock:
-        """Return the lock serializing updates for ``channel_id``."""
+    async def _acquire_channel_lock(self, channel_id: str) -> _ChannelLockEntry:
         async with self._mu:
-            lock = self._locks.get(channel_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._locks[channel_id] = lock
-            return lock
+            entry = self._locks.get(channel_id)
+            if entry is None:
+                entry = _ChannelLockEntry()
+                self._locks[channel_id] = entry
+            entry.refs += 1
+        try:
+            await entry.lock.acquire()
+        except BaseException:
+            await asyncio.shield(self._drop_channel_lock_ref(channel_id, entry))
+            raise
+        return entry
+
+    async def _drop_channel_lock_ref(self, channel_id: str, entry: _ChannelLockEntry) -> None:
+        async with self._mu:
+            entry.refs -= 1
+            if entry.refs == 0 and self._locks.get(channel_id) is entry:
+                del self._locks[channel_id]
+
+    async def _release_channel_lock(self, channel_id: str, entry: _ChannelLockEntry) -> None:
+        entry.lock.release()
+        await asyncio.shield(self._drop_channel_lock_ref(channel_id, entry))
 
     async def get_channel(self, channel_id: str) -> ChannelState | None:
         async with self._mu:
@@ -349,8 +369,8 @@ class MemoryChannelStore(ChannelStore):
             return None if state is None else state.clone()
 
     async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
-        lock = await self._channel_lock(channel_id)
-        async with lock:
+        entry = await self._acquire_channel_lock(channel_id)
+        try:
             async with self._mu:
                 current = self._data.get(channel_id)
                 current_snapshot = None if current is None else current.clone()
@@ -362,6 +382,8 @@ class MemoryChannelStore(ChannelStore):
             async with self._mu:
                 self._data[channel_id] = next_state.clone()
             return next_state
+        finally:
+            await self._release_channel_lock(channel_id, entry)
 
     async def delete_channel(self, channel_id: str) -> None:
         # Take the per-channel lock before mutating _data, in the same
@@ -369,13 +391,12 @@ class MemoryChannelStore(ChannelStore):
         # in-flight mutator that would otherwise write the channel back after
         # the pop. Matching the order means no deadlock.
         #
-        # The lock entry is intentionally NOT removed: popping it while another
-        # task is still queued on it would let a later operation create a fresh
-        # lock for the same id and run unserialized against the queued one. Locks
-        # persist for the store's lifetime (as they already do for update_channel).
-        lock = await self._channel_lock(channel_id)
-        async with lock, self._mu:
-            self._data.pop(channel_id, None)
+        entry = await self._acquire_channel_lock(channel_id)
+        try:
+            async with self._mu:
+                self._data.pop(channel_id, None)
+        finally:
+            await self._release_channel_lock(channel_id, entry)
 
     async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
         async with self._mu:
