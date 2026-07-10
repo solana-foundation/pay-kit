@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +57,15 @@ func hostedPaymentChannelsABIDrift(body string) bool {
 	// bytes that follow gracePeriod as the recipients count.
 	return strings.Contains(body, "NotEnoughAccountKeys") ||
 		strings.Contains(body, "custom program error: 0x104")
+}
+
+func hostedSurfpoolDatasourceMiss(err error) bool {
+	if err == nil || os.Getenv("MPP_HARNESS_RPC_URL") != "" {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "Failed to fetch account") &&
+		strings.Contains(message, "AccountNotFound")
 }
 
 // requireSurfpool skips the test explicitly when the sandbox is unreachable.
@@ -105,7 +115,25 @@ func surfnetSetTokenAccount(ctx context.Context, t *testing.T, rpcClient *rpc.Cl
 	}
 	var out json.RawMessage
 	if err := rpcClient.RPCCallForInto(ctx, &out, "surfnet_setTokenAccount", params); err != nil {
+		if hostedSurfpoolDatasourceMiss(err) {
+			t.Skipf("hosted Surfpool datasource could not clone the generated token account: %v", err)
+		}
 		t.Fatalf("surfnet_setTokenAccount(%s): %v", owner, err)
+	}
+}
+
+func TestHostedSurfpoolDatasourceMiss(t *testing.T) {
+	t.Setenv("MPP_HARNESS_RPC_URL", "")
+	miss := errors.New("Internal error: Failed to fetch account abc from remote: AccountNotFound")
+	if !hostedSurfpoolDatasourceMiss(miss) {
+		t.Fatal("expected the hosted datasource miss to be recognized")
+	}
+	if hostedSurfpoolDatasourceMiss(errors.New("connection refused")) {
+		t.Fatal("unrelated hosted failures must remain blocking")
+	}
+	t.Setenv("MPP_HARNESS_RPC_URL", "http://127.0.0.1:8899")
+	if hostedSurfpoolDatasourceMiss(miss) {
+		t.Fatal("an explicitly configured sandbox must remain strict")
 	}
 }
 
