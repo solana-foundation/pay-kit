@@ -1903,7 +1903,8 @@ mod tests {
 
     #[test]
     fn rejects_each_missing_required_field() {
-        let cases: Vec<(&str, fn(&mut SubscriptionConfig))> = vec![
+        type ConfigMutation = fn(&mut SubscriptionConfig);
+        let cases: Vec<(&str, ConfigMutation)> = vec![
             ("mint", |c| c.mint = String::new()),
             ("token_program", |c| c.token_program = String::new()),
             ("puller", |c| c.puller = String::new()),
