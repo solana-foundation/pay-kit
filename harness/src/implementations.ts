@@ -31,6 +31,15 @@ export function expectedReportedImplementation(
   return implementation.reportsAs ?? implementation.id;
 }
 
+// The Go harness deliberately exercises devnet scenarios using a
+// process-local fixture store. Keep this opt-in on the harness child process;
+// normal Go server configuration continues to fail closed off-localnet.
+const goHarnessServerCommand = [
+  "sh",
+  "-c",
+  "cd go-server && PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 exec ./paykit-server",
+];
+
 function isEnabled(
   id: string,
   envName: string,
@@ -397,7 +406,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "go",
     label: "Go PayKit umbrella server (dual protocol)",
     role: "server",
-    command: ["sh", "-c", "cd go-server && ./paykit-server"],
+    command: goHarnessServerCommand,
     enabled: isEnabled("go", "MPP_HARNESS_SERVERS", true),
     intents: ["charge", "x402-exact"],
     // The Go umbrella server fixture reports the bare language tag
@@ -475,7 +484,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "go-x402-upto",
     label: "Go PayKit x402 upto server",
     role: "server",
-    command: ["sh", "-c", "cd go-server && ./paykit-server"],
+    command: goHarnessServerCommand,
     enabled: isEnabled("go-x402-upto", "X402_HARNESS_SERVERS", false),
     intents: ["x402-upto"],
     reportsAs: "go-paykit",
