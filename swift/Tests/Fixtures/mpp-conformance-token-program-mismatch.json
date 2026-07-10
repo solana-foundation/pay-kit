@@ -1,0 +1,23 @@
+{
+  "id": "swift-x402-exact-token-program-mismatch",
+  "intent": "x402-exact",
+  "mode": "verify-x402-transaction",
+  "input": {
+    "transaction": "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAIBBAgBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICsamXrWtVYgdvBS7bPEFS+O48vbfaJ03V3YyMVxJX9JrsvlNqVWh8N62Op6w3hGqvzrPlEKqbIqN+iY+xXcuvPwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE3615Yv+x3ZJdCp+15tAM5hlbqLs6kf0H75hgxel7uAbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkEBAAFAiBOAAAEAAkDAQAAAAAAAAAHBAMFAgEKDOgDAAAAAAAABgYBAAEAAA==",
+    "x402ExactManagedSigners": [
+      "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+    ],
+    "x402ExactRequirement": {
+      "asset": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+      "payTo": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+      "amount": "1000",
+      "extra": {
+        "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      }
+    }
+  },
+  "expect": {
+    "outcome": "reject",
+    "x402ExactRejectCode": "invalid_exact_svm_payload_no_transfer_instruction"
+  }
+}

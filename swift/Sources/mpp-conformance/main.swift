@@ -797,6 +797,10 @@ private func verifyExactTransaction(_ base64: String, requirement: X402ExactRequ
           transfer.data[0] == 12 else {
         throw exactFailure("invalid_exact_svm_payload_no_transfer_instruction")
     }
+    if let requiredTokenProgram = requirement.extra?.tokenProgram,
+       requiredTokenProgram != transferProgram {
+        throw exactFailure("invalid_exact_svm_payload_no_transfer_instruction")
+    }
 
     let source = try keyAt(Int(transfer.accountIndices[0]))
     let mint = try keyAt(Int(transfer.accountIndices[1]))
