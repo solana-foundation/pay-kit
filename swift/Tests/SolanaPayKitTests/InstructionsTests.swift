@@ -26,6 +26,26 @@ struct InstructionsTests {
     }
 
     @Test
+    func systemTransferEncodesLamportsAboveDoublePrecisionExactly() {
+        let source = TransactionTests.pubkeyOf(1)
+        let destination = TransactionTests.pubkeyOf(2)
+        let value: UInt64 = (1 << 53) + 1
+
+        #expect(UInt64(Double(value)) != value)
+
+        let ix = Instructions.systemTransfer(from: source, to: destination, lamports: value)
+        let encoded = ix.data.suffix(8)
+        var expected = Data()
+        expected.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+
+        #expect(encoded == expected)
+        let decoded = encoded.enumerated().reduce(into: UInt64(0)) { result, element in
+            result |= UInt64(element.element) << (8 * element.offset)
+        }
+        #expect(decoded == value)
+    }
+
+    @Test
     func splTransferCheckedMatchesWireDiscriminator() {
         let source = TransactionTests.pubkeyOf(20)
         let mint = TransactionTests.pubkeyOf(10)
