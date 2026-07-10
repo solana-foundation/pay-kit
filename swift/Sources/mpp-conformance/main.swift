@@ -287,6 +287,32 @@ private struct RunnerResult: Encodable {
     }
 }
 
+private func extractVectorID(from raw: Data) -> String {
+    guard let text = String(data: raw, encoding: .utf8),
+          let regex = try? NSRegularExpression(pattern: #""id"\s*:\s*"([A-Za-z0-9._-]+)""#),
+          let match = regex.firstMatch(
+              in: text,
+              range: NSRange(text.startIndex..<text.endIndex, in: text)
+          ),
+          let idRange = Range(match.range(at: 1), in: text) else {
+        return ""
+    }
+    return String(text[idRange])
+}
+
+private func writeResult(_ result: RunnerResult) {
+    do {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(result)
+        var line = data
+        line.append(0x0A)
+        FileHandle.standardOutput.write(line)
+    } catch {
+        FileHandle.standardError.write(Data("failed to encode result: \(error)".utf8))
+        exit(1)
+    }
+}
+
 // MARK: - Reject classification
 //
 // The harness asserts a normalized reject CATEGORY per reject vector. Map the
@@ -1106,21 +1132,17 @@ func main() async {
             rawValue = nil
         }
     } catch {
-        FileHandle.standardError.write(Data("failed to parse vector: \(error)".utf8))
-        exit(1)
+        writeResult(RunnerResult(
+            id: extractVectorID(from: raw),
+            outcome: "reject",
+            error: "failed to parse vector: \(error)",
+            rejectCode: "invalid-payload"
+        ))
+        return
     }
 
     let result = await runVector(vector, rawValue: rawValue)
-    do {
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(result)
-        var line = data
-        line.append(0x0A)
-        FileHandle.standardOutput.write(line)
-    } catch {
-        FileHandle.standardError.write(Data("failed to encode result: \(error)".utf8))
-        exit(1)
-    }
+    writeResult(result)
 }
 
 await main()
