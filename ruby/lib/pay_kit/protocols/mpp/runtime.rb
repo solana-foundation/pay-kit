@@ -56,7 +56,7 @@ module PayKit::Protocols::Mpp
     if replay_store == DEV_ONLY_MEMORY_STORE
       unless localnet?(method)
         raise ::PayKit::ConfigurationError,
-          "PayKit::Protocols::Mpp.create requires a durable replay_store for #{network_name(method)}"
+          "PayKit::Protocols::Mpp.create requires a durable replay_store shared across workers for #{network_name(method)}"
       end
 
       warn "[Mpp] WARNING: no replay_store supplied to PayKit::Protocols::Mpp.create — " \

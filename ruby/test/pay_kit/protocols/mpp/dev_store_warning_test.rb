@@ -45,6 +45,7 @@ class DevStoreWarningTest < Minitest::Test
       end
 
       assert_match(/requires a durable replay_store/i, error.message)
+      assert_match(/shared across workers/i, error.message)
       assert_match(/#{network}/, error.message)
     end
   end
