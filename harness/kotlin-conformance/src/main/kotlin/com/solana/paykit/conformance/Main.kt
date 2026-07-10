@@ -7,7 +7,6 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.Base64
-import java.lang.reflect.InvocationTargetException
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
@@ -89,7 +88,7 @@ private fun runVector(vector: Vector, rawInput: Map<String, JsonElement>): Runne
     }
 
     rawInput["value"]?.let { value ->
-        val canonical = canonicalJsonFromSdk(value)
+        val canonical = CanonicalJsonBridge.encode(value)
         return RunnerResult(
             id = vector.id,
             outcome = "accept",
@@ -165,26 +164,5 @@ private fun hexToBytes(hex: String): ByteArray {
     require(hex.length % 2 == 0) { "hexBytes must have an even length" }
     return ByteArray(hex.length / 2) { index ->
         hex.substring(index * 2, index * 2 + 2).toInt(16).toByte()
-    }
-}
-
-/**
- * CanonicalJson is deliberately internal to the Kotlin SDK, so the standalone
- * runner cannot import it at compile time. Invoke that exact production object
- * at runtime rather than copying a reference serializer into the harness.
- */
-private fun canonicalJsonFromSdk(value: JsonElement): String {
-    val type = Class.forName("com.solana.paykit.protocols.mpp.core.CanonicalJson")
-    val instance = type.getField("INSTANCE").get(null)
-    val encode = type.methods.singleOrNull {
-        it.name.startsWith("encode") &&
-            it.parameterCount == 1 &&
-            it.parameterTypes[0] == JsonElement::class.java
-    } ?: error("Kotlin SDK CanonicalJson.encode(JsonElement) is unavailable")
-
-    return try {
-        encode.invoke(instance, value) as String
-    } catch (error: InvocationTargetException) {
-        throw error.targetException
     }
 }

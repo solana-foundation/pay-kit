@@ -66,6 +66,35 @@ class MainTest {
         assertTrue(result["error"]?.jsonPrimitive?.content?.contains("invalid cumulativeAmount") == true)
     }
 
+    @Test
+    fun `canonicalizes negative finite numbers across exponent boundaries`() {
+        val result = json.parseToJsonElement(
+            renderVectorResult(
+                """
+                {
+                  "id": "canonical-json-negative-boundaries",
+                  "intent": "charge",
+                  "mode": "canonical-bytes",
+                  "input": {
+                    "value": {
+                      "integer": -42.0,
+                      "fraction": -1.5,
+                      "fixed": -1e-6,
+                      "scientific": -1e-7
+                    }
+                  }
+                }
+                """.trimIndent(),
+            ),
+        ).jsonObject
+
+        assertEquals("accept", result["outcome"]?.jsonPrimitive?.content)
+        assertEquals(
+            """{"fixed":-0.000001,"fraction":-1.5,"integer":-42,"scientific":-1e-7}""",
+            result["exactBytes"]?.jsonObject?.get("canonicalJson")?.jsonPrimitive?.content,
+        )
+    }
+
     private fun sessionVectorsPath(): Path {
         var directory = Path.of(System.getProperty("user.dir")).toAbsolutePath()
         while (true) {

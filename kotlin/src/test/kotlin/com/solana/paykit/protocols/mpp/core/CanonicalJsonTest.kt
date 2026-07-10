@@ -91,6 +91,17 @@ class CanonicalJsonTest {
     }
 
     @Test
+    fun normalizesNegativeFiniteNumbersAtEcmaScriptExponentBoundaries() {
+        val element = json.parseToJsonElement(
+            """{"integer":-42.0,"fraction":-1.5,"fixed":-1e-6,"scientific":-1e-7,"large":-1e21}""",
+        )
+        assertEquals(
+            """{"fixed":-0.000001,"fraction":-1.5,"integer":-42,"large":-1e+21,"scientific":-1e-7}""",
+            CanonicalJson.encode(element),
+        )
+    }
+
+    @Test
     fun paymentCredentialMatchesGoldenJcsOutput() {
         // Hand-canonicalized golden value computed by sorting every
         // object's keys and joining with no whitespace; this is what
