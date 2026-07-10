@@ -1,3 +1,4 @@
+import { Challenge } from '@solana/mpp/client';
 import { describe, expect, it } from 'vitest';
 
 import { createMppAdapter } from '../adapters/mpp.js';
@@ -74,5 +75,54 @@ describe('createMppAdapter', () => {
         expect(headers['www-authenticate']).toContain('intent="charge"');
         expect(headers['www-authenticate']).toContain('method="solana"');
         expect(headers['www-authenticate']).toContain('realm="Adapter test"');
+    });
+
+    it.each([
+        ['description', 'Access to "premium" \\ API'],
+        ['description', '\\"quoted\\"'],
+    ])('round-trips a quote/backslash-bearing %s', async (_field, description) => {
+        const { adapter } = await setup();
+        const describedGate = Gate.create(
+            { amount: usd('10.00'), description, name: 'quoted', payTo: SELLER },
+            { accept: ['mpp'], payTo: SELLER },
+        );
+        const headers = await adapter.challengeHeaders(describedGate, new Request('http://t/quoted'));
+        expect(Challenge.deserialize(headers['www-authenticate'] as string).description).toBe(description);
+    });
+
+    it('round-trips a quote/backslash-bearing realm', async () => {
+        const realm = 'ac"me\\corp';
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'adapter-test-secret', realm },
+            operator: { recipient: SELLER, signer: await Signer.generate() },
+        });
+        const adapter = createMppAdapter(config);
+        const headers = await adapter.challengeHeaders(gate(), new Request('http://t/marketplace'));
+        expect(Challenge.deserialize(headers['www-authenticate'] as string).realm).toBe(realm);
+    });
+
+    it.each([
+        ['carriage return', 'legit\rInjected-Header: evil'],
+        ['newline', 'legit\nInjected-Header: evil'],
+    ])('rejects a description containing a %s', async (_name, description) => {
+        const { adapter } = await setup();
+        const injectedGate = Gate.create(
+            { amount: usd('10.00'), description, name: 'injected', payTo: SELLER },
+            { accept: ['mpp'], payTo: SELLER },
+        );
+        await expect(adapter.challengeHeaders(injectedGate, new Request('http://t/injected'))).rejects.toThrow(
+            /must not contain a carriage-return or newline/,
+        );
+    });
+
+    it('rejects a realm containing CRLF', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'api.example.com\r\nInjected: evil' },
+            operator: { recipient: SELLER, signer: await Signer.generate() },
+        });
+        const adapter = createMppAdapter(config);
+        await expect(adapter.challengeHeaders(gate(), new Request('http://t/marketplace'))).rejects.toThrow(
+            /must not contain a carriage-return or newline/,
+        );
     });
 });
