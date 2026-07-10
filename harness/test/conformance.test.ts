@@ -117,6 +117,18 @@ const UNSUPPORTED_MODE_EXEMPTIONS: Record<
   string,
   { owner: string; date: string; reason: string }
 > = {
+  "lua:charge:build-transaction": {
+    owner: "lua",
+    date: "2026-07-10",
+    reason:
+      "Lua is currently server-only and has no charge transaction builder; remove when the Lua SDK ships a charge client builder.",
+  },
+  "lua:x402-exact:build-transaction": {
+    owner: "lua",
+    date: "2026-07-10",
+    reason:
+      "Lua is currently server-only and has no x402 transaction builder; remove when the Lua SDK ships an x402 client builder.",
+  },
   "ruby:charge:build-transaction": {
     owner: "harness",
     date: "2026-07-09",
