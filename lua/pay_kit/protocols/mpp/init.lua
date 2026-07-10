@@ -109,7 +109,7 @@ local function build_mpp_server(config, gate, store)
     warn_volatile_replay_store(network)
   end
   if network ~= 'localnet' and not replay_store_is_shared(replay_store) then
-    error('MPP replay store must be shared outside localnet; process-local stores are unsafe')
+    error('MPP replay store must declare shared=true outside localnet; durability alone does not prove atomic cross-worker reservations')
   end
 
   -- Enforce the replay-store policy before loading or initializing transport

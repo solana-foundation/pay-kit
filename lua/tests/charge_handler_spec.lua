@@ -102,7 +102,7 @@ t.test('handler constructor rejects a process-local replay store outside localne
       replay_store = store.memory(),
       transaction_verifier = function() end,
     })
-  end, 'replay_store must be shared outside localnet')
+  end, 'replay_store must declare shared=true outside localnet')
 end)
 
 t.test('handler constructor rejects a durable-only replay store outside localnet', function()
@@ -116,7 +116,7 @@ t.test('handler constructor rejects a durable-only replay store outside localnet
       },
       transaction_verifier = function() end,
     })
-  end, 'replay_store must be shared outside localnet')
+  end, 'replay_store must declare shared=true outside localnet')
 end)
 
 -- ─── Pull mode ────────────────────────────────────────────────────────────
