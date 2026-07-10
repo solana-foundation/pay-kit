@@ -31,6 +31,7 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
+from spl.token.instructions import create_idempotent_associated_token_account  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
@@ -40,6 +41,7 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     build_distribute_instruction,
     build_settle_and_seal_instructions,
     find_channel_pda,
+    treasury_owner,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
 from solana_pay_kit.protocols.mpp.server._tx_decode import _transaction_dict
@@ -893,21 +895,40 @@ async def settle_and_seal_channel(
         raise PaymentError(
             f"channel {state.channel_id} payer is unknown; cannot derive the refund account", code="invalid-config"
         )
+    payee = Pubkey.from_string(config.recipient)
+    mint = Pubkey.from_string(mint_address)
+    token_program = Pubkey.from_string(default_token_program_for_currency(config.currency, config.network))
+    recipients = [Distribution(recipient=Pubkey.from_string(split.recipient), bps=split.bps) for split in config.splits]
+    treasury = treasury_owner()
     distribute = build_distribute_instruction(
         channel=channel,
         payer=Pubkey.from_string(payer_address),
-        payee=Pubkey.from_string(config.recipient),
-        mint=Pubkey.from_string(mint_address),
-        recipients=[Distribution(recipient=Pubkey.from_string(s.recipient), bps=s.bps) for s in config.splits],
-        token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
+        payee=payee,
+        mint=mint,
+        recipients=recipients,
+        token_program=token_program,
         program_id=program_id,
+        treasury=treasury,
         # rentPayer recovers the channel/escrow rent at distribute (or via
         # reclaim); it is the operator recorded as rentPayer at open.
         rent_payer=Pubkey.from_string(config.operator) if config.operator else None,
     )
 
+    ata_owners = [payee, treasury, *(entry.recipient for entry in recipients)]
+    seen_owners: set[str] = set()
+    create_destination_atas = []
+    for owner in ata_owners:
+        if str(owner) in seen_owners:
+            continue
+        seen_owners.add(str(owner))
+        create_destination_atas.append(
+            create_idempotent_associated_token_account(merchant_pubkey, owner, mint, token_program)
+        )
+
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-    tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
+    tx = Transaction.new_signed_with_payer(
+        [*settle, *create_destination_atas, distribute], merchant_pubkey, [merchant], blockhash
+    )
     sent = await rpc.send_raw_transaction(bytes(tx))
     signature = str(sent.value)
     # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
