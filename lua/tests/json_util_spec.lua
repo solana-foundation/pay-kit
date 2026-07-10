@@ -120,6 +120,7 @@ end)
 helpers.test('json.decode: empty array', function()
   local arr = json.decode('[]')
   helpers.assert_equal(#arr, 0)
+  helpers.assert_equal(json.encode(arr), '[]')
 end)
 
 helpers.test('json.decode: array with elements', function()
@@ -135,8 +136,13 @@ end)
 
 helpers.test('json.decode: empty object', function()
   local obj = json.decode('{}')
-  -- Lua doesn't distinguish empty array vs empty object — both are empty tables.
   helpers.assert_true(type(obj) == 'table')
+  helpers.assert_equal(json.encode(obj), '{}')
+end)
+
+helpers.test('json.decode: preserves nested empty container types', function()
+  local value = json.decode('{"array":[],"object":{}}')
+  helpers.assert_equal(json.encode(value), '{"array":[],"object":{}}')
 end)
 
 helpers.test('json.decode: object with entries', function()

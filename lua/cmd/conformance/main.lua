@@ -83,6 +83,7 @@ end
 -- encoder; key order is canonical, which is fine because the driver parses
 -- the line with JSON.parse and reads fields by name.
 local function emit(result)
+  result.language = 'lua'
   io.write(json.encode(result) .. '\n')
 end
 
@@ -856,6 +857,11 @@ local function main()
 
   local ok, vector = pcall(json.decode, raw)
   if not ok then
+    local id = raw:match('"id"%s*:%s*"([%w%._%-]+)"')
+    if id ~= nil then
+      emit({ id = id, outcome = 'reject', error = tostring(vector) })
+      return
+    end
     io.stderr:write('failed to parse vector: ' .. tostring(vector) .. '\n')
     os.exit(1)
   end

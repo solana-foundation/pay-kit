@@ -6,10 +6,18 @@
 local M = {}
 
 local null_sentinel = {}
+local array_metatable = {}
+local object_metatable = {}
 M.null = null_sentinel
 
 local function is_array(value)
   if type(value) ~= 'table' then
+    return false
+  end
+  local metatable = getmetatable(value)
+  if metatable == array_metatable then
+    return true
+  elseif metatable == object_metatable then
     return false
   end
   local max = 0
@@ -403,7 +411,7 @@ end
 function Parser:parse_array()
   self:expect('[')
   self:skip_ws()
-  local out = {}
+  local out = setmetatable({}, array_metatable)
   if self:peek() == ']' then
     self.pos = self.pos + 1
     return out
@@ -424,7 +432,7 @@ end
 function Parser:parse_object()
   self:expect('{')
   self:skip_ws()
-  local out = {}
+  local out = setmetatable({}, object_metatable)
   if self:peek() == '}' then
     self.pos = self.pos + 1
     return out
