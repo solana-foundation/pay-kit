@@ -424,3 +424,81 @@ helper.test('verifier rejects compute-budget over the unit limit cap', function(
     })
   end, 'Compute unit limit')
 end)
+
+-- Audit #25 (fee-sponsored compute-price cap). Build a fee-sponsored SPL
+-- charge whose fee payer sits at account index 0 (so `expected_fee_payer`
+-- resolves it) with a NON-fee-payer source ATA and a separate transfer
+-- authority (so the fee-payer fund-mover guards pass), plus a
+-- SetComputeUnitPrice instruction. The real verifier used to cap this at the
+-- general 5_000_000 ceiling regardless of who paid the fee, so a
+-- server-funded charge could carry a ~1_000_000-lamport priority fee out of
+-- the merchant's balance. Mirrors the Rust spine
+-- (validate_compute_budget_instruction(ix, fee_payer.is_some())) and the
+-- hooks-based `solana_verify` path.
+local function fee_sponsored_compute_price_tx(price)
+  local fee_payer_bytes = string.rep('\x01', 32)
+  local fee_payer_pub = base58.encode(fee_payer_bytes)
+  local source_ata_bytes = string.rep('\x02', 32)          -- NOT the fee-payer ATA
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local recipient_ata_bytes = base58.decode(ata.derive(recipient_pub, USDC, instructions.TOKEN_PROGRAM))
+  local authority_bytes = string.rep('\x44', 32)           -- separate authority (not the fee payer)
+  local compute_budget_bytes = base58.decode(instructions.COMPUTE_BUDGET_PROGRAM)
+  local account_keys = {
+    fee_payer_bytes, source_ata_bytes, recipient_ata_bytes, authority_bytes,
+    USDC_BYTES, TOKEN_PROGRAM_BYTES, compute_budget_bytes,
+  }
+  local transfer = encode_instruction(5, { 1, 4, 2, 3 },
+    string.char(12) .. le_u64(1000) .. string.char(6))
+  local cb = encode_instruction(6, {}, string.char(3) .. le_u64(price))
+  local message = build_message(account_keys, string.rep('\xc3', 32), { transfer, cb }, 1)
+  return tx_from(message, 1), recipient_pub, fee_payer_pub
+end
+
+helper.test('verifier rejects a fee-sponsored compute-unit price above the tight cap (audit #25)', function()
+  -- 20000 microLamports is UNDER the general 5_000_000 cap but OVER the
+  -- 10_000 fee-sponsored cap. A server-funded charge must reject it.
+  local tx, recipient_pub, fee_payer_pub = fee_sponsored_compute_price_tx(20000)
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1000', currency = USDC, recipient = recipient_pub,
+      methodDetails = { decimals = 6, tokenProgram = instructions.TOKEN_PROGRAM,
+        feePayer = true, feePayerKey = fee_payer_pub, network = 'mainnet-beta' },
+    })
+  end, 'Compute unit price 20000 exceeds maximum 10000')
+end)
+
+helper.test('verifier accepts a fee-sponsored compute-unit price at the tight cap', function()
+  local tx, recipient_pub, fee_payer_pub = fee_sponsored_compute_price_tx(10000)
+  verifier.verify_transaction(tx, {
+    amount = '1000', currency = USDC, recipient = recipient_pub,
+    methodDetails = { decimals = 6, tokenProgram = instructions.TOKEN_PROGRAM,
+      feePayer = true, feePayerKey = fee_payer_pub, network = 'mainnet-beta' },
+  })
+end)
+
+helper.test('verifier keeps the general compute-price cap for client-paid charges', function()
+  -- No feePayer: the client funds its own priority fee, so the tight cap must
+  -- NOT apply. A 20000 microLamport price (under the general 5_000_000 cap)
+  -- is accepted, proving the tight cap is gated on the server-side fee-payer
+  -- signal rather than tightening every charge.
+  local payer_bytes = string.rep('\x01', 32)
+  local source_ata_bytes = string.rep('\x02', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local recipient_ata_bytes = base58.decode(ata.derive(recipient_pub, USDC, instructions.TOKEN_PROGRAM))
+  local compute_budget_bytes = base58.decode(instructions.COMPUTE_BUDGET_PROGRAM)
+  local account_keys = {
+    payer_bytes, source_ata_bytes, recipient_ata_bytes, recipient_bytes,
+    USDC_BYTES, TOKEN_PROGRAM_BYTES, compute_budget_bytes,
+  }
+  local transfer = encode_instruction(5, { 1, 4, 2, 0 },
+    string.char(12) .. le_u64(1000) .. string.char(6))
+  local cb = encode_instruction(6, {}, string.char(3) .. le_u64(20000))
+  local message = build_message(account_keys, string.rep('\xc3', 32), { transfer, cb }, 1)
+  local tx = tx_from(message, 1)
+  verifier.verify_transaction(tx, {
+    amount = '1000', currency = USDC, recipient = recipient_pub,
+    methodDetails = { decimals = 6, tokenProgram = instructions.TOKEN_PROGRAM },
+  })
+end)

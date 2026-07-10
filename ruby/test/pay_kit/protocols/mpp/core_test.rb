@@ -225,6 +225,42 @@ class CoreTest < Minitest::Test
     assert_raises(ArgumentError) { PayKit::Protocols::Mpp::Protocol::Core::ChallengeEcho.from_h("bad") }
   end
 
+  def test_parse_www_authenticate_rejects_oversized_request_token
+    # A VALID base64url JSON payload above the cap: pre-cap parsers would
+    # happily decode + JSON-parse it, so this fails without the length gate.
+    limit = PayKit::Protocols::Mpp::Protocol::Core::Headers::MAX_TOKEN_LENGTH
+    token = ::PayCore::Base64Url.encode(::PayCore::Json.canonical_generate({"pad" => "x" * limit}))
+    header = "Payment id=\"abc\", realm=\"api\", method=\"solana\", intent=\"charge\", request=\"#{token}\""
+
+    error = assert_raises(ArgumentError) { PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_www_authenticate(header) }
+    assert_match(/exceeds maximum length of 16384 bytes/, error.message)
+  end
+
+  def test_parse_www_authenticate_accepts_request_token_at_the_cap
+    limit = PayKit::Protocols::Mpp::Protocol::Core::Headers::MAX_TOKEN_LENGTH
+    body = ::PayCore::Json.canonical_generate({"pad" => "x"})
+    token = ::PayCore::Base64Url.encode(body)
+    header = "Payment id=\"abc\", realm=\"api\", method=\"solana\", intent=\"charge\", request=\"#{token}\""
+
+    parsed = PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_www_authenticate(header)
+    assert_equal "abc", parsed.id
+    assert_operator token.bytesize, :<=, limit
+  end
+
+  def test_parse_receipt_rejects_oversized_token
+    limit = PayKit::Protocols::Mpp::Protocol::Core::Headers::MAX_TOKEN_LENGTH
+    receipt = {
+      "status" => "success",
+      "method" => "solana",
+      "reference" => "x" * limit,
+      "timestamp" => "2026-01-01T00:00:00Z"
+    }
+    token = ::PayCore::Base64Url.encode(::PayCore::Json.canonical_generate(receipt))
+
+    error = assert_raises(ArgumentError) { PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_receipt(token) }
+    assert_match(/exceeds maximum length of 16384 bytes/, error.message)
+  end
+
   def test_receipt_header_round_trip
     receipt = PayKit::Protocols::Mpp::Protocol::Core::Receipt.success(method: "solana", reference: "sig", challenge_id: "challenge", external_id: "order")
 

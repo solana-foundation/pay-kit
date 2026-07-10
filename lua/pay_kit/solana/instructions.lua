@@ -30,6 +30,14 @@ local COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
 -- Audit-v2 caps shared with the Rust spine and the Ruby verifier.
 local MAX_COMPUTE_UNIT_LIMIT = 200000
 local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000
+-- Audit #25: in fee-sponsored pull mode the server co-signs BEFORE broadcast,
+-- so the priority fee comes out of the server's fee-payer balance. Apply a
+-- tight compute-unit-price cap when the server is the fee payer, matching the
+-- Rust spine (mpp/server/charge.rs MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED),
+-- the Ruby verifier, and the hooks-based `solana_verify` path. Without it the
+-- real verifier accepts a 5_000_000 microLamport price (~1_000_000 lamports /
+-- charge, ~200x the base fee), a looped merchant drain.
+local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10000
 
 M.TOKEN_PROGRAM = TOKEN_PROGRAM
 M.TOKEN_2022_PROGRAM = TOKEN_2022_PROGRAM
@@ -39,6 +47,7 @@ M.MEMO_PROGRAM = MEMO_PROGRAM
 M.COMPUTE_BUDGET_PROGRAM = COMPUTE_BUDGET_PROGRAM
 M.MAX_COMPUTE_UNIT_LIMIT = MAX_COMPUTE_UNIT_LIMIT
 M.MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+M.MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
 
 -- Decode a little-endian unsigned integer in the byte range [start, start+len).
 -- Returns a decimal string so values above 2^53 stay exact through the
@@ -146,7 +155,14 @@ end
 --- Parse a Compute Budget instruction.
 --- Returns the typed table or raises with the canonical cap-violation
 --- message so the verifier short-circuits without an extra branch.
-function M.parse_compute_budget(ix)
+---
+--- `fee_sponsored` (audit #25): when true the server is the transaction fee
+--- payer, so the SetComputeUnitPrice ceiling tightens to
+--- MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED. The flag is derived
+--- from the server-side fee-payer signal by the caller (never a
+--- client-supplied field). Defaults to false so client-paid charges keep the
+--- general cap.
+function M.parse_compute_budget(ix, fee_sponsored)
   local data = ix.data or ''
   if #data < 1 then
     error('Unsupported compute budget instruction')
@@ -182,8 +198,11 @@ function M.parse_compute_budget(ix)
     -- through pay_kit.util.uint so a future cap raise above 2^53 still rejects
     -- genuinely over-cap transactions.
     local price_str = decode_le_uint(data, 2, 8)
-    if uint.compare(price_str, tostring(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) > 0 then
-      error('Compute unit price ' .. price_str .. ' exceeds maximum ' .. MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)
+    local price_cap = fee_sponsored
+      and MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+      or MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+    if uint.compare(price_str, tostring(price_cap)) > 0 then
+      error('Compute unit price ' .. price_str .. ' exceeds maximum ' .. price_cap)
     end
     return { kind = 'compute_budget_set_price', price = price_str }
   end
