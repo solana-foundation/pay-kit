@@ -617,7 +617,7 @@ func TestSessionOpenVerifiesSignatureOnChain(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 
 	channelID := solana.NewWallet().PublicKey().String()
-	receipt, channelID := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
+	receipt, _ := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
 	if receipt.Reference != okSig {
 		t.Fatalf("reference = %q", receipt.Reference)
 	}

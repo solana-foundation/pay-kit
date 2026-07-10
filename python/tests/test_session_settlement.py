@@ -6,15 +6,20 @@ Mirrors the Go/TS closeAndSettleChannel path.
 
 from __future__ import annotations
 
+import hashlib
+import struct
 from typing import Any
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
+from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.signer import LocalSigner
 
 _BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
@@ -39,9 +44,16 @@ class _SettleRpc:
     can assert no on-chain confirmation was attempted on a trust path.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, echo_transaction_signature: bool = False) -> None:
         self.sent: list[bytes] = []
         self.status_queries: list[list[str]] = []
+        self.accounts: dict[str, tuple[bytes, str] | None] = {}
+        self.echo_transaction_signature = echo_transaction_signature
+
+    async def get_account_info(
+        self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
+    ) -> tuple[bytes, str] | None:
+        return self.accounts.get(address)
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         self.status_queries.append(list(signatures))
@@ -52,7 +64,34 @@ class _SettleRpc:
 
     async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
         self.sent.append(raw_tx)
+        if self.echo_transaction_signature:
+            return _Resp(str(Transaction.from_bytes(raw_tx).signatures[0]))
         return _Resp(_SENT_SIGNATURE)
+
+
+def _seed_open_account(rpc: _SettleRpc, open_: Any) -> None:
+    distribution_hash = hashlib.sha256(struct.pack("<I", 0)).digest()
+    body = Channel.layout.build(
+        {
+            "version": 1,
+            "bump": 255,
+            "status": 0,
+            "salt": open_.salt,
+            "deposit": open_.deposit,
+            "settlement": {"settled": 0, "payoutWatermark": 0},
+            "closureStartedAt": 0,
+            "payerWithdrawnAt": 0,
+            "gracePeriod": open_.grace_period,
+            "distributionHash": list(distribution_hash),
+            "payer": Pubkey.from_string(str(open_.payer)),
+            "payee": Pubkey.from_string(str(open_.payee)),
+            "authorizedSigner": Pubkey.from_string(str(open_.authorized_signer)),
+            "mint": Pubkey.from_string(str(open_.mint)),
+            "rentPayer": Pubkey.from_string(str(open_.payee)),
+            "openSlot": open_.open_slot,
+        }
+    )
+    rpc.accounts[str(open_.channel_id)] = (bytes([1]) + bytes(body), PAYMENT_CHANNELS_PROGRAM_ID)
 
 
 def _session(rpc: _SettleRpc, operator: Keypair):
@@ -269,7 +308,7 @@ def _server_open_payload(operator: Keypair):
 @pytest.mark.asyncio
 async def test_server_broadcast_open_builds_signs_and_persists() -> None:
     operator = Keypair.from_seed(bytes([8] * 32))
-    rpc = _SettleRpc()
+    rpc = _SettleRpc(echo_transaction_signature=True)
     session = new_session(
         SessionOptions(
             operator=str(operator.pubkey()),
@@ -287,11 +326,13 @@ async def test_server_broadcast_open_builds_signs_and_persists() -> None:
         )
     )
     open_, payload = _server_open_payload(operator)
+    _seed_open_account(rpc, open_)
     payload.deposit = "1500000"
 
     signature = await session._handle_open(payload)
 
-    assert signature == _SENT_SIGNATURE
+    assert signature == payload.signature
+    assert signature == str(Transaction.from_bytes(rpc.sent[0]).signatures[0])
     # One open transaction broadcast, a single open instruction (discriminator 1).
     assert len(rpc.sent) == 1
     assert _instruction_discriminators(rpc.sent[0]) == [1]
@@ -391,6 +432,7 @@ async def test_open_tx_submitter_client_verifies_pull_transaction() -> None:
     operator = Keypair.from_seed(bytes([14] * 32))
     open_, payload = _server_open_payload(operator)
     rpc = _SettleRpc()
+    _seed_open_account(rpc, open_)
     session = new_session(
         SessionOptions(
             operator=str(operator.pubkey()),
@@ -663,7 +705,7 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
     unchanged, the voucher watermark is preserved)."""
 
     operator = Keypair.from_seed(bytes([27] * 32))
-    rpc = _SettleRpc()
+    rpc = _SettleRpc(echo_transaction_signature=True)
     session = new_session(
         SessionOptions(
             operator=str(operator.pubkey()),
@@ -681,10 +723,12 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
         )
     )
     open_, payload = _server_open_payload(operator)
+    _seed_open_account(rpc, open_)
     payload.deposit = "1500000"
 
     first = await session._handle_open(payload)
-    assert first == _SENT_SIGNATURE
+    assert first == payload.signature
+    assert first == str(Transaction.from_bytes(rpc.sent[0]).signatures[0])
     assert len(rpc.sent) == 1
 
     replay = await session._handle_open(payload)
@@ -692,7 +736,7 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
     # No second broadcast on replay.
     assert len(rpc.sent) == 1
     # The replay returns the original signature (already recorded).
-    assert replay == _SENT_SIGNATURE
+    assert replay == first
     persisted = await session._core.store().get_channel(str(open_.channel_id))
     assert persisted is not None
     assert persisted.deposit == open_.deposit

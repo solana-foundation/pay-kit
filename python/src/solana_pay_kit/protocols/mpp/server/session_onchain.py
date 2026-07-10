@@ -935,6 +935,10 @@ async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc
             f"broadcast open signature {signature} != completed transaction signature {expected_signature}",
             code="invalid-payload",
         )
+    # Downstream processing verifies the payload again before persisting it.
+    # Keep the transaction and claimed signature bound to the same completed
+    # wire bytes instead of leaving the original partially signed transaction.
+    payload.transaction = base64.b64encode(wire).decode("ascii")
     await confirm_transaction_signature(rpc, signature, "open")
     return signature
 
