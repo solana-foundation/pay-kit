@@ -83,14 +83,26 @@ describe('createMemorySessionStore', () => {
     test('updateChannel grants one concurrent settlement claim and preserves its pending signature', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('c1', () => makeState({ channelId: 'c1' }));
+        const now = BigInt(Date.now());
         let claims = 0;
 
         await Promise.all(
-            Array.from({ length: 20 }, () =>
+            Array.from({ length: 20 }, (_, index) =>
                 store.updateChannel('c1', current => {
-                    if (current?.settling) return current;
+                    if (
+                        current?.settling &&
+                        current.settlementClaimExpiresAt !== undefined &&
+                        current.settlementClaimExpiresAt > now
+                    ) {
+                        return current;
+                    }
                     claims += 1;
-                    return { ...current!, settling: true };
+                    return {
+                        ...current!,
+                        settlementClaimExpiresAt: now + 30_000n,
+                        settlementClaimOwner: `owner-${index}`,
+                        settling: true,
+                    };
                 }),
             ),
         );
@@ -103,6 +115,19 @@ describe('createMemorySessionStore', () => {
         }));
         expect(pending.settlementPendingSignature).toBe('settle-signature');
         expect(pending.settling).toBe(false);
+
+        await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementClaimExpiresAt: 0n,
+            settlementPendingSignature: undefined,
+            settling: true,
+        }));
+        const recovered = await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementClaimExpiresAt: now + 30_000n,
+            settlementClaimOwner: 'recovery-owner',
+        }));
+        expect(recovered.settlementClaimOwner).toBe('recovery-owner');
     });
 
     test('updateChannel error does not poison subsequent updates', async () => {

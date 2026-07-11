@@ -81,6 +81,10 @@ export interface ChannelState {
     readonly salt?: bigint | undefined;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
+    /** Unix milliseconds when the current signature-less settlement claim expires. */
+    readonly settlementClaimExpiresAt?: bigint | undefined;
+    /** Opaque owner token for the current settlement claim. */
+    readonly settlementClaimOwner?: string | undefined;
     /** Broadcast settlement awaiting a definite confirmed/failed outcome. */
     readonly settlementPendingSignature?: string | undefined;
     /** True while one server instance owns the on-chain settlement broadcast. */

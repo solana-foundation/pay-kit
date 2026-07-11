@@ -5,7 +5,14 @@
 // vouchers. The 402 challenge body is also snapshotted against the
 // canonical Methods.ts schema so future schema drifts are caught here.
 
-import { generateKeyPairSigner, getBase58Decoder, type KeyPairSigner } from '@solana/kit';
+import {
+    generateKeyPairSigner,
+    getBase58Decoder,
+    getBase64Codec,
+    getSignatureFromTransaction,
+    getTransactionDecoder,
+    type KeyPairSigner,
+} from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import * as Methods from '../Methods.js';
@@ -18,6 +25,10 @@ import { encodeVoucherMessage } from '../shared/voucher.js';
 
 const OPERATOR = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 const RECIPIENT = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
+
+function signedWireSignature(wire: string): string {
+    return getSignatureFromTransaction(getTransactionDecoder().decode(getBase64Codec().encode(wire)));
+}
 
 /**
  * Minimal RPC mock exposing `getSignatureStatuses` driven by a lookup
@@ -1309,7 +1320,7 @@ describe('session() verify() close retry', () => {
         const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
-        const settleSignature = 'SettleSig11111111111111111111111111111111111111111111111111111111';
+        let settleSignature: string | undefined;
 
         let settlementStatusCalls = 0;
         const sends: string[] = [];
@@ -1324,7 +1335,11 @@ describe('session() verify() close retry', () => {
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
                 send: async () => {
-                    if (sigs.includes(settleSignature) && settlementStatusCalls++ === 0) {
+                    if (
+                        settleSignature !== undefined &&
+                        sigs.includes(settleSignature) &&
+                        settlementStatusCalls++ === 0
+                    ) {
                         throw new Error('status RPC unavailable');
                     }
                     return {
@@ -1336,6 +1351,7 @@ describe('session() verify() close retry', () => {
             sendTransaction: (wire: string) => ({
                 send: async () => {
                     sends.push(wire);
+                    settleSignature = signedWireSignature(wire);
                     return settleSignature;
                 },
             }),
@@ -1405,7 +1421,7 @@ describe('session() verify() close retry', () => {
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
         const failedSignature = 'FailedSig11111111111111111111111111111111111111111111111111111111';
-        const retrySignature = 'RetrySig11111111111111111111111111111111111111111111111111111111';
+        let retrySignature: string | undefined;
         const sends: string[] = [];
         const rpc = {
             getLatestBlockhash: () => ({
@@ -1429,6 +1445,7 @@ describe('session() verify() close retry', () => {
             sendTransaction: (wire: string) => ({
                 send: async () => {
                     sends.push(wire);
+                    retrySignature = signedWireSignature(wire);
                     return retrySignature;
                 },
             }),
@@ -1479,12 +1496,104 @@ describe('session() verify() close retry', () => {
         expect(sends).toHaveLength(1);
     });
 
+    test('restart recovery re-confirms pending signatures and only takes over stale claim-only leases', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const pendingChannelId = '11111111111111111111111111111111';
+        const claimOnlyChannelId = OPERATOR;
+        const pendingSignature = 'PendingSig1111111111111111111111111111111111111111111111111111111';
+        const sends: string[] = [];
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 0n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    return signedWireSignature(wire);
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        const restartedState = (channelId: string): ChannelState => ({
+            authorizedSigner: signer.address,
+            channelId,
+            closeRequestedAt: 1n,
+            committedDeliveries: [],
+            cumulative: 0n,
+            deposit: 1_000n,
+            nextDeliverySequence: 0n,
+            operator: signer.address,
+            pendingDeliveries: [],
+            sealed: false,
+            settlementClaimExpiresAt: BigInt(Date.now() + 60_000),
+            settlementClaimOwner: 'crashed-instance',
+            settling: true,
+        });
+        await store.updateChannel(pendingChannelId, () => ({
+            ...restartedState(pendingChannelId),
+            settlementPendingSignature: pendingSignature,
+        }));
+        await store.updateChannel(claimOnlyChannelId, () => restartedState(claimOnlyChannelId));
+
+        const recovered = await method.verify({
+            credential: makeCred({ action: 'close', channelId: pendingChannelId }),
+            request: {} as never,
+        });
+        expect(recovered.status).toBe('success');
+        expect((await store.getChannel(pendingChannelId))?.settledSignature).toBe(pendingSignature);
+        expect(sends).toHaveLength(0);
+
+        const blocked = await method.verify({
+            credential: makeCred({ action: 'close', channelId: claimOnlyChannelId }),
+            request: {} as never,
+        });
+        expect(blocked.status).toBe('success');
+        expect((await store.getChannel(claimOnlyChannelId))?.sealed).toBe(false);
+        expect(sends).toHaveLength(0);
+
+        await store.updateChannel(claimOnlyChannelId, current => ({
+            ...current!,
+            settlementClaimExpiresAt: 0n,
+        }));
+        const takenOver = await method.verify({
+            credential: makeCred({ action: 'close', channelId: claimOnlyChannelId }),
+            request: {} as never,
+        });
+        expect(takenOver.status).toBe('success');
+        expect((await store.getChannel(claimOnlyChannelId))?.sealed).toBe(true);
+        expect(sends).toHaveLength(1);
+    });
+
     test('concurrent closes broadcast once and seal only after confirmation', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
-        const settleSignature = 'SettleSig11111111111111111111111111111111111111111111111111111111';
+        let settleSignature: string | undefined;
         const sends: string[] = [];
         let releaseConfirmation!: () => void;
         let statusRequested!: () => void;
@@ -1505,7 +1614,7 @@ describe('session() verify() close retry', () => {
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
                 send: async () => {
-                    if (sigs.includes(settleSignature)) {
+                    if (settleSignature !== undefined && sigs.includes(settleSignature)) {
                         statusRequested();
                         await confirmationGate;
                     }
@@ -1518,6 +1627,7 @@ describe('session() verify() close retry', () => {
             sendTransaction: (wire: string) => ({
                 send: async () => {
                     sends.push(wire);
+                    settleSignature = signedWireSignature(wire);
                     return settleSignature;
                 },
             }),
@@ -1562,16 +1672,17 @@ describe('session() verify() close retry', () => {
         expect(state?.settledSignature).toBeUndefined();
         requestAbort.abort();
 
-        const secondClose = await method.verify({
+        const secondClose = method.verify({
             credential: makeCred({ action: 'close', channelId }),
             request: {} as never,
         });
-        expect(secondClose.status).toBe('success');
+        await Promise.resolve();
         expect(sends).toHaveLength(1);
 
         releaseConfirmation();
-        const firstReceipt = await firstClose;
+        const [firstReceipt, secondReceipt] = await Promise.all([firstClose, secondClose]);
         expect(firstReceipt.status).toBe('success');
+        expect(secondReceipt.status).toBe('success');
         state = await store.getChannel(channelId);
         expect(state?.settlementPendingSignature).toBeUndefined();
         expect(state?.settling).toBe(false);

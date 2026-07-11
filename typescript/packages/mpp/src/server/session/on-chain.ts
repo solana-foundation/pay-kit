@@ -1507,7 +1507,7 @@ export interface SubmitSettleAndDistributeArgs {
 export interface SubmitSettleAndDistributeResult {
     /** Instructions that were composed into the transaction. */
     readonly instructions: readonly ServerInstruction[];
-    /** Signature of the broadcast transaction. */
+    /** Signature derived from the signed transaction. */
     readonly signature: Signature;
 }
 
@@ -1519,6 +1519,21 @@ export interface SubmitSettleAndDistributeResult {
  */
 export async function submitSettleAndDistribute(
     args: SubmitSettleAndDistributeArgs,
+): Promise<SubmitSettleAndDistributeResult> {
+    return await submitSettleAndDistributeInternal(args);
+}
+
+/** Session-internal variant that persists signed identity before broadcast. */
+export async function submitSettleAndDistributeWithPreBroadcastPersistence(
+    args: SubmitSettleAndDistributeArgs,
+    beforeBroadcast: (prepared: { readonly signature: Signature; readonly wire: string }) => Promise<void>,
+): Promise<SubmitSettleAndDistributeResult> {
+    return await submitSettleAndDistributeInternal(args, beforeBroadcast);
+}
+
+async function submitSettleAndDistributeInternal(
+    args: SubmitSettleAndDistributeArgs,
+    beforeBroadcast?: (prepared: { readonly signature: Signature; readonly wire: string }) => Promise<void>,
 ): Promise<SubmitSettleAndDistributeResult> {
     const tokenProgram =
         args.tokenProgram ?? (args.currency ? defaultTokenProgramForCurrency(args.currency, args.network) : undefined);
@@ -1545,7 +1560,10 @@ export async function submitSettleAndDistribute(
 
     const instructions: ServerInstruction[] = [...settle.instructions, distribute];
     const wire = await args.buildAndSignWireTransaction(instructions);
-    const signature = await args.rpc.sendTransaction(wire, { encoding: 'base64' }).send();
+    const transaction = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+    const signature = getSignatureFromTransaction(transaction);
+    await beforeBroadcast?.({ signature, wire });
+    await args.rpc.sendTransaction(wire, { encoding: 'base64' }).send();
     return { instructions, signature };
 }
 

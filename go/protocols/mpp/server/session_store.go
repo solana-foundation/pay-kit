@@ -104,10 +104,10 @@ type ChannelState struct {
 	// was requested. Once set, no further vouchers are accepted.
 	CloseRequestedAt *uint64 `json:"close_requested_at"`
 
-	// SettledSignature is the signature (base58) of the submitted
-	// settle-and-distribute transaction. It is persisted immediately after
-	// broadcast, before confirmation. When Sealed is false, retries confirm
-	// this same transaction instead of broadcasting another settlement.
+	// SettledSignature is the signature (base58) of the signed
+	// settle-and-distribute transaction. It is persisted under the settlement
+	// claim before broadcast. When Sealed is false, retries confirm this same
+	// transaction instead of broadcasting another settlement.
 	//
 	// An extension beyond the core channel-state shape, recorded only when
 	// this server drives on-chain settlement. Serialized with omitempty so a
@@ -119,6 +119,16 @@ type ChannelState struct {
 	// prevents server instances sharing a store from duplicating broadcasts.
 	// It is persisted so independent store clients observe the same claim.
 	Settling bool `json:"settling,omitempty"`
+
+	// SettlementClaimOwner identifies the settlement attempt that currently
+	// owns a signature-less claim. Release operations compare this token so an
+	// older attempt cannot clear a claim taken over by another server.
+	SettlementClaimOwner string `json:"settlement_claim_owner,omitempty"`
+
+	// SettlementClaimedAt is the Unix timestamp when the current claim was
+	// acquired. A signature-less claim may be taken over after the bounded
+	// lease expires, recovering from a crash before signature persistence.
+	SettlementClaimedAt int64 `json:"settlement_claimed_at,omitempty"`
 
 	// Operator is the client wallet pubkey (base58) for pull-mode sessions;
 	// nil for push sessions.
@@ -397,6 +407,9 @@ func (s *MemoryChannelStore) MarkSealed(ctx context.Context, channelID string) (
 		}
 		next := *current
 		next.Sealed = true
+		next.Settling = false
+		next.SettlementClaimOwner = ""
+		next.SettlementClaimedAt = 0
 		return next, nil
 	})
 }

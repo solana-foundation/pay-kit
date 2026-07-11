@@ -32,8 +32,8 @@ import {
     SignatureConfirmationError,
     submitInitMultiDelegateTxIfMissing,
     submitOpenTx,
-    submitSettleAndDistribute,
     type SubmitSettleAndDistributeResult,
+    submitSettleAndDistributeWithPreBroadcastPersistence,
     type TopUpTransactionRpc,
     verifyChannelAccountState,
     verifyOpenTx,
@@ -54,6 +54,7 @@ import { buildAndSignWireTransaction } from './session/wire-tx.js';
 // The Rust mirror keeps this default literal in
 // `crate::protocol::intents::session::DEFAULT_SESSION_EXPIRES_AT` (year 2100).
 const DEFAULT_DIRECTIVE_EXPIRES_AT = 4_102_444_800;
+const SETTLEMENT_CLAIM_LEASE_MS = 30_000n;
 
 // Lazily-created default store shared by `session()` and `session.routes()`
 // when both are built from the same parameters object — otherwise each call
@@ -1240,12 +1241,25 @@ interface CloseAndSettleArgs {
 async function closeAndSettleChannel(
     args: CloseAndSettleArgs,
 ): Promise<Pick<SubmitSettleAndDistributeResult, 'signature'> | undefined> {
+    const claimOwner = crypto.randomUUID();
+    const claimNow = BigInt(Date.now());
     let claimed = false;
     const state = await args.store.updateChannel(args.channelId, current => {
         if (!current) throw new Error(`Channel ${args.channelId} not found`);
-        if (current.sealed || current.settledSignature !== undefined || current.settling) return current;
+        if (current.sealed || current.settledSignature !== undefined) return current;
+        const hasPendingSignature = current.settlementPendingSignature !== undefined;
+        const claimIsFresh =
+            current.settling &&
+            current.settlementClaimExpiresAt !== undefined &&
+            current.settlementClaimExpiresAt > claimNow;
+        if (!hasPendingSignature && claimIsFresh) return current;
         claimed = true;
-        return { ...current, settling: true };
+        return {
+            ...current,
+            settlementClaimExpiresAt: claimNow + SETTLEMENT_CLAIM_LEASE_MS,
+            settlementClaimOwner: claimOwner,
+            settling: true,
+        };
     });
     if (!claimed) return undefined;
 
@@ -1277,39 +1291,51 @@ async function closeAndSettleChannel(
                 };
             }
 
-            const result = await submitSettleAndDistribute({
-                buildAndSignWireTransaction: instructions =>
-                    buildAndSignWireTransaction(
-                        args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
-                        args.merchantSigner as unknown as TransactionSigner,
-                        instructions,
-                    ),
-                channelId: args.channelId,
-                currency: args.currency,
-                mint: args.mint,
-                network: args.network,
-                payee: args.recipient,
-                payer: state.operator,
+            const result = await submitSettleAndDistributeWithPreBroadcastPersistence(
+                {
+                    buildAndSignWireTransaction: instructions =>
+                        buildAndSignWireTransaction(
+                            args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
+                            args.merchantSigner as unknown as TransactionSigner,
+                            instructions,
+                        ),
+                    channelId: args.channelId,
+                    currency: args.currency,
+                    mint: args.mint,
+                    network: args.network,
+                    payee: args.recipient,
+                    payer: state.operator,
 
-                programId: args.programId,
-                // rentPayer reclaims the channel/escrow rent at distribute; it is the
-                // operator recorded as the channel rentPayer at open (the fee payer),
-                // not the refund payer carried in state.operator.
-                rentPayer: args.operator,
-                rpc: args.rpc as unknown as {
-                    sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
+                    programId: args.programId,
+                    // rentPayer reclaims the channel/escrow rent at distribute; it is the
+                    // operator recorded as the channel rentPayer at open (the fee payer),
+                    // not the refund payer carried in state.operator.
+                    rentPayer: args.operator,
+                    rpc: args.rpc as unknown as {
+                        sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
+                    },
+                    signer: args.merchantSigner as unknown as TransactionSigner,
+                    splits: args.splits ?? [],
+                    tokenProgram: args.tokenProgram,
+                    voucher,
                 },
-                signer: args.merchantSigner as unknown as TransactionSigner,
-                splits: args.splits ?? [],
-                tokenProgram: args.tokenProgram,
-                voucher,
-            });
+                async prepared => {
+                    pendingSignature = prepared.signature;
+                    await args.store.updateChannel(args.channelId, current => {
+                        if (!current) {
+                            throw new Error(`Channel ${args.channelId} disappeared before settlement broadcast`);
+                        }
+                        if (current.settlementClaimOwner !== claimOwner) {
+                            throw new Error(`Channel ${args.channelId} lost its settlement claim`);
+                        }
+                        return {
+                            ...current,
+                            settlementPendingSignature: prepared.signature as unknown as string,
+                        };
+                    });
+                },
+            );
             pendingSignature = result.signature;
-            await args.store.updateChannel(args.channelId, current => {
-                if (!current) throw new Error(`Channel ${args.channelId} disappeared after settlement broadcast`);
-                if (!current.settling) throw new Error(`Channel ${args.channelId} lost its settlement claim`);
-                return { ...current, settlementPendingSignature: result.signature as unknown as string };
-            });
         }
 
         await waitForSignatureConfirmation({
@@ -1325,6 +1351,8 @@ async function closeAndSettleChannel(
             return {
                 ...current,
                 sealed: true,
+                settlementClaimExpiresAt: undefined,
+                settlementClaimOwner: undefined,
                 settlementPendingSignature: undefined,
                 settledSignature: pendingSignature as unknown as string,
                 settling: false,
@@ -1336,8 +1364,11 @@ async function closeAndSettleChannel(
         await args.store.updateChannel(args.channelId, current => {
             if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
             if (current.sealed) return current;
+            if (current.settlementClaimOwner !== claimOwner) return current;
             return {
                 ...current,
+                settlementClaimExpiresAt: undefined,
+                settlementClaimOwner: undefined,
                 ...(definiteFailure && current.settlementPendingSignature === pendingSignature
                     ? { settlementPendingSignature: undefined }
                     : {}),

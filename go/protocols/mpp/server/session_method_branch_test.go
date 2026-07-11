@@ -387,8 +387,8 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 	_, channelID := openTrustedChannel(t, session, 1_000)
 	baseline := fake.calls()
 
-	// The watchdog fires, the settle fails (the broadcast is blocked), and
-	// the channel stays re-drivable rather than sealed.
+	// The watchdog fires and submission returns an uncertain error. The signed
+	// signature remains pending for confirmation by a later retry.
 	deadline := time.Now().Add(3 * time.Second)
 	for fake.calls() == baseline {
 		if time.Now().After(deadline) {
@@ -397,7 +397,7 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || state.SettledSignature != nil {
+	if state.Sealed || state.Settling || state.SettledSignature == nil {
 		t.Fatalf("failed settle mutated state: %+v", state)
 	}
 }

@@ -1157,20 +1157,33 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("voucher: %v", err)
 	}
 
-	// First close: settlement broadcast fails; close stays pending and
-	// re-drivable.
+	// Submission fails after the signed signature was persisted. The outcome
+	// is uncertain, so a retry must confirm that signature before rebuilding.
 	fake.SendErr = fmt.Errorf("blockhash not found")
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err == nil ||
 		!strings.Contains(err.Error(), "blockhash not found") {
 		t.Fatalf("settlement failure error = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.CloseRequestedAt == nil || state.Sealed || state.SettledSignature != nil {
+	if state.CloseRequestedAt == nil || state.Sealed || state.Settling || state.SettledSignature == nil {
 		t.Fatalf("state after failed settle = %+v", state)
 	}
+	pendingSignature := *state.SettledSignature
 
-	// Retry succeeds and seals the channel.
+	// A definite failed status clears the pending signature without another
+	// broadcast, allowing a later retry to build a fresh transaction.
 	fake.SendErr = nil
+	fake.Statuses[pendingSignature] = &rpc.SignatureStatusesResult{Err: "dropped"}
+	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err == nil ||
+		!strings.Contains(err.Error(), "failed on-chain") {
+		t.Fatalf("pending settlement failure = %v", err)
+	}
+	state = mustGetChannel(t, session, channelID)
+	if state.Sealed || state.Settling || state.SettledSignature != nil {
+		t.Fatalf("state after definite pending failure = %+v", state)
+	}
+	delete(fake.Statuses, pendingSignature)
+
 	receipt, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID}))
 	if err != nil {
 		t.Fatalf("close retry: %v", err)
@@ -1186,7 +1199,7 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("reference = %q, want settled signature %q", receipt.Reference, *state.SettledSignature)
 	}
 
-	// A third close on the sealed channel rejects.
+	// A later close on the sealed channel rejects.
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err == nil ||
 		!strings.Contains(err.Error(), "sealed") {
 		t.Fatalf("third close error = %v", err)
@@ -1779,6 +1792,7 @@ type blockingConfirmationRPC struct {
 	statusEntered chan struct{}
 	releaseStatus chan struct{}
 	block         atomic.Bool
+	statusCalls   atomic.Int64
 }
 
 type definiteFailureRPC struct {
@@ -1812,6 +1826,7 @@ func (b *blockingConfirmationRPC) GetSignatureStatuses(ctx context.Context, sear
 	if !b.block.Load() {
 		return b.FakeRPC.GetSignatureStatuses(ctx, searchHistory, signatures...)
 	}
+	b.statusCalls.Add(1)
 	select {
 	case b.statusEntered <- struct{}{}:
 	default:
@@ -1891,13 +1906,25 @@ func TestExplicitCloseRacingIdleCloseBroadcastsOnce(t *testing.T) {
 		t.Fatal("explicit close never reached confirmation")
 	}
 
-	// The idle path observes the explicit close's atomic settling claim and
-	// returns without broadcasting a competing transaction.
-	session.closeOnIdle(channelID)
+	// The idle path observes the persisted signature and joins confirmation
+	// without broadcasting a competing transaction.
+	idleDone := make(chan struct{})
+	go func() {
+		session.closeOnIdle(channelID)
+		close(idleDone)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for fake.statusCalls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("idle close never joined pending confirmation")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if len(fake.Sent) != 1 {
 		t.Fatalf("settlement broadcasts while first close is in flight = %d, want 1", len(fake.Sent))
 	}
 	close(fake.releaseStatus)
+	<-idleDone
 	if err := <-explicitDone; err != nil {
 		t.Fatalf("explicit close: %v", err)
 	}

@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 )
 
@@ -133,6 +136,9 @@ func (s *sharedJSONChannelStore) MarkSealed(ctx context.Context, channelID strin
 		}
 		next := *current
 		next.Sealed = true
+		next.Settling = false
+		next.SettlementClaimOwner = ""
+		next.SettlementClaimedAt = 0
 		return next, nil
 	})
 }
@@ -141,6 +147,26 @@ func (b *sharedJSONChannelBackend) raw(channelID string) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.data[channelID])
+}
+
+type preBroadcastStateRPC struct {
+	*testutil.FakeRPC
+	store     ChannelStore
+	channelID string
+	observed  bool
+}
+
+func (p *preBroadcastStateRPC) SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts rpc.TransactionOpts) (solana.Signature, error) {
+	state, err := p.store.GetChannel(ctx, p.channelID)
+	if err != nil {
+		return solana.Signature{}, err
+	}
+	if state == nil || !state.Settling || state.SettlementClaimOwner == "" || state.SettlementClaimedAt == 0 ||
+		state.SettledSignature == nil || len(tx.Signatures) == 0 || *state.SettledSignature != tx.Signatures[0].String() {
+		return solana.Signature{}, fmt.Errorf("settlement state was not durably persisted before send: %+v", state)
+	}
+	p.observed = true
+	return p.FakeRPC.SendTransactionWithOpts(ctx, tx, opts)
 }
 
 func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T) {
@@ -190,8 +216,17 @@ func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T)
 	if err != nil || state == nil || !state.Settling || state.SettledSignature == nil {
 		t.Fatalf("second store client state=%+v err=%v", state, err)
 	}
-	if signature, err := second.closeAndSettleChannel(context.Background(), channelID); err != nil || signature != "" {
-		t.Fatalf("competing store settle = %q, %v", signature, err)
+	secondDone := make(chan settleResult, 1)
+	go func() {
+		signature, err := second.closeAndSettleChannel(context.Background(), channelID)
+		secondDone <- settleResult{signature: signature, err: err}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for blockingRPC.statusCalls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("second store client never joined pending confirmation")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if len(baseRPC.Sent) != 1 {
 		t.Fatalf("shared-store broadcasts = %d, want 1", len(baseRPC.Sent))
@@ -201,6 +236,10 @@ func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T)
 	result := <-firstDone
 	if result.err != nil || result.signature == "" {
 		t.Fatalf("winning store settle = %q, %v", result.signature, result.err)
+	}
+	secondResult := <-secondDone
+	if secondResult.err != nil || secondResult.signature != result.signature {
+		t.Fatalf("joining store settle = %q, %v; want %q", secondResult.signature, secondResult.err, result.signature)
 	}
 	state, err = stores[1].GetChannel(context.Background(), channelID)
 	if err != nil || state == nil || !state.Sealed || state.Settling || state.SettledSignature == nil {
@@ -244,5 +283,117 @@ func TestSharedJSONStoreRetryReconfirmsPendingSignatureWithoutBroadcast(t *testi
 	}
 	if settled != pendingSignature || len(retryRPC.Sent) != 0 {
 		t.Fatalf("retry signature=%q broadcasts=%d want signature=%q broadcasts=0", settled, len(retryRPC.Sent), pendingSignature)
+	}
+}
+
+func TestSettlementSignatureIsPersistedBeforeBroadcast(t *testing.T) {
+	_, stores := newSharedJSONChannelStores(1)
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[0]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, session, 1_000)
+	inspectingRPC := &preBroadcastStateRPC{
+		FakeRPC:   baseRPC,
+		store:     stores[0],
+		channelID: channelID,
+	}
+	session.rpc = inspectingRPC
+
+	if _, err := session.closeAndSettleChannel(context.Background(), channelID); err != nil {
+		t.Fatalf("settlement: %v", err)
+	}
+	if !inspectingRPC.observed || len(baseRPC.Sent) != 1 {
+		t.Fatalf("pre-broadcast persistence observed=%v sends=%d", inspectingRPC.observed, len(baseRPC.Sent))
+	}
+}
+
+func TestRestartReconfirmsPersistedPendingSignatureDespiteSettling(t *testing.T) {
+	_, stores := newSharedJSONChannelStores(2)
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	first := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[0]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	restarted := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[1]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, first, 1_000)
+	pendingSignature := confirmedSignature(0xD1)
+	if _, err := stores[0].UpdateChannel(context.Background(), channelID, func(current *ChannelState) (ChannelState, error) {
+		next := *current
+		next.Settling = true
+		next.SettlementClaimOwner = "crashed-worker"
+		next.SettlementClaimedAt = time.Now().Unix()
+		next.SettledSignature = &pendingSignature
+		return next, nil
+	}); err != nil {
+		t.Fatalf("seed pending crash state: %v", err)
+	}
+
+	settled, err := restarted.closeAndSettleChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("restart confirmation: %v", err)
+	}
+	if settled != pendingSignature || len(baseRPC.Sent) != 0 {
+		t.Fatalf("restart signature=%q sends=%d", settled, len(baseRPC.Sent))
+	}
+	state, err := stores[0].GetChannel(context.Background(), channelID)
+	if err != nil || state == nil || !state.Sealed || state.Settling || state.SettlementClaimOwner != "" || state.SettlementClaimedAt != 0 {
+		t.Fatalf("restart reconciliation state=%+v err=%v", state, err)
+	}
+}
+
+func TestRestartTakesOverOnlyStaleSignaturelessClaim(t *testing.T) {
+	_, stores := newSharedJSONChannelStores(2)
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	first := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[0]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	restarted := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[1]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, first, 1_000)
+	setClaimTime := func(claimedAt int64) {
+		t.Helper()
+		if _, err := stores[0].UpdateChannel(context.Background(), channelID, func(current *ChannelState) (ChannelState, error) {
+			next := *current
+			next.Settling = true
+			next.SettlementClaimOwner = "crashed-worker"
+			next.SettlementClaimedAt = claimedAt
+			next.SettledSignature = nil
+			return next, nil
+		}); err != nil {
+			t.Fatalf("seed claim-only state: %v", err)
+		}
+	}
+
+	setClaimTime(time.Now().Unix())
+	if signature, err := restarted.closeAndSettleChannel(context.Background(), channelID); err != nil || signature != "" {
+		t.Fatalf("fresh claim result=%q err=%v", signature, err)
+	}
+	if len(baseRPC.Sent) != 0 {
+		t.Fatalf("fresh claim allowed %d broadcasts", len(baseRPC.Sent))
+	}
+
+	setClaimTime(time.Now().Add(-settlementClaimLease - time.Second).Unix())
+	settled, err := restarted.closeAndSettleChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("stale claim takeover: %v", err)
+	}
+	if settled == "" || len(baseRPC.Sent) != 1 {
+		t.Fatalf("stale takeover signature=%q sends=%d", settled, len(baseRPC.Sent))
 	}
 }

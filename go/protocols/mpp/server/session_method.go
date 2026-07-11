@@ -17,6 +17,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -927,7 +929,10 @@ var (
 	errSettlementAlreadyClaimed = errors.New("settlement already claimed")
 )
 
-const settlementStateWriteTimeout = 5 * time.Second
+const (
+	settlementStateWriteTimeout = 5 * time.Second
+	settlementClaimLease        = 30 * time.Second
+)
 
 type definiteSettlementFailure struct {
 	detail any
@@ -939,6 +944,14 @@ func (e *definiteSettlementFailure) Error() string {
 
 func settlementStateContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(parent), settlementStateWriteTimeout)
+}
+
+func newSettlementClaimOwner() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("generate settlement claim owner: %w", err)
+	}
+	return hex.EncodeToString(token[:]), nil
 }
 
 func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCClient, signature solana.Signature) error {
@@ -971,6 +984,11 @@ func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCCl
 // releases its claim so close remains re-drivable. Returns "" when the channel
 // does not exist or another caller currently owns the settlement claim.
 func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (string, error) {
+	claimOwner, err := newSettlementClaimOwner()
+	if err != nil {
+		return "", err
+	}
+	claimedAt := time.Now()
 	var recordedSignature string
 	state, err := s.core.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
 		if current == nil {
@@ -982,11 +1000,16 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			}
 			return ChannelState{}, errSettlementAlreadySealed
 		}
-		if current.Settling {
-			return ChannelState{}, errSettlementAlreadyClaimed
+		if current.Settling && current.SettledSignature == nil {
+			claimExpiresAt := time.Unix(current.SettlementClaimedAt, 0).Add(settlementClaimLease)
+			if current.SettlementClaimedAt != 0 && claimedAt.Before(claimExpiresAt) {
+				return ChannelState{}, errSettlementAlreadyClaimed
+			}
 		}
 		next := *current
 		next.Settling = true
+		next.SettlementClaimOwner = claimOwner
+		next.SettlementClaimedAt = claimedAt.Unix()
 		return next, nil
 	})
 	if err != nil {
@@ -1010,11 +1033,13 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			if current == nil {
 				return ChannelState{}, fmt.Errorf("channel %s disappeared while releasing settlement claim", channelID)
 			}
-			if current.Sealed || !current.Settling {
+			if current.Sealed || !current.Settling || current.SettlementClaimOwner != claimOwner {
 				return *current, nil
 			}
 			next := *current
 			next.Settling = false
+			next.SettlementClaimOwner = ""
+			next.SettlementClaimedAt = 0
 			if clearSignature {
 				next.SettledSignature = nil
 			}
@@ -1057,21 +1082,21 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		if err := solanatx.SignTransaction(tx, s.signer); err != nil {
 			return releaseClaim(fmt.Errorf("sign settlement transaction: %w", err), true)
 		}
-		signature, err = solanatx.SendTransaction(ctx, s.rpc, tx)
-		if err != nil {
-			return releaseClaim(core.WrapError(core.ErrCodeRPC, "send settlement transaction", err), true)
+		if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
+			return releaseClaim(errors.New("signed settlement transaction has no fee-payer signature"), true)
 		}
+		signature = tx.Signatures[0]
 		settled := signature.String()
 		writeCtx, cancel := settlementStateContext(ctx)
 		stored, persistErr := s.core.store.UpdateChannel(writeCtx, channelID, func(current *ChannelState) (ChannelState, error) {
 			if current == nil {
-				return ChannelState{}, fmt.Errorf("channel %s disappeared after settlement broadcast", channelID)
+				return ChannelState{}, fmt.Errorf("channel %s disappeared before settlement broadcast", channelID)
 			}
 			if current.Sealed {
 				return *current, nil
 			}
-			if !current.Settling {
-				return ChannelState{}, fmt.Errorf("channel %s lost settlement claim after broadcast", channelID)
+			if !current.Settling || current.SettlementClaimOwner != claimOwner {
+				return ChannelState{}, fmt.Errorf("channel %s lost settlement claim before broadcast", channelID)
 			}
 			if current.SettledSignature != nil && *current.SettledSignature != settled {
 				return ChannelState{}, fmt.Errorf("channel %s already records settlement signature %s", channelID, *current.SettledSignature)
@@ -1082,15 +1107,24 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		})
 		cancel()
 		if persistErr != nil {
-			// The transaction may have landed. Keep the durable claim intact so a
-			// caller cannot safely assume it may broadcast another transaction.
-			return "", fmt.Errorf("persist settlement signature after broadcast: %w", persistErr)
+			// Nothing has been sent. Keep the durable claim so another instance
+			// waits for lease expiry before rebuilding the transaction.
+			return "", fmt.Errorf("persist settlement signature before broadcast: %w", persistErr)
 		}
 		if stored.Sealed {
 			if stored.SettledSignature != nil {
 				return *stored.SettledSignature, nil
 			}
 			return settled, nil
+		}
+		sentSignature, sendErr := solanatx.SendTransaction(ctx, s.rpc, tx)
+		if sendErr != nil {
+			// Submission errors can be uncertain. Retain the pre-persisted
+			// signature so retries only re-confirm this transaction.
+			return releaseClaim(core.WrapError(core.ErrCodeRPC, "send settlement transaction", sendErr), false)
+		}
+		if sentSignature != signature {
+			return releaseClaim(fmt.Errorf("broadcast settlement signature %s != signed signature %s", sentSignature, signature), false)
 		}
 	}
 
@@ -1119,6 +1153,8 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		next.Sealed = true
 		next.SettledSignature = &settled
 		next.Settling = false
+		next.SettlementClaimOwner = ""
+		next.SettlementClaimedAt = 0
 		return next, nil
 	})
 	if err != nil {
