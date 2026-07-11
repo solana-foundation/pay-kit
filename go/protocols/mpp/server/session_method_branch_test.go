@@ -310,15 +310,17 @@ func TestCloseAndSettleChannelFailureMatrix(t *testing.T) {
 		t.Fatalf("unknown channel settle = %q, %v", signature, err)
 	}
 
-	// Store read failure surfaces.
-	store := &failingGetStore{ChannelStore: NewMemoryChannelStore(), getErr: errors.New("store offline")}
+	// Atomic settle-claim write failure surfaces.
+	store := &failingUpdateStore{ChannelStore: NewMemoryChannelStore()}
 	failingStoreSession := newTestSession(t, func(o *SessionOptions) {
 		o.RPC = fake
 		o.Signer = merchant
 		o.Store = store
 	})
-	if _, err := failingStoreSession.closeAndSettleChannel(ctx, "any"); err == nil ||
-		!strings.Contains(err.Error(), "store offline") {
+	_, failingChannelID := openTrustedChannel(t, failingStoreSession, 1_000)
+	store.fail = true
+	if _, err := failingStoreSession.closeAndSettleChannel(ctx, failingChannelID); err == nil ||
+		!strings.Contains(err.Error(), "store write rejected") {
 		t.Fatalf("store failure = %v", err)
 	}
 

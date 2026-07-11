@@ -38,6 +38,7 @@ import {
     verifyOpenTx,
     verifySignatureOnlyOpenTransaction,
     verifyTopUpTransaction,
+    waitForSignatureConfirmation,
 } from './session/on-chain.js';
 import {
     type ChannelState,
@@ -1236,67 +1237,90 @@ interface CloseAndSettleArgs {
  * highest voucher recorded — nothing to settle).
  */
 async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSettleAndDistributeResult | undefined> {
-    const state = await args.store.getChannel(args.channelId);
-    if (!state) return undefined;
+    let claimed = false;
+    const state = await args.store.updateChannel(args.channelId, current => {
+        if (!current) throw new Error(`Channel ${args.channelId} not found`);
+        if (current.sealed || current.settledSignature !== undefined || current.settling) return current;
+        claimed = true;
+        return { ...current, settling: true };
+    });
+    if (!claimed) return undefined;
 
-    // The distribute refund goes to the channel payer (the program enforces
-    // `payer == channel.payer`). It is recorded as `state.operator` at open.
-    // Never fall back to the recipient: refunding the merchant would derive the
-    // wrong refund token account and the settlement would fail on-chain.
-    if (!state.operator) {
-        throw new Error(
-            `cannot settle channel ${args.channelId}: the channel payer (refund destination) was not recorded at open`,
-        );
-    }
+    try {
+        // The distribute refund goes to the channel payer (the program enforces
+        // `payer == channel.payer`). It is recorded as `state.operator` at open.
+        // Never fall back to the recipient: refunding the merchant would derive the
+        // wrong refund token account and the settlement would fail on-chain.
+        if (!state.operator) {
+            throw new Error(
+                `cannot settle channel ${args.channelId}: the channel payer (refund destination) was not recorded at open`,
+            );
+        }
 
-    let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
-    if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
-        voucher = {
-            authorizedSigner: state.authorizedSigner,
-            signed: {
-                data: {
-                    channelId: args.channelId,
-                    cumulativeAmount: state.cumulative.toString(),
-                    expiresAt: Number(state.highestVoucherExpiresAt),
+        let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
+        if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
+            voucher = {
+                authorizedSigner: state.authorizedSigner,
+                signed: {
+                    data: {
+                        channelId: args.channelId,
+                        cumulativeAmount: state.cumulative.toString(),
+                        expiresAt: Number(state.highestVoucherExpiresAt),
+                    },
+                    signature: state.highestVoucherSignature,
                 },
-                signature: state.highestVoucherSignature,
+            };
+        }
+
+        const result = await submitSettleAndDistribute({
+            buildAndSignWireTransaction: instructions =>
+                buildAndSignWireTransaction(
+                    args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
+                    args.merchantSigner as unknown as TransactionSigner,
+                    instructions,
+                ),
+            channelId: args.channelId,
+            currency: args.currency,
+            mint: args.mint,
+            network: args.network,
+            payee: args.recipient,
+            payer: state.operator,
+
+            programId: args.programId,
+            // rentPayer reclaims the channel/escrow rent at distribute; it is the
+            // operator recorded as the channel rentPayer at open (the fee payer),
+            // not the refund payer carried in state.operator.
+            rentPayer: args.operator,
+            rpc: args.rpc as unknown as {
+                sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
             },
-        };
+            signer: args.merchantSigner as unknown as TransactionSigner,
+            splits: args.splits ?? [],
+            tokenProgram: args.tokenProgram,
+            voucher,
+        });
+        await waitForSignatureConfirmation({
+            context: `settle channel ${args.channelId}`,
+            rpc: args.rpc,
+            signature: result.signature,
+        });
+        await args.store.updateChannel(args.channelId, current => {
+            if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
+            return {
+                ...current,
+                sealed: true,
+                settledSignature: result.signature as unknown as string,
+                settling: false,
+            };
+        });
+        return result;
+    } catch (error) {
+        await args.store.updateChannel(args.channelId, current => {
+            if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
+            return { ...current, settling: false };
+        });
+        throw error;
     }
-
-    const result = await submitSettleAndDistribute({
-        buildAndSignWireTransaction: instructions =>
-            buildAndSignWireTransaction(
-                args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
-                args.merchantSigner as unknown as TransactionSigner,
-                instructions,
-            ),
-        channelId: args.channelId,
-        currency: args.currency,
-        mint: args.mint,
-        network: args.network,
-        payee: args.recipient,
-        payer: state.operator,
-
-        programId: args.programId,
-        // rentPayer reclaims the channel/escrow rent at distribute; it is the
-        // operator recorded as the channel rentPayer at open (the fee payer),
-        // not the refund payer carried in state.operator.
-        rentPayer: args.operator,
-        rpc: args.rpc as unknown as {
-            sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
-        },
-        signer: args.merchantSigner as unknown as TransactionSigner,
-        splits: args.splits ?? [],
-        tokenProgram: args.tokenProgram,
-        voucher,
-    });
-
-    await args.store.updateChannel(args.channelId, current => {
-        if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
-        return { ...current, sealed: true, settledSignature: result.signature as unknown as string };
-    });
-    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────

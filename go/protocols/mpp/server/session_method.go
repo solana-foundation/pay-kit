@@ -17,6 +17,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -292,14 +293,12 @@ func (s *Session) touch(channelID string) {
 	}
 }
 
-// closeOnIdle is the idle-close watchdog handler: settle the channel
-// on-chain when both a merchant signer and an RPC client are configured.
-// Errors have no synchronous caller to report to and are logged instead.
+// closeOnIdle is the idle-close watchdog handler: always flip the channel to
+// close-pending, then settle on-chain when both a merchant signer and an RPC
+// client are configured. Errors have no synchronous caller to report to and
+// are logged instead.
 func (s *Session) closeOnIdle(channelID string) {
-	if s.signer == nil || s.rpc == nil {
-		return
-	}
-	if _, err := s.closeAndSettleChannel(context.Background(), channelID); err != nil {
+	if _, err := s.handleClose(context.Background(), &intents.ClosePayload{ChannelID: channelID}); err != nil {
 		log.Printf("[solana-mpp] idle-close settle failed for %s: %v", channelID, err)
 	}
 }
@@ -924,58 +923,119 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 	return reference, nil
 }
 
-// closeAndSettleChannel builds settle_and_seal (+ the Ed25519 precompile
-// when a voucher was accepted) + distribute for a channel that has flipped
-// to close-pending, submits them as one merchant-signed transaction, and
-// marks the channel sealed with the settled signature. Returns "" when
-// the channel does not exist.
+var (
+	errSettlementChannelMissing = errors.New("settlement channel missing")
+	errSettlementAlreadySealed  = errors.New("settlement already sealed")
+	errSettlementAlreadyClaimed = errors.New("settlement already claimed")
+)
+
+// closeAndSettleChannel atomically claims a channel, builds settle_and_seal
+// (+ the Ed25519 precompile when a voucher was accepted) + distribute,
+// submits them as one merchant-signed transaction, waits for confirmation,
+// and only then seals the channel with the settled signature. A failed attempt
+// releases its claim so close remains re-drivable. Returns "" when the channel
+// does not exist or another caller currently owns the settlement claim.
 func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (string, error) {
-	state, err := s.core.store.GetChannel(ctx, channelID)
+	var recordedSignature string
+	state, err := s.core.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
+		if current == nil {
+			return ChannelState{}, errSettlementChannelMissing
+		}
+		if current.Sealed {
+			if current.SettledSignature != nil {
+				recordedSignature = *current.SettledSignature
+			}
+			return ChannelState{}, errSettlementAlreadySealed
+		}
+		if current.Settling {
+			return ChannelState{}, errSettlementAlreadyClaimed
+		}
+		next := *current
+		next.Settling = true
+		return next, nil
+	})
 	if err != nil {
-		return "", err
+		switch {
+		case errors.Is(err, errSettlementChannelMissing), errors.Is(err, errSettlementAlreadyClaimed):
+			return "", nil
+		case errors.Is(err, errSettlementAlreadySealed):
+			return recordedSignature, nil
+		default:
+			return "", err
+		}
 	}
-	if state == nil {
-		return "", nil
+
+	releaseClaim := func(settlementErr error) (string, error) {
+		// Confirmation commonly fails because ctx was canceled or timed out;
+		// retain its values but detach cancellation so cleanup can make the
+		// channel retryable.
+		_, releaseErr := s.core.store.UpdateChannel(context.WithoutCancel(ctx), channelID, func(current *ChannelState) (ChannelState, error) {
+			if current == nil {
+				return ChannelState{}, fmt.Errorf("channel %s disappeared while releasing settlement claim", channelID)
+			}
+			if current.Sealed || !current.Settling {
+				return *current, nil
+			}
+			next := *current
+			next.Settling = false
+			return next, nil
+		})
+		if releaseErr != nil {
+			return "", errors.Join(settlementErr, fmt.Errorf("release settlement claim: %w", releaseErr))
+		}
+		return "", settlementErr
 	}
+
 	merchant := s.signer.PublicKey()
 	// The distribute refund goes to the channel payer (the program enforces
 	// payer == channel.payer), recorded as state.Operator at open. Never fall
 	// back to the recipient: refunding the merchant would derive the wrong
 	// refund token account and fail settlement on-chain — settlement errors
 	// instead when the payer was never recorded.
-	instructions, err := s.core.settlementInstructionsForState(*state, channelID, merchant)
+	instructions, err := s.core.settlementInstructionsForState(state, channelID, merchant)
 	if err != nil {
-		return "", err
+		return releaseClaim(err)
 	}
 	blockhash, err := s.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
-		return "", core.WrapError(core.ErrCodeRPC, "fetch settlement blockhash", err)
+		return releaseClaim(core.WrapError(core.ErrCodeRPC, "fetch settlement blockhash", err))
 	}
 	if blockhash == nil || blockhash.Value == nil {
-		return "", core.NewError(core.ErrCodeRPC, "fetch settlement blockhash: empty response")
+		return releaseClaim(core.NewError(core.ErrCodeRPC, "fetch settlement blockhash: empty response"))
 	}
 	tx, err := solana.NewTransaction(instructions, blockhash.Value.Blockhash, solana.TransactionPayer(merchant))
 	if err != nil {
-		return "", fmt.Errorf("build settlement transaction: %w", err)
+		return releaseClaim(fmt.Errorf("build settlement transaction: %w", err))
 	}
 	if err := solanatx.SignTransaction(tx, s.signer); err != nil {
-		return "", fmt.Errorf("sign settlement transaction: %w", err)
+		return releaseClaim(fmt.Errorf("sign settlement transaction: %w", err))
 	}
 	signature, err := solanatx.SendTransaction(ctx, s.rpc, tx)
 	if err != nil {
-		return "", core.WrapError(core.ErrCodeRPC, "send settlement transaction", err)
+		return releaseClaim(core.WrapError(core.ErrCodeRPC, "send settlement transaction", err))
+	}
+	if err := solanatx.WaitForConfirmation(ctx, s.rpc, signature); err != nil {
+		return releaseClaim(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err))
 	}
 	settled := signature.String()
-	if _, err := s.core.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
+	stored, err := s.core.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s disappeared during settle", channelID)
+		}
+		if current.Sealed {
+			return *current, nil
 		}
 		next := *current
 		next.Sealed = true
 		next.SettledSignature = &settled
+		next.Settling = false
 		return next, nil
-	}); err != nil {
+	})
+	if err != nil {
 		return "", err
+	}
+	if stored.SettledSignature != nil {
+		return *stored.SettledSignature, nil
 	}
 	return settled, nil
 }

@@ -1772,6 +1772,31 @@ type countingBlockhashRPC struct {
 	blockhashCalls atomic.Int64
 }
 
+// blockingConfirmationRPC pauses the first settlement confirmation poll so a
+// competing close path can attempt to claim the same channel deterministically.
+type blockingConfirmationRPC struct {
+	*testutil.FakeRPC
+	statusEntered chan struct{}
+	releaseStatus chan struct{}
+	block         atomic.Bool
+}
+
+func (b *blockingConfirmationRPC) GetSignatureStatuses(ctx context.Context, searchHistory bool, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	if !b.block.Load() {
+		return b.FakeRPC.GetSignatureStatuses(ctx, searchHistory, signatures...)
+	}
+	select {
+	case b.statusEntered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-b.releaseStatus:
+		return b.FakeRPC.GetSignatureStatuses(ctx, searchHistory, signatures...)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // calls returns the GetLatestBlockhash call count.
 func (c *countingBlockhashRPC) calls() int64 { return c.blockhashCalls.Load() }
 
@@ -1811,7 +1836,88 @@ func TestSessionIdleCloseSettlesOnChain(t *testing.T) {
 	}
 }
 
-func TestSessionIdleCloseWithoutSignerIsInert(t *testing.T) {
+func TestExplicitCloseRacingIdleCloseBroadcastsOnce(t *testing.T) {
+	baseRPC := testutil.NewFakeRPC()
+	fake := &blockingConfirmationRPC{
+		FakeRPC:       baseRPC,
+		statusEntered: make(chan struct{}, 1),
+		releaseStatus: make(chan struct{}),
+	}
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, session, 1_000)
+	session.rpc = fake
+	fake.block.Store(true)
+
+	explicitDone := make(chan error, 1)
+	go func() {
+		_, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID}))
+		explicitDone <- err
+	}()
+
+	select {
+	case <-fake.statusEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("explicit close never reached confirmation")
+	}
+
+	// The idle path observes the explicit close's atomic settling claim and
+	// returns without broadcasting a competing transaction.
+	session.closeOnIdle(channelID)
+	if len(fake.Sent) != 1 {
+		t.Fatalf("settlement broadcasts while first close is in flight = %d, want 1", len(fake.Sent))
+	}
+	close(fake.releaseStatus)
+	if err := <-explicitDone; err != nil {
+		t.Fatalf("explicit close: %v", err)
+	}
+
+	state := mustGetChannel(t, session, channelID)
+	if !state.Sealed || state.Settling || state.SettledSignature == nil {
+		t.Fatalf("state after winning settle = %+v", state)
+	}
+}
+
+func TestSettlementConfirmationFailureReleasesClaimForRetry(t *testing.T) {
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, session, 1_000)
+	session.rpc = &failingStatusRPC{FakeRPC: baseRPC}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := session.closeAndSettleChannel(ctx, channelID); err == nil ||
+		!strings.Contains(err.Error(), "confirm settlement transaction") {
+		t.Fatalf("confirmation failure = %v", err)
+	}
+	state := mustGetChannel(t, session, channelID)
+	if state.Sealed || state.Settling || state.SettledSignature != nil {
+		t.Fatalf("failed confirmation left channel non-retryable: %+v", state)
+	}
+
+	healthyRPC := testutil.NewFakeRPC()
+	session.rpc = healthyRPC
+	settled, err := session.closeAndSettleChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("settlement retry: %v", err)
+	}
+	if settled == "" || len(healthyRPC.Sent) != 1 {
+		t.Fatalf("settlement retry = %q with %d broadcasts", settled, len(healthyRPC.Sent))
+	}
+	state = mustGetChannel(t, session, channelID)
+	if !state.Sealed || state.Settling || state.SettledSignature == nil {
+		t.Fatalf("state after settlement retry = %+v", state)
+	}
+}
+
+func TestSessionIdleCloseWithoutSignerStillClosesOffChain(t *testing.T) {
 	fake := testutil.NewFakeRPC()
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.RPC = fake
@@ -1821,7 +1927,7 @@ func TestSessionIdleCloseWithoutSignerIsInert(t *testing.T) {
 
 	time.Sleep(80 * time.Millisecond)
 	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || len(fake.Sent) != 0 {
-		t.Fatalf("idle close ran without a signer: state=%+v sends=%d", state, len(fake.Sent))
+	if state.CloseRequestedAt == nil || state.Sealed || len(fake.Sent) != 0 {
+		t.Fatalf("idle close without signer state=%+v sends=%d", state, len(fake.Sent))
 	}
 }

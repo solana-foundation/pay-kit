@@ -43,8 +43,8 @@ describe('createSessionEngine', () => {
         expect(() => createSessionEngine(config, gate)).toThrow(/mpp\.sessionStore is required outside localnet/);
     });
 
-    it('uses the injected store outside localnet', async () => {
-        const store = createMemorySessionStore();
+    it('uses an explicitly durable shared injected store outside localnet', async () => {
+        const store = { ...createMemorySessionStore(), sessionStoreDurability: 'durable-shared' as const };
         const getChannel = vi.spyOn(store, 'getChannel');
         const { config, gate } = await setup({ network: 'solana_devnet', sessionStore: store });
 

@@ -114,6 +114,13 @@ type ChannelState struct {
 	// channel state without a settlement round-trips cleanly.
 	SettledSignature *string `json:"settled_signature,omitempty"`
 
+	// Settling is a transient in-flight claim acquired atomically before this
+	// server builds or broadcasts a settlement transaction. It prevents an
+	// explicit close and the idle-close watchdog from both broadcasting for
+	// the same channel. It is cleared after a failed attempt or by the seal
+	// write after confirmation, and is intentionally not serialized.
+	Settling bool `json:"-"`
+
 	// Operator is the client wallet pubkey (base58) for pull-mode sessions;
 	// nil for push sessions.
 	Operator *string `json:"operator"`

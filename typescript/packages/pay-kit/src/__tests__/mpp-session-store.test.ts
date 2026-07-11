@@ -1,4 +1,5 @@
 import { createMemorySessionStore } from '@solana/mpp/server';
+import { Store } from 'mppx';
 import { describe, expect, it } from 'vitest';
 
 import { createSessionEngine } from '../adapters/mpp-session.js';
@@ -30,6 +31,7 @@ async function configWithStore(sessionStore?: SessionStoreWithCapability) {
         mpp: { challengeBindingSecret: 'session-store-test-secret', sessionStore },
         network: 'solana_devnet',
         operator: { recipient: RECIPIENT, signer: await Signer.generate() },
+        replayStore: Store.memory(),
     });
 }
 

@@ -68,8 +68,7 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
     const signer = config.operator.signer.signer;
     const store = resolveSessionStore(config);
     const allowUnsafeEphemeralStoreOffLocalnet =
-        config.network !== 'solana_localnet' &&
-        (config.mpp.sessionStore !== undefined || process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE === '1');
+        config.network !== 'solana_localnet' && process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE === '1';
     const params = {
         cap: gate.amount.baseUnits(),
         ...(gate.session.closeDelayMs !== undefined ? { closeDelayMs: gate.session.closeDelayMs } : {}),
