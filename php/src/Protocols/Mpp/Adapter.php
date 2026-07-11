@@ -8,6 +8,7 @@ use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
 use PayKit\Payment;
+use PayKit\PayCore\Network;
 use PayKit\Price;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
@@ -16,6 +17,7 @@ use PayKit\Protocols\Mpp\Server\ChargeSettlement;
 use PayKit\Protocols\Mpp\Server\PaymentRequiredResponse;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Store\MemoryStore;
+use PayKit\Store\ReplayStoreCapability;
 use PayKit\Store\Store;
 use Psr\Http\Message\ServerRequestInterface;
 use SolanaPhpSdk\Keypair\Keypair;
@@ -40,24 +42,39 @@ final class Adapter
 
     /**
      * @param ?Store $replayStore Replay-protection store shared across every
-     *        {@see SolanaChargeHandler} this adapter builds. When null (the
-     *        default) an in-process {@see MemoryStore} is used and a loud
-     *        dev-only warning is emitted: a single-process memory store
-     *        loses replay protection across workers/restarts, so production
-     *        deployments MUST inject a shared atomic store (Redis, Postgres).
+     *        {@see SolanaChargeHandler} this adapter builds. When null, the
+     *        MPP config's replayStore is used. Localnet may fall back to an
+     *        in-process {@see MemoryStore}; every other network requires a
+     *        store that explicitly declares durable shared replay protection.
      */
     public function __construct(
         private readonly Config $config,
         ?Store $replayStore = null,
     ) {
+        $replayStore ??= $config->mpp->replayStore;
         if ($replayStore === null) {
+            if ($config->network !== Network::SolanaLocalnet) {
+                throw new \InvalidArgumentException(
+                    'pay_kit: MPP replayStore is required outside localnet; '
+                    . 'inject a durable shared Store (for example Redis or Postgres)',
+                );
+            }
             if (function_exists('error_log')) {
                 error_log(
                     'pay_kit: WARN: mpp adapter using in-memory replay store; '
-                    . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+                    . 'allowed only on localnet.',
                 );
             }
             $replayStore = new MemoryStore();
+        }
+        if (
+            $config->network !== Network::SolanaLocalnet
+            && (!$replayStore instanceof ReplayStoreCapability
+                || !$replayStore->providesDurableSharedReplayProtection())
+        ) {
+            throw new \InvalidArgumentException(
+                'pay_kit: MPP replayStore must explicitly declare durable shared replay protection outside localnet',
+            );
         }
         $this->replayStore = $replayStore;
     }

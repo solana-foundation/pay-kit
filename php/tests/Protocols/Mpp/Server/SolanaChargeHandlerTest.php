@@ -16,6 +16,8 @@ use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Protocols\Mpp\Server\TransactionPayloadVerifier;
 use PayKit\Protocols\Mpp\Server\VerificationResult;
 use PayKit\Store\FileStore;
+use PayKit\Store\MemoryStore;
+use PayKit\Store\ReplayStoreCapability;
 use PayKit\Store\Store;
 use SolanaPhpSdk\Util\Base58;
 use SolanaPhpSdk\Keypair\Keypair;
@@ -175,6 +177,7 @@ final class SolanaChargeHandlerTest extends TestCase
             challenges: $challenges,
             verifier: new AlwaysAcceptVerifier(),
             network: 'devnet',
+            replayStore: new HandlerDurableSharedReplayStore(),
         );
 
         $result = $handler->handle($credential->toAuthorizationHeader(), $request);
@@ -182,6 +185,40 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertInstanceOf(PaymentRequiredResponse::class, $result);
         self::assertStringContainsString('Surfpool localnet blockhash', $result->body['detail']);
         self::assertStringContainsString('devnet', $result->body['detail']);
+    }
+
+    public function testNonLocalnetRejectsMissingReplayStore(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('replayStore is required outside localnet');
+
+        $this->handler(network: 'devnet');
+    }
+
+    public function testNonLocalnetRejectsMemoryReplayStore(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+
+        $this->handler(network: 'devnet', replayStore: new MemoryStore());
+    }
+
+    public function testNonLocalnetRejectsStoreWithoutReplayCapability(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+
+        $this->handler(network: 'devnet', replayStore: new HandlerUnspecifiedReplayStore());
+    }
+
+    public function testNonLocalnetAcceptsExplicitDurableSharedReplayStore(): void
+    {
+        $handler = $this->handler(
+            network: 'devnet',
+            replayStore: new HandlerDurableSharedReplayStore(),
+        );
+
+        self::assertInstanceOf(SolanaChargeHandler::class, $handler);
     }
 
     public function testReturns402WhenBroadcastReportsOnChainFailure(): void
@@ -575,7 +612,7 @@ final class SolanaChargeHandlerTest extends TestCase
     private function handler(
         ?ChargeServer $challenges = null,
         ?Keypair $feePayer = null,
-        string $network = 'mainnet-beta',
+        string $network = 'localnet',
         ?RpcClient $rpc = null,
         ?PaymentVerifier $verifier = null,
         ?TransactionPayloadVerifier $transactionVerifier = null,
@@ -652,6 +689,41 @@ final class SolanaChargeHandlerTest extends TestCase
             recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
             methodDetails: ['network' => 'localnet', 'decimals' => 6],
         );
+    }
+}
+
+final class HandlerUnspecifiedReplayStore implements Store
+{
+    private MemoryStore $store;
+
+    public function __construct()
+    {
+        $this->store = new MemoryStore();
+    }
+
+    public function putIfAbsent(string $key, mixed $value): bool
+    {
+        return $this->store->putIfAbsent($key, $value);
+    }
+}
+
+final class HandlerDurableSharedReplayStore implements Store, ReplayStoreCapability
+{
+    private MemoryStore $store;
+
+    public function __construct()
+    {
+        $this->store = new MemoryStore();
+    }
+
+    public function putIfAbsent(string $key, mixed $value): bool
+    {
+        return $this->store->putIfAbsent($key, $value);
+    }
+
+    public function providesDurableSharedReplayProtection(): bool
+    {
+        return true;
     }
 }
 

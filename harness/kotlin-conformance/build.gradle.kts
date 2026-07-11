@@ -8,6 +8,7 @@ dependencies {
     // Path-included build, see settings.gradle.kts.
     implementation("com.solana.paykit:solana-pay-kit-kotlin")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    testImplementation(kotlin("test"))
 }
 
 kotlin {

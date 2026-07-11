@@ -38,8 +38,17 @@ fun interface MintOwnerResolver {
  */
 class ChargeCredentialBuilder(private val transactionProvider: ChargeTransactionProvider) {
     /** Builds an `Authorization: Payment ...` header for a Solana charge challenge. */
-    fun authorizationHeader(challenge: PaymentChallenge): String {
+    fun authorizationHeader(challenge: PaymentChallenge): String =
+        authorizationHeader(challenge, Instant.now())
+
+    /** Builds a charge credential using [now] for deterministic expiry validation. */
+    fun authorizationHeader(challenge: PaymentChallenge, now: Instant): String {
         challenge.requireSolanaCharge()
+        if (challenge.isExpired(now)) {
+            throw MppException.InvalidTransaction(
+                "refusing to sign expired challenge (expires=${challenge.expires})",
+            )
+        }
 
         val transaction = transactionProvider.buildTransaction(challenge.chargeRequest())
         return MppHeaders.formatAuthorization(
