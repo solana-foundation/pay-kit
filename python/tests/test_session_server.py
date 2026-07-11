@@ -30,6 +30,7 @@ from solana_pay_kit.protocols.mpp.server.session import (
     SessionServer,
     Split,
 )
+from solana_pay_kit.protocols.mpp.server.session_onchain import VerifyOpenTxResult
 from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
 SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
@@ -278,6 +279,35 @@ async def test_process_open_invokes_verify_open_tx_seam_for_push() -> None:
     await server.process_open(session_open_payload("chan1", 1_000, "signer1"))
     assert len(calls) == 1
     assert calls[0].signature == "dummy_tx_sig"
+
+
+async def test_process_open_persists_authoritative_verified_facts() -> None:
+    """Verifier facts override payload echoes before state is persisted."""
+
+    async def verifier(_: OpenPayload) -> VerifyOpenTxResult:
+        return VerifyOpenTxResult(
+            channel_id="chan1",
+            deposit=4_321,
+            grace_period=900,
+            salt=44,
+            open_slot=55,
+            payer="verified-payer",
+        )
+
+    config = session_test_config()
+    config.verify_open_state_tx = verifier
+    server = new_session_test_server(config)
+    payload = session_open_payload("chan1", 1_000, "signer1")
+    payload.payer = "forged-payer"
+    payload.salt = 2
+    payload.recent_slot = 3
+
+    state = await server.process_open(payload)
+
+    assert state.deposit == 4_321
+    assert state.operator == "verified-payer"
+    assert state.salt == 44
+    assert state.open_slot == 55
 
 
 async def test_process_open_verify_open_tx_error_rejects_without_persisting() -> None:

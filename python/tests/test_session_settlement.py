@@ -6,6 +6,8 @@ Mirrors the Go/TS closeAndSettleChannel path.
 
 from __future__ import annotations
 
+import base64
+import copy
 import hashlib
 import struct
 from typing import Any
@@ -59,6 +61,9 @@ class _SettleRpc:
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         self.status_queries.append(list(signatures))
         return [{"err": None, "confirmationStatus": "confirmed", "slot": 42} for _ in signatures]
+
+    async def get_transaction(self, signature: str, **kwargs: Any) -> None:
+        return None
 
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> _Resp:
         return _Resp(_Blockhash(_BLOCKHASH))
@@ -486,6 +491,11 @@ async def test_open_tx_submitter_client_verifies_pull_transaction() -> None:
         )
     )
     payload.deposit = "1500000"
+    from solana_pay_kit.protocols.mpp.server.session_onchain import _complete_open_transaction
+
+    completed_wire, completed_signature = _complete_open_transaction(payload, operator)
+    payload.transaction = base64.b64encode(completed_wire).decode("ascii")
+    payload.signature = completed_signature
 
     reference = await session._handle_open(payload)
 
@@ -734,11 +744,11 @@ async def test_concurrent_settle_in_progress_guard_blocks_second_caller() -> Non
 
 @pytest.mark.asyncio
 async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
-    """S1: a replayed server-broadcast open (same payload, channel already
-    persisted) must NOT call ``send_raw_transaction`` again. The store
-    idempotency pre-check short-circuits the broadcast; ``process_open`` is
-    still the final source of truth (the existing state is returned
-    unchanged, the voucher watermark is preserved)."""
+    """S1: a fresh copy of the original partial open retries idempotently.
+
+    The persisted completed signature is returned without rebroadcasting or
+    comparing it to the still-partial wire transaction.
+    """
 
     operator = Keypair.from_seed(bytes([27] * 32))
     rpc = _SettleRpc(echo_transaction_signature=True)
@@ -759,6 +769,7 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
         )
     )
     open_, payload = _server_open_payload(operator)
+    fresh_partial_retry = copy.copy(payload)
     _seed_open_account(rpc, open_)
     payload.deposit = "1500000"
 
@@ -767,7 +778,7 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
     assert first == str(Transaction.from_bytes(rpc.sent[0]).signatures[0])
     assert len(rpc.sent) == 1
 
-    replay = await session._handle_open(payload)
+    replay = await session._handle_open(fresh_partial_retry)
 
     # No second broadcast on replay.
     assert len(rpc.sent) == 1

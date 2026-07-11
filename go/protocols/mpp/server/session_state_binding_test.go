@@ -74,7 +74,8 @@ func seedSessionChannelAccountWithSeeds(
 
 func TestSessionBarePushOpenUsesAuthoritativeChannelState(t *testing.T) {
 	fake := testutil.NewFakeRPC()
-	payer := solana.NewWallet().PublicKey()
+	payerKey := testutil.NewPrivateKey()
+	payer := payerKey.PublicKey()
 	signer := solana.NewWallet().PublicKey()
 	mint := solana.MustPublicKeyFromBase58(paycore.ResolveMint("USDC", "localnet"))
 	recipient := solana.MustPublicKeyFromBase58(sessionTestRecipient)
@@ -90,9 +91,10 @@ func TestSessionBarePushOpenUsesAuthoritativeChannelState(t *testing.T) {
 	)
 
 	session := newTestSession(t, func(options *SessionOptions) { options.RPC = fake })
-	payload := intents.OpenPayloadPush(channelID.String(), "1000", signer.String(), confirmedSignature(0x31))
+	payload := intents.OpenPayloadPush(channelID.String(), "4000", signer.String(), confirmedSignature(0x31))
 	claimedPayer := solana.NewWallet().PublicKey().String()
 	payload.Payer = &claimedPayer
+	registerSignatureOnlyOpenTransaction(t, session, &payload, payerKey, 4_000)
 	if _, err := verifySessionAction(t, session, intents.NewOpenAction(payload)); err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -108,6 +110,66 @@ func TestSessionBarePushOpenUsesAuthoritativeChannelState(t *testing.T) {
 	}
 	if state.Salt != 7 {
 		t.Fatalf("salt = %d, want authoritative 7", state.Salt)
+	}
+}
+
+func TestSessionServerRejectsLegacyOpenVerifierOffLocalnet(t *testing.T) {
+	fake := testutil.NewFakeRPC()
+	config := sessionTestConfig()
+	config.Network = "devnet"
+	config.VerifyOpenTx = NewOpenTxVerifier(config, fake)
+	server := NewSessionServer(config, durableTestChannelStore{ChannelStore: NewMemoryChannelStore()})
+
+	signer := solana.NewWallet().PublicKey()
+	signature := confirmedSignature(0x61)
+	fake.Statuses[signature] = &rpc.SignatureStatusesResult{
+		ConfirmationStatus: rpc.ConfirmationStatusConfirmed,
+		Slot:               99,
+	}
+	payload := intents.OpenPayloadPush(
+		solana.NewWallet().PublicKey().String(),
+		"999999",
+		signer.String(),
+		signature,
+	)
+	if _, err := server.ProcessOpen(context.Background(), &payload); err == nil ||
+		!strings.Contains(err.Error(), "authoritative state") {
+		t.Fatalf("legacy verifier error = %v, want authoritative-state rejection", err)
+	}
+	state, err := server.Store().GetChannel(context.Background(), *payload.ChannelID)
+	if err != nil {
+		t.Fatalf("GetChannel: %v", err)
+	}
+	if state != nil {
+		t.Fatalf("channel persisted despite legacy verifier: %+v", state)
+	}
+}
+
+func TestSessionServerStateAwareOpenPersistsAuthoritativeChannelFacts(t *testing.T) {
+	fixture := buildOpenTxFixture(t, false)
+	fake := testutil.NewFakeRPC()
+	config := authoritativeOpenSessionConfig(fixture)
+	config.VerifyOpenStateTx = NewOpenStateTxVerifier(config, fake)
+	server := NewSessionServer(config, durableTestChannelStore{ChannelStore: NewMemoryChannelStore()})
+	fake.Statuses[fixture.signature] = &rpc.SignatureStatusesResult{
+		ConfirmationStatus: rpc.ConfirmationStatusConfirmed,
+		Slot:               777,
+	}
+	seedSessionChannelAccountWithSeeds(
+		t, fake, fixture.channel, openFixtureDeposit, fixture.payer.PublicKey(), fixture.payee,
+		fixture.authorized, fixture.mint, pcgen.ChannelStatus_Open, openFixtureSalt, openFixtureOpenSlot,
+		fixture.payer.PublicKey(),
+	)
+
+	state, err := server.ProcessOpen(context.Background(), &fixture.payload)
+	if err != nil {
+		t.Fatalf("ProcessOpen: %v", err)
+	}
+	if state.Deposit != openFixtureDeposit || state.Salt != openFixtureSalt || state.OpenSlot != openFixtureOpenSlot {
+		t.Fatalf("state = %+v, want authoritative deposit/salt/openSlot", state)
+	}
+	if state.Operator == nil || *state.Operator != fixture.payer.PublicKey().String() {
+		t.Fatalf("operator = %v, want on-chain payer %s", state.Operator, fixture.payer.PublicKey())
 	}
 }
 

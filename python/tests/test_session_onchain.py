@@ -33,11 +33,13 @@ from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
+    Distribution,
     OpenChannelParams,
     build_open_instruction,
     find_channel_pda,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+from solana_pay_kit.protocols.mpp.server.session import Split
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
     is_placeholder_signature,
@@ -79,6 +81,10 @@ class _FakeRpc:
     def __init__(self) -> None:
         self.statuses: dict[str, dict | None] = {}
         self.accounts: dict[str, tuple[bytes, str] | None] = {}
+        self.transaction: dict | None = None
+
+    async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN003, ANN201
+        return self.transaction
 
     async def get_account_info(
         self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
@@ -131,16 +137,18 @@ def _channel_account(fixture: OpenTxFixture, deposit: int) -> tuple[bytes, str]:
     return bytes([1]) + bytes(body), str(PROGRAM_ID)
 
 
-def _sign_and_attach(fixture: OpenTxFixture, ix: Instruction, v0: bool) -> tuple[str, OpenPayload]:
+def _sign_and_attach_instructions(
+    fixture: OpenTxFixture, instructions: list[Instruction], v0: bool
+) -> tuple[str, OpenPayload]:
     blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
     payer_pubkey = fixture.payer.pubkey()
     if v0:
-        message_v0 = MessageV0.try_compile(payer_pubkey, [ix], [], blockhash)
+        message_v0 = MessageV0.try_compile(payer_pubkey, instructions, [], blockhash)
         vtx = VersionedTransaction(message_v0, [fixture.payer])
         encoded = base64.b64encode(bytes(vtx)).decode("ascii")
         signature = str(vtx.signatures[0])
     else:
-        message = Message.new_with_blockhash([ix], payer_pubkey, blockhash)
+        message = Message.new_with_blockhash(instructions, payer_pubkey, blockhash)
         tx = Transaction([fixture.payer], message, blockhash)
         encoded = base64.b64encode(bytes(tx)).decode("ascii")
         signature = str(tx.signatures[0])
@@ -157,6 +165,10 @@ def _sign_and_attach(fixture: OpenTxFixture, ix: Instruction, v0: bool) -> tuple
         signature,
     ).with_transaction(encoded)
     return signature, payload
+
+
+def _sign_and_attach(fixture: OpenTxFixture, ix: Instruction, v0: bool) -> tuple[str, OpenPayload]:
+    return _sign_and_attach_instructions(fixture, [ix], v0)
 
 
 def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
@@ -203,6 +215,24 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
         operator=str(payer.pubkey()),
     )
     return fixture
+
+
+def _fixture_open_instruction(fixture: OpenTxFixture, recipients: list[Distribution] | None = None) -> Instruction:
+    return build_open_instruction(
+        OpenChannelParams(
+            payer=fixture.payer.pubkey(),
+            payee=fixture.payee,
+            mint=fixture.mint,
+            authorized_signer=fixture.authorized,
+            salt=OPEN_FIXTURE_SALT,
+            deposit=OPEN_FIXTURE_DEPOSIT,
+            grace_period=OPEN_FIXTURE_GRACE,
+            open_slot=OPEN_FIXTURE_SLOT,
+            recipients=[] if recipients is None else recipients,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
+        )
+    )
 
 
 # -- verify_open_tx: accepted encodings ---------------------------------------
@@ -452,6 +482,71 @@ async def test_verify_open_tx_rejects_missing_open_instruction() -> None:
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
+@pytest.mark.parametrize("case", ["extra", "duplicate"])
+async def test_verify_open_tx_rejects_extra_or_duplicate_instructions(case: str) -> None:
+    """A server must validate the complete signed message before co-signing it."""
+    fixture = build_open_tx_fixture(v0=False)
+    open_ix = _fixture_open_instruction(fixture)
+    if case == "extra":
+        instructions = [
+            open_ix,
+            Instruction(
+                Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+                b"unexpected",
+                [],
+            ),
+        ]
+    else:
+        instructions = [open_ix, open_ix]
+    _, fixture.payload = _sign_and_attach_instructions(fixture, instructions, v0=False)
+
+    with pytest.raises(PaymentError, match="exactly one instruction"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_altered_splits() -> None:
+    """The open's ordered split entries must match the challenge exactly."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected_recipient = _kp(60).pubkey()
+    altered_recipient = _kp(61).pubkey()
+    ix = _fixture_open_instruction(
+        fixture,
+        recipients=[Distribution(recipient=altered_recipient, bps=250)],
+    )
+    _, fixture.payload = _sign_and_attach(fixture, ix, v0=False)
+    expected = replace(
+        fixture.expected,
+        splits=[Split(recipient=str(expected_recipient), bps=250)],
+    )
+
+    with pytest.raises(PaymentError, match=r"recipient\[0\].*expected split"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_reordered_fixed_accounts() -> None:
+    """The fixed accounts must remain in the generated instruction order."""
+    fixture = build_open_tx_fixture(v0=False)
+    ix = _fixture_open_instruction(fixture)
+    accounts = list(ix.accounts)
+    accounts[9], accounts[10] = accounts[10], accounts[9]
+    forged = Instruction(ix.program_id, ix.data, accounts)
+    _, fixture.payload = _sign_and_attach(fixture, forged, v0=False)
+
+    with pytest.raises(PaymentError, match="canonical account"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_trailing_open_data() -> None:
+    """Trailing bytes after the canonical Borsh open args are not accepted."""
+    fixture = build_open_tx_fixture(v0=False)
+    ix = _fixture_open_instruction(fixture)
+    forged = Instruction(ix.program_id, bytes(ix.data) + b"\x00", ix.accounts)
+    _, fixture.payload = _sign_and_attach(fixture, forged, v0=False)
+
+    with pytest.raises(PaymentError, match="canonical"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
 async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
     """Mirrors TestVerifyOpenTxRejectsChannelPDAMismatch."""
     fixture = build_open_tx_fixture(v0=False)
@@ -618,9 +713,49 @@ async def test_new_open_tx_verifier_without_transaction_requires_rpc() -> None:
 async def test_new_open_tx_verifier_without_transaction_confirms_signature() -> None:
     """Mirrors TestNewOpenTxVerifierWithoutTransactionConfirmsSignature."""
     fixture = build_open_tx_fixture(v0=False)
-    verifier = new_open_tx_verifier(_open_session_config(fixture), _FakeRpc())
+    fake_rpc = _FakeRpc()
+    fake_rpc.accounts[str(fixture.channel)] = _channel_account(fixture, OPEN_FIXTURE_DEPOSIT)
+    fake_rpc.transaction = {"meta": {"err": None}, "transaction": [fixture.payload.transaction, "base64"]}
+    verifier = new_open_tx_verifier(_open_session_config(fixture), fake_rpc)
     fixture.payload.transaction = None
-    await verifier(fixture.payload)
+    result = await verifier(fixture.payload)
+    assert result is not None
+    assert result.channel_id == str(fixture.channel)
+    assert result.deposit == OPEN_FIXTURE_DEPOSIT
+    assert result.salt == OPEN_FIXTURE_SALT
+    assert result.open_slot == OPEN_FIXTURE_SLOT
+    assert result.payer == str(fixture.payer.pubkey())
+
+
+@pytest.mark.parametrize("case", ["missing", "unrelated", "extra"])
+async def test_signature_only_open_rejects_noncanonical_confirmed_transaction(case: str) -> None:
+    fixture = build_open_tx_fixture(v0=False)
+    open_ix = _fixture_open_instruction(fixture)
+    if case == "missing":
+        instructions = [
+            Instruction(
+                Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+                b"unrelated",
+                [],
+            )
+        ]
+    elif case == "unrelated":
+        instructions = [Instruction(Pubkey.new_unique(), b"unrelated", [])]
+    else:
+        instructions = [open_ix, open_ix]
+    signature, wire_payload = _sign_and_attach_instructions(fixture, instructions, v0=False)
+    wire = wire_payload.transaction
+    fixture.payload = wire_payload
+    fixture.payload.transaction = None
+    fixture.payload.signature = signature
+    fake_rpc = _FakeRpc()
+    fake_rpc.accounts[str(fixture.channel)] = _channel_account(fixture, OPEN_FIXTURE_DEPOSIT)
+    fake_rpc.transaction = {"meta": {"err": None}, "transaction": [wire, "base64"]}
+    verifier = new_open_tx_verifier(_open_session_config(fixture), fake_rpc)
+
+    with pytest.raises(PaymentError) as error:
+        await verifier(fixture.payload)
+    assert error.value.code == "invalid-payload"
 
 
 # -- new_top_up_tx_verifier ---------------------------------------------------

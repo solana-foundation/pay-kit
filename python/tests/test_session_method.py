@@ -19,18 +19,22 @@ test it mirrors in the docstring.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import struct
 
 import pytest
+from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
+from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
-from solana_pay_kit._paycore.solana import resolve_mint
-from solana_pay_kit.protocols.mpp._paymentchannels import find_channel_pda
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
+from solana_pay_kit.protocols.mpp._paymentchannels import OpenChannelParams, build_open_instruction, find_channel_pda
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
@@ -129,6 +133,8 @@ class _FakeRpc:
         self.statuses: dict[str, dict | None] = {}
         self.blockhash = blockhash
         self.accounts: dict[str, tuple[bytes, str] | None] = {}
+        self.transaction: dict | None = None
+        self.transaction_signature: str | None = None
 
     def seed_channel(
         self,
@@ -143,6 +149,32 @@ class _FakeRpc:
         open_slot: int = 0,
     ) -> None:
         self.accounts[channel_id] = _channel_account(deposit, payer, payee, signer, mint, rent_payer, salt, open_slot)
+        instruction = build_open_instruction(
+            OpenChannelParams(
+                payer=Pubkey.from_string(payer),
+                rent_payer=Pubkey.from_string(rent_payer or payee),
+                payee=Pubkey.from_string(payee),
+                mint=Pubkey.from_string(mint),
+                authorized_signer=Pubkey.from_string(signer),
+                salt=salt,
+                deposit=deposit,
+                grace_period=900,
+                open_slot=open_slot,
+                token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            )
+        )
+        fee_payer = Pubkey.from_string(rent_payer or payee)
+        blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
+        message = Message.new_with_blockhash([instruction], fee_payer, blockhash)
+        signatures = [Signature.default()] * message.header.num_required_signatures
+        if self.transaction_signature is not None:
+            signatures[0] = Signature.from_string(self.transaction_signature)
+        transaction = Transaction.populate(message, signatures)
+        encoded = base64.b64encode(bytes(transaction)).decode("ascii")
+        self.transaction = {"meta": {"err": None}, "transaction": [encoded, "base64"]}
+
+    async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN003, ANN201
+        return self.transaction
 
     async def get_account_info(
         self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
@@ -218,6 +250,7 @@ async def _open_session_channel(
     if isinstance(session._rpc, _FakeRpc):
         mint = resolve_mint(session._currency, session._network)
         assert mint is not None
+        session._rpc.transaction_signature = signature
         session._rpc.seed_channel(channel_id, deposit, _new_wallet(), session._recipient, authorized_signer, mint)
     return await _verify_session_action(session, SessionAction.open_action(payload))
 
@@ -593,20 +626,25 @@ async def test_session_open_verifies_signature_on_chain() -> None:
     mint = resolve_mint("USDC", "localnet")
     assert mint is not None
     payer = _new_wallet()
-    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint)
-    fake.seed_channel(channel_id, 1_000, payer, SESSION_TEST_RECIPIENT, signer.address(), mint)
+    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
+    fake.transaction_signature = ok_sig
+    fake.seed_channel(channel_id, 1_000, payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
+    open_payload = OpenPayload.push(channel_id, "1000", signer.address(), ok_sig)
+    open_payload.recent_slot = 42
     receipt = await _verify_session_action(
-        session, SessionAction.open_action(OpenPayload.push(channel_id, "1000", signer.address(), ok_sig))
+        session, SessionAction.open_action(open_payload)
     )
     assert receipt.reference == ok_sig
 
     ghost_channel = _new_wallet()
     ghost = OpenPayload.push(ghost_channel, "1000", signer.address(), ghost_sig)
+    ghost.recent_slot = 42
     with pytest.raises(PaymentError, match="not found"):
         await _verify_session_action(session, SessionAction.open_action(ghost))
     assert await _get_channel(session, ghost_channel) is None
 
     failed = OpenPayload.push(_new_wallet(), "1000", signer.address(), failed_sig)
+    failed.recent_slot = 42
     with pytest.raises(PaymentError, match="failed on-chain"):
         await _verify_session_action(session, SessionAction.open_action(failed))
 
@@ -775,10 +813,13 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
     mint = resolve_mint("USDC", "localnet")
     assert mint is not None
     payer = _new_wallet()
-    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint)
-    fake.seed_channel(channel_id, 1_000, payer, SESSION_TEST_RECIPIENT, signer.address(), mint)
+    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
+    fake.transaction_signature = open_sig
+    fake.seed_channel(channel_id, 1_000, payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
+    open_payload = OpenPayload.push(channel_id, "1000", signer.address(), open_sig)
+    open_payload.recent_slot = 42
     await _verify_session_action(
-        session, SessionAction.open_action(OpenPayload.push(channel_id, "1000", signer.address(), open_sig))
+        session, SessionAction.open_action(open_payload)
     )
     opened = await _get_channel(session, channel_id)
     assert opened is not None and opened.operator is not None
@@ -958,6 +999,7 @@ async def test_session_push_open_requires_payer_or_transaction_for_settlement() 
     assert mint is not None
     channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint, 1, 777)
     assert isinstance(session._rpc, _FakeRpc)
+    session._rpc.transaction_signature = _confirmed_signature(0x32)
     session._rpc.seed_channel(
         channel_id,
         1_000,

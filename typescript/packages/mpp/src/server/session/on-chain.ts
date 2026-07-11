@@ -26,6 +26,7 @@ import {
     getCompiledTransactionMessageDecoder,
     getI64Encoder,
     getProgramDerivedAddress,
+    getSignatureFromTransaction,
     getTransactionDecoder,
     getU64Encoder,
     getUtf8Encoder,
@@ -39,11 +40,21 @@ import {
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 
-import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
+import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    defaultTokenProgramForCurrency,
+    resolveStablecoinMint,
+    SYSTEM_PROGRAM,
+} from '../../constants.js';
 import { type Channel, getChannelDecoder } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
 import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
 import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
+import {
+    getOpenInstructionDataDecoder,
+    getOpenInstructionDataEncoder,
+} from '../../generated/payment-channels/instructions/open.js';
+import type { OpenInstructionData } from '../../generated/payment-channels/instructions/open.js';
 import {
     getTopUpInstruction,
     getTopUpInstructionDataDecoder,
@@ -97,6 +108,7 @@ const TREASURY_OWNER_BYTES = new Uint8Array([
 
 /** Payment-channel open instruction discriminator. */
 const OPEN_DISCRIMINATOR = 1;
+const RENT_SYSVAR_ADDRESS = 'SysvarRent111111111111111111111111111111111' as Address;
 
 const U16_LE = (n: number) => new Uint8Array([n & 0xff, (n >> 8) & 0xff]);
 
@@ -429,6 +441,8 @@ export interface VerifyOpenTxExpected {
     readonly authorizedSigner: string;
     readonly currency: string;
     readonly maxCap: bigint;
+    /** Expected channel close grace period, defaulting to the program default. */
+    readonly gracePeriod?: number | undefined;
     /** Optional override for the SPL mint (otherwise resolved from currency/network). */
     readonly mint?: string | undefined;
     readonly network?: string | undefined;
@@ -449,6 +463,8 @@ export interface VerifyOpenTxExpected {
     readonly programId?: string | undefined;
     /** Primary recipient (challenge `recipient`). */
     readonly recipient: string;
+    /** Ordered payout distribution committed by the challenge. */
+    readonly splits?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
     /** Optional explicit token program (otherwise derived from currency/network). */
     readonly tokenProgram?: string | undefined;
 }
@@ -467,6 +483,36 @@ export interface SignatureStatusRpc {
             value: ReadonlyArray<SignatureStatus | null>;
         }>;
     };
+}
+
+/** Minimal RPC shape needed to fetch and inspect a confirmed open transaction. */
+export interface OpenTransactionRpc extends SignatureStatusRpc {
+    getTransaction(
+        signature: Signature,
+        config: {
+            readonly commitment: 'confirmed';
+            readonly encoding: 'base64';
+            readonly maxSupportedTransactionVersion: 0;
+        },
+    ): {
+        send(): Promise<{
+            readonly meta: {
+                readonly err: unknown;
+                readonly loadedAddresses?:
+                    | {
+                          readonly readonly: readonly string[];
+                          readonly writable: readonly string[];
+                      }
+                    | null
+                    | undefined;
+            } | null;
+            readonly transaction: readonly [string, string];
+        } | null>;
+    };
+}
+
+export function isOpenTransactionRpc(rpc: unknown): rpc is OpenTransactionRpc {
+    return typeof rpc === 'object' && rpc !== null && typeof (rpc as OpenTransactionRpc).getTransaction === 'function';
 }
 
 /** Arguments to {@link verifyOpenTx}. */
@@ -529,6 +575,11 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     // byte, so legacy and v0 messages both decode to this shape.
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
         addressTableLookups?: readonly unknown[] | undefined;
+        header: {
+            numReadonlyNonSignerAccounts: number;
+            numReadonlySignerAccounts: number;
+            numSignerAccounts: number;
+        };
         instructions: readonly {
             accountIndices?: readonly number[];
             data?: Uint8Array | undefined;
@@ -572,6 +623,12 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         expected.mint ?? resolveStablecoinMint(expected.currency, expected.network ?? 'mainnet') ?? expected.currency;
     if (!expectedMint) {
         throw new Error('verifyOpenTx: could not resolve mint from currency/network');
+    }
+
+    if (message.instructions.length !== 1) {
+        throw new Error(
+            `verifyOpenTx: expected exactly one instruction before server co-signing, found ${message.instructions.length}`,
+        );
     }
 
     let openIx: { accountIndices: readonly number[]; data: Uint8Array } | undefined;
@@ -628,15 +685,21 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected operator ${expected.operator}`);
     }
 
-    // ix data: [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients array]
-    if (openIx.data.length < 1 + 8 + 8 + 4 + 8) {
-        throw new Error('verifyOpenTx: open instruction data too short');
+    // Decode the complete Borsh payload, including the ordered recipient list.
+    // The canonical re-encoding below rejects both malformed encodings and
+    // otherwise-valid payloads with trailing bytes.
+    let decodedOpenData: OpenInstructionData;
+    try {
+        decodedOpenData = getOpenInstructionDataDecoder().decode(openIx.data);
+    } catch (error) {
+        throw new Error(`verifyOpenTx: could not decode open instruction data: ${String(error)}`);
     }
-    const view = new DataView(openIx.data.buffer, openIx.data.byteOffset, openIx.data.byteLength);
-    const salt = view.getBigUint64(1, true);
-    const deposit = view.getBigUint64(9, true);
-    const gracePeriod = view.getUint32(17, true);
-    const openSlot = view.getBigUint64(21, true);
+    if (decodedOpenData.discriminator !== OPEN_DISCRIMINATOR) {
+        throw new Error(`verifyOpenTx: invalid open instruction discriminator ${decodedOpenData.discriminator}`);
+    }
+
+    const { openArgs } = decodedOpenData;
+    const { deposit, gracePeriod, openSlot, recipients, salt } = openArgs;
 
     if (deposit === 0n) {
         throw new Error('verifyOpenTx: deposit must be greater than zero');
@@ -644,8 +707,38 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     if (deposit > expected.maxCap) {
         throw new Error(`verifyOpenTx: deposit ${deposit} exceeds maxCap ${expected.maxCap}`);
     }
+    const expectedGracePeriod = expected.gracePeriod ?? 900;
+    if (gracePeriod !== expectedGracePeriod) {
+        throw new Error(`verifyOpenTx: gracePeriod ${gracePeriod} != expected ${expectedGracePeriod}`);
+    }
     if (expected.openSlot !== undefined && openSlot !== expected.openSlot) {
         throw new Error(`verifyOpenTx: openSlot ${openSlot} != challenge-issued openSlot ${expected.openSlot}`);
+    }
+
+    const expectedSplits = expected.splits ?? [];
+    if (recipients.length !== expectedSplits.length) {
+        throw new Error(
+            `verifyOpenTx: open recipients length ${recipients.length} != expected splits length ${expectedSplits.length}`,
+        );
+    }
+    for (const [index, recipient] of recipients.entries()) {
+        const expectedSplit = expectedSplits[index];
+        if (!expectedSplit || recipient.recipient !== expectedSplit.recipient || recipient.bps !== expectedSplit.bps) {
+            throw new Error(`verifyOpenTx: open recipient[${index}] does not match expected split`);
+        }
+    }
+
+    const canonicalData = getOpenInstructionDataEncoder().encode({
+        openArgs: {
+            deposit,
+            gracePeriod,
+            openSlot,
+            recipients: expectedSplits.map(split => ({ bps: split.bps, recipient: address(split.recipient) })),
+            salt,
+        },
+    });
+    if (!bytesEqual(openIx.data, canonicalData)) {
+        throw new Error('verifyOpenTx: open instruction data is not canonical');
     }
 
     // Re-derive the channel PDA and assert it matches.
@@ -670,6 +763,57 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     }
     if (openPayload.recentSlot !== undefined && BigInt(openPayload.recentSlot) !== openSlot) {
         throw new Error(`verifyOpenTx: openPayload.recentSlot ${openPayload.recentSlot} != tx openSlot ${openSlot}`);
+    }
+
+    const tokenProgram = address(
+        expected.tokenProgram ?? defaultTokenProgramForCurrency(expected.currency, expected.network ?? 'mainnet'),
+    );
+    const [payerTokenAccount] = await findAssociatedTokenPda({
+        mint: address(mintAddr),
+        owner: address(payerAddr),
+        tokenProgram,
+    });
+    const [channelTokenAccount] = await findAssociatedTokenPda({
+        mint: address(mintAddr),
+        owner: address(channelAddr),
+        tokenProgram,
+    });
+    const [eventAuthority] = await findEventAuthorityPda({ programAddress });
+    const canonicalAccounts: readonly { readonly address: string; readonly role: AccountRole }[] = [
+        { address: payerAddr, role: AccountRole.WRITABLE_SIGNER },
+        { address: expected.operator, role: AccountRole.WRITABLE_SIGNER },
+        { address: expected.recipient, role: AccountRole.READONLY },
+        { address: expectedMint, role: AccountRole.READONLY },
+        { address: expected.authorizedSigner, role: AccountRole.READONLY },
+        { address: channelAddr, role: AccountRole.WRITABLE },
+        { address: payerTokenAccount, role: AccountRole.WRITABLE },
+        { address: channelTokenAccount, role: AccountRole.WRITABLE },
+        { address: tokenProgram, role: AccountRole.READONLY },
+        { address: SYSTEM_PROGRAM, role: AccountRole.READONLY },
+        { address: RENT_SYSVAR_ADDRESS, role: AccountRole.READONLY },
+        { address: ASSOCIATED_TOKEN_PROGRAM, role: AccountRole.READONLY },
+        { address: eventAuthority, role: AccountRole.READONLY },
+        { address: programIdStr, role: AccountRole.READONLY },
+    ];
+    if (indices.length !== canonicalAccounts.length) {
+        throw new Error(
+            `verifyOpenTx: open instruction account count ${indices.length} != canonical count ${canonicalAccounts.length}`,
+        );
+    }
+    for (const [slot, canonical] of canonicalAccounts.entries()) {
+        const accountIndex = indices[slot];
+        const actualAddress = accountIndex === undefined ? undefined : message.staticAccounts[accountIndex];
+        if (actualAddress !== canonical.address) {
+            throw new Error(
+                `verifyOpenTx: open instruction account[${slot}] ${String(actualAddress)} does not match canonical account ${canonical.address}`,
+            );
+        }
+        const actualRole = accountIndex === undefined ? undefined : compiledAccountRole(message, accountIndex);
+        if (actualRole !== canonical.role) {
+            throw new Error(
+                `verifyOpenTx: open instruction account[${slot}] has role ${String(actualRole)} instead of ${canonical.role}`,
+            );
+        }
     }
 
     // Optional liveness check — only when caller provides an RPC and the
@@ -704,10 +848,23 @@ export interface GetAccountInfoRpc {
 export interface TopUpTransactionRpc {
     getTransaction(
         signature: Signature,
-        config: { readonly encoding: 'base64'; readonly maxSupportedTransactionVersion: 0 },
+        config: {
+            readonly commitment: 'confirmed';
+            readonly encoding: 'base64';
+            readonly maxSupportedTransactionVersion: 0;
+        },
     ): {
         send(): Promise<{
-            meta: { err: unknown } | null;
+            meta: {
+                err: unknown;
+                loadedAddresses?:
+                    | {
+                          readonly readonly: readonly string[];
+                          readonly writable: readonly string[];
+                      }
+                    | null
+                    | undefined;
+            } | null;
             transaction: readonly [string, string];
         } | null>;
     };
@@ -722,6 +879,7 @@ export interface VerifyChannelStateExpected {
     readonly deposit?: bigint | undefined;
     readonly gracePeriod?: number | undefined;
     readonly mint: string;
+    readonly openSlot?: bigint | undefined;
     readonly payee: string;
     readonly payer?: string | undefined;
     readonly programId?: string | undefined;
@@ -803,6 +961,11 @@ export async function verifyChannelAccountState(args: {
             `verifyChannelAccountState: on-chain rentPayer ${channel.rentPayer} != expected operator ${args.expected.rentPayer}`,
         );
     }
+    if (args.expected.openSlot !== undefined && channel.openSlot !== args.expected.openSlot) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain openSlot ${channel.openSlot} != expected ${args.expected.openSlot}`,
+        );
+    }
     if (
         args.expected.requireFresh !== false &&
         (channel.settlement.settled !== 0n || channel.settlement.payoutWatermark !== 0n)
@@ -854,6 +1017,251 @@ export async function verifyChannelAccountState(args: {
     return channel;
 }
 
+/**
+ * Fetch and bind a signature-only payment-channel open to its canonical open
+ * instruction. This is deliberately separate from verifyOpenTx: attached
+ * transaction opens remain authoritative over their decoded transaction, while
+ * compact opens must derive their authorization from the confirmed wire tx.
+ */
+export async function verifySignatureOnlyOpenTransaction(args: {
+    readonly channelId: string;
+    readonly deposit: bigint;
+    readonly expected: VerifyOpenTxExpected;
+    readonly openSlot?: bigint | undefined;
+    readonly rpc: OpenTransactionRpc;
+    readonly signature: Signature;
+}): Promise<void> {
+    const fetched = await args.rpc
+        .getTransaction(args.signature, {
+            commitment: 'confirmed',
+            encoding: 'base64',
+            maxSupportedTransactionVersion: 0,
+        })
+        .send();
+    if (!fetched) {
+        throw new Error(`verifySignatureOnlyOpenTransaction: tx ${args.signature} not found on-chain`);
+    }
+    if (fetched.meta?.err) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: tx ${args.signature} failed on-chain: ${JSON.stringify(fetched.meta.err)}`,
+        );
+    }
+
+    const [wire, encoding] = fetched.transaction;
+    if (encoding !== 'base64') {
+        throw new Error(`verifySignatureOnlyOpenTransaction: expected base64, got ${encoding}`);
+    }
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+    if (getSignatureFromTransaction(decoded) !== args.signature) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: fetched transaction signature does not match ${args.signature}`,
+        );
+    }
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        readonly instructions: readonly {
+            readonly accountIndices?: readonly number[];
+            readonly data?: Uint8Array | undefined;
+            readonly programAddressIndex: number;
+        }[];
+        readonly staticAccounts: readonly string[];
+    };
+    const loadedAddresses = fetched.meta?.loadedAddresses;
+    const accounts = [
+        ...message.staticAccounts,
+        ...(loadedAddresses?.writable ?? []),
+        ...(loadedAddresses?.readonly ?? []),
+    ];
+    const accountAtIndex = (index: number, context: string): string => {
+        const value = accounts[index];
+        if (!value) {
+            throw new Error(`verifySignatureOnlyOpenTransaction: ${context} account index ${index} is out of range`);
+        }
+        return value;
+    };
+
+    const programId = args.expected.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
+    const expectedMint =
+        args.expected.mint ??
+        resolveStablecoinMint(args.expected.currency, args.expected.network ?? 'mainnet') ??
+        args.expected.currency;
+    if (!expectedMint) {
+        throw new Error('verifySignatureOnlyOpenTransaction: could not resolve mint from currency/network');
+    }
+    if (!args.expected.operator) {
+        throw new Error('verifySignatureOnlyOpenTransaction: expected.operator is required');
+    }
+
+    const openInstructions = [] as {
+        readonly accountIndices: readonly number[];
+        readonly data: Uint8Array;
+    }[];
+    for (const [instructionIndex, instruction] of message.instructions.entries()) {
+        const instructionProgram = accountAtIndex(
+            instruction.programAddressIndex,
+            `instruction[${instructionIndex}] program`,
+        );
+        if (instructionProgram !== programId) continue;
+        if (!instruction.data || instruction.data[0] !== OPEN_DISCRIMINATOR) continue;
+        openInstructions.push({ accountIndices: instruction.accountIndices ?? [], data: instruction.data });
+    }
+    if (openInstructions.length !== 1) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: expected exactly one canonical payment-channel open, found ${openInstructions.length}`,
+        );
+    }
+
+    const openInstruction = openInstructions[0];
+    if (!openInstruction) throw new Error('verifySignatureOnlyOpenTransaction: missing open instruction');
+    if (openInstruction.accountIndices.length !== 14) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: open instruction account count ${openInstruction.accountIndices.length} != canonical count 14`,
+        );
+    }
+    const instructionAccounts = openInstruction.accountIndices.map((index, slot) =>
+        accountAtIndex(index, `open instruction account[${slot}]`),
+    );
+    const [payerAddr, rentPayerAddr, payeeAddr, mintAddr, authorizedSignerAddr, channelAddr] = instructionAccounts;
+    if (!payerAddr || !rentPayerAddr || !payeeAddr || !mintAddr || !authorizedSignerAddr || !channelAddr) {
+        throw new Error('verifySignatureOnlyOpenTransaction: open instruction is missing canonical accounts');
+    }
+    if (channelAddr !== args.channelId) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: open channel ${channelAddr} != asserted channel ${args.channelId}`,
+        );
+    }
+    if (rentPayerAddr !== args.expected.operator) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: rentPayer ${rentPayerAddr} != expected operator ${args.expected.operator}`,
+        );
+    }
+    if (payeeAddr !== args.expected.recipient) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: payee ${payeeAddr} != expected recipient ${args.expected.recipient}`,
+        );
+    }
+    if (mintAddr !== expectedMint) {
+        throw new Error(`verifySignatureOnlyOpenTransaction: mint ${mintAddr} != expected mint ${expectedMint}`);
+    }
+    if (authorizedSignerAddr !== args.expected.authorizedSigner) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: authorizedSigner ${authorizedSignerAddr} != expected ${args.expected.authorizedSigner}`,
+        );
+    }
+
+    let decodedOpenData: OpenInstructionData;
+    try {
+        decodedOpenData = getOpenInstructionDataDecoder().decode(openInstruction.data);
+    } catch (error) {
+        throw new Error(`verifySignatureOnlyOpenTransaction: malformed open instruction data: ${String(error)}`);
+    }
+    if (decodedOpenData.discriminator !== OPEN_DISCRIMINATOR) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: invalid open instruction discriminator ${decodedOpenData.discriminator}`,
+        );
+    }
+    const { deposit, gracePeriod, openSlot, recipients, salt } = decodedOpenData.openArgs;
+    if (deposit !== args.deposit) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: on-chain open deposit ${deposit} != asserted deposit ${args.deposit}`,
+        );
+    }
+    const expectedGracePeriod = args.expected.gracePeriod ?? 900;
+    if (gracePeriod !== expectedGracePeriod) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: gracePeriod ${gracePeriod} != expected ${expectedGracePeriod}`,
+        );
+    }
+    if (args.openSlot !== undefined && openSlot !== args.openSlot) {
+        throw new Error(`verifySignatureOnlyOpenTransaction: openSlot ${openSlot} != expected ${args.openSlot}`);
+    }
+    if (deposit === 0n || deposit > args.expected.maxCap) {
+        throw new Error(`verifySignatureOnlyOpenTransaction: deposit ${deposit} is outside the permitted range`);
+    }
+
+    const expectedSplits = args.expected.splits ?? [];
+    if (
+        recipients.length !== expectedSplits.length ||
+        recipients.some(
+            (recipient, index) =>
+                recipient.recipient !== expectedSplits[index]?.recipient ||
+                recipient.bps !== expectedSplits[index]?.bps,
+        )
+    ) {
+        throw new Error('verifySignatureOnlyOpenTransaction: open recipients do not match expected session splits');
+    }
+
+    const tokenProgram = address(
+        args.expected.tokenProgram ??
+            defaultTokenProgramForCurrency(args.expected.currency, args.expected.network ?? 'mainnet'),
+    );
+    const [payerTokenAccount] = await findAssociatedTokenPda({
+        mint: address(mintAddr),
+        owner: address(payerAddr),
+        tokenProgram,
+    });
+    const [channelTokenAccount] = await findAssociatedTokenPda({
+        mint: address(mintAddr),
+        owner: address(channelAddr),
+        tokenProgram,
+    });
+    const [eventAuthority] = await findEventAuthorityPda({ programAddress: address(programId) });
+    const canonicalAccounts = [
+        payerAddr,
+        args.expected.operator,
+        args.expected.recipient,
+        expectedMint,
+        args.expected.authorizedSigner,
+        channelAddr,
+        payerTokenAccount,
+        channelTokenAccount,
+        tokenProgram,
+        SYSTEM_PROGRAM,
+        RENT_SYSVAR_ADDRESS,
+        ASSOCIATED_TOKEN_PROGRAM,
+        eventAuthority,
+        programId,
+    ];
+    for (const [slot, expectedAccount] of canonicalAccounts.entries()) {
+        const actualAccount = instructionAccounts[slot];
+        if (actualAccount !== expectedAccount) {
+            throw new Error(
+                `verifySignatureOnlyOpenTransaction: open instruction account[${slot}] ${String(actualAccount)} != canonical account ${expectedAccount}`,
+            );
+        }
+    }
+
+    const canonicalData = getOpenInstructionDataEncoder().encode({
+        openArgs: {
+            deposit,
+            gracePeriod,
+            openSlot,
+            recipients: expectedSplits.map(split => ({ bps: split.bps, recipient: address(split.recipient) })),
+            salt,
+        },
+    });
+    if (!bytesEqual(openInstruction.data, canonicalData)) {
+        throw new Error('verifySignatureOnlyOpenTransaction: open instruction data is not canonical');
+    }
+
+    const [derivedChannel] = await getProgramDerivedAddress({
+        programAddress: address(programId),
+        seeds: [
+            getUtf8Encoder().encode('channel'),
+            getAddressEncoder().encode(address(payerAddr)),
+            getAddressEncoder().encode(address(payeeAddr)),
+            getAddressEncoder().encode(address(mintAddr)),
+            getAddressEncoder().encode(address(authorizedSignerAddr)),
+            getU64Encoder().encode(salt),
+            getU64Encoder().encode(openSlot),
+        ],
+    });
+    if (derivedChannel !== args.channelId) {
+        throw new Error(
+            `verifySignatureOnlyOpenTransaction: channel PDA ${args.channelId} != derived ${derivedChannel}`,
+        );
+    }
+}
+
 export async function verifyTopUpTransaction(args: {
     readonly amount: bigint;
     readonly channelId: string;
@@ -862,7 +1270,11 @@ export async function verifyTopUpTransaction(args: {
     readonly signature: Signature;
 }): Promise<void> {
     const fetched = await args.rpc
-        .getTransaction(args.signature, { encoding: 'base64', maxSupportedTransactionVersion: 0 })
+        .getTransaction(args.signature, {
+            commitment: 'confirmed',
+            encoding: 'base64',
+            maxSupportedTransactionVersion: 0,
+        })
         .send();
     if (!fetched) throw new Error(`verifyTopUpTransaction: tx ${args.signature} not found on-chain`);
     if (fetched.meta?.err) {
@@ -879,13 +1291,19 @@ export async function verifyTopUpTransaction(args: {
         }[];
         staticAccounts: readonly string[];
     };
+    const loadedAddresses = fetched.meta?.loadedAddresses;
+    const accounts = [
+        ...message.staticAccounts,
+        ...(loadedAddresses?.writable ?? []),
+        ...(loadedAddresses?.readonly ?? []),
+    ];
     let count = 0;
     let total = 0n;
     for (const instruction of message.instructions) {
-        if (message.staticAccounts[instruction.programAddressIndex] !== args.programId) continue;
+        if (accounts[instruction.programAddressIndex] !== args.programId) continue;
         if (!instruction.data || instruction.data[0] !== TOP_UP_DISCRIMINATOR) continue;
         const channelIndex = instruction.accountIndices?.[1];
-        if (channelIndex === undefined || message.staticAccounts[channelIndex] !== args.channelId) continue;
+        if (channelIndex === undefined || accounts[channelIndex] !== args.channelId) continue;
         count += 1;
         total += getTopUpInstructionDataDecoder().decode(instruction.data).topUpArgs.amount;
     }
@@ -931,9 +1349,7 @@ export async function waitForSignatureConfirmation(args: {
                 throw new Error(`${context}: tx ${args.signature} failed on-chain: ${JSON.stringify(status.err)}`);
             }
             const level = status.confirmationStatus;
-            // RPC endpoints that omit confirmationStatus only report a
-            // status once the tx landed — treat that as confirmed.
-            if (level === undefined || level === null || level === 'confirmed' || level === 'finalized') {
+            if (level === 'confirmed' || level === 'finalized') {
                 return;
             }
         }
@@ -1271,6 +1687,33 @@ export async function buildMultiDelegatorUpdateInstruction(args: MultiDelegatorU
 // ─────────────────────────────────────────────────────────────────────
 // internals
 // ─────────────────────────────────────────────────────────────────────
+
+function bytesEqual(left: ReadonlyUint8Array, right: ReadonlyUint8Array): boolean {
+    return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function compiledAccountRole(
+    message: {
+        readonly header: {
+            readonly numReadonlyNonSignerAccounts: number;
+            readonly numReadonlySignerAccounts: number;
+            readonly numSignerAccounts: number;
+        };
+        readonly staticAccounts: readonly unknown[];
+    },
+    index: number,
+): AccountRole {
+    if (index < 0 || index >= message.staticAccounts.length) {
+        throw new Error(`verifyOpenTx: account index ${index} is outside static accounts`);
+    }
+    const { header } = message;
+    const writableSignerCount = header.numSignerAccounts - header.numReadonlySignerAccounts;
+    const writableNonSignerEnd = message.staticAccounts.length - header.numReadonlyNonSignerAccounts;
+    if (index < header.numSignerAccounts) {
+        return index < writableSignerCount ? AccountRole.WRITABLE_SIGNER : AccountRole.READONLY_SIGNER;
+    }
+    return index < writableNonSignerEnd ? AccountRole.WRITABLE : AccountRole.READONLY;
+}
 
 const SYSTEM_PROGRAM_ADDRESS = '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
 

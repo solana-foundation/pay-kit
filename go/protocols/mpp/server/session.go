@@ -15,12 +15,13 @@ package server
 //    once the close-pending state is recorded.
 //
 // On-chain verification is a seam in this layer: when
-// SessionConfig.VerifyOpenTx / VerifyTopUpTx are set, ProcessOpen (push mode)
+// SessionConfig.VerifyOpenStateTx / VerifyTopUpStateTx are set, ProcessOpen
 // and ProcessTopUp invoke them before persisting channel state, binding the
-// payload to the attached transaction and confirming the signature on-chain.
-// When nil, the transaction signature and
-// deposit amount are trusted as provided, which is suitable only for unit
-// tests or deployments that verify transactions out of band.
+// payload to authoritative transaction or account facts. The legacy
+// VerifyOpenTx / VerifyTopUpTx hooks remain available for compatibility; a
+// legacy open verifier is accepted only on localnet. Off-localnet payment
+// channel opens require VerifyOpenStateTx so a confirmed signature cannot
+// authorize a payload-supplied deposit.
 
 import (
 	"context"
@@ -56,6 +57,12 @@ type Split struct {
 // a top-up that carries no open transaction); callers then fall back to the
 // payload's owner/payer fields.
 type SessionTxVerifier[P any] func(ctx context.Context, payload *P) (string, error)
+
+// SessionOpenStateTxVerifier verifies a payment-channel open and returns the
+// authoritative facts extracted from the verified transaction or channel
+// account. It is additive to SessionTxVerifier so existing integrations that
+// only return the channel payer remain source-compatible.
+type SessionOpenStateTxVerifier func(ctx context.Context, payload *intents.OpenPayload) (VerifyOpenTxResult, error)
 
 // SessionTopUpTxVerifier binds a top-up transaction to both its resulting
 // on-chain account and the channel identity already held in the store.
@@ -111,9 +118,15 @@ type SessionConfig struct {
 	// Required when Modes includes pull.
 	PullVoucherStrategy *intents.SessionPullVoucherStrategy
 
-	// VerifyOpenTx, when set, confirms the open transaction on-chain (push
-	// mode) before ProcessOpen persists channel state. See SessionTxVerifier.
+	// VerifyOpenTx is the legacy payer-only hook retained for API compatibility.
+	// It may verify an open on localnet, but off-localnet payment-channel opens
+	// require VerifyOpenStateTx so payload claims are never persisted as facts.
 	VerifyOpenTx SessionTxVerifier[intents.OpenPayload]
+
+	// VerifyOpenStateTx is the stronger open verifier. When set, ProcessOpen
+	// persists its returned deposit, salt, payer, and open seeds instead of
+	// payload claims. It is required for payment-channel opens off localnet.
+	VerifyOpenStateTx SessionOpenStateTxVerifier
 
 	// VerifyTopUpTx is the legacy payload-only hook retained for API
 	// compatibility. New integrations should use VerifyTopUpStateTx.
@@ -262,9 +275,39 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 	if err != nil {
 		return ChannelState{}, err
 	}
-	deposit, err := payload.DepositAmount()
-	if err != nil {
-		return ChannelState{}, err
+	paymentChannelBacked := payload.Mode == intents.SessionModePush || payload.Transaction != nil
+	if paymentChannelBacked && s.config.Network != "localnet" && s.config.VerifyOpenStateTx == nil {
+		return ChannelState{}, fmt.Errorf("payment-channel open requires an on-chain verifier with authoritative state off localnet")
+	}
+
+	// Transaction-backed pull opens are payment-channel opens too and must pass
+	// the same verifier as push opens.
+	var verifiedPayer string
+	var verifiedState *VerifyOpenTxResult
+	var deposit uint64
+	if paymentChannelBacked && s.config.VerifyOpenStateTx != nil {
+		verified, err := s.config.VerifyOpenStateTx(ctx, payload)
+		if err != nil {
+			return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
+		}
+		if verified.ChannelID != "" && verified.ChannelID != sessionID {
+			return ChannelState{}, fmt.Errorf("verified open channel %s != session %s", verified.ChannelID, sessionID)
+		}
+		verifiedState = &verified
+		deposit = verified.Deposit
+		verifiedPayer = verified.Payer
+	} else {
+		var err error
+		deposit, err = payload.DepositAmount()
+		if err != nil {
+			return ChannelState{}, err
+		}
+		if paymentChannelBacked && s.config.VerifyOpenTx != nil {
+			verifiedPayer, err = s.config.VerifyOpenTx(ctx, payload)
+			if err != nil {
+				return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
+			}
+		}
 	}
 	if deposit == 0 {
 		return ChannelState{}, fmt.Errorf("deposit must be greater than zero")
@@ -273,19 +316,15 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		return ChannelState{}, fmt.Errorf("deposit %d exceeds max cap %d", deposit, s.config.MaxCap)
 	}
 
-	paymentChannelBacked := payload.Mode == intents.SessionModePush || payload.Transaction != nil
-	if paymentChannelBacked && s.config.Network != "localnet" && s.config.VerifyOpenTx == nil {
-		return ChannelState{}, fmt.Errorf("payment-channel open requires an on-chain verifier off localnet")
-	}
-
-	// Transaction-backed pull opens are payment-channel opens too and must pass
-	// the same verifier as push opens.
-	var verifiedPayer string
-	if paymentChannelBacked && s.config.VerifyOpenTx != nil {
-		var err error
-		verifiedPayer, err = s.config.VerifyOpenTx(ctx, payload)
-		if err != nil {
-			return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
+	if verifiedState != nil {
+		if err := validateAssertedOpenDeposit(payload, verifiedState.Deposit); err != nil {
+			return ChannelState{}, err
+		}
+		if verifiedState.Deposit == 0 {
+			return ChannelState{}, fmt.Errorf("verified open deposit must be greater than zero")
+		}
+		if verifiedState.Deposit > s.config.MaxCap {
+			return ChannelState{}, fmt.Errorf("verified open deposit %d exceeds max cap %d", verifiedState.Deposit, s.config.MaxCap)
 		}
 	}
 
@@ -302,6 +341,10 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		Deposit:          deposit,
 		OpenSlot:         openSlotFromPayload(payload),
 		Operator:         operator,
+	}
+	if verifiedState != nil {
+		fresh.OpenSlot = verifiedState.OpenSlot
+		fresh.Salt = verifiedState.Salt
 	}
 
 	// Atomic check-and-insert: a replayed open re-passes all checks above

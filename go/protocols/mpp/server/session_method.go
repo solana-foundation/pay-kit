@@ -251,6 +251,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 	}
 	if options.RPC != nil {
 		config.VerifyOpenTx = NewOpenTxVerifier(config, options.RPC)
+		config.VerifyOpenStateTx = NewOpenStateTxVerifier(config, options.RPC)
 	}
 	config.VerifyTopUpStateTx = NewTopUpStateTxVerifier(config, options.RPC)
 	session := &Session{
@@ -420,16 +421,24 @@ func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentC
 	var err error
 	switch {
 	case action.Open != nil:
-		// Sanity-check the challenge-bound recentSlot: when both the
-		// HMAC-bound challenge and the payload carry one, they must agree,
-		// since the payload slot seeds the channel PDA the server re-derives.
+		// A signature-only push open has no transaction bytes to establish
+		// the channel incarnation. It must echo the challenge's recentSlot;
+		// accepting omission would let a confirmed signature for another PDA
+		// incarnation be paired with this challenge.
+		if action.Open.Mode == intents.SessionModePush && request.RecentSlot != nil &&
+			action.Open.Transaction == nil && action.Open.ChannelID != nil {
+			if action.Open.RecentSlot == nil {
+				return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload,
+					"signature-only push open requires recentSlot")
+			}
+		}
 		if request.RecentSlot != nil && action.Open.RecentSlot != nil &&
 			uint64(*request.RecentSlot) != *action.Open.RecentSlot {
 			return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload,
 				fmt.Sprintf("open payload recentSlot %d does not match the challenge recentSlot %d",
 					*action.Open.RecentSlot, uint64(*request.RecentSlot)))
 		}
-		reference, err = s.handleOpen(ctx, action.Open)
+		reference, err = s.handleOpen(ctx, action.Open, request.RecentSlot)
 	case action.Voucher != nil:
 		reference, err = s.handleVoucher(ctx, action.Voucher)
 	case action.Commit != nil:
@@ -489,7 +498,7 @@ func (s *Session) verifyPinnedSessionFields(credential core.PaymentCredential, r
 // payload (verifying or broadcasting the attached transaction when present),
 // enforce the deposit invariants, and insert the channel state atomically and
 // idempotently.
-func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) (string, error) {
+func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, challengeRecentSlot *intents.U64String) (string, error) {
 	mode := payload.Mode
 	if !s.core.supportsMode(mode) {
 		return "", fmt.Errorf("session mode %q is not supported by this challenge", mode)
@@ -516,6 +525,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	openSlot := openSlotFromPayload(payload)
 	var salt uint64
 	var openSignature string
+	var verifiedOpen *VerifyOpenTxResult
 
 	switch {
 	case hasTransaction:
@@ -530,6 +540,12 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
 			Recipient:        s.recipient,
+			Splits:           s.core.config.Splits,
+			GracePeriod:      expectedSessionGracePeriod(s.core.config),
+		}
+		if challengeRecentSlot != nil {
+			recentSlot := uint64(*challengeRecentSlot)
+			expected.RecentSlot = &recentSlot
 		}
 		if s.openTxSubmitter == OpenTxSubmitterServer {
 			if s.rpc == nil {
@@ -556,6 +572,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				salt = preVerified.Salt
 				signature = existing.OpenSignature
 				openSignature = existing.OpenSignature
+				verifiedOpen = &preVerified
 			} else {
 				submitted, err := SubmitOpenTx(ctx, expected, payload, s.payerSigner, s.rpc)
 				if err != nil {
@@ -568,12 +585,17 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				salt = submitted.Salt
 				signature = submitted.Signature
 				openSignature = submitted.Signature
+				verifiedOpen = &submitted.VerifyOpenTxResult
 			}
 		} else {
 			verified, err := VerifyOpenTx(ctx, expected, payload, s.rpc)
 			if err != nil {
 				return "", err
 			}
+			if err := validateAssertedOpenDeposit(payload, verified.Deposit); err != nil {
+				return "", err
+			}
+			verifiedOpen = &verified
 			channelID = verified.ChannelID
 			deposit = verified.Deposit
 			channelPayer = verified.Payer
@@ -610,30 +632,49 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			if err != nil {
 				return "", err
 			}
+			if verifiedOpen != nil {
+				if err := validateBoundOpenChannel(bound, verifiedOpen, s.cap); err != nil {
+					return "", err
+				}
+			}
+			if err := validateAssertedOpenDeposit(payload, bound.Deposit); err != nil {
+				return "", err
+			}
 			deposit = bound.Deposit
 			channelPayer = bound.Payer
 			openSlot = bound.OpenSlot
 			salt = bound.Salt
 		}
 	case mode == intents.SessionModePush:
-		// No transaction in the payload: the client asserts a previously
-		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting; without one the channelId/deposit
-		// fields are trusted as-is.
+		// No transaction in the payload: with an RPC client, fetch and
+		// validate the transaction named by the signature before reading the
+		// channel account. Without one, localnet keeps the explicit
+		// trust-as-provided test seam.
 		channelID = *payload.ChannelID
-		var err error
-		deposit, err = payload.DepositAmount()
-		if err != nil {
-			return "", err
-		}
 		if s.rpc != nil {
-			confirmedSlot, err := confirmedTransactionSlot(ctx, s.rpc, signature, "open")
+			expected := VerifyOpenTxExpected{
+				AuthorizedSigner: payload.AuthorizedSigner,
+				Currency:         s.currency,
+				MaxCap:           s.cap,
+				Network:          s.network,
+				Operator:         s.core.config.Operator,
+				ProgramID:        s.core.config.ProgramID,
+				Recipient:        s.recipient,
+				Splits:           s.core.config.Splits,
+				GracePeriod:      expectedSessionGracePeriod(s.core.config),
+			}
+			if challengeRecentSlot != nil {
+				recentSlot := uint64(*challengeRecentSlot)
+				expected.RecentSlot = &recentSlot
+			}
+			verified, confirmedSlot, err := verifySignatureOnlyOpen(ctx, expected, payload, s.rpc)
 			if err != nil {
 				return "", err
 			}
-			channelPDA, err := solana.PublicKeyFromBase58(channelID)
+			channelID = verified.ChannelID
+			channelPDA, err := solana.PublicKeyFromBase58(verified.ChannelID)
 			if err != nil {
-				return "", fmt.Errorf("invalid channelId %q: %w", channelID, err)
+				return "", fmt.Errorf("invalid verified channelId %q: %w", verified.ChannelID, err)
 			}
 			bound, err := fetchAndBindChannelAccount(
 				ctx,
@@ -652,12 +693,24 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			if err != nil {
 				return "", err
 			}
+			if err := validateBoundOpenChannel(bound, &verified, s.cap); err != nil {
+				return "", err
+			}
+			if err := validateAssertedOpenDeposit(payload, bound.Deposit); err != nil {
+				return "", err
+			}
 			deposit = bound.Deposit
 			channelPayer = bound.Payer
 			openSlot = bound.OpenSlot
 			salt = bound.Salt
 		} else if s.network != "localnet" {
 			return "", fmt.Errorf("payment-channel push open requires an rpc client to bind the on-chain channel off localnet")
+		} else {
+			var err error
+			deposit, err = payload.DepositAmount()
+			if err != nil {
+				return "", err
+			}
 		}
 	default:
 		// Pull mode without a channel transaction: trust the

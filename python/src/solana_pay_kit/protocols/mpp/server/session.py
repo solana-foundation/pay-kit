@@ -12,14 +12,12 @@ channel lifecycle management.
    :meth:`SessionServer.process_close`; on-chain settlement is driven by the
    host once the close-pending state is recorded.
 
-On-chain verification is a seam in this layer: when
-:attr:`SessionConfig.verify_open_tx` / :attr:`SessionConfig.verify_top_up_tx`
-are set, :meth:`process_open` (push mode) and :meth:`process_top_up` invoke
-them before persisting channel state, binding the payload to the attached
-transaction and confirming the signature on-chain. When ``None``, the
-transaction signature and deposit amount are trusted as provided, which is
-suitable only for unit tests or deployments that verify transactions out of
-band.
+On-chain verification is a pair of seams in this layer. The legacy
+:attr:`SessionConfig.verify_open_tx` hook remains structural/payload-only for
+compatibility, while :attr:`SessionConfig.verify_open_state_tx` returns facts
+bound to the confirmed on-chain channel account. Off-localnet payment-channel
+opens require the state-aware hook so a confirmed signature can never authorize
+payload-supplied channel economics.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -68,6 +66,9 @@ from solana_pay_kit.protocols.mpp.server.session_voucher import (
 __all__ = [
     "Split",
     "SessionTxVerifier",
+    "SessionOpenTxVerifier",
+    "SessionOpenStateTxVerifier",
+    "VerifiedOpenFacts",
     "SessionConfig",
     "DeliveryRequest",
     "SessionServer",
@@ -77,12 +78,23 @@ _U64_MAX = (1 << 64) - 1
 
 _P = TypeVar("_P")
 
-# SessionTxVerifier confirms an on-chain transaction referenced by a session
-# payload before channel state is persisted. Implementations typically decode
-# the attached transaction, bind the payload signature to it, and confirm the
-# signature on-chain. This is the seam the on-chain layer plugs into; ``None``
-# skips verification. Raising signals a verification failure.
+
+# SessionTxVerifier is the legacy payload-only callback retained for host
+# compatibility. The state-aware open callback below is the production seam for
+# payment-channel-backed opens.
+class VerifiedOpenFacts(Protocol):
+    """Authoritative facts returned by a verified payment-channel open."""
+
+    channel_id: str
+    deposit: int
+    salt: int
+    open_slot: int
+    payer: str
+
+
 SessionTxVerifier = Callable[[_P], Awaitable[None]]
+SessionOpenTxVerifier = Callable[[OpenPayload], Awaitable[None]]
+SessionOpenStateTxVerifier = Callable[[OpenPayload], Awaitable[VerifiedOpenFacts]]
 SessionTopUpTxVerifier = Callable[[TopUpPayload, ChannelState], Awaitable[None]]
 
 
@@ -152,9 +164,13 @@ class SessionConfig:
     # Required when modes includes pull.
     pull_voucher_strategy: SessionPullVoucherStrategy | None = None
 
-    # VerifyOpenTx, when set, confirms the open transaction on-chain (push
-    # mode) before process_open persists channel state.
+    # VerifyOpenTx is the legacy structural/payload-only callback. It may be
+    # used on localnet, but it does not authorize payload economics off-localnet.
     verify_open_tx: SessionTxVerifier[OpenPayload] | None = None
+
+    # VerifyOpenStateTx returns facts bound to the confirmed on-chain channel
+    # account. It is required for payment-channel-backed opens off localnet.
+    verify_open_state_tx: SessionOpenStateTxVerifier | None = None
 
     # OpenTxSubmitter identifies who broadcasts transaction-backed opens.
     # Only server-broadcast signatures are retained for idempotent replay;
@@ -339,35 +355,53 @@ class SessionServer:
             raise ValueError(f"session mode {payload.mode!r} is not supported by this challenge")
 
         session_id = payload.session_id()
-        deposit = payload.deposit_amount()
-        if deposit == 0:
-            raise ValueError("deposit must be greater than zero")
-        if deposit > self._config.max_cap:
-            raise ValueError(f"deposit {deposit} exceeds max cap {self._config.max_cap}")
-
         payment_channel_backed = payload.mode == "push" or payload.transaction is not None
-        if payment_channel_backed and self._config.network != "localnet" and self._config.verify_open_tx is None:
-            raise ValueError("payment-channel open requires an on-chain verifier off localnet")
-        if payment_channel_backed and self._config.verify_open_tx is not None:
+        if payment_channel_backed and self._config.network != "localnet" and self._config.verify_open_state_tx is None:
+            raise ValueError(
+                "payment-channel open requires an authoritative verifier with channel facts off localnet"
+            )
+        verified: VerifiedOpenFacts | None = None
+        if payment_channel_backed and self._config.verify_open_state_tx is not None:
+            try:
+                verified = await self._config.verify_open_state_tx(payload)
+            except Exception as exc:
+                raise _wrap("open tx verification failed", exc) from exc
+            if verified is None:
+                raise ValueError("authoritative open verifier must return authoritative channel facts")
+        elif payment_channel_backed and self._config.verify_open_tx is not None:
             try:
                 await self._config.verify_open_tx(payload)
             except Exception as exc:
                 raise _wrap("open tx verification failed", exc) from exc
 
-        operator = payload.owner
-        if operator is None:
-            operator = payload.payer
+        if verified is None:
+            deposit = payload.deposit_amount()
+            operator = payload.owner
+            if operator is None:
+                operator = payload.payer
+            open_slot = payload.recent_slot or 0
+            salt = payload.salt or 0
+        else:
+            if verified.channel_id != session_id:
+                raise ValueError(f"verified open channel {verified.channel_id} != session {session_id}")
+            # The verifier decoded these facts from the payment-channel
+            # transaction. Payload echoes are not authoritative for state.
+            deposit = verified.deposit
+            operator = verified.payer
+            open_slot = verified.open_slot
+            salt = verified.salt
+        if deposit == 0:
+            raise ValueError("deposit must be greater than zero")
+        if deposit > self._config.max_cap:
+            raise ValueError(f"deposit {deposit} exceeds max cap {self._config.max_cap}")
+
         fresh = ChannelState(
             channel_id=session_id,
             authorized_signer=payload.authorized_signer,
             deposit=deposit,
             operator=operator,
-            # The payload's recentSlot is the channel openSlot (a channel PDA
-            # seed); persist it so the channel address can be re-derived and
-            # the rent reclaimed later. Zero when the payload does not carry
-            # one (pull opens, trusted opens).
-            open_slot=payload.recent_slot or 0,
-            salt=payload.salt or 0,
+            open_slot=open_slot,
+            salt=salt,
             open_signature=(payload.signature or None) if self._config.open_tx_submitter == "server" else None,
         )
 

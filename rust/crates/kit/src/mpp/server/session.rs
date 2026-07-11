@@ -528,115 +528,272 @@ impl<S: ChannelStore> SessionServer<S> {
         let mut bound_salt = payload.salt;
         let payment_channel_backed =
             payload.mode == SessionMode::Push || payload.transaction.is_some();
+        let compact_payment_channel_open = payload.payer.is_none()
+            && payload.payee.is_none()
+            && payload.mint.is_none()
+            && payload.salt.is_none()
+            && payload.grace_period.is_none()
+            && payload.recent_slot.is_none();
         if payment_channel_backed {
             match self.config.rpc_url.as_deref() {
                 Some(rpc_url) => {
-                    let params = self.payment_channel_open_params(payload)?;
-                    let bound_signature = bound_client_open_signature(payload)?;
-                    let confirmed_slot = verify_transaction_signature(bound_signature, rpc_url, VerifiedTx::Open)
+                    if compact_payment_channel_open {
+                        let bound_signature = bound_client_open_signature(payload)?;
+                        let confirmed_slot = verify_transaction_signature(
+                            bound_signature,
+                            rpc_url,
+                            VerifiedTx::Open,
+                        )
                         .map_err(|e| {
                             tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
                             e
                         })?;
-                    let channel_pda = parse_pubkey_field(session_id, "channelId")?;
-                    let channel = fetch_channel_account(
-                        rpc_url,
-                        &channel_pda,
-                        &params.program_id,
-                        confirmed_slot,
-                    )?;
-                    if channel.status != CHANNEL_STATUS_OPEN {
-                        return Err(Error::Other(format!(
-                            "channel {session_id} is not open on-chain (status {})",
-                            channel.status
-                        )));
-                    }
-                    if payment_channels::from_address(&channel.mint) != params.mint {
-                        return Err(Error::Other("on-chain channel mint mismatch".to_string()));
-                    }
-                    if payment_channels::from_address(&channel.payee) != params.payee {
-                        return Err(Error::Other("on-chain channel payee mismatch".to_string()));
-                    }
-                    if payment_channels::from_address(&channel.authorized_signer)
-                        != params.authorized_signer
-                    {
-                        return Err(Error::Other(
-                            "on-chain channel authorized_signer mismatch".to_string(),
+                        let channel_pda = parse_pubkey_field(session_id, "channelId")?;
+                        let program_id = self
+                            .config
+                            .program_id
+                            .unwrap_or_else(payment_channels::default_program_id);
+                        let channel = fetch_channel_account(
+                            rpc_url,
+                            &channel_pda,
+                            &program_id,
+                            confirmed_slot,
+                        )?;
+                        if channel.status != CHANNEL_STATUS_OPEN {
+                            return Err(Error::Other(format!(
+                                "channel {session_id} is not open on-chain (status {})",
+                                channel.status
+                            )));
+                        }
+                        if payment_channels::from_address(&channel.mint)
+                            != expected_payment_channel_mint(&self.config)?
+                        {
+                            return Err(Error::Other("on-chain channel mint mismatch".to_string()));
+                        }
+                        if payment_channels::from_address(&channel.payee)
+                            != parse_pubkey_field(&self.config.recipient, "recipient")?
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel payee mismatch".to_string(),
+                            ));
+                        }
+                        if payment_channels::from_address(&channel.authorized_signer)
+                            != parse_pubkey_field(&payload.authorized_signer, "authorizedSigner")?
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel authorized_signer mismatch".to_string(),
+                            ));
+                        }
+                        if payment_channels::from_address(&channel.rent_payer)
+                            != parse_required_operator(&self.config.operator)?
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel rent_payer mismatch".to_string(),
+                            ));
+                        }
+                        if channel.deposit != deposit {
+                            return Err(Error::Other(format!(
+                                "on-chain channel deposit {} != asserted deposit {deposit}",
+                                channel.deposit
+                            )));
+                        }
+                        if channel.settlement.settled != 0
+                            || channel.settlement.payout_watermark != 0
+                        {
+                            return Err(Error::Other(
+                                "channel has nonzero settlement watermarks".to_string(),
+                            ));
+                        }
+                        if channel.grace_period != self.config.grace_period_seconds {
+                            return Err(Error::Other(format!(
+                                "on-chain channel grace_period {} != expected {}",
+                                channel.grace_period, self.config.grace_period_seconds
+                            )));
+                        }
+                        let expected_distribution: Vec<payment_channels::Distribution> = self
+                            .config
+                            .splits
+                            .iter()
+                            .map(|split| payment_channels::Distribution {
+                                recipient: split.recipient,
+                                bps: split.bps,
+                            })
+                            .collect();
+                        if channel.distribution_hash
+                            != payment_channels::distribution_hash(&expected_distribution)
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel distribution_hash does not match session splits"
+                                    .to_string(),
+                            ));
+                        }
+                        if channel.deposit > self.config.max_cap {
+                            return Err(Error::Other(format!(
+                                "on-chain channel deposit {} exceeds max cap {}",
+                                channel.deposit, self.config.max_cap
+                            )));
+                        }
+                        let authoritative_params = payment_channels::OpenChannelParams {
+                            payer: payment_channels::from_address(&channel.payer),
+                            rent_payer: payment_channels::from_address(&channel.rent_payer),
+                            payee: payment_channels::from_address(&channel.payee),
+                            mint: payment_channels::from_address(&channel.mint),
+                            authorized_signer: payment_channels::from_address(
+                                &channel.authorized_signer,
+                            ),
+                            salt: channel.salt,
+                            deposit: channel.deposit,
+                            grace_period: channel.grace_period,
+                            open_slot: channel.open_slot,
+                            recipients: expected_distribution,
+                            token_program: parse_pubkey_field(
+                                default_token_program_for_currency(
+                                    &self.config.currency,
+                                    Some(self.config.network.as_str()),
+                                ),
+                                "token program",
+                            )?,
+                            program_id,
+                        };
+                        let authoritative_channel =
+                            payment_channels::derive_channel_addresses(&authoritative_params)
+                                .channel;
+                        if authoritative_channel != channel_pda {
+                            return Err(Error::Other(
+                                "channel account does not match PDA derived from authoritative state"
+                                    .to_string(),
+                            ));
+                        }
+                        verify_open_transaction(rpc_url, bound_signature, &authoritative_params)?;
+                        bound_deposit = channel.deposit;
+                        bound_payer = Some(payment_channels::pubkey_string(
+                            &payment_channels::from_address(&channel.payer),
                         ));
+                        open_slot = Some(channel.open_slot);
+                        bound_salt = Some(channel.salt);
+                    } else {
+                        let params = self.payment_channel_open_params(payload)?;
+                        let bound_signature = bound_client_open_signature(payload)?;
+                        let confirmed_slot = verify_transaction_signature(
+                            bound_signature,
+                            rpc_url,
+                            VerifiedTx::Open,
+                        )
+                        .map_err(|e| {
+                            tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
+                            e
+                        })?;
+                        verify_open_transaction(rpc_url, bound_signature, &params)?;
+                        let channel_pda = parse_pubkey_field(session_id, "channelId")?;
+                        let channel = fetch_channel_account(
+                            rpc_url,
+                            &channel_pda,
+                            &params.program_id,
+                            confirmed_slot,
+                        )?;
+                        if channel.status != CHANNEL_STATUS_OPEN {
+                            return Err(Error::Other(format!(
+                                "channel {session_id} is not open on-chain (status {})",
+                                channel.status
+                            )));
+                        }
+                        if payment_channels::from_address(&channel.mint) != params.mint {
+                            return Err(Error::Other("on-chain channel mint mismatch".to_string()));
+                        }
+                        if payment_channels::from_address(&channel.payee) != params.payee {
+                            return Err(Error::Other(
+                                "on-chain channel payee mismatch".to_string(),
+                            ));
+                        }
+                        if payment_channels::from_address(&channel.authorized_signer)
+                            != params.authorized_signer
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel authorized_signer mismatch".to_string(),
+                            ));
+                        }
+                        if payment_channels::from_address(&channel.payer) != params.payer {
+                            return Err(Error::Other(
+                                "on-chain channel payer mismatch".to_string(),
+                            ));
+                        }
+                        if payment_channels::from_address(&channel.rent_payer) != params.rent_payer
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel rent_payer mismatch".to_string(),
+                            ));
+                        }
+                        if channel.settlement.settled != 0
+                            || channel.settlement.payout_watermark != 0
+                        {
+                            return Err(Error::Other(
+                                "channel has nonzero settlement watermarks".to_string(),
+                            ));
+                        }
+                        if channel.grace_period != self.config.grace_period_seconds {
+                            return Err(Error::Other(format!(
+                                "on-chain channel grace_period {} != expected {}",
+                                channel.grace_period, self.config.grace_period_seconds
+                            )));
+                        }
+                        let expected_distribution: Vec<payment_channels::Distribution> = self
+                            .config
+                            .splits
+                            .iter()
+                            .map(|split| payment_channels::Distribution {
+                                recipient: split.recipient,
+                                bps: split.bps,
+                            })
+                            .collect();
+                        if channel.distribution_hash
+                            != payment_channels::distribution_hash(&expected_distribution)
+                        {
+                            return Err(Error::Other(
+                                "on-chain channel distribution_hash does not match session splits"
+                                    .to_string(),
+                            ));
+                        }
+                        let authoritative_params = payment_channels::OpenChannelParams {
+                            payer: payment_channels::from_address(&channel.payer),
+                            rent_payer: payment_channels::from_address(&channel.rent_payer),
+                            payee: payment_channels::from_address(&channel.payee),
+                            mint: payment_channels::from_address(&channel.mint),
+                            authorized_signer: payment_channels::from_address(
+                                &channel.authorized_signer,
+                            ),
+                            salt: channel.salt,
+                            deposit: channel.deposit,
+                            grace_period: channel.grace_period,
+                            open_slot: channel.open_slot,
+                            recipients: expected_distribution,
+                            token_program: params.token_program,
+                            program_id: params.program_id,
+                        };
+                        let authoritative_channel =
+                            payment_channels::derive_channel_addresses(&authoritative_params)
+                                .channel;
+                        if authoritative_channel != channel_pda {
+                            return Err(Error::Other(
+                                "channel account does not match PDA derived from authoritative state"
+                                    .to_string(),
+                            ));
+                        }
+                        if channel.deposit == 0 {
+                            return Err(Error::Other(
+                                "on-chain channel deposit is zero".to_string(),
+                            ));
+                        }
+                        if channel.deposit > self.config.max_cap {
+                            return Err(Error::Other(format!(
+                                "on-chain channel deposit {} exceeds max cap {}",
+                                channel.deposit, self.config.max_cap
+                            )));
+                        }
+                        bound_deposit = channel.deposit;
+                        bound_payer = Some(payment_channels::pubkey_string(&params.payer));
+                        open_slot = Some(channel.open_slot);
+                        bound_salt = Some(channel.salt);
                     }
-                    if payment_channels::from_address(&channel.payer) != params.payer {
-                        return Err(Error::Other("on-chain channel payer mismatch".to_string()));
-                    }
-                    if payment_channels::from_address(&channel.rent_payer) != params.rent_payer {
-                        return Err(Error::Other(
-                            "on-chain channel rent_payer mismatch".to_string(),
-                        ));
-                    }
-                    if channel.settlement.settled != 0 || channel.settlement.payout_watermark != 0 {
-                        return Err(Error::Other(
-                            "channel has nonzero settlement watermarks".to_string(),
-                        ));
-                    }
-                    if channel.grace_period != self.config.grace_period_seconds {
-                        return Err(Error::Other(format!(
-                            "on-chain channel grace_period {} != expected {}",
-                            channel.grace_period, self.config.grace_period_seconds
-                        )));
-                    }
-                    let expected_distribution: Vec<payment_channels::Distribution> = self
-                        .config
-                        .splits
-                        .iter()
-                        .map(|split| payment_channels::Distribution {
-                            recipient: split.recipient,
-                            bps: split.bps,
-                        })
-                        .collect();
-                    if channel.distribution_hash
-                        != payment_channels::distribution_hash(&expected_distribution)
-                    {
-                        return Err(Error::Other(
-                            "on-chain channel distribution_hash does not match session splits"
-                                .to_string(),
-                        ));
-                    }
-                    let authoritative_params = payment_channels::OpenChannelParams {
-                        payer: payment_channels::from_address(&channel.payer),
-                        rent_payer: payment_channels::from_address(&channel.rent_payer),
-                        payee: payment_channels::from_address(&channel.payee),
-                        mint: payment_channels::from_address(&channel.mint),
-                        authorized_signer: payment_channels::from_address(
-                            &channel.authorized_signer,
-                        ),
-                        salt: channel.salt,
-                        deposit: channel.deposit,
-                        grace_period: channel.grace_period,
-                        open_slot: channel.open_slot,
-                        recipients: expected_distribution,
-                        token_program: params.token_program,
-                        program_id: params.program_id,
-                    };
-                    let authoritative_channel =
-                        payment_channels::derive_channel_addresses(&authoritative_params).channel;
-                    if authoritative_channel != channel_pda {
-                        return Err(Error::Other(
-                            "channel account does not match PDA derived from authoritative state"
-                                .to_string(),
-                        ));
-                    }
-                    if channel.deposit == 0 {
-                        return Err(Error::Other("on-chain channel deposit is zero".to_string()));
-                    }
-                    if channel.deposit > self.config.max_cap {
-                        return Err(Error::Other(format!(
-                            "on-chain channel deposit {} exceeds max cap {}",
-                            channel.deposit, self.config.max_cap
-                        )));
-                    }
-                    bound_deposit = channel.deposit;
-                    bound_payer = Some(payment_channels::pubkey_string(&params.payer));
-                    open_slot = Some(channel.open_slot);
-                    bound_salt = Some(channel.salt);
                 }
                 None if self.config.network != "localnet" => {
                     return Err(Error::Other(
@@ -1392,26 +1549,24 @@ enum VerifiedTx {
 
 #[cfg(feature = "server")]
 fn bound_client_open_signature(payload: &OpenPayload) -> Result<&str> {
-    let transaction = payload
-        .transaction
-        .as_deref()
-        .ok_or_else(|| Error::Other("payment-channel open missing transaction".to_string()))?;
-    let decoded = payment_channels::decode_transaction(transaction)?;
-    let transaction_signature = decoded.signatures.first().ok_or_else(|| {
-        Error::Other("open transaction has no fee-payer signature slot".to_string())
-    })?;
-    if *transaction_signature == solana_signature::Signature::default() {
-        return Err(Error::Other(
-            "Rust session server does not broadcast partially signed opens; broadcast the completed transaction and provide its signature"
-                .to_string(),
-        ));
-    }
-    let transaction_signature = transaction_signature.to_string();
-    if payload.signature != transaction_signature {
-        return Err(Error::Other(format!(
-            "open payload signature {} does not match transaction signature {transaction_signature}",
-            payload.signature
-        )));
+    if let Some(transaction) = payload.transaction.as_deref() {
+        let decoded = payment_channels::decode_transaction(transaction)?;
+        let transaction_signature = decoded.signatures.first().ok_or_else(|| {
+            Error::Other("open transaction has no fee-payer signature slot".to_string())
+        })?;
+        if *transaction_signature == solana_signature::Signature::default() {
+            return Err(Error::Other(
+                "Rust session server does not broadcast partially signed opens; broadcast the completed transaction and provide its signature"
+                    .to_string(),
+            ));
+        }
+        let transaction_signature = transaction_signature.to_string();
+        if payload.signature != transaction_signature {
+            return Err(Error::Other(format!(
+                "open payload signature {} does not match transaction signature {transaction_signature}",
+                payload.signature
+            )));
+        }
     }
     Ok(&payload.signature)
 }
@@ -1665,6 +1820,119 @@ fn verify_top_up_wire_transaction(
     Ok(())
 }
 
+#[cfg(feature = "server")]
+fn verify_open_transaction(
+    rpc_url: &str,
+    signature: &str,
+    params: &payment_channels::OpenChannelParams,
+) -> Result<()> {
+    use solana_rpc_client::rpc_client::RpcClient;
+    use solana_rpc_client_api::config::RpcTransactionConfig;
+    use solana_signature::Signature;
+    use solana_transaction_status_client_types::option_serializer::OptionSerializer;
+    use solana_transaction_status_client_types::UiTransactionEncoding;
+    use std::str::FromStr;
+
+    let signature = Signature::from_str(signature)
+        .map_err(|e| Error::Other(format!("invalid open signature: {e}")))?;
+    let transaction = RpcClient::new(rpc_url.to_string())
+        .get_transaction_with_config(
+            &signature,
+            RpcTransactionConfig {
+                encoding: Some(UiTransactionEncoding::Base64),
+                commitment: Some(solana_commitment_config::CommitmentConfig::confirmed()),
+                max_supported_transaction_version: Some(0),
+            },
+        )
+        .map_err(|e| Error::Other(format!("fetch open transaction: {e}")))?;
+    if transaction
+        .transaction
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.err.as_ref())
+        .is_some()
+    {
+        return Err(Error::Other("open transaction failed on-chain".to_string()));
+    }
+    let decoded = transaction
+        .transaction
+        .transaction
+        .decode()
+        .ok_or_else(|| {
+            Error::Other("open transaction is not valid base64 wire data".to_string())
+        })?;
+    let loaded_addresses = match transaction.transaction.meta.as_ref() {
+        Some(meta) => match &meta.loaded_addresses {
+            OptionSerializer::Some(addresses) => addresses
+                .writable
+                .iter()
+                .chain(&addresses.readonly)
+                .map(|address| {
+                    address.parse::<Pubkey>().map_err(|e| {
+                        Error::Other(format!("open transaction has invalid loaded address: {e}"))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            OptionSerializer::None | OptionSerializer::Skip => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    verify_open_wire_transaction(
+        &decoded,
+        &loaded_addresses,
+        &payment_channels::build_open_instruction(params),
+    )
+}
+
+#[cfg(feature = "server")]
+fn verify_open_wire_transaction(
+    transaction: &solana_transaction::versioned::VersionedTransaction,
+    loaded_addresses: &[Pubkey],
+    expected: &solana_instruction::Instruction,
+) -> Result<()> {
+    let mut account_keys = transaction.message.static_account_keys().to_vec();
+    account_keys.extend_from_slice(loaded_addresses);
+    let mut matches = 0usize;
+
+    for instruction in transaction.message.instructions() {
+        let program_id = account_keys
+            .get(usize::from(instruction.program_id_index))
+            .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))?;
+        if *program_id != expected.program_id {
+            continue;
+        }
+        let accounts = instruction
+            .accounts
+            .iter()
+            .map(|index| {
+                account_keys
+                    .get(usize::from(*index))
+                    .copied()
+                    .ok_or_else(|| {
+                        Error::Other("open instruction account out of range".to_string())
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if accounts
+            == expected
+                .accounts
+                .iter()
+                .map(|account| account.pubkey)
+                .collect::<Vec<_>>()
+            && instruction.data == expected.data
+        {
+            matches += 1;
+        }
+    }
+
+    if matches != 1 {
+        return Err(Error::Other(format!(
+            "expected exactly one exact payment-channel open instruction, found {matches}"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
     let bytes = bs58::decode(s)
         .into_vec()
@@ -1762,6 +2030,8 @@ pub fn compute_distribution_hash(_recipient: &Pubkey, splits: &[(Pubkey, u16)]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "client")]
+    use crate::mpp::protocol::intents::session::SessionAction;
     use crate::mpp::protocol::intents::session::{
         ClosePayload, CommitPayload, CommitStatus, OpenPayload, SessionMode,
         SessionPullVoucherStrategy, VoucherData, VoucherPayload,
@@ -2920,6 +3190,14 @@ mod tests {
     #[cfg(feature = "server")]
     impl SessionAccountRpc {
         fn start(account_data: Vec<u8>, owner: Pubkey) -> Self {
+            Self::start_with_transaction(account_data, owner, None)
+        }
+
+        fn start_with_transaction(
+            account_data: Vec<u8>,
+            owner: Pubkey,
+            transaction: Option<Vec<u8>>,
+        ) -> Self {
             use base64::Engine as _;
             use std::io::{Read, Write};
             use std::sync::atomic::Ordering;
@@ -2931,6 +3209,8 @@ mod tests {
             let thread_stop = stop.clone();
             let data = base64::engine::general_purpose::STANDARD.encode(account_data);
             let owner = payment_channels::pubkey_string(&owner);
+            let transaction = transaction
+                .map(|transaction| base64::engine::general_purpose::STANDARD.encode(transaction));
             let thread = std::thread::spawn(move || {
                 while !thread_stop.load(Ordering::Relaxed) {
                     let (mut stream, _) = match listener.accept() {
@@ -3004,6 +3284,19 @@ mod tests {
                                 "space": 0
                             }
                         }),
+                        Some("getTransaction") => {
+                            transaction
+                                .as_ref()
+                                .map_or(serde_json::Value::Null, |transaction| {
+                                    serde_json::json!({
+                                        "slot": 1,
+                                        "transaction": [transaction, "base64"],
+                                        "meta": null,
+                                        "version": "legacy",
+                                        "blockTime": null
+                                    })
+                                })
+                        }
                         _ => serde_json::json!({
                             "context": {"slot": 1},
                             "value": [{
@@ -3084,6 +3377,24 @@ mod tests {
     }
 
     #[cfg(feature = "server")]
+    fn signed_open_transaction(params: &payment_channels::OpenChannelParams) -> (Vec<u8>, String) {
+        let mut transaction =
+            solana_transaction::Transaction::new_unsigned(solana_message::Message::new(
+                &[payment_channels::build_open_instruction(params)],
+                Some(&params.rent_payer),
+            ));
+        let signature = solana_signature::Signature::from([9u8; 64]);
+        transaction.signatures[0] = signature;
+        (
+            bincode::serialize(&solana_transaction::versioned::VersionedTransaction::from(
+                transaction,
+            ))
+            .unwrap(),
+            signature.to_string(),
+        )
+    }
+
+    #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn process_open_binds_authoritative_channel_account() {
         let base = make_server();
@@ -3110,9 +3421,19 @@ mod tests {
             program_id: payment_channels::default_program_id(),
         };
         let channel_id = payment_channels::derive_channel_addresses(&params).channel;
-        let rpc = SessionAccountRpc::start(
+        let open_instruction = payment_channels::build_open_instruction(&params);
+        let mut open_transaction = solana_transaction::Transaction::new_unsigned(
+            solana_message::Message::new(&[open_instruction], Some(&payee)),
+        );
+        open_transaction.signatures[0] = solana_signature::Signature::from([9u8; 64]);
+        let open_transaction = bincode::serialize(
+            &solana_transaction::versioned::VersionedTransaction::from(open_transaction),
+        )
+        .unwrap();
+        let rpc = SessionAccountRpc::start_with_transaction(
             encoded_channel(CHANNEL_STATUS_OPEN, 4_000, payer, payee, signer, mint),
             params.program_id,
+            Some(open_transaction.clone()),
         );
         let server = SessionServer::new(
             SessionConfig {
@@ -3135,14 +3456,9 @@ mod tests {
             bs58::encode([9u8; 64]).into_string(),
         );
         payload.mode = SessionMode::Pull;
-        let mut transaction = solana_transaction::Transaction::new_unsigned(
-            solana_message::Message::new(&[], Some(&payer)),
-        );
-        transaction.signatures[0] = solana_signature::Signature::from([9u8; 64]);
-        let transaction = solana_transaction::versioned::VersionedTransaction::from(transaction);
         payload.transaction = Some(base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
-            bincode::serialize(&transaction).unwrap(),
+            open_transaction,
         ));
         let state = server.process_open(&payload).await.unwrap();
         assert_eq!(state.deposit, 4_000);
@@ -3151,6 +3467,242 @@ mod tests {
             state.operator.as_deref(),
             Some(payment_channels::pubkey_string(&payer).as_str())
         );
+    }
+
+    #[cfg(all(feature = "server", feature = "client"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_open_accepts_signature_only_public_open_action() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let (mut active, authorized_signer, _, _) = make_e2e_session();
+        let signer = parse_pubkey(&authorized_signer).unwrap();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            rent_payer: payee,
+            payee,
+            mint,
+            authorized_signer: signer,
+            salt: 7,
+            deposit: 4_000,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            open_slot: 42,
+            recipients: vec![],
+            token_program: parse_pubkey(default_token_program_for_currency(
+                "USDC",
+                Some("localnet"),
+            ))
+            .unwrap(),
+            program_id: payment_channels::default_program_id(),
+        };
+        let channel_id = payment_channels::derive_channel_addresses(&params).channel;
+        active.channel_id = channel_id;
+        let (wire, signature) = signed_open_transaction(&params);
+        let rpc = SessionAccountRpc::start_with_transaction(
+            encoded_channel(CHANNEL_STATUS_OPEN, 4_000, payer, payee, signer, mint),
+            params.program_id,
+            Some(wire),
+        );
+        let payload = match active.open_action(4_000, &signature) {
+            SessionAction::Open(payload) => payload,
+            _ => panic!("expected open action"),
+        };
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+
+        let state = server.process_open(&payload).await.unwrap();
+        assert_eq!(state.deposit, 4_000);
+        assert_eq!(state.open_slot, Some(42));
+        assert_eq!(state.salt, Some(7));
+        assert_eq!(
+            state.operator.as_deref(),
+            Some(payment_channels::pubkey_string(&payer).as_str())
+        );
+    }
+
+    #[cfg(all(feature = "server", feature = "client"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_open_accepts_signature_only_public_payment_channel_action() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let (mut active, authorized_signer, _, _) = make_e2e_session();
+        let signer = parse_pubkey(&authorized_signer).unwrap();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            rent_payer: payee,
+            payee,
+            mint,
+            authorized_signer: signer,
+            salt: 7,
+            deposit: 4_000,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            open_slot: 42,
+            recipients: vec![],
+            token_program: parse_pubkey(default_token_program_for_currency(
+                "USDC",
+                Some("localnet"),
+            ))
+            .unwrap(),
+            program_id: payment_channels::default_program_id(),
+        };
+        let channel_id = payment_channels::derive_channel_addresses(&params).channel;
+        active.channel_id = channel_id;
+        let (wire, signature) = signed_open_transaction(&params);
+        let rpc = SessionAccountRpc::start_with_transaction(
+            encoded_channel(CHANNEL_STATUS_OPEN, 4_000, payer, payee, signer, mint),
+            params.program_id,
+            Some(wire),
+        );
+        let payload = match active.open_payment_channel_action(
+            4_000,
+            &payment_channels::pubkey_string(&payer),
+            &payment_channels::pubkey_string(&payee),
+            &payment_channels::pubkey_string(&mint),
+            7,
+            payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            42,
+            &signature,
+        ) {
+            SessionAction::Open(payload) => payload,
+            _ => panic!("expected open action"),
+        };
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+
+        let state = server.process_open(&payload).await.unwrap();
+        assert_eq!(state.deposit, 4_000);
+        assert_eq!(state.open_slot, Some(42));
+        assert_eq!(state.salt, Some(7));
+    }
+
+    #[cfg(all(feature = "server", feature = "client"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_open_rejects_signature_only_open_payload_mismatch() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let (mut active, _, _, _) = make_e2e_session();
+        let authorized_signer = active.authorized_signer();
+        let signer = parse_pubkey(&authorized_signer).unwrap();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            rent_payer: payee,
+            payee,
+            mint,
+            authorized_signer: signer,
+            salt: 7,
+            deposit: 4_000,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            open_slot: 42,
+            recipients: vec![],
+            token_program: parse_pubkey(default_token_program_for_currency(
+                "USDC",
+                Some("localnet"),
+            ))
+            .unwrap(),
+            program_id: payment_channels::default_program_id(),
+        };
+        let channel_id = payment_channels::derive_channel_addresses(&params).channel;
+        active.channel_id = channel_id;
+        let (wire, signature) = signed_open_transaction(&params);
+        let rpc = SessionAccountRpc::start_with_transaction(
+            encoded_channel(CHANNEL_STATUS_OPEN, 4_000, payer, payee, signer, mint),
+            params.program_id,
+            Some(wire),
+        );
+        let payload = match active.open_action(3_000, &signature) {
+            SessionAction::Open(payload) => payload,
+            _ => panic!("expected open action"),
+        };
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+
+        let error = server.process_open(&payload).await.unwrap_err();
+        assert!(error.to_string().contains("asserted deposit"));
+    }
+
+    #[cfg(all(feature = "server", feature = "client"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_open_rejects_signature_only_open_with_unrelated_transaction() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let (mut active, _, _, _) = make_e2e_session();
+        let authorized_signer = active.authorized_signer();
+        let signer = parse_pubkey(&authorized_signer).unwrap();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            rent_payer: payee,
+            payee,
+            mint,
+            authorized_signer: signer,
+            salt: 7,
+            deposit: 4_000,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            open_slot: 42,
+            recipients: vec![],
+            token_program: parse_pubkey(default_token_program_for_currency(
+                "USDC",
+                Some("localnet"),
+            ))
+            .unwrap(),
+            program_id: payment_channels::default_program_id(),
+        };
+        let channel_id = payment_channels::derive_channel_addresses(&params).channel;
+        active.channel_id = channel_id;
+        let unrelated = solana_instruction::Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![],
+            data: vec![],
+        };
+        let mut transaction = solana_transaction::Transaction::new_unsigned(
+            solana_message::Message::new(&[unrelated], Some(&payee)),
+        );
+        let signature = solana_signature::Signature::from([9u8; 64]);
+        transaction.signatures[0] = signature;
+        let wire = bincode::serialize(&solana_transaction::versioned::VersionedTransaction::from(
+            transaction,
+        ))
+        .unwrap();
+        let rpc = SessionAccountRpc::start_with_transaction(
+            encoded_channel(CHANNEL_STATUS_OPEN, 4_000, payer, payee, signer, mint),
+            params.program_id,
+            Some(wire),
+        );
+        let payload = match active.open_action(4_000, &signature.to_string()) {
+            SessionAction::Open(payload) => payload,
+            _ => panic!("expected open action"),
+        };
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+
+        let error = server.process_open(&payload).await.unwrap_err();
+        assert!(error.to_string().contains("exact payment-channel open"));
     }
 
     #[cfg(feature = "server")]
@@ -3194,6 +3746,87 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("does not match transaction signature"));
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn open_wire_verifier_rejects_unrelated_confirmed_transaction() {
+        let payer = Pubkey::new_unique();
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            rent_payer: Pubkey::new_unique(),
+            payee: Pubkey::new_unique(),
+            mint: Pubkey::new_unique(),
+            authorized_signer: Pubkey::new_unique(),
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            recipients: vec![],
+            token_program: Pubkey::new_unique(),
+            program_id: payment_channels::default_program_id(),
+        };
+        let unrelated = solana_instruction::Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![],
+            data: vec![],
+        };
+        let transaction = solana_transaction::versioned::VersionedTransaction::from(
+            solana_transaction::Transaction::new_unsigned(solana_message::Message::new(
+                &[unrelated],
+                Some(&payer),
+            )),
+        );
+
+        let error = verify_open_wire_transaction(
+            &transaction,
+            &[],
+            &payment_channels::build_open_instruction(&params),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exact payment-channel open"));
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn open_wire_verifier_accepts_exact_v0_open_with_loaded_address() {
+        let params = payment_channels::OpenChannelParams {
+            payer: Pubkey::new_unique(),
+            rent_payer: Pubkey::new_unique(),
+            payee: Pubkey::new_unique(),
+            mint: Pubkey::new_unique(),
+            authorized_signer: Pubkey::new_unique(),
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            recipients: vec![],
+            token_program: Pubkey::new_unique(),
+            program_id: payment_channels::default_program_id(),
+        };
+        let expected = payment_channels::build_open_instruction(&params);
+        let loaded_channel = expected.accounts[5].pubkey;
+        let lookup_table = solana_message::AddressLookupTableAccount {
+            key: Pubkey::new_unique(),
+            addresses: vec![loaded_channel],
+        };
+        let message = solana_message::v0::Message::try_compile(
+            &params.rent_payer,
+            std::slice::from_ref(&expected),
+            &[lookup_table],
+            solana_hash::Hash::default(),
+        )
+        .unwrap();
+        assert!(!message.address_table_lookups.is_empty());
+        let transaction = solana_transaction::versioned::VersionedTransaction {
+            signatures: vec![
+                solana_signature::Signature::default();
+                message.header.num_required_signatures as usize
+            ],
+            message: solana_message::VersionedMessage::V0(message),
+        };
+
+        verify_open_wire_transaction(&transaction, &[loaded_channel], &expected).unwrap();
     }
 
     #[cfg(feature = "server")]

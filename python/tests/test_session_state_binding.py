@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import struct
 from typing import Any
 
 import pytest
+from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
+from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
-from solana_pay_kit._paycore.solana import resolve_mint
-from solana_pay_kit.protocols.mpp._paymentchannels import find_channel_pda
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
+from solana_pay_kit.protocols.mpp._paymentchannels import OpenChannelParams, build_open_instruction, find_channel_pda
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
 from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest, SessionConfig, SessionServer
 from solana_pay_kit.protocols.mpp.server.session_method import SessionOptions, new_session
@@ -75,6 +79,30 @@ def _channel_bytes(
     return bytes([1]) + bytes(body)
 
 
+def _open_transaction(*, deposit: int, payer: str, payee: str, signer: str, mint: str) -> tuple[str, str]:
+    operator = Keypair.from_seed(bytes([1] * 32))
+    payer_keypair = Keypair.from_seed(bytes([4] * 32))
+    instruction = build_open_instruction(
+        OpenChannelParams(
+            payer=Pubkey.from_string(payer),
+            rent_payer=operator.pubkey(),
+            payee=Pubkey.from_string(payee),
+            mint=Pubkey.from_string(mint),
+            authorized_signer=Pubkey.from_string(signer),
+            salt=7,
+            deposit=deposit,
+            grace_period=900,
+            open_slot=42,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+        )
+    )
+    blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
+    message = Message.new_with_blockhash([instruction], operator.pubkey(), blockhash)
+    transaction = Transaction([operator, payer_keypair], message, blockhash)
+    encoded = base64.b64encode(bytes(transaction)).decode("ascii")
+    return encoded, str(transaction.signatures[0])
+
+
 class _Rpc:
     def __init__(self) -> None:
         self.accounts: dict[str, tuple[bytes, str] | None] = {}
@@ -123,6 +151,10 @@ async def test_bare_push_open_persists_authoritative_channel_deposit_and_payer()
         _channel_bytes(deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint),
         PAYMENT_CHANNELS_PROGRAM_ID,
     )
+    transaction, signature = _open_transaction(
+        deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint
+    )
+    rpc.transaction = {"meta": {"err": None}, "transaction": [transaction, "base64"]}
     store = MemoryChannelStore()
     store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
     session = new_session(
@@ -139,16 +171,121 @@ async def test_bare_push_open_persists_authoritative_channel_deposit_and_payer()
         )
     )
     payload = OpenPayload.payment_channel(
-        channel_id, "1000", _wallet(5), recipient, mint, 7, 900, 0, signer, _signature(6)
+        channel_id, "4000", _wallet(5), recipient, mint, 7, 900, 0, signer, signature
     )
     payload.transaction = None
-    await session._handle_open(payload)
+    await session._handle_open(payload, challenge_recent_slot=42)
     state = await store.get_channel(channel_id)
     assert state is not None
     assert state.deposit == 4_000
     assert state.operator == payer
     assert state.open_slot == 42
     assert state.salt == 7
+
+
+async def test_bare_push_open_rejects_asserted_deposit_mismatch() -> None:
+    rpc = _Rpc()
+    recipient = _wallet(1)
+    signer = _wallet(3)
+    payer = _wallet(4)
+    mint = resolve_mint("USDC", "mainnet")
+    assert mint is not None
+    channel_id = str(
+        find_channel_pda(
+            Pubkey.from_string(payer),
+            Pubkey.from_string(recipient),
+            Pubkey.from_string(mint),
+            Pubkey.from_string(signer),
+            7,
+            42,
+            Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID),
+        )[0]
+    )
+    rpc.accounts[channel_id] = (
+        _channel_bytes(deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint),
+        PAYMENT_CHANNELS_PROGRAM_ID,
+    )
+    transaction, signature = _open_transaction(
+        deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint
+    )
+    rpc.transaction = {"meta": {"err": None}, "transaction": [transaction, "base64"]}
+    store = MemoryChannelStore()
+    store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+    session = new_session(
+        SessionOptions(
+            operator=recipient,
+            recipient=recipient,
+            cap=10_000,
+            currency="USDC",
+            network="mainnet",
+            secret_key="test-secret",
+            realm="api.test",
+            rpc=rpc,
+            store=store,
+        )
+    )
+    payload = OpenPayload.payment_channel(
+        channel_id, "1000", _wallet(5), recipient, mint, 7, 900, 0, signer, signature
+    )
+    payload.transaction = None
+
+    with pytest.raises(PaymentError, match="asserted deposit"):
+        await session._handle_open(payload, challenge_recent_slot=42)
+    assert await store.get_channel(channel_id) is None
+
+
+async def test_bare_push_open_rejects_channel_from_wrong_challenge_incarnation() -> None:
+    """A signature-only open must bind the confirmed channel openSlot to the
+    challenge recentSlot, even when the payload omits or forges that echo."""
+    rpc = _Rpc()
+    recipient = _wallet(1)
+    signer = _wallet(3)
+    payer = _wallet(4)
+    mint = resolve_mint("USDC", "mainnet")
+    assert mint is not None
+    channel_id = str(
+        find_channel_pda(
+            Pubkey.from_string(payer),
+            Pubkey.from_string(recipient),
+            Pubkey.from_string(mint),
+            Pubkey.from_string(signer),
+            7,
+            42,
+            Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID),
+        )[0]
+    )
+    rpc.accounts[channel_id] = (
+        _channel_bytes(deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint),
+        PAYMENT_CHANNELS_PROGRAM_ID,
+    )
+    transaction, signature = _open_transaction(
+        deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint
+    )
+    rpc.transaction = {"meta": {"err": None}, "transaction": [transaction, "base64"]}
+    store = MemoryChannelStore()
+    store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+    session = new_session(
+        SessionOptions(
+            operator=recipient,
+            recipient=recipient,
+            cap=10_000,
+            currency="USDC",
+            network="mainnet",
+            secret_key="test-secret",
+            realm="api.test",
+            rpc=rpc,
+            store=store,
+        )
+    )
+    payload = OpenPayload.payment_channel(
+        channel_id, "4000", _wallet(10), recipient, mint, 99, 900, 0, signer, signature
+    )
+    payload.transaction = None
+    payload.recent_slot = None
+
+    with pytest.raises(PaymentError, match="recentSlot 43 .*openSlot 42"):
+        await session._handle_open(payload, challenge_recent_slot=43)
+    assert await store.get_channel(channel_id) is None
 
 
 async def test_top_up_binds_resulting_deposit_and_open_status() -> None:
@@ -211,8 +348,20 @@ async def test_core_direct_construction_rejects_nonlocalnet_bypasses() -> None:
         await SessionServer(config, memory).process_open(payload)
 
     memory.session_store_durability = SessionStoreDurability.DURABLE_SHARED
-    with pytest.raises(ValueError, match="requires an on-chain verifier"):
+    with pytest.raises(ValueError, match="requires an authoritative verifier"):
         await SessionServer(config, memory).process_open(payload)
+
+    async def signature_only_without_state(_payload: OpenPayload) -> None:
+        return None
+
+    config.verify_open_tx = signature_only_without_state
+    with pytest.raises(ValueError, match="requires an authoritative verifier"):
+        await SessionServer(config, memory).process_open(payload)
+
+    config.verify_open_state_tx = signature_only_without_state  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="authoritative channel facts"):
+        await SessionServer(config, memory).process_open(payload)
+
     await memory.update_channel(
         "topup",
         lambda _: ChannelState(channel_id="topup", authorized_signer=_wallet(34), deposit=1_000, operator=_wallet(35)),

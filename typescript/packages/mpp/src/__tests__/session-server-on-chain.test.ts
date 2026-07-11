@@ -50,7 +50,12 @@ async function loadFixedSigners() {
     ]);
 }
 
-async function buildClientOpen(payer: KeyPairSigner, payee: KeyPairSigner, authorizedSigner: KeyPairSigner) {
+async function buildClientOpen(
+    payer: KeyPairSigner,
+    payee: KeyPairSigner,
+    authorizedSigner: KeyPairSigner,
+    splits: SessionRequest['splits'] = [],
+) {
     const request: SessionRequest = {
         cap: '1000000',
         currency: USDC.mainnet!,
@@ -60,6 +65,7 @@ async function buildClientOpen(payer: KeyPairSigner, payee: KeyPairSigner, autho
         recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
         recentSlot: '4242',
         recipient: payee.address,
+        ...(splits.length > 0 ? { splits } : {}),
     };
     const open = await buildOpenPaymentChannelTransaction({
         authorizedSigner: authorizedSigner.address,
@@ -73,7 +79,12 @@ async function buildClientOpen(payer: KeyPairSigner, payee: KeyPairSigner, autho
     return { open, request };
 }
 
-function expectedFor(payer: KeyPairSigner, payee: KeyPairSigner, authorizedSigner: KeyPairSigner) {
+function expectedFor(
+    payer: KeyPairSigner,
+    payee: KeyPairSigner,
+    authorizedSigner: KeyPairSigner,
+    splits: SessionRequest['splits'] = [],
+) {
     return {
         authorizedSigner: authorizedSigner.address,
         currency: USDC.mainnet!,
@@ -82,6 +93,7 @@ function expectedFor(payer: KeyPairSigner, payee: KeyPairSigner, authorizedSigne
         operator: payer.address,
         programId: PAYMENT_CHANNELS_PROGRAM_ID as string,
         recipient: payee.address,
+        ...(splits.length > 0 ? { splits } : {}),
     };
 }
 
@@ -104,6 +116,67 @@ function reencodeAsLegacy(transactionBase64: string): string {
         signatures: tx.signatures,
     });
     return getBase64Codec().decode(legacyTx);
+}
+
+function appendOpenInstruction(transactionBase64: string, duplicate: boolean): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as never as {
+        instructions: readonly Record<string, unknown>[];
+    };
+    const openInstruction = message.instructions[0];
+    if (!openInstruction) throw new Error('open fixture has no instruction');
+    const extra = duplicate ? openInstruction : { ...openInstruction, data: new Uint8Array([0]) };
+    const messageBytes = getCompiledTransactionMessageEncoder().encode({
+        ...message,
+        instructions: [...message.instructions, extra],
+    } as never);
+    const rebuilt = getTransactionEncoder().encode({ ...tx, messageBytes } as never);
+    return getBase64Codec().decode(new Uint8Array(rebuilt));
+}
+
+type TestOpenMessage = {
+    readonly instructions: readonly {
+        readonly accountIndices?: readonly number[];
+        readonly data?: Uint8Array;
+        readonly programAddressIndex: number;
+    }[];
+    readonly staticAccounts: readonly string[];
+};
+
+function rewriteOpenTransaction(
+    transactionBase64: string,
+    rewrite: (message: TestOpenMessage, openInstruction: TestOpenMessage['instructions'][number]) => object,
+): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as never as TestOpenMessage;
+    const openInstruction = message.instructions[0];
+    if (!openInstruction) throw new Error('open fixture has no instruction');
+    const messageBytes = getCompiledTransactionMessageEncoder().encode({
+        ...message,
+        ...rewrite(message, openInstruction),
+    } as never);
+    const rebuilt = getTransactionEncoder().encode({ ...tx, messageBytes: messageBytes as never });
+    return getBase64Codec().decode(new Uint8Array(rebuilt));
+}
+
+function replaceOpenAccount(transactionBase64: string, slot: number, replacement: string): string {
+    return rewriteOpenTransaction(transactionBase64, (message, openInstruction) => {
+        const accountIndex = openInstruction.accountIndices?.[slot];
+        if (accountIndex === undefined) throw new Error(`open fixture has no account at slot ${slot}`);
+        const staticAccounts = [...message.staticAccounts];
+        staticAccounts[accountIndex] = replacement;
+        return { staticAccounts };
+    });
+}
+
+function appendOpenDataByte(transactionBase64: string): string {
+    return rewriteOpenTransaction(transactionBase64, (message, openInstruction) => {
+        if (!openInstruction.data) throw new Error('open fixture has no instruction data');
+        const instructions = message.instructions.map((instruction, index) =>
+            index === 0 ? { ...instruction, data: new Uint8Array([...openInstruction.data!, 0]) } : instruction,
+        );
+        return { instructions };
+    });
 }
 
 const PLACEHOLDER_SIG = '1'.repeat(88);
@@ -177,6 +250,124 @@ describe('verifyOpenTx signature binding', () => {
             },
         });
         expect(result.deposit).toBe(1_000_000n);
+    });
+
+    test.each(['arbitrary extra', 'duplicate open'])('rejects %s instructions before server co-signing', async kind => {
+        const [payer, payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        const transaction = appendOpenInstruction(open.transaction, kind === 'duplicate open');
+        let signerCalls = 0;
+        const payerSigner = {
+            address: payer.address,
+            signTransactions: async () => {
+                signerCalls += 1;
+                throw new Error('co-signing should not run for an invalid open');
+            },
+        };
+        const rpc = makeSubmitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+
+        await expect(
+            submitOpenTx({
+                confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+                expected: expectedFor(payer, payee, authorizedSigner),
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    mode: 'push',
+                    signature: PLACEHOLDER_SIG,
+                    transaction,
+                },
+                payerSigner: payerSigner as never,
+                rpc,
+            }),
+        ).rejects.toThrow(/exactly one instruction/);
+        expect(signerCalls).toBe(0);
+        expect(rpc.sends).toHaveLength(0);
+    });
+
+    test('rejects an altered split before co-signing or broadcast', async () => {
+        const [payer, payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner, [
+            { bps: 100, recipient: payee.address },
+        ]);
+        const expected = expectedFor(payer, payee, authorizedSigner, [{ bps: 100, recipient: payer.address }]);
+        const rpc = makeSubmitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+
+        await expect(
+            submitOpenTx({
+                expected,
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    mode: 'push',
+                    signature: PLACEHOLDER_SIG,
+                    transaction: open.transaction,
+                },
+                rpc,
+            }),
+        ).rejects.toThrow(/recipient\[0\]/);
+        expect(rpc.sends).toHaveLength(0);
+    });
+
+    test('rejects an altered payer token account before co-signing or broadcast', async () => {
+        const [payer, payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        const transaction = replaceOpenAccount(open.transaction, 6, authorizedSigner.address);
+        const rpc = makeSubmitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+
+        await expect(
+            submitOpenTx({
+                expected: expectedFor(payer, payee, authorizedSigner),
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    mode: 'push',
+                    signature: PLACEHOLDER_SIG,
+                    transaction,
+                },
+                rpc,
+            }),
+        ).rejects.toThrow(/account\[6\]/);
+        expect(rpc.sends).toHaveLength(0);
+    });
+
+    test('rejects an altered fixed rent sysvar account before co-signing or broadcast', async () => {
+        const [payer, payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        const transaction = replaceOpenAccount(open.transaction, 10, authorizedSigner.address);
+        const rpc = makeSubmitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+
+        await expect(
+            submitOpenTx({
+                expected: expectedFor(payer, payee, authorizedSigner),
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    mode: 'push',
+                    signature: PLACEHOLDER_SIG,
+                    transaction,
+                },
+                rpc,
+            }),
+        ).rejects.toThrow(/account\[10\]/);
+        expect(rpc.sends).toHaveLength(0);
+    });
+
+    test('rejects trailing open instruction data before co-signing or broadcast', async () => {
+        const [payer, payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        const transaction = appendOpenDataByte(open.transaction);
+        const rpc = makeSubmitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+
+        await expect(
+            submitOpenTx({
+                expected: expectedFor(payer, payee, authorizedSigner),
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    mode: 'push',
+                    signature: PLACEHOLDER_SIG,
+                    transaction,
+                },
+                rpc,
+            }),
+        ).rejects.toThrow(/not canonical/);
+        expect(rpc.sends).toHaveLength(0);
     });
 });
 
@@ -263,6 +454,29 @@ describe('submitOpenTx confirmation', () => {
         expect(result.channelId).toBe(open.channelId);
         expect(rpc.sends).toHaveLength(1);
         expect(rpc.statusCallCount()).toBeGreaterThanOrEqual(3);
+    });
+
+    test.each([
+        ['null status', null],
+        ['omitted confirmationStatus', { err: null }],
+        ['processed status', { confirmationStatus: 'processed', err: null }],
+    ] as const)('does not accept %s as confirmed', async (_label, initialStatus) => {
+        const [payer, payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        const rpc = makeSubmitRpc([initialStatus, { confirmationStatus: 'confirmed', err: null }]);
+
+        await submitOpenTx({
+            confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+            expected: expectedFor(payer, payee, authorizedSigner),
+            openPayload: {
+                authorizedSigner: authorizedSigner.address,
+                mode: 'push',
+                signature: PLACEHOLDER_SIG,
+                transaction: open.transaction,
+            },
+            rpc,
+        });
+        expect(rpc.statusCallCount()).toBeGreaterThanOrEqual(2);
     });
 
     test('throws when confirmation never arrives within the timeout', async () => {

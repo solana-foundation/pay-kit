@@ -25,7 +25,9 @@ import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
     type GetAccountInfoRpc,
     isGetAccountInfoRpc,
+    isOpenTransactionRpc,
     type MultiDelegateSubmitRpc,
+    type OpenTransactionRpc,
     PAYMENT_CHANNELS_PROGRAM_ID,
     submitInitMultiDelegateTxIfMissing,
     submitOpenTx,
@@ -34,6 +36,7 @@ import {
     type TopUpTransactionRpc,
     verifyChannelAccountState,
     verifyOpenTx,
+    verifySignatureOnlyOpenTransaction,
     verifyTopUpTransaction,
 } from './session/on-chain.js';
 import {
@@ -164,6 +167,7 @@ export function session(parameters: session.Parameters) {
     const resolvedProgramId = (programId ?? PAYMENT_CHANNELS_PROGRAM_ID) as Address;
     const resolvedMint = resolveStablecoinMint(currency, network) ?? currency;
     const tokenProgram = parameters.tokenProgram ?? defaultTokenProgramForCurrency(currency, network);
+    const sessionGracePeriod = expectedSessionGracePeriod(settlementWindowSeconds);
     const lifecycleRef: { value: Lifecycle | undefined } = { value: undefined };
 
     // Note: lifecycle's closeOnIdle would normally drive an on-chain settle.
@@ -296,8 +300,10 @@ export function session(parameters: session.Parameters) {
                         pullVoucherStrategy,
                         recipient,
                         rpc,
+                        gracePeriod: sessionGracePeriod,
                         splits,
                         store,
+                        tokenProgram,
                     });
                 case 'voucher':
                     return await handleVoucher({
@@ -331,6 +337,7 @@ export function session(parameters: session.Parameters) {
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
+                        gracePeriod: sessionGracePeriod,
                         splits,
                         store,
                     });
@@ -454,8 +461,10 @@ interface HandleOpenArgs {
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly gracePeriod: number;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
+    readonly tokenProgram: string;
 }
 
 async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
@@ -495,6 +504,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         const expected = {
             authorizedSigner: payload.authorizedSigner,
             currency: args.currency,
+            gracePeriod: args.gracePeriod,
             maxCap: args.cap,
             mint: args.mint,
             network: args.network,
@@ -502,6 +512,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             operator: args.operator,
             programId: args.programId.toString(),
             recipient: args.recipient,
+            splits: args.splits,
+            tokenProgram: args.tokenProgram,
         };
 
         if (args.openTxSubmitter === 'server') {
@@ -585,6 +597,17 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         }
     }
 
+    if (!payload.transaction && mode === 'push' && args.challengeOpenSlot !== undefined) {
+        if (openSlot === undefined) {
+            throw new Error('open payload missing recentSlot for challenge-bound push open');
+        }
+        if (openSlot !== args.challengeOpenSlot) {
+            throw new Error(
+                `open payload recentSlot ${openSlot} does not match challenge recentSlot ${args.challengeOpenSlot}`,
+            );
+        }
+    }
+
     if (paymentChannelBacked) {
         if (!args.rpc) {
             if (args.network !== 'localnet') {
@@ -604,11 +627,42 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 signature,
                 'open',
             );
+            if (!payload.transaction) {
+                if (!isOpenTransactionRpc(args.rpc)) {
+                    throw new Error(
+                        'open: configured rpc does not expose getTransaction — cannot bind the signature-only open to its canonical transaction',
+                    );
+                }
+                await verifySignatureOnlyOpenTransaction({
+                    channelId,
+                    deposit,
+                    expected: {
+                        authorizedSigner: payload.authorizedSigner,
+                        currency: args.currency,
+                        gracePeriod: args.gracePeriod,
+                        maxCap: args.cap,
+                        mint: args.mint,
+                        network: args.network,
+                        operator: args.operator,
+                        openSlot,
+                        programId: args.programId.toString(),
+                        recipient: args.recipient,
+                        splits: args.splits,
+                        tokenProgram: args.tokenProgram,
+                    },
+                    openSlot,
+                    rpc: args.rpc as OpenTransactionRpc,
+                    signature: expectString(signature, 'signature') as Signature,
+                });
+            }
             const channel = await verifyChannelAccountState({
                 channelId,
                 expected: {
                     authorizedSigner: payload.authorizedSigner,
+                    ...(payload.transaction ? {} : { deposit }),
+                    gracePeriod: args.gracePeriod,
                     mint: args.mint,
+                    openSlot: args.challengeOpenSlot,
                     payee: args.recipient,
                     payer: payload.transaction ? channelPayer : undefined,
                     programId: args.programId.toString(),
@@ -789,6 +843,7 @@ interface HandleTopUpArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly gracePeriod: number;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
 }
@@ -839,6 +894,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
                 expected: {
                     authorizedSigner: existing.authorizedSigner,
                     deposit: newDeposit,
+                    gracePeriod: args.gracePeriod,
                     mint: args.mint,
                     payee: args.recipient,
                     payer: existing.operator,
@@ -1317,6 +1373,14 @@ function parseU64String(value: string, name: string): bigint {
 function parseOptionalU64(value: number | string | undefined, name: string): bigint | undefined {
     if (value === undefined) return undefined;
     return parseU64String(String(value), name);
+}
+
+function expectedSessionGracePeriod(settlementWindowSeconds: bigint | undefined): number {
+    if (settlementWindowSeconds === undefined || settlementWindowSeconds <= 0n) return 900;
+    if (settlementWindowSeconds > 0xffff_ffffn) {
+        throw new Error('settlementWindowSeconds must fit in a u32 channel grace period');
+    }
+    return Number(settlementWindowSeconds);
 }
 
 function errorMessage(error: unknown): string {

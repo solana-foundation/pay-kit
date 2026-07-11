@@ -44,7 +44,7 @@ async function channelId(): Promise<string> {
     return derived;
 }
 
-function encodeChannel(deposit: bigint, status = 0): string {
+function encodeChannel(deposit: bigint, status = 0, gracePeriod = 900): string {
     const bytes = getChannelEncoder().encode({
         discriminator: 1,
         version: 1,
@@ -55,7 +55,7 @@ function encodeChannel(deposit: bigint, status = 0): string {
         settlement: { settled: 0n, payoutWatermark: 0n },
         closureStartedAt: 0n,
         payerWithdrawnAt: 0n,
-        gracePeriod: 900,
+        gracePeriod,
         distributionHash: Array.from(EMPTY_DISTRIBUTION_HASH),
         payer: address(PAYER),
         payee: address(RECIPIENT),
@@ -83,14 +83,20 @@ function rpcWithChannel(data: string) {
     };
 }
 
-function credential(payload: unknown) {
+function credential(payload: unknown, requestOverrides: Record<string, unknown> = {}) {
     return {
         challenge: {
             id: 'challenge-id',
             intent: 'session',
             method: 'solana',
             realm: 'api.test',
-            request: { cap: '10000', currency: 'USDC', operator: OPERATOR, recipient: RECIPIENT },
+            request: {
+                cap: '10000',
+                currency: 'USDC',
+                operator: OPERATOR,
+                recipient: RECIPIENT,
+                ...requestOverrides,
+            },
         },
         payload,
     } as never;
@@ -127,27 +133,73 @@ describe('session Channel account state binding', () => {
         );
     });
 
-    test('bare push open persists on-chain deposit and payer', async () => {
+    test('bare push open fails closed when rpc cannot fetch its transaction', async () => {
         const channel = await channelId();
         const store = createMemorySessionStore();
         const method = session(parameters({ rpc: rpcWithChannel(encodeChannel(4_000n)) as never, store }));
-        await method.verify({
-            credential: credential({
-                action: 'open',
-                authorizedSigner: SIGNER,
-                channelId: channel,
-                deposit: '1000',
-                mode: 'push',
-                payer: CLAIMED_PAYER,
-                signature: 'open-signature',
+        await expect(
+            method.verify({
+                credential: credential({
+                    action: 'open',
+                    authorizedSigner: SIGNER,
+                    channelId: channel,
+                    deposit: '4000',
+                    mode: 'push',
+                    payer: CLAIMED_PAYER,
+                    signature: 'open-signature',
+                }),
+                request: {} as never,
             }),
-            request: {} as never,
-        });
-        const state = await store.getChannel(channel);
-        expect(state?.deposit).toBe(4_000n);
-        expect(state?.operator).toBe(PAYER);
-        expect(state?.openSlot).toBe(42n);
-        expect(state?.salt).toBe(7n);
+        ).rejects.toThrow(/does not expose getTransaction/);
+        expect(await store.getChannel(channel)).toBeUndefined();
+    });
+
+    test('binds signature-only opens to the challenge incarnation and configured grace period', async () => {
+        const channel = await channelId();
+        const store = createMemorySessionStore();
+        const method = session(
+            parameters({
+                rpc: rpcWithChannel(encodeChannel(4_000n, 0, 600)) as never,
+                settlementWindowSeconds: 600n,
+                store,
+            }),
+        );
+
+        await expect(
+            method.verify({
+                credential: credential(
+                    {
+                        action: 'open',
+                        authorizedSigner: SIGNER,
+                        channelId: channel,
+                        deposit: '1000',
+                        mode: 'push',
+                        recentSlot: '41',
+                        signature: 'open-signature',
+                    },
+                    { recentSlot: '42' },
+                ),
+                request: {} as never,
+            }),
+        ).rejects.toThrow(/does not match challenge recentSlot/);
+
+        await expect(
+            method.verify({
+                credential: credential(
+                    {
+                        action: 'open',
+                        authorizedSigner: SIGNER,
+                        channelId: channel,
+                        deposit: '1000',
+                        mode: 'push',
+                        recentSlot: '43',
+                        signature: 'open-signature',
+                    },
+                    { recentSlot: '43' },
+                ),
+                request: {} as never,
+            }),
+        ).rejects.toThrow(/does not expose getTransaction/);
     });
 
     test('topUp rejects a mismatched resulting deposit and non-open status', async () => {

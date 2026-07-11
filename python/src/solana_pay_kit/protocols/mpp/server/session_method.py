@@ -45,7 +45,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
-from solana_pay_kit._paycore.solana import MAX_SPLITS, resolve_mint
+from solana_pay_kit._paycore.solana import MAX_SPLITS
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
     PAYMENT_RECEIPT_HEADER,
@@ -70,9 +70,7 @@ from solana_pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecyc
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
     RpcClient,
     VerifyOpenTxExpected,
-    confirm_transaction_signature,
     cosign_and_broadcast_open,
-    fetch_and_bind_channel_account,
     settle_and_seal_channel,
     verify_open_tx,
 )
@@ -570,6 +568,8 @@ class Session:
             max_cap=self._core.config.max_cap,
             operator=self._core.config.operator,
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+            splits=self._core.config.splits,
+            grace_period=self._core.config.settlement_window or 900,
             recent_slot=challenge_recent_slot,
         )
 
@@ -649,9 +649,12 @@ class Session:
                         f"server-submitted open {session_id} is missing its persisted broadcast signature",
                         code="invalid-payload",
                     )
-                payload.signature = existing.open_signature
-                payload.salt = existing.salt
-                payload.recent_slot = existing.open_slot
+                # The retry may carry a fresh copy of the original partial
+                # transaction. Returning the persisted signature directly
+                # avoids re-validating that partial wire against the completed
+                # signature and, crucially, avoids rebroadcasting it.
+                self._touch(existing.channel_id)
+                return existing.open_signature
             else:
                 # Built lazily: only the transaction-carrying paths verify
                 # the open on-chain, so the on-chain expected facts (and the
@@ -698,30 +701,11 @@ class Session:
                 code="invalid-payload",
             )
         elif mode == "push" and self._rpc is not None:
-            confirmed_slot = await confirm_transaction_signature(self._rpc, payload.signature, "open")
-            expected_mint = resolve_mint(self._currency, self._network)
-            if not expected_mint:
-                raise PaymentError(
-                    f"payment-channel push open requires an SPL token, got currency {self._currency!r}",
-                    code="invalid-config",
-                )
-            bound = await fetch_and_bind_channel_account(
-                self._rpc,
-                payload.session_id(),
-                program_id=self._core.config.program_id,
-                max_cap=self._core.config.max_cap,
-                expected_authorized_signer=payload.authorized_signer,
-                expected_payee=self._recipient,
-                expected_mint=expected_mint,
-                expected_operator=self._core.config.operator,
-                min_context_slot=confirmed_slot,
-                expected_grace_period=(self._core.config.settlement_window or 900),
-                expected_splits=self._core.config.splits,
-            )
-            payload.deposit = str(bound.deposit)
-            payload.payer = bound.payer
-            payload.recent_slot = bound.open_slot
-            payload.salt = bound.salt
+            # The state-aware verifier performs the confirmed account bind. Keep
+            # the challenge incarnation on the payload so it can reject a stale
+            # channel before state is persisted.
+            if payload.recent_slot in (None, 0):
+                payload.recent_slot = challenge_recent_slot
         elif mode == "push" and self._network != "localnet":
             raise PaymentError(
                 "payment-channel push open requires an rpc client to bind the on-chain channel off localnet",
@@ -732,39 +716,6 @@ class Session:
         # `else` branch) or by a push open with a channel id and no RPC (trusted
         # as previously broadcast). The server-broadcast path is skipped even when
         # openTxSubmitter=server is configured.
-
-        if has_transaction:
-            if self._rpc is None:
-                if self._network != "localnet":
-                    raise PaymentError(
-                        "payment-channel open requires an rpc client to bind the on-chain channel off localnet",
-                        code="invalid-config",
-                    )
-            else:
-                confirmed_slot = await confirm_transaction_signature(self._rpc, payload.signature, "open")
-                expected_mint = resolve_mint(self._currency, self._network)
-                if not expected_mint:
-                    raise PaymentError(
-                        f"payment-channel open requires an SPL token, got currency {self._currency!r}",
-                        code="invalid-config",
-                    )
-                bound = await fetch_and_bind_channel_account(
-                    self._rpc,
-                    payload.session_id(),
-                    program_id=self._core.config.program_id,
-                    max_cap=self._core.config.max_cap,
-                    expected_authorized_signer=payload.authorized_signer,
-                    expected_payee=self._recipient,
-                    expected_mint=expected_mint,
-                    expected_operator=self._core.config.operator,
-                    min_context_slot=confirmed_slot,
-                    expected_grace_period=(self._core.config.settlement_window or 900),
-                    expected_splits=self._core.config.splits,
-                )
-                payload.deposit = str(bound.deposit)
-                payload.payer = bound.payer
-                payload.recent_slot = bound.open_slot
-                payload.salt = bound.salt
 
         try:
             state = await self._core.process_open(payload)
@@ -1092,13 +1043,20 @@ def new_session(options: SessionOptions) -> Session:
         open_tx_submitter=open_tx_submitter,
     )
     from solana_pay_kit.protocols.mpp.server.session_onchain import (
+        new_open_state_tx_verifier,
         new_open_tx_verifier,
         new_top_up_state_tx_verifier,
     )
 
     config.allow_unsafe_ephemeral_store_off_localnet = options.allow_unsafe_ephemeral_store_off_localnet
     if options.rpc is not None:
-        config.verify_open_tx = new_open_tx_verifier(config, options.rpc)
+        legacy_open_verifier = new_open_tx_verifier(config, options.rpc)
+
+        async def verify_open_tx_compat(payload: OpenPayload) -> None:
+            await legacy_open_verifier(payload)
+
+        config.verify_open_tx = verify_open_tx_compat
+        config.verify_open_state_tx = new_open_state_tx_verifier(config, options.rpc)
     config.verify_top_up_state_tx = new_top_up_state_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(
