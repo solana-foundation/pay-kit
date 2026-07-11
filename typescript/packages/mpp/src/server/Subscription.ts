@@ -811,29 +811,6 @@ function decodeSubscriptionDelegation(data: Uint8Array): SubscriptionDelegation 
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
-function encodeBase58(bytes: Uint8Array): string {
-    if (bytes.length === 0) return '';
-    let leading = 0;
-    while (leading < bytes.length && bytes[leading] === 0) leading += 1;
-    const buf: number[] = [];
-    for (let i = leading; i < bytes.length; i += 1) {
-        let carry = bytes[i];
-        for (let j = 0; j < buf.length; j += 1) {
-            const x = (buf[j] << 8) + carry;
-            buf[j] = x % 58;
-            carry = Math.floor(x / 58);
-        }
-        while (carry > 0) {
-            buf.push(carry % 58);
-            carry = Math.floor(carry / 58);
-        }
-    }
-    let out = '';
-    for (let i = 0; i < leading; i += 1) out += '1';
-    for (let i = buf.length - 1; i >= 0; i -= 1) out += BASE58_ALPHABET[buf[i]];
-    return out;
-}
-
 function decodeBase58(s: string): Uint8Array {
     if (s.length === 0) return new Uint8Array();
     const map: Record<string, number> = {};
@@ -1025,7 +1002,6 @@ export const __testing = {
     base64UrlEncodeNoPadding,
     decodeBase58,
     decodeSubscriptionDelegation,
-    encodeBase58,
     extractSubscriberFromTransaction,
     validateActivationInstructions,
 };

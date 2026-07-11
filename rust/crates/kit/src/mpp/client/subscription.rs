@@ -228,16 +228,14 @@ pub async fn build_subscription_activation_transaction_with_options(
     // The on-chain `Subscribe` instruction binds the subscriber's signature
     // to a specific `SubscriptionAuthority::init_id`. Callers must explicitly
     // initialize/read that authority before asking this pure builder to run.
-    let blockhash_str = method_details.recent_blockhash.as_deref().ok_or_else(|| {
-        Error::Other(
-            "Challenge is missing methodDetails.recentBlockhash — the server failed \
-             to pre-fetch one. Check the server's operator.rpc_url config."
-                .into(),
-        )
-    })?;
-    let blockhash: solana_hash::Hash = blockhash_str
-        .parse()
-        .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?;
+    let blockhash: solana_hash::Hash = match method_details.recent_blockhash.as_deref() {
+        Some(value) => value
+            .parse()
+            .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?,
+        None => rpc
+            .get_latest_blockhash()
+            .map_err(|e| Error::Other(format!("Failed to fetch recent blockhash: {e}")))?,
+    };
 
     let expected_subscription_authority_init_id = match options.subscription_authority_init_id {
         Some(init_id) => init_id,
@@ -780,6 +778,23 @@ mod tests {
         .await
         .expect_err("bad blockhash");
         assert!(format!("{err}").contains("blockhash") || format!("{err}").contains("Invalid"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_recent_blockhash_falls_back_to_client_rpc() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.recent_blockhash = None;
+        let payload = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            test_options(),
+        )
+        .await
+        .expect("client RPC blockhash fallback");
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
     }
 
     #[test]
