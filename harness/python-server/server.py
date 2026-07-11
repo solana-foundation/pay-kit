@@ -68,9 +68,13 @@ from solana_pay_kit import (  # noqa: E402
 )
 from solana_pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
 from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
-from solana_pay_kit._paycore.store import MemoryStore  # noqa: E402
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore  # noqa: E402
 from solana_pay_kit.errors import InvalidProofError  # noqa: E402
-from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
+from solana_pay_kit.protocols.mpp.core.headers import (  # noqa: E402
+    format_www_authenticate,
+    parse_authorization,
+    parse_receipt,
+)
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
 from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
     SessionChallengeOptions,
@@ -237,7 +241,8 @@ class _Adapter:
             preflight=False,
         ).model_copy()
         self.config = config
-        self.adapter = X402Adapter(config)
+        replay_store = FileReplayStore(f"/tmp/pay-kit-python-x402-replay-{os.getpid()}.json")
+        self.adapter = X402Adapter(config, replay_store=replay_store)
         self.pay_to = pay_to
         decimals = int(optional_env("X402_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
