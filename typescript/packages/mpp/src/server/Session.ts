@@ -152,6 +152,9 @@ export function session(parameters: session.Parameters) {
     if (signer && !isTransactionPartialSigner(signer)) {
         throw new Error('signer must implement signTransactions()');
     }
+    if (signer && rpc) {
+        requireSettlementRpc(rpc);
+    }
     if (paymentChannelPayerSigner && !isTransactionPartialSigner(paymentChannelPayerSigner)) {
         throw new Error('paymentChannelPayerSigner must implement signTransactions()');
     }

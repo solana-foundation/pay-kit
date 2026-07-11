@@ -1315,11 +1315,9 @@ describe('session() verify() close monotonicity', () => {
 // ── verify() — close retry after a failed settlement ────────────────────
 
 describe('session() verify() close retry', () => {
-    test('settlement fails clearly before outbox creation when getBlockHeight is unavailable', async () => {
+    test('construction rejects signer-driven settlement without getBlockHeight before store or lifecycle use', async () => {
         const store = createMemorySessionStore();
-        const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
-        const channelId = '11111111111111111111111111111111';
         const rpc = {
             getLatestBlockhash: () => ({
                 send: async () => ({
@@ -1337,39 +1335,38 @@ describe('session() verify() close retry', () => {
             }),
             sendTransaction: () => ({ send: async () => 'unused' }),
         };
-        const method = session({
-            cap: 1_000_000n,
-            currency: 'USDC',
-            decimals: 6,
-            network: 'localnet',
-            operator: OPERATOR,
-            pricing: {},
-            recipient: RECIPIENT,
-            rpc: rpc as never,
-            signer: merchant,
-            store,
-        });
-        await method.verify({
-            credential: makeCred({
-                action: 'open',
-                authorizedSigner: signer.address,
-                channelId,
-                deposit: '1000',
-                mode: 'push',
-                payer: signer.address,
-                signature: 'open-sig',
-            }),
-            request: {} as never,
-        });
 
-        await expect(
-            method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
-        ).rejects.toThrow(/requires rpc\.getBlockHeight/);
-        const state = await store.getChannel(channelId);
-        expect(state?.settling).toBeUndefined();
-        expect(state?.settlementClaimOwner).toBeUndefined();
-        expect(state?.settlementPendingSignature).toBeUndefined();
-        expect(state?.settlementPendingWire).toBeUndefined();
+        expect(() =>
+            session({
+                cap: 1_000_000n,
+                closeDelayMs: 1,
+                currency: 'USDC',
+                decimals: 6,
+                network: 'localnet',
+                operator: OPERATOR,
+                pricing: {},
+                recipient: RECIPIENT,
+                rpc: rpc as never,
+                signer: merchant,
+                store,
+            }),
+        ).toThrow(/requires rpc\.getBlockHeight/);
+        expect(await store.listChannels()).toEqual([]);
+
+        expect(() =>
+            session({
+                cap: 1_000_000n,
+                closeDelayMs: 1,
+                currency: 'USDC',
+                decimals: 6,
+                network: 'localnet',
+                operator: OPERATOR,
+                pricing: {},
+                recipient: RECIPIENT,
+                rpc: rpc as never,
+                store,
+            }),
+        ).not.toThrow();
     });
 
     test('an uncertain confirmation retries by rebroadcasting the persisted wire', async () => {

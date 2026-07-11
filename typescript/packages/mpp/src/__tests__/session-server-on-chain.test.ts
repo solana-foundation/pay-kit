@@ -611,6 +611,7 @@ describe('submitInitMultiDelegateTxIfMissing', () => {
         const accountLookups: string[] = [];
         return {
             accountLookups,
+            getBlockHeight: () => ({ send: async () => 0n }),
             getAccountInfo: (addr: string) => ({
                 send: async () => {
                     accountLookups.push(addr);
