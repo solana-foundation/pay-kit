@@ -139,6 +139,7 @@ func (s *sharedJSONChannelStore) MarkSealed(ctx context.Context, channelID strin
 		next := *current
 		next.Sealed = true
 		next.SettlementWire = ""
+		next.SettlementLastValidBlockHeight = 0
 		next.Settling = false
 		next.SettlementClaimOwner = ""
 		next.SettlementClaimedAt = 0
@@ -180,6 +181,8 @@ func (p *preBroadcastStateRPC) SendTransactionWithOpts(ctx context.Context, tx *
 type crashBeforeSendRPC struct {
 	*testutil.FakeRPC
 	attemptedWire string
+	lastValid     uint64
+	blockHeight   uint64
 }
 
 func (c *crashBeforeSendRPC) SendTransactionWithOpts(_ context.Context, tx *solana.Transaction, _ rpc.TransactionOpts) (solana.Signature, error) {
@@ -189,6 +192,32 @@ func (c *crashBeforeSendRPC) SendTransactionWithOpts(_ context.Context, tx *sola
 	}
 	c.attemptedWire = wire
 	return solana.Signature{}, errors.New("simulated process crash before network send")
+}
+
+func (c *crashBeforeSendRPC) GetLatestBlockhash(_ context.Context, _ rpc.CommitmentType) (*rpc.GetLatestBlockhashResult, error) {
+	return &rpc.GetLatestBlockhashResult{Value: &rpc.LatestBlockhashResult{
+		Blockhash:            c.Blockhash,
+		LastValidBlockHeight: c.lastValid,
+	}}, nil
+}
+
+func (c *crashBeforeSendRPC) GetSignatureStatuses(context.Context, bool, ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}, nil
+}
+
+func (c *crashBeforeSendRPC) GetBlockHeight(context.Context, rpc.CommitmentType) (uint64, error) {
+	return c.blockHeight, nil
+}
+
+type sendErrorConfirmedRPC struct {
+	*testutil.FakeRPC
+}
+
+func (s *sendErrorConfirmedRPC) SendTransactionWithOpts(ctx context.Context, tx *solana.Transaction, opts rpc.TransactionOpts) (solana.Signature, error) {
+	if _, err := s.FakeRPC.SendTransactionWithOpts(ctx, tx, opts); err != nil {
+		return solana.Signature{}, err
+	}
+	return solana.Signature{}, errors.New("transaction already processed")
 }
 
 func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T) {
@@ -360,10 +389,12 @@ func TestPreSendCrashRestartRebroadcastsExactPersistedWire(t *testing.T) {
 		o.Signer = merchant
 	})
 	_, channelID := openTrustedChannel(t, first, 1_000)
-	crashRPC := &crashBeforeSendRPC{FakeRPC: baseRPC}
+	crashRPC := &crashBeforeSendRPC{FakeRPC: baseRPC, lastValid: 100, blockHeight: 50}
 	first.rpc = crashRPC
 
-	if _, err := first.closeAndSettleChannel(context.Background(), channelID); err == nil ||
+	crashCtx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := first.closeAndSettleChannel(crashCtx, channelID); err == nil ||
 		!strings.Contains(err.Error(), "simulated process crash") {
 		t.Fatalf("pre-send crash error = %v", err)
 	}
@@ -371,7 +402,8 @@ func TestPreSendCrashRestartRebroadcastsExactPersistedWire(t *testing.T) {
 		t.Fatalf("pre-send crash reached network %d times", len(baseRPC.Sent))
 	}
 	pending, err := stores[1].GetChannel(context.Background(), channelID)
-	if err != nil || pending == nil || !pending.Settling || pending.SettledSignature == nil || pending.SettlementWire == "" {
+	if err != nil || pending == nil || !pending.Settling || pending.SettledSignature == nil || pending.SettlementWire == "" ||
+		pending.SettlementLastValidBlockHeight != 100 {
 		t.Fatalf("persisted pre-send outbox=%+v err=%v", pending, err)
 	}
 	if crashRPC.attemptedWire != pending.SettlementWire {
@@ -396,6 +428,90 @@ func TestPreSendCrashRestartRebroadcastsExactPersistedWire(t *testing.T) {
 	sealed, err := stores[0].GetChannel(context.Background(), channelID)
 	if err != nil || sealed == nil || !sealed.Sealed || sealed.SettlementWire != "" || sealed.Settling {
 		t.Fatalf("sealed outbox state=%+v err=%v", sealed, err)
+	}
+}
+
+func TestSendErrorStillConfirmsPersistedSettlement(t *testing.T) {
+	_, stores := newSharedJSONChannelStores(1)
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[0]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, session, 1_000)
+	session.rpc = &sendErrorConfirmedRPC{FakeRPC: baseRPC}
+
+	settled, err := session.closeAndSettleChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("send error with confirmed signature: %v", err)
+	}
+	if settled == "" || len(baseRPC.Sent) != 1 {
+		t.Fatalf("settlement=%q submissions=%d", settled, len(baseRPC.Sent))
+	}
+	state, err := stores[0].GetChannel(context.Background(), channelID)
+	if err != nil || state == nil || !state.Sealed || state.SettlementWire != "" || state.Settling {
+		t.Fatalf("confirmed send-error state=%+v err=%v", state, err)
+	}
+}
+
+func TestExpiredUnsentOutboxRetiresThenRebuilds(t *testing.T) {
+	_, stores := newSharedJSONChannelStores(2)
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	first := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[0]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	restarted := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[1]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, first, 1_000)
+	crashRPC := &crashBeforeSendRPC{FakeRPC: baseRPC, lastValid: 100, blockHeight: 50}
+	first.rpc = crashRPC
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := first.closeAndSettleChannel(ctx, channelID); err == nil {
+		t.Fatal("unexpired unsent outbox unexpectedly resolved")
+	}
+	pending, err := stores[1].GetChannel(context.Background(), channelID)
+	if err != nil || pending == nil || pending.SettlementWire == "" || pending.SettlementLastValidBlockHeight != 100 {
+		t.Fatalf("unexpired outbox=%+v err=%v", pending, err)
+	}
+	oldWire := pending.SettlementWire
+
+	crashRPC.blockHeight = 101
+	restarted.rpc = crashRPC
+	if _, err := restarted.closeAndSettleChannel(context.Background(), channelID); err == nil ||
+		!strings.Contains(err.Error(), "expired at block height 100") {
+		t.Fatalf("expired outbox result = %v", err)
+	}
+	retired, err := stores[0].GetChannel(context.Background(), channelID)
+	if err != nil || retired == nil || retired.SettledSignature != nil || retired.SettlementWire != "" ||
+		retired.SettlementLastValidBlockHeight != 0 || retired.Settling || retired.SettlementClaimOwner != "" {
+		t.Fatalf("retired outbox=%+v err=%v", retired, err)
+	}
+
+	baseRPC.Blockhash = solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
+	restarted.rpc = baseRPC
+	settled, err := restarted.closeAndSettleChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("fresh settlement after expiry: %v", err)
+	}
+	if settled == "" || len(baseRPC.Sent) != 1 {
+		t.Fatalf("fresh settlement=%q submissions=%d", settled, len(baseRPC.Sent))
+	}
+	newWire, err := solanatx.EncodeTransactionBase64(baseRPC.Sent[0])
+	if err != nil {
+		t.Fatalf("encode rebuilt settlement: %v", err)
+	}
+	if newWire == oldWire {
+		t.Fatal("expired outbox was reused instead of rebuilding with a fresh blockhash")
 	}
 }
 

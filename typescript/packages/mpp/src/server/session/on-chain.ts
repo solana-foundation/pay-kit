@@ -1355,11 +1355,13 @@ export interface ConfirmSignatureOptions {
 /** Confirmation failure with an explicit retry-safety classification. */
 export class SignatureConfirmationError extends Error {
     readonly outcome: 'definite-failure' | 'uncertain';
+    readonly reason: 'aborted' | 'failed' | 'timeout';
 
-    constructor(message: string, outcome: 'definite-failure' | 'uncertain') {
+    constructor(message: string, outcome: 'definite-failure' | 'uncertain', reason: 'aborted' | 'failed' | 'timeout') {
         super(message);
         this.name = 'SignatureConfirmationError';
         this.outcome = outcome;
+        this.reason = reason;
     }
 }
 
@@ -1384,6 +1386,7 @@ export async function waitForSignatureConfirmation(args: {
             throw new SignatureConfirmationError(
                 `${context}: aborted while waiting for tx ${args.signature} confirmation`,
                 'uncertain',
+                'aborted',
             );
         }
         const [status] = (await args.rpc.getSignatureStatuses([args.signature]).send()).value;
@@ -1392,6 +1395,7 @@ export async function waitForSignatureConfirmation(args: {
                 throw new SignatureConfirmationError(
                     `${context}: tx ${args.signature} failed on-chain: ${JSON.stringify(status.err)}`,
                     'definite-failure',
+                    'failed',
                 );
             }
             const level = status.confirmationStatus;
@@ -1403,6 +1407,7 @@ export async function waitForSignatureConfirmation(args: {
             throw new SignatureConfirmationError(
                 `${context}: timed out waiting for tx ${args.signature} confirmation`,
                 'uncertain',
+                'timeout',
             );
         }
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
@@ -1528,12 +1533,13 @@ export async function submitSettleAndDistributeWithPreBroadcastPersistence(
     args: SubmitSettleAndDistributeArgs,
     beforeBroadcast: (prepared: { readonly signature: Signature; readonly wire: string }) => Promise<void>,
 ): Promise<SubmitSettleAndDistributeResult> {
-    return await submitSettleAndDistributeInternal(args, beforeBroadcast);
+    return await submitSettleAndDistributeInternal(args, beforeBroadcast, true);
 }
 
 async function submitSettleAndDistributeInternal(
     args: SubmitSettleAndDistributeArgs,
     beforeBroadcast?: (prepared: { readonly signature: Signature; readonly wire: string }) => Promise<void>,
+    reconcileBroadcastError = false,
 ): Promise<SubmitSettleAndDistributeResult> {
     const tokenProgram =
         args.tokenProgram ?? (args.currency ? defaultTokenProgramForCurrency(args.currency, args.network) : undefined);
@@ -1563,7 +1569,11 @@ async function submitSettleAndDistributeInternal(
     const transaction = getTransactionDecoder().decode(getBase64Codec().encode(wire));
     const signature = getSignatureFromTransaction(transaction);
     await beforeBroadcast?.({ signature, wire });
-    await args.rpc.sendTransaction(wire, { encoding: 'base64' }).send();
+    try {
+        await args.rpc.sendTransaction(wire, { encoding: 'base64' }).send();
+    } catch (error) {
+        if (!reconcileBroadcastError) throw error;
+    }
     return { instructions, signature };
 }
 

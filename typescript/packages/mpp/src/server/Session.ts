@@ -26,6 +26,7 @@ import type {
 import { normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
+    type ConfirmSignatureOptions,
     type GetAccountInfoRpc,
     isGetAccountInfoRpc,
     isOpenTransactionRpc,
@@ -52,7 +53,7 @@ import {
     type SessionStore,
 } from './session/store.js';
 import { verifyVoucherForChannel, type VoucherVerifyResult } from './session/voucher.js';
-import { buildAndSignWireTransaction } from './session/wire-tx.js';
+import { buildAndSignWireTransactionWithLifetime } from './session/wire-tx.js';
 
 // The Rust mirror keeps this default literal in
 // `crate::protocol::intents::session::DEFAULT_SESSION_EXPIRES_AT` (year 2100).
@@ -141,6 +142,7 @@ export function session(parameters: session.Parameters) {
         minVoucherDelta,
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
+        settlementConfirmation,
         settlementWindowSeconds,
     } = parameters;
 
@@ -196,6 +198,7 @@ export function session(parameters: session.Parameters) {
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
+                        settlementConfirmation,
                         splits,
                         store,
                         tokenProgram,
@@ -362,6 +365,7 @@ export function session(parameters: session.Parameters) {
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
+                        settlementConfirmation,
                         settlementWindow: settlementWindowSeconds,
                         splits,
                         store,
@@ -968,6 +972,7 @@ interface HandleCloseArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly settlementConfirmation: ConfirmSignatureOptions | undefined;
     readonly settlementWindow: bigint | undefined;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
@@ -1042,6 +1047,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             programId: args.programId,
             recipient: args.recipient,
             rpc: args.rpc,
+            settlementConfirmation: args.settlementConfirmation,
             splits: args.splits,
             store: args.store,
             tokenProgram: args.tokenProgram,
@@ -1228,6 +1234,7 @@ interface CloseAndSettleArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike;
+    readonly settlementConfirmation: ConfirmSignatureOptions | undefined;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
     readonly tokenProgram: string;
@@ -1267,6 +1274,7 @@ async function closeAndSettleChannel(
     if (!claimed) return undefined;
 
     let pendingSignature = state.settlementPendingSignature as Signature | undefined;
+    let pendingLastValidBlockHeight = state.settlementPendingLastValidBlockHeight;
     let pendingWire = state.settlementPendingWire;
     try {
         // The distribute refund goes to the channel payer (the program enforces
@@ -1297,12 +1305,15 @@ async function closeAndSettleChannel(
 
             const result = await submitSettleAndDistributeWithPreBroadcastPersistence(
                 {
-                    buildAndSignWireTransaction: instructions =>
-                        buildAndSignWireTransaction(
-                            args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
+                    buildAndSignWireTransaction: async instructions => {
+                        const prepared = await buildAndSignWireTransactionWithLifetime(
+                            args.rpc as unknown as Parameters<typeof buildAndSignWireTransactionWithLifetime>[0],
                             args.merchantSigner as unknown as TransactionSigner,
                             instructions,
-                        ),
+                        );
+                        pendingLastValidBlockHeight = prepared.lastValidBlockHeight;
+                        return prepared.wire;
+                    },
                     channelId: args.channelId,
                     currency: args.currency,
                     mint: args.mint,
@@ -1326,6 +1337,9 @@ async function closeAndSettleChannel(
                 async prepared => {
                     pendingSignature = prepared.signature;
                     pendingWire = prepared.wire;
+                    if (pendingLastValidBlockHeight === undefined) {
+                        throw new Error(`Channel ${args.channelId} settlement transaction lifetime was not captured`);
+                    }
                     await args.store.updateChannel(args.channelId, current => {
                         if (!current) {
                             throw new Error(`Channel ${args.channelId} disappeared before settlement broadcast`);
@@ -1335,6 +1349,7 @@ async function closeAndSettleChannel(
                         }
                         return {
                             ...current,
+                            settlementPendingLastValidBlockHeight: pendingLastValidBlockHeight,
                             settlementPendingSignature: prepared.signature as unknown as string,
                             settlementPendingWire: prepared.wire,
                         };
@@ -1349,17 +1364,23 @@ async function closeAndSettleChannel(
             if (wireSignature !== pendingSignature) {
                 throw new Error(`Channel ${args.channelId} pending settlement wire does not match its signature`);
             }
-            await (
-                args.rpc as unknown as {
-                    sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
-                }
-            )
-                .sendTransaction(pendingWire, { encoding: 'base64' })
-                .send();
+            try {
+                await (
+                    args.rpc as unknown as {
+                        sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
+                    }
+                )
+                    .sendTransaction(pendingWire, { encoding: 'base64' })
+                    .send();
+            } catch {
+                // The RPC can report an error after accepting the transaction.
+                // Always reconcile the persisted signature before deciding.
+            }
         }
 
         await waitForSignatureConfirmation({
             context: `settle channel ${args.channelId}`,
+            options: args.settlementConfirmation,
             rpc: args.rpc,
             signature: pendingSignature,
         });
@@ -1374,6 +1395,7 @@ async function closeAndSettleChannel(
                 sealed: true,
                 settlementClaimExpiresAt: undefined,
                 settlementClaimOwner: undefined,
+                settlementPendingLastValidBlockHeight: undefined,
                 settlementPendingSignature: undefined,
                 settlementPendingWire: undefined,
                 settledSignature: pendingSignature as unknown as string,
@@ -1383,6 +1405,23 @@ async function closeAndSettleChannel(
         return { signature: pendingSignature };
     } catch (error) {
         const definiteFailure = error instanceof SignatureConfirmationError && error.outcome === 'definite-failure';
+        let expired = false;
+        if (
+            error instanceof SignatureConfirmationError &&
+            error.reason === 'timeout' &&
+            pendingLastValidBlockHeight !== undefined
+        ) {
+            const getBlockHeight = (args.rpc as unknown as { getBlockHeight?: () => { send(): Promise<bigint> } })
+                .getBlockHeight;
+            if (getBlockHeight) {
+                try {
+                    expired = (await getBlockHeight.call(args.rpc).send()) > pendingLastValidBlockHeight;
+                } catch {
+                    // Failure to prove expiry is uncertainty; retain the outbox.
+                }
+            }
+        }
+        const retireOutbox = definiteFailure || expired;
         await args.store.updateChannel(args.channelId, current => {
             if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
             if (current.sealed) return current;
@@ -1391,8 +1430,12 @@ async function closeAndSettleChannel(
                 ...current,
                 settlementClaimExpiresAt: undefined,
                 settlementClaimOwner: undefined,
-                ...(definiteFailure && current.settlementPendingSignature === pendingSignature
-                    ? { settlementPendingSignature: undefined, settlementPendingWire: undefined }
+                ...(retireOutbox && current.settlementPendingSignature === pendingSignature
+                    ? {
+                          settlementPendingLastValidBlockHeight: undefined,
+                          settlementPendingSignature: undefined,
+                          settlementPendingWire: undefined,
+                      }
                     : {}),
                 settling: false,
             };
@@ -1619,6 +1662,8 @@ export declare namespace session {
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
+        /** Settlement confirmation timing and cancellation overrides. */
+        readonly settlementConfirmation?: ConfirmSignatureOptions;
         /**
          * Settlement window in seconds — the forced-close grace period a
          * non-zero voucher `expiresAt` must outlast. When set, a voucher

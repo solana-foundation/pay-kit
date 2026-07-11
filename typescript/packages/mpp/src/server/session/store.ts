@@ -85,6 +85,8 @@ export interface ChannelState {
     readonly settlementClaimExpiresAt?: bigint | undefined;
     /** Opaque owner token for the current settlement claim. */
     readonly settlementClaimOwner?: string | undefined;
+    /** Last valid block height of the signed settlement outbox transaction. */
+    readonly settlementPendingLastValidBlockHeight?: bigint | undefined;
     /** Broadcast settlement awaiting a definite confirmed/failed outcome. */
     readonly settlementPendingSignature?: string | undefined;
     /** Exact signed base64 transaction paired with `settlementPendingSignature`. */

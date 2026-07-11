@@ -1315,7 +1315,7 @@ describe('session() verify() close monotonicity', () => {
 // ── verify() — close retry after a failed settlement ────────────────────
 
 describe('session() verify() close retry', () => {
-    test('an uncertain confirmation retries the persisted signature without rebroadcasting', async () => {
+    test('an uncertain confirmation retries by rebroadcasting the persisted wire', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
@@ -1391,6 +1391,7 @@ describe('session() verify() close retry', () => {
         let state = await store.getChannel(channelId);
         expect(state?.closeRequestedAt).toBeDefined();
         expect(state?.sealed).toBe(false);
+        expect(state?.settlementPendingLastValidBlockHeight).toBe(0n);
         expect(state?.settlementPendingSignature).toBe(settleSignature);
         expect(state?.settlementPendingWire).toBe(sends[0]);
         expect(state?.settling).toBe(false);
@@ -1408,6 +1409,7 @@ describe('session() verify() close retry', () => {
         expect(new Set(sends).size).toBe(1);
         state = await store.getChannel(channelId);
         expect(state?.sealed).toBe(true);
+        expect(state?.settlementPendingLastValidBlockHeight).toBeUndefined();
         expect(state?.settlementPendingSignature).toBeUndefined();
         expect(state?.settlementPendingWire).toBeUndefined();
         expect(state?.settling).toBe(false);
@@ -1419,7 +1421,74 @@ describe('session() verify() close retry', () => {
         ).rejects.toThrow(/sealed/);
     });
 
-    test('a restart after outbox persistence but before send rebroadcasts the stored wire', async () => {
+    test('a send error still seals when the persisted signature is already confirmed', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const sends: string[] = [];
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 100n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    throw new Error('already processed');
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        await method.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                payer: signer.address,
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+
+        const receipt = await method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
+        expect(sends).toHaveLength(1);
+        const state = await store.getChannel(channelId);
+        expect(state?.sealed).toBe(true);
+        expect(state?.settledSignature).toBe(signedWireSignature(sends[0]!));
+        expect(state?.settlementPendingLastValidBlockHeight).toBeUndefined();
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settlementPendingWire).toBeUndefined();
+    });
+
+    test('an expired unsent outbox is retired and rebuilt after restart', async () => {
         const durableStore = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
@@ -1427,6 +1496,7 @@ describe('session() verify() close retry', () => {
         const sends: string[] = [];
         let blockhashCalls = 0;
         let crashBeforeSend = true;
+        let phase: 'crash' | 'expired' | 'fresh' = 'crash';
         const crashingStore: SessionStore = {
             ...durableStore,
             async updateChannel(id, mutator) {
@@ -1449,8 +1519,11 @@ describe('session() verify() close retry', () => {
                     blockhashCalls += 1;
                     return {
                         value: {
-                            blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
-                            lastValidBlockHeight: 0n,
+                            blockhash:
+                                blockhashCalls === 1
+                                    ? 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N'
+                                    : '11111111111111111111111111111111',
+                            lastValidBlockHeight: blockhashCalls === 1 ? 100n : 200n,
                         },
                     };
                 },
@@ -1458,12 +1531,16 @@ describe('session() verify() close retry', () => {
             getSignatureStatuses: (sigs: readonly string[]) => ({
                 send: async () => ({
                     context: { slot: 42 },
-                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                    value: sigs.map(() =>
+                        phase === 'expired' ? null : { confirmationStatus: 'confirmed', err: null },
+                    ),
                 }),
             }),
+            getBlockHeight: () => ({ send: async () => 101n }),
             sendTransaction: (wire: string) => ({
                 send: async () => {
                     sends.push(wire);
+                    if (phase === 'expired') throw new Error('blockhash not found');
                     return signedWireSignature(wire);
                 },
             }),
@@ -1478,6 +1555,7 @@ describe('session() verify() close retry', () => {
                 pricing: {},
                 recipient: RECIPIENT,
                 rpc: rpc as never,
+                settlementConfirmation: { pollIntervalMs: 1, timeoutMs: 20 },
                 signer: merchant,
                 store,
             });
@@ -1501,20 +1579,36 @@ describe('session() verify() close retry', () => {
         const pending = await durableStore.getChannel(channelId);
         expect(pending?.settlementPendingSignature).toBeDefined();
         expect(pending?.settlementPendingWire).toBeDefined();
+        expect(pending?.settlementPendingLastValidBlockHeight).toBe(100n);
         expect(sends).toHaveLength(0);
         expect(blockhashCalls).toBe(1);
 
         const restartedMethod = createMethod(durableStore);
+        phase = 'expired';
+        await expect(
+            restartedMethod.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/timed out/);
+        expect(sends).toEqual([pending?.settlementPendingWire]);
+        const recovered = await durableStore.getChannel(channelId);
+        expect(recovered?.sealed).toBe(false);
+        expect(recovered?.settlementPendingLastValidBlockHeight).toBeUndefined();
+        expect(recovered?.settlementPendingSignature).toBeUndefined();
+        expect(recovered?.settlementPendingWire).toBeUndefined();
+
+        phase = 'fresh';
         const receipt = await restartedMethod.verify({
             credential: makeCred({ action: 'close', channelId }),
             request: {} as never,
         });
         expect(receipt.status).toBe('success');
-        expect(sends).toEqual([pending?.settlementPendingWire]);
-        expect(blockhashCalls).toBe(1);
+        expect(sends).toHaveLength(2);
+        expect(sends[0]).toBe(pending?.settlementPendingWire);
+        expect(sends[1]).not.toBe(pending?.settlementPendingWire);
+        expect(blockhashCalls).toBe(2);
         const sealed = await durableStore.getChannel(channelId);
         expect(sealed?.sealed).toBe(true);
-        expect(sealed?.settledSignature).toBe(pending?.settlementPendingSignature);
+        expect(sealed?.settledSignature).toBe(signedWireSignature(sends[1]!));
+        expect(sealed?.settlementPendingLastValidBlockHeight).toBeUndefined();
         expect(sealed?.settlementPendingSignature).toBeUndefined();
         expect(sealed?.settlementPendingWire).toBeUndefined();
     });

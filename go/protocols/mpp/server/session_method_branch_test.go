@@ -375,7 +375,7 @@ func TestCloseAndSettleChannelFailureMatrix(t *testing.T) {
 	}
 }
 
-func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
+func TestSessionIdleCloseConfirmsDespiteSendError(t *testing.T) {
 	fake := &countingBlockhashRPC{FakeRPC: testutil.NewFakeRPC()}
 	fake.SendErr = errors.New("blockhash not found")
 	merchant := testutil.NewPrivateKey()
@@ -387,22 +387,22 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 	_, channelID := openTrustedChannel(t, session, 1_000)
 	baseline := fake.calls()
 
-	// The watchdog fires and submission returns an uncertain error. The signed
-	// signature remains pending for confirmation by a later retry.
+	// The watchdog's submission returns an error, but the persisted signature
+	// is reported confirmed. The send error must not prevent reconciliation.
 	deadline := time.Now().Add(3 * time.Second)
 	var state *ChannelState
 	for {
 		state = mustGetChannel(t, session, channelID)
-		if fake.calls() > baseline && state.SettledSignature != nil && state.SettlementWire != "" {
+		if fake.calls() > baseline && state.Sealed && state.SettledSignature != nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("idle-close watchdog never persisted its outbox: %+v", state)
+			t.Fatalf("idle-close watchdog never reconciled confirmed signature: %+v", state)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if state.Sealed || !state.Settling || state.SettledSignature == nil || state.SettlementWire == "" {
-		t.Fatalf("failed settle mutated state: %+v", state)
+	if !state.Sealed || state.Settling || state.SettledSignature == nil || state.SettlementWire != "" {
+		t.Fatalf("send-error confirmation state: %+v", state)
 	}
 }
 

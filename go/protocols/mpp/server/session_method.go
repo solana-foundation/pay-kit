@@ -938,6 +938,19 @@ type definiteSettlementFailure struct {
 	detail any
 }
 
+type expiredSettlementOutbox struct {
+	currentBlockHeight uint64
+	lastValidHeight    uint64
+}
+
+func (e *expiredSettlementOutbox) Error() string {
+	return fmt.Sprintf("settlement transaction expired at block height %d (current %d)", e.lastValidHeight, e.currentBlockHeight)
+}
+
+type settlementBlockHeightRPC interface {
+	GetBlockHeight(context.Context, rpc.CommitmentType) (uint64, error)
+}
+
 func (e *definiteSettlementFailure) Error() string {
 	return fmt.Sprintf("settlement transaction failed on-chain: %v", e.detail)
 }
@@ -954,11 +967,12 @@ func newSettlementClaimOwner() (string, error) {
 	return hex.EncodeToString(token[:]), nil
 }
 
-func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCClient, signature solana.Signature) error {
+func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCClient, signature solana.Signature, lastValidBlockHeight uint64) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		out, err := rpcClient.GetSignatureStatuses(ctx, true, signature)
+		notFound := err == nil && (out == nil || len(out.Value) == 0 || out.Value[0] == nil)
 		if err == nil && out != nil && len(out.Value) > 0 && out.Value[0] != nil {
 			status := out.Value[0]
 			if status.Err != nil {
@@ -967,6 +981,17 @@ func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCCl
 			if status.ConfirmationStatus == rpc.ConfirmationStatusConfirmed ||
 				status.ConfirmationStatus == rpc.ConfirmationStatusFinalized || status.Confirmations == nil {
 				return nil
+			}
+		}
+		if notFound && lastValidBlockHeight != 0 {
+			if blockHeightRPC, ok := rpcClient.(settlementBlockHeightRPC); ok {
+				currentBlockHeight, heightErr := blockHeightRPC.GetBlockHeight(ctx, rpc.CommitmentConfirmed)
+				if heightErr == nil && currentBlockHeight > lastValidBlockHeight {
+					return &expiredSettlementOutbox{
+						currentBlockHeight: currentBlockHeight,
+						lastValidHeight:    lastValidBlockHeight,
+					}
+				}
 			}
 		}
 		select {
@@ -980,9 +1005,10 @@ func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCCl
 // closeAndSettleChannel atomically claims a channel, builds settle_and_seal
 // (+ the Ed25519 precompile when a voucher was accepted) + distribute,
 // submits them as one merchant-signed transaction, waits for confirmation,
-// and only then seals the channel with the settled signature. A failed attempt
-// releases its claim so close remains re-drivable. Returns "" when the channel
-// does not exist or another caller currently owns the settlement claim.
+// and only then seals the channel with the settled signature. Definitive
+// failures clear the attempt; uncertain outcomes preserve the outbox for
+// exact-wire retry. Returns "" when the channel does not exist or another
+// caller currently owns a fresh signature-less settlement claim.
 func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (string, error) {
 	claimOwner, err := newSettlementClaimOwner()
 	if err != nil {
@@ -1043,6 +1069,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			if clearOutbox {
 				next.SettledSignature = nil
 				next.SettlementWire = ""
+				next.SettlementLastValidBlockHeight = 0
 			}
 			return next, nil
 		})
@@ -1055,6 +1082,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 	merchant := s.signer.PublicKey()
 	var signature solana.Signature
 	var settlementTx *solana.Transaction
+	lastValidBlockHeight := state.SettlementLastValidBlockHeight
 	if state.SettlementWire != "" && state.SettledSignature == nil {
 		return clearAttempt(errors.New("stored settlement wire has no signature"), true)
 	}
@@ -1106,6 +1134,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		if err != nil {
 			return clearAttempt(fmt.Errorf("encode signed settlement transaction: %w", err), true)
 		}
+		lastValidBlockHeight = blockhash.Value.LastValidBlockHeight
 		writeCtx, cancel := settlementStateContext(ctx)
 		stored, persistErr := s.core.store.UpdateChannel(writeCtx, channelID, func(current *ChannelState) (ChannelState, error) {
 			if current == nil {
@@ -1123,6 +1152,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			next := *current
 			next.SettledSignature = &settled
 			next.SettlementWire = wire
+			next.SettlementLastValidBlockHeight = lastValidBlockHeight
 			return next, nil
 		})
 		cancel()
@@ -1139,22 +1169,29 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		}
 	}
 
+	var sendErr error
 	if settlementTx != nil {
-		sentSignature, sendErr := solanatx.SendTransaction(ctx, s.rpc, settlementTx)
-		if sendErr != nil {
-			return "", core.WrapError(core.ErrCodeRPC, "send settlement transaction", sendErr)
-		}
-		if sentSignature != signature {
-			return "", fmt.Errorf("broadcast settlement signature %s != signed signature %s", sentSignature, signature)
+		var sentSignature solana.Signature
+		sentSignature, sendErr = solanatx.SendTransaction(ctx, s.rpc, settlementTx)
+		if sendErr == nil && sentSignature != signature {
+			sendErr = fmt.Errorf("broadcast settlement signature %s != signed signature %s", sentSignature, signature)
 		}
 	}
 
-	if err := waitForSettlementConfirmation(ctx, s.rpc, signature); err != nil {
+	if err := waitForSettlementConfirmation(ctx, s.rpc, signature, lastValidBlockHeight); err != nil {
 		var definite *definiteSettlementFailure
 		if errors.As(err, &definite) {
 			return clearAttempt(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err), true)
 		}
-		return "", core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err)
+		var expired *expiredSettlementOutbox
+		if errors.As(err, &expired) {
+			return clearAttempt(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err), true)
+		}
+		confirmationErr := core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err)
+		if sendErr != nil {
+			return "", errors.Join(core.WrapError(core.ErrCodeRPC, "send settlement transaction", sendErr), confirmationErr)
+		}
+		return "", confirmationErr
 	}
 
 	settled := signature.String()
@@ -1174,6 +1211,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		next.Sealed = true
 		next.SettledSignature = &settled
 		next.SettlementWire = ""
+		next.SettlementLastValidBlockHeight = 0
 		next.Settling = false
 		next.SettlementClaimOwner = ""
 		next.SettlementClaimedAt = 0

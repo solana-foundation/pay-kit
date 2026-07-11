@@ -1157,23 +1157,26 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("voucher: %v", err)
 	}
 
-	// Submission fails after the signed signature was persisted. The outcome
-	// is uncertain, so a retry must confirm that signature before rebuilding.
-	fake.SendErr = fmt.Errorf("blockhash not found")
-	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err == nil ||
-		!strings.Contains(err.Error(), "blockhash not found") {
+	// Submission fails before reaching the network and the signature remains
+	// not found within its validity window. The exact outbox stays uncertain.
+	crashRPC := &crashBeforeSendRPC{FakeRPC: fake}
+	session.rpc = crashRPC
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := session.handleClose(ctx, &intents.ClosePayload{ChannelID: channelID}); err == nil ||
+		!strings.Contains(err.Error(), "simulated process crash") {
 		t.Fatalf("settlement failure error = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
 	if state.CloseRequestedAt == nil || state.Sealed || !state.Settling || state.SettledSignature == nil || state.SettlementWire == "" {
 		t.Fatalf("state after failed settle = %+v", state)
 	}
-	pendingSignature := *state.SettledSignature
 
-	// A definite failed status clears the pending signature without another
-	// broadcast, allowing a later retry to build a fresh transaction.
-	fake.SendErr = nil
-	fake.Statuses[pendingSignature] = &rpc.SignatureStatusesResult{Err: "dropped"}
+	// A retry idempotently submits the same wire. A definite failed status then
+	// clears the outbox, allowing a later retry to build a fresh transaction.
+	failureRPC := &definiteFailureRPC{FakeRPC: fake}
+	failureRPC.fail.Store(true)
+	session.rpc = failureRPC
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID})); err == nil ||
 		!strings.Contains(err.Error(), "failed on-chain") {
 		t.Fatalf("pending settlement failure = %v", err)
@@ -1183,8 +1186,7 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		state.SettlementClaimOwner != "" || state.SettlementClaimedAt != 0 {
 		t.Fatalf("state after definite pending failure = %+v", state)
 	}
-	delete(fake.Statuses, pendingSignature)
-
+	failureRPC.fail.Store(false)
 	receipt, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{ChannelID: channelID}))
 	if err != nil {
 		t.Fatalf("close retry: %v", err)

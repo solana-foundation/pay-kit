@@ -120,6 +120,11 @@ type ChannelState struct {
 	// these exact bytes, preserving the transaction signature.
 	SettlementWire string `json:"settlement_wire,omitempty"`
 
+	// SettlementLastValidBlockHeight is the block-height validity ceiling from
+	// the blockhash used by SettlementWire. A not-found signature is retired
+	// only after the current block height is proven greater than this value.
+	SettlementLastValidBlockHeight uint64 `json:"settlement_last_valid_block_height,omitempty"`
+
 	// Settling is the durable in-flight claim acquired atomically before this
 	// server builds a settlement transaction. A fresh signature-less claim
 	// blocks competing builds; once the exact wire is persisted, other servers
@@ -127,8 +132,8 @@ type ChannelState struct {
 	Settling bool `json:"settling,omitempty"`
 
 	// SettlementClaimOwner identifies the settlement attempt that currently
-	// owns a signature-less claim. Release operations compare this token so an
-	// older attempt cannot clear a claim taken over by another server.
+	// owns the claim. Release operations compare this token so an older attempt
+	// cannot clear a claim taken over by another server.
 	SettlementClaimOwner string `json:"settlement_claim_owner,omitempty"`
 
 	// SettlementClaimedAt is the Unix timestamp when the current claim was
@@ -414,6 +419,7 @@ func (s *MemoryChannelStore) MarkSealed(ctx context.Context, channelID string) (
 		next := *current
 		next.Sealed = true
 		next.SettlementWire = ""
+		next.SettlementLastValidBlockHeight = 0
 		next.Settling = false
 		next.SettlementClaimOwner = ""
 		next.SettlementClaimedAt = 0
