@@ -1315,6 +1315,63 @@ describe('session() verify() close monotonicity', () => {
 // ── verify() — close retry after a failed settlement ────────────────────
 
 describe('session() verify() close retry', () => {
+    test('settlement fails clearly before outbox creation when getBlockHeight is unavailable', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 100n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
+            }),
+            sendTransaction: () => ({ send: async () => 'unused' }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        await method.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                payer: signer.address,
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+
+        await expect(
+            method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/requires rpc\.getBlockHeight/);
+        const state = await store.getChannel(channelId);
+        expect(state?.settling).toBeUndefined();
+        expect(state?.settlementClaimOwner).toBeUndefined();
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settlementPendingWire).toBeUndefined();
+    });
+
     test('an uncertain confirmation retries by rebroadcasting the persisted wire', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
@@ -1325,6 +1382,7 @@ describe('session() verify() close retry', () => {
         let settlementStatusCalls = 0;
         const sends: string[] = [];
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: {
@@ -1428,6 +1486,7 @@ describe('session() verify() close retry', () => {
         const channelId = '11111111111111111111111111111111';
         const sends: string[] = [];
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: {
@@ -1622,6 +1681,7 @@ describe('session() verify() close retry', () => {
         let retrySignature: string | undefined;
         const sends: string[] = [];
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: {
@@ -1703,6 +1763,7 @@ describe('session() verify() close retry', () => {
         const pendingSignature = 'PendingSig1111111111111111111111111111111111111111111111111111111';
         const sends: string[] = [];
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: {
@@ -1807,6 +1868,7 @@ describe('session() verify() close retry', () => {
             secondStatusRequested = resolve;
         });
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: {
@@ -1905,6 +1967,7 @@ describe('session() verify() close retry', () => {
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N', lastValidBlockHeight: 0n },

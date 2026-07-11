@@ -38,6 +38,14 @@ import (
 // transaction.
 type OpenTxSubmitter string
 
+// SettlementRPC is the additional RPC capability required when a Session is
+// configured to settle merchant-signed payment channels. Keeping this separate
+// from solanatx.RPCClient avoids breaking verification-only RPC consumers.
+type SettlementRPC interface {
+	solanatx.RPCClient
+	GetBlockHeight(context.Context, rpc.CommitmentType) (uint64, error)
+}
+
 const (
 	// OpenTxSubmitterClient means the client broadcasts the open transaction
 	// itself and the server only verifies it. Default.
@@ -121,8 +129,9 @@ type SessionOptions struct {
 	AllowUnsafeEphemeralStoreOffLocalnet bool
 
 	// RPC is the optional RPC client used for on-chain checks, the
-	// recentBlockhash prefetch, and settlement broadcasts. Nil skips every
-	// on-chain check and trusts payload claims as provided.
+	// recentBlockhash prefetch, and settlement broadcasts. When Signer is also
+	// set, RPC must implement SettlementRPC. Nil skips every on-chain check and
+	// trusts payload claims as provided.
 	RPC solanatx.RPCClient
 }
 
@@ -236,6 +245,13 @@ func NewSession(options SessionOptions) (*Session, error) {
 	if options.Network != "localnet" && !options.AllowUnsafeEphemeralStoreOffLocalnet && !isDurableSharedSessionStore(store) {
 		return nil, core.NewError(core.ErrCodeInvalidConfig,
 			sessionStoreSafetyMessage(store))
+	}
+	if options.Signer != nil && options.RPC != nil {
+		_, ok := options.RPC.(SettlementRPC)
+		if !ok {
+			return nil, core.NewError(core.ErrCodeInvalidConfig,
+				"session settlement RPC must implement GetBlockHeight")
+		}
 	}
 
 	config := SessionConfig{
@@ -947,10 +963,6 @@ func (e *expiredSettlementOutbox) Error() string {
 	return fmt.Sprintf("settlement transaction expired at block height %d (current %d)", e.lastValidHeight, e.currentBlockHeight)
 }
 
-type settlementBlockHeightRPC interface {
-	GetBlockHeight(context.Context, rpc.CommitmentType) (uint64, error)
-}
-
 func (e *definiteSettlementFailure) Error() string {
 	return fmt.Sprintf("settlement transaction failed on-chain: %v", e.detail)
 }
@@ -967,7 +979,7 @@ func newSettlementClaimOwner() (string, error) {
 	return hex.EncodeToString(token[:]), nil
 }
 
-func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCClient, signature solana.Signature, lastValidBlockHeight uint64) error {
+func waitForSettlementConfirmation(ctx context.Context, rpcClient SettlementRPC, signature solana.Signature, lastValidBlockHeight uint64) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -984,13 +996,11 @@ func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCCl
 			}
 		}
 		if notFound && lastValidBlockHeight != 0 {
-			if blockHeightRPC, ok := rpcClient.(settlementBlockHeightRPC); ok {
-				currentBlockHeight, heightErr := blockHeightRPC.GetBlockHeight(ctx, rpc.CommitmentConfirmed)
-				if heightErr == nil && currentBlockHeight > lastValidBlockHeight {
-					return &expiredSettlementOutbox{
-						currentBlockHeight: currentBlockHeight,
-						lastValidHeight:    lastValidBlockHeight,
-					}
+			currentBlockHeight, heightErr := rpcClient.GetBlockHeight(ctx, rpc.CommitmentConfirmed)
+			if heightErr == nil && currentBlockHeight > lastValidBlockHeight {
+				return &expiredSettlementOutbox{
+					currentBlockHeight: currentBlockHeight,
+					lastValidHeight:    lastValidBlockHeight,
 				}
 			}
 		}
@@ -1010,6 +1020,11 @@ func waitForSettlementConfirmation(ctx context.Context, rpcClient solanatx.RPCCl
 // exact-wire retry. Returns "" when the channel does not exist or another
 // caller currently owns a fresh signature-less settlement claim.
 func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (string, error) {
+	settlementRPC, ok := s.rpc.(SettlementRPC)
+	if !ok {
+		return "", core.NewError(core.ErrCodeInvalidConfig,
+			"session settlement requires an RPC implementing GetBlockHeight")
+	}
 	claimOwner, err := newSettlementClaimOwner()
 	if err != nil {
 		return "", err
@@ -1110,7 +1125,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		if err != nil {
 			return clearAttempt(err, true)
 		}
-		blockhash, err := s.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
+		blockhash, err := settlementRPC.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 		if err != nil {
 			return clearAttempt(core.WrapError(core.ErrCodeRPC, "fetch settlement blockhash", err), true)
 		}
@@ -1172,13 +1187,13 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 	var sendErr error
 	if settlementTx != nil {
 		var sentSignature solana.Signature
-		sentSignature, sendErr = solanatx.SendTransaction(ctx, s.rpc, settlementTx)
+		sentSignature, sendErr = solanatx.SendTransaction(ctx, settlementRPC, settlementTx)
 		if sendErr == nil && sentSignature != signature {
 			sendErr = fmt.Errorf("broadcast settlement signature %s != signed signature %s", sentSignature, signature)
 		}
 	}
 
-	if err := waitForSettlementConfirmation(ctx, s.rpc, signature, lastValidBlockHeight); err != nil {
+	if err := waitForSettlementConfirmation(ctx, settlementRPC, signature, lastValidBlockHeight); err != nil {
 		var definite *definiteSettlementFailure
 		if errors.As(err, &definite) {
 			return clearAttempt(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err), true)

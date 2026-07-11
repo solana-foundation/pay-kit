@@ -1251,6 +1251,7 @@ interface CloseAndSettleArgs {
 async function closeAndSettleChannel(
     args: CloseAndSettleArgs,
 ): Promise<Pick<SubmitSettleAndDistributeResult, 'signature'> | undefined> {
+    requireSettlementRpc(args.rpc);
     const claimOwner = crypto.randomUUID();
     const claimNow = BigInt(Date.now());
     let claimed = false;
@@ -1411,14 +1412,11 @@ async function closeAndSettleChannel(
             error.reason === 'timeout' &&
             pendingLastValidBlockHeight !== undefined
         ) {
-            const getBlockHeight = (args.rpc as unknown as { getBlockHeight?: () => { send(): Promise<bigint> } })
-                .getBlockHeight;
-            if (getBlockHeight) {
-                try {
-                    expired = (await getBlockHeight.call(args.rpc).send()) > pendingLastValidBlockHeight;
-                } catch {
-                    // Failure to prove expiry is uncertainty; retain the outbox.
-                }
+            try {
+                const blockHeight = await args.rpc.getBlockHeight({ commitment: 'confirmed' }).send();
+                expired = BigInt(blockHeight) > pendingLastValidBlockHeight;
+            } catch {
+                // Failure to prove expiry is uncertainty; retain the outbox.
             }
         }
         const retireOutbox = definiteFailure || expired;
@@ -1513,6 +1511,12 @@ function isTopUpTransactionRpc(rpc: RpcLike | undefined): rpc is RpcLike & TopUp
     return typeof (rpc as { getTransaction?: unknown } | undefined)?.getTransaction === 'function';
 }
 
+function requireSettlementRpc(rpc: RpcLike): asserts rpc is SettlementRpc {
+    if (typeof (rpc as { getBlockHeight?: unknown }).getBlockHeight !== 'function') {
+        throw new Error('session settlement requires rpc.getBlockHeight() for outbox expiry recovery');
+    }
+}
+
 function isPlaceholderSignature(signature: string | undefined): boolean {
     return !signature || /^1+$/.test(signature);
 }
@@ -1576,6 +1580,13 @@ export type VerifyOpenRpc = {
 /** Minimal RPC subset used to verify and submit open transactions. */
 export type SubmitOpenRpc = VerifyOpenRpc & {
     sendTransaction(wire: string, config?: unknown): { send(): Promise<Signature> };
+};
+
+/** RPC contract required before a session settlement outbox may be created. */
+export type SettlementRpc = RpcLike & {
+    getBlockHeight(config?: { commitment?: 'confirmed' | 'finalized' | 'processed' }): {
+        send(): Promise<bigint | number>;
+    };
 };
 
 type CredentialPayload = {

@@ -33,6 +33,8 @@ type FakeRPC struct {
 	mu sync.Mutex
 
 	Blockhash           solana.Hash
+	BlockHeight         uint64
+	BlockHeightErr      error
 	MintOwners          map[string]solana.PublicKey
 	Accounts            map[string]*rpc.Account
 	Statuses            map[string]*rpc.SignatureStatusesResult
@@ -94,6 +96,14 @@ func (f *FakeRPC) GetLatestBlockhash(_ context.Context, _ rpc.CommitmentType) (*
 	return &rpc.GetLatestBlockhashResult{
 		Value: &rpc.LatestBlockhashResult{Blockhash: f.Blockhash},
 	}, nil
+}
+
+// GetBlockHeight returns the canned block height or configured error.
+func (f *FakeRPC) GetBlockHeight(_ context.Context, _ rpc.CommitmentType) (uint64, error) {
+	if f.BlockHeightErr != nil {
+		return 0, f.BlockHeightErr
+	}
+	return f.BlockHeight, nil
 }
 
 // GetSignatureStatuses returns the canned per-signature status, falling

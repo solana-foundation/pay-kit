@@ -33,6 +33,12 @@ import (
 
 const sessionMethodSecret = "session-method-secret"
 
+type rpcWithoutBlockHeight struct {
+	solanatx.RPCClient
+}
+
+var _ SettlementRPC = (*testutil.FakeRPC)(nil)
+
 // confirmedSignature returns a base58 signature string registered as
 // confirmed on the fake RPC.
 func confirmedSignature(fill byte) string {
@@ -348,6 +354,24 @@ func TestNewSessionValidation(t *testing.T) {
 	if _, err := NewSession(noSecret); err == nil || !strings.Contains(err.Error(), "missing secret key") {
 		t.Fatalf("missing secret error = %v", err)
 	}
+
+	legacyRPC := &rpcWithoutBlockHeight{RPCClient: testutil.NewFakeRPC()}
+	unsupportedSettlement := base()
+	unsupportedSettlement.Network = "localnet"
+	unsupportedSettlement.Signer = testutil.NewPrivateKey()
+	unsupportedSettlement.RPC = legacyRPC
+	if _, err := NewSession(unsupportedSettlement); err == nil || !strings.Contains(err.Error(), "GetBlockHeight") {
+		t.Fatalf("settlement RPC capability error = %v", err)
+	}
+
+	verificationOnly := base()
+	verificationOnly.Network = "localnet"
+	verificationOnly.RPC = legacyRPC
+	session, err := NewSession(verificationOnly)
+	if err != nil {
+		t.Fatalf("verification-only legacy RPC: %v", err)
+	}
+	session.Shutdown()
 }
 
 func TestNewSessionDefaults(t *testing.T) {
