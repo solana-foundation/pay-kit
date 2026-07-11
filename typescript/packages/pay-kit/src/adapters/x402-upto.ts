@@ -48,13 +48,19 @@ export class Charge {
         this.maxBaseUnits = maxBaseUnits;
     }
 
-    /** Record the actual amount consumed (base units). Values above the ceiling are clamped; negatives floor to 0. */
+    /** Record the actual amount consumed (base units). Invalid negative values and overages reject at settlement. */
     charge(baseUnits: bigint | number): void {
         const value = typeof baseUnits === 'bigint' ? baseUnits : BigInt(Math.trunc(baseUnits));
-        this.#amount = value < 0n ? 0n : value > this.maxBaseUnits ? this.maxBaseUnits : value;
+        if (value < 0n) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_settlement_negative_amount',
+                `settlement amount ${value} must be non-negative`,
+            );
+        }
+        this.#amount = value;
     }
 
-    /** The amount to settle (base units): the clamped charge, or `0` if never set. */
+    /** The amount to settle (base units): the recorded charge, or `0` if never set. */
     settledBaseUnits(): bigint {
         return this.#amount ?? 0n;
     }
@@ -174,13 +180,25 @@ export class X402Upto {
     }
 
     /**
-     * Settle the metered amount (`actualBaseUnits`, clamped to the ceiling) against
-     * a verified open: receiver-authorizer voucher, settle-and-seal, refund the remainder.
+     * Settle the metered amount (`actualBaseUnits`) against a verified open:
+     * receiver-authorizer voucher, settle-and-seal, refunding the remainder.
      *
-     * @throws {InvalidProofError} when settlement fails.
+     * @throws {InvalidProofError} when the meter exceeds its authorized ceiling or settlement fails.
      */
     async settle(verified: UptoVerified, actualBaseUnits: bigint): Promise<UptoSettlement> {
-        const actual = actualBaseUnits > verified.maxBaseUnits ? verified.maxBaseUnits : actualBaseUnits;
+        if (actualBaseUnits < 0n) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_settlement_negative_amount',
+                `settlement amount ${actualBaseUnits} must be non-negative`,
+            );
+        }
+        if (actualBaseUnits > verified.maxBaseUnits) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_settlement_exceeds_amount',
+                `settlement amount ${actualBaseUnits} exceeds authorized ceiling ${verified.maxBaseUnits}`,
+            );
+        }
+        const actual = actualBaseUnits;
         const payload = parseUptoPayload(verified.payload);
         const rpc = createSolanaRpc(this.#rpcUrl);
         const confirmRpc = rpc as unknown as SettlementConfirmRpc;

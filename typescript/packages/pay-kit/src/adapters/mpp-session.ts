@@ -8,11 +8,11 @@
  *
  * pay-kit does NOT auto-mount the side-channel routes (mppx-consistent): the
  * instance exposes `handler` / `deliveries` / `commit` / `receipt` and the app
- * mounts them. All four share one in-memory session store per gate.
+ * mounts them. All four share the configured session store per gate.
  */
 import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
-import { createMemorySessionStore, Mppx, session } from '@solana/mpp/server';
+import { createMemorySessionStore, Mppx, session, type SessionStore } from '@solana/mpp/server';
 
 import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
@@ -47,9 +47,9 @@ export type SessionEngine = {
 };
 
 /**
- * Build the session engine for a `session` gate. One in-memory store is shared
- * across the gated handler and the side-channel routes so the receipt poll can
- * read whichever channel a request opened.
+ * Build the session engine for a `session` gate. One store is shared across the
+ * gated handler and the side-channel routes so the receipt poll can read
+ * whichever channel a request opened.
  */
 export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEngine {
     if (!gate.session) {
@@ -65,7 +65,7 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
     const mint = requireMint(coin, resolveStablecoinMint(coin, network), config.network);
 
     const signer = config.operator.signer.signer;
-    const store = createMemorySessionStore();
+    const store = resolveSessionStore(config);
     const params = {
         cap: gate.amount.baseUnits(),
         ...(gate.session.closeDelayMs !== undefined ? { closeDelayMs: gate.session.closeDelayMs } : {}),
@@ -113,4 +113,15 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
             };
         },
     };
+}
+
+function resolveSessionStore(config: PayKitConfig): SessionStore {
+    if (config.mpp.sessionStore) return config.mpp.sessionStore;
+    if (config.network === 'solana_localnet' || process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE === '1') {
+        return createMemorySessionStore();
+    }
+    throw new ConfigurationError(
+        'mpp.sessionStore is required outside localnet; provide a durable shared store or set ' +
+            'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 for an explicit in-memory override.',
+    );
 }
