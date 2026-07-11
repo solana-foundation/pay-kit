@@ -542,7 +542,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, 
 	openSlot := openSlotFromPayload(payload)
 	var salt uint64
 	var openSignature string
-	var verifiedOpen *VerifyOpenTxResult
+	var verifiedOpen VerifyOpenTxResult
 
 	switch {
 	case hasTransaction:
@@ -589,7 +589,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, 
 				salt = preVerified.Salt
 				signature = existing.OpenSignature
 				openSignature = existing.OpenSignature
-				verifiedOpen = &preVerified
+				verifiedOpen = preVerified
 			} else {
 				submitted, err := SubmitOpenTx(ctx, expected, payload, s.payerSigner, s.rpc)
 				if err != nil {
@@ -602,7 +602,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, 
 				salt = submitted.Salt
 				signature = submitted.Signature
 				openSignature = submitted.Signature
-				verifiedOpen = &submitted.VerifyOpenTxResult
+				verifiedOpen = submitted.VerifyOpenTxResult
 			}
 		} else {
 			verified, err := VerifyOpenTx(ctx, expected, payload, s.rpc)
@@ -612,7 +612,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, 
 			if err := validateAssertedOpenDeposit(payload, verified.Deposit); err != nil {
 				return "", err
 			}
-			verifiedOpen = &verified
+			verifiedOpen = verified
 			channelID = verified.ChannelID
 			deposit = verified.Deposit
 			channelPayer = verified.Payer
@@ -649,10 +649,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, 
 			if err != nil {
 				return "", err
 			}
-			if verifiedOpen != nil {
-				if err := validateBoundOpenChannel(bound, verifiedOpen, s.cap); err != nil {
-					return "", err
-				}
+			if err := validateBoundOpenChannel(bound, &verifiedOpen, s.cap); err != nil {
+				return "", err
 			}
 			if err := validateAssertedOpenDeposit(payload, bound.Deposit); err != nil {
 				return "", err
