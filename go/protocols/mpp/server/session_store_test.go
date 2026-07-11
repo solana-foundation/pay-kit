@@ -300,3 +300,27 @@ func TestChannelStateRejectsLegacyFinalizedRecord(t *testing.T) {
 		t.Fatalf("current record decoded incorrectly: %+v", state)
 	}
 }
+
+func TestChannelStatePersistsSettlementClaimAndPendingSignature(t *testing.T) {
+	signature := "pending-settlement-signature"
+	state := testChannelState("c1", 1_000)
+	state.Settling = true
+	state.SettledSignature = &signature
+
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal channel state: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"settling":true`) ||
+		!strings.Contains(string(encoded), `"settled_signature":"pending-settlement-signature"`) {
+		t.Fatalf("serialized settlement state = %s", encoded)
+	}
+
+	var decoded ChannelState
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal channel state: %v", err)
+	}
+	if !decoded.Settling || decoded.SettledSignature == nil || *decoded.SettledSignature != signature {
+		t.Fatalf("decoded settlement state = %+v", decoded)
+	}
+}

@@ -80,6 +80,31 @@ describe('createMemorySessionStore', () => {
         expect((await store.getChannel('c1'))?.cumulative).toBe(50n);
     });
 
+    test('updateChannel grants one concurrent settlement claim and preserves its pending signature', async () => {
+        const store = createMemorySessionStore();
+        await store.updateChannel('c1', () => makeState({ channelId: 'c1' }));
+        let claims = 0;
+
+        await Promise.all(
+            Array.from({ length: 20 }, () =>
+                store.updateChannel('c1', current => {
+                    if (current?.settling) return current;
+                    claims += 1;
+                    return { ...current!, settling: true };
+                }),
+            ),
+        );
+        expect(claims).toBe(1);
+
+        const pending = await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementPendingSignature: 'settle-signature',
+            settling: false,
+        }));
+        expect(pending.settlementPendingSignature).toBe('settle-signature');
+        expect(pending.settling).toBe(false);
+    });
+
     test('updateChannel error does not poison subsequent updates', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('c1', () => makeState({ channelId: 'c1', cumulative: 7n }));

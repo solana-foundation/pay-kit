@@ -104,22 +104,21 @@ type ChannelState struct {
 	// was requested. Once set, no further vouchers are accepted.
 	CloseRequestedAt *uint64 `json:"close_requested_at"`
 
-	// SettledSignature is the signature (base58) of the broadcast
-	// settle-and-distribute transaction. A close-pending channel with no
-	// settled signature is re-drivable: a close retry may attempt settlement
-	// again.
+	// SettledSignature is the signature (base58) of the submitted
+	// settle-and-distribute transaction. It is persisted immediately after
+	// broadcast, before confirmation. When Sealed is false, retries confirm
+	// this same transaction instead of broadcasting another settlement.
 	//
 	// An extension beyond the core channel-state shape, recorded only when
 	// this server drives on-chain settlement. Serialized with omitempty so a
 	// channel state without a settlement round-trips cleanly.
 	SettledSignature *string `json:"settled_signature,omitempty"`
 
-	// Settling is a transient in-flight claim acquired atomically before this
-	// server builds or broadcasts a settlement transaction. It prevents an
-	// explicit close and the idle-close watchdog from both broadcasting for
-	// the same channel. It is cleared after a failed attempt or by the seal
-	// write after confirmation, and is intentionally not serialized.
-	Settling bool `json:"-"`
+	// Settling is the durable in-flight claim acquired atomically before this
+	// server builds, broadcasts, or confirms a settlement transaction. It
+	// prevents server instances sharing a store from duplicating broadcasts.
+	// It is persisted so independent store clients observe the same claim.
+	Settling bool `json:"settling,omitempty"`
 
 	// Operator is the client wallet pubkey (base58) for pull-mode sessions;
 	// nil for push sessions.

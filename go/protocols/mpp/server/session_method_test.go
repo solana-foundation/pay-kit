@@ -1781,6 +1781,33 @@ type blockingConfirmationRPC struct {
 	block         atomic.Bool
 }
 
+type definiteFailureRPC struct {
+	*testutil.FakeRPC
+	fail atomic.Bool
+}
+
+func (d *definiteFailureRPC) GetSignatureStatuses(ctx context.Context, searchHistory bool, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	if d.fail.Load() {
+		return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{{
+			Err: map[string]any{"InstructionError": []any{0, "Custom"}},
+		}}}, nil
+	}
+	return d.FakeRPC.GetSignatureStatuses(ctx, searchHistory, signatures...)
+}
+
+type cancelOnConfirmationRPC struct {
+	*testutil.FakeRPC
+	cancel context.CancelFunc
+	armed  atomic.Bool
+}
+
+func (c *cancelOnConfirmationRPC) GetSignatureStatuses(ctx context.Context, searchHistory bool, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	if c.armed.Load() {
+		c.cancel()
+	}
+	return c.FakeRPC.GetSignatureStatuses(ctx, searchHistory, signatures...)
+}
+
 func (b *blockingConfirmationRPC) GetSignatureStatuses(ctx context.Context, searchHistory bool, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
 	if !b.block.Load() {
 		return b.FakeRPC.GetSignatureStatuses(ctx, searchHistory, signatures...)
@@ -1898,9 +1925,10 @@ func TestSettlementConfirmationFailureReleasesClaimForRetry(t *testing.T) {
 		t.Fatalf("confirmation failure = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || state.Settling || state.SettledSignature != nil {
+	if state.Sealed || state.Settling || state.SettledSignature == nil {
 		t.Fatalf("failed confirmation left channel non-retryable: %+v", state)
 	}
+	pendingSignature := *state.SettledSignature
 
 	healthyRPC := testutil.NewFakeRPC()
 	session.rpc = healthyRPC
@@ -1908,12 +1936,73 @@ func TestSettlementConfirmationFailureReleasesClaimForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settlement retry: %v", err)
 	}
-	if settled == "" || len(healthyRPC.Sent) != 1 {
+	if settled != pendingSignature || len(healthyRPC.Sent) != 0 {
 		t.Fatalf("settlement retry = %q with %d broadcasts", settled, len(healthyRPC.Sent))
 	}
 	state = mustGetChannel(t, session, channelID)
 	if !state.Sealed || state.Settling || state.SettledSignature == nil {
 		t.Fatalf("state after settlement retry = %+v", state)
+	}
+}
+
+func TestDefiniteSettlementFailureClearsSignatureForRetry(t *testing.T) {
+	baseRPC := testutil.NewFakeRPC()
+	rpcClient := &definiteFailureRPC{FakeRPC: baseRPC}
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, session, 1_000)
+	session.rpc = rpcClient
+	rpcClient.fail.Store(true)
+
+	if _, err := session.closeAndSettleChannel(context.Background(), channelID); err == nil ||
+		!strings.Contains(err.Error(), "failed on-chain") {
+		t.Fatalf("definite settlement failure = %v", err)
+	}
+	state := mustGetChannel(t, session, channelID)
+	if state.Sealed || state.Settling || state.SettledSignature != nil {
+		t.Fatalf("definite failure did not clear settlement state: %+v", state)
+	}
+	if len(baseRPC.Sent) != 1 {
+		t.Fatalf("broadcasts after definite failure = %d, want 1", len(baseRPC.Sent))
+	}
+
+	rpcClient.fail.Store(false)
+	if _, err := session.closeAndSettleChannel(context.Background(), channelID); err != nil {
+		t.Fatalf("retry after definite failure: %v", err)
+	}
+	if len(baseRPC.Sent) != 2 {
+		t.Fatalf("broadcasts after safe retry = %d, want 2", len(baseRPC.Sent))
+	}
+}
+
+func TestConfirmedSettlementReconcilesAfterRequestCancellation(t *testing.T) {
+	baseRPC := testutil.NewFakeRPC()
+	_, stores := newSharedJSONChannelStores(1)
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = baseRPC
+		o.Signer = merchant
+		o.Store = stores[0]
+	})
+	_, channelID := openTrustedChannel(t, session, 1_000)
+	ctx, cancel := context.WithCancel(context.Background())
+	rpcClient := &cancelOnConfirmationRPC{FakeRPC: baseRPC, cancel: cancel}
+	rpcClient.armed.Store(true)
+	session.rpc = rpcClient
+
+	settled, err := session.closeAndSettleChannel(ctx, channelID)
+	if err != nil {
+		t.Fatalf("settlement after confirmation-side cancellation: %v", err)
+	}
+	if settled == "" || ctx.Err() == nil {
+		t.Fatalf("settlement=%q context error=%v", settled, ctx.Err())
+	}
+	state := mustGetChannel(t, session, channelID)
+	if !state.Sealed || state.Settling || state.SettledSignature == nil || *state.SettledSignature != settled {
+		t.Fatalf("confirmed settlement was not reconciled: %+v", state)
 	}
 }
 

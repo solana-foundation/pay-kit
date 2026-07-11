@@ -81,9 +81,11 @@ export interface ChannelState {
     readonly salt?: bigint | undefined;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
+    /** Broadcast settlement awaiting a definite confirmed/failed outcome. */
+    readonly settlementPendingSignature?: string | undefined;
     /** True while one server instance owns the on-chain settlement broadcast. */
     readonly settling?: boolean | undefined;
-    /** On-chain settle_and_seal transaction signature (base58), once submitted. */
+    /** Confirmed on-chain settle_and_seal transaction signature (base58). */
     readonly settledSignature?: string | undefined;
     /**
      * Top-up transaction signatures already applied to this channel.

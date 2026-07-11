@@ -29,6 +29,7 @@ import {
     type MultiDelegateSubmitRpc,
     type OpenTransactionRpc,
     PAYMENT_CHANNELS_PROGRAM_ID,
+    SignatureConfirmationError,
     submitInitMultiDelegateTxIfMissing,
     submitOpenTx,
     submitSettleAndDistribute,
@@ -1236,7 +1237,9 @@ interface CloseAndSettleArgs {
  * Returns `undefined` when the channel cannot be settled (e.g. no
  * highest voucher recorded — nothing to settle).
  */
-async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSettleAndDistributeResult | undefined> {
+async function closeAndSettleChannel(
+    args: CloseAndSettleArgs,
+): Promise<Pick<SubmitSettleAndDistributeResult, 'signature'> | undefined> {
     let claimed = false;
     const state = await args.store.updateChannel(args.channelId, current => {
         if (!current) throw new Error(`Channel ${args.channelId} not found`);
@@ -1246,6 +1249,7 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
     });
     if (!claimed) return undefined;
 
+    let pendingSignature = state.settlementPendingSignature as Signature | undefined;
     try {
         // The distribute refund goes to the channel payer (the program enforces
         // `payer == channel.payer`). It is recorded as `state.operator` at open.
@@ -1257,67 +1261,88 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
             );
         }
 
-        let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
-        if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
-            voucher = {
-                authorizedSigner: state.authorizedSigner,
-                signed: {
-                    data: {
-                        channelId: args.channelId,
-                        cumulativeAmount: state.cumulative.toString(),
-                        expiresAt: Number(state.highestVoucherExpiresAt),
+        if (!pendingSignature) {
+            let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
+            if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
+                voucher = {
+                    authorizedSigner: state.authorizedSigner,
+                    signed: {
+                        data: {
+                            channelId: args.channelId,
+                            cumulativeAmount: state.cumulative.toString(),
+                            expiresAt: Number(state.highestVoucherExpiresAt),
+                        },
+                        signature: state.highestVoucherSignature,
                     },
-                    signature: state.highestVoucherSignature,
+                };
+            }
+
+            const result = await submitSettleAndDistribute({
+                buildAndSignWireTransaction: instructions =>
+                    buildAndSignWireTransaction(
+                        args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
+                        args.merchantSigner as unknown as TransactionSigner,
+                        instructions,
+                    ),
+                channelId: args.channelId,
+                currency: args.currency,
+                mint: args.mint,
+                network: args.network,
+                payee: args.recipient,
+                payer: state.operator,
+
+                programId: args.programId,
+                // rentPayer reclaims the channel/escrow rent at distribute; it is the
+                // operator recorded as the channel rentPayer at open (the fee payer),
+                // not the refund payer carried in state.operator.
+                rentPayer: args.operator,
+                rpc: args.rpc as unknown as {
+                    sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
                 },
-            };
+                signer: args.merchantSigner as unknown as TransactionSigner,
+                splits: args.splits ?? [],
+                tokenProgram: args.tokenProgram,
+                voucher,
+            });
+            pendingSignature = result.signature;
+            await args.store.updateChannel(args.channelId, current => {
+                if (!current) throw new Error(`Channel ${args.channelId} disappeared after settlement broadcast`);
+                if (!current.settling) throw new Error(`Channel ${args.channelId} lost its settlement claim`);
+                return { ...current, settlementPendingSignature: result.signature as unknown as string };
+            });
         }
 
-        const result = await submitSettleAndDistribute({
-            buildAndSignWireTransaction: instructions =>
-                buildAndSignWireTransaction(
-                    args.rpc as unknown as Parameters<typeof buildAndSignWireTransaction>[0],
-                    args.merchantSigner as unknown as TransactionSigner,
-                    instructions,
-                ),
-            channelId: args.channelId,
-            currency: args.currency,
-            mint: args.mint,
-            network: args.network,
-            payee: args.recipient,
-            payer: state.operator,
-
-            programId: args.programId,
-            // rentPayer reclaims the channel/escrow rent at distribute; it is the
-            // operator recorded as the channel rentPayer at open (the fee payer),
-            // not the refund payer carried in state.operator.
-            rentPayer: args.operator,
-            rpc: args.rpc as unknown as {
-                sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
-            },
-            signer: args.merchantSigner as unknown as TransactionSigner,
-            splits: args.splits ?? [],
-            tokenProgram: args.tokenProgram,
-            voucher,
-        });
         await waitForSignatureConfirmation({
             context: `settle channel ${args.channelId}`,
             rpc: args.rpc,
-            signature: result.signature,
+            signature: pendingSignature,
         });
         await args.store.updateChannel(args.channelId, current => {
             if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
+            if (current.settlementPendingSignature !== pendingSignature) {
+                throw new Error(`Channel ${args.channelId} settlement signature changed during confirmation`);
+            }
             return {
                 ...current,
                 sealed: true,
-                settledSignature: result.signature as unknown as string,
+                settlementPendingSignature: undefined,
+                settledSignature: pendingSignature as unknown as string,
                 settling: false,
             };
         });
-        return result;
+        return { signature: pendingSignature };
     } catch (error) {
+        const definiteFailure = error instanceof SignatureConfirmationError && error.outcome === 'definite-failure';
         await args.store.updateChannel(args.channelId, current => {
             if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
-            return { ...current, settling: false };
+            if (current.sealed) return current;
+            return {
+                ...current,
+                ...(definiteFailure && current.settlementPendingSignature === pendingSignature
+                    ? { settlementPendingSignature: undefined }
+                    : {}),
+                settling: false,
+            };
         });
         throw error;
     }

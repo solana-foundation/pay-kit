@@ -1304,13 +1304,14 @@ describe('session() verify() close monotonicity', () => {
 // ── verify() — close retry after a failed settlement ────────────────────
 
 describe('session() verify() close retry', () => {
-    test('a failed settlement leaves close re-drivable; the retry settles', async () => {
+    test('an uncertain confirmation retries the persisted signature without rebroadcasting', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
+        const settleSignature = 'SettleSig11111111111111111111111111111111111111111111111111111111';
 
-        let sendFailures = 1;
+        let settlementStatusCalls = 0;
         const sends: string[] = [];
         const rpc = {
             getLatestBlockhash: () => ({
@@ -1322,19 +1323,20 @@ describe('session() verify() close retry', () => {
                 }),
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
-                send: async () => ({
-                    context: { slot: 42 },
-                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
-                }),
+                send: async () => {
+                    if (sigs.includes(settleSignature) && settlementStatusCalls++ === 0) {
+                        throw new Error('status RPC unavailable');
+                    }
+                    return {
+                        context: { slot: 42 },
+                        value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                    };
+                },
             }),
             sendTransaction: (wire: string) => ({
                 send: async () => {
-                    if (sendFailures > 0) {
-                        sendFailures -= 1;
-                        throw new Error('blockhash not found');
-                    }
                     sends.push(wire);
-                    return 'SettleSig11111111111111111111111111111111111111111111111111111111';
+                    return settleSignature;
                 },
             }),
         };
@@ -1365,17 +1367,20 @@ describe('session() verify() close retry', () => {
             request: {} as never,
         });
 
-        // First close: settlement submit fails — close stays pending.
+        // The broadcast succeeded but confirmation is uncertain. The signature
+        // remains durable so a retry cannot create a second transaction.
         await expect(
             method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
-        ).rejects.toThrow(/blockhash not found/);
+        ).rejects.toThrow(/status RPC unavailable/);
         let state = await store.getChannel(channelId);
         expect(state?.closeRequestedAt).toBeDefined();
         expect(state?.sealed).toBe(false);
+        expect(state?.settlementPendingSignature).toBe(settleSignature);
         expect(state?.settling).toBe(false);
         expect(state?.settledSignature).toBeUndefined();
+        expect(sends).toHaveLength(1);
 
-        // Retry succeeds and seals the channel.
+        // Retry confirms the same transaction without another broadcast.
         const receipt = await method.verify({
             credential: makeCred({ action: 'close', channelId }),
             request: {} as never,
@@ -1384,13 +1389,94 @@ describe('session() verify() close retry', () => {
         expect(sends).toHaveLength(1);
         state = await store.getChannel(channelId);
         expect(state?.sealed).toBe(true);
+        expect(state?.settlementPendingSignature).toBeUndefined();
         expect(state?.settling).toBe(false);
-        expect(state?.settledSignature).toBeDefined();
+        expect(state?.settledSignature).toBe(settleSignature);
 
         // A third close on the sealed channel rejects.
         await expect(
             method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
         ).rejects.toThrow(/sealed/);
+    });
+
+    test('a definite on-chain failure clears the pending signature for a fresh retry', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const failedSignature = 'FailedSig11111111111111111111111111111111111111111111111111111111';
+        const retrySignature = 'RetrySig11111111111111111111111111111111111111111111111111111111';
+        const sends: string[] = [];
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 0n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(signature =>
+                        signature === failedSignature
+                            ? { confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Custom'] } }
+                            : { confirmationStatus: 'confirmed', err: null },
+                    ),
+                }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    return retrySignature;
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        await store.updateChannel(channelId, () => ({
+            authorizedSigner: signer.address,
+            channelId,
+            closeRequestedAt: 1n,
+            committedDeliveries: [],
+            cumulative: 0n,
+            deposit: 1_000n,
+            nextDeliverySequence: 0n,
+            operator: signer.address,
+            pendingDeliveries: [],
+            sealed: false,
+            settlementPendingSignature: failedSignature,
+        }));
+
+        await expect(
+            method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/failed on-chain/);
+        let state = await store.getChannel(channelId);
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settling).toBe(false);
+        expect(state?.sealed).toBe(false);
+        expect(sends).toHaveLength(0);
+
+        const receipt = await method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
+        state = await store.getChannel(channelId);
+        expect(state?.sealed).toBe(true);
+        expect(state?.settledSignature).toBe(retrySignature);
+        expect(sends).toHaveLength(1);
     });
 
     test('concurrent closes broadcast once and seal only after confirmation', async () => {
@@ -1462,16 +1548,19 @@ describe('session() verify() close retry', () => {
             request: {} as never,
         });
 
+        const requestAbort = new AbortController();
         const firstClose = method.verify({
             credential: makeCred({ action: 'close', channelId }),
-            request: {} as never,
+            request: new Request('https://api.test/session/close', { signal: requestAbort.signal }) as never,
         });
         await statusRequest;
 
         let state = await store.getChannel(channelId);
+        expect(state?.settlementPendingSignature).toBe(settleSignature);
         expect(state?.settling).toBe(true);
         expect(state?.sealed).toBe(false);
         expect(state?.settledSignature).toBeUndefined();
+        requestAbort.abort();
 
         const secondClose = await method.verify({
             credential: makeCred({ action: 'close', channelId }),
@@ -1484,6 +1573,7 @@ describe('session() verify() close retry', () => {
         const firstReceipt = await firstClose;
         expect(firstReceipt.status).toBe('success');
         state = await store.getChannel(channelId);
+        expect(state?.settlementPendingSignature).toBeUndefined();
         expect(state?.settling).toBe(false);
         expect(state?.sealed).toBe(true);
         expect(state?.settledSignature).toBe(settleSignature);

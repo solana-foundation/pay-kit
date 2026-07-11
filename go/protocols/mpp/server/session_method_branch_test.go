@@ -267,7 +267,7 @@ func TestSessionTopUpMalformedDepositAndStoreFailure(t *testing.T) {
 	}
 }
 
-func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
+func TestSessionCloseUnknownChannelAndPendingSignatureRetry(t *testing.T) {
 	session := newTestSession(t, nil)
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{
 		ChannelID: solana.NewWallet().PublicKey().String(),
@@ -275,8 +275,9 @@ func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
 		t.Fatalf("unknown channel error = %v", err)
 	}
 
-	// A close-pending channel that already recorded a settlement signature
-	// (but is not yet marked sealed) is not re-drivable.
+	// A close-pending channel that recorded a broadcast signature but is not
+	// sealed remains re-drivable. Without RPC/signer configuration this call
+	// only preserves the pending state.
 	channelID := solana.NewWallet().PublicKey().String()
 	closeRequestedAt := uint64(1)
 	settled := confirmedSignature(0xAB)
@@ -287,10 +288,15 @@ func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
 		CloseRequestedAt: &closeRequestedAt,
 		SettledSignature: &settled,
 	})
-	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{
+	receipt, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{
 		ChannelID: channelID,
-	})); err == nil || !strings.Contains(err.Error(), "close already requested") {
-		t.Fatalf("settled double-close error = %v", err)
+	}))
+	if err != nil {
+		t.Fatalf("pending-signature close retry: %v", err)
+	}
+	state := mustGetChannel(t, session, channelID)
+	if receipt.Reference != channelID || state.Sealed || state.SettledSignature == nil || *state.SettledSignature != settled {
+		t.Fatalf("pending-signature retry receipt=%+v state=%+v", receipt, state)
 	}
 }
 

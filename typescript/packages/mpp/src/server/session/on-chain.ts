@@ -1352,6 +1352,17 @@ export interface ConfirmSignatureOptions {
     readonly timeoutMs?: number | undefined;
 }
 
+/** Confirmation failure with an explicit retry-safety classification. */
+export class SignatureConfirmationError extends Error {
+    readonly outcome: 'definite-failure' | 'uncertain';
+
+    constructor(message: string, outcome: 'definite-failure' | 'uncertain') {
+        super(message);
+        this.name = 'SignatureConfirmationError';
+        this.outcome = outcome;
+    }
+}
+
 /**
  * Poll `getSignatureStatuses` until `signature` reaches at least
  * 'confirmed' commitment. Throws if the transaction failed on-chain, the
@@ -1370,12 +1381,18 @@ export async function waitForSignatureConfirmation(args: {
 
     for (;;) {
         if (args.options?.signal?.aborted) {
-            throw new Error(`${context}: aborted while waiting for tx ${args.signature} confirmation`);
+            throw new SignatureConfirmationError(
+                `${context}: aborted while waiting for tx ${args.signature} confirmation`,
+                'uncertain',
+            );
         }
         const [status] = (await args.rpc.getSignatureStatuses([args.signature]).send()).value;
         if (status) {
             if (status.err) {
-                throw new Error(`${context}: tx ${args.signature} failed on-chain: ${JSON.stringify(status.err)}`);
+                throw new SignatureConfirmationError(
+                    `${context}: tx ${args.signature} failed on-chain: ${JSON.stringify(status.err)}`,
+                    'definite-failure',
+                );
             }
             const level = status.confirmationStatus;
             if (level === 'confirmed' || level === 'finalized') {
@@ -1383,7 +1400,10 @@ export async function waitForSignatureConfirmation(args: {
             }
         }
         if (Date.now() >= deadline) {
-            throw new Error(`${context}: timed out waiting for tx ${args.signature} confirmation`);
+            throw new SignatureConfirmationError(
+                `${context}: timed out waiting for tx ${args.signature} confirmation`,
+                'uncertain',
+            );
         }
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
