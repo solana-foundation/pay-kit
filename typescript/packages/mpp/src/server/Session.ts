@@ -496,6 +496,9 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     }
 
     if (payload.transaction) {
+        if (args.openTxSubmitter === 'client' && args.rpc && isPlaceholderSignature(payload.signature)) {
+            throw new Error('client-submitted open requires a non-placeholder signature when rpc is configured');
+        }
         // Payment-channel-backed open. This covers push sessions and
         // clientVoucher pull sessions whose deposit lives in an on-chain
         // payment channel (the `createPaymentChannelSessionOpener` flow):
@@ -702,6 +705,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         operator: channelPayer ?? payload.owner ?? payload.payer,
         pendingDeliveries: [],
         sealed: false,
+        usedTopUpSignatures: [],
     };
 
     // The existence check lives inside the atomic mutator so a concurrent
@@ -865,15 +869,17 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // Confirm the signature and bind the resulting account state before
     // raising the local deposit.
     if (args.rpc) {
+        const hasTransactionRpc = isTopUpTransactionRpc(args.rpc);
+        const hasAccountInfoRpc = isGetAccountInfoRpc(args.rpc);
+        if (!hasTransactionRpc && !hasAccountInfoRpc) {
+            throw new Error('topUp requires an rpc client with getTransaction to bind the deposit delta');
+        }
         const confirmedSlot = await assertSignatureSucceeded(
             args.rpc as VerifyOpenRpc,
             args.payload.signature,
             'topUp',
         );
-        if (!isTopUpTransactionRpc(args.rpc) && args.network !== 'localnet') {
-            throw new Error('topUp requires an rpc client with getTransaction to bind the deposit delta');
-        }
-        if (isTopUpTransactionRpc(args.rpc)) {
+        if (hasTransactionRpc) {
             await verifyTopUpTransaction({
                 amount: newDeposit - existing.deposit,
                 channelId: args.payload.channelId,
@@ -882,7 +888,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
                 signature: args.payload.signature as Signature,
             });
         }
-        if (!isGetAccountInfoRpc(args.rpc)) {
+        if (!hasAccountInfoRpc) {
             if (args.network !== 'localnet') {
                 throw new Error(
                     'topUp: configured rpc does not expose getAccountInfo — cannot bind the raised deposit to the on-chain Channel account',
@@ -916,10 +922,14 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         if (current.closeRequestedAt !== undefined) {
             throw new Error('Channel close is pending — no further top-ups accepted');
         }
+        const usedSignatures = current.usedTopUpSignatures ?? [];
+        if (usedSignatures.includes(args.payload.signature)) {
+            throw new Error(`topUp signature ${args.payload.signature} was already accepted for this channel`);
+        }
         if (newDeposit <= current.deposit) {
             throw new Error(`newDeposit ${newDeposit} must exceed current deposit ${current.deposit}`);
         }
-        return { ...current, deposit: newDeposit };
+        return { ...current, deposit: newDeposit, usedTopUpSignatures: [...usedSignatures, args.payload.signature] };
     });
     args.lifecycle?.touch(result.channelId);
 
@@ -975,6 +985,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             throw new Error('Close already requested');
         }
 
+        // nosemgrep: security-check-gated-on-optional-field-ts -- A missing final voucher intentionally closes at the persisted watermark.
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
             // Route the final voucher (replay AND advancing) through the verifier
@@ -1326,10 +1337,6 @@ async function assertSignatureSucceeded(
     return slot;
 }
 
-function isTopUpTransactionRpc(rpc: RpcLike | undefined): rpc is RpcLike & TopUpTransactionRpc {
-    return typeof (rpc as { getTransaction?: unknown } | undefined)?.getTransaction === 'function';
-}
-
 /** Throw unless the voucher's Ed25519 signature verifies against `authorizedSigner`. */
 async function assertVoucherSignature(signed: SignedVoucher, authorizedSigner: string): Promise<void> {
     let valid = false;
@@ -1355,6 +1362,14 @@ function isMultiDelegateSubmitRpc(rpc: RpcLike | undefined): rpc is MultiDelegat
         typeof candidate.sendTransaction === 'function' &&
         typeof candidate.getSignatureStatuses === 'function'
     );
+}
+
+function isTopUpTransactionRpc(rpc: RpcLike | undefined): rpc is RpcLike & TopUpTransactionRpc {
+    return typeof (rpc as { getTransaction?: unknown } | undefined)?.getTransaction === 'function';
+}
+
+function isPlaceholderSignature(signature: string | undefined): boolean {
+    return !signature || /^1+$/.test(signature);
 }
 
 function expectString(value: string | undefined, name: string): string {
@@ -1494,7 +1509,11 @@ export declare namespace session {
         readonly pullVoucherStrategy?: SessionPullVoucherStrategy;
         /** Primary recipient (base58). */
         readonly recipient: string;
-        /** Optional RPC client used for on-chain checks + transactions. */
+        /**
+         * Optional RPC client used for on-chain checks + transactions. Without
+         * it, open/top-up assertions are trusted input and the host must verify
+         * them out of band; do not expose that mode to untrusted clients.
+         */
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;

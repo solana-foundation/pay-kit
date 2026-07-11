@@ -83,6 +83,12 @@ export interface ChannelState {
     readonly sealed: boolean;
     /** On-chain settle_and_seal transaction signature (base58), once submitted. */
     readonly settledSignature?: string | undefined;
+    /**
+     * Top-up transaction signatures already applied to this channel.
+     * Kept in the channel record so replay rejection and the deposit increase
+     * share the same atomic `updateChannel` operation.
+     */
+    readonly usedTopUpSignatures?: readonly string[] | undefined;
 }
 
 /**

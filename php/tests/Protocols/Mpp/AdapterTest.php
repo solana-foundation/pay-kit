@@ -17,6 +17,9 @@ use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
+use PayKit\Store\MemoryStore;
+use PayKit\Store\ReplayStoreCapability;
+use PayKit\Store\Store;
 use PHPUnit\Framework\TestCase;
 
 final class AdapterTest extends TestCase
@@ -31,8 +34,42 @@ final class AdapterTest extends TestCase
                 feePayer:  true,
             ),
             preflight: false,
+            mpp: new MppConfig(
+                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+                replayStore: new AdapterDurableSharedReplayStore(),
+            ),
+        );
+    }
+
+    public function testNonLocalnetRejectsMissingReplayStore(): void
+    {
+        $config = new Config(
+            network: Network::SolanaDevnet,
+            preflight: false,
             mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
         );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('replayStore is required outside localnet');
+
+        new Adapter($config);
+    }
+
+    public function testNonLocalnetRejectsStoreWithoutDurableSharedCapability(): void
+    {
+        $config = new Config(
+            network: Network::SolanaDevnet,
+            preflight: false,
+            mpp: new MppConfig(
+                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+                replayStore: new MemoryStore(),
+            ),
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+
+        new Adapter($config);
     }
 
     public function testAcceptsEntryShape(): void
@@ -227,7 +264,11 @@ final class AdapterTest extends TestCase
                 feePayer:  true,
             ),
             preflight: false,
-            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01', expiresIn: $expiresIn),
+            mpp: new MppConfig(
+                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+                expiresIn: $expiresIn,
+                replayStore: new AdapterDurableSharedReplayStore(),
+            ),
         );
     }
 
@@ -287,5 +328,25 @@ final class AdapterTest extends TestCase
         $this->assertSame('', $challenge->expires, 'expiresIn=0 must issue an empty (never-expires) challenge');
         $farFuture = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->add(new \DateInterval('P3650D'));
         $this->assertFalse($challenge->isExpired($farFuture));
+    }
+}
+
+final class AdapterDurableSharedReplayStore implements Store, ReplayStoreCapability
+{
+    private MemoryStore $store;
+
+    public function __construct()
+    {
+        $this->store = new MemoryStore();
+    }
+
+    public function putIfAbsent(string $key, mixed $value): bool
+    {
+        return $this->store->putIfAbsent($key, $value);
+    }
+
+    public function providesDurableSharedReplayProtection(): bool
+    {
+        return true;
     }
 }

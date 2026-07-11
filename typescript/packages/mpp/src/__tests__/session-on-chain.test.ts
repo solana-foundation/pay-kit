@@ -39,6 +39,7 @@ import {
     verifyOpenTx,
     verifyTopUpTransaction,
 } from '../server/session/on-chain.js';
+import { buildAndSignWireTransaction } from '../server/session/wire-tx.js';
 
 function makeSeed(byte: number): Uint8Array {
     const seed = new Uint8Array(32);
@@ -262,6 +263,72 @@ describe('buildTopUpInstruction', () => {
         expect(data[0]).toBe(3); // discriminator
         const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
         expect(view.getBigUint64(1, true)).toBe(1_234_567n);
+    });
+});
+
+describe('verifyTopUpTransaction', () => {
+    async function buildTopUpWire(amount: bigint) {
+        const [payer] = await loadFixedSigners();
+        const channelId = '11111111111111111111111111111111';
+        const instruction = await buildTopUpInstruction({
+            amount,
+            channelId,
+            mint: USDC.mainnet!,
+            payer,
+            tokenProgram: TOKEN_PROGRAM,
+        });
+        const wire = await buildAndSignWireTransaction(
+            {
+                getLatestBlockhash: () => ({
+                    send: async () => ({
+                        value: {
+                            blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+                            lastValidBlockHeight: 100n,
+                        },
+                    }),
+                }),
+            },
+            payer,
+            [instruction],
+        );
+        return { channelId, signature: extractTxSignature(wire), wire };
+    }
+
+    function transactionRpc(wire: string) {
+        return {
+            getTransaction: () => ({
+                send: async () => ({ meta: { err: null }, transaction: [wire, 'base64'] as const }),
+            }),
+        };
+    }
+
+    test('accepts an encoded payment-channel top-up with the exact deposit delta', async () => {
+        const amount = 1_234_567n;
+        const { channelId, signature, wire } = await buildTopUpWire(amount);
+
+        await expect(
+            verifyTopUpTransaction({
+                amount,
+                channelId,
+                programId: PAYMENT_CHANNELS_PROGRAM_ID,
+                rpc: transactionRpc(wire),
+                signature,
+            }),
+        ).resolves.toBeUndefined();
+    });
+
+    test('rejects an encoded payment-channel top-up whose delta does not match', async () => {
+        const { channelId, signature, wire } = await buildTopUpWire(500n);
+
+        await expect(
+            verifyTopUpTransaction({
+                amount: 499n,
+                channelId,
+                programId: PAYMENT_CHANNELS_PROGRAM_ID,
+                rpc: transactionRpc(wire),
+                signature,
+            }),
+        ).rejects.toThrow(/on-chain top-up total 500 != expected delta 499/);
     });
 });
 

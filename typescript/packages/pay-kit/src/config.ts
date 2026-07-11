@@ -94,6 +94,7 @@ export type PayKitConfig = {
 };
 
 const DEFAULT_EXPIRES_IN_SECONDS = 120;
+const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
 
 function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
     const secret = provided ?? process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
@@ -176,6 +177,17 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
     const challengeBindingSecret = accept.includes('mpp')
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
+
+    if (
+        accept.includes('mpp') &&
+        network !== 'solana_localnet' &&
+        params.replayStore === undefined &&
+        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] !== '1'
+    ) {
+        throw new ConfigurationError(
+            `no shared replay store configured outside localnet; provide replayStore or set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
+        );
+    }
 
     return Object.freeze({
         accept: Object.freeze([...accept]),

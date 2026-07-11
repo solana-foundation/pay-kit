@@ -237,6 +237,7 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
     let expiresAt = 0n;
     let hasVoucher = 0;
 
+    // nosemgrep: security-check-gated-on-optional-field-ts -- Voucher-less settlement intentionally emits hasVoucher=0 and requires no Ed25519 precompile.
     if (args.voucher) {
         const { signed, authorizedSigner } = args.voucher;
         cumulativeAmount = parseU64String(signed.data.cumulativeAmount, 'voucher.cumulativeAmount');
@@ -463,7 +464,7 @@ export interface VerifyOpenTxExpected {
     readonly programId?: string | undefined;
     /** Primary recipient (challenge `recipient`). */
     readonly recipient: string;
-    /** Ordered payout distribution committed by the challenge. */
+    /** Exact payment-channel distribution advertised by the challenge. */
     readonly splits?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
     /** Optional explicit token program (otherwise derived from currency/network). */
     readonly tokenProgram?: string | undefined;
@@ -714,6 +715,25 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     if (expected.openSlot !== undefined && openSlot !== expected.openSlot) {
         throw new Error(`verifyOpenTx: openSlot ${openSlot} != challenge-issued openSlot ${expected.openSlot}`);
     }
+    if (expected.splits !== undefined) {
+        if (recipients.length !== expected.splits.length) {
+            throw new Error(
+                `verifyOpenTx: recipient split count ${recipients.length} != expected ${expected.splits.length}`,
+            );
+        }
+        for (let index = 0; index < recipients.length; index += 1) {
+            const actual = recipients[index];
+            const expectedSplit = expected.splits[index];
+            if (
+                !actual ||
+                !expectedSplit ||
+                actual.recipient !== expectedSplit.recipient ||
+                actual.bps !== expectedSplit.bps
+            ) {
+                throw new Error(`verifyOpenTx: recipient split at index ${index} does not match the challenge`);
+            }
+        }
+    }
 
     const expectedSplits = expected.splits ?? [];
     if (recipients.length !== expectedSplits.length) {
@@ -849,7 +869,7 @@ export interface TopUpTransactionRpc {
     getTransaction(
         signature: Signature,
         config: {
-            readonly commitment: 'confirmed';
+            readonly commitment?: 'confirmed';
             readonly encoding: 'base64';
             readonly maxSupportedTransactionVersion: 0;
         },
@@ -1262,6 +1282,10 @@ export async function verifySignatureOnlyOpenTransaction(args: {
     }
 }
 
+/**
+ * Confirms that a landed transaction contains exactly the required payment-channel
+ * top-up: same program, same channel account, and the precise deposit delta.
+ */
 export async function verifyTopUpTransaction(args: {
     readonly amount: bigint;
     readonly channelId: string;
@@ -1276,21 +1300,34 @@ export async function verifyTopUpTransaction(args: {
             maxSupportedTransactionVersion: 0,
         })
         .send();
-    if (!fetched) throw new Error(`verifyTopUpTransaction: tx ${args.signature} not found on-chain`);
+    if (!fetched) {
+        throw new Error(`verifyTopUpTransaction: tx ${args.signature} not found on-chain`);
+    }
     if (fetched.meta?.err) {
-        throw new Error(`verifyTopUpTransaction: tx failed on-chain: ${JSON.stringify(fetched.meta.err)}`);
+        throw new Error(
+            `verifyTopUpTransaction: tx ${args.signature} failed on-chain: ${JSON.stringify(fetched.meta.err)}`,
+        );
     }
     const [wire, encoding] = fetched.transaction;
-    if (encoding !== 'base64') throw new Error(`verifyTopUpTransaction: expected base64, got ${encoding}`);
-    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
-    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+    if (encoding !== 'base64') {
+        throw new Error(`verifyTopUpTransaction: expected base64 transaction data, got ${encoding}`);
+    }
+
+    let message: {
         instructions: readonly {
             accountIndices?: readonly number[];
-            data?: Uint8Array;
+            data?: Uint8Array | undefined;
             programAddressIndex: number;
         }[];
         staticAccounts: readonly string[];
     };
+    try {
+        const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as typeof message;
+    } catch (error) {
+        throw new Error(`verifyTopUpTransaction: invalid transaction data: ${errorMessage(error)}`);
+    }
+
     const loadedAddresses = fetched.meta?.loadedAddresses;
     const accounts = [
         ...message.staticAccounts,
@@ -1304,15 +1341,27 @@ export async function verifyTopUpTransaction(args: {
         if (!instruction.data || instruction.data[0] !== TOP_UP_DISCRIMINATOR) continue;
         const channelIndex = instruction.accountIndices?.[1];
         if (channelIndex === undefined || accounts[channelIndex] !== args.channelId) continue;
-        count += 1;
-        total += getTopUpInstructionDataDecoder().decode(instruction.data).topUpArgs.amount;
+        try {
+            count += 1;
+            total += getTopUpInstructionDataDecoder().decode(instruction.data).topUpArgs.amount;
+        } catch (error) {
+            throw new Error(`verifyTopUpTransaction: invalid top-up instruction: ${errorMessage(error)}`);
+        }
     }
-    if (count !== 1) throw new Error(`verifyTopUpTransaction: expected exactly one top-up, found ${count}`);
+    if (count === 0) {
+        throw new Error(`verifyTopUpTransaction: no top-up for channel ${args.channelId} found in ${args.signature}`);
+    }
+    if (count !== 1) {
+        throw new Error(`verifyTopUpTransaction: expected exactly one top-up, found ${count}`);
+    }
     if (total !== args.amount) {
         throw new Error(`verifyTopUpTransaction: on-chain top-up total ${total} != expected delta ${args.amount}`);
     }
 }
 
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */
 export interface ConfirmSignatureOptions {
     /** Delay between status polls in ms. Defaults to 1_000. */
