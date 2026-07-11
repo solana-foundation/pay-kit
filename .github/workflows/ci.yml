@@ -327,6 +327,13 @@ jobs:
         working-directory: rust
         run: cargo test --locked -p solana-pay-kit --lib x402 --features server,client
 
+      # The session implementation is gated behind the server feature. Keep a
+      # real execution gate here: compiling the feature does not run the
+      # on-chain binding and transaction-shape regressions in its test module.
+      - name: Run solana-pay-kit Rust session server tests
+        working-directory: rust
+        run: cargo test --locked -p solana-pay-kit --lib mpp::server::session --features mpp,server,client -- --test-threads=1
+
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
         run: |
