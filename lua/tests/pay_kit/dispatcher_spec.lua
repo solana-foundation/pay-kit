@@ -128,6 +128,26 @@ helper.test('MPP on a non-localnet network rejects a process-local replay store'
   helper.assert_true(tostring(err):find('shared', 1, true) ~= nil, tostring(err))
 end)
 
+helper.test('MPP on a non-localnet network rejects a durable-only replay store', function()
+  pay_kit._reset_for_tests()
+  assert(pay_kit.configure({
+    network  = 'solana_devnet',
+    accept   = {'mpp'},
+    operator = {recipient = SELLER},
+    mpp      = {
+      challenge_binding_secret = 'test-secret-key-long-enough-32bytes',
+      replay_store = {
+        durable = true,
+        put_if_absent = function() return true end,
+      },
+    },
+  }))
+  assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
+  local ok, err = pcall(pay_kit.try_payment, 'report', {headers = {}, path = '/report'})
+  helper.assert_true(not ok, 'expected a durable-only store to fail closed')
+  helper.assert_true(tostring(err):find('shared', 1, true) ~= nil, tostring(err))
+end)
+
 helper.test('MPP on a non-localnet network accepts an explicit shared replay store', function()
   pay_kit._reset_for_tests()
   assert(pay_kit.configure({
