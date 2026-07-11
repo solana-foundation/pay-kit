@@ -30,7 +30,6 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
-from spl.token.instructions import create_idempotent_associated_token_account  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
@@ -668,10 +667,7 @@ async def settle_and_seal_channel(
     config: SessionConfig,
 ) -> str:
     """Build, sign, broadcast, and confirm the close settlement transaction;
-    return the confirmed on-chain signature. Idempotent ATA creation for the
-    payee, treasury, and configured split recipients is included before
-    ``distribute`` so a missing recipient ATA cannot produce a settled-looking
-    close without delivering the payout.
+    return the confirmed on-chain signature.
 
     Mirrors the Rust/Go close path: a settle_and_seal instruction (preceded
     by the Ed25519 precompile when a voucher was recorded) plus a distribute
@@ -742,26 +738,8 @@ async def settle_and_seal_channel(
         rent_payer=Pubkey.from_string(config.operator) if config.operator else None,
     )
 
-    # The payment-channels program does not create payout ATAs itself. Without
-    # these idempotent setup instructions a missing payee ATA can turn a close
-    # into a confirmed transaction whose receipt claims settlement but leaves
-    # the recipient unpaid. Mirror the x402-up-to settlement path and create
-    # every distribution destination in the same atomic transaction.
-    ata_owners = [payee, treasury, *(entry.recipient for entry in recipients)]
-    seen_owners: set[str] = set()
-    create_destination_atas = []
-    for owner in ata_owners:
-        if str(owner) in seen_owners:
-            continue
-        seen_owners.add(str(owner))
-        create_destination_atas.append(
-            create_idempotent_associated_token_account(merchant_pubkey, owner, mint, token_program)
-        )
-
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
-    tx = Transaction.new_signed_with_payer(
-        [*settle, *create_destination_atas, distribute], merchant_pubkey, [merchant], blockhash
-    )
+    tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
     sent = await rpc.send_raw_transaction(bytes(tx))
     signature = str(sent.value)
     # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
