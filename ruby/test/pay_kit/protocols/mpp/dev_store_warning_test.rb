@@ -118,6 +118,39 @@ class DevStoreWarningTest < Minitest::Test
     end
   end
 
+  def test_non_localnet_rejects_truthy_capability_markers
+    store = DurableSharedStore.new
+    store.define_singleton_method(:shared?) { "false" }
+
+    assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "mainnet"),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: store
+      )
+    end
+  end
+
+  def test_non_localnet_rejects_store_without_atomic_insert
+    assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "mainnet"),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: CapabilityOnlyStore.new
+      )
+    end
+  end
+
+  def test_non_localnet_rejects_atomic_insert_with_incompatible_arity
+    assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "mainnet"),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: WrongArityStore.new
+      )
+    end
+  end
+
   class DurableSharedStore < PayKit::Protocols::Mpp::Store
     def durable?
       true
@@ -128,6 +161,22 @@ class DevStoreWarningTest < Minitest::Test
     end
 
     def put_if_absent(_key, _value)
+      true
+    end
+  end
+
+  class CapabilityOnlyStore < PayKit::Protocols::Mpp::Store
+    def durable?
+      true
+    end
+
+    def shared?
+      true
+    end
+  end
+
+  class WrongArityStore < DurableSharedStore
+    def put_if_absent(_key)
       true
     end
   end

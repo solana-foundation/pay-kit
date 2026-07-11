@@ -96,8 +96,18 @@ module PayKit::Protocols::Mpp
   private_class_method :network_name
 
   def self.durable_shared_replay_store?(store)
-    store.respond_to?(:durable?) && store.durable? &&
-      store.respond_to?(:shared?) && store.shared?
+    atomic_insert = store.method(:put_if_absent) if store.respond_to?(:put_if_absent)
+
+    store.respond_to?(:durable?) && store.durable? == true &&
+      store.respond_to?(:shared?) && store.shared? == true &&
+      atomic_insert && atomic_insert.owner != Store &&
+      accepts_two_positional_arguments?(atomic_insert)
   end
   private_class_method :durable_shared_replay_store?
+
+  def self.accepts_two_positional_arguments?(method)
+    arity = method.arity
+    arity == 2 || (arity.negative? && (-arity - 1) <= 2)
+  end
+  private_class_method :accepts_two_positional_arguments?
 end
