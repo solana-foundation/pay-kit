@@ -87,6 +87,8 @@ export interface ChannelState {
     readonly settlementClaimOwner?: string | undefined;
     /** Broadcast settlement awaiting a definite confirmed/failed outcome. */
     readonly settlementPendingSignature?: string | undefined;
+    /** Exact signed base64 transaction paired with `settlementPendingSignature`. */
+    readonly settlementPendingWire?: string | undefined;
     /** True while one server instance owns the on-chain settlement broadcast. */
     readonly settling?: boolean | undefined;
     /** Confirmed on-chain settle_and_seal transaction signature (base58). */

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 )
 
 // sharedJSONChannelBackend models a durable database shared by independent
@@ -136,6 +138,7 @@ func (s *sharedJSONChannelStore) MarkSealed(ctx context.Context, channelID strin
 		}
 		next := *current
 		next.Sealed = true
+		next.SettlementWire = ""
 		next.Settling = false
 		next.SettlementClaimOwner = ""
 		next.SettlementClaimedAt = 0
@@ -161,12 +164,31 @@ func (p *preBroadcastStateRPC) SendTransactionWithOpts(ctx context.Context, tx *
 	if err != nil {
 		return solana.Signature{}, err
 	}
+	wire, encodeErr := solanatx.EncodeTransactionBase64(tx)
+	if encodeErr != nil {
+		return solana.Signature{}, encodeErr
+	}
 	if state == nil || !state.Settling || state.SettlementClaimOwner == "" || state.SettlementClaimedAt == 0 ||
-		state.SettledSignature == nil || len(tx.Signatures) == 0 || *state.SettledSignature != tx.Signatures[0].String() {
+		state.SettledSignature == nil || len(tx.Signatures) == 0 || *state.SettledSignature != tx.Signatures[0].String() ||
+		state.SettlementWire != wire {
 		return solana.Signature{}, fmt.Errorf("settlement state was not durably persisted before send: %+v", state)
 	}
 	p.observed = true
 	return p.FakeRPC.SendTransactionWithOpts(ctx, tx, opts)
+}
+
+type crashBeforeSendRPC struct {
+	*testutil.FakeRPC
+	attemptedWire string
+}
+
+func (c *crashBeforeSendRPC) SendTransactionWithOpts(_ context.Context, tx *solana.Transaction, _ rpc.TransactionOpts) (solana.Signature, error) {
+	wire, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		return solana.Signature{}, err
+	}
+	c.attemptedWire = wire
+	return solana.Signature{}, errors.New("simulated process crash before network send")
 }
 
 func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T) {
@@ -209,7 +231,8 @@ func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T)
 	}
 
 	raw := backend.raw(channelID)
-	if !strings.Contains(raw, `"settling":true`) || !strings.Contains(raw, `"settled_signature":`) {
+	if !strings.Contains(raw, `"settling":true`) || !strings.Contains(raw, `"settled_signature":`) ||
+		!strings.Contains(raw, `"settlement_wire":`) {
 		t.Fatalf("in-flight durable state = %s", raw)
 	}
 	state, err := stores[1].GetChannel(context.Background(), channelID)
@@ -228,8 +251,19 @@ func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if len(baseRPC.Sent) != 1 {
-		t.Fatalf("shared-store broadcasts = %d, want 1", len(baseRPC.Sent))
+	if len(baseRPC.Sent) != 2 {
+		t.Fatalf("shared-store idempotent submissions = %d, want 2", len(baseRPC.Sent))
+	}
+	firstWire, err := solanatx.EncodeTransactionBase64(baseRPC.Sent[0])
+	if err != nil {
+		t.Fatalf("encode first submission: %v", err)
+	}
+	secondWire, err := solanatx.EncodeTransactionBase64(baseRPC.Sent[1])
+	if err != nil {
+		t.Fatalf("encode second submission: %v", err)
+	}
+	if firstWire != secondWire {
+		t.Fatal("shared-store retry submitted different settlement bytes")
 	}
 
 	close(blockingRPC.releaseStatus)
@@ -247,7 +281,7 @@ func TestSharedJSONStoresObserveSettlementClaimAndPendingSignature(t *testing.T)
 	}
 }
 
-func TestSharedJSONStoreRetryReconfirmsPendingSignatureWithoutBroadcast(t *testing.T) {
+func TestSharedJSONStoreRetryRebroadcastsExactPendingWire(t *testing.T) {
 	_, stores := newSharedJSONChannelStores(2)
 	baseRPC := testutil.NewFakeRPC()
 	merchant := testutil.NewPrivateKey()
@@ -270,7 +304,7 @@ func TestSharedJSONStoreRetryReconfirmsPendingSignatureWithoutBroadcast(t *testi
 		t.Fatal("uncertain settlement confirmation unexpectedly succeeded")
 	}
 	pending, err := stores[1].GetChannel(context.Background(), channelID)
-	if err != nil || pending == nil || pending.Sealed || pending.Settling || pending.SettledSignature == nil {
+	if err != nil || pending == nil || pending.Sealed || !pending.Settling || pending.SettledSignature == nil || pending.SettlementWire == "" {
 		t.Fatalf("pending shared state=%+v err=%v", pending, err)
 	}
 	pendingSignature := *pending.SettledSignature
@@ -281,8 +315,8 @@ func TestSharedJSONStoreRetryReconfirmsPendingSignatureWithoutBroadcast(t *testi
 	if err != nil {
 		t.Fatalf("shared-store settlement retry: %v", err)
 	}
-	if settled != pendingSignature || len(retryRPC.Sent) != 0 {
-		t.Fatalf("retry signature=%q broadcasts=%d want signature=%q broadcasts=0", settled, len(retryRPC.Sent), pendingSignature)
+	if settled != pendingSignature || len(retryRPC.Sent) != 1 {
+		t.Fatalf("retry signature=%q submissions=%d want signature=%q submissions=1", settled, len(retryRPC.Sent), pendingSignature)
 	}
 }
 
@@ -308,6 +342,60 @@ func TestSettlementSignatureIsPersistedBeforeBroadcast(t *testing.T) {
 	}
 	if !inspectingRPC.observed || len(baseRPC.Sent) != 1 {
 		t.Fatalf("pre-broadcast persistence observed=%v sends=%d", inspectingRPC.observed, len(baseRPC.Sent))
+	}
+}
+
+func TestPreSendCrashRestartRebroadcastsExactPersistedWire(t *testing.T) {
+	_, stores := newSharedJSONChannelStores(2)
+	baseRPC := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	first := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[0]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	restarted := newTestSession(t, func(o *SessionOptions) {
+		o.Store = stores[1]
+		o.RPC = baseRPC
+		o.Signer = merchant
+	})
+	_, channelID := openTrustedChannel(t, first, 1_000)
+	crashRPC := &crashBeforeSendRPC{FakeRPC: baseRPC}
+	first.rpc = crashRPC
+
+	if _, err := first.closeAndSettleChannel(context.Background(), channelID); err == nil ||
+		!strings.Contains(err.Error(), "simulated process crash") {
+		t.Fatalf("pre-send crash error = %v", err)
+	}
+	if len(baseRPC.Sent) != 0 {
+		t.Fatalf("pre-send crash reached network %d times", len(baseRPC.Sent))
+	}
+	pending, err := stores[1].GetChannel(context.Background(), channelID)
+	if err != nil || pending == nil || !pending.Settling || pending.SettledSignature == nil || pending.SettlementWire == "" {
+		t.Fatalf("persisted pre-send outbox=%+v err=%v", pending, err)
+	}
+	if crashRPC.attemptedWire != pending.SettlementWire {
+		t.Fatal("RPC boundary did not receive the persisted settlement wire")
+	}
+	pendingSignature := *pending.SettledSignature
+
+	settled, err := restarted.closeAndSettleChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("restart outbox delivery: %v", err)
+	}
+	if settled != pendingSignature || len(baseRPC.Sent) != 1 {
+		t.Fatalf("restart signature=%q submissions=%d want=%q,1", settled, len(baseRPC.Sent), pendingSignature)
+	}
+	rebroadcastWire, err := solanatx.EncodeTransactionBase64(baseRPC.Sent[0])
+	if err != nil {
+		t.Fatalf("encode restart submission: %v", err)
+	}
+	if rebroadcastWire != pending.SettlementWire {
+		t.Fatal("restart rebuilt settlement instead of delivering exact persisted wire")
+	}
+	sealed, err := stores[0].GetChannel(context.Background(), channelID)
+	if err != nil || sealed == nil || !sealed.Sealed || sealed.SettlementWire != "" || sealed.Settling {
+		t.Fatalf("sealed outbox state=%+v err=%v", sealed, err)
 	}
 }
 

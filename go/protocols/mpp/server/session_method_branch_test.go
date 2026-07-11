@@ -390,14 +390,18 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 	// The watchdog fires and submission returns an uncertain error. The signed
 	// signature remains pending for confirmation by a later retry.
 	deadline := time.Now().Add(3 * time.Second)
-	for fake.calls() == baseline {
+	var state *ChannelState
+	for {
+		state = mustGetChannel(t, session, channelID)
+		if fake.calls() > baseline && state.SettledSignature != nil && state.SettlementWire != "" {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("idle-close watchdog never attempted settlement")
+			t.Fatalf("idle-close watchdog never persisted its outbox: %+v", state)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || state.Settling || state.SettledSignature == nil {
+	if state.Sealed || !state.Settling || state.SettledSignature == nil || state.SettlementWire == "" {
 		t.Fatalf("failed settle mutated state: %+v", state)
 	}
 }

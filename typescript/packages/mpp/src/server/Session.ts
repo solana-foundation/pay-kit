@@ -1,6 +1,9 @@
 import {
     type Address,
     createSolanaRpc,
+    getBase64Codec,
+    getSignatureFromTransaction,
+    getTransactionDecoder,
     isTransactionPartialSigner,
     type Signature,
     type TransactionPartialSigner,
@@ -1264,6 +1267,7 @@ async function closeAndSettleChannel(
     if (!claimed) return undefined;
 
     let pendingSignature = state.settlementPendingSignature as Signature | undefined;
+    let pendingWire = state.settlementPendingWire;
     try {
         // The distribute refund goes to the channel payer (the program enforces
         // `payer == channel.payer`). It is recorded as `state.operator` at open.
@@ -1321,6 +1325,7 @@ async function closeAndSettleChannel(
                 },
                 async prepared => {
                     pendingSignature = prepared.signature;
+                    pendingWire = prepared.wire;
                     await args.store.updateChannel(args.channelId, current => {
                         if (!current) {
                             throw new Error(`Channel ${args.channelId} disappeared before settlement broadcast`);
@@ -1331,11 +1336,26 @@ async function closeAndSettleChannel(
                         return {
                             ...current,
                             settlementPendingSignature: prepared.signature as unknown as string,
+                            settlementPendingWire: prepared.wire,
                         };
                     });
                 },
             );
             pendingSignature = result.signature;
+        } else if (pendingWire) {
+            const wireSignature = getSignatureFromTransaction(
+                getTransactionDecoder().decode(getBase64Codec().encode(pendingWire)),
+            );
+            if (wireSignature !== pendingSignature) {
+                throw new Error(`Channel ${args.channelId} pending settlement wire does not match its signature`);
+            }
+            await (
+                args.rpc as unknown as {
+                    sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
+                }
+            )
+                .sendTransaction(pendingWire, { encoding: 'base64' })
+                .send();
         }
 
         await waitForSignatureConfirmation({
@@ -1345,6 +1365,7 @@ async function closeAndSettleChannel(
         });
         await args.store.updateChannel(args.channelId, current => {
             if (!current) throw new Error(`Channel ${args.channelId} disappeared during settle`);
+            if (current.sealed && current.settledSignature === pendingSignature) return current;
             if (current.settlementPendingSignature !== pendingSignature) {
                 throw new Error(`Channel ${args.channelId} settlement signature changed during confirmation`);
             }
@@ -1354,6 +1375,7 @@ async function closeAndSettleChannel(
                 settlementClaimExpiresAt: undefined,
                 settlementClaimOwner: undefined,
                 settlementPendingSignature: undefined,
+                settlementPendingWire: undefined,
                 settledSignature: pendingSignature as unknown as string,
                 settling: false,
             };
@@ -1370,7 +1392,7 @@ async function closeAndSettleChannel(
                 settlementClaimExpiresAt: undefined,
                 settlementClaimOwner: undefined,
                 ...(definiteFailure && current.settlementPendingSignature === pendingSignature
-                    ? { settlementPendingSignature: undefined }
+                    ? { settlementPendingSignature: undefined, settlementPendingWire: undefined }
                     : {}),
                 settling: false,
             };

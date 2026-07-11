@@ -306,6 +306,7 @@ func TestChannelStatePersistsSettlementClaimAndPendingSignature(t *testing.T) {
 	state := testChannelState("c1", 1_000)
 	state.Settling = true
 	state.SettledSignature = &signature
+	state.SettlementWire = "c2lnbmVkLXdpcmU="
 	state.SettlementClaimOwner = "worker-1"
 	state.SettlementClaimedAt = 123
 
@@ -315,6 +316,7 @@ func TestChannelStatePersistsSettlementClaimAndPendingSignature(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"settling":true`) ||
 		!strings.Contains(string(encoded), `"settled_signature":"pending-settlement-signature"`) ||
+		!strings.Contains(string(encoded), `"settlement_wire":"c2lnbmVkLXdpcmU="`) ||
 		!strings.Contains(string(encoded), `"settlement_claim_owner":"worker-1"`) ||
 		!strings.Contains(string(encoded), `"settlement_claimed_at":123`) {
 		t.Fatalf("serialized settlement state = %s", encoded)
@@ -325,7 +327,7 @@ func TestChannelStatePersistsSettlementClaimAndPendingSignature(t *testing.T) {
 		t.Fatalf("unmarshal channel state: %v", err)
 	}
 	if !decoded.Settling || decoded.SettledSignature == nil || *decoded.SettledSignature != signature ||
-		decoded.SettlementClaimOwner != "worker-1" || decoded.SettlementClaimedAt != 123 {
+		decoded.SettlementWire != "c2lnbmVkLXdpcmU=" || decoded.SettlementClaimOwner != "worker-1" || decoded.SettlementClaimedAt != 123 {
 		t.Fatalf("decoded settlement state = %+v", decoded)
 	}
 }

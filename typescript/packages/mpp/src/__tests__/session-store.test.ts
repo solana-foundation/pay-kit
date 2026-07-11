@@ -111,15 +111,18 @@ describe('createMemorySessionStore', () => {
         const pending = await store.updateChannel('c1', current => ({
             ...current!,
             settlementPendingSignature: 'settle-signature',
+            settlementPendingWire: 'signed-wire',
             settling: false,
         }));
         expect(pending.settlementPendingSignature).toBe('settle-signature');
+        expect(pending.settlementPendingWire).toBe('signed-wire');
         expect(pending.settling).toBe(false);
 
         await store.updateChannel('c1', current => ({
             ...current!,
             settlementClaimExpiresAt: 0n,
             settlementPendingSignature: undefined,
+            settlementPendingWire: undefined,
             settling: true,
         }));
         const recovered = await store.updateChannel('c1', current => ({

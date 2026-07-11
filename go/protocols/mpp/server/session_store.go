@@ -106,18 +106,24 @@ type ChannelState struct {
 
 	// SettledSignature is the signature (base58) of the signed
 	// settle-and-distribute transaction. It is persisted under the settlement
-	// claim before broadcast. When Sealed is false, retries confirm this same
-	// transaction instead of broadcasting another settlement.
+	// claim before broadcast. When Sealed is false, retries rebroadcast the
+	// exact stored wire and confirm this same transaction.
 	//
 	// An extension beyond the core channel-state shape, recorded only when
 	// this server drives on-chain settlement. Serialized with omitempty so a
 	// channel state without a settlement round-trips cleanly.
 	SettledSignature *string `json:"settled_signature,omitempty"`
 
+	// SettlementWire is the exact signed transaction encoded as base64. New
+	// settlement attempts persist it atomically with SettledSignature before
+	// broadcast, forming a transactional outbox. Retries decode and rebroadcast
+	// these exact bytes, preserving the transaction signature.
+	SettlementWire string `json:"settlement_wire,omitempty"`
+
 	// Settling is the durable in-flight claim acquired atomically before this
-	// server builds, broadcasts, or confirms a settlement transaction. It
-	// prevents server instances sharing a store from duplicating broadcasts.
-	// It is persisted so independent store clients observe the same claim.
+	// server builds a settlement transaction. A fresh signature-less claim
+	// blocks competing builds; once the exact wire is persisted, other servers
+	// may safely take over and idempotently submit that same transaction.
 	Settling bool `json:"settling,omitempty"`
 
 	// SettlementClaimOwner identifies the settlement attempt that currently
@@ -407,6 +413,7 @@ func (s *MemoryChannelStore) MarkSealed(ctx context.Context, channelID string) (
 		}
 		next := *current
 		next.Sealed = true
+		next.SettlementWire = ""
 		next.Settling = false
 		next.SettlementClaimOwner = ""
 		next.SettlementClaimedAt = 0

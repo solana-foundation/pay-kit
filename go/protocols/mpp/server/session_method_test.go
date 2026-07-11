@@ -1165,7 +1165,7 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("settlement failure error = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.CloseRequestedAt == nil || state.Sealed || state.Settling || state.SettledSignature == nil {
+	if state.CloseRequestedAt == nil || state.Sealed || !state.Settling || state.SettledSignature == nil || state.SettlementWire == "" {
 		t.Fatalf("state after failed settle = %+v", state)
 	}
 	pendingSignature := *state.SettledSignature
@@ -1179,7 +1179,8 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 		t.Fatalf("pending settlement failure = %v", err)
 	}
 	state = mustGetChannel(t, session, channelID)
-	if state.Sealed || state.Settling || state.SettledSignature != nil {
+	if state.Sealed || state.Settling || state.SettledSignature != nil || state.SettlementWire != "" ||
+		state.SettlementClaimOwner != "" || state.SettlementClaimedAt != 0 {
 		t.Fatalf("state after definite pending failure = %+v", state)
 	}
 	delete(fake.Statuses, pendingSignature)
@@ -1188,8 +1189,8 @@ func TestSessionCloseRetryAfterFailedSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("close retry: %v", err)
 	}
-	if len(fake.Sent) != 1 {
-		t.Fatalf("settlement broadcasts = %d, want 1", len(fake.Sent))
+	if len(fake.Sent) != 2 {
+		t.Fatalf("settlement broadcasts = %d, want 2", len(fake.Sent))
 	}
 	state = mustGetChannel(t, session, channelID)
 	if !state.Sealed || state.SettledSignature == nil {
@@ -1878,7 +1879,7 @@ func TestSessionIdleCloseSettlesOnChain(t *testing.T) {
 	}
 }
 
-func TestExplicitCloseRacingIdleCloseBroadcastsOnce(t *testing.T) {
+func TestExplicitCloseRacingIdleCloseReusesSettlementWire(t *testing.T) {
 	baseRPC := testutil.NewFakeRPC()
 	fake := &blockingConfirmationRPC{
 		FakeRPC:       baseRPC,
@@ -1920,8 +1921,8 @@ func TestExplicitCloseRacingIdleCloseBroadcastsOnce(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if len(fake.Sent) != 1 {
-		t.Fatalf("settlement broadcasts while first close is in flight = %d, want 1", len(fake.Sent))
+	if len(fake.Sent) != 2 {
+		t.Fatalf("idempotent settlement submissions while first close is in flight = %d, want 2", len(fake.Sent))
 	}
 	close(fake.releaseStatus)
 	<-idleDone
@@ -1952,7 +1953,7 @@ func TestSettlementConfirmationFailureReleasesClaimForRetry(t *testing.T) {
 		t.Fatalf("confirmation failure = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || state.Settling || state.SettledSignature == nil {
+	if state.Sealed || !state.Settling || state.SettledSignature == nil || state.SettlementWire == "" {
 		t.Fatalf("failed confirmation left channel non-retryable: %+v", state)
 	}
 	pendingSignature := *state.SettledSignature
@@ -1963,7 +1964,7 @@ func TestSettlementConfirmationFailureReleasesClaimForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settlement retry: %v", err)
 	}
-	if settled != pendingSignature || len(healthyRPC.Sent) != 0 {
+	if settled != pendingSignature || len(healthyRPC.Sent) != 1 {
 		t.Fatalf("settlement retry = %q with %d broadcasts", settled, len(healthyRPC.Sent))
 	}
 	state = mustGetChannel(t, session, channelID)
@@ -1989,7 +1990,8 @@ func TestDefiniteSettlementFailureClearsSignatureForRetry(t *testing.T) {
 		t.Fatalf("definite settlement failure = %v", err)
 	}
 	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || state.Settling || state.SettledSignature != nil {
+	if state.Sealed || state.Settling || state.SettledSignature != nil || state.SettlementWire != "" ||
+		state.SettlementClaimOwner != "" || state.SettlementClaimedAt != 0 {
 		t.Fatalf("definite failure did not clear settlement state: %+v", state)
 	}
 	if len(baseRPC.Sent) != 1 {
@@ -2028,7 +2030,7 @@ func TestConfirmedSettlementReconcilesAfterRequestCancellation(t *testing.T) {
 		t.Fatalf("settlement=%q context error=%v", settled, ctx.Err())
 	}
 	state := mustGetChannel(t, session, channelID)
-	if !state.Sealed || state.Settling || state.SettledSignature == nil || *state.SettledSignature != settled {
+	if !state.Sealed || state.Settling || state.SettledSignature == nil || *state.SettledSignature != settled || state.SettlementWire != "" {
 		t.Fatalf("confirmed settlement was not reconciled: %+v", state)
 	}
 }

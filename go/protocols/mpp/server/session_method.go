@@ -1023,10 +1023,10 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		}
 	}
 
-	releaseClaim := func(settlementErr error, clearSignature bool) (string, error) {
-		// Confirmation commonly fails because ctx was canceled or timed out;
-		// retain its values but detach cancellation so cleanup can make the
-		// channel retryable.
+	clearAttempt := func(settlementErr error, clearOutbox bool) (string, error) {
+		// Definitive failures clear the owner-checked attempt under a detached,
+		// bounded context. Uncertain failures do not call this helper: their
+		// claim and exact signed wire remain durable for idempotent retry.
 		writeCtx, cancel := settlementStateContext(ctx)
 		defer cancel()
 		_, releaseErr := s.core.store.UpdateChannel(writeCtx, channelID, func(current *ChannelState) (ChannelState, error) {
@@ -1040,8 +1040,9 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			next.Settling = false
 			next.SettlementClaimOwner = ""
 			next.SettlementClaimedAt = 0
-			if clearSignature {
+			if clearOutbox {
 				next.SettledSignature = nil
+				next.SettlementWire = ""
 			}
 			return next, nil
 		})
@@ -1053,10 +1054,23 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 
 	merchant := s.signer.PublicKey()
 	var signature solana.Signature
+	var settlementTx *solana.Transaction
+	if state.SettlementWire != "" && state.SettledSignature == nil {
+		return clearAttempt(errors.New("stored settlement wire has no signature"), true)
+	}
 	if state.SettledSignature != nil {
 		signature, err = solana.SignatureFromBase58(*state.SettledSignature)
 		if err != nil {
-			return releaseClaim(fmt.Errorf("invalid stored settlement signature %q: %w", *state.SettledSignature, err), false)
+			return clearAttempt(fmt.Errorf("invalid stored settlement signature %q: %w", *state.SettledSignature, err), true)
+		}
+		if state.SettlementWire != "" {
+			settlementTx, err = solanatx.DecodeTransactionBase64(state.SettlementWire)
+			if err != nil {
+				return clearAttempt(fmt.Errorf("decode stored settlement wire: %w", err), true)
+			}
+			if len(settlementTx.Signatures) == 0 || settlementTx.Signatures[0] != signature {
+				return clearAttempt(errors.New("stored settlement wire does not match its signature"), true)
+			}
 		}
 	} else {
 		// The distribute refund goes to the channel payer (the program enforces
@@ -1066,27 +1080,32 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		// instead when the payer was never recorded.
 		instructions, err := s.core.settlementInstructionsForState(state, channelID, merchant)
 		if err != nil {
-			return releaseClaim(err, true)
+			return clearAttempt(err, true)
 		}
 		blockhash, err := s.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 		if err != nil {
-			return releaseClaim(core.WrapError(core.ErrCodeRPC, "fetch settlement blockhash", err), true)
+			return clearAttempt(core.WrapError(core.ErrCodeRPC, "fetch settlement blockhash", err), true)
 		}
 		if blockhash == nil || blockhash.Value == nil {
-			return releaseClaim(core.NewError(core.ErrCodeRPC, "fetch settlement blockhash: empty response"), true)
+			return clearAttempt(core.NewError(core.ErrCodeRPC, "fetch settlement blockhash: empty response"), true)
 		}
 		tx, err := solana.NewTransaction(instructions, blockhash.Value.Blockhash, solana.TransactionPayer(merchant))
 		if err != nil {
-			return releaseClaim(fmt.Errorf("build settlement transaction: %w", err), true)
+			return clearAttempt(fmt.Errorf("build settlement transaction: %w", err), true)
 		}
 		if err := solanatx.SignTransaction(tx, s.signer); err != nil {
-			return releaseClaim(fmt.Errorf("sign settlement transaction: %w", err), true)
+			return clearAttempt(fmt.Errorf("sign settlement transaction: %w", err), true)
 		}
 		if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
-			return releaseClaim(errors.New("signed settlement transaction has no fee-payer signature"), true)
+			return clearAttempt(errors.New("signed settlement transaction has no fee-payer signature"), true)
 		}
+		settlementTx = tx
 		signature = tx.Signatures[0]
 		settled := signature.String()
+		wire, err := solanatx.EncodeTransactionBase64(tx)
+		if err != nil {
+			return clearAttempt(fmt.Errorf("encode signed settlement transaction: %w", err), true)
+		}
 		writeCtx, cancel := settlementStateContext(ctx)
 		stored, persistErr := s.core.store.UpdateChannel(writeCtx, channelID, func(current *ChannelState) (ChannelState, error) {
 			if current == nil {
@@ -1103,6 +1122,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			}
 			next := *current
 			next.SettledSignature = &settled
+			next.SettlementWire = wire
 			return next, nil
 		})
 		cancel()
@@ -1117,23 +1137,24 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 			}
 			return settled, nil
 		}
-		sentSignature, sendErr := solanatx.SendTransaction(ctx, s.rpc, tx)
+	}
+
+	if settlementTx != nil {
+		sentSignature, sendErr := solanatx.SendTransaction(ctx, s.rpc, settlementTx)
 		if sendErr != nil {
-			// Submission errors can be uncertain. Retain the pre-persisted
-			// signature so retries only re-confirm this transaction.
-			return releaseClaim(core.WrapError(core.ErrCodeRPC, "send settlement transaction", sendErr), false)
+			return "", core.WrapError(core.ErrCodeRPC, "send settlement transaction", sendErr)
 		}
 		if sentSignature != signature {
-			return releaseClaim(fmt.Errorf("broadcast settlement signature %s != signed signature %s", sentSignature, signature), false)
+			return "", fmt.Errorf("broadcast settlement signature %s != signed signature %s", sentSignature, signature)
 		}
 	}
 
 	if err := waitForSettlementConfirmation(ctx, s.rpc, signature); err != nil {
 		var definite *definiteSettlementFailure
 		if errors.As(err, &definite) {
-			return releaseClaim(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err), true)
+			return clearAttempt(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err), true)
 		}
-		return releaseClaim(core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err), false)
+		return "", core.WrapError(core.ErrCodeRPC, "confirm settlement transaction", err)
 	}
 
 	settled := signature.String()
@@ -1152,13 +1173,14 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		next := *current
 		next.Sealed = true
 		next.SettledSignature = &settled
+		next.SettlementWire = ""
 		next.Settling = false
 		next.SettlementClaimOwner = ""
 		next.SettlementClaimedAt = 0
 		return next, nil
 	})
 	if err != nil {
-		return releaseClaim(fmt.Errorf("persist confirmed settlement: %w", err), false)
+		return "", fmt.Errorf("persist confirmed settlement: %w", err)
 	}
 	if stored.SettledSignature != nil {
 		return *stored.SettledSignature, nil
