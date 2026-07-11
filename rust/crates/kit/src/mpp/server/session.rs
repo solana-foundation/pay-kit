@@ -1544,14 +1544,23 @@ fn verify_top_up_transaction(
     expected_delta: u64,
 ) -> Result<()> {
     use solana_rpc_client::rpc_client::RpcClient;
+    use solana_rpc_client_api::config::RpcTransactionConfig;
     use solana_signature::Signature;
+    use solana_transaction_status_client_types::option_serializer::OptionSerializer;
     use solana_transaction_status_client_types::UiTransactionEncoding;
     use std::str::FromStr;
 
     let signature = Signature::from_str(signature)
         .map_err(|e| Error::Other(format!("invalid top-up signature: {e}")))?;
     let transaction = RpcClient::new(rpc_url.to_string())
-        .get_transaction(&signature, UiTransactionEncoding::JsonParsed)
+        .get_transaction_with_config(
+            &signature,
+            RpcTransactionConfig {
+                encoding: Some(UiTransactionEncoding::Base64),
+                commitment: Some(solana_commitment_config::CommitmentConfig::confirmed()),
+                max_supported_transaction_version: Some(0),
+            },
+        )
         .map_err(|e| Error::Other(format!("fetch top-up transaction: {e}")))?;
     if transaction
         .transaction
@@ -1564,44 +1573,76 @@ fn verify_top_up_transaction(
             "top-up transaction failed on-chain".to_string(),
         ));
     }
-    let value = serde_json::to_value(&transaction)
-        .map_err(|e| Error::Other(format!("serialize top-up transaction: {e}")))?;
-    let instructions = value
-        .pointer("/transaction/transaction/message/instructions")
-        .and_then(|value| value.as_array())
-        .ok_or_else(|| Error::Other("top-up transaction has no parsed instructions".to_string()))?;
+    let decoded = transaction
+        .transaction
+        .transaction
+        .decode()
+        .ok_or_else(|| {
+            Error::Other("top-up transaction is not valid base64 wire data".to_string())
+        })?;
+    let loaded_addresses = match transaction.transaction.meta.as_ref() {
+        Some(meta) => match &meta.loaded_addresses {
+            OptionSerializer::Some(addresses) => addresses
+                .writable
+                .iter()
+                .chain(&addresses.readonly)
+                .map(|address| {
+                    address.parse::<Pubkey>().map_err(|e| {
+                        Error::Other(format!(
+                            "top-up transaction has invalid loaded address: {e}"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            OptionSerializer::None | OptionSerializer::Skip => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    let channel_id = channel_id
+        .parse::<Pubkey>()
+        .map_err(|e| Error::Other(format!("invalid top-up channel id: {e}")))?;
+    verify_top_up_wire_transaction(
+        &decoded,
+        &loaded_addresses,
+        &channel_id,
+        program_id,
+        expected_delta,
+    )
+}
+
+#[cfg(feature = "server")]
+fn verify_top_up_wire_transaction(
+    transaction: &solana_transaction::versioned::VersionedTransaction,
+    loaded_addresses: &[Pubkey],
+    channel_id: &Pubkey,
+    program_id: &Pubkey,
+    expected_delta: u64,
+) -> Result<()> {
+    let mut account_keys = transaction.message.static_account_keys().to_vec();
+    account_keys.extend_from_slice(loaded_addresses);
     let mut matches = 0usize;
     let mut total = 0u64;
-    for instruction in instructions {
-        if instruction
-            .get("programId")
-            .and_then(|value| value.as_str())
-            != Some(&program_id.to_string())
-        {
+    for instruction in transaction.message.instructions() {
+        if account_keys.get(usize::from(instruction.program_id_index)) != Some(program_id) {
             continue;
         }
-        let Some(data) = instruction.get("data").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let decoded = bs58::decode(data)
-            .into_vec()
-            .map_err(|e| Error::Other(format!("invalid top-up instruction data: {e}")))?;
-        if decoded.first().copied() != Some(3) {
+        if instruction.data.first().copied() != Some(3) {
             continue;
         }
-        let accounts = instruction
-            .get("accounts")
-            .and_then(|value| value.as_array())
+        let channel_index = *instruction
+            .accounts
+            .get(1)
             .ok_or_else(|| Error::Other("top-up instruction has invalid accounts".to_string()))?;
-        if accounts.get(1).and_then(|value| value.as_str()) != Some(channel_id) {
+        if account_keys.get(usize::from(channel_index)) != Some(channel_id) {
             continue;
         }
-        let amount_bytes: [u8; 8] = decoded
+        let amount_bytes: [u8; 8] = instruction
+            .data
             .get(1..9)
             .ok_or_else(|| Error::Other("top-up instruction has invalid length".to_string()))?
             .try_into()
             .map_err(|_| Error::Other("top-up instruction has invalid length".to_string()))?;
-        if decoded.len() != 9 {
+        if instruction.data.len() != 9 {
             return Err(Error::Other(
                 "top-up instruction has trailing data".to_string(),
             ));
@@ -3153,6 +3194,51 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("does not match transaction signature"));
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn top_up_wire_verifier_binds_compiled_instruction() {
+        let payer = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let token_program = Pubkey::new_unique();
+        let program_id = payment_channels::default_program_id();
+        let instruction = payment_channels::build_top_up_instruction(
+            &payer,
+            &channel,
+            &mint,
+            1_000,
+            &token_program,
+            &program_id,
+        );
+        let transaction = solana_transaction::versioned::VersionedTransaction::from(
+            solana_transaction::Transaction::new_unsigned(solana_message::Message::new(
+                std::slice::from_ref(&instruction),
+                Some(&payer),
+            )),
+        );
+
+        verify_top_up_wire_transaction(&transaction, &[], &channel, &program_id, 1_000).unwrap();
+        assert!(
+            verify_top_up_wire_transaction(&transaction, &[], &channel, &program_id, 999)
+                .unwrap_err()
+                .to_string()
+                .contains("expected delta")
+        );
+
+        let duplicate = solana_transaction::versioned::VersionedTransaction::from(
+            solana_transaction::Transaction::new_unsigned(solana_message::Message::new(
+                &[instruction.clone(), instruction],
+                Some(&payer),
+            )),
+        );
+        assert!(
+            verify_top_up_wire_transaction(&duplicate, &[], &channel, &program_id, 2_000)
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one")
+        );
     }
 
     #[cfg(feature = "server")]
