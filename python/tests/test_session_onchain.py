@@ -79,6 +79,7 @@ class _FakeRpc:
     def __init__(self) -> None:
         self.statuses: dict[str, dict | None] = {}
         self.transactions: dict[str, dict] = {}
+        self.get_transaction_kwargs: list[dict[str, object]] = []
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         out: list[dict | None] = []
@@ -95,7 +96,8 @@ class _FakeRpc:
     async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
         raise NotImplementedError  # not exercised by the open/top-up verifier tests
 
-    async def get_transaction(self, signature: str, **_kwargs):  # noqa: ANN201 (RPC seam stub)
+    async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN201 (RPC seam stub)
+        self.get_transaction_kwargs.append(kwargs)
         return self.transactions.get(str(signature))
 
 
@@ -688,6 +690,9 @@ async def test_new_top_up_tx_verifier_confirms_signature() -> None:
     assert verifier is not None
     payload = TopUpPayload(channel_id=str(channel), new_deposit="2000000", signature=str(signature))
     await verifier(payload, _top_up_state(channel))
+    assert fake_rpc.get_transaction_kwargs == [
+        {"commitment": "confirmed", "encoding": "jsonParsed", "max_supported_transaction_version": 0}
+    ]
 
 
 @pytest.mark.parametrize(

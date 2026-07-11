@@ -483,6 +483,7 @@ def new_top_up_tx_verifier(
         try:
             pending: Any = get_transaction(
                 payload.signature,
+                commitment="confirmed",
                 encoding="jsonParsed",
                 max_supported_transaction_version=0,
             )
