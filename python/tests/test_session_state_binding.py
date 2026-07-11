@@ -249,6 +249,11 @@ async def test_processed_signature_rejected_and_account_read_is_slot_pinned() ->
     with pytest.raises(PaymentError, match="not confirmed"):
         await confirm_transaction_signature(rpc, _signature(35), "open", timeout_seconds=0)
 
+    for invalid_slot in (None, -1, True, "88"):
+        rpc.status = {"err": None, "confirmationStatus": "confirmed", "slot": invalid_slot}
+        with pytest.raises(PaymentError, match="confirmation response has an invalid slot"):
+            await confirm_transaction_signature(rpc, _signature(35), "open", timeout_seconds=0)
+
     rpc.status = {"err": None, "confirmationStatus": "confirmed", "slot": 88}
     recipient = _wallet(36)
     signer = _wallet(38)

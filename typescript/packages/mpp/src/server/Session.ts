@@ -1259,7 +1259,15 @@ async function assertSignatureSucceeded(
     if (status.confirmationStatus !== 'confirmed' && status.confirmationStatus !== 'finalized') {
         throw new Error(`${context}: tx ${signature} is only ${String(status.confirmationStatus)}; confirmed required`);
     }
-    return response.context?.slot ?? 0n;
+    const slot = response.context?.slot;
+    if (
+        (typeof slot !== 'number' && typeof slot !== 'bigint') ||
+        slot < 0 ||
+        (typeof slot === 'number' && !Number.isSafeInteger(slot))
+    ) {
+        throw new Error(`${context}: tx ${signature} confirmation response has an invalid context slot`);
+    }
+    return slot;
 }
 
 function isTopUpTransactionRpc(rpc: RpcLike | undefined): rpc is RpcLike & TopUpTransactionRpc {

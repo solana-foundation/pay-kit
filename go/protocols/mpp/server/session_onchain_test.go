@@ -543,6 +543,52 @@ func TestNewTopUpTxVerifierConfirmsSignature(t *testing.T) {
 	}
 }
 
+func TestNewTopUpTxVerifierRejectsTwoMatchingInstructions(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	channelID := solana.NewWallet().PublicKey()
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	buildTopUp := func(amount uint64) solana.Instruction {
+		t.Helper()
+		instruction, err := paymentchannels.BuildTopUpInstruction(paymentchannels.TopUpParams{
+			Payer: payer.PublicKey(), Channel: channelID, Mint: mint,
+			Amount: amount, TokenProgram: solana.TokenProgramID,
+		})
+		if err != nil {
+			t.Fatalf("BuildTopUpInstruction: %v", err)
+		}
+		return instruction
+	}
+	tx, err := solana.NewTransaction(
+		[]solana.Instruction{buildTopUp(400), buildTopUp(600)},
+		solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"),
+		solana.TransactionPayer(payer.PublicKey()),
+	)
+	if err != nil {
+		t.Fatalf("NewTransaction: %v", err)
+	}
+	if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		if key.Equals(payer.PublicKey()) {
+			return &payer
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("sign top-up transaction: %v", err)
+	}
+
+	fake := testutil.NewFakeRPC()
+	signature := tx.Signatures[0]
+	fake.BySig[signature.String()] = tx
+	config := sessionTestConfig()
+	config.Network = "mainnet"
+	payload := &intents.TopUpPayload{
+		ChannelID: channelID.String(), NewDeposit: "2000", Signature: signature.String(),
+	}
+	err = NewTopUpStateTxVerifier(config, fake)(context.Background(), payload, ChannelState{Deposit: 1_000})
+	if err == nil || !strings.Contains(err.Error(), "exactly one") || !strings.Contains(err.Error(), "found 2") {
+		t.Fatalf("duplicate top-up instruction error = %v", err)
+	}
+}
+
 func TestNewTopUpTxVerifierSurfacesFailureAndNotFound(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	signature, err := signer.Sign([]byte("top-up"))

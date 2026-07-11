@@ -156,6 +156,11 @@ class SessionConfig:
     # mode) before process_open persists channel state.
     verify_open_tx: SessionTxVerifier[OpenPayload] | None = None
 
+    # OpenTxSubmitter identifies who broadcasts transaction-backed opens.
+    # Only server-broadcast signatures are retained for idempotent replay;
+    # client signatures are request data and do not belong in server state.
+    open_tx_submitter: str = "client"
+
     # Legacy payload-only callback retained for API compatibility.
     verify_top_up_tx: SessionTxVerifier[TopUpPayload] | None = None
 
@@ -363,7 +368,7 @@ class SessionServer:
             # one (pull opens, trusted opens).
             open_slot=payload.recent_slot or 0,
             salt=payload.salt or 0,
-            open_signature=payload.signature or None,
+            open_signature=(payload.signature or None) if self._config.open_tx_submitter == "server" else None,
         )
 
         def mutator(existing: ChannelState | None) -> ChannelState:

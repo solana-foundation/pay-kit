@@ -161,6 +161,24 @@ async def test_process_open_stores_state() -> None:
     assert state.authorized_signer == "signer1"
 
 
+async def test_process_open_does_not_persist_client_submitted_signature() -> None:
+    server = new_session_test_server(session_test_config())
+
+    state = await server.process_open(session_open_payload("chan1", 1_000_000, "signer1"))
+
+    assert state.open_signature is None
+
+
+async def test_process_open_persists_server_submitted_signature() -> None:
+    config = session_test_config()
+    config.open_tx_submitter = "server"
+    server = new_session_test_server(config)
+
+    state = await server.process_open(session_open_payload("chan1", 1_000_000, "signer1"))
+
+    assert state.open_signature == "dummy_tx_sig"
+
+
 async def test_process_open_zero_deposit_rejected() -> None:
     """Mirrors TestProcessOpenZeroDepositRejected."""
     server = new_session_test_server(session_test_config())

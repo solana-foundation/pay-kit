@@ -274,6 +274,50 @@ describe('session Channel account state binding', () => {
         ).rejects.toThrow(/only processed/);
     });
 
+    test.each([
+        ['missing context', undefined],
+        ['missing slot', {}],
+        ['negative slot', { slot: -1 }],
+        ['fractional slot', { slot: 1.5 }],
+        ['non-numeric slot', { slot: '42' }],
+    ])('rejects a confirmed signature with %s', async (_label, context) => {
+        const channel = await channelId();
+        let accountInfoRequested = false;
+        const rpc = {
+            ...rpcWithChannel(encodeChannel(1_000n)),
+            getAccountInfo: (_address: Address) => ({
+                send: async () => {
+                    accountInfoRequested = true;
+                    return {
+                        value: { data: [encodeChannel(1_000n), 'base64'], owner: PAYMENT_CHANNELS_PROGRAM_ADDRESS },
+                    };
+                },
+            }),
+            getSignatureStatuses: () => ({
+                send: async () => ({
+                    context,
+                    value: [{ confirmationStatus: 'confirmed', err: null }],
+                }),
+            }),
+        };
+        const method = session(parameters({ rpc: rpc as never }));
+
+        await expect(
+            method.verify({
+                credential: credential({
+                    action: 'open',
+                    authorizedSigner: SIGNER,
+                    channelId: channel,
+                    deposit: '1000',
+                    mode: 'push',
+                    signature: 'confirmed-signature',
+                }),
+                request: {} as never,
+            }),
+        ).rejects.toThrow(/confirmation response has an invalid context slot/);
+        expect(accountInfoRequested).toBe(false);
+    });
+
     test('rejects an account whose grace period or distribution hash differs from the challenge', async () => {
         const channel = await channelId();
         const expected = {

@@ -58,7 +58,7 @@ class _SettleRpc:
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         self.status_queries.append(list(signatures))
-        return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
+        return [{"err": None, "confirmationStatus": "confirmed", "slot": 42} for _ in signatures]
 
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> _Resp:
         return _Resp(_Blockhash(_BLOCKHASH))
@@ -551,7 +551,7 @@ class _PollingSettleRpc(_SettleRpc):
             self._bounced_sig = signatures[0]
             self._none_left -= 1
             return [None for _ in signatures]
-        return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
+        return [{"err": None, "confirmationStatus": "confirmed", "slot": 42} for _ in signatures]
 
 
 @pytest.mark.asyncio

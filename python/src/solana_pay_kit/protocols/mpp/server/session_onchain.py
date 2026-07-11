@@ -820,7 +820,12 @@ async def confirm_transaction_signature(
             level = status.get("confirmationStatus")
             if level in ("confirmed", "finalized"):
                 slot = status.get("slot")
-                return slot if isinstance(slot, int) and slot >= 0 else 0
+                if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+                    raise PaymentError(
+                        f"{label} tx {signature!r} confirmation response has an invalid slot",
+                        code="transaction-not-confirmed",
+                    )
+                return slot
 
         now = time.monotonic()
         if now >= deadline:

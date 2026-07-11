@@ -1089,6 +1089,7 @@ def new_session(options: SessionOptions) -> Session:
         min_voucher_delta=options.min_voucher_delta,
         modes=options.modes,
         pull_voucher_strategy=options.pull_voucher_strategy,
+        open_tx_submitter=open_tx_submitter,
     )
     from solana_pay_kit.protocols.mpp.server.session_onchain import (
         new_open_tx_verifier,

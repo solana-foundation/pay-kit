@@ -542,15 +542,14 @@ func NewTopUpStateTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient)
 					!tx.Message.AccountKeys[instruction.Accounts[1]].Equals(channelID) {
 					continue
 				}
-				amount := binary.LittleEndian.Uint64(instruction.Data[1:])
-				if ^uint64(0)-funded < amount {
-					return fmt.Errorf("top-up instruction amount overflows total")
-				}
-				funded += amount
 				matched++
+				if matched > 1 {
+					return fmt.Errorf("top-up transaction must contain exactly one payment-channels top_up instruction for channel %s, found %d", channelID, matched)
+				}
+				funded = binary.LittleEndian.Uint64(instruction.Data[1:])
 			}
-			if matched == 0 {
-				return fmt.Errorf("no payment-channels top_up instruction found for channel %s", channelID)
+			if matched != 1 {
+				return fmt.Errorf("top-up transaction must contain exactly one payment-channels top_up instruction for channel %s, found %d", channelID, matched)
 			}
 			if newDeposit <= current.Deposit || funded != newDeposit-current.Deposit {
 				return fmt.Errorf("top-up amount %d != claimed deposit delta %d", funded, newDeposit-current.Deposit)
