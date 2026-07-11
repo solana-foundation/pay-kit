@@ -1268,9 +1268,9 @@ describe("mpp harness", () => {
     // ATA nor delivers the payout: the recipient receives 0 and no ATA is
     // created, a silent success-with-no-delivery. The safety invariant asserted
     // here — a settle reported successful (200 + settledSignature) MUST deliver
-    // the +N payout — is therefore violated and this is RED until the session
-    // close path grows the idempotent payee-ATA creation the upto path already
-    // has (or otherwise rejects clearly instead of reporting a phantom success).
+    // the +N payout — is therefore violated until the on-chain settlement path
+    // either delivers or rejects clearly. Session clients must not payer-fund
+    // recipient ATA creation.
     if (process.env.MPP_HARNESS_SESSION_RED_FAULTS === "1")
     socketAwareIt(
       `${sessionFaultScenario.id} fault: settle to a recipient with no ATA must deliver the payout (missing-ATA-creation)`,
@@ -1325,13 +1325,28 @@ describe("mpp harness", () => {
         );
         const detail = JSON.stringify(result, null, 2);
 
-        // Settlement must land: the on-chain distribute creates the payee ATA
-        // and pays out even though it did not exist before the close.
-        expect(result.status, detail).toBe(200);
         const body = result.responseBody as
           | { settledSignature?: unknown; reference?: unknown }
           | undefined;
         const settledSignature = body?.settledSignature;
+        if (result.status !== 200) {
+          expect(result.status, detail).toBeGreaterThanOrEqual(400);
+          for (const receipt of [
+            settledSignature,
+            body?.reference,
+            result.settlement,
+          ]) {
+            expect(
+              receipt ?? "",
+              `missing-ATA-creation: a rejected settle must not surface a receipt. ${detail}`,
+            ).toBe("");
+          }
+          expect(after - before, detail).toBe(0n);
+          return;
+        }
+
+        // A successful settlement must deliver the payout; a confirmed receipt
+        // without delivery is the false-paid condition this fault pins.
         expect(
           typeof settledSignature === "string" && settledSignature.length > 0,
           `missing-ATA-creation: a landed settle must surface a settledSignature. ${detail}`,
@@ -1715,10 +1730,9 @@ function expectPaymentChannelSettlement(
   ).toBe(PAYMENT_CHANNEL_PROGRAM);
 }
 
-// Session settle-at-close includes idempotent ATA creation for the payee and
-// treasury. Otherwise a missing destination ATA can leave a confirmed close
-// with a receipt but no delivered payout. A session always settles a recorded
-// voucher, so the Ed25519 precompile is present and hasVoucher is always 1.
+// Session clients do not payer-fund recipient ATA creation; that option belongs
+// to mpp/charge. A session always settles a recorded voucher, so the Ed25519
+// precompile is present and hasVoucher is always 1.
 function expectSessionChannelSettlement(
   surfnet: Surfnet,
   message: CompiledMessage,
@@ -1728,10 +1742,9 @@ function expectSessionChannelSettlement(
   expect(
     message.instructions,
     "session settle instruction count",
-  ).toHaveLength(5);
+  ).toHaveLength(3);
 
-  const [verify, settle, createPayee, createTreasury, distribute] =
-    message.instructions;
+  const [verify, settle, distribute] = message.instructions;
 
   // Ed25519 precompile verifying the final voucher.
   expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
@@ -1767,19 +1780,6 @@ function expectSessionChannelSettlement(
     mint,
     tokenProgram,
   );
-
-  expectIdempotentAtaCreationInstruction(message, createPayee, {
-    ata: payeeAta,
-    owner: primaryRecipientForScenario(scenario, scenarioEnv),
-    mint,
-    tokenProgram,
-  });
-  expectIdempotentAtaCreationInstruction(message, createTreasury, {
-    ata: treasuryAta,
-    owner: PAYMENT_CHANNEL_TREASURY_OWNER,
-    mint,
-    tokenProgram,
-  });
 
   // distribute (discriminator 7): 11-account header, channel matches the
   // settled channel, payee/treasury ATAs + mint + token program + self program
