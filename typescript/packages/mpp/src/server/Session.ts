@@ -299,6 +299,7 @@ export function session(parameters: session.Parameters) {
                         challengeOpenSlot: parseOptionalU64(cred.challenge.request.recentSlot, 'recentSlot'),
                         currency,
                         externalId: cred.challenge.request.externalId,
+                        gracePeriod: sessionGracePeriod,
                         lifecycle: lifecycleRef.value,
                         merchantSigner: signer,
                         mint: resolvedMint,
@@ -312,7 +313,6 @@ export function session(parameters: session.Parameters) {
                         pullVoucherStrategy,
                         recipient,
                         rpc,
-                        gracePeriod: sessionGracePeriod,
                         splits,
                         store,
                         tokenProgram,
@@ -341,6 +341,7 @@ export function session(parameters: session.Parameters) {
                         cap,
                         challengeId: cred.challenge.id,
                         externalId: cred.challenge.request.externalId,
+                        gracePeriod: sessionGracePeriod,
                         lifecycle: lifecycleRef.value,
                         mint: resolvedMint,
                         network,
@@ -349,7 +350,6 @@ export function session(parameters: session.Parameters) {
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
-                        gracePeriod: sessionGracePeriod,
                         splits,
                         store,
                     });
@@ -460,6 +460,7 @@ interface HandleOpenArgs {
     readonly challengeOpenSlot: bigint | undefined;
     readonly currency: string;
     readonly externalId: string | undefined;
+    readonly gracePeriod: number;
     readonly lifecycle: Lifecycle | undefined;
     readonly merchantSigner: TransactionPartialSigner | undefined;
     readonly mint: string;
@@ -474,7 +475,6 @@ interface HandleOpenArgs {
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
-    readonly gracePeriod: number;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
     readonly tokenProgram: string;
@@ -659,8 +659,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                         maxCap: args.cap,
                         mint: args.mint,
                         network: args.network,
-                        operator: args.operator,
                         openSlot,
+                        operator: args.operator,
                         programId: args.programId.toString(),
                         recipient: args.recipient,
                         splits: args.splits,
@@ -847,6 +847,7 @@ interface HandleTopUpArgs {
     readonly cap: bigint;
     readonly challengeId: string | undefined;
     readonly externalId: string | undefined;
+    readonly gracePeriod: number;
     readonly lifecycle: Lifecycle | undefined;
     readonly mint: string;
     readonly network: string;
@@ -860,7 +861,6 @@ interface HandleTopUpArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
-    readonly gracePeriod: number;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
 }
@@ -1397,12 +1397,12 @@ async function closeAndSettleChannel(
             return {
                 ...current,
                 sealed: true,
+                settledSignature: pendingSignature as unknown as string,
                 settlementClaimExpiresAt: undefined,
                 settlementClaimOwner: undefined,
                 settlementPendingLastValidBlockHeight: undefined,
                 settlementPendingSignature: undefined,
                 settlementPendingWire: undefined,
-                settledSignature: pendingSignature as unknown as string,
                 settling: false,
             };
         });

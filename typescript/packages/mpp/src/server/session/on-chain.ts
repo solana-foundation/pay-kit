@@ -48,13 +48,13 @@ import {
 } from '../../constants.js';
 import { type Channel, getChannelDecoder } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
-import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
-import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
+import type { OpenInstructionData } from '../../generated/payment-channels/instructions/open.js';
 import {
     getOpenInstructionDataDecoder,
     getOpenInstructionDataEncoder,
 } from '../../generated/payment-channels/instructions/open.js';
-import type { OpenInstructionData } from '../../generated/payment-channels/instructions/open.js';
+import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
+import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
 import {
     getTopUpInstruction,
     getTopUpInstructionDataDecoder,
@@ -441,9 +441,9 @@ export function buildReclaimInstruction(args: ReclaimBuildArgs): ServerInstructi
 export interface VerifyOpenTxExpected {
     readonly authorizedSigner: string;
     readonly currency: string;
-    readonly maxCap: bigint;
     /** Expected channel close grace period, defaulting to the program default. */
     readonly gracePeriod?: number | undefined;
+    readonly maxCap: bigint;
     /** Optional override for the SPL mint (otherwise resolved from currency/network). */
     readonly mint?: string | undefined;
     readonly network?: string | undefined;

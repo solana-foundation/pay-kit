@@ -81,6 +81,8 @@ export interface ChannelState {
     readonly salt?: bigint | undefined;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
+    /** Confirmed on-chain settle_and_seal transaction signature (base58). */
+    readonly settledSignature?: string | undefined;
     /** Unix milliseconds when the current signature-less settlement claim expires. */
     readonly settlementClaimExpiresAt?: bigint | undefined;
     /** Opaque owner token for the current settlement claim. */
@@ -93,8 +95,6 @@ export interface ChannelState {
     readonly settlementPendingWire?: string | undefined;
     /** True while one server instance owns the on-chain settlement broadcast. */
     readonly settling?: boolean | undefined;
-    /** Confirmed on-chain settle_and_seal transaction signature (base58). */
-    readonly settledSignature?: string | undefined;
     /**
      * Top-up transaction signatures already applied to this channel.
      * Kept in the channel record so replay rejection and the deposit increase
