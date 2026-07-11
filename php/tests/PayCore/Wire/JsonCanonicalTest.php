@@ -126,7 +126,11 @@ final class JsonCanonicalTest extends TestCase
     public function testCanonicalizeEmptyArrayAndObject(): void
     {
         self::assertSame('[]', Json::canonicalize([]));
-        // Non-list array with one item works through encodeObject; empty array is list-shape per array_is_list.
+        self::assertSame('{}', Json::canonicalize(new \stdClass()));
+        self::assertSame(
+            '{"array":[],"object":{}}',
+            Json::canonicalize(['object' => new \stdClass(), 'array' => []]),
+        );
     }
 
     public function testCanonicalizeRejectsUnsupportedValue(): void

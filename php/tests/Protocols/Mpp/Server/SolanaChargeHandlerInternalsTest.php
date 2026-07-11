@@ -29,7 +29,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
             ),
             rpc: $rpc,
             feePayer: null,
-            network: 'mainnet',
+            network: 'localnet',
             verifier: new SolanaChargeTransactionVerifier(),
             confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: $confirmationDelayMicros,

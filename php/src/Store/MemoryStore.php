@@ -11,7 +11,7 @@ namespace PayKit\Store;
  * shared atomic backing store (Redis, Postgres, DynamoDB) instead, otherwise
  * replay protection is lost across the worker pool.
  */
-final class MemoryStore implements Store
+final class MemoryStore implements Store, ReplayStoreCapability
 {
     /**
      * @var array<string, mixed>
@@ -25,5 +25,10 @@ final class MemoryStore implements Store
         }
         $this->values[$key] = $value;
         return true;
+    }
+
+    public function providesDurableSharedReplayProtection(): bool
+    {
+        return false;
     }
 }

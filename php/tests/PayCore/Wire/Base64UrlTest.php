@@ -69,12 +69,12 @@ final class Base64UrlTest extends TestCase
         Base64Url::decodeJson(Base64Url::encode('{'));
     }
 
-    public function testRejectsNonJsonValuesDuringCanonicalization(): void
+    public function testCanonicalizesStdClassAsJsonObject(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('unsupported JSON value');
+        $encoded = Base64Url::encodeJson(['object' => (object)['not' => 'json']]);
 
-        Base64Url::encodeJson(['object' => (object)['not' => 'json']]);
+        self::assertSame('{"object":{"not":"json"}}', Base64Url::decode($encoded));
+        self::assertSame(['object' => ['not' => 'json']], Base64Url::decodeJson($encoded));
     }
 
     public function testRejectsJsonScalars(): void
