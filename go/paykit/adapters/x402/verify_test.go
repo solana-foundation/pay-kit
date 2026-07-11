@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
@@ -278,11 +279,25 @@ func TestVerifyRejectsAccountIndexOutOfRange(t *testing.T) {
 // fakeRPC is the rpcClient test double for the broadcast + confirmation
 // path. send/confirm behaviour is scripted per field.
 type fakeRPC struct {
-	sig        solana.Signature
-	sendErr    error
-	confirm    rpc.ConfirmationStatusType
-	confirmErr *struct{ msg string } // non-nil => on-chain tx error
-	sends      int
+	sig         solana.Signature
+	sendErr     error
+	confirm     rpc.ConfirmationStatusType
+	confirmErr  *struct{ msg string } // non-nil => on-chain tx error
+	sends       int
+	sourceOwner solana.PublicKey
+}
+
+func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	data := make([]byte, 165)
+	owner := f.sourceOwner
+	if owner.IsZero() {
+		owner = solana.NewWallet().PublicKey()
+	}
+	copy(data[32:64], owner.Bytes())
+	return &rpc.GetAccountInfoResult{Value: &rpc.Account{
+		Owner: solana.MustPublicKeyFromBase58(paycore.TokenProgram),
+		Data:  rpc.DataBytesOrJSONFromBytes(data),
+	}}, nil
 }
 
 func (f *fakeRPC) SendEncodedTransactionWithOpts(_ context.Context, _ string, _ rpc.TransactionOpts) (solana.Signature, error) {
@@ -380,6 +395,20 @@ func TestVerifyAndSettleHappyPath(t *testing.T) {
 	}
 	if pmt.SettlementHeaders[proto.SettlementHeader] != sampleSig {
 		t.Error("settlement header missing")
+	}
+}
+
+func TestVerifyAndSettleRejectsManagedOwnerBehindDelegate(t *testing.T) {
+	fake := &fakeRPC{confirm: rpc.ConfirmationStatusConfirmed}
+	a, gate, sig := settleFixture(t, fake)
+	fake.sourceOwner = solana.MustPublicKeyFromBase58(string(a.signer.Pubkey()))
+
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	if err == nil || !strings.Contains(err.Error(), "owned by managed signer") {
+		t.Fatalf("managed source owner error = %v", err)
+	}
+	if fake.sends != 0 {
+		t.Fatalf("managed source owner transaction was broadcast %d times", fake.sends)
 	}
 }
 

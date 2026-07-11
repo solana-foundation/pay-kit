@@ -293,6 +293,48 @@ func TestVerifyOpenTxRequiresTransaction(t *testing.T) {
 	}
 }
 
+func TestVerifySignatureOnlyOpenFetchesAndBindsTransaction(t *testing.T) {
+	fixture := buildOpenTxFixture(t, false)
+	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
+	if err != nil {
+		t.Fatalf("DecodeTransactionBase64: %v", err)
+	}
+	fake := testutil.NewFakeRPC()
+	fake.BySig[fixture.signature] = tx
+	payload := fixture.payload
+	payload.Transaction = nil
+
+	verified, err := verifySignatureOnlyOpen(context.Background(), fixture.expected, &payload, fake)
+	if err != nil {
+		t.Fatalf("verifySignatureOnlyOpen: %v", err)
+	}
+	if verified.ChannelID != fixture.channel.String() || verified.Deposit != openFixtureDeposit {
+		t.Fatalf("verified = %+v", verified)
+	}
+
+	unrelated := buildOpenTxFixture(t, false)
+	unrelatedTx, err := solanatx.DecodeTransactionBase64(*unrelated.payload.Transaction)
+	if err != nil {
+		t.Fatalf("decode unrelated transaction: %v", err)
+	}
+	fake.BySig[unrelated.signature] = unrelatedTx
+	payload.Signature = unrelated.signature
+	if _, err := verifySignatureOnlyOpen(context.Background(), fixture.expected, &payload, fake); err == nil {
+		t.Fatal("unrelated confirmed transaction was accepted")
+	}
+}
+
+func TestConfirmTransactionSignatureRejectsProcessed(t *testing.T) {
+	fake := testutil.NewFakeRPC()
+	signature := confirmedSignature(0x91)
+	fake.Statuses[signature] = &rpc.SignatureStatusesResult{
+		ConfirmationStatus: rpc.ConfirmationStatusProcessed,
+	}
+	if err := confirmTransactionSignature(context.Background(), fake, signature, "open"); err == nil || !strings.Contains(err.Error(), "only processed") {
+		t.Fatalf("processed status error = %v", err)
+	}
+}
+
 func TestVerifyOpenTxRejectsWrongPayee(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	fixture.expected.Recipient = fixture.payer.PublicKey().String()

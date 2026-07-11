@@ -94,7 +94,7 @@ func TestAppendChallengeDropsProtocolOnBuildError(t *testing.T) {
 			c.RequireFunc(func(*http.Request) (Gate, error) {
 				return Gate{Amount: MustParseUSD("0.10"), Name: "g"}, nil
 			})(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
-			if rec.Code != http.StatusPaymentRequired {
+			if rec.Code != http.StatusInternalServerError {
 				t.Fatalf("status: got %d", rec.Code)
 			}
 			// The failed protocol is dropped, so it contributes no header.

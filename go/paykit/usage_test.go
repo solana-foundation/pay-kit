@@ -143,9 +143,8 @@ func TestRequireUsageReturns402WhenNoPayment(t *testing.T) {
 
 // TestRequireUsage402DropsFailedPieces exercises the writeUsage402 error
 // branches: if EITHER the accepts entry or the challenge header fails to build,
-// BOTH are dropped (atomic assembly), so the 402 never advertises an accepts
-// entry the client has no challenge header to bind a credential to -- an
-// unpayable 402. The 402 status is still returned.
+// BOTH are dropped (atomic assembly), and the server surfaces a 500 rather
+// than returning an unpayable 402 with no accepts entries.
 func TestRequireUsage402DropsFailedPieces(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -162,7 +161,7 @@ func TestRequireUsage402DropsFailedPieces(t *testing.T) {
 				usageAdapter: tc.adapter,
 				errorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 					_ = errors.As(err, &captured)
-					w.WriteHeader(http.StatusPaymentRequired)
+					w.WriteHeader(captured.status)
 				},
 			}
 			gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
@@ -171,8 +170,8 @@ func TestRequireUsage402DropsFailedPieces(t *testing.T) {
 			}))
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/usage", nil))
-			if rr.Code != http.StatusPaymentRequired {
-				t.Fatalf("status = %d, want 402", rr.Code)
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", rr.Code)
 			}
 			if captured == nil {
 				t.Fatal("error handler was not invoked with a *PaymentError")

@@ -73,6 +73,36 @@ func TestMemoryChannelStoreUpdateChannelSeesPriorWrites(t *testing.T) {
 	}
 }
 
+func TestMemoryChannelStoreClonesConsumedTopUpSignatures(t *testing.T) {
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+	result, err := store.UpdateChannel(ctx, "c1", func(*ChannelState) (ChannelState, error) {
+		state := testChannelState("c1", 1)
+		state.ConsumedTopUpSignatures = []string{"topup-a"}
+		return state, nil
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	result.ConsumedTopUpSignatures[0] = "mutated-result"
+
+	first, err := store.GetChannel(ctx, "c1")
+	if err != nil || first == nil {
+		t.Fatalf("GetChannel: state=%v err=%v", first, err)
+	}
+	if got := first.ConsumedTopUpSignatures[0]; got != "topup-a" {
+		t.Fatalf("stored signature = %q after result mutation", got)
+	}
+	first.ConsumedTopUpSignatures[0] = "mutated-read"
+	second, err := store.GetChannel(ctx, "c1")
+	if err != nil || second == nil {
+		t.Fatalf("second GetChannel: state=%v err=%v", second, err)
+	}
+	if got := second.ConsumedTopUpSignatures[0]; got != "topup-a" {
+		t.Fatalf("stored signature = %q after read mutation", got)
+	}
+}
+
 func TestMemoryChannelStoreSerializesConcurrentUpdates(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()

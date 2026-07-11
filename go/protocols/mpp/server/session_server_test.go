@@ -526,6 +526,25 @@ func TestProcessTopUpRaisesDeposit(t *testing.T) {
 	}
 }
 
+func TestProcessTopUpRejectsReplayedOlderSignature(t *testing.T) {
+	server := newSessionTestServer(sessionTestConfig())
+	_, channelID := openTestChannel(t, server, 1_000_000)
+	for _, topUp := range []intents.TopUpPayload{
+		{ChannelID: channelID, NewDeposit: "2000000", Signature: "topup-a"},
+		{ChannelID: channelID, NewDeposit: "3000000", Signature: "topup-b"},
+	} {
+		if _, err := server.ProcessTopUp(context.Background(), &topUp); err != nil {
+			t.Fatalf("ProcessTopUp(%s): %v", topUp.Signature, err)
+		}
+	}
+	_, err := server.ProcessTopUp(context.Background(), &intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "4000000", Signature: "topup-a",
+	})
+	if err == nil || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("replayed top-up error = %v", err)
+	}
+}
+
 func TestProcessTopUpRejectsNonIncreasingDeposit(t *testing.T) {
 	server := newSessionTestServer(sessionTestConfig())
 	_, channelID := openTestChannel(t, server, 1_000_000)

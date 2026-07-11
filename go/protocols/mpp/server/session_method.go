@@ -578,6 +578,12 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				signature = submitted.Signature
 			}
 		} else {
+			if s.network != "localnet" && isPlaceholderSignature(payload.Signature) {
+				return "", fmt.Errorf("client-submitted open requires a real confirmed signature")
+			}
+			if s.network != "localnet" && s.rpc == nil {
+				return "", fmt.Errorf("client-submitted open requires an rpc client off localnet")
+			}
 			verified, err := VerifyOpenTx(ctx, expected, payload, s.rpc)
 			if err != nil {
 				return "", err
@@ -588,19 +594,40 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			openSlot = verified.OpenSlot
 		}
 	case mode == intents.SessionModePush:
-		// No transaction in the payload: the client asserts a previously
-		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting; without one the channelId/deposit
-		// fields are trusted as-is.
+		// No transaction in the payload: fetch the transaction named by the
+		// signature and bind its verified channel/deposit facts before storing.
 		channelID = *payload.ChannelID
-		var err error
-		deposit, err = payload.DepositAmount()
-		if err != nil {
-			return "", err
-		}
-		if s.rpc != nil {
-			if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
+		if s.rpc != nil && s.network != "localnet" {
+			expected := VerifyOpenTxExpected{
+				AuthorizedSigner: payload.AuthorizedSigner,
+				Currency:         s.currency,
+				MaxCap:           s.cap,
+				Network:          s.network,
+				Operator:         s.core.config.Operator,
+				ProgramID:        s.core.config.ProgramID,
+				Recipient:        s.recipient,
+				Splits:           s.core.config.Splits,
+			}
+			verified, err := verifySignatureOnlyOpen(ctx, expected, payload, s.rpc)
+			if err != nil {
 				return "", err
+			}
+			channelID = verified.ChannelID
+			deposit = verified.Deposit
+			channelPayer = verified.Payer
+			openSlot = verified.OpenSlot
+		} else if s.network != "localnet" {
+			return "", fmt.Errorf("signature-only push open requires an rpc client off localnet")
+		} else {
+			var err error
+			deposit, err = payload.DepositAmount()
+			if err != nil {
+				return "", err
+			}
+			if s.rpc != nil {
+				if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
+					return "", err
+				}
 			}
 		}
 	default:

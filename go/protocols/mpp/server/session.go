@@ -488,6 +488,9 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 	if current == nil {
 		return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 	}
+	if slices.Contains(current.ConsumedTopUpSignatures, payload.Signature) {
+		return ChannelState{}, fmt.Errorf("top-up signature %s was already consumed", payload.Signature)
+	}
 	verifiedDeposit := current.Deposit
 	if s.config.VerifyTopUpTx != nil {
 		if err := s.config.VerifyTopUpTx(ctx, payload, verifiedDeposit); err != nil {
@@ -499,6 +502,9 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 	return s.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
+		}
+		if slices.Contains(current.ConsumedTopUpSignatures, payload.Signature) {
+			return ChannelState{}, fmt.Errorf("top-up signature %s was already consumed", payload.Signature)
 		}
 		if s.config.VerifyTopUpTx != nil && current.Deposit != verifiedDeposit {
 			return ChannelState{}, fmt.Errorf("channel %s deposit changed during top-up verification", channelID)
@@ -517,6 +523,10 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 		}
 		next := *current
 		next.Deposit = newDeposit
+		next.ConsumedTopUpSignatures = append(
+			append([]string(nil), current.ConsumedTopUpSignatures...),
+			payload.Signature,
+		)
 		return next, nil
 	})
 }

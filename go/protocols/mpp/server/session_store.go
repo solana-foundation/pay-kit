@@ -70,6 +70,10 @@ type ChannelState struct {
 	// (base units).
 	Deposit uint64 `json:"deposit"`
 
+	// ConsumedTopUpSignatures prevents a confirmed top-up transaction from
+	// being credited again under a later absolute newDeposit claim.
+	ConsumedTopUpSignatures []string `json:"consumed_top_up_signatures,omitempty"`
+
 	// OpenSlot is the slot recorded in the channel open args (push sessions).
 	// It is a channel PDA seed, so it is persisted to re-derive the address
 	// and to drive the post-distribute reclaim. Zero for pull sessions and
@@ -156,6 +160,9 @@ func (s *ChannelState) UnmarshalJSON(data []byte) error {
 // clone returns a deep copy so callers can never alias store-internal state.
 func (s ChannelState) clone() ChannelState {
 	out := s
+	if s.ConsumedTopUpSignatures != nil {
+		out.ConsumedTopUpSignatures = append([]string(nil), s.ConsumedTopUpSignatures...)
+	}
 	if s.HighestVoucherSignature != nil {
 		v := *s.HighestVoucherSignature
 		out.HighestVoucherSignature = &v

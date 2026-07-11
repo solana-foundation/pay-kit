@@ -23,6 +23,7 @@ import (
 
 	ag_binary "github.com/gagliardetto/binary"
 	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
@@ -632,7 +633,65 @@ func confirmTransactionSignature(ctx context.Context, rpcClient solanatx.RPCClie
 	if out.Value[0].Err != nil {
 		return fmt.Errorf("%s tx %q failed on-chain: %v", label, signature, out.Value[0].Err)
 	}
+	status := out.Value[0].ConfirmationStatus
+	if status != rpc.ConfirmationStatusConfirmed && status != rpc.ConfirmationStatusFinalized {
+		return fmt.Errorf("%s tx %q is only %s; confirmed or finalized required", label, signature, status)
+	}
 	return nil
+}
+
+// verifySignatureOnlyOpen fetches the transaction named by a compact open and
+// runs the same structural verifier used for attached transactions. A status
+// lookup alone could otherwise bind an unrelated successful transaction.
+func verifySignatureOnlyOpen(
+	ctx context.Context,
+	expected VerifyOpenTxExpected,
+	payload *intents.OpenPayload,
+	rpcClient solanatx.RPCClient,
+) (VerifyOpenTxResult, error) {
+	if rpcClient == nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("signature-only open verification requires an RPC client")
+	}
+	if payload == nil || isPlaceholderSignature(payload.Signature) {
+		return VerifyOpenTxResult{}, fmt.Errorf("signature-only open requires a real confirmed signature")
+	}
+	parsedSignature, err := solana.SignatureFromBase58(payload.Signature)
+	if err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("invalid open tx signature %q: %w", payload.Signature, err)
+	}
+	if err := confirmTransactionSignature(ctx, rpcClient, payload.Signature, "open"); err != nil {
+		return VerifyOpenTxResult{}, err
+	}
+	maxSupportedTransactionVersion := uint64(0)
+	result, err := rpcClient.GetTransaction(ctx, parsedSignature, &rpc.GetTransactionOpts{
+		Commitment:                     rpc.CommitmentConfirmed,
+		Encoding:                       solana.EncodingBase64,
+		MaxSupportedTransactionVersion: &maxSupportedTransactionVersion,
+	})
+	if err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("fetch confirmed open transaction: %w", err)
+	}
+	if result == nil || result.Transaction == nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("confirmed open transaction %q is missing", payload.Signature)
+	}
+	tx, err := result.Transaction.GetTransaction()
+	if err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("decode confirmed open transaction: %w", err)
+	}
+	if tx == nil || len(tx.Signatures) == 0 || tx.Signatures[0] != parsedSignature {
+		return VerifyOpenTxResult{}, fmt.Errorf("confirmed open transaction fee-payer signature does not match payload signature")
+	}
+	wire, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("encode confirmed open transaction: %w", err)
+	}
+	boundPayload := *payload
+	boundPayload.Transaction = &wire
+	verified, err := VerifyOpenTx(ctx, expected, &boundPayload, nil)
+	if err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("verify confirmed open transaction: %w", err)
+	}
+	return verified, nil
 }
 
 // isPlaceholderSignature reports whether the signature is the pending

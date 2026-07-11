@@ -205,6 +205,9 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		}
 		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
+	if err := a.rejectManagedSourceOwner(ctx, tx, reqs.ManagedSigners); err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds", Err: err, Gate: req.Gate}
+	}
 	replayKey, err := transactionReplayKey(tx)
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
@@ -399,15 +402,57 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 	if len(signature) != 64 {
 		return nil, fmt.Errorf("operator signature length %d, want 64", len(signature))
 	}
-	const feePayerSignatureOffset = 1
-	offset := feePayerSignatureOffset
-	if offset+64 > len(rawTx) {
-		return nil, errors.New("signature slot offset out of range")
+	tx.Signatures[0] = solana.SignatureFromBytes(signature)
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("marshal cosigned transaction: %w", err)
 	}
-	wire := make([]byte, len(rawTx))
-	copy(wire, rawTx)
-	copy(wire[offset:offset+64], signature)
 	return wire, nil
+}
+
+// rejectManagedSourceOwner closes the delegate path that structural account
+// indexes cannot see: a non-managed delegate may transfer from a token account
+// whose stored owner is a managed signer.
+func (a *Adapter) rejectManagedSourceOwner(ctx context.Context, tx *solana.Transaction, managed []solana.PublicKey) error {
+	if len(tx.Message.Instructions) < 3 {
+		return errors.New("missing transferChecked instruction")
+	}
+	ix := tx.Message.Instructions[2]
+	if len(ix.Accounts) < 1 || int(ix.ProgramIDIndex) >= len(tx.Message.AccountKeys) || int(ix.Accounts[0]) >= len(tx.Message.AccountKeys) {
+		return errors.New("invalid transferChecked source indexes")
+	}
+	program := tx.Message.AccountKeys[ix.ProgramIDIndex]
+	source := tx.Message.AccountKeys[ix.Accounts[0]]
+	reader, ok := a.rpc.(interface {
+		GetAccountInfoWithOpts(context.Context, solana.PublicKey, *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error)
+	})
+	if !ok {
+		return errors.New("RPC client cannot inspect the transfer source account")
+	}
+	info, err := reader.GetAccountInfoWithOpts(ctx, source, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	})
+	if err != nil {
+		return fmt.Errorf("fetch transfer source account: %w", err)
+	}
+	if info == nil || info.Value == nil || info.Value.Data == nil {
+		return errors.New("transfer source account is missing")
+	}
+	if !info.Value.Owner.Equals(program) {
+		return fmt.Errorf("transfer source account owner program %s != %s", info.Value.Owner, program)
+	}
+	data := info.Value.Data.GetBinary()
+	if len(data) < 64 {
+		return fmt.Errorf("transfer source token account data is too short: %d", len(data))
+	}
+	owner := solana.PublicKeyFromBytes(data[32:64])
+	for _, signer := range managed {
+		if owner.Equals(signer) {
+			return fmt.Errorf("transfer source token account is owned by managed signer %s", signer)
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) awaitConfirmation(ctx context.Context, signature solana.Signature) error {

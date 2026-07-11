@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -142,15 +143,25 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 	}
 	accepts := []AcceptsEntry{}
 	headers := map[string]string{}
+	var challengeErrors []error
 	if c.x402Adapter != nil && containsProtocol(accept, X402) && !gate.HasFees() {
-		appendChallenge(gate, c.x402Adapter, &accepts, headers)
+		if err := appendChallenge(gate, c.x402Adapter, &accepts, headers); err != nil {
+			challengeErrors = append(challengeErrors, err)
+		}
 	}
 	if c.mppAdapter != nil && containsProtocol(accept, MPP) {
-		appendChallenge(gate, c.mppAdapter, &accepts, headers)
+		if err := appendChallenge(gate, c.mppAdapter, &accepts, headers); err != nil {
+			challengeErrors = append(challengeErrors, err)
+		}
 	}
 	perr.Gate = gate
 	perr.Protocols = accept
 	perr.status = http.StatusPaymentRequired
+	if len(accepts) == 0 && len(challengeErrors) > 0 {
+		perr.Code = "challenge_generation_failed"
+		perr.Err = errors.Join(challengeErrors...)
+		perr.status = http.StatusInternalServerError
+	}
 	perr.resource = r.URL.Path
 	perr.accepts = accepts
 	perr.headers = headers
@@ -168,21 +179,22 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 // than emitting a half-formed, unpayable entry. Both the entry and its
 // headers are added together so an offer never lists a protocol whose
 // challenge header could not be produced.
-func appendChallenge(gate *Gate, adapter Adapter, accepts *[]AcceptsEntry, headers map[string]string) {
+func appendChallenge(gate *Gate, adapter Adapter, accepts *[]AcceptsEntry, headers map[string]string) error {
 	entry, err := adapter.AcceptsEntry(gate)
 	if err != nil {
 		slog.Error("paykit: building 402 accepts entry failed",
 			"protocol", adapter.Protocol(), "gate", gate.Name, "err", err)
-		return
+		return fmt.Errorf("%s accepts entry: %w", adapter.Protocol(), err)
 	}
 	challengeHeaders, err := adapter.ChallengeHeaders(gate)
 	if err != nil {
 		slog.Error("paykit: building 402 challenge headers failed",
 			"protocol", adapter.Protocol(), "gate", gate.Name, "err", err)
-		return
+		return fmt.Errorf("%s challenge headers: %w", adapter.Protocol(), err)
 	}
 	*accepts = append(*accepts, entry)
 	maps.Copy(headers, challengeHeaders)
+	return nil
 }
 
 // DefaultErrorHandler renders the canonical 402 response: every
