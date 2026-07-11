@@ -235,9 +235,37 @@ impl SubscriptionServer {
         parse_pubkey(&config.plan_id, "plan_id")?;
         parse_pubkey(&config.mint, "mint")?;
         parse_pubkey(&config.token_program, "token_program")?;
-        parse_pubkey(&config.puller, "puller")?;
+        let puller = parse_pubkey(&config.puller, "puller")?;
         parse_pubkey(&merchant, "merchant")?;
         parse_pubkey(&config.recipient, "recipient")?;
+
+        if config.fee_payer {
+            let fee_payer = match config.fee_payer_pubkey.as_deref() {
+                Some(value) => parse_pubkey(value, "fee_payer_pubkey")?,
+                None => config
+                    .fee_payer_signer
+                    .as_ref()
+                    .map(|signer| signer.pubkey())
+                    .ok_or_else(|| {
+                        Error::InvalidConfig(
+                            "fee-sponsored subscription requires a fee payer signer or pubkey"
+                                .into(),
+                        )
+                    })?,
+            };
+            if fee_payer != puller {
+                return Err(Error::InvalidConfig(
+                    "subscription fee payer must equal puller".into(),
+                ));
+            }
+            if let Some(signer) = config.fee_payer_signer.as_ref() {
+                if signer.pubkey() != fee_payer {
+                    return Err(Error::InvalidConfig(
+                        "subscription fee payer signer must equal fee payer pubkey".into(),
+                    ));
+                }
+            }
+        }
 
         // Validate the period mapping.
         config.period_unit.to_period_hours(config.period_count)?;
@@ -577,10 +605,14 @@ impl SubscriptionServer {
                 .await?;
                 let (delegation_pda, _) =
                     find_subscription_pda(&plan_pda, &subscriber, &program_id);
-                let delegation_already_exists = self
-                    .fetch_subscription_delegation(&delegation_pda)
-                    .await
-                    .is_ok();
+                let delegation_already_exists = release_on_err(
+                    &*self.store,
+                    &claimed_key,
+                    self.fetch_optional_subscription_delegation(&delegation_pda)
+                        .await,
+                )
+                .await?
+                .is_some();
 
                 let sig = if delegation_already_exists {
                     let confirmed = release_on_err(
@@ -711,17 +743,38 @@ impl SubscriptionServer {
         &self,
         subscription_pda: &Pubkey,
     ) -> Result<SubscriptionDelegationView, VerificationError> {
+        self.fetch_optional_subscription_delegation(subscription_pda)
+            .await?
+            .ok_or_else(|| {
+                VerificationError::not_found(format!(
+                    "SubscriptionDelegation account {subscription_pda} not found"
+                ))
+            })
+    }
+
+    async fn fetch_optional_subscription_delegation(
+        &self,
+        subscription_pda: &Pubkey,
+    ) -> Result<Option<SubscriptionDelegationView>, VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
         use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let pda = *subscription_pda;
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
-            let account = rpc.get_account(&pda).map_err(|e| {
-                VerificationError::not_found(format!(
-                    "SubscriptionDelegation account {pda} not found: {e}"
-                ))
-            })?;
-            decode_subscription_delegation(&account.data).map_err(VerificationError::new)
+            let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+            let response = rpc
+                .get_account_with_commitment(&pda, CommitmentConfig::confirmed())
+                .map_err(|e| {
+                    VerificationError::network_error(format!(
+                        "getAccount({pda}) failed while reading SubscriptionDelegation: {e}"
+                    ))
+                })?;
+            let Some(account) = response.value else {
+                return Ok(None);
+            };
+            decode_subscription_delegation(&account.data)
+                .map(Some)
+                .map_err(VerificationError::new)
         })
         .await
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
@@ -1946,14 +1999,16 @@ mod tests {
 
     #[test]
     fn challenge_emits_fee_payer_when_signer_configured() {
-        use solana_keychain::MemorySigner;
+        use solana_keychain::{MemorySigner, SolanaSigner};
         let mut cfg = make_config();
         cfg.fee_payer = true;
         let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
-        cfg.fee_payer_signer = Some(Arc::new(MemorySigner::from_bytes(&kp).expect("kp")));
+        let signer = MemorySigner::from_bytes(&kp).expect("kp");
+        cfg.puller = signer.pubkey().to_string();
+        cfg.fee_payer_signer = Some(Arc::new(signer));
 
         let server = SubscriptionServer::new(cfg).expect("server");
         let challenge = server
@@ -1970,6 +2025,33 @@ mod tests {
         let md = parsed.method_details.as_ref().unwrap();
         assert_eq!(md.get("feePayer").unwrap().as_bool(), Some(true));
         assert!(md.get("feePayerKey").is_some());
+    }
+
+    #[test]
+    fn rejects_fee_payer_that_differs_from_puller() {
+        let mut cfg = make_config();
+        cfg.fee_payer = true;
+        cfg.fee_payer_pubkey = Some(Pubkey::new_unique().to_string());
+        let error = match SubscriptionServer::new(cfg) {
+            Ok(_) => panic!("fee payer must match puller"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("must equal puller"));
+    }
+
+    #[test]
+    fn rejects_fee_payer_signer_that_differs_from_explicit_pubkey() {
+        let mut cfg = make_config();
+        cfg.fee_payer = true;
+        cfg.fee_payer_pubkey = Some(cfg.puller.clone());
+        cfg.fee_payer_signer = Some(fee_payer_signer_and_key().0);
+        let error = match SubscriptionServer::new(cfg) {
+            Ok(_) => panic!("fee payer signer must match explicit pubkey"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("signer must equal fee payer pubkey"));
     }
 
     #[test]
@@ -3592,14 +3674,16 @@ mod tests {
     async fn verify_rejects_signature_with_fee_sponsorship() {
         // type="signature" combined with fee sponsorship must be rejected
         // before the push-mode branch.
-        use solana_keychain::MemorySigner;
+        use solana_keychain::{MemorySigner, SolanaSigner};
         let mut cfg = make_config();
         cfg.fee_payer = true;
         let sk = ed25519_dalek::SigningKey::from_bytes(&[13u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
-        cfg.fee_payer_signer = Some(Arc::new(MemorySigner::from_bytes(&kp).expect("kp")));
+        let signer = MemorySigner::from_bytes(&kp).expect("kp");
+        cfg.puller = signer.pubkey().to_string();
+        cfg.fee_payer_signer = Some(Arc::new(signer));
         let server = SubscriptionServer::new(cfg).expect("server");
         let credential = credential_for_server(
             &server,
@@ -4085,6 +4169,7 @@ mod tests {
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
         let signer = MemorySigner::from_bytes(&kp).expect("kp");
         let fee_payer = signer.pubkey();
+        cfg.puller = fee_payer.to_string();
         cfg.fee_payer_signer = Some(Arc::new(signer));
         let server = SubscriptionServer::new(cfg).expect("server");
 

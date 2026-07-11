@@ -116,6 +116,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
     let plan_pda = parse_pubkey(&method_details.plan_id, "planId")?;
     let puller = parse_pubkey(&method_details.puller, "puller")?;
+    let fee_payer = resolve_fee_payer(method_details, puller)?;
     // Plan owner — defaults to the puller when the operator publishes
     // its own plan and is its own puller (the common pay-server case).
     let merchant = match method_details.merchant.as_deref() {
@@ -201,13 +202,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     // `CreateIdempotent` is a no-op when the ATA is already in place,
     // so we always prepend it. Rent is paid by the fee_payer when
     // sponsorship is on, otherwise by the subscriber.
-    let ata_funder = match (
-        method_details.fee_payer,
-        method_details.fee_payer_key.as_deref(),
-    ) {
-        (true, Some(k)) => parse_pubkey(k, "feePayerKey")?,
-        _ => subscriber,
-    };
+    let ata_funder = fee_payer.unwrap_or(subscriber);
     instructions.push(build_create_idempotent_ata_ix(
         ata_funder,
         subscriber_ata,
@@ -225,38 +220,49 @@ pub async fn build_subscription_activation_transaction_with_options(
         associated_token_program,
     ));
 
-    // The on-chain `Subscribe` instruction binds the subscriber's signature
-    // to a specific `SubscriptionAuthority::init_id`. Callers must explicitly
-    // initialize/read that authority before asking this pure builder to run.
-    let blockhash: solana_hash::Hash = match method_details.recent_blockhash.as_deref() {
-        Some(value) => value
-            .parse()
-            .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))?,
-        None => rpc
-            .get_latest_blockhash()
-            .map_err(|e| Error::Other(format!("Failed to fetch recent blockhash: {e}")))?,
-    };
-
-    let expected_subscription_authority_init_id = match options.subscription_authority_init_id {
-        Some(init_id) => init_id,
-        None => initialize_subscription_authority(signer, rpc, method_details).await?,
+    // Validate a server-provided hash before doing any implicit authority
+    // initialization. If initialization creates the authority, the supplied
+    // hash is deliberately discarded below: the init transaction consumes a
+    // blockhash first, so reusing the challenge hash can leave activation with
+    // an already-expired or otherwise stale lifetime.
+    let provided_blockhash = parse_recent_blockhash(method_details)?;
+    let (expected_subscription_authority_init_id, blockhash) = match options
+        .subscription_authority_init_id
+    {
+        Some(init_id) => {
+            let blockhash = match provided_blockhash {
+                Some(blockhash) => blockhash,
+                None => rpc
+                    .get_latest_blockhash()
+                    .map_err(|e| Error::Other(format!("Failed to fetch recent blockhash: {e}")))?,
+            };
+            (init_id, blockhash)
+        }
+        None => {
+            let (init_id, initialized) =
+                initialize_subscription_authority_with_state(signer, rpc, method_details).await?;
+            let blockhash = if initialized {
+                rpc.get_latest_blockhash().map_err(|e| {
+                        Error::Other(format!(
+                            "Failed to fetch fresh activation blockhash after SubscriptionAuthority init: {e}"
+                        ))
+                    })?
+            } else {
+                match provided_blockhash {
+                    Some(blockhash) => blockhash,
+                    None => rpc.get_latest_blockhash().map_err(|e| {
+                        Error::Other(format!("Failed to fetch recent blockhash: {e}"))
+                    })?,
+                }
+            };
+            (init_id, blockhash)
+        }
     };
 
     // Optional rent payer for the subscribe ix: fee_payer when
     // configured, otherwise the subscriber pays its own rent (no extra
     // account meta).
-    let subscribe_payer = if method_details.fee_payer {
-        match method_details.fee_payer_key.as_deref() {
-            Some(k) => Some(parse_pubkey(k, "feePayerKey")?),
-            None => {
-                return Err(Error::Other(
-                    "feePayer=true requires feePayerKey in methodDetails".into(),
-                ));
-            }
-        }
-    } else {
-        None
-    };
+    let subscribe_payer = fee_payer;
 
     instructions.push(crate::mpp::program::subscriptions::build_subscribe_ix(
         program_id,
@@ -307,20 +313,10 @@ pub async fn build_subscription_activation_transaction_with_options(
     }
 
     // Fee payer + blockhash.
-    let fee_payer_pubkey = if method_details.fee_payer {
-        method_details
-            .fee_payer_key
-            .as_deref()
-            .map(|k| parse_pubkey(k, "feePayerKey"))
-            .transpose()?
-            .unwrap_or(subscriber)
-    } else {
-        subscriber
-    };
+    let fee_payer_pubkey = fee_payer.unwrap_or(subscriber);
 
-    // Blockhash was already parsed above for the SA-init pre-step; reuse it
-    // for the activation tx. Both transactions share the same recentBlockhash
-    // so they land in the same ~150-slot window.
+    // The activation transaction uses the hash resolved after any implicit
+    // authority initialization, so its lifetime starts after the init step.
     let message = Message::new_with_blockhash(&instructions, Some(&fee_payer_pubkey), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
 
@@ -361,6 +357,16 @@ pub async fn initialize_subscription_authority(
     rpc: &RpcClient,
     method_details: &SubscriptionMethodDetails,
 ) -> Result<i64, Error> {
+    initialize_subscription_authority_with_state(signer, rpc, method_details)
+        .await
+        .map(|(init_id, _)| init_id)
+}
+
+async fn initialize_subscription_authority_with_state(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    method_details: &SubscriptionMethodDetails,
+) -> Result<(i64, bool), Error> {
     let program_id = match method_details.program_id.as_deref() {
         Some(p) => parse_pubkey(p, "programId")?,
         None => default_program_id(),
@@ -378,8 +384,14 @@ pub async fn initialize_subscription_authority(
     );
     let (subscription_authority, _) =
         find_subscription_authority_pda(&subscriber, &mint, &program_id);
-    if let Ok(account) = rpc.get_account(&subscription_authority) {
-        return parse_subscription_authority_init_id(&account.data);
+    let authority_account = rpc
+        .get_account_with_commitment(
+            &subscription_authority,
+            solana_commitment_config::CommitmentConfig::confirmed(),
+        )
+        .map_err(|e| Error::Other(format!("Failed to read SubscriptionAuthority: {e}")))?;
+    if let Some(account) = authority_account.value {
+        return parse_subscription_authority_init_id(&account.data).map(|init_id| (init_id, false));
     }
 
     let blockhash = rpc
@@ -424,12 +436,55 @@ pub async fn initialize_subscription_authority(
         ))
     })?;
 
-    let account = rpc.get_account(&subscription_authority).map_err(|e| {
-        Error::Other(format!(
-            "SubscriptionAuthority still missing after init broadcast: {e}"
-        ))
+    let account = rpc
+        .get_account_with_commitment(
+            &subscription_authority,
+            solana_commitment_config::CommitmentConfig::confirmed(),
+        )
+        .map_err(|e| {
+            Error::Other(format!(
+                "Failed to read SubscriptionAuthority after init broadcast: {e}"
+            ))
+        })?
+        .value
+        .ok_or_else(|| {
+            Error::Other("SubscriptionAuthority still missing after init broadcast".into())
+        })?;
+    parse_subscription_authority_init_id(&account.data).map(|init_id| (init_id, true))
+}
+
+fn parse_recent_blockhash(
+    method_details: &SubscriptionMethodDetails,
+) -> Result<Option<solana_hash::Hash>, Error> {
+    method_details
+        .recent_blockhash
+        .as_deref()
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|e| Error::Other(format!("Invalid recentBlockhash: {e}")))
+        })
+        .transpose()
+}
+
+fn resolve_fee_payer(
+    method_details: &SubscriptionMethodDetails,
+    puller: Pubkey,
+) -> Result<Option<Pubkey>, Error> {
+    if !method_details.fee_payer {
+        return Ok(None);
+    }
+    let fee_payer_key = method_details.fee_payer_key.as_deref().ok_or_else(|| {
+        Error::Other("feePayer=true requires feePayerKey in methodDetails".into())
     })?;
-    parse_subscription_authority_init_id(&account.data)
+    let fee_payer = parse_pubkey(fee_payer_key, "feePayerKey")?;
+    if fee_payer != puller {
+        return Err(Error::Other(
+            "feePayerKey must equal puller so the server signs the canonical transfer caller"
+                .into(),
+        ));
+    }
+    Ok(Some(fee_payer))
 }
 
 /// Extract `init_id` (i64 LE) from a serialised `SubscriptionAuthority`
@@ -703,7 +758,7 @@ mod tests {
     async fn fee_payer_true_with_fee_payer_key_sets_fee_payer_account() {
         let signer = make_signer();
         let rpc = RpcClient::new_mock("succeeds".to_string());
-        let fee_payer_key = "FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
+        let fee_payer_key = "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h";
         let md = make_method_details(true, Some(fee_payer_key));
         let payload = build_subscription_activation_transaction_with_options(
             &*signer,
@@ -727,6 +782,22 @@ mod tests {
             }
             _ => panic!("expected Transaction payload"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fee_payer_true_with_nonmatching_fee_payer_key_errors() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let md = make_method_details(true, Some("FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ"));
+        let err = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            test_options(),
+        )
+        .await
+        .expect_err("fee payer must match puller");
+        assert!(format!("{err}").contains("feePayerKey must equal puller"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

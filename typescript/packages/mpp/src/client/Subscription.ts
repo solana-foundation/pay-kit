@@ -62,6 +62,9 @@ export function subscription(parameters: subscription.Parameters) {
                           tokenProgram: challenge.request.methodDetails.tokenProgram,
                       })
                     : undefined);
+            const refreshBlockhash =
+                parameters.initializeSubscriptionAuthority === true &&
+                parameters.subscriptionAuthorityInitId === undefined;
             if (subscriptionAuthorityInitId === undefined) {
                 throw new Error(
                     'subscriptionAuthorityInitId is required unless initializeSubscriptionAuthority=true is explicitly enabled',
@@ -71,6 +74,7 @@ export function subscription(parameters: subscription.Parameters) {
                 computeUnitLimit: parameters.computeUnitLimit,
                 computeUnitPrice: parameters.computeUnitPrice,
                 onProgress,
+                ...(refreshBlockhash ? { refreshBlockhash: true } : {}),
                 request: challenge.request,
                 rpcUrl,
                 signer,
@@ -240,9 +244,10 @@ export async function buildSubscriptionActivationTransaction(
     if (externalId) instructions.push(buildMemoInstruction(externalId));
 
     onProgress?.({ type: 'signing' });
-    const latestBlockhash = recentBlockhash
-        ? { blockhash: recentBlockhash as Blockhash, lastValidBlockHeight: 0n }
-        : (await rpc.getLatestBlockhash().send()).value;
+    const latestBlockhash =
+        !parameters.refreshBlockhash && recentBlockhash
+            ? { blockhash: recentBlockhash as Blockhash, lastValidBlockHeight: 0n }
+            : (await rpc.getLatestBlockhash().send()).value;
     const txMessage = pipe(
         createTransactionMessage({ version: 0 }),
         msg => setTransactionMessageFeePayer(serverSignerAddress, msg),
@@ -436,6 +441,7 @@ export declare namespace buildSubscriptionActivationTransaction {
         computeUnitLimit?: number;
         computeUnitPrice?: bigint;
         onProgress?: subscription.Parameters['onProgress'];
+        refreshBlockhash?: boolean;
         request: SubscriptionRequest;
         rpcUrl?: string;
         signer: TransactionSigner;

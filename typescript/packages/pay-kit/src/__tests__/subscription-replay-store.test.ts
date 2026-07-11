@@ -23,7 +23,7 @@ describe('subscription replay store', () => {
     it('shares one atomic namespace with charge replay reservations', async () => {
         const store = createUnsafeMemorySubscriptionReplayStore();
 
-        await expect(store.putIfAbsent('credential', 'charge')).resolves.toBe(true);
+        await expect(store.reserve('credential', 'charge')).resolves.toBe(true);
         await expect(store.reserve('credential', 'subscription')).resolves.toBe(false);
         await expect(store.get('credential')).resolves.toBe('charge');
     });

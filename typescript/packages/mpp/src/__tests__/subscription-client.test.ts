@@ -239,7 +239,7 @@ describe('canonical subscription activation builder', () => {
             } as never,
         });
 
-        expect(requestedUrls).toEqual(['https://api.devnet.solana.com']);
+        expect(requestedUrls).toEqual(['https://api.devnet.solana.com', 'https://api.devnet.solana.com']);
     });
 });
 

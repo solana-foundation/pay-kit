@@ -4,7 +4,6 @@ import type { SubscriptionReplayStore } from '@solana/mpp/server';
 export type AtomicSubscriptionReplayStore = SubscriptionReplayStore & {
     readonly isDurable?: boolean;
     readonly isShared?: boolean;
-    putIfAbsent(key: string, value: unknown): Promise<boolean>;
 };
 
 /**
@@ -29,11 +28,6 @@ export function createUnsafeMemorySubscriptionReplayStore(): AtomicSubscriptionR
         put(key, value) {
             values.set(key, value);
             return Promise.resolve();
-        },
-        putIfAbsent(key, value) {
-            if (values.has(key)) return Promise.resolve(false);
-            values.set(key, value);
-            return Promise.resolve(true);
         },
         reserve(key, value = true) {
             if (values.has(key)) return Promise.resolve(false);
