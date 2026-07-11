@@ -24,8 +24,13 @@ describe('configure', () => {
     it('refuses the demo signer on mainnet', async () => {
         await expect(configure({ ...SECRET, network: 'solana_mainnet' })).rejects.toThrow(DemoSignerOnMainnetError);
         const signer = await Signer.generate();
-        const config = await configure({ ...SECRET, network: 'solana_mainnet', operator: { signer } });
-        expect(config.operator.recipient).toBe(signer.pubkey);
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const config = await configure({ ...SECRET, network: 'solana_mainnet', operator: { signer } });
+            expect(config.operator.recipient).toBe(signer.pubkey);
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
     });
 
     it('accepts the shipped protocols (mpp + x402)', async () => {
@@ -51,9 +56,38 @@ describe('configure', () => {
         delete process.env.MPP_SECRET_KEY;
         await expect(configure({ network: 'solana_devnet', operator: { signer } })).rejects.toThrow(ConfigurationError);
         process.env.MPP_SECRET_KEY = 'env-secret';
-        const config = await configure({ network: 'solana_devnet', operator: { signer } });
-        expect(config.mpp.challengeBindingSecret).toBe('env-secret');
-        delete process.env.MPP_SECRET_KEY;
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const config = await configure({ network: 'solana_devnet', operator: { signer } });
+            expect(config.mpp.challengeBindingSecret).toBe('env-secret');
+        } finally {
+            delete process.env.MPP_SECRET_KEY;
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+
+    it('requires a shared MPP replay store outside localnet unless explicitly opted in', async () => {
+        const signer = await Signer.generate();
+        await expect(
+            configure({
+                ...SECRET,
+                network: 'solana_devnet',
+                operator: { signer },
+            }),
+        ).rejects.toThrow(/PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE/);
+
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            await expect(
+                configure({
+                    ...SECRET,
+                    network: 'solana_devnet',
+                    operator: { signer },
+                }),
+            ).resolves.toMatchObject({ network: 'solana_devnet' });
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
     });
 
     it('configures from prefixed environment variables', async () => {
@@ -62,6 +96,7 @@ describe('configure', () => {
         process.env.PAY_KIT_MPP_EXPIRES_IN = '60';
         process.env.PAY_KIT_STABLECOINS = '';
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
             const config = await configureFromEnv();
             expect(config.network).toBe('solana_devnet');
@@ -75,6 +110,7 @@ describe('configure', () => {
             delete process.env.PAY_KIT_MPP_EXPIRES_IN;
             delete process.env.PAY_KIT_STABLECOINS;
             delete process.env.PAY_KIT_RPC_URL;
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
     });
 });

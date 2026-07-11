@@ -18,7 +18,7 @@ use RuntimeException;
  * arbitrary key strings (including ones containing path separators) without
  * worrying about filesystem-safe encodings.
  */
-final class FileStore implements Store
+final class FileStore implements Store, ReplayStoreCapability
 {
     public function __construct(private readonly string $directory)
     {
@@ -48,6 +48,13 @@ final class FileStore implements Store
         }
 
         return true;
+    }
+
+    public function providesDurableSharedReplayProtection(): bool
+    {
+        // A local filesystem may survive restarts, but it is not a shared
+        // backend for a multi-host deployment.
+        return false;
     }
 
     private function pathForKey(string $key): string

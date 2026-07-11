@@ -29,7 +29,9 @@ import {
     submitOpenTx,
     submitSettleAndDistribute,
     type SubmitSettleAndDistributeResult,
+    type TopUpTransactionRpc,
     verifyOpenTx,
+    verifyTopUpTransaction,
 } from './session/on-chain.js';
 import {
     type ChannelState,
@@ -272,6 +274,7 @@ export function session(parameters: session.Parameters) {
                         pullVoucherStrategy,
                         recipient,
                         rpc,
+                        splits,
                         store,
                     });
                 case 'voucher':
@@ -300,6 +303,7 @@ export function session(parameters: session.Parameters) {
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
                         payload: cred.payload,
+                        programId: resolvedProgramId,
                         rpc,
                         store,
                     });
@@ -422,6 +426,7 @@ interface HandleOpenArgs {
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
 }
 
@@ -452,6 +457,9 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     }
 
     if (payload.transaction) {
+        if (args.openTxSubmitter === 'client' && args.rpc && isPlaceholderSignature(payload.signature)) {
+            throw new Error('client-submitted open requires a non-placeholder signature when rpc is configured');
+        }
         // Payment-channel-backed open. This covers push sessions and
         // clientVoucher pull sessions whose deposit lives in an on-chain
         // payment channel (the `createPaymentChannelSessionOpener` flow):
@@ -467,6 +475,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             operator: args.operator,
             programId: args.programId.toString(),
             recipient: args.recipient,
+            splits: args.splits ?? [],
         };
 
         if (args.openTxSubmitter === 'server') {
@@ -569,6 +578,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         operator: channelPayer ?? payload.owner ?? payload.payer,
         pendingDeliveries: [],
         sealed: false,
+        usedTopUpSignatures: [],
     };
 
     // The existence check lives inside the atomic mutator so a concurrent
@@ -704,6 +714,7 @@ interface HandleTopUpArgs {
         readonly newDeposit: string;
         readonly signature: string;
     };
+    readonly programId: Address;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
 }
@@ -725,7 +736,17 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // Confirm the top-up transaction on-chain before raising the deposit
     // (parity with the open-signature verification).
     if (args.rpc) {
+        if (!isTopUpTransactionRpc(args.rpc)) {
+            throw new Error('topUp requires an rpc client with getTransaction to bind the deposit delta');
+        }
         await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, args.payload.signature, 'topUp');
+        await verifyTopUpTransaction({
+            amount: newDeposit - existing.deposit,
+            channelId: args.payload.channelId,
+            programId: args.programId,
+            rpc: args.rpc,
+            signature: args.payload.signature as Signature,
+        });
     }
 
     const result = await args.store.updateChannel(args.payload.channelId, current => {
@@ -734,10 +755,14 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         if (current.closeRequestedAt !== undefined) {
             throw new Error('Channel close is pending — no further top-ups accepted');
         }
+        const usedSignatures = current.usedTopUpSignatures ?? [];
+        if (usedSignatures.includes(args.payload.signature)) {
+            throw new Error(`topUp signature ${args.payload.signature} was already accepted for this channel`);
+        }
         if (newDeposit <= current.deposit) {
             throw new Error(`newDeposit ${newDeposit} must exceed current deposit ${current.deposit}`);
         }
-        return { ...current, deposit: newDeposit };
+        return { ...current, deposit: newDeposit, usedTopUpSignatures: [...usedSignatures, args.payload.signature] };
     });
     args.lifecycle?.touch(result.channelId);
 
@@ -793,6 +818,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             throw new Error('Close already requested');
         }
 
+        // nosemgrep: security-check-gated-on-optional-field-ts -- A missing final voucher intentionally closes at the persisted watermark.
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
             // Route the final voucher (replay AND advancing) through the verifier
@@ -1154,6 +1180,14 @@ function isMultiDelegateSubmitRpc(rpc: RpcLike | undefined): rpc is MultiDelegat
     );
 }
 
+function isTopUpTransactionRpc(rpc: RpcLike | undefined): rpc is RpcLike & TopUpTransactionRpc {
+    return typeof (rpc as { getTransaction?: unknown } | undefined)?.getTransaction === 'function';
+}
+
+function isPlaceholderSignature(signature: string | undefined): boolean {
+    return !signature || /^1+$/.test(signature);
+}
+
 function expectString(value: string | undefined, name: string): string {
     if (!value) throw new Error(`${name} required`);
     return value;
@@ -1278,7 +1312,11 @@ export declare namespace session {
         readonly pullVoucherStrategy?: SessionPullVoucherStrategy;
         /** Primary recipient (base58). */
         readonly recipient: string;
-        /** Optional RPC client used for on-chain checks + transactions. */
+        /**
+         * Optional RPC client used for on-chain checks + transactions. Without
+         * it, open/top-up assertions are trusted input and the host must verify
+         * them out of band; do not expose that mode to untrusted clients.
+         */
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;

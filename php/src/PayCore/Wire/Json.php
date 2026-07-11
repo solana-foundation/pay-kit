@@ -50,6 +50,9 @@ final class Json
             }
             return self::encodeObject($value);
         }
+        if ($value instanceof \stdClass) {
+            return self::encodeObject(get_object_vars($value));
+        }
         throw new InvalidArgumentException('unsupported JSON value');
     }
 

@@ -1,4 +1,5 @@
 import { DEFAULT_RPC_URLS } from '@solana/mpp';
+import type { SessionStore } from '@solana/mpp/server';
 import type { Store } from 'mppx';
 
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
@@ -25,6 +26,11 @@ export type MppOptions = {
      */
     readonly html?: boolean;
     readonly realm?: string;
+    /**
+     * Storage for MPP session channels. Provide a durable, shared store in
+     * production because it records voucher and delivery state.
+     */
+    readonly sessionStore?: SessionStore;
 };
 
 /** x402 protocol options. Reserved for future scheme-specific settings. */
@@ -81,6 +87,7 @@ export type PayKitConfig = {
         readonly expiresIn: number;
         readonly html: boolean;
         readonly realm: string;
+        readonly sessionStore: SessionStore | undefined;
     };
     readonly network: Network;
     readonly operator: Operator;
@@ -92,6 +99,7 @@ export type PayKitConfig = {
 };
 
 const DEFAULT_EXPIRES_IN_SECONDS = 120;
+const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
 
 function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
     const secret = provided ?? process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
@@ -175,6 +183,17 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
 
+    if (
+        accept.includes('mpp') &&
+        network !== 'solana_localnet' &&
+        params.replayStore === undefined &&
+        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] !== '1'
+    ) {
+        throw new ConfigurationError(
+            `no shared replay store configured outside localnet; provide replayStore or set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
+        );
+    }
+
     return Object.freeze({
         accept: Object.freeze([...accept]),
         mpp: Object.freeze({
@@ -182,6 +201,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
             expiresIn,
             html: params.mpp?.html ?? false,
             realm: params.mpp?.realm ?? 'App',
+            sessionStore: params.mpp?.sessionStore,
         }),
         network,
         operator: Object.freeze(operator),

@@ -47,9 +47,7 @@ public enum MppHeaders {
     }
 
     public static func formatAuthorization(_ credential: PaymentCredential) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(credential)
+        let data = try CanonicalJSON.encode(json: JSONEncoder().encode(credential))
         return "\(paymentScheme) \(Base64URL.encode(data))"
     }
 
