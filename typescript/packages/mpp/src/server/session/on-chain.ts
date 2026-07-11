@@ -715,26 +715,6 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     if (expected.openSlot !== undefined && openSlot !== expected.openSlot) {
         throw new Error(`verifyOpenTx: openSlot ${openSlot} != challenge-issued openSlot ${expected.openSlot}`);
     }
-    if (expected.splits !== undefined) {
-        if (recipients.length !== expected.splits.length) {
-            throw new Error(
-                `verifyOpenTx: recipient split count ${recipients.length} != expected ${expected.splits.length}`,
-            );
-        }
-        for (let index = 0; index < recipients.length; index += 1) {
-            const actual = recipients[index];
-            const expectedSplit = expected.splits[index];
-            if (
-                !actual ||
-                !expectedSplit ||
-                actual.recipient !== expectedSplit.recipient ||
-                actual.bps !== expectedSplit.bps
-            ) {
-                throw new Error(`verifyOpenTx: recipient split at index ${index} does not match the challenge`);
-            }
-        }
-    }
-
     const expectedSplits = expected.splits ?? [];
     if (recipients.length !== expectedSplits.length) {
         throw new Error(
