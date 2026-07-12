@@ -1,0 +1,51 @@
+[
+  {
+    "id": "jcs-cyberphone-arrays",
+    "source": "cyberphone/json-canonicalization:testdata/input/arrays.json",
+    "license": "Apache-2.0",
+    "input": {
+      "value": [
+        56,
+        {
+          "d": true,
+          "10": null,
+          "1": []
+        }
+      ]
+    },
+    "expect": {
+      "canonicalJson": "[56,{\"1\":[],\"10\":null,\"d\":true}]",
+      "base64Url": "WzU2LHsiMSI6W10sIjEwIjpudWxsLCJkIjp0cnVlfV0"
+    }
+  },
+  {
+    "id": "jcs-cyberphone-structures",
+    "source": "cyberphone/json-canonicalization:testdata/input/structures.json",
+    "license": "Apache-2.0",
+    "input": {
+      "value": {
+        "1": {
+          "f": {
+            "f": "hi",
+            "F": 5
+          },
+          "\n": 56
+        },
+        "10": {},
+        "": "empty",
+        "a": {},
+        "111": [
+          {
+            "e": "yes",
+            "E": "no"
+          }
+        ],
+        "A": {}
+      }
+    },
+    "expect": {
+      "canonicalJson": "{\"\":\"empty\",\"1\":{\"\\n\":56,\"f\":{\"F\":5,\"f\":\"hi\"}},\"10\":{},\"111\":[{\"E\":\"no\",\"e\":\"yes\"}],\"A\":{},\"a\":{}}",
+      "base64Url": "eyIiOiJlbXB0eSIsIjEiOnsiXG4iOjU2LCJmIjp7IkYiOjUsImYiOiJoaSJ9fSwiMTAiOnt9LCIxMTEiOlt7IkUiOiJubyIsImUiOiJ5ZXMifV0sIkEiOnt9LCJhIjp7fX0"
+    }
+  }
+]
