@@ -87,7 +87,14 @@ class RpcClient(Protocol):
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]: ...
 
-    async def get_transaction(self, signature: str, **kwargs: Any) -> Any: ...
+    async def get_transaction(
+        self,
+        signature: str,
+        *,
+        encoding: str = ...,
+        commitment: str = ...,
+        max_supported_transaction_version: int = ...,
+    ) -> Any: ...
 
     async def get_latest_blockhash(self, commitment: str = ...) -> Any: ...
 
