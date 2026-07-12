@@ -285,9 +285,13 @@ type fakeRPC struct {
 	confirmErr  *struct{ msg string } // non-nil => on-chain tx error
 	sends       int
 	sourceOwner solana.PublicKey
+	sourceErr   error
 }
 
 func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	if f.sourceErr != nil {
+		return nil, f.sourceErr
+	}
 	data := make([]byte, 165)
 	owner := f.sourceOwner
 	if owner.IsZero() {
@@ -407,8 +411,26 @@ func TestVerifyAndSettleRejectsManagedOwnerBehindDelegate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "owned by managed signer") {
 		t.Fatalf("managed source owner error = %v", err)
 	}
+	var paymentErr *paykit.PaymentError
+	if !errors.As(err, &paymentErr) || paymentErr.Code != "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds" {
+		t.Fatalf("managed source owner code = %v", err)
+	}
 	if fake.sends != 0 {
 		t.Fatalf("managed source owner transaction was broadcast %d times", fake.sends)
+	}
+}
+
+func TestVerifyAndSettleReportsSourceInspectionFailureSeparately(t *testing.T) {
+	fake := &fakeRPC{sourceErr: errors.New("RPC unavailable")}
+	a, gate, sig := settleFixture(t, fake)
+
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	var paymentErr *paykit.PaymentError
+	if !errors.As(err, &paymentErr) || paymentErr.Code != "source_owner_check_failed" {
+		t.Fatalf("source inspection code = %v", err)
+	}
+	if fake.sends != 0 {
+		t.Fatalf("transaction was broadcast after source inspection failed %d times", fake.sends)
 	}
 }
 

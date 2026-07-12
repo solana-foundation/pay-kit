@@ -206,7 +206,12 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
 	if err := a.rejectManagedSourceOwner(ctx, tx, reqs.ManagedSigners); err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds", Err: err, Gate: req.Gate}
+		code := "source_owner_check_failed"
+		var managedOwner *managedSourceOwnerError
+		if errors.As(err, &managedOwner) {
+			code = "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+		}
+		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
 	replayKey, err := transactionReplayKey(tx)
 	if err != nil {
@@ -413,6 +418,14 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 // rejectManagedSourceOwner closes the delegate path that structural account
 // indexes cannot see: a non-managed delegate may transfer from a token account
 // whose stored owner is a managed signer.
+type managedSourceOwnerError struct {
+	owner solana.PublicKey
+}
+
+func (e *managedSourceOwnerError) Error() string {
+	return fmt.Sprintf("transfer source token account is owned by managed signer %s", e.owner)
+}
+
 func (a *Adapter) rejectManagedSourceOwner(ctx context.Context, tx *solana.Transaction, managed []solana.PublicKey) error {
 	if len(tx.Message.Instructions) < 3 {
 		return errors.New("missing transferChecked instruction")
@@ -449,7 +462,7 @@ func (a *Adapter) rejectManagedSourceOwner(ctx context.Context, tx *solana.Trans
 	owner := solana.PublicKeyFromBytes(data[32:64])
 	for _, signer := range managed {
 		if owner.Equals(signer) {
-			return fmt.Errorf("transfer source token account is owned by managed signer %s", signer)
+			return &managedSourceOwnerError{owner: signer}
 		}
 	}
 	return nil
