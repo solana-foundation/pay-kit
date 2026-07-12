@@ -26,8 +26,11 @@ import {
     DEFAULT_RPC_URLS,
     MEMO_PROGRAM,
     normalizeNetwork,
+    stablecoinSymbolForCurrency,
     SUBSCRIPTIONS_PROGRAM,
     SYSTEM_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
 } from '../constants.js';
 import { getSubscriptionAuthorityDecoder } from '../generated/subscriptions/accounts/subscriptionAuthority.js';
 import { getInitSubscriptionAuthorityInstructionAsync } from '../generated/subscriptions/instructions/initSubscriptionAuthority.js';
@@ -60,6 +63,7 @@ export function subscription(parameters: subscription.Parameters) {
                           rpcUrl,
                           signer,
                           tokenProgram: challenge.request.methodDetails.tokenProgram,
+                          allowUnknownToken2022: parameters.allowUnknownToken2022,
                       })
                     : undefined);
             const refreshBlockhash =
@@ -71,6 +75,7 @@ export function subscription(parameters: subscription.Parameters) {
                 );
             }
             const encodedTx = await buildSubscriptionActivationTransaction({
+                allowUnknownToken2022: parameters.allowUnknownToken2022,
                 computeUnitLimit: parameters.computeUnitLimit,
                 computeUnitPrice: parameters.computeUnitPrice,
                 onProgress,
@@ -133,6 +138,7 @@ export async function buildSubscriptionActivationTransaction(
     if (BigInt(expectedPeriodHours) !== BigInt(periodHours)) {
         throw new Error('methodDetails.expectedPeriodHours does not match periodCount/periodUnit');
     }
+    assertTrustedSubscriptionTokenProgram(mint, tokenProgram, parameters.allowUnknownToken2022);
 
     const rpcUrl = resolveSubscriptionRpcUrl(parameters.rpcUrl, network);
     const rpc = createSolanaRpc(rpcUrl);
@@ -273,7 +279,8 @@ export async function buildSubscriptionActivationTransaction(
 export async function initializeSubscriptionAuthority(
     parameters: initializeSubscriptionAuthority.Parameters,
 ): Promise<bigint> {
-    const { mint, signer, programId = SUBSCRIPTIONS_PROGRAM, tokenProgram } = parameters;
+    const { allowUnknownToken2022 = false, mint, signer, programId = SUBSCRIPTIONS_PROGRAM, tokenProgram } = parameters;
+    assertTrustedSubscriptionTokenProgram(mint, tokenProgram, allowUnknownToken2022);
     const rpcUrl = resolveSubscriptionRpcUrl(parameters.rpcUrl, parameters.network);
     const rpc = createSolanaRpc(rpcUrl);
     const mintAddress = address(mint);
@@ -330,6 +337,26 @@ export async function initializeSubscriptionAuthority(
 
 function resolveSubscriptionRpcUrl(rpcUrl?: string, network = 'mainnet'): string {
     return rpcUrl ?? DEFAULT_RPC_URLS[normalizeNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet;
+}
+
+function assertTrustedSubscriptionTokenProgram(
+    mint: string,
+    tokenProgram: string,
+    allowUnknownToken2022 = false,
+): void {
+    if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error(`Unsupported token program: ${tokenProgram}`);
+    }
+    if (
+        tokenProgram === TOKEN_2022_PROGRAM &&
+        stablecoinSymbolForCurrency(mint) === undefined &&
+        !allowUnknownToken2022
+    ) {
+        throw new Error(
+            'Refusing to sign an unknown Token-2022 mint (transfer-hook risk). ' +
+                'Set allowUnknownToken2022: true to override.',
+        );
+    }
 }
 
 function remoteSigner(remoteAddress: Address): TransactionSigner {
@@ -417,6 +444,11 @@ type SubscriptionRequest = {
 
 export declare namespace subscription {
     type Parameters = {
+        /**
+         * Opt-in: allow signing unknown Token-2022 mints. They may run transfer
+         * hooks; canonical Token and known Token-2022 stablecoins remain allowed.
+         */
+        allowUnknownToken2022?: boolean;
         /** Must remain false; signature-mode subscription activation is rejected by servers. */
         broadcast?: false;
         computeUnitLimit?: number;
@@ -438,6 +470,8 @@ export declare namespace subscription {
 
 export declare namespace buildSubscriptionActivationTransaction {
     type Parameters = {
+        /** Allow signing an unknown Token-2022 mint. Defaults to false. */
+        allowUnknownToken2022?: boolean;
         computeUnitLimit?: number;
         computeUnitPrice?: bigint;
         onProgress?: subscription.Parameters['onProgress'];
@@ -451,6 +485,8 @@ export declare namespace buildSubscriptionActivationTransaction {
 
 export declare namespace initializeSubscriptionAuthority {
     type Parameters = {
+        /** Allow initializing an authority for an unknown Token-2022 mint. Defaults to false. */
+        allowUnknownToken2022?: boolean;
         mint: string;
         network?: string;
         programId?: string;

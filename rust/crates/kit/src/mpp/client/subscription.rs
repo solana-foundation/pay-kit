@@ -23,7 +23,7 @@ use crate::mpp::error::Error;
 use crate::mpp::program::subscriptions::{
     default_program_id, find_subscription_authority_pda, find_subscription_pda, parse_pubkey,
 };
-use crate::mpp::protocol::solana::CredentialPayload;
+use crate::mpp::protocol::solana::{programs, CredentialPayload};
 
 /// Raw byte length of the on-chain `SubscriptionAuthority` PDA. Mirrors
 /// `#[repr(C, packed)]` layout: discriminator(1) + user(32) + token_mint(32)
@@ -42,6 +42,13 @@ const DEFAULT_ACTIVATION_COMPUTE_UNIT_LIMIT: u32 = 200_000;
 /// Options for building a Solana subscription activation transaction.
 #[derive(Debug, Clone, Default)]
 pub struct BuildSubscriptionActivationOptions {
+    /// Opt-in: sign for an unknown Token-2022 mint.
+    ///
+    /// Token-2022 supports transfer hooks that run arbitrary program code on
+    /// every transfer. The client refuses unknown Token-2022 mints unless the
+    /// caller explicitly accepts that risk. Arbitrary mints on the canonical
+    /// Token Program remain allowed because it has no transfer hooks.
+    pub allow_unknown_token_2022: bool,
     /// Optional memo with the merchant's external reference, embedded as a
     /// trailing memo instruction.
     pub external_id: Option<String>,
@@ -90,6 +97,7 @@ pub async fn build_subscription_activation_transaction_with_init_id(
         rpc,
         method_details,
         BuildSubscriptionActivationOptions {
+            allow_unknown_token_2022: false,
             external_id: None,
             compute_unit_limit: None,
             compute_unit_price: None,
@@ -114,6 +122,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     let subscriber = signer.pubkey();
     let mint = parse_pubkey(&method_details.mint, "mint")?;
     let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
+    validate_subscription_token_program(&mint, &token_program, options.allow_unknown_token_2022)?;
     let plan_pda = parse_pubkey(&method_details.plan_id, "planId")?;
     let puller = parse_pubkey(&method_details.puller, "puller")?;
     let fee_payer = resolve_fee_payer(method_details, puller)?;
@@ -239,8 +248,13 @@ pub async fn build_subscription_activation_transaction_with_options(
             (init_id, blockhash)
         }
         None => {
-            let (init_id, initialized) =
-                initialize_subscription_authority_with_state(signer, rpc, method_details).await?;
+            let (init_id, initialized) = initialize_subscription_authority_with_state(
+                signer,
+                rpc,
+                method_details,
+                options.allow_unknown_token_2022,
+            )
+            .await?;
             let blockhash = if initialized {
                 rpc.get_latest_blockhash().map_err(|e| {
                         Error::Other(format!(
@@ -357,7 +371,7 @@ pub async fn initialize_subscription_authority(
     rpc: &RpcClient,
     method_details: &SubscriptionMethodDetails,
 ) -> Result<i64, Error> {
-    initialize_subscription_authority_with_state(signer, rpc, method_details)
+    initialize_subscription_authority_with_state(signer, rpc, method_details, false)
         .await
         .map(|(init_id, _)| init_id)
 }
@@ -366,6 +380,7 @@ async fn initialize_subscription_authority_with_state(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
     method_details: &SubscriptionMethodDetails,
+    allow_unknown_token_2022: bool,
 ) -> Result<(i64, bool), Error> {
     let program_id = match method_details.program_id.as_deref() {
         Some(p) => parse_pubkey(p, "programId")?,
@@ -374,6 +389,7 @@ async fn initialize_subscription_authority_with_state(
     let subscriber = signer.pubkey();
     let mint = parse_pubkey(&method_details.mint, "mint")?;
     let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
+    validate_subscription_token_program(&mint, &token_program, allow_unknown_token_2022)?;
     let associated_token_program = parse_pubkey(
         "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
         "associated_token_program",
@@ -582,6 +598,35 @@ fn compute_unit_limit_ix(units: u32) -> Instruction {
     }
 }
 
+fn validate_subscription_token_program(
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    allow_unknown_token_2022: bool,
+) -> Result<(), Error> {
+    let token_program_str = token_program.to_string();
+    if token_program_str != programs::TOKEN_PROGRAM
+        && token_program_str != programs::TOKEN_2022_PROGRAM
+    {
+        return Err(Error::Other(format!(
+            "Unsupported token program: {token_program}"
+        )));
+    }
+
+    let mint_str = mint.to_string();
+    if token_program_str == programs::TOKEN_2022_PROGRAM
+        && !crate::mpp::protocol::solana::is_known_stablecoin_mint(&mint_str)
+        && !allow_unknown_token_2022
+    {
+        return Err(Error::Other(format!(
+            "Refusing to sign for unknown Token-2022 mint {mint}: \
+             set BuildSubscriptionActivationOptions::allow_unknown_token_2022 \
+             to opt in (Token-2022 supports transfer hooks)"
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +694,7 @@ mod tests {
 
     fn test_options() -> BuildSubscriptionActivationOptions {
         BuildSubscriptionActivationOptions {
+            allow_unknown_token_2022: false,
             external_id: None,
             compute_unit_limit: None,
             compute_unit_price: None,
@@ -707,6 +753,7 @@ mod tests {
             &rpc,
             &md,
             BuildSubscriptionActivationOptions {
+                allow_unknown_token_2022: false,
                 external_id: Some("order-42".into()),
                 compute_unit_limit: Some(123_456),
                 compute_unit_price: Some(1_000),
@@ -815,6 +862,88 @@ mod tests {
         .await
         .expect_err("invalid mint");
         assert!(format!("{err}").contains("mint"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_server_selected_custom_token_program() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.token_program = Pubkey::new_unique().to_string();
+
+        let err = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            test_options(),
+        )
+        .await
+        .expect_err("custom token program must be rejected");
+
+        assert!(format!("{err}").contains("Unsupported token program"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_unknown_token_2022_mint_without_opt_in() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.mint = Pubkey::new_unique().to_string();
+        md.token_program = programs::TOKEN_2022_PROGRAM.into();
+
+        let err = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            test_options(),
+        )
+        .await
+        .expect_err("unknown Token-2022 mint must require opt-in");
+
+        assert!(format!("{err}").contains("unknown Token-2022 mint"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn allows_unknown_token_2022_mint_with_explicit_opt_in() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.mint = Pubkey::new_unique().to_string();
+        md.token_program = programs::TOKEN_2022_PROGRAM.into();
+
+        let payload = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            BuildSubscriptionActivationOptions {
+                allow_unknown_token_2022: true,
+                ..test_options()
+            },
+        )
+        .await
+        .expect("explicit opt-in permits unknown Token-2022 mint");
+
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn allows_known_token_2022_stablecoin() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.mint = crate::mpp::protocol::solana::mints::PYUSD_MAINNET.into();
+        md.token_program = programs::TOKEN_2022_PROGRAM.into();
+
+        let payload = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            test_options(),
+        )
+        .await
+        .expect("known Token-2022 stablecoin remains supported");
+
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
     }
 
     #[tokio::test(flavor = "multi_thread")]

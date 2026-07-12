@@ -32,6 +32,7 @@
 use std::sync::Arc;
 
 use solana_pubkey::Pubkey;
+use solana_sanitize::Sanitize;
 use solana_signature::Signature;
 use solana_transaction::Transaction;
 
@@ -903,8 +904,11 @@ fn decode_activate_payload(
 fn decode_base64_transaction(b64: &str) -> Result<Transaction, VerificationError> {
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
         .map_err(|e| VerificationError::invalid_payload(format!("Tx base64 decode: {e}")))?;
-    bincode::deserialize(&bytes)
-        .map_err(|e| VerificationError::invalid_payload(format!("Tx bincode decode: {e}")))
+    let tx: Transaction = bincode::deserialize(&bytes)
+        .map_err(|e| VerificationError::invalid_payload(format!("Tx bincode decode: {e}")))?;
+    tx.sanitize()
+        .map_err(|e| VerificationError::invalid_payload(format!("Tx sanitization failed: {e}")))?;
+    Ok(tx)
 }
 
 /// Extract the subscriber pubkey from the activation transaction.
@@ -1399,12 +1403,28 @@ fn validate_instruction_accounts(
 
 fn is_writable_account_index(message: &solana_message::Message, index: usize) -> bool {
     let required_signatures = usize::from(message.header.num_required_signatures);
+    let readonly_signed = usize::from(message.header.num_readonly_signed_accounts);
+    let readonly_unsigned = usize::from(message.header.num_readonly_unsigned_accounts);
+    let account_keys_len = message.account_keys.len();
+
+    if index >= account_keys_len || required_signatures > account_keys_len {
+        return false;
+    }
+    let unsigned_accounts = account_keys_len - required_signatures;
+    if readonly_unsigned > unsigned_accounts {
+        return false;
+    }
+    let Some(writable_signed) = required_signatures.checked_sub(readonly_signed) else {
+        return false;
+    };
+    let Some(writable_unsigned) = account_keys_len.checked_sub(readonly_unsigned) else {
+        return false;
+    };
+
     if index < required_signatures {
-        index < required_signatures - usize::from(message.header.num_readonly_signed_accounts)
+        index < writable_signed
     } else {
-        index
-            < message.account_keys.len()
-                - usize::from(message.header.num_readonly_unsigned_accounts)
+        index < writable_unsigned
     }
 }
 
@@ -3395,6 +3415,31 @@ mod tests {
     }
 
     #[test]
+    fn malformed_transaction_header_does_not_reach_writable_check() {
+        let subscriber = Pubkey::new_unique();
+        let mut tx = build_tx(&[subscriber], vec![]);
+        tx.message.header.num_readonly_unsigned_accounts =
+            (tx.message.account_keys.len() + 1) as u8;
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+
+        let result = std::panic::catch_unwind(|| decode_base64_transaction(&b64));
+        assert!(result.is_ok(), "malformed header must not panic");
+        let err = result
+            .unwrap()
+            .expect_err("malformed header must be rejected");
+        assert_eq!(err.message, "Tx sanitization failed: index out of bounds");
+
+        assert!(
+            !is_writable_account_index(
+                &tx.message,
+                usize::from(tx.message.header.num_required_signatures),
+            ),
+            "defense-in-depth writable check must fail closed"
+        );
+    }
+
+    #[test]
     fn decode_base64_transaction_round_trips_real_tx() {
         let subscriber = Pubkey::new_unique();
         let tx = build_tx(&[subscriber], vec![(INSTRUCTION_SUBSCRIBE, vec![])]);
@@ -3714,8 +3759,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn verify_rejects_transaction_empty_account_keys() {
-        // A real (decodable) tx whose account_keys are empty exercises the
-        // extract_subscriber "no account keys" branch through verify.
+        // A real (decodable) tx with no accounts must be rejected by the
+        // transaction sanitization boundary before deeper verification.
         use solana_hash::Hash;
         use solana_message::{Message, MessageHeader};
         let server = SubscriptionServer::new(make_config()).expect("server");
@@ -3743,7 +3788,11 @@ mod tests {
             },
         );
         let err = server.verify_credential(&credential).await.unwrap_err();
-        assert!(err.message.contains("no account keys"), "{}", err.message);
+        assert!(
+            err.message.contains("sanitization failed"),
+            "{}",
+            err.message
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

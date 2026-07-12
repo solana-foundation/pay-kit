@@ -8,7 +8,13 @@ import {
     getTransactionDecoder,
 } from '@solana/kit';
 
-import { ASSOCIATED_TOKEN_PROGRAM, SUBSCRIPTIONS_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
+import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    PYUSD,
+    SUBSCRIPTIONS_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+} from '../constants.js';
 import {
     buildSubscriptionActivationTransaction,
     initializeSubscriptionAuthority,
@@ -129,12 +135,14 @@ describe('canonical subscription activation builder', () => {
         expect(ataInstructions.every(ix => ix.data.length === 1 && ix.data[0] === 1)).toBe(true);
     });
 
-    test('uses the challenged Token-2022 program for both ATA layouts', async () => {
+    test('allows a known Token-2022 stablecoin for both ATA layouts', async () => {
         const subscriber = await generateKeyPairSigner();
         const server = await generateKeyPairSigner();
+        const challenged = request(server.address, TOKEN_2022_PROGRAM);
+        challenged.methodDetails.mint = PYUSD.mainnet;
         const message = decodeWire(
             await buildSubscriptionActivationTransaction({
-                request: request(server.address, TOKEN_2022_PROGRAM),
+                request: challenged,
                 signer: subscriber,
                 subscriptionAuthorityInitId: INIT_ID,
             }),
@@ -145,6 +153,44 @@ describe('canonical subscription activation builder', () => {
         for (const ix of ataInstructions) {
             expect(message.staticAccounts[ix.accountIndices[5]]).toBe(TOKEN_2022_PROGRAM);
         }
+    });
+
+    test('rejects a server-selected custom token program', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const customTokenProgram = (await generateKeyPairSigner()).address;
+
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request: request(server.address, customTokenProgram),
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        ).rejects.toThrow(/Unsupported token program/);
+    });
+
+    test('rejects an unknown Token-2022 mint unless explicitly opted in', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const challenged = request(server.address, TOKEN_2022_PROGRAM);
+        challenged.methodDetails.mint = (await generateKeyPairSigner()).address;
+
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request: challenged,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        ).rejects.toThrow(/unknown Token-2022 mint/);
+
+        await expect(
+            buildSubscriptionActivationTransaction({
+                allowUnknownToken2022: true,
+                request: challenged,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        ).resolves.toEqual(expect.any(String));
     });
 
     test('derives event authority and self-program from a challenged custom program', async () => {
