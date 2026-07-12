@@ -234,6 +234,10 @@ func resolveServerTokenProgram(ctx context.Context, rpcClient solanatx.RPCClient
 		return "", core.WrapError(core.ErrCodeInvalidConfig,
 			"currency must be a known stablecoin symbol or a valid SPL mint address", err)
 	}
+	if rpcClient == nil {
+		return "", core.NewError(core.ErrCodeInvalidConfig,
+			"an RPC client is required to resolve the token program for an arbitrary mint")
+	}
 	program, err := solanatx.ResolveTokenProgram(ctx, rpcClient, mint, "")
 	if err != nil {
 		return "", core.WrapError(core.ErrCodeInvalidConfig,
@@ -660,6 +664,12 @@ func (m *Mpp) verifyTransaction(
 	if err := solanatx.SimulateTransaction(ctx, m.rpc, tx); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "simulate transaction", err)
 	}
+	// A transport error from SendTransaction is ambiguous: the RPC may have
+	// accepted the transaction before losing the response. Retain the marker
+	// before the first send attempt so a retry cannot broadcast the same
+	// credential a second time. Simulation and validation failures remain
+	// rollback-safe because they return before this point.
+	cleanupConsumed = false
 	signature, err := solanatx.SendTransaction(ctx, m.rpc, tx)
 	if err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
@@ -671,7 +681,6 @@ func (m *Mpp) verifyTransaction(
 	// same credential for a second submission while the original lands and
 	// double-pays. Mirrors the rust reference, which consumes the signature
 	// after broadcast and never deletes it on a confirmation timeout.
-	cleanupConsumed = false
 	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}

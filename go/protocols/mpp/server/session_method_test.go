@@ -22,6 +22,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
@@ -61,6 +62,35 @@ func newTestSession(t *testing.T, mutate func(*SessionOptions)) *Session {
 	}
 	t.Cleanup(session.Shutdown)
 	return session
+}
+
+func TestNewSessionResolvesArbitraryMintTokenProgram(t *testing.T) {
+	mint := testutil.NewPrivateKey().PublicKey()
+	fake := testutil.NewFakeRPC()
+	fake.MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+
+	session := newTestSession(t, func(options *SessionOptions) {
+		options.Currency = mint.String()
+		options.RPC = fake
+	})
+	if got := session.core.config.TokenProgram; got != paycore.Token2022Program {
+		t.Fatalf("resolved token program = %s, want %s", got, paycore.Token2022Program)
+	}
+}
+
+func TestNewSessionRejectsUnresolvedArbitraryMint(t *testing.T) {
+	mint := testutil.NewPrivateKey().PublicKey()
+	options := SessionOptions{
+		Operator:  sessionTestRecipient,
+		Recipient: sessionTestRecipient,
+		Cap:       1,
+		Currency:  mint.String(),
+		Network:   "localnet",
+		SecretKey: sessionMethodSecret,
+	}
+	if _, err := NewSession(options); err == nil || !strings.Contains(err.Error(), "RPC client is required") {
+		t.Fatalf("unresolved arbitrary mint error = %v", err)
+	}
 }
 
 func TestNewSessionMemoryChannelStorePolicy(t *testing.T) {
@@ -452,6 +482,49 @@ func TestSessionOpenTrustsChannelIDAndDeposit(t *testing.T) {
 	}
 }
 
+func TestSessionOpenRejectsDepositAboveAuthenticatedChallengeCap(t *testing.T) {
+	session := newTestSession(t, func(o *SessionOptions) { o.Cap = 5_000 })
+	challenge, err := session.Challenge(context.Background(), SessionChallengeOptions{Cap: "1000"})
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
+		intents.OpenPayloadPush(channelID, "1001", signer.Address(), "sig")))
+	if err != nil {
+		t.Fatalf("NewPaymentCredential: %v", err)
+	}
+
+	if _, err := session.VerifyCredential(context.Background(), credential); err == nil ||
+		!strings.Contains(err.Error(), "deposit 1001 exceeds cap 1000") {
+		t.Fatalf("over-challenge-cap error = %v", err)
+	}
+	if state := mustGetChannel(t, session, channelID); state != nil {
+		t.Fatalf("channel persisted after rejected open: %+v", state)
+	}
+}
+
+func TestSessionOpenUsesReducedCurrentCapForOldChallenge(t *testing.T) {
+	session := newTestSession(t, func(o *SessionOptions) { o.Cap = 5_000 })
+	challenge, err := session.Challenge(context.Background(), SessionChallengeOptions{})
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	session.cap = 1_000
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
+		intents.OpenPayloadPush(channelID, "1001", signer.Address(), "sig")))
+	if err != nil {
+		t.Fatalf("NewPaymentCredential: %v", err)
+	}
+	if _, err := session.VerifyCredential(context.Background(), credential); err == nil ||
+		!strings.Contains(err.Error(), "deposit 1001 exceeds cap 1000") {
+		t.Fatalf("reduced-cap error = %v", err)
+	}
+}
+
 func TestSessionOpenRejectsUnadvertisedMode(t *testing.T) {
 	session := newTestSession(t, nil)
 	signer := newTestVoucherSigner(t)
@@ -718,6 +791,28 @@ func TestSessionTopUpUpdatesDeposit(t *testing.T) {
 	}
 	if mustGetChannel(t, session, channelID).Deposit != 5_000 {
 		t.Fatal("deposit not raised")
+	}
+}
+
+func TestSessionTopUpRejectsDepositAboveAuthenticatedChallengeCap(t *testing.T) {
+	session := newTestSession(t, func(o *SessionOptions) { o.Cap = 5_000 })
+	_, channelID := openTrustedChannel(t, session, 500)
+	challenge, err := session.Challenge(context.Background(), SessionChallengeOptions{Cap: "1000"})
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewTopUpAction(intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "1001", Signature: "topup-sig",
+	}))
+	if err != nil {
+		t.Fatalf("NewPaymentCredential: %v", err)
+	}
+	if _, err := session.VerifyCredential(context.Background(), credential); err == nil ||
+		!strings.Contains(err.Error(), "newDeposit 1001 exceeds cap 1000") {
+		t.Fatalf("over-challenge-cap error = %v", err)
+	}
+	if got := mustGetChannel(t, session, channelID).Deposit; got != 500 {
+		t.Fatalf("deposit = %d after rejected top-up, want 500", got)
 	}
 }
 

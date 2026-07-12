@@ -82,6 +82,12 @@ type SessionConfig struct {
 	// Currency identifier (e.g., "USDC", mint address).
 	Currency string
 
+	// TokenProgram is the authoritative SPL token program owning Currency
+	// (Token or Token-2022), resolved when the session is configured. Leave
+	// empty for the known currency default; arbitrary mint addresses must set
+	// this to the mint account's resolved owner.
+	TokenProgram string
+
 	// Decimals is the token decimals (default 6 for USDC).
 	Decimals uint8
 

@@ -26,14 +26,15 @@ import (
 // openTxFixture bundles a freshly built and signed payment-channel open
 // transaction with the payload and challenge expectations that accept it.
 type openTxFixture struct {
-	payer      solana.PrivateKey    // channel payer keypair; fee payer and sole signer of the open tx
-	payee      solana.PublicKey     // channel recipient the challenge expects
-	authorized solana.PublicKey     // voucher-signing pubkey baked into the channel
-	mint       solana.PublicKey     // SPL mint the channel settles in (mainnet USDC)
-	channel    solana.PublicKey     // channel PDA derived from payer/payee/mint/authorized + salt
-	signature  string               // fee-payer signature of the open tx (base58)
-	payload    intents.OpenPayload  // open payload carrying the base64-encoded wire tx
-	expected   VerifyOpenTxExpected // challenge-side expectations that accept this fixture
+	payer        solana.PrivateKey    // channel payer keypair; fee payer and sole signer of the open tx
+	payee        solana.PublicKey     // channel recipient the challenge expects
+	authorized   solana.PublicKey     // voucher-signing pubkey baked into the channel
+	mint         solana.PublicKey     // SPL mint the channel settles in (mainnet USDC)
+	tokenProgram solana.PublicKey     // token program owning mint
+	channel      solana.PublicKey     // channel PDA derived from payer/payee/mint/authorized + salt
+	signature    string               // fee-payer signature of the open tx (base58)
+	payload      intents.OpenPayload  // open payload carrying the base64-encoded wire tx
+	expected     VerifyOpenTxExpected // challenge-side expectations that accept this fixture
 }
 
 const (
@@ -64,28 +65,30 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 		RentPayer:        payer.PublicKey(),
 		Payee:            payee,
 		Mint:             mint,
+		TokenProgram:     solana.TokenProgramID,
 		AuthorizedSigner: authorized,
 		Salt:             openFixtureSalt,
 		OpenSlot:         openFixtureOpenSlot,
 		Deposit:          openFixtureDeposit,
 		GracePeriod:      openFixtureGrace,
-		TokenProgram:     solana.TokenProgramID,
 	})
 	if err != nil {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
 
 	fixture := openTxFixture{
-		payer:      payer,
-		payee:      payee,
-		authorized: authorized,
-		mint:       mint,
-		channel:    channel,
+		payer:        payer,
+		payee:        payee,
+		authorized:   authorized,
+		mint:         mint,
+		tokenProgram: solana.TokenProgramID,
+		channel:      channel,
 	}
 	fixture.signature, fixture.payload = signAndAttachOpenTx(t, &fixture, ix, v0)
 	fixture.expected = VerifyOpenTxExpected{
 		AuthorizedSigner: authorized.String(),
 		Currency:         "USDC",
+		TokenProgram:     fixture.tokenProgram.String(),
 		MaxCap:           5_000_000,
 		Network:          "localnet",
 		Operator:         payer.PublicKey().String(),
@@ -404,6 +407,29 @@ func TestVerifyOpenTxRejectsUnboundSignature(t *testing.T) {
 	}
 }
 
+func TestVerifyOpenTxRejectsForgedMessageWithCopiedConfirmedSignature(t *testing.T) {
+	fixture := buildOpenTxFixture(t, false)
+	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
+	if err != nil {
+		t.Fatalf("decode fixture transaction: %v", err)
+	}
+	// Copying a confirmed signature onto a different message preserves the
+	// signature/status lookup but must fail cryptographic verification first.
+	tx.Message.RecentBlockhash = solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
+	forgedWire, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("encode forged transaction: %v", err)
+	}
+	fixture.payload.Transaction = &forgedWire
+	fakeRPC := testutil.NewFakeRPC()
+	fakeRPC.Statuses[fixture.signature] = &rpc.SignatureStatusesResult{
+		ConfirmationStatus: rpc.ConfirmationStatusConfirmed,
+	}
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, fakeRPC); err == nil || !strings.Contains(err.Error(), "invalid signature") {
+		t.Fatalf("err = %v, want forged-message signature rejection", err)
+	}
+}
+
 func TestVerifyOpenTxRejectsSignatureWithoutFeePayerSignature(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
@@ -416,16 +442,63 @@ func TestVerifyOpenTxRejectsSignatureWithoutFeePayerSignature(t *testing.T) {
 		t.Fatalf("re-encode stripped transaction: %v", err)
 	}
 	fixture.payload.Transaction = &stripped
-	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "no fee-payer signature") {
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "no signature") {
 		t.Fatalf("err = %v, want missing fee-payer-signature rejection", err)
 	}
 }
 
-func TestVerifyOpenTxAcceptsPlaceholderSignatureWithoutBinding(t *testing.T) {
+func TestVerifyOpenTxRejectsPlaceholderSignature(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	fixture.payload.Signature = strings.Repeat("1", 64)
-	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err != nil {
-		t.Fatalf("VerifyOpenTx with placeholder signature: %v", err)
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "must be a real transaction signature") {
+		t.Fatalf("placeholder signature error = %v", err)
+	}
+}
+
+func TestVerifyOpenTxRejectsTokenProgramMismatch(t *testing.T) {
+	fixture := buildOpenTxFixture(t, false)
+	token2022 := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
+		Payer:            fixture.payer.PublicKey(),
+		RentPayer:        fixture.payer.PublicKey(),
+		Payee:            fixture.payee,
+		Mint:             fixture.mint,
+		AuthorizedSigner: fixture.authorized,
+		Salt:             openFixtureSalt,
+		OpenSlot:         openFixtureOpenSlot,
+		Deposit:          openFixtureDeposit,
+		GracePeriod:      openFixtureGrace,
+		TokenProgram:     token2022,
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenInstruction: %v", err)
+	}
+	_, fixture.payload = signAndAttachOpenTx(t, &fixture, ix, false)
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "token program") {
+		t.Fatalf("err = %v, want token-program mismatch rejection", err)
+	}
+}
+
+func TestVerifyOpenTxRejectsAdditionalInstructions(t *testing.T) {
+	fixture := buildOpenTxFixture(t, false)
+	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
+	if err != nil {
+		t.Fatalf("decode fixture transaction: %v", err)
+	}
+	tx.Message.Instructions = append(tx.Message.Instructions, tx.Message.Instructions[0])
+	if err := solanatx.SignTransaction(tx, fixture.payer); err != nil {
+		t.Fatalf("re-sign transaction: %v", err)
+	}
+	wire, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("encode transaction: %v", err)
+	}
+	fixture.payload.Transaction = &wire
+	fixture.payload.Signature = tx.Signatures[0].String()
+
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil ||
+		!strings.Contains(err.Error(), "exactly one instruction") {
+		t.Fatalf("additional-instruction error = %v", err)
 	}
 }
 
@@ -602,10 +675,16 @@ func TestNewOpenTxVerifierReturnsChannelPayerForTransaction(t *testing.T) {
 	}
 }
 
-func TestNewOpenTxVerifierWithoutTransactionConfirmsSignature(t *testing.T) {
+func TestNewOpenTxVerifierWithoutTransactionVerifiesFetchedTransaction(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	config := openSessionConfig(fixture)
-	verifier := NewOpenTxVerifier(config, testutil.NewFakeRPC())
+	fakeRPC := testutil.NewFakeRPC()
+	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
+	if err != nil {
+		t.Fatalf("decode fixture transaction: %v", err)
+	}
+	fakeRPC.BySig[fixture.payload.Signature] = tx
+	verifier := NewOpenTxVerifier(config, fakeRPC)
 	payload := fixture.payload
 	payload.Transaction = nil
 	if _, err := verifier(context.Background(), &payload); err != nil {
@@ -919,6 +998,46 @@ func TestSettlementInstructionsResolvesToken2022FromCurrency(t *testing.T) {
 	}
 	if got := accounts[8].PublicKey.String(); got != paycore.Token2022Program {
 		t.Fatalf("distribute token program = %s, want Token-2022", got)
+	}
+}
+
+func TestSettlementInstructionsUsesConfiguredToken2022ForArbitraryMint(t *testing.T) {
+	config := sessionTestConfig()
+	arbitraryMint := testutil.NewPrivateKey().PublicKey()
+	config.Currency = arbitraryMint.String()
+	config.TokenProgram = paycore.Token2022Program
+	server := newSessionTestServer(config)
+	payer := testutil.NewPrivateKey().PublicKey()
+	merchant := testutil.NewPrivateKey().PublicKey()
+	signer := newTestVoucherSigner(t)
+	channelID := testutil.NewPrivateKey().PublicKey().String()
+	payload := intents.OpenPayloadPaymentChannel(
+		channelID, "1000000", payer.String(), sessionTestRecipient,
+		arbitraryMint.String(), openFixtureSalt, openFixtureGrace, openFixtureOpenSlot,
+		signer.Address(), "dummy_tx_sig",
+	)
+	if _, err := server.ProcessOpen(context.Background(), &payload); err != nil {
+		t.Fatalf("ProcessOpen: %v", err)
+	}
+
+	instructions, err := server.SettlementInstructions(context.Background(), channelID, merchant)
+	if err != nil {
+		t.Fatalf("SettlementInstructions: %v", err)
+	}
+	accounts := instructions[len(instructions)-1].Accounts()
+	if !accounts[7].PublicKey.Equals(arbitraryMint) {
+		t.Fatalf("distribute mint = %s, want arbitrary mint %s", accounts[7].PublicKey, arbitraryMint)
+	}
+	wantToken2022 := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	if !accounts[8].PublicKey.Equals(wantToken2022) {
+		t.Fatalf("distribute token program = %s, want Token-2022", accounts[8].PublicKey)
+	}
+	wantPayerATA, _, err := solana.FindAssociatedTokenAddressWithProgram(payer, arbitraryMint, wantToken2022)
+	if err != nil {
+		t.Fatalf("derive payer ATA: %v", err)
+	}
+	if !accounts[4].PublicKey.Equals(wantPayerATA) {
+		t.Fatalf("distribute payer token account = %s, want %s", accounts[4].PublicKey, wantPayerATA)
 	}
 }
 

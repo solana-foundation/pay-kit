@@ -61,6 +61,13 @@ type SessionOptions struct {
 	// Currency identifier (e.g. "USDC" or an SPL mint address). Default USDC.
 	Currency string
 
+	// TokenProgram optionally pins the SPL token program owning Currency.
+	// Known currencies resolve from the static mapping; arbitrary mint
+	// addresses resolve their owner through RPC when this is empty. Clients
+	// opening an arbitrary Token-2022 channel must use the matching
+	// PaymentChannelOpenOptions.TokenProgram override.
+	TokenProgram string
+
 	// Decimals is the token decimals. Default 6.
 	Decimals uint8
 
@@ -114,9 +121,11 @@ type SessionOptions struct {
 	// replay protection. Localnet defaults to MemoryChannelStore.
 	Store ChannelStore
 
-	// RPC is the optional RPC client used for on-chain checks, the
-	// recentBlockhash prefetch, and settlement broadcasts. Nil skips every
-	// on-chain check and trusts payload claims as provided.
+	// RPC is the optional RPC client used for on-chain checks, arbitrary-mint
+	// token-program resolution, the recentBlockhash prefetch, and settlement
+	// broadcasts. It is required when Currency is an arbitrary mint and
+	// TokenProgram is not explicitly pinned; otherwise nil skips on-chain
+	// checks and trusts payload claims as provided.
 	RPC solanatx.RPCClient
 
 	// Logger receives library-side diagnostics that have no synchronous
@@ -206,6 +215,15 @@ func NewSession(options SessionOptions) (*Session, error) {
 	if options.Network == "" {
 		options.Network = "mainnet"
 	}
+	if options.TokenProgram == "" {
+		resolved, err := resolveServerTokenProgram(context.Background(), options.RPC, options.Currency, options.Network)
+		if err != nil {
+			return nil, err
+		}
+		options.TokenProgram = resolved
+	} else if _, err := resolveSessionTokenProgram(options.TokenProgram, options.Currency, options.Network); err != nil {
+		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid session token program", err)
+	}
 	if options.Realm == "" {
 		options.Realm = DetectRealm(options.Recipient)
 	}
@@ -255,6 +273,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		Splits:              options.Splits,
 		MaxCap:              options.Cap,
 		Currency:            options.Currency,
+		TokenProgram:        options.TokenProgram,
 		Decimals:            options.Decimals,
 		Network:             options.Network,
 		ProgramID:           options.ProgramID,
@@ -419,6 +438,13 @@ func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentC
 	if err := challenge.Request.Decode(&request); err != nil {
 		return core.Receipt{}, err
 	}
+	challengeCap, capErr := parseSessionU64(request.Cap, "challenge cap")
+	if capErr != nil {
+		return core.Receipt{}, core.WrapError(core.ErrCodeInvalidPayload, "invalid challenge cap", capErr)
+	}
+	// An older still-valid challenge must not override a cap reduced in the
+	// current server configuration.
+	challengeCap = min(challengeCap, s.cap)
 	if err := s.verifyPinnedSessionFields(credential, request); err != nil {
 		return core.Receipt{}, err
 	}
@@ -440,13 +466,13 @@ func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentC
 				fmt.Sprintf("open payload recentSlot %d does not match the challenge recentSlot %d",
 					*action.Open.RecentSlot, uint64(*request.RecentSlot)))
 		}
-		reference, err = s.handleOpen(ctx, action.Open)
+		reference, err = s.handleOpen(ctx, action.Open, challengeCap)
 	case action.Voucher != nil:
 		reference, err = s.handleVoucher(ctx, action.Voucher)
 	case action.Commit != nil:
 		reference, err = s.handleCommit(ctx, action.Commit)
 	case action.TopUp != nil:
-		reference, err = s.handleTopUp(ctx, action.TopUp)
+		reference, err = s.handleTopUp(ctx, action.TopUp, challengeCap)
 	case action.Close != nil:
 		reference, err = s.handleClose(ctx, action.Close)
 	default:
@@ -506,7 +532,7 @@ func (s *Session) verifyPinnedSessionFields(credential core.PaymentCredential, r
 // touch on top of the same insert invariant. The duplication is deliberate;
 // keep the shared invariant (finalized/authorized-signer/deposit checks) in
 // step with ProcessOpen.
-func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) (string, error) {
+func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, challengeCap uint64) (string, error) {
 	mode := payload.Mode
 	if !s.core.supportsMode(mode) {
 		return "", fmt.Errorf("session mode %q is not supported by this challenge", mode)
@@ -540,7 +566,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		expected := VerifyOpenTxExpected{
 			AuthorizedSigner: payload.AuthorizedSigner,
 			Currency:         s.currency,
-			MaxCap:           s.cap,
+			TokenProgram:     s.core.config.TokenProgram,
+			MaxCap:           challengeCap,
 			Network:          s.network,
 			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
@@ -553,7 +580,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			}
 			// Decode-only first so an idempotent replay of an
 			// already-persisted open does not rebroadcast the transaction.
-			preVerified, err := VerifyOpenTx(ctx, expected, payload, nil)
+			preVerified, err := verifyOpenTx(ctx, expected, payload, nil, true)
 			if err != nil {
 				return "", err
 			}
@@ -601,7 +628,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			expected := VerifyOpenTxExpected{
 				AuthorizedSigner: payload.AuthorizedSigner,
 				Currency:         s.currency,
-				MaxCap:           s.cap,
+				TokenProgram:     s.core.config.TokenProgram,
+				MaxCap:           challengeCap,
 				Network:          s.network,
 				Operator:         s.core.config.Operator,
 				ProgramID:        s.core.config.ProgramID,
@@ -653,8 +681,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	if deposit == 0 {
 		return "", fmt.Errorf("deposit must be greater than zero")
 	}
-	if deposit > s.cap {
-		return "", fmt.Errorf("deposit %d exceeds cap %d", deposit, s.cap)
+	if deposit > challengeCap {
+		return "", fmt.Errorf("deposit %d exceeds cap %d", deposit, challengeCap)
 	}
 
 	// Prefer the payer read from the verified open transaction (account 0, what
@@ -721,13 +749,13 @@ func (s *Session) handleCommit(ctx context.Context, payload *intents.CommitPaylo
 // handleTopUp raises a channel's deposit after the core binds the confirmed
 // top-up transaction to the channel and claimed deposit delta. The receipt
 // reference is the top-up transaction signature.
-func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
+func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload, challengeCap uint64) (string, error) {
 	newDeposit, err := parseSessionU64(payload.NewDeposit, "newDeposit")
 	if err != nil {
 		return "", err
 	}
-	if newDeposit > s.cap {
-		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, s.cap)
+	if newDeposit > challengeCap {
+		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, challengeCap)
 	}
 
 	if _, err := s.core.ProcessTopUp(ctx, payload); err != nil {
