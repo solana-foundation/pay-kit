@@ -44,7 +44,15 @@ async function channelId(): Promise<string> {
     return derived;
 }
 
-function encodeChannel(deposit: bigint, status = 0, gracePeriod = 900): string {
+function encodeChannel(
+    deposit: bigint,
+    status = 0,
+    gracePeriod = 900,
+    settlement: { readonly payoutWatermark: bigint; readonly settled: bigint } = {
+        payoutWatermark: 0n,
+        settled: 0n,
+    },
+): string {
     const bytes = getChannelEncoder().encode({
         discriminator: 1,
         version: 1,
@@ -52,7 +60,7 @@ function encodeChannel(deposit: bigint, status = 0, gracePeriod = 900): string {
         status,
         salt: 7n,
         deposit,
-        settlement: { settled: 0n, payoutWatermark: 0n },
+        settlement,
         closureStartedAt: 0n,
         payerWithdrawnAt: 0n,
         gracePeriod,
@@ -243,6 +251,43 @@ describe('session Channel account state binding', () => {
         );
     });
 
+    test('topUp accepts an existing channel with a settlement watermark', async () => {
+        const channel = await channelId();
+        const store = createMemorySessionStore();
+        await store.updateChannel(channel, () => ({
+            authorizedSigner: SIGNER,
+            channelId: channel,
+            committedDeliveries: [],
+            cumulative: 0n,
+            deposit: 1_000n,
+            nextDeliverySequence: 0n,
+            operator: PAYER,
+            pendingDeliveries: [],
+            sealed: false,
+        }));
+        const method = session(
+            parameters({
+                rpc: rpcWithChannel(
+                    encodeChannel(3_000n, 0, 900, { payoutWatermark: 1_000n, settled: 1_000n }),
+                ) as never,
+                store,
+            }),
+        );
+
+        await expect(
+            method.verify({
+                credential: credential({
+                    action: 'topUp',
+                    channelId: channel,
+                    newDeposit: '3000',
+                    signature: 'topup-signature',
+                }),
+                request: {} as never,
+            }),
+        ).resolves.toMatchObject({ status: 'success' });
+        expect((await store.getChannel(channel))?.deposit).toBe(3_000n);
+    });
+
     test('topUp fails closed without rpc off localnet', async () => {
         const channel = await channelId();
         const store = createMemorySessionStore();
@@ -395,5 +440,22 @@ describe('session Channel account state binding', () => {
                 rpc,
             }),
         ).rejects.toThrow(/distributionHash/);
+    });
+
+    test('keeps fresh-channel state binding strict about settlement watermarks', async () => {
+        const channel = await channelId();
+        await expect(
+            verifyChannelAccountState({
+                channelId: channel,
+                expected: {
+                    authorizedSigner: SIGNER,
+                    mint: LOCALNET_USDC,
+                    payee: RECIPIENT,
+                    programId: PAYMENT_CHANNELS_PROGRAM_ADDRESS,
+                    rentPayer: OPERATOR,
+                },
+                rpc: rpcWithChannel(encodeChannel(2_000n, 0, 900, { payoutWatermark: 1_000n, settled: 1_000n })),
+            }),
+        ).rejects.toThrow(/nonzero settlement watermarks/);
     });
 });

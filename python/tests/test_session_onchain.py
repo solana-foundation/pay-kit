@@ -746,6 +746,19 @@ async def test_signature_only_open_rejects_parsed_rpc_transaction() -> None:
     assert fake_rpc.transaction_kwargs["encoding"] == "base64"
 
 
+async def test_signature_only_open_rejects_failed_confirmed_transaction() -> None:
+    """The shared wire verifier keeps failed RPC results from reaching account binding."""
+    fixture = build_open_tx_fixture(v0=False)
+    fixture.payload.transaction = None
+    fake_rpc = _FakeRpc()
+    fake_rpc.transaction = {"meta": {"err": "InstructionError"}, "transaction": ["ignored", "base64"]}
+    verifier = new_open_tx_verifier(_open_session_config(fixture), fake_rpc)
+
+    with pytest.raises(PaymentError, match="failed on-chain") as error:
+        await verifier(fixture.payload)
+    assert error.value.code == "transaction-failed"
+
+
 @pytest.mark.parametrize("case", ["missing", "unrelated", "extra"])
 async def test_signature_only_open_rejects_noncanonical_confirmed_transaction(case: str) -> None:
     fixture = build_open_tx_fixture(v0=False)

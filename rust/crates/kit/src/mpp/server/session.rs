@@ -1007,6 +1007,29 @@ impl<S: ChannelStore> SessionServer<S> {
                         "on-chain channel payer does not match stored channel".to_string(),
                     ));
                 }
+                if channel.grace_period != self.config.grace_period_seconds {
+                    return Err(Error::Other(format!(
+                        "on-chain channel grace_period {} != expected {}",
+                        channel.grace_period, self.config.grace_period_seconds
+                    )));
+                }
+                let expected_distribution: Vec<payment_channels::Distribution> = self
+                    .config
+                    .splits
+                    .iter()
+                    .map(|split| payment_channels::Distribution {
+                        recipient: split.recipient,
+                        bps: split.bps,
+                    })
+                    .collect();
+                if channel.distribution_hash
+                    != payment_channels::distribution_hash(&expected_distribution)
+                {
+                    return Err(Error::Other(
+                        "on-chain channel distribution_hash does not match session splits"
+                            .to_string(),
+                    ));
+                }
                 if channel.deposit != new_deposit {
                     return Err(Error::Other(format!(
                         "on-chain channel deposit {} != asserted new_deposit {new_deposit}",
@@ -3377,6 +3400,27 @@ mod tests {
     }
 
     #[cfg(feature = "server")]
+    fn stored_topup_channel(channel_id: String, payer: Pubkey, signer: Pubkey) -> ChannelState {
+        ChannelState {
+            channel_id,
+            authorized_signer: payment_channels::pubkey_string(&signer),
+            deposit: 1_000,
+            cumulative: 0,
+            sealed: false,
+            highest_voucher_signature: None,
+            highest_voucher_expires_at: None,
+            close_requested_at: None,
+            open_slot: Some(42),
+            salt: Some(7),
+            open_signature: None,
+            operator: Some(payment_channels::pubkey_string(&payer)),
+            next_delivery_sequence: 0,
+            pending_deliveries: vec![],
+            committed_deliveries: vec![],
+        }
+    }
+
+    #[cfg(feature = "server")]
     fn signed_open_transaction(params: &payment_channels::OpenChannelParams) -> (Vec<u8>, String) {
         let mut transaction =
             solana_transaction::Transaction::new_unsigned(solana_message::Message::new(
@@ -3945,6 +3989,119 @@ mod tests {
         assert!(error
             .to_string()
             .contains("on-chain channel deposit 2000 != asserted new_deposit 3000"));
+        assert_eq!(
+            server
+                .store
+                .get_channel(&channel_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deposit,
+            1_000
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_grace_period_mismatch() {
+        let base = make_server();
+        let channel = Pubkey::new_unique();
+        let channel_id = payment_channels::pubkey_string(&channel);
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        let rpc = SessionAccountRpc::start(
+            encoded_channel(CHANNEL_STATUS_OPEN, 2_000, payer, payee, signer, mint),
+            payment_channels::default_program_id(),
+        );
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS + 1,
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+        server
+            .store
+            .put_channel(
+                &channel_id,
+                stored_topup_channel(channel_id.clone(), payer, signer),
+            )
+            .await
+            .unwrap();
+
+        let error = server
+            .process_topup(&TopUpPayload {
+                channel_id: channel_id.clone(),
+                new_deposit: "2000".to_string(),
+                signature: bs58::encode([10u8; 64]).into_string(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("on-chain channel grace_period 900 != expected 901"));
+        assert_eq!(
+            server
+                .store
+                .get_channel(&channel_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deposit,
+            1_000
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_distribution_hash_mismatch() {
+        let base = make_server();
+        let channel = Pubkey::new_unique();
+        let channel_id = payment_channels::pubkey_string(&channel);
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        let rpc = SessionAccountRpc::start(
+            encoded_channel(CHANNEL_STATUS_OPEN, 2_000, payer, payee, signer, mint),
+            payment_channels::default_program_id(),
+        );
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                splits: vec![Split {
+                    recipient: Pubkey::new_unique(),
+                    bps: 1_000,
+                }],
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+        server
+            .store
+            .put_channel(
+                &channel_id,
+                stored_topup_channel(channel_id.clone(), payer, signer),
+            )
+            .await
+            .unwrap();
+
+        let error = server
+            .process_topup(&TopUpPayload {
+                channel_id: channel_id.clone(),
+                new_deposit: "2000".to_string(),
+                signature: bs58::encode([10u8; 64]).into_string(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("on-chain channel distribution_hash does not match session splits"));
         assert_eq!(
             server
                 .store

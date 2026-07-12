@@ -919,6 +919,9 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
                     payer: existing.operator,
                     programId: args.programId.toString(),
                     rentPayer: args.operator,
+                    // An existing channel may have advanced its settlement
+                    // watermark; freshness is required only when opening it.
+                    requireFresh: false,
                     splits: args.splits,
                 },
                 minContextSlot: confirmedSlot,
