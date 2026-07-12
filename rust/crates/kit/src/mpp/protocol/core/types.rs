@@ -389,6 +389,7 @@ mod tests {
     fn base64url_json_decode_invalid_base64() {
         let b = Base64UrlJson::from_raw("!!!invalid!!!");
         assert!(b.decode_value().is_err());
+        assert!(b.decode::<serde_json::Value>().is_err());
     }
 
     #[test]
@@ -396,6 +397,7 @@ mod tests {
         // base64url of "not json"
         let b = Base64UrlJson::from_raw(base64url_encode(b"not json"));
         assert!(b.decode_value().is_err());
+        assert!(b.decode::<serde_json::Value>().is_err());
     }
 
     #[test]

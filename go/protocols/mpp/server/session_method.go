@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -111,8 +112,8 @@ type SessionOptions struct {
 	OpenTxSubmitter OpenTxSubmitter
 
 	// Signer is the merchant signer for the settle_and_seal + distribute
-	// settlement transaction. Settlement at close (and on idle close) only
-	// runs when both Signer and RPC are configured.
+	// settlement transaction. It requires RPC to implement SettlementRPC so
+	// close and idle-close settlement can recover from expired transactions.
 	Signer solanatx.Signer
 
 	// PaymentChannelPayerSigner completes the fee-payer signature when the
@@ -128,10 +129,10 @@ type SessionOptions struct {
 	// memory store outside localnet. Unsafe; intended only for explicit dev use.
 	AllowUnsafeEphemeralStoreOffLocalnet bool
 
-	// RPC is the optional RPC client used for on-chain checks, the
-	// recentBlockhash prefetch, and settlement broadcasts. When Signer is also
-	// set, RPC must implement SettlementRPC. Nil skips every on-chain check and
-	// trusts payload claims as provided.
+	// RPC is the optional RPC client used for on-chain checks and recentBlockhash
+	// prefetch. It must implement SettlementRPC when Signer is set; without a
+	// signer, nil skips every on-chain check and trusts payload claims as
+	// provided.
 	RPC solanatx.RPCClient
 }
 
@@ -180,6 +181,19 @@ type Session struct {
 	// prefetch, and settlement broadcasts; nil skips every on-chain check
 	// and trusts payload claims as provided.
 	rpc solanatx.RPCClient
+}
+
+func isNilOption(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // NewSession creates the server-side session method.
@@ -246,7 +260,19 @@ func NewSession(options SessionOptions) (*Session, error) {
 		return nil, core.NewError(core.ErrCodeInvalidConfig,
 			sessionStoreSafetyMessage(store))
 	}
-	if options.Signer != nil && options.RPC != nil {
+	signerConfigured := !isNilOption(options.Signer)
+	rpcConfigured := !isNilOption(options.RPC)
+	if options.Signer != nil && !signerConfigured {
+		return nil, core.NewError(core.ErrCodeInvalidConfig, "signer must not be a typed nil")
+	}
+	if options.RPC != nil && !rpcConfigured {
+		return nil, core.NewError(core.ErrCodeInvalidConfig, "RPC must not be a typed nil")
+	}
+	if signerConfigured && !rpcConfigured {
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			"session settlement RPC is required when signer is configured")
+	}
+	if signerConfigured {
 		_, ok := options.RPC.(SettlementRPC)
 		if !ok {
 			return nil, core.NewError(core.ErrCodeInvalidConfig,

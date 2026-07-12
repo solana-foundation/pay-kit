@@ -37,6 +37,13 @@ type rpcWithoutBlockHeight struct {
 	solanatx.RPCClient
 }
 
+type typedNilSessionSigner struct{}
+
+func (*typedNilSessionSigner) PublicKey() solana.PublicKey { panic("typed-nil signer used") }
+func (*typedNilSessionSigner) Sign([]byte) (solana.Signature, error) {
+	panic("typed-nil signer used")
+}
+
 var _ SettlementRPC = (*testutil.FakeRPC)(nil)
 
 // confirmedSignature returns a base58 signature string registered as
@@ -356,6 +363,29 @@ func TestNewSessionValidation(t *testing.T) {
 	}
 
 	legacyRPC := &rpcWithoutBlockHeight{RPCClient: testutil.NewFakeRPC()}
+	missingSettlementRPC := base()
+	missingSettlementRPC.Network = "localnet"
+	missingSettlementRPC.Signer = testutil.NewPrivateKey()
+	if _, err := NewSession(missingSettlementRPC); err == nil || !strings.Contains(err.Error(), "RPC is required") {
+		t.Fatalf("missing settlement RPC error = %v", err)
+	}
+
+	typedNilSigner := base()
+	typedNilSigner.Network = "localnet"
+	var nilSigner *typedNilSessionSigner
+	typedNilSigner.Signer = nilSigner
+	if _, err := NewSession(typedNilSigner); err == nil || !strings.Contains(err.Error(), "typed nil") {
+		t.Fatalf("typed-nil signer error = %v", err)
+	}
+
+	typedNilRPC := base()
+	typedNilRPC.Network = "localnet"
+	var nilRPC *testutil.FakeRPC
+	typedNilRPC.RPC = nilRPC
+	if _, err := NewSession(typedNilRPC); err == nil || !strings.Contains(err.Error(), "typed nil") {
+		t.Fatalf("typed-nil RPC error = %v", err)
+	}
+
 	unsupportedSettlement := base()
 	unsupportedSettlement.Network = "localnet"
 	unsupportedSettlement.Signer = testutil.NewPrivateKey()
@@ -364,10 +394,20 @@ func TestNewSessionValidation(t *testing.T) {
 		t.Fatalf("settlement RPC capability error = %v", err)
 	}
 
+	validSettlement := base()
+	validSettlement.Network = "localnet"
+	validSettlement.Signer = testutil.NewPrivateKey()
+	validSettlement.RPC = testutil.NewFakeRPC()
+	session, err := NewSession(validSettlement)
+	if err != nil {
+		t.Fatalf("valid settlement configuration: %v", err)
+	}
+	session.Shutdown()
+
 	verificationOnly := base()
 	verificationOnly.Network = "localnet"
 	verificationOnly.RPC = legacyRPC
-	session, err := NewSession(verificationOnly)
+	session, err = NewSession(verificationOnly)
 	if err != nil {
 		t.Fatalf("verification-only legacy RPC: %v", err)
 	}
