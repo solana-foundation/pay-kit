@@ -117,9 +117,6 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: go
-      - name: Verify Go harness replay-store opt-in wiring
-        working-directory: harness
-        run: pnpm exec vitest run test/go-harness-replay-store.test.ts
       # Cross-SDK conformance vectors for Go: the REAL Go structural exact
       # verifier (go/protocols/x402/verify.go, driven via
       # go/cmd/conformance/x402.go -> x402.VerifyExactTransaction) must execute
@@ -200,9 +197,16 @@ jobs:
       - name: Build Go paykit harness server
         working-directory: harness/go-server
         run: go build -o paykit-server .
+      - name: Test Go paykit harness server
+        working-directory: harness/go-server
+        run: go test ./...
       - name: Run Go PayKit harness matrix (mpp charge + x402 exact + x402 upto)
         working-directory: harness
         env:
+          # Only this settlement matrix opts its ephemeral devnet fixture into
+          # a process-local store. Conformance and boot-policy probes remain
+          # fail-closed when they do not provide a durable replay store.
+          PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE: "1"
           # Only the go server runs in this job, so every generated pair
           # targets it: no testNamePattern filter and no skipped rows.
           MPP_HARNESS_CLIENTS: typescript
