@@ -35,7 +35,9 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     Distribution,
     OpenChannelParams,
+    TopUpParams,
     build_open_instruction,
+    build_top_up_instruction,
     find_channel_pda,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
@@ -82,8 +84,10 @@ class _FakeRpc:
         self.statuses: dict[str, dict | None] = {}
         self.accounts: dict[str, tuple[bytes, str] | None] = {}
         self.transaction: dict | None = None
+        self.transaction_kwargs: dict[str, Any] | None = None
 
     async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN003, ANN201
+        self.transaction_kwargs = kwargs
         return self.transaction
 
     async def get_account_info(
@@ -725,6 +729,21 @@ async def test_new_open_tx_verifier_without_transaction_confirms_signature() -> 
     assert result.salt == OPEN_FIXTURE_SALT
     assert result.open_slot == OPEN_FIXTURE_SLOT
     assert result.payer == str(fixture.payer.pubkey())
+    assert fake_rpc.transaction_kwargs is not None
+    assert fake_rpc.transaction_kwargs["encoding"] == "base64"
+
+
+async def test_signature_only_open_rejects_parsed_rpc_transaction() -> None:
+    fixture = build_open_tx_fixture(v0=False)
+    fixture.payload.transaction = None
+    fake_rpc = _FakeRpc()
+    fake_rpc.transaction = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+    verifier = new_open_tx_verifier(_open_session_config(fixture), fake_rpc)
+
+    with pytest.raises(PaymentError, match="not base64 wire data"):
+        await verifier(fixture.payload)
+    assert fake_rpc.transaction_kwargs is not None
+    assert fake_rpc.transaction_kwargs["encoding"] == "base64"
 
 
 @pytest.mark.parametrize("case", ["missing", "unrelated", "extra"])
@@ -785,6 +804,33 @@ async def test_new_top_up_tx_verifier_confirms_signature() -> None:
     assert verifier is not None
     payload = TopUpPayload(channel_id=str(fixture.channel), new_deposit="2000000", signature=str(signature))
     await verifier(payload, _stored_channel(fixture))
+
+
+async def test_top_up_state_verifier_decodes_base64_wire_transaction() -> None:
+    fixture = build_open_tx_fixture(v0=False)
+    top_up = build_top_up_instruction(
+        TopUpParams(
+            payer=fixture.payer.pubkey(),
+            channel=fixture.channel,
+            mint=fixture.mint,
+            amount=1_000_000,
+        )
+    )
+    signature, wire_payload = _sign_and_attach_instructions(fixture, [top_up], v0=False)
+    fake_rpc = _FakeRpc()
+    fake_rpc.transaction = {"meta": {"err": None}, "transaction": [wire_payload.transaction, "base64"]}
+    fake_rpc.accounts[str(fixture.channel)] = _channel_account(fixture, 2_000_000)
+    config = _open_session_config(fixture)
+    config.network = "mainnet"
+    verifier = new_top_up_state_tx_verifier(config, fake_rpc)
+    assert verifier is not None
+
+    await verifier(
+        TopUpPayload(channel_id=str(fixture.channel), new_deposit="2000000", signature=signature),
+        _stored_channel(fixture),
+    )
+    assert fake_rpc.transaction_kwargs is not None
+    assert fake_rpc.transaction_kwargs["encoding"] == "base64"
 
 
 async def test_new_top_up_tx_verifier_surfaces_failure_and_not_found() -> None:

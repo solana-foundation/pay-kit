@@ -106,6 +106,27 @@ async def test_get_transaction_returns_wrapped_value():
 
 
 @pytest.mark.asyncio
+async def test_get_transaction_forwards_base64_wire_options():
+    rpc = _rpc({"result": {"slot": 101}, "id": 1})
+    await rpc.get_transaction(
+        "sig",
+        encoding="base64",
+        commitment="finalized",
+        max_supported_transaction_version=1,
+    )
+
+    body = rpc._client.last_body  # type: ignore[attr-defined]
+    assert body["params"] == [
+        "sig",
+        {
+            "encoding": "base64",
+            "commitment": "finalized",
+            "maxSupportedTransactionVersion": 1,
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_confirm_transaction_success():
     payload = {"result": {"value": [{"confirmationStatus": "finalized", "err": None}]}, "id": 1}
     rpc = _rpc(payload)

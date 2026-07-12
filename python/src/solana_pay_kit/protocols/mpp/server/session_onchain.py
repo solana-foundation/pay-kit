@@ -680,6 +680,19 @@ def _confirmed_open_transaction_json(
     )
 
 
+def _confirmed_transaction_wire(transaction: dict[str, Any], label: str) -> str:
+    """Return the exact base64 wire transaction from a confirmed RPC result."""
+    meta = transaction.get("meta")
+    if not isinstance(meta, dict):
+        raise PaymentError(f"confirmed {label} transaction has malformed metadata", code="invalid-payload")
+    if meta.get("err") is not None:
+        raise PaymentError(f"{label} transaction failed on-chain", code="transaction-failed")
+    value = transaction.get("transaction")
+    if not isinstance(value, list) or len(value) < 2 or not isinstance(value[0], str) or value[1] != "base64":
+        raise PaymentError(f"confirmed {label} transaction is not base64 wire data", code="invalid-payload")
+    return value[0]
+
+
 async def _fetch_and_verify_signature_only_open(
     expected: VerifyOpenTxExpected,
     payload: OpenPayload,
@@ -697,7 +710,7 @@ async def _fetch_and_verify_signature_only_open(
         pending: Any = get_transaction(
             payload.signature,
             commitment="confirmed",
-            encoding="jsonParsed",
+            encoding="base64",
             max_supported_transaction_version=0,
         )
         response: Any = await pending
@@ -707,17 +720,8 @@ async def _fetch_and_verify_signature_only_open(
     if transaction is None:
         raise PaymentError("open transaction not found or not yet confirmed", code="transaction-not-found")
 
-    transaction_value: Any = transaction.get("transaction")
-    if (
-        isinstance(transaction_value, list)
-        and len(transaction_value) >= 2
-        and transaction_value[1] == "base64"
-        and isinstance(transaction_value[0], str)
-    ):
-        wire_payload = replace(payload, transaction=transaction_value[0])
-        structural = await verify_open_tx(expected, wire_payload, None)
-    else:
-        structural = _confirmed_open_transaction_json(expected, payload, transaction)
+    wire_payload = replace(payload, transaction=_confirmed_transaction_wire(transaction, "open"))
+    structural = await verify_open_tx(expected, wire_payload, None)
     return confirmed_slot, structural
 
 
@@ -1156,14 +1160,19 @@ def new_top_up_state_tx_verifier(
             pending: Any = get_transaction(
                 payload.signature,
                 commitment="confirmed",
-                encoding="jsonParsed",
+                encoding="base64",
                 max_supported_transaction_version=0,
             )
             response: Any = await pending
             transaction = _transaction_dict(response)
             if transaction is None:
                 raise PaymentError("top-up transaction not found or not yet confirmed", code="transaction-not-found")
-            _verify_confirmed_top_up(transaction, payload, current, config.program_id)
+            _verify_confirmed_top_up(
+                _confirmed_transaction_wire(transaction, "top-up"),
+                payload,
+                current,
+                config.program_id,
+            )
         channel = await _fetch_and_validate_channel(
             rpc_client,
             payload.channel_id,
@@ -1192,27 +1201,26 @@ def new_top_up_state_tx_verifier(
 
 
 def _verify_confirmed_top_up(
-    transaction: dict[str, Any],
+    transaction_b64: str,
     payload: TopUpPayload,
     state: ChannelState,
     configured_program_id: Pubkey | str | None,
 ) -> None:
     program_id = str(PROGRAM_ID if configured_program_id is None else configured_program_id)
-    meta = transaction.get("meta")
-    if not isinstance(meta, dict) or meta.get("err") is not None:
-        raise PaymentError("top-up transaction failed on-chain", code="transaction-failed")
-    message = (transaction.get("transaction") or {}).get("message")
-    instructions = message.get("instructions") if isinstance(message, dict) else None
-    if not isinstance(instructions, list):
-        raise PaymentError("confirmed top-up transaction has no instructions", code="invalid-payload")
-    matches: list[dict[str, Any]] = []
+    try:
+        account_keys, instructions, signatures = _decode_transaction(transaction_b64)
+    except PaymentError:
+        raise
+    except Exception as exc:
+        raise PaymentError(f"decode top-up transaction: {exc}", code="invalid-payload") from exc
+    if not signatures or signatures[0] != payload.signature:
+        raise PaymentError("top-up payload signature does not match transaction", code="invalid-payload")
+    matches: list[Any] = []
     for instruction in instructions:
-        if not isinstance(instruction, dict) or instruction.get("programId") != program_id:
+        program_index = int(instruction.program_id_index)
+        if program_index >= len(account_keys) or account_keys[program_index] != program_id:
             continue
-        raw = instruction.get("data")
-        if not isinstance(raw, str):
-            continue
-        decoded = _base58_decode(raw)
+        decoded = bytes(instruction.data)
         if decoded and decoded[0] == _TOP_UP_INSTRUCTION_DISCRIMINATOR:
             matches.append(instruction)
     if len(matches) != 1:
@@ -1221,10 +1229,10 @@ def _verify_confirmed_top_up(
             code="invalid-payload",
         )
     instruction = matches[0]
-    accounts = instruction.get("accounts")
-    if not isinstance(accounts, list) or len(accounts) < 2 or accounts[1] != payload.channel_id:
+    accounts = [int(index) for index in instruction.accounts]
+    if len(accounts) < 2 or accounts[1] >= len(account_keys) or account_keys[accounts[1]] != payload.channel_id:
         raise PaymentError("top-up instruction channel does not match the session", code="invalid-payload")
-    raw_data = _base58_decode(instruction["data"])
+    raw_data = bytes(instruction.data)
     decoded_args = TopUpArgs.from_decoded(TopUpArgs.layout.parse(raw_data[1:]))
     if TopUpArgs.layout.build(decoded_args.to_encodable()) != raw_data[1:]:
         raise PaymentError("top-up instruction has trailing data", code="invalid-payload")

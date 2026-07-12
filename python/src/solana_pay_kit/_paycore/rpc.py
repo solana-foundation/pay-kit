@@ -191,15 +191,22 @@ class SolanaRpc:
             await asyncio.sleep(0.25)
         return _RpcResponse([{"err": "timeout"}])
 
-    async def get_transaction(self, signature: Any, **_kwargs: Any) -> Any:
+    async def get_transaction(
+        self,
+        signature: Any,
+        *,
+        encoding: str = "jsonParsed",
+        commitment: str = "confirmed",
+        max_supported_transaction_version: int = 0,
+    ) -> Any:
         result = await self._call(
             "getTransaction",
             [
                 str(signature),
                 {
-                    "encoding": "jsonParsed",
-                    "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 0,
+                    "encoding": encoding,
+                    "commitment": commitment,
+                    "maxSupportedTransactionVersion": max_supported_transaction_version,
                 },
             ],
         )
