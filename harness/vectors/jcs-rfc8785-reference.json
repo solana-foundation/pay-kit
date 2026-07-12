@@ -1,7 +1,11 @@
 [
   {
     "id": "jcs-cyberphone-arrays",
-    "source": "cyberphone/json-canonicalization:testdata/input/arrays.json",
+    "source": {
+      "input": "cyberphone/json-canonicalization:testdata/input/arrays.json",
+      "canonicalJson": "cyberphone/json-canonicalization:testdata/output/arrays.json",
+      "base64Url": "derived from canonicalJson with the harness base64url encoder"
+    },
     "license": "Apache-2.0",
     "input": {
       "value": [
@@ -20,7 +24,11 @@
   },
   {
     "id": "jcs-cyberphone-structures",
-    "source": "cyberphone/json-canonicalization:testdata/input/structures.json",
+    "source": {
+      "input": "cyberphone/json-canonicalization:testdata/input/structures.json",
+      "canonicalJson": "cyberphone/json-canonicalization:testdata/output/structures.json",
+      "base64Url": "derived from canonicalJson with the harness base64url encoder"
+    },
     "license": "Apache-2.0",
     "input": {
       "value": {
