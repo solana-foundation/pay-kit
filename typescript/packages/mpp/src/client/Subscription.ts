@@ -58,12 +58,12 @@ export function subscription(parameters: subscription.Parameters) {
                 parameters.subscriptionAuthorityInitId ??
                 (parameters.initializeSubscriptionAuthority
                     ? await initializeSubscriptionAuthority({
+                          allowUnknownToken2022: parameters.allowUnknownToken2022,
                           mint: challenge.request.methodDetails.mint,
                           programId: challenge.request.methodDetails.programId,
                           rpcUrl,
                           signer,
                           tokenProgram: challenge.request.methodDetails.tokenProgram,
-                          allowUnknownToken2022: parameters.allowUnknownToken2022,
                       })
                     : undefined);
             const refreshBlockhash =
