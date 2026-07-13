@@ -177,14 +177,16 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 		feePayer = &signerBridge{signer: a.cfg.Operator.Signer, pub: pub}
 	}
 	srv, err := server.New(server.Config{
-		Recipient:      string(payTo),
-		SecretKey:      string(a.cfg.MPP.ChallengeBindingSecret),
-		Currency:       coin,
-		Network:        a.cfg.Network.MintsLabel(),
-		Realm:          a.cfg.MPP.Realm,
-		RPCURL:         a.cfg.RPCURL,
-		Decimals:       paycore.DefaultDecimalsForCurrency(coin, a.cfg.Network.MintsLabel()),
-		FeePayerSigner: feePayer,
+		Recipient:              string(payTo),
+		SecretKey:              string(a.cfg.MPP.ChallengeBindingSecret),
+		Currency:               coin,
+		Network:                a.cfg.Network.MintsLabel(),
+		Realm:                  a.cfg.MPP.Realm,
+		RPCURL:                 a.cfg.RPCURL,
+		Decimals:               paycore.DefaultDecimalsForCurrency(coin, a.cfg.Network.MintsLabel()),
+		FeePayerSigner:         feePayer,
+		Store:                  a.cfg.MPP.ReplayStore,
+		AllowUnsafeMemoryStore: a.cfg.MPP.AllowUnsafeMemoryStore,
 	})
 	if err != nil {
 		return nil, err
