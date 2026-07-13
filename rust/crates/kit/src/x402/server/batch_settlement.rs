@@ -929,7 +929,7 @@ impl X402BatchSettlement {
 mod tests {
     use super::*;
     use crate::x402::client::batch_settlement::{build_deposit, sign_voucher};
-    use crate::x402::server::mock_rpc::MockRpc;
+    use crate::x402::server::mock_rpc::{MockRpc, TransactionExpectation};
     use ed25519_dalek::SigningKey;
     use solana_keychain::memory::MemorySigner;
 
@@ -1517,5 +1517,108 @@ mod tests {
         assert!(settlement.distribute(&channel_b58).await.is_err());
         assert!(settlement.settle_and_seal(&channel_b58).await.is_err());
         assert!(settlement.fetch_channel(&Pubkey::new_unique()).is_err());
+    }
+
+    // The settle broadcast path: a valid, unexpired voucher is redeemed
+    // on-chain and the reconstructed settle transaction is accepted by the
+    // fixture RPC. The expectation is rebuilt from the same instruction
+    // builder the server uses, so any drift in the settle schema fails here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settle_batch_broadcasts_the_reconstructed_settle_transaction() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let signer = Pubkey::new_unique();
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&signer), 100);
+        let sig_bytes = [4u8; 64];
+        state.highest_voucher_signature = Some(bs58::encode(sig_bytes).into_string());
+        state.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let settlement = handler_with_rpc(store, rpc.url());
+
+        let expected = pc::build_settle_instructions(
+            &channel,
+            &signer,
+            &sig_bytes,
+            100,
+            FAR_FUTURE,
+            &settlement.program_id().unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, expected));
+
+        let signatures = settlement
+            .settle_batch(std::slice::from_ref(&channel_b58))
+            .await
+            .unwrap();
+        assert_eq!(signatures.len(), 1);
+        rpc.assert_transaction_consumed();
+    }
+
+    // The distribute sweep path: the pool is swept via the program's
+    // `distribute` instruction. Pinning the channel operator to the fee payer
+    // keeps the transaction single-signer so the fixture can verify it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn distribute_broadcasts_the_reconstructed_distribute_transaction() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&Pubkey::new_unique()), 0);
+        state.operator = Some(settlement.operator());
+        store.put_channel(&channel_b58, state).await.unwrap();
+
+        let ix = pc::build_distribute_instruction(
+            &channel,
+            &settlement.operator,
+            &settlement.operator,
+            &Pubkey::from_str(&settlement.config.recipient).unwrap(),
+            &pc::treasury_owner(),
+            &settlement.mint().unwrap(),
+            &settlement.distributions().unwrap(),
+            &settlement.token_program().unwrap(),
+            &settlement.program_id().unwrap(),
+        );
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, vec![ix]));
+
+        let signature = settlement.distribute(&channel_b58).await.unwrap();
+        assert!(signature.is_some());
+        rpc.assert_transaction_consumed();
+    }
+
+    // The seal path: settle the latest voucher and close the channel in one
+    // transaction. The payee is the operator, so the reconstructed
+    // settle-and-seal transaction stays single-signer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settle_and_seal_broadcasts_the_reconstructed_seal_transaction() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let signer = Pubkey::new_unique();
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&signer), 100);
+        let sig_bytes = [4u8; 64];
+        state.highest_voucher_signature = Some(bs58::encode(sig_bytes).into_string());
+        state.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let settlement = handler_with_rpc(store, rpc.url());
+
+        let expected = pc::build_settle_and_seal_instructions(
+            &settlement.operator,
+            &channel,
+            &signer,
+            Some(&sig_bytes),
+            100,
+            FAR_FUTURE,
+            &settlement.program_id().unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, expected));
+
+        let signature = settlement.settle_and_seal(&channel_b58).await.unwrap();
+        assert!(!signature.is_empty());
+        rpc.assert_transaction_consumed();
     }
 }
