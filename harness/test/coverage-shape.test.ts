@@ -3,12 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// Radar guard: a verify-capable protocol must ship BOTH accept and reject
+// Radar guard: every verify mode of a protocol must ship BOTH accept and reject
 // executed vectors. One-sided coverage — accept-only, or reject-only — is how a
 // verifier regression escapes: an accept-only corpus never proves a bad payment
 // is refused, and a reject-only corpus never proves a good one still settles.
-// This fails if any intent that has verify vectors is missing either outcome,
-// so the reject bank for a protocol cannot be quietly deleted or never added.
+// This fails if any intent:mode pair is missing either outcome, so coverage in
+// one verifier cannot hide a one-sided corpus in another verifier.
 //
 // Session-voucher semantic verification is exercised directly against the pure
 // verifier in session-voucher-verify.test.ts (its corpus vectors are byte-level
@@ -36,34 +36,39 @@ function loadTopLevelVectors(): Vector[] {
   return out;
 }
 
-describe("coverage shape — no one-sided verify corpus", () => {
+describe("coverage shape — no one-sided intent:verify-mode corpus", () => {
   const vectors = loadTopLevelVectors();
 
-  it("every verify-capable intent has BOTH accept and reject vectors", () => {
-    const byIntent = new Map<string, Set<string>>();
+  it("every intent:verify-mode has BOTH accept and reject vectors", () => {
+    const byIntentAndMode = new Map<string, Set<string>>();
     for (const v of vectors) {
       if (!v.mode || !VERIFY_MODES.has(v.mode)) continue;
       const intent = v.intent ?? "(none)";
       const outcome = v.expect?.outcome ?? "(none)";
-      if (!byIntent.has(intent)) byIntent.set(intent, new Set());
-      byIntent.get(intent)?.add(outcome);
+      const group = `${intent}:${v.mode}`;
+      if (!byIntentAndMode.has(group)) byIntentAndMode.set(group, new Set());
+      byIntentAndMode.get(group)?.add(outcome);
     }
 
-    // Floor: the two protocols with a real verifier must be present, so a
-    // globbing regression cannot make this assertion vacuous.
-    expect([...byIntent.keys()].sort()).toEqual(
-      expect.arrayContaining(["charge", "x402-exact"]),
+    // Floor: every real verifier mode must be present, so deleting one entire
+    // mode cannot make the per-group assertion vacuous.
+    expect([...byIntentAndMode.keys()].sort()).toEqual(
+      expect.arrayContaining([
+        "charge:verify-transaction",
+        "x402-exact:verify-transaction",
+        "x402-exact:verify-x402-transaction",
+      ]),
     );
 
     const oneSided: string[] = [];
-    for (const [intent, outcomes] of byIntent) {
+    for (const [group, outcomes] of byIntentAndMode) {
       if (!(outcomes.has("accept") && outcomes.has("reject"))) {
-        oneSided.push(`${intent} (has: ${[...outcomes].sort().join(", ")})`);
+        oneSided.push(`${group} (has: ${[...outcomes].sort().join(", ")})`);
       }
     }
     expect(
       oneSided,
-      `Verify-capable intent(s) with one-sided coverage: ${oneSided.join("; ")}. ` +
+      `Intent:verify-mode group(s) with one-sided coverage: ${oneSided.join("; ")}. ` +
         "Add the missing accept or reject vectors so the verifier is proven in both directions.",
     ).toEqual([]);
   });
@@ -72,7 +77,10 @@ describe("coverage shape — no one-sided verify corpus", () => {
     // The corpus carries only byte-level session vectors; the adversarial
     // reject coverage lives in the direct suite. Assert it exists and drives
     // the real verifier so the semantic coverage cannot vanish unnoticed.
-    const suite = readFileSync(join(here, "session-voucher-verify.test.ts"), "utf8");
+    const suite = readFileSync(
+      join(here, "session-voucher-verify.test.ts"),
+      "utf8",
+    );
     expect(suite).toContain("verifyVoucherForChannel");
     expect(suite).toContain("expires-within-settlement-window");
   });

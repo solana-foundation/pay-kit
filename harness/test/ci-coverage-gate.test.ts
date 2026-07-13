@@ -12,6 +12,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url)); // harness/test
 const testDir = here;
@@ -23,39 +24,95 @@ const workflowsDir = join(here, "..", "..", ".github", "workflows");
 // so they run in dedicated on-chain / matrix legs (harness.yml, go.yml
 // playground) or are opt-in, NOT the fast unit job. Keep this list SMALL and
 // justified; prefer wiring a test over exempting it.
-const CI_EXEMPT: Record<string, string> = {
-  "onchain.e2e.test.ts":
-    "on-chain E2E: needs a live surfnet + payment-channels program; core on-chain settlement is covered by the e2e.test.ts matrix legs (charge/x402-exact/x402-upto/session).",
-  "x402-exact.e2e.test.ts":
-    "on-chain/cross-server E2E: opt-in via the X402_HARNESS_* surfnet + real-SDK-server setup (matrix legs), not the fast unit job.",
-  "x402-upto.e2e.test.ts":
-    "on-chain E2E: needs surfnet + the payment-channels program; the x402-upto flow runs via the e2e.test.ts matrix leg.",
-  "cross-server-scenarios.test.ts":
-    "cross-server matrix E2E: needs multiple live SDK servers; runs via the harness matrix legs (opt-in X402_HARNESS_CROSS_SERVER).",
+interface CiExemption {
+  owner: string;
+  reason: string;
+  lastReviewed: string;
+  removalCondition: string;
+}
+
+const CI_EXEMPT: Record<string, CiExemption> = {
+  "onchain.e2e.test.ts": {
+    owner: "harness",
+    reason:
+      "Needs a live surfnet and payment-channels program; deterministic state-transition coverage lives in the unit and conformance suites.",
+    lastReviewed: "2026-07-10",
+    removalCondition:
+      "Remove when the workflow provisions a deterministic local validator for this file.",
+  },
+  "x402-upto.e2e.test.ts": {
+    owner: "x402",
+    reason: "Needs a live surfnet and the deployed payment-channels program.",
+    lastReviewed: "2026-07-10",
+    removalCondition:
+      "Remove when the standard matrix provisions the program and executes this file.",
+  },
   // protocol-conformance.test.ts is no longer exempt: it now honors
   // MPP_CONFORMANCE_LANGUAGES (spawn loop filtered) and is wired into ci.yml
   // pinned to `typescript`, running the canonical challenge/receipt vectors
   // against the real TS reference codecs. The 6 divergences it caught are fixed.
 };
 
-// Strip YAML comments before matching: a test path that appears only in a
-// comment / doc block is NOT execution, so it must not count as "wired". The
-// real wirings live in `run:` command lines (and env/matrix entries). Strips
-// BOTH full-line comments AND trailing inline comments (` # ...` — a YAML inline
-// comment must be whitespace-preceded), so `run: vitest test/a.test.ts # test/b.test.ts`
-// no longer falsely counts test/b as wired. Over-stripping (a `#` inside a
-// value) only risks a FALSE NEGATIVE (RED), never a false green, so it errs safe.
-function stripYamlComments(text: string): string {
-  return text
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stripShellComments(run: string): string {
+  return run
     .split("\n")
     .map((line) => (/^\s*#/.test(line) ? "" : line.replace(/\s+#.*$/, "")))
     .join("\n");
 }
 
-const workflowText = readdirSync(workflowsDir)
-  .filter((name) => /\.ya?ml$/.test(name))
-  .map((name) => stripYamlComments(readFileSync(join(workflowsDir, name), "utf8")))
-  .join("\n");
+function testsInvokedByRun(run: string): string[] {
+  const logical = stripShellComments(run).replace(/\\\s*\n/g, " ");
+  const invoked = new Set<string>();
+  for (const segment of logical.split(/\n|&&|\|\||;/)) {
+    const command = segment.trim();
+    if (
+      !/^(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:pnpm\s+(?:exec\s+)?|npx\s+)?vitest\s+run\b/.test(
+        command,
+      )
+    ) {
+      continue;
+    }
+    for (const match of command.matchAll(
+      /\btest\/([A-Za-z0-9._/-]+\.test\.ts)\b/g,
+    )) {
+      invoked.add(match[1]);
+    }
+  }
+  return [...invoked];
+}
+
+function collectExecutedHarnessTests(workflowYaml: string): Set<string> {
+  const document = parse(workflowYaml) as unknown;
+  const executed = new Set<string>();
+  if (!isRecord(document) || !isRecord(document.jobs)) return executed;
+
+  for (const job of Object.values(document.jobs)) {
+    if (!isRecord(job) || !Array.isArray(job.steps)) continue;
+    for (const step of job.steps) {
+      if (!isRecord(step) || typeof step.run !== "string") continue;
+      const workingDirectory = step["working-directory"];
+      const runsInHarness =
+        workingDirectory === "harness" ||
+        /(?:^|\n)\s*cd\s+(?:\.\/)?harness(?:\s|$)/.test(step.run);
+      if (!runsInHarness) continue;
+      for (const test of testsInvokedByRun(step.run)) executed.add(test);
+    }
+  }
+  return executed;
+}
+
+const workflowFiles = readdirSync(workflowsDir).filter((name) =>
+  /\.ya?ml$/.test(name),
+);
+const executedTests = new Set<string>();
+for (const workflow of workflowFiles) {
+  const text = readFileSync(join(workflowsDir, workflow), "utf8");
+  for (const test of collectExecutedHarnessTests(text)) executedTests.add(test);
+}
 
 const DIRECT_NON_PUBLISH_WORKFLOWS = [
   "android-demo.yml",
@@ -69,6 +126,7 @@ const DIRECT_NON_PUBLISH_WORKFLOWS = [
   "php.yml",
   "python.yml",
   "ruby.yml",
+  "semgrep.yml",
   "swift.yml",
 ] as const;
 
@@ -79,25 +137,54 @@ const allTests = readdirSync(testDir)
 describe("CI coverage gate: every harness test runs in CI (or is documented-exempt)", () => {
   it("finds a non-trivial set of harness tests and workflow files", () => {
     expect(allTests.length).toBeGreaterThan(10);
-    expect(workflowText.length).toBeGreaterThan(100);
+    expect(workflowFiles.length).toBeGreaterThan(10);
+    expect(executedTests.size).toBeGreaterThan(10);
+  });
+
+  it("counts only test paths passed to a harness vitest command", () => {
+    const fixture = `
+jobs:
+  fake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: test/dead-name.test.ts
+        working-directory: harness
+        env:
+          UNUSED_TEST: test/dead-env.test.ts
+        run: |
+          echo test/dead-echo.test.ts
+          # pnpm exec vitest run test/dead-comment.test.ts
+          pnpm exec vitest run \\
+            test/live.test.ts
+`;
+    expect([...collectExecutedHarnessTests(fixture)]).toEqual(["live.test.ts"]);
   });
 
   it("does not carry stale CI_EXEMPT entries", () => {
-    for (const f of Object.keys(CI_EXEMPT)) {
+    for (const [f, exemption] of Object.entries(CI_EXEMPT)) {
       expect(
         allTests,
         `CI_EXEMPT names '${f}' but no such harness test exists — remove the stale exemption`,
       ).toContain(f);
+      expect(exemption.owner.trim(), `${f}.owner`).not.toBe("");
+      expect(exemption.reason.trim(), `${f}.reason`).not.toBe("");
+      expect(exemption.lastReviewed, `${f}.lastReviewed`).toMatch(
+        /^\d{4}-\d{2}-\d{2}$/,
+      );
+      expect(
+        exemption.removalCondition.trim(),
+        `${f}.removalCondition`,
+      ).not.toBe("");
     }
   });
 
   for (const test of allTests) {
     it(`${test} is wired into a workflow or in CI_EXEMPT`, () => {
-      const wired = workflowText.includes(`test/${test}`);
+      const wired = executedTests.has(test);
       const exempt = Object.prototype.hasOwnProperty.call(CI_EXEMPT, test);
       if (!wired && !exempt) {
         throw new Error(
-          `harness/test/${test} is not referenced by any .github/workflows/*.yml ` +
+          `harness/test/${test} is not passed to a harness vitest command in any workflow ` +
             `and is not in CI_EXEMPT. Wire it into a CI step, or add it to ` +
             `CI_EXEMPT with a reason. (This gate exists because the audit found ` +
             `~21 harness tests silently dead in CI.)`,
@@ -116,15 +203,18 @@ describe("CI coverage gate: every harness test runs in CI (or is documented-exem
 describe("workflow hygiene gate: direct non-publish workflows are read-only by default", () => {
   for (const workflow of DIRECT_NON_PUBLISH_WORKFLOWS) {
     it(`${workflow} declares top-level contents: read permissions`, () => {
-      const text = stripYamlComments(readFileSync(join(workflowsDir, workflow), "utf8"));
+      const text = readFileSync(join(workflowsDir, workflow), "utf8");
       expect(
         /^permissions:\n(?:[ \t]+[A-Za-z-]+:[^\n]*\n)+/m.test(text),
         `${workflow} has no top-level permissions block; PR CI would inherit repository defaults`,
       ).toBe(true);
-      const block = text.match(/^permissions:\n((?:[ \t]+[A-Za-z-]+:[^\n]*\n)+)/m)?.[1] ?? "";
-      expect(block, `${workflow} top-level permissions must include contents: read`).toMatch(
-        /^[ \t]+contents:[ \t]*read[ \t]*$/m,
-      );
+      const block =
+        text.match(/^permissions:\n((?:[ \t]+[A-Za-z-]+:[^\n]*\n)+)/m)?.[1] ??
+        "";
+      expect(
+        block,
+        `${workflow} top-level permissions must include contents: read`,
+      ).toMatch(/^[ \t]+contents:[ \t]*read[ \t]*$/m);
       expect(
         block,
         `${workflow} top-level permissions must not grant write scopes; use job-level permissions only where needed`,
@@ -133,6 +223,31 @@ describe("workflow hygiene gate: direct non-publish workflows are read-only by d
   }
 
   it("does not accidentally inspect publish workflows in the direct-workflow guard", () => {
-    expect([...DIRECT_NON_PUBLISH_WORKFLOWS].some((name) => name.includes("publish"))).toBe(false);
+    expect(
+      [...DIRECT_NON_PUBLISH_WORKFLOWS].some((name) =>
+        name.includes("publish"),
+      ),
+    ).toBe(false);
+  });
+
+  it("pins the Semgrep runtime and reserves blocking enforcement for release gates", () => {
+    const source = readFileSync(join(workflowsDir, "semgrep.yml"), "utf8");
+    expect(source).toMatch(/semgrep\/semgrep@sha256:[a-f0-9]{64}/);
+    expect(source).not.toMatch(/pip install semgrep/);
+    expect(source).toMatch(/SEMGREP_ERROR_ON_FINDINGS=1/);
+  });
+
+  it("keeps the repaired missing-ATA settlement regression blocking", () => {
+    for (const workflow of ["python.yml", "harness.yml"]) {
+      const source = readFileSync(join(workflowsDir, workflow), "utf8");
+      const step = source.match(
+        /- name: Focused Python session fault-injection \(missing-ATA\)([\s\S]*?)(?=\n\s*- name:|$)/,
+      )?.[1];
+      expect(step, `${workflow} missing-ATA step`).toBeTruthy();
+      expect(step, `${workflow} missing-ATA step must not swallow fund-loss failures`).not.toMatch(
+        /continue-on-error:\s*true/,
+      );
+      expect(step).toMatch(/MPP_HARNESS_SESSION_RED_FAULTS:\s*"1"/);
+    }
   });
 });
