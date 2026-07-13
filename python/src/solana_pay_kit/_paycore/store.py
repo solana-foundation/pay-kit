@@ -263,10 +263,12 @@ def resolve_replay_store(network: str, replay_store: Store | None, *, protocol: 
     for providing an atomic, shared, durable backend.
     """
     is_localnet = network == "localnet"
+    is_devnet = network == "devnet"
     is_mainnet = network == "mainnet"
-    allow_inmemory = os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
+    inmemory_opt_in = os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
+    allow_inmemory = is_devnet and inmemory_opt_in
 
-    if is_mainnet and allow_inmemory:
+    if is_mainnet and inmemory_opt_in:
         raise ReplayStoreConfigurationError(
             f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 is forbidden on mainnet; "
             "inject a ProductionReplayStore backed by atomic, shared, durable storage"

@@ -68,7 +68,7 @@ def _resolve_replay_store(config: Config, replay_store: Store | None) -> Store:
     try:
         return resolve_replay_store(config.network.mints_label(), replay_store, protocol="x402")
     except ReplayStoreConfigurationError as exc:
-        raise ConfigurationError(str(exc)) from exc
+        raise ConfigurationError(f"solana_pay_kit: {exc}") from exc
 
 
 class X402Adapter:
