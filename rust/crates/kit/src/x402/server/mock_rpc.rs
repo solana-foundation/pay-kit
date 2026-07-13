@@ -6,6 +6,10 @@ use std::sync::{Arc, Mutex};
 use axum::{extract::State, routing::post, Json, Router};
 use base64::Engine as _;
 use serde_json::{json, Value};
+use solana_hash::Hash;
+use solana_instruction::Instruction;
+use solana_message::{Message, VersionedMessage};
+use solana_pubkey::Pubkey;
 use solana_transaction::versioned::VersionedTransaction;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -16,6 +20,7 @@ const BLOCKHASH: &str = "11111111111111111111111111111111";
 struct StateData {
     accounts: HashMap<String, Account>,
     accepted_signatures: HashSet<String>,
+    expected_transaction: Option<TransactionExpectation>,
     send_error: Option<String>,
     blockhash_error: Option<String>,
 }
@@ -24,6 +29,84 @@ struct StateData {
 struct Account {
     data: Vec<u8>,
     owner: String,
+}
+
+/// One exact transaction the fixture will accept and apply to its account state.
+///
+/// The complete legacy message is compared, so program IDs, instruction order,
+/// account metas, data, fee payer, and blockhash all have to match.
+#[derive(Clone)]
+pub(crate) struct TransactionExpectation {
+    fee_payer: Pubkey,
+    instructions: Vec<Instruction>,
+    account_transitions: Vec<AccountDataTransition>,
+}
+
+#[derive(Clone)]
+struct AccountDataTransition {
+    address: String,
+    expected_data: Vec<u8>,
+    updated_data: Vec<u8>,
+}
+
+impl TransactionExpectation {
+    pub(crate) fn new(fee_payer: Pubkey, instructions: Vec<Instruction>) -> Self {
+        Self {
+            fee_payer,
+            instructions,
+            account_transitions: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_account_data_transition(
+        mut self,
+        address: String,
+        expected_data: Vec<u8>,
+        updated_data: Vec<u8>,
+    ) -> Self {
+        self.account_transitions.push(AccountDataTransition {
+            address,
+            expected_data,
+            updated_data,
+        });
+        self
+    }
+
+    fn validate(
+        &self,
+        transaction: &VersionedTransaction,
+        accounts: &HashMap<String, Account>,
+    ) -> Result<(), &'static str> {
+        let expected_message = Message::new_with_blockhash(
+            &self.instructions,
+            Some(&self.fee_payer),
+            &Hash::default(),
+        );
+        match &transaction.message {
+            VersionedMessage::Legacy(message) if message == &expected_message => {}
+            _ => return Err("transaction does not match configured schema"),
+        }
+
+        for transition in &self.account_transitions {
+            let account = accounts
+                .get(&transition.address)
+                .ok_or("transaction transition account is missing")?;
+            if account.data != transition.expected_data {
+                return Err("transaction transition precondition failed");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply(self, accounts: &mut HashMap<String, Account>) {
+        for transition in self.account_transitions {
+            accounts
+                .get_mut(&transition.address)
+                .expect("transition account checked above")
+                .data = transition.updated_data;
+        }
+    }
 }
 
 pub(crate) struct MockRpc {
@@ -62,6 +145,22 @@ impl MockRpc {
             .expect("mock rpc state")
             .accounts
             .insert(pubkey, Account { data, owner });
+    }
+
+    pub(crate) fn expect_transaction(&self, expectation: TransactionExpectation) {
+        self.state
+            .lock()
+            .expect("mock rpc state")
+            .expected_transaction = Some(expectation);
+    }
+
+    pub(crate) fn account_data(&self, pubkey: &str) -> Option<Vec<u8>> {
+        self.state
+            .lock()
+            .expect("mock rpc state")
+            .accounts
+            .get(pubkey)
+            .map(|account| account.data.clone())
     }
 
     pub(crate) fn fail_send(&self, message: impl Into<String>) {
@@ -104,8 +203,23 @@ async fn dispatch(
         },
         "sendTransaction" => match &state.send_error {
             Some(message) => error(id, -32002, message),
-            None => match verified_signature_of(&params) {
-                Ok(signature) => {
+            None => match verified_transaction_of(&params) {
+                Ok((signature, transaction)) => {
+                    let Some(expectation) = state.expected_transaction.as_ref() else {
+                        return Json(error(
+                            id,
+                            -32602,
+                            "transaction expectation is not configured",
+                        ));
+                    };
+                    if let Err(message) = expectation.validate(&transaction, &state.accounts) {
+                        return Json(error(id, -32602, message));
+                    }
+                    state
+                        .expected_transaction
+                        .take()
+                        .expect("validated transaction expectation")
+                        .apply(&mut state.accounts);
                     state.accepted_signatures.insert(signature.clone());
                     result(id, Value::String(signature))
                 }
@@ -151,7 +265,7 @@ async fn dispatch(
     Json(response)
 }
 
-fn verified_signature_of(params: &Value) -> Result<String, &'static str> {
+fn verified_transaction_of(params: &Value) -> Result<(String, VersionedTransaction), &'static str> {
     let encoded = params
         .get(0)
         .and_then(Value::as_str)
@@ -176,11 +290,17 @@ fn verified_signature_of(params: &Value) -> Result<String, &'static str> {
         return Err("transaction signature verification failed");
     }
 
-    transaction
+    let signature = transaction
         .signatures
         .first()
         .map(ToString::to_string)
-        .ok_or("transaction has no fee-payer signature")
+        .ok_or("transaction has no fee-payer signature")?;
+
+    Ok((signature, transaction))
+}
+
+fn verified_signature_of(params: &Value) -> Result<String, &'static str> {
+    verified_transaction_of(params).map(|(signature, _)| signature)
 }
 
 fn signature_statuses(
@@ -228,6 +348,7 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};
+    use solana_instruction::{AccountMeta, Instruction};
     use solana_message::Message;
     use solana_pubkey::Pubkey;
     use solana_signature::Signature;
@@ -237,6 +358,18 @@ mod tests {
         let encoded = base64::engine::general_purpose::STANDARD
             .encode(bincode::serialize(transaction).expect("serialize transaction"));
         json!([encoded])
+    }
+
+    fn signed_transaction(
+        fee_payer: &SigningKey,
+        instructions: &[Instruction],
+    ) -> VersionedTransaction {
+        let fee_payer_pubkey = Pubkey::new_from_array(fee_payer.verifying_key().to_bytes());
+        let mut transaction =
+            Transaction::new_unsigned(Message::new(instructions, Some(&fee_payer_pubkey)));
+        transaction.signatures[0] =
+            Signature::from(fee_payer.sign(&transaction.message_data()).to_bytes());
+        VersionedTransaction::from(transaction)
     }
 
     #[test]
@@ -275,5 +408,218 @@ mod tests {
 
         assert!(statuses[0].is_object());
         assert!(statuses[1].is_null());
+    }
+
+    #[tokio::test]
+    async fn rejects_signed_transactions_without_an_expectation() {
+        let fee_payer = SigningKey::from_bytes(&[72; 32]);
+        let transaction = signed_transaction(&fee_payer, &[]);
+        let state = Arc::new(Mutex::new(StateData::default()));
+
+        let response = dispatch(
+            State(state.clone()),
+            Json(json!({
+                "id": 1,
+                "method": "sendTransaction",
+                "params": transaction_params(&transaction),
+            })),
+        )
+        .await
+        .0;
+        assert_eq!(
+            response["error"]["message"],
+            Value::String("transaction expectation is not configured".to_string())
+        );
+        assert!(state
+            .lock()
+            .expect("mock rpc state")
+            .accepted_signatures
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_signed_transactions_with_wrong_program_or_data() {
+        let fee_payer = SigningKey::from_bytes(&[72; 32]);
+        let fee_payer_pubkey = Pubkey::new_from_array(fee_payer.verifying_key().to_bytes());
+        let channel = Pubkey::new_unique();
+        let expected = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta::new(channel, false)],
+            data: vec![4, 1],
+        };
+
+        for wrong in [
+            Instruction {
+                program_id: Pubkey::new_unique(),
+                accounts: expected.accounts.clone(),
+                data: expected.data.clone(),
+            },
+            Instruction {
+                program_id: expected.program_id,
+                accounts: expected.accounts.clone(),
+                data: vec![4, 0],
+            },
+        ] {
+            let state = Arc::new(Mutex::new(StateData {
+                accounts: HashMap::from([(
+                    channel.to_string(),
+                    Account {
+                        data: vec![0],
+                        owner: "payment-channels".to_string(),
+                    },
+                )]),
+                expected_transaction: Some(
+                    TransactionExpectation::new(fee_payer_pubkey, vec![expected.clone()])
+                        .with_account_data_transition(channel.to_string(), vec![0], vec![1]),
+                ),
+                ..StateData::default()
+            }));
+            let transaction = signed_transaction(&fee_payer, &[wrong]);
+            assert!(verified_signature_of(&transaction_params(&transaction)).is_ok());
+
+            let response = dispatch(
+                State(state.clone()),
+                Json(json!({
+                    "id": 1,
+                    "method": "sendTransaction",
+                    "params": transaction_params(&transaction),
+                })),
+            )
+            .await
+            .0;
+            assert_eq!(
+                response["error"]["message"],
+                Value::String("transaction does not match configured schema".to_string())
+            );
+
+            let state = state.lock().expect("mock rpc state");
+            assert!(state.accepted_signatures.is_empty());
+            assert_eq!(state.accounts[&channel.to_string()].data, vec![0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_signed_transactions_when_the_transition_precondition_fails() {
+        let fee_payer = SigningKey::from_bytes(&[73; 32]);
+        let fee_payer_pubkey = Pubkey::new_from_array(fee_payer.verifying_key().to_bytes());
+        let channel = Pubkey::new_unique();
+        let instruction = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta::new(channel, false)],
+            data: vec![4, 1],
+        };
+        let state = Arc::new(Mutex::new(StateData {
+            accounts: HashMap::from([(
+                channel.to_string(),
+                Account {
+                    data: vec![9],
+                    owner: "payment-channels".to_string(),
+                },
+            )]),
+            expected_transaction: Some(
+                TransactionExpectation::new(fee_payer_pubkey, vec![instruction.clone()])
+                    .with_account_data_transition(channel.to_string(), vec![0], vec![1]),
+            ),
+            ..StateData::default()
+        }));
+        let transaction = signed_transaction(&fee_payer, &[instruction]);
+        assert!(verified_signature_of(&transaction_params(&transaction)).is_ok());
+
+        let response = dispatch(
+            State(state.clone()),
+            Json(json!({
+                "id": 1,
+                "method": "sendTransaction",
+                "params": transaction_params(&transaction),
+            })),
+        )
+        .await
+        .0;
+        assert_eq!(
+            response["error"]["message"],
+            Value::String("transaction transition precondition failed".to_string())
+        );
+
+        let state = state.lock().expect("mock rpc state");
+        assert!(state.accepted_signatures.is_empty());
+        assert!(state.expected_transaction.is_some());
+        assert_eq!(state.accounts[&channel.to_string()].data, vec![9]);
+    }
+
+    #[tokio::test]
+    async fn rejected_transaction_preserves_expectation_for_a_correct_retry() {
+        let fee_payer = SigningKey::from_bytes(&[74; 32]);
+        let fee_payer_pubkey = Pubkey::new_from_array(fee_payer.verifying_key().to_bytes());
+        let channel = Pubkey::new_unique();
+        let expected = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta::new(channel, false)],
+            data: vec![4, 1],
+        };
+        let state = Arc::new(Mutex::new(StateData {
+            accounts: HashMap::from([(
+                channel.to_string(),
+                Account {
+                    data: vec![0],
+                    owner: "payment-channels".to_string(),
+                },
+            )]),
+            expected_transaction: Some(
+                TransactionExpectation::new(fee_payer_pubkey, vec![expected.clone()])
+                    .with_account_data_transition(channel.to_string(), vec![0], vec![1]),
+            ),
+            ..StateData::default()
+        }));
+        let wrong = signed_transaction(
+            &fee_payer,
+            &[Instruction {
+                data: vec![4, 0],
+                ..expected.clone()
+            }],
+        );
+
+        let rejected = dispatch(
+            State(state.clone()),
+            Json(json!({
+                "id": 1,
+                "method": "sendTransaction",
+                "params": transaction_params(&wrong),
+            })),
+        )
+        .await
+        .0;
+        assert_eq!(
+            rejected["error"]["message"],
+            Value::String("transaction does not match configured schema".to_string())
+        );
+        {
+            let state = state.lock().expect("mock rpc state");
+            assert!(state.expected_transaction.is_some());
+            assert!(state.accepted_signatures.is_empty());
+            assert_eq!(state.accounts[&channel.to_string()].data, vec![0]);
+        }
+
+        let correct = signed_transaction(&fee_payer, &[expected]);
+        let signature = correct
+            .signatures
+            .first()
+            .expect("fee payer signature")
+            .to_string();
+        let accepted = dispatch(
+            State(state.clone()),
+            Json(json!({
+                "id": 2,
+                "method": "sendTransaction",
+                "params": transaction_params(&correct),
+            })),
+        )
+        .await
+        .0;
+        assert_eq!(accepted["result"], Value::String(signature.clone()));
+
+        let state = state.lock().expect("mock rpc state");
+        assert!(state.expected_transaction.is_none());
+        assert!(state.accepted_signatures.contains(&signature));
+        assert_eq!(state.accounts[&channel.to_string()].data, vec![1]);
     }
 }

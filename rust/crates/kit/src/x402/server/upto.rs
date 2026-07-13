@@ -42,6 +42,8 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION
 
 /// `ChannelStatus::Open` discriminant in the generated client.
 const CHANNEL_STATUS_OPEN: u8 = 0;
+#[cfg(test)]
+const CHANNEL_STATUS_DISTRIBUTED: u8 = 3;
 
 /// `Open` instruction discriminator in the generated payment-channels client
 /// (`crate::generated::payment_channels::generated::instructions::OPEN_DISCRIMINATOR`).
@@ -1202,12 +1204,23 @@ mod tests {
     use crate::generated::payment_channels::generated::types::SettlementWatermarks;
     use crate::x402::protocol::schemes::exact::SOLANA_DEVNET;
     use crate::x402::protocol::schemes::upto::UptoPayload;
-    use crate::x402::server::mock_rpc::MockRpc;
+    use crate::x402::server::mock_rpc::{MockRpc, TransactionExpectation};
     use async_trait::async_trait;
     use ed25519_dalek::{Signer as _, SigningKey};
+    use solana_instruction::AccountMeta;
     use solana_keychain::memory::MemorySigner;
     use solana_keychain::{SignTransactionResult, SignerError};
     use solana_signature::Signature;
+
+    const GOLDEN_PAYMENT_CHANNELS_PROGRAM: &str = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX";
+    const GOLDEN_ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+    const GOLDEN_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+    const GOLDEN_SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+    const GOLDEN_ED25519_PROGRAM: &str = "Ed25519SigVerify111111111111111111111111111";
+    const GOLDEN_INSTRUCTIONS_SYSVAR: &str = "Sysvar1nstructions1111111111111111111111111";
+    const GOLDEN_TREASURY_OWNER: &str = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP";
+    const GOLDEN_VOUCHER_OFFSET: usize = 112;
+    const GOLDEN_VOUCHER_LEN: usize = 50;
 
     struct TestSigner(Pubkey);
 
@@ -2034,8 +2047,9 @@ mod tests {
             program_id: pc::default_program_id(),
         };
         let channel_id = derive_channel_addresses(&params).channel;
+        let open_instruction = build_open_instruction(&params);
         let mut transaction =
-            unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
+            unsigned_tx_with_fee_payer(std::slice::from_ref(&open_instruction), operator);
         let payer_index = transaction
             .message
             .static_account_keys()
@@ -2071,6 +2085,10 @@ mod tests {
             &base64::engine::general_purpose::STANDARD,
             serde_json::to_vec(&envelope).expect("serialize signature envelope"),
         );
+        mock.expect_transaction(TransactionExpectation::new(
+            operator,
+            vec![open_instruction],
+        ));
 
         RpcFixture {
             mock,
@@ -2114,6 +2132,213 @@ mod tests {
             borsh::to_vec(channel).expect("serialize channel account"),
             pc::pubkey_string(&pc::default_program_id()),
         );
+    }
+
+    fn golden_pubkey(value: &str) -> Pubkey {
+        Pubkey::from_str(value).expect("valid golden pubkey")
+    }
+
+    fn golden_ata(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+            &golden_pubkey(GOLDEN_ASSOCIATED_TOKEN_PROGRAM),
+        )
+        .0
+    }
+
+    fn golden_create_ata_instruction(
+        payer: Pubkey,
+        owner: Pubkey,
+        mint: Pubkey,
+        token_program: Pubkey,
+    ) -> Instruction {
+        Instruction {
+            program_id: golden_pubkey(GOLDEN_ASSOCIATED_TOKEN_PROGRAM),
+            accounts: vec![
+                AccountMeta::new(payer, true),
+                AccountMeta::new(golden_ata(&owner, &mint, &token_program), false),
+                AccountMeta::new_readonly(owner, false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new_readonly(golden_pubkey(GOLDEN_SYSTEM_PROGRAM), false),
+                AccountMeta::new_readonly(token_program, false),
+            ],
+            data: vec![1],
+        }
+    }
+
+    fn golden_voucher_bytes(channel: &Pubkey, actual: u64, expires_at: i64) -> Vec<u8> {
+        let mut voucher = Vec::with_capacity(GOLDEN_VOUCHER_LEN);
+        voucher.extend_from_slice(&[0x56, 0x01]);
+        voucher.extend_from_slice(channel.as_ref());
+        voucher.extend_from_slice(&actual.to_le_bytes());
+        voucher.extend_from_slice(&expires_at.to_le_bytes());
+        assert_eq!(voucher.len(), GOLDEN_VOUCHER_LEN);
+        voucher
+    }
+
+    fn golden_ed25519_instruction(
+        authorized_signer: &Pubkey,
+        signature: &[u8; 64],
+        voucher: &[u8],
+    ) -> Instruction {
+        let mut data = Vec::with_capacity(GOLDEN_VOUCHER_OFFSET + GOLDEN_VOUCHER_LEN);
+        data.extend_from_slice(&[
+            1, 0, 48, 0, 0xff, 0xff, 16, 0, 0xff, 0xff, 112, 0, 50, 0, 0xff, 0xff,
+        ]);
+        data.extend_from_slice(authorized_signer.as_ref());
+        data.extend_from_slice(signature);
+        data.extend_from_slice(voucher);
+        assert_eq!(data.len(), GOLDEN_VOUCHER_OFFSET + GOLDEN_VOUCHER_LEN);
+        Instruction {
+            program_id: golden_pubkey(GOLDEN_ED25519_PROGRAM),
+            accounts: vec![],
+            data,
+        }
+    }
+
+    fn golden_settlement_instructions(
+        fixture: &RpcFixture,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+    ) -> Vec<Instruction> {
+        let payment_channels = golden_pubkey(GOLDEN_PAYMENT_CHANNELS_PROGRAM);
+        let instructions_sysvar = golden_pubkey(GOLDEN_INSTRUCTIONS_SYSVAR);
+        let treasury = golden_pubkey(GOLDEN_TREASURY_OWNER);
+        assert_eq!(open.program_id, payment_channels);
+        assert_eq!(open.token_program, golden_pubkey(GOLDEN_TOKEN_PROGRAM));
+        assert_eq!(open.payee, fixture.operator);
+        assert_eq!(open.rent_payer, fixture.operator);
+        assert!(open.distribution.is_empty());
+
+        let voucher = golden_voucher_bytes(&open.channel_id, actual, open.expires_at);
+        let signature = SigningKey::from_bytes(&[61; 32]).sign(&voucher).to_bytes();
+        let verify = golden_ed25519_instruction(&fixture.operator, &signature, &voucher);
+        let settle_and_seal = Instruction {
+            program_id: payment_channels,
+            accounts: vec![
+                AccountMeta::new_readonly(fixture.operator, true),
+                AccountMeta::new(open.channel_id, false),
+                AccountMeta::new_readonly(instructions_sysvar, false),
+            ],
+            data: vec![4, 1],
+        };
+        let create_payee_ata = golden_create_ata_instruction(
+            fixture.operator,
+            open.payee,
+            open.mint,
+            open.token_program,
+        );
+        let create_treasury_ata = golden_create_ata_instruction(
+            fixture.operator,
+            treasury,
+            open.mint,
+            open.token_program,
+        );
+        let channel_token_account = golden_ata(&open.channel_id, &open.mint, &open.token_program);
+        let payer_token_account = golden_ata(&open.payer, &open.mint, &open.token_program);
+        let payee_token_account = golden_ata(&open.payee, &open.mint, &open.token_program);
+        let treasury_token_account = golden_ata(&treasury, &open.mint, &open.token_program);
+        let event_authority =
+            Pubkey::find_program_address(&[b"event_authority"], &payment_channels).0;
+        let distribute = Instruction {
+            program_id: payment_channels,
+            accounts: vec![
+                AccountMeta::new(open.channel_id, false),
+                AccountMeta::new(open.payer, false),
+                AccountMeta::new(open.rent_payer, false),
+                AccountMeta::new(channel_token_account, false),
+                AccountMeta::new(payer_token_account, false),
+                AccountMeta::new(payee_token_account, false),
+                AccountMeta::new(treasury_token_account, false),
+                AccountMeta::new_readonly(open.mint, false),
+                AccountMeta::new_readonly(open.token_program, false),
+                AccountMeta::new_readonly(event_authority, false),
+                AccountMeta::new_readonly(payment_channels, false),
+            ],
+            data: vec![7, 0, 0, 0, 0],
+        };
+
+        vec![
+            verify,
+            settle_and_seal,
+            create_payee_ata,
+            create_treasury_ata,
+            distribute,
+        ]
+    }
+
+    fn decode_golden_settlement_amount(
+        instructions: &[Instruction],
+        operator: &Pubkey,
+        channel: &Pubkey,
+        expires_at: i64,
+    ) -> u64 {
+        assert_eq!(instructions.len(), 5);
+        let verify = &instructions[0];
+        assert_eq!(verify.program_id, golden_pubkey(GOLDEN_ED25519_PROGRAM));
+        assert!(verify.accounts.is_empty());
+        assert_eq!(
+            &verify.data[..16],
+            &[1, 0, 48, 0, 0xff, 0xff, 16, 0, 0xff, 0xff, 112, 0, 50, 0, 0xff, 0xff]
+        );
+        assert_eq!(&verify.data[16..48], operator.as_ref());
+        let voucher = &verify.data[GOLDEN_VOUCHER_OFFSET..];
+        assert_eq!(voucher.len(), GOLDEN_VOUCHER_LEN);
+        assert_eq!(&voucher[..2], &[0x56, 0x01]);
+        assert_eq!(&voucher[2..34], channel.as_ref());
+        assert_eq!(
+            i64::from_le_bytes(voucher[42..50].try_into().expect("voucher expiry bytes")),
+            expires_at
+        );
+
+        let settle_and_seal = &instructions[1];
+        assert_eq!(
+            settle_and_seal.program_id,
+            golden_pubkey(GOLDEN_PAYMENT_CHANNELS_PROGRAM)
+        );
+        assert_eq!(settle_and_seal.data, [4, 1]);
+        for create_ata in &instructions[2..4] {
+            assert_eq!(
+                create_ata.program_id,
+                golden_pubkey(GOLDEN_ASSOCIATED_TOKEN_PROGRAM)
+            );
+            assert_eq!(create_ata.data, [1]);
+        }
+        assert_eq!(
+            instructions[4].program_id,
+            golden_pubkey(GOLDEN_PAYMENT_CHANNELS_PROGRAM)
+        );
+        assert_eq!(instructions[4].data, [7, 0, 0, 0, 0]);
+
+        u64::from_le_bytes(
+            voucher[34..42]
+                .try_into()
+                .expect("voucher cumulative bytes"),
+        )
+    }
+
+    fn settlement_expectation(
+        fixture: &RpcFixture,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+    ) -> TransactionExpectation {
+        let instructions = golden_settlement_instructions(fixture, open, actual);
+        let settled_amount = decode_golden_settlement_amount(
+            &instructions,
+            &fixture.operator,
+            &open.channel_id,
+            open.expires_at,
+        );
+        let before = matching_channel(fixture);
+        let mut after = before.clone();
+        after.status = CHANNEL_STATUS_DISTRIBUTED;
+        after.settlement.settled = settled_amount;
+        after.settlement.payout_watermark = settled_amount;
+        TransactionExpectation::new(fixture.operator, instructions).with_account_data_transition(
+            fixture.channel_id.to_string(),
+            borsh::to_vec(&before).expect("serialize open channel"),
+            borsh::to_vec(&after).expect("serialize distributed channel"),
+        )
     }
 
     async fn verify_error(mutator: impl FnOnce(&mut Channel)) -> Error {
@@ -2161,6 +2386,9 @@ mod tests {
             .await
             .is_err());
 
+        fixture
+            .mock
+            .expect_transaction(settlement_expectation(&fixture, &open, 250_000));
         let settlement = fixture
             .handler
             .settle_actual(&open, 250_000)
@@ -2172,6 +2400,16 @@ mod tests {
             settlement.payer.as_deref(),
             Some(pc::pubkey_string(&fixture.payer).as_str())
         );
+        let channel = Channel::from_bytes(
+            &fixture
+                .mock
+                .account_data(&pc::pubkey_string(&fixture.channel_id))
+                .expect("settlement transition updates channel"),
+        )
+        .expect("decode distributed channel");
+        assert_eq!(channel.status, CHANNEL_STATUS_DISTRIBUTED);
+        assert_eq!(channel.settlement.settled, 250_000);
+        assert_eq!(channel.settlement.payout_watermark, 250_000);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
