@@ -32,6 +32,7 @@ use crate::core::rpc::SKIP_PREFLIGHT_SEND;
 use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
 use solana_client::rpc_response::RpcSimulateTransactionResult;
+use solana_commitment_config::CommitmentConfig;
 use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -1087,6 +1088,7 @@ impl Mpp {
             let signer = self.fee_payer_signer.as_ref().ok_or_else(|| {
                 VerificationError::new("Fee payer enabled but no signer configured")
             })?;
+            reject_managed_transfer_source_owners(&self.rpc, &tx, &[signer.pubkey()])?;
             let msg_data = tx.message.serialize();
             let sig_bytes = signer
                 .sign_message(&msg_data)
@@ -2373,6 +2375,106 @@ fn verify_spl_transfer_instructions(
     )))
 }
 
+const TOKEN_ACCOUNT_BASE_LEN: usize = 165;
+const TOKEN_ACCOUNT_OWNER_START: usize = 32;
+const TOKEN_ACCOUNT_OWNER_END: usize = 64;
+const TOKEN_ACCOUNT_DELEGATE_OPTION_START: usize = 72;
+const TOKEN_ACCOUNT_STATE_OFFSET: usize = 108;
+const TOKEN_ACCOUNT_NATIVE_OPTION_START: usize = 109;
+const TOKEN_ACCOUNT_CLOSE_AUTHORITY_OPTION_START: usize = 129;
+
+/// Reject a fee-sponsored pull before the server signs when any verified SPL
+/// transfer source is a token account stored for a managed signer. A delegate
+/// authority does not reveal that owner in the transaction itself.
+fn reject_managed_transfer_source_owners(
+    rpc: &RpcClient,
+    tx: &VersionedTransaction,
+    managed_signers: &[Pubkey],
+) -> Result<(), VerificationError> {
+    let account_keys = tx.message.static_account_keys();
+    let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+    let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+    let mut checked_sources = HashSet::new();
+
+    for instruction in tx.message.instructions() {
+        let program = account_keys
+            .get(instruction.program_id_index as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid token program index"))?;
+        if program != &token_program && program != &token_2022_program {
+            continue;
+        }
+        if instruction.data.len() != 10 || instruction.data.first() != Some(&12) {
+            continue;
+        }
+        let source_index = *instruction
+            .accounts
+            .first()
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid transfer source index"))?;
+        let source = *account_keys
+            .get(source_index as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid transfer source index"))?;
+        if !checked_sources.insert((source, *program)) {
+            continue;
+        }
+
+        let account = rpc
+            .get_account_with_commitment(&source, CommitmentConfig::confirmed())
+            .map_err(|e| {
+                VerificationError::invalid_payload(format!(
+                    "Failed to fetch transfer source token account: {e}"
+                ))
+            })?
+            .value
+            .ok_or_else(|| {
+                VerificationError::invalid_payload("Transfer source token account is missing")
+            })?;
+        if account.owner != *program {
+            return Err(VerificationError::invalid_payload(
+                "Transfer source token account has wrong owner program",
+            ));
+        }
+
+        let stored_owner = token_account_owner(&account.data).ok_or_else(|| {
+            VerificationError::invalid_payload("Transfer source token account data is malformed")
+        })?;
+        if managed_signers.contains(&stored_owner) {
+            return Err(VerificationError::invalid_payload(
+                "Fee payer token account cannot fund the SPL payment transfer",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn token_account_owner(data: &[u8]) -> Option<Pubkey> {
+    if data.len() < TOKEN_ACCOUNT_BASE_LEN {
+        return None;
+    }
+    // Both token programs keep the base Account owner at bytes 32..64; Token-2022
+    // extensions are appended after this base layout. Mirror the base Account
+    // decoder's validity checks before trusting its owner field.
+    if !matches!(data.get(TOKEN_ACCOUNT_STATE_OFFSET).copied(), Some(1 | 2))
+        || !coption_tag_is_valid(data, TOKEN_ACCOUNT_DELEGATE_OPTION_START)
+        || !coption_tag_is_valid(data, TOKEN_ACCOUNT_NATIVE_OPTION_START)
+        || !coption_tag_is_valid(data, TOKEN_ACCOUNT_CLOSE_AUTHORITY_OPTION_START)
+    {
+        return None;
+    }
+    let owner = data
+        .get(TOKEN_ACCOUNT_OWNER_START..TOKEN_ACCOUNT_OWNER_END)?
+        .try_into()
+        .ok()?;
+    Some(Pubkey::new_from_array(owner))
+}
+
+fn coption_tag_is_valid(data: &[u8], offset: usize) -> bool {
+    matches!(
+        data.get(offset..offset + 4),
+        Some([0, 0, 0, 0] | [1, 0, 0, 0])
+    )
+}
+
 // ── On-chain verification helpers ──
 
 fn verify_sol_transfers(
@@ -3221,6 +3323,52 @@ impl std::error::Error for VerificationError {}
 #[allow(clippy::err_expect)]
 mod tests {
     use super::*;
+    use crate::x402::server::mock_rpc::MockRpc;
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingSigner {
+        pubkey: Pubkey,
+        sign_calls: AtomicUsize,
+    }
+
+    impl CountingSigner {
+        fn new(pubkey: Pubkey) -> Self {
+            Self {
+                pubkey,
+                sign_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn sign_calls(&self) -> usize {
+            self.sign_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SolanaSigner for CountingSigner {
+        fn pubkey(&self) -> Pubkey {
+            self.pubkey
+        }
+
+        async fn sign_transaction(
+            &self,
+            _tx: &mut Transaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            Err(SignerError::Other("unused".to_string()))
+        }
+
+        async fn sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
+            self.sign_calls.fetch_add(1, Ordering::SeqCst);
+            Err(SignerError::SigningFailed(
+                "test signer invoked".to_string(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
 
     #[derive(Default)]
     struct UnspecifiedTestStore {
@@ -3694,12 +3842,32 @@ mod tests {
         amount: u64,
         decimals: u8,
     ) -> Instruction {
+        spl_transfer_checked_ix_for_program(
+            source,
+            mint,
+            destination,
+            authority,
+            amount,
+            decimals,
+            token_program_id(),
+        )
+    }
+
+    fn spl_transfer_checked_ix_for_program(
+        source: &Pubkey,
+        mint: &Pubkey,
+        destination: &Pubkey,
+        authority: &Pubkey,
+        amount: u64,
+        decimals: u8,
+        token_program: Pubkey,
+    ) -> Instruction {
         let mut data = Vec::with_capacity(10);
         data.push(12); // TransferChecked = 12
         data.extend_from_slice(&amount.to_le_bytes());
         data.push(decimals);
         Instruction {
-            program_id: token_program_id(),
+            program_id: token_program,
             accounts: vec![
                 AccountMeta::new(*source, false),
                 AccountMeta::new_readonly(*mint, false),
@@ -3708,6 +3876,199 @@ mod tests {
             ],
             data,
         }
+    }
+
+    fn token_account_data(mint: Pubkey, owner: Pubkey) -> Vec<u8> {
+        let mut data = vec![0u8; TOKEN_ACCOUNT_BASE_LEN];
+        data[..32].copy_from_slice(mint.as_ref());
+        data[TOKEN_ACCOUNT_OWNER_START..TOKEN_ACCOUNT_OWNER_END].copy_from_slice(owner.as_ref());
+        data[TOKEN_ACCOUNT_STATE_OFFSET] = 1;
+        data
+    }
+
+    fn fee_sponsored_mpp(
+        rpc_url: String,
+        recipient: Pubkey,
+        mint: Pubkey,
+        signer: Arc<CountingSigner>,
+    ) -> Mpp {
+        Mpp::new(Config {
+            recipient: recipient.to_string(),
+            currency: mint.to_string(),
+            decimals: 6,
+            network: "localnet".to_string(),
+            rpc_url: Some(rpc_url),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            fee_payer: true,
+            fee_payer_signer: Some(signer),
+            ..Default::default()
+        })
+        .expect("fee-sponsored MPP test server")
+    }
+
+    fn fee_sponsored_method_details(fee_payer: Pubkey, token_program: Pubkey) -> MethodDetails {
+        MethodDetails {
+            network: Some("localnet".to_string()),
+            decimals: Some(6),
+            token_program: Some(token_program.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn mpp_token_program_cases() -> [(Pubkey, Pubkey); 2] {
+        [
+            (
+                Pubkey::from_str(crate::mpp::protocol::solana::mints::USDC_DEVNET).unwrap(),
+                Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap(),
+            ),
+            (
+                Pubkey::from_str(crate::mpp::protocol::solana::mints::PYUSD_DEVNET).unwrap(),
+                Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap(),
+            ),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_pull_rejects_managed_non_ata_sources_before_signing_for_both_token_programs()
+    {
+        for (mint, token_program) in mpp_token_program_cases() {
+            let mock = MockRpc::start().await;
+            let fee_payer = Pubkey::new_unique();
+            let recipient = Pubkey::new_unique();
+            let customer = Pubkey::new_unique();
+            let delegate = Pubkey::new_unique();
+            let source = Pubkey::new_unique();
+            let signer = Arc::new(CountingSigner::new(fee_payer));
+            let mpp = fee_sponsored_mpp(mock.url(), recipient, mint, signer.clone());
+            let destination = derive_ata(&recipient, &mint, &token_program);
+            let transaction = dummy_tx(
+                vec![spl_transfer_checked_ix_for_program(
+                    &source,
+                    &mint,
+                    &destination,
+                    &delegate,
+                    1_000_000,
+                    6,
+                    token_program,
+                )],
+                &fee_payer,
+            );
+            let request = charge_request(1_000_000, &mint.to_string(), &recipient);
+            let method_details = fee_sponsored_method_details(fee_payer, token_program);
+
+            verify_transaction_pre_broadcast(&transaction, &request, &method_details)
+                .expect("offline verifier accepts delegated customer authority");
+
+            mock.set_account(
+                source.to_string(),
+                token_account_data(mint, fee_payer),
+                token_program.to_string(),
+            );
+            let transaction_b64 = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                bincode::serialize(&VersionedTransaction::from(transaction.clone()))
+                    .expect("serialize transaction"),
+            );
+            let err = mpp
+                .broadcast_pull(&transaction_b64, &request, &method_details)
+                .await
+                .expect_err("managed token-account owner must be rejected");
+            assert_eq!(
+                err.message,
+                "Fee payer token account cannot fund the SPL payment transfer"
+            );
+            assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
+
+            // A delegated custom source stored for the customer remains
+            // legitimate and reaches the signer. This test double then stops
+            // execution before network broadcast.
+            mock.set_account(
+                source.to_string(),
+                token_account_data(mint, customer),
+                token_program.to_string(),
+            );
+            let err = mpp
+                .broadcast_pull(&transaction_b64, &request, &method_details)
+                .await
+                .expect_err("counting signer intentionally fails");
+            assert!(err.message.contains("Fee payer signing failed"));
+            assert_eq!(
+                signer.sign_calls(),
+                1,
+                "customer source must remain signable"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_pull_source_owner_check_fails_closed_before_signing() {
+        let (mint, token_program) = mpp_token_program_cases()[0];
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let source = Pubkey::new_unique();
+        let transaction = dummy_tx(
+            vec![spl_transfer_checked_ix_for_program(
+                &source,
+                &mint,
+                &derive_ata(&recipient, &mint, &token_program),
+                &Pubkey::new_unique(),
+                1_000_000,
+                6,
+                token_program,
+            )],
+            &fee_payer,
+        );
+        let transaction_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            bincode::serialize(&VersionedTransaction::from(transaction))
+                .expect("serialize transaction"),
+        );
+        let request = charge_request(1_000_000, &mint.to_string(), &recipient);
+        let method_details = fee_sponsored_method_details(fee_payer, token_program);
+
+        let mut invalid_state = token_account_data(mint, Pubkey::new_unique());
+        invalid_state[TOKEN_ACCOUNT_STATE_OFFSET] = 3;
+        for (data, owner) in [
+            (None, None),
+            (
+                Some(vec![0u8; TOKEN_ACCOUNT_BASE_LEN - 1]),
+                Some(token_program),
+            ),
+            (Some(invalid_state), Some(token_program)),
+            (
+                Some(token_account_data(mint, Pubkey::new_unique())),
+                Some(Pubkey::new_unique()),
+            ),
+        ] {
+            let mock = MockRpc::start().await;
+            if let (Some(data), Some(owner)) = (data, owner) {
+                mock.set_account(source.to_string(), data, owner.to_string());
+            }
+            let signer = Arc::new(CountingSigner::new(fee_payer));
+            let mpp = fee_sponsored_mpp(mock.url(), recipient, mint, signer.clone());
+            let err = mpp
+                .broadcast_pull(&transaction_b64, &request, &method_details)
+                .await
+                .expect_err("uninspectable source must be rejected");
+            assert_eq!(err.code, Some("malformed-credential"));
+            assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
+        }
+
+        let signer = Arc::new(CountingSigner::new(fee_payer));
+        let mpp = fee_sponsored_mpp(
+            "http://127.0.0.1:1".to_string(),
+            recipient,
+            mint,
+            signer.clone(),
+        );
+        let err = mpp
+            .broadcast_pull(&transaction_b64, &request, &method_details)
+            .await
+            .expect_err("source-account RPC failures must fail closed");
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
     }
 
     fn create_ata_ix(
