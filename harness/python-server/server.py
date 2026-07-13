@@ -38,6 +38,7 @@ import socket
 import sys
 import threading
 import urllib.request
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -77,6 +78,8 @@ from solana_pay_kit.protocols.mpp.core.headers import (  # noqa: E402
 )
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
 from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
+    MemoryChannelStore,
+    Session,
     SessionChallengeOptions,
     SessionOptions,
     new_session,
@@ -369,36 +372,45 @@ class _Adapter:
                 file=sys.stderr,
             )
             sys.exit(2)
-        self.session_method = new_session(
-            SessionOptions(
-                operator=signer.pubkey(),
-                recipient=pay_to,
-                cap=int(amount_units),
-                currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
-                decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
-                network=network_raw,
-                secret_key=secret,
-                realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
-                modes=["pull"],
-                pull_voucher_strategy="clientVoucher",
-                # The client builds an open tied to the challenge recentSlot;
-                # the server checks that slot, signs the fee-payer slot, and
-                # broadcasts before it accepts any vouchers. The current
-                # verifier persists the transaction's openSlot, so this path
-                # is compatible with the epoch-addressed program.
-                open_tx_submitter="server",
-                signer=signer,
-                # _handle_session installs a fresh request-scoped RPC client
-                # for both open and settle, avoiding cross-event-loop clients.
-                rpc=None,
-                recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
-            )
+        # Keep the channel state across HTTP requests while constructing each
+        # request handler with its own event-loop-bound RPC client. ``new_session``
+        # captures ``options.rpc`` in both the method and the core's top-up
+        # verifier, so changing ``Session._rpc`` later would leave that verifier
+        # disabled.
+        self.session_store = MemoryChannelStore()
+        self.session_options = SessionOptions(
+            operator=signer.pubkey(),
+            recipient=pay_to,
+            cap=int(amount_units),
+            currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
+            decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
+            network=network_raw,
+            secret_key=secret,
+            realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            # The client builds an open tied to the challenge recentSlot; the
+            # server checks that slot, signs the fee-payer slot, and broadcasts
+            # before it accepts any vouchers. The verifier persists the
+            # transaction's openSlot, so this path is compatible with the
+            # epoch-addressed program.
+            open_tx_submitter="server",
+            signer=signer,
+            store=self.session_store,
+            recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
         )
+        # SessionRoutes handles delivery/commit endpoints, which do not use the
+        # on-chain verification seam. Its core shares the request sessions' store.
+        self.session_method = new_session(self.session_options)
         self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)
         self.session_challenge = SessionChallengeOptions(cap=amount_units, description="Harness session")
         decimals = int(optional_env("MPP_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
         self.replay_path = ""
+
+    def session_for_request(self, rpc: SolanaRpc) -> Session:
+        """Build a request-loop session with on-chain verification enabled."""
+        return new_session(replace(self.session_options, rpc=rpc))
 
     def charge_options(self) -> ChargeOptions:
         options = ChargeOptions(
@@ -623,18 +635,14 @@ class HarnessHandler(BaseHTTPRequestHandler):
             # A request-lifetime RPC bound to THIS event loop drives both the
             # server-broadcast open (openTxSubmitter=server) and the
             # settle_and_finalize + distribute at close, so the session settles
-            # for real on-chain and ``settledSignature`` is a landed tx. Mirror
-            # the charge path: build a fresh SolanaRpc, scope it onto the
-            # session for the request, and always close it.
+            # for real on-chain and ``settledSignature`` is a landed tx. Build a
+            # fresh public Session so ``new_session`` also installs its top-up
+            # transaction/delta verifier with this RPC client.
             fresh_rpc = SolanaRpc(adapter.rpc_url)
-            session = adapter.session_method
-            previous = session._rpc
-            # Reaches private session state because there is no public per-request rpc-injection API; safe only in this synchronous single-threaded harness, never production.
-            session._rpc = fresh_rpc
+            session = adapter.session_for_request(fresh_rpc)
             try:
                 return await session.handle(auth or None, adapter.session_challenge)
             finally:
-                session._rpc = previous
                 await fresh_rpc.aclose()
 
         result = asyncio.run(_handle_with_fresh_rpc())
