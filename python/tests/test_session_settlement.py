@@ -6,6 +6,7 @@ Mirrors the Go/TS closeAndSettleChannel path.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -666,14 +667,17 @@ async def test_settle_polls_until_confirmed_when_status_initially_none() -> None
 
 
 @pytest.mark.asyncio
-async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling() -> None:
-    """B1: when the poll times out before any status is seen the channel is NOT
-    sealed and the settle-in-progress guard is released so a retry can claim
-    again (S2)."""
+async def test_settle_not_confirmed_within_timeout_preserves_signature_for_reconciliation() -> None:
+    """An ambiguous post-broadcast timeout keeps the signature and replays only
+    confirmation, never a fresh settlement transaction."""
 
     class _StuckNoneRpc(_SettleRpc):
+        confirmed = False
+
         async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
             self.status_queries.append(list(signatures))
+            if self.confirmed:
+                return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
             return [None for _ in signatures]
 
     operator = Keypair.from_seed(bytes([23] * 32))
@@ -724,7 +728,19 @@ async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling(
     final = await session._core.store().get_channel(channel)
     assert final is not None
     assert final.sealed is False
-    assert final.settled_signature is None
+    assert final.settled_signature == _SENT_SIGNATURE
+    assert final.settling is False
+    assert len(rpc.sent) == 1
+
+    rpc.confirmed = True
+    reconciled = await session._settle_channel(channel)
+
+    assert reconciled == _SENT_SIGNATURE
+    assert len(rpc.sent) == 1
+    final = await session._core.store().get_channel(channel)
+    assert final is not None
+    assert final.sealed is True
+    assert final.settled_signature == _SENT_SIGNATURE
     assert final.settling is False
 
 
@@ -772,8 +788,8 @@ async def test_concurrent_settle_claimed_once_does_not_double_broadcast() -> Non
 @pytest.mark.asyncio
 async def test_concurrent_settle_in_progress_guard_blocks_second_caller() -> None:
     """S2: a channel in ``settling=True`` state (claim taken mid-broadcast) is
-    seen as busy by a second caller, which returns ``None`` instead of
-    re-broadcasting."""
+    seen as busy by a second caller, which receives a retryable error instead
+    of a receipt or a re-broadcast."""
 
     operator = Keypair.from_seed(bytes([28] * 32))
     channel = str(Keypair.from_seed(bytes([29] * 32)).pubkey())
@@ -792,13 +808,179 @@ async def test_concurrent_settle_in_progress_guard_blocks_second_caller() -> Non
         ),
     )
 
-    result = await session._settle_channel(channel)
-    assert result is None
+    with pytest.raises(PaymentError, match="already in progress") as excinfo:
+        await session._settle_channel(channel)
+    assert excinfo.value.retryable is True
     assert len(rpc.sent) == 0
     state = await session._core.store().get_channel(channel)
     assert state is not None
     assert state.sealed is False
     assert state.settling is True
+
+
+@pytest.mark.asyncio
+async def test_public_concurrent_close_does_not_issue_receipt_while_claim_is_owned() -> None:
+    """The public gate must not turn a busy settlement into a success receipt."""
+
+    class _BlockedBroadcastRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.block_next_blockhash = False
+            self.blockhash_requested = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get_latest_blockhash(self, commitment: str = "confirmed") -> _Resp:
+            if not self.block_next_blockhash:
+                return await super().get_latest_blockhash(commitment)
+            self.block_next_blockhash = False
+            self.blockhash_requested.set()
+            await self.release.wait()
+            return await super().get_latest_blockhash(commitment)
+
+        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+            self.status_queries.append(list(signatures))
+            return [{"err": {"InstructionError": [0, "Custom"]}} for _ in signatures]
+
+    operator = Keypair.from_seed(bytes([41] * 32))
+    channel = str(Keypair.from_seed(bytes([42] * 32)).pubkey())
+    rpc = _BlockedBroadcastRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    options = SessionChallengeOptions()
+    challenge = await session.challenge(options)
+    credential = PaymentCredential(
+        challenge=challenge.to_echo(),
+        payload=SessionAction.close_action(ClosePayload(channel_id=channel)).to_dict(),
+    )
+    authorization = format_authorization(credential)
+
+    rpc.block_next_blockhash = True
+    owner = asyncio.create_task(session.handle(authorization, options))
+    await rpc.blockhash_requested.wait()
+
+    losing_result = await session.handle(authorization, options)
+
+    assert losing_result.ok is False
+    assert losing_result.status == 402
+    assert PAYMENT_RECEIPT_HEADER not in losing_result.headers
+
+    rpc.release.set()
+    owner_result = await owner
+    assert owner_result.ok is False
+    assert PAYMENT_RECEIPT_HEADER not in owner_result.headers
+    assert len(rpc.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_settle_releases_pre_broadcast_claim() -> None:
+    """Cancellation before broadcast must not leave the channel permanently busy."""
+
+    class _BlockedBlockhashRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.blockhash_requested = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get_latest_blockhash(self, commitment: str = "confirmed") -> _Resp:
+            self.blockhash_requested.set()
+            await self.release.wait()
+            return await super().get_latest_blockhash(commitment)
+
+    operator = Keypair.from_seed(bytes([43] * 32))
+    channel = str(Keypair.from_seed(bytes([44] * 32)).pubkey())
+    rpc = _BlockedBlockhashRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    pending = asyncio.create_task(session._settle_channel(channel))
+    await rpc.blockhash_requested.wait()
+    pending.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settled_signature is None
+    assert state.settling is False
+    assert rpc.sent == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_post_broadcast_settle_preserves_signature_for_reconciliation() -> None:
+    """Cancellation after RPC acceptance records the signature before releasing."""
+
+    class _BlockedConfirmationRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.confirmation_requested = asyncio.Event()
+            self.release = asyncio.Event()
+            self.confirmed = False
+
+        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+            self.status_queries.append(list(signatures))
+            if self.confirmed:
+                return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
+            self.confirmation_requested.set()
+            await self.release.wait()
+            return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
+
+    operator = Keypair.from_seed(bytes([45] * 32))
+    channel = str(Keypair.from_seed(bytes([46] * 32)).pubkey())
+    rpc = _BlockedConfirmationRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    pending = asyncio.create_task(session._settle_channel(channel))
+    await rpc.confirmation_requested.wait()
+    pending.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settled_signature == _SENT_SIGNATURE
+    assert state.settling is False
+    assert len(rpc.sent) == 1
+
+    rpc.confirmed = True
+    assert await session._settle_channel(channel) == _SENT_SIGNATURE
+    assert len(rpc.sent) == 1
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is True
+    assert state.settling is False
 
 
 # --- S1: server-broadcast open replay does not re-broadcast -------------------

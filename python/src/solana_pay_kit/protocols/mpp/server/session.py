@@ -13,13 +13,14 @@ channel lifecycle management.
    host once the close-pending state is recorded.
 
 On-chain verification is a seam in this layer: when
-:attr:`SessionConfig.verify_open_tx` / :attr:`SessionConfig.verify_top_up_tx`
-are set, :meth:`process_open` (push mode) and :meth:`process_top_up` invoke
-them before persisting channel state, binding the payload to the attached
-transaction and confirming the signature on-chain. When ``None``, the
-transaction signature and deposit amount are trusted as provided, which is
-suitable only for unit tests or deployments that verify transactions out of
-band.
+:attr:`SessionConfig.verify_open_tx`, :attr:`SessionConfig.verify_top_up_tx`,
+or :attr:`SessionConfig.verify_top_up_state_tx` are set, :meth:`process_open`
+(push mode) and :meth:`process_top_up` invoke them before persisting channel
+state. The payload-only top-up callback is retained for host compatibility;
+the state-aware callback binds the verified transaction to the immutable
+channel snapshot. When no verifier is set, the transaction signature and
+deposit amount are trusted as provided, which is suitable only for unit tests
+or deployments that verify transactions out of band.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ __all__ = [
     "Split",
     "SessionTxVerifier",
     "TopUpTxVerifier",
+    "TopUpStateTxVerifier",
     "SessionConfig",
     "DeliveryRequest",
     "SessionServer",
@@ -81,11 +83,15 @@ _P = TypeVar("_P")
 # skips verification. Raising signals a verification failure.
 SessionTxVerifier = Callable[[_P], Awaitable[None]]
 
-# A top-up verifier receives the immutable channel snapshot that the payload
+# TopUpTxVerifier is the legacy payload-only callback. Keep it stable for hosts
+# that installed custom verification before the state-aware binding seam.
+TopUpTxVerifier = SessionTxVerifier[TopUpPayload]
+
+# TopUpStateTxVerifier receives the immutable channel snapshot that the payload
 # will be applied to. The core rechecks that snapshot's deposit in the atomic
 # mutator after the verifier's RPC work returns, closing the verify-then-write
 # race for a transaction whose amount only matches the old deposit.
-TopUpTxVerifier = Callable[[TopUpPayload, ChannelState], Awaitable[None]]
+TopUpStateTxVerifier = Callable[[TopUpPayload, ChannelState], Awaitable[None]]
 
 
 @dataclass
@@ -158,9 +164,13 @@ class SessionConfig:
     # mode) before process_open persists channel state.
     verify_open_tx: SessionTxVerifier[OpenPayload] | None = None
 
-    # VerifyTopUpTx, when set, confirms and value-binds the top-up transaction
-    # against the channel snapshot before process_top_up raises the deposit.
+    # VerifyTopUpTx is the legacy payload-only top-up callback retained for
+    # existing host integrations.
     verify_top_up_tx: TopUpTxVerifier | None = None
+
+    # VerifyTopUpStateTx confirms and value-binds the top-up transaction
+    # against the channel snapshot before process_top_up raises the deposit.
+    verify_top_up_state_tx: TopUpStateTxVerifier | None = None
 
 
 @dataclass
@@ -475,10 +485,18 @@ class SessionServer:
         if new_deposit > self._config.max_cap:
             raise ValueError(f"new deposit {new_deposit} exceeds max cap {self._config.max_cap}")
 
-        verified_snapshot_deposit: int | None = None
         if self._config.verify_top_up_tx is not None:
             try:
-                await self._config.verify_top_up_tx(payload, snapshot)
+                await self._config.verify_top_up_tx(payload)
+            except PaymentError:
+                raise
+            except Exception as exc:
+                raise _wrap("top-up tx verification failed", exc) from exc
+
+        verified_snapshot_deposit: int | None = None
+        if self._config.verify_top_up_state_tx is not None:
+            try:
+                await self._config.verify_top_up_state_tx(payload, snapshot)
             except PaymentError:
                 raise
             except Exception as exc:

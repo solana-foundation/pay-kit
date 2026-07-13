@@ -9,11 +9,11 @@ signatures and deposit amounts are trusted as provided. :func:`verify_open_tx`
 always validates an attached open transaction structurally (decode, bind the
 payload signature, check the open instruction against the challenge, re-derive
 the channel PDA); confirming that the transaction actually landed additionally
-requires an RPC client. :func:`new_top_up_tx_verifier` fetches the confirmed
-transaction because a top-up payload carries only a signature: it binds the
-configured program, channel, and Borsh-decoded amount to the stored deposit.
-Without an RPC client the top-up seam stays ``None`` and the new deposit is
-trusted as provided.
+requires an RPC client. :func:`new_top_up_tx_verifier` retains the legacy
+payload-only callback shape, while :func:`new_top_up_state_tx_verifier` binds a
+confirmed top-up transaction to the configured program, channel, and stored
+deposit. Without an RPC client the top-up seam stays ``None`` and the new
+deposit is trusted as provided.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import base64
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast, overload
 
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
@@ -59,6 +59,7 @@ __all__ = [
     "verify_open_tx",
     "new_open_tx_verifier",
     "new_top_up_tx_verifier",
+    "new_top_up_state_tx_verifier",
     "confirm_transaction_signature",
     "is_placeholder_signature",
 ]
@@ -97,7 +98,8 @@ class AccountInfoRpc(Protocol):
 #: A verifier seam installed on the session config: validates a payload (open
 #: or top-up) and raises on rejection.
 OpenTxVerifier = Callable[[OpenPayload], Awaitable[None]]
-TopUpTxVerifier = Callable[[TopUpPayload, "ChannelState"], Awaitable[None]]
+TopUpTxVerifier = Callable[[TopUpPayload], Awaitable[None]]
+TopUpStateTxVerifier = Callable[[TopUpPayload, "ChannelState"], Awaitable[None]]
 
 
 class OpenVerifierConfig(Protocol):
@@ -457,11 +459,84 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
     return verifier
 
 
+class _TopUpVerifierMissing:
+    """Sentinel that distinguishes the legacy and state-aware factory forms."""
+
+
+_TOP_UP_VERIFIER_MISSING = _TopUpVerifierMissing()
+
+
+@overload
+def new_top_up_tx_verifier(config_or_rpc: RpcClient | None) -> TopUpTxVerifier | None: ...
+
+
+@overload
 def new_top_up_tx_verifier(
+    config_or_rpc: TopUpVerifierConfig, rpc_client: RpcClient | None
+) -> TopUpStateTxVerifier | None: ...
+
+
+@overload
+def new_top_up_tx_verifier(*, rpc_client: RpcClient | None) -> TopUpTxVerifier | None: ...
+
+
+@overload
+def new_top_up_tx_verifier(
+    *, config: TopUpVerifierConfig, rpc_client: RpcClient | None
+) -> TopUpStateTxVerifier | None: ...
+
+
+def new_top_up_tx_verifier(
+    config_or_rpc: TopUpVerifierConfig | RpcClient | None | _TopUpVerifierMissing = _TOP_UP_VERIFIER_MISSING,
+    rpc_client: RpcClient | None | _TopUpVerifierMissing = _TOP_UP_VERIFIER_MISSING,
+    **kwargs: object,
+) -> TopUpTxVerifier | TopUpStateTxVerifier | None:
+    """Build a top-up verifier without breaking either published call shape.
+
+    ``new_top_up_tx_verifier(rpc)`` returns the legacy payload-only callback.
+    ``new_top_up_tx_verifier(config, rpc)`` remains accepted for callers that
+    adopted the newer state-aware factory before it received its explicit name.
+    New session construction should call :func:`new_top_up_state_tx_verifier`.
+    """
+    config = kwargs.pop("config", _TOP_UP_VERIFIER_MISSING)
+    if kwargs:
+        unexpected = next(iter(kwargs))
+        raise TypeError(f"new_top_up_tx_verifier() got an unexpected keyword argument {unexpected!r}")
+    if config is not _TOP_UP_VERIFIER_MISSING:
+        if config_or_rpc is not _TOP_UP_VERIFIER_MISSING:
+            raise TypeError("new_top_up_tx_verifier() received both config and a positional first argument")
+        if rpc_client is _TOP_UP_VERIFIER_MISSING:
+            raise TypeError("new_top_up_tx_verifier() missing required rpc_client argument")
+        return new_top_up_state_tx_verifier(
+            cast(TopUpVerifierConfig, config), cast(RpcClient | None, rpc_client)
+        )
+    if config_or_rpc is _TOP_UP_VERIFIER_MISSING:
+        if rpc_client is _TOP_UP_VERIFIER_MISSING:
+            raise TypeError("new_top_up_tx_verifier() missing required rpc_client argument")
+        return _new_legacy_top_up_tx_verifier(cast(RpcClient | None, rpc_client))
+    if rpc_client is _TOP_UP_VERIFIER_MISSING:
+        return _new_legacy_top_up_tx_verifier(cast(RpcClient | None, config_or_rpc))
+    return new_top_up_state_tx_verifier(
+        cast(TopUpVerifierConfig, config_or_rpc), cast(RpcClient | None, rpc_client)
+    )
+
+
+def _new_legacy_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
+    """Return the original payload-only confirmation callback."""
+    if rpc_client is None:
+        return None
+
+    async def verifier(payload: TopUpPayload) -> None:
+        await confirm_transaction_signature(rpc_client, payload.signature, "top-up")
+
+    return verifier
+
+
+def new_top_up_state_tx_verifier(
     config: TopUpVerifierConfig,
     rpc_client: RpcClient | None,
-) -> TopUpTxVerifier | None:
-    """Return the top-up verifier bound to a configured payment-channel program.
+) -> TopUpStateTxVerifier | None:
+    """Return the state-aware top-up verifier for session-owned settlement.
 
     A top-up payload contains only a signature and target total, so confirming
     that signature alone proves neither that it targeted this channel nor that
@@ -742,14 +817,17 @@ async def settle_and_seal_channel(
     merchant: Keypair,
     rpc: RpcClient,
     config: SessionConfig,
+    on_broadcast: Callable[[str], Awaitable[None]] | None = None,
 ) -> str:
     """Build, sign, broadcast, and confirm the close settlement transaction;
     return the confirmed on-chain signature.
 
     Mirrors the Rust/Go close path: a settle_and_seal instruction (preceded
     by the Ed25519 precompile when a voucher was recorded) plus a distribute
-    instruction in one transaction whose fee payer is the merchant. The caller
-    persists ``settled_signature`` on success.
+    instruction in one transaction whose fee payer is the merchant. When
+    ``on_broadcast`` is set, it receives the accepted signature before
+    confirmation so callers can persist an ambiguous settlement for later
+    reconciliation.
     """
     channel = Pubkey.from_string(state.channel_id)
     program_id = Pubkey.from_string(config.program_id) if config.program_id else PROGRAM_ID
@@ -825,6 +903,8 @@ async def settle_and_seal_channel(
     tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
     sent = await rpc.send_raw_transaction(bytes(tx))
     signature = str(sent.value)
+    if on_broadcast is not None:
+        await on_broadcast(signature)
     # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
     # settle tx (blockhash expiry, congestion, duplicate-settle race) must raise
     # here so the caller does NOT mark the channel sealed with an unconfirmed

@@ -33,10 +33,12 @@ dispatch.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
@@ -75,11 +77,11 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     _require_account_info_rpc,
     confirm_transaction_signature,
     cosign_and_broadcast_open,
-    new_top_up_tx_verifier,
+    new_top_up_state_tx_verifier,
     settle_and_seal_channel,
     verify_open_tx,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, ChannelStore, MemoryChannelStore
 from solana_pay_kit.signer import LocalSigner
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,36 @@ class _AlreadySealed(Exception):
 
 class _AlreadySettling(Exception):
     """Raised by the settle-claim mutator when another caller is mid-settle."""
+
+
+class _SettlementPhase(Enum):
+    """Persisted settlement states derived from the channel record."""
+
+    READY = "ready"
+    IN_PROGRESS = "in_progress"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    SEALED = "sealed"
+
+
+@dataclass(frozen=True)
+class _SettlementStatus:
+    """Typed view of the settlement fields persisted on a channel."""
+
+    phase: _SettlementPhase
+    signature: str | None = None
+
+
+def _settlement_status(state: ChannelState) -> _SettlementStatus:
+    """Classify settlement without conflating a broadcast with a receipt."""
+    if state.sealed:
+        return _SettlementStatus(_SettlementPhase.SEALED, state.settled_signature)
+    if state.settled_signature is not None:
+        # ``settling`` is transient and may reset after process restart. The
+        # durable broadcast signature is sufficient to reconcile safely.
+        return _SettlementStatus(_SettlementPhase.AWAITING_CONFIRMATION, state.settled_signature)
+    if state.settling:
+        return _SettlementStatus(_SettlementPhase.IN_PROGRESS)
+    return _SettlementStatus(_SettlementPhase.READY)
 
 
 __all__ = [
@@ -756,19 +788,15 @@ class Session:
         The receipt reference is the channel id (the on-chain settlement path is
         not implemented here).
 
-        Unlike :meth:`SessionServer.process_close`, where a second close is
-        always rejected, the close here is re-drivable: when a prior close
-        flipped the close-pending flag but settlement never recorded a signature
-        (``settled_signature is None``), the retry proceeds so a transient
-        settlement failure cannot strand the channel. A close-pending channel
-        that already recorded a settled signature is not re-drivable and
-        hard-rejects with "close already requested". The fund-safety final
+        Unlike :meth:`SessionServer.process_close`, the close here is
+        re-drivable. A prior pre-broadcast failure may be retried, while a
+        prior broadcast is reconciled using its persisted signature before any
+        caller can build another settlement transaction. The fund-safety final
         voucher validation is unchanged from the core path.
         """
         import time
 
         from solana_pay_kit.protocols.mpp.server.session import _parse_u64
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
         from solana_pay_kit.protocols.mpp.server.session_voucher import verify_session_voucher
 
         channel_id = payload.channel_id
@@ -781,11 +809,11 @@ class Session:
             if current.sealed:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
-                if current.settled_signature is None:
-                    # Re-drivable close: leave state untouched and let the
-                    # settlement retry proceed.
-                    return current.clone()
-                raise ValueError("close already requested")
+                # Re-drive failed pre-broadcast closes and reconcile an
+                # already-broadcast signature. A sealed channel was rejected
+                # above; the settlement state machine decides whether this
+                # caller can proceed or must receive a retryable failure.
+                return current.clone()
 
             nxt = current.clone()
             if voucher is not None:
@@ -850,81 +878,150 @@ class Session:
         if self._signer is None or self._rpc is None:
             return None
 
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
-
         # Atomic settle-in-progress guard: claim the channel under the
         # per-channel store lock so a concurrent close retry or idle-watchdog
         # fire cannot both pass the seal check and broadcast duplicate
-        # settle transactions. The winning caller flips ``settling`` to True
-        # and continues to the broadcast; losing callers see ``settling`` is
-        # already True and bail out (the winner will seal, a loser may
-        # retry if the winner's broadcast fails).
+        # settle transactions. A durable unsealed signature is a distinct
+        # phase: it must be reconciled before any caller can broadcast again.
         claimed = False
+        reconcile_signature: str | None = None
 
         def claim(current: ChannelState | None) -> ChannelState:
-            nonlocal claimed
+            nonlocal claimed, reconcile_signature
             if current is None:
                 raise ValueError(f"channel {channel_id} disappeared during settle-claim")
-            if current.sealed:
-                raise _AlreadySealed(current.settled_signature)
-            if current.settling:
+            status = _settlement_status(current)
+            if status.phase is _SettlementPhase.SEALED:
+                raise _AlreadySealed(status.signature)
+            if status.phase is _SettlementPhase.IN_PROGRESS:
                 raise _AlreadySettling()
             nxt = current.clone()
             nxt.settling = True
+            if status.phase is _SettlementPhase.AWAITING_CONFIRMATION:
+                reconcile_signature = status.signature
             claimed = True
             return nxt
 
-        settled_signature: str | None = None
         try:
-            await self._core.store().update_channel(channel_id, claim)
+            state = await self._core.store().update_channel(channel_id, claim)
         except _AlreadySealed as exc:
             return exc.signature
         except _AlreadySettling:
-            return None
+            raise PaymentError(
+                f"channel {channel_id} settlement is already in progress",
+                code="invalid-payload",
+                retryable=True,
+            ) from None
 
         if not claimed:
             return None
 
-        state = await self._core.store().get_channel(channel_id)
-        if state is None:
-            return None
+        async def release_claim(signature: str | None, *, clear_signature: bool) -> None:
+            """Release a claimed phase without erasing an ambiguous broadcast."""
+
+            def release(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared while releasing settle-claim")
+                if current.sealed:
+                    return current
+                if signature is not None and current.settled_signature != signature:
+                    return current
+                if signature is None and current.settled_signature is not None:
+                    return current
+                nxt = current.clone()
+                nxt.settling = False
+                if clear_signature:
+                    nxt.settled_signature = None
+                return nxt
+
+            await self._core.store().update_channel(channel_id, release)
+
+        async def seal(signature: str) -> str:
+            def mark_sealed(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared during settle")
+                if current.sealed:
+                    return current
+                if current.settled_signature not in (None, signature):
+                    raise ValueError(f"channel {channel_id} settlement signature changed during confirmation")
+                nxt = current.clone()
+                nxt.sealed = True
+                nxt.settled_signature = signature
+                nxt.settling = False
+                return nxt
+
+            await self._core.store().update_channel(channel_id, mark_sealed)
+            return signature
+
+        if reconcile_signature is not None:
+            try:
+                await confirm_transaction_signature(self._rpc, reconcile_signature, "settle")
+            except PaymentError as exc:
+                # A known execution failure can safely open a new settlement
+                # attempt. Transport errors and timeouts remain ambiguous and
+                # keep the broadcast signature for a later reconciliation.
+                await release_claim(reconcile_signature, clear_signature=exc.code == "transaction-failed")
+                raise
+            except BaseException:
+                await release_claim(reconcile_signature, clear_signature=False)
+                raise
+            return await seal(reconcile_signature)
+
+        broadcast_signature: str | None = None
+
+        async def record_broadcast(signature: str) -> None:
+            nonlocal broadcast_signature
+            broadcast_signature = signature
+
+            def persist(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared after settle broadcast")
+                if current.sealed:
+                    return current
+                if not current.settling:
+                    raise ValueError(f"channel {channel_id} settle claim was released before broadcast persistence")
+                if current.settled_signature not in (None, signature):
+                    raise ValueError(f"channel {channel_id} settlement signature changed during broadcast")
+                nxt = current.clone()
+                nxt.settled_signature = signature
+                return nxt
+
+            # Once a broadcast returns, cancellation must not interrupt the
+            # durable record that prevents a second broadcast. Finish the store
+            # mutation, then propagate cancellation to the public caller.
+            task = asyncio.create_task(self._core.store().update_channel(channel_id, persist))
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            task.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
         try:
             signature = await settle_and_seal_channel(
-                state, merchant=self._signer.keypair, rpc=self._rpc, config=self._core.config
+                state,
+                merchant=self._signer.keypair,
+                rpc=self._rpc,
+                config=self._core.config,
+                on_broadcast=record_broadcast,
             )
-        except Exception:
-            # Broadcast/confirm failed: release the settle-in-progress guard
-            # so a retry can claim again, re-raise for the caller.
-            def release(current: ChannelState | None) -> ChannelState:
-                if current is not None and current.settling and not current.sealed:
-                    nxt = current.clone()
-                    nxt.settling = False
-                    return nxt
-                return current  # type: ignore[return-value]
-
-            await self._core.store().update_channel(channel_id, release)
+        except BaseException as exc:
+            # Pre-broadcast failures and cancellation can release the claim.
+            # Once a signature exists, only a definitive execution failure may
+            # clear it; every other error is reconciled before a later retry.
+            await release_claim(
+                broadcast_signature,
+                clear_signature=(
+                    broadcast_signature is not None
+                    and isinstance(exc, PaymentError)
+                    and exc.code == "transaction-failed"
+                ),
+            )
             raise
-
-        def seal(current: ChannelState | None) -> ChannelState:
-            if current is None:
-                raise ValueError(f"channel {channel_id} disappeared during settle")
-            # Idempotent against a concurrent re-drive (e.g. a client close
-            # racing the idle-close watchdog): if another caller already
-            # sealed under the per-channel lock, keep its signature rather
-            # than overwriting with this call's, which may be a rejected second
-            # on-chain seal.
-            if current.sealed:
-                return current
-            nxt = current.clone()
-            nxt.sealed = True
-            nxt.settled_signature = signature
-            nxt.settling = False
-            return nxt
-
-        await self._core.store().update_channel(channel_id, seal)
-        settled_signature = signature
-        return settled_signature
+        return await seal(signature)
 
     async def _close_on_idle(self, channel_id: str) -> None:
         """Idle-close watchdog handler: close the channel and settle on-chain.
@@ -1031,10 +1128,10 @@ def new_session(options: SessionOptions) -> Session:
         pull_voucher_strategy=options.pull_voucher_strategy,
     )
     # Open verification remains in the method layer because server-broadcast
-    # opens need request-specific signing. Top-ups use the core seam so it can
-    # bind the confirmed transaction's delta to the exact channel snapshot and
-    # recheck that snapshot atomically after the RPC await.
-    config.verify_top_up_tx = new_top_up_tx_verifier(config, options.rpc)
+    # opens need request-specific signing. Top-ups use the state-aware core
+    # seam so it can bind the confirmed transaction's delta to the exact
+    # channel snapshot and recheck that snapshot atomically after the RPC await.
+    config.verify_top_up_state_tx = new_top_up_state_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(
         core=core,

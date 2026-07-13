@@ -465,11 +465,10 @@ async def test_process_top_up_rejects_when_sealed_or_close_pending() -> None:
 
 
 async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
-    """Mirrors TestProcessTopUpInvokesVerifyTopUpTxSeam."""
+    """Legacy one-argument callbacks remain a supported host extension."""
 
-    async def verifier(payload: TopUpPayload, state) -> None:
+    async def verifier(payload: TopUpPayload) -> None:
         assert payload.signature == "topup_sig"
-        assert state.deposit == 1_000_000
         raise ValueError("topup tx unknown")
 
     config = session_test_config()
@@ -485,7 +484,7 @@ async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
 
 
 async def test_process_top_up_preserves_verifier_payment_error_code() -> None:
-    async def verifier(_payload: TopUpPayload, _state) -> None:
+    async def verifier(_payload: TopUpPayload) -> None:
         raise PaymentError("confirmation unavailable", code="transaction-failed")
 
     config = session_test_config()
@@ -511,7 +510,7 @@ async def test_process_top_up_rejects_deposit_change_during_verification() -> No
         await release.wait()
 
     config = session_test_config()
-    config.verify_top_up_tx = verifier
+    config.verify_top_up_state_tx = verifier
     server = new_session_test_server(config)
     _, channel_id = await _open_test_channel(server, 1_000)
 
