@@ -78,7 +78,8 @@ class RpcClient(Protocol):
     is a status dict with an ``err`` field, or ``None`` when unknown);
     ``get_latest_blockhash`` / ``send_raw_transaction`` back the settle path.
     The top-up verifier additionally requires a duck-typed ``get_transaction``
-    method and fails closed when it is absent."""
+    method. Settle-at-close requires the :class:`AccountInfoRpc` capability so
+    mint ownership and recipient ATAs can be verified before broadcast."""
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]: ...
 

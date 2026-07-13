@@ -72,6 +72,7 @@ from solana_pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecyc
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
     RpcClient,
     VerifyOpenTxExpected,
+    _require_account_info_rpc,
     confirm_transaction_signature,
     cosign_and_broadcast_open,
     new_top_up_tx_verifier,
@@ -169,7 +170,8 @@ class SessionOptions:
     # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 is set explicitly.
     store: ChannelStore | None = None
     # RPC is the optional RPC client used for on-chain checks. None skips every
-    # on-chain check and trusts payload claims as provided.
+    # on-chain check and trusts payload claims as provided. When signer is also
+    # configured, settlement requires get_account_info in addition to RpcClient.
     rpc: RpcClient | None = None
     # RecentStateProvider pre-fetches ``(recentBlockhash, recentSlot)`` for
     # challenge issuance from a single ``getLatestBlockhash`` call (the
@@ -953,12 +955,27 @@ def new_session(options: SessionOptions) -> Session:
     if len(options.splits) > MAX_SPLITS:
         raise PaymentError(f"splits cannot exceed {MAX_SPLITS} entries", code="invalid-config")
     split_recipients: set[str] = set()
+    total_split_bps = 0
     for index, split in enumerate(options.splits):
-        if split.recipient in split_recipients:
+        try:
+            canonical_recipient = str(Pubkey.from_string(split.recipient))
+        except (ValueError, TypeError) as exc:
             raise PaymentError(
-                f"splits[{index}] duplicates recipient {split.recipient}", code="invalid-config"
+                f"splits[{index}] has invalid recipient pubkey: {exc}", code="invalid-config"
+            ) from exc
+        if split.bps <= 0:
+            raise PaymentError(f"splits[{index}] bps must be positive", code="invalid-config")
+        total_split_bps += split.bps
+        if total_split_bps > 10_000:
+            raise PaymentError("split bps total cannot exceed 10000", code="invalid-config")
+        if canonical_recipient in split_recipients:
+            raise PaymentError(
+                f"splits[{index}] duplicates recipient {canonical_recipient}", code="invalid-config"
             )
-        split_recipients.add(split.recipient)
+        split_recipients.add(canonical_recipient)
+
+    if options.signer is not None and options.rpc is not None:
+        _require_account_info_rpc(options.rpc)
 
     secret_key = options.secret_key
     if secret_key == "":

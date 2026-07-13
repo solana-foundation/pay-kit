@@ -19,6 +19,8 @@ test it mirrors in the docstring.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
@@ -111,6 +113,11 @@ class _FakeRpc:
 
     async def get_transaction(self, signature: str, **_kwargs):
         return self.transactions.get(str(signature))
+
+    async def get_account_info(
+        self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
+    ) -> tuple[bytes, str] | None:
+        return None
 
 
 def _base58_encode(data: bytes) -> str:
@@ -228,6 +235,46 @@ def test_new_session_validation_rejects_duplicate_split_recipient() -> None:
                     Split(recipient=duplicate_recipient, bps=1_000),
                     Split(recipient=duplicate_recipient, bps=2_000),
                 ],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("splits", "message"),
+    [
+        ([Split(recipient="not-base58!", bps=1)], "invalid recipient pubkey"),
+        ([Split(recipient=SESSION_TEST_RECIPIENT, bps=0)], "bps must be positive"),
+        (
+            [
+                Split(recipient=SESSION_TEST_RECIPIENT, bps=6_000),
+                Split(recipient=_new_wallet(), bps=4_001),
+            ],
+            "split bps total cannot exceed 10000",
+        ),
+    ],
+)
+def test_new_session_validation_rejects_invalid_split_config(splits: list[Split], message: str) -> None:
+    with pytest.raises(PaymentError, match=message):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                splits=splits,
+            )
+        )
+
+
+def test_new_session_validation_requires_account_info_for_settlement_rpc() -> None:
+    signer = LocalSigner.from_keypair(Keypair.from_seed(bytes([55] * 32)))
+    with pytest.raises(PaymentError, match="settlement requires an RPC client with get_account_info"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                signer=signer,
+                rpc=cast(Any, object()),
             )
         )
 
