@@ -5,8 +5,11 @@ import type { Store } from 'mppx';
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
 import { type Stablecoin, STABLECOINS } from './price.js';
 import { type Network, type NetworkSlug, type Protocol, toNetwork, toSolanaNetwork } from './protocol.js';
-import { type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
-import type { AtomicSubscriptionReplayStore } from './subscription-replay-store.js';
+import { DEMO_SIGNER_PUBLIC_KEY, type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
+import {
+    type AtomicSubscriptionReplayStore,
+    createUnsafeMemorySubscriptionReplayStore,
+} from './subscription-replay-store.js';
 
 /** MPP protocol options. */
 export type MppOptions = {
@@ -130,10 +133,66 @@ function validateStablecoins(stablecoins: readonly Stablecoin[]): void {
 }
 
 function validateOperator(network: Network, operator: Operator): void {
-    if (operator.signer.isDemo && network === 'solana_mainnet') {
+    if (network === 'solana_mainnet' && operator.signer.signer.address === DEMO_SIGNER_PUBLIC_KEY) {
         throw new DemoSignerOnMainnetError(
             'The demo signer is public and must not be used on mainnet. Provide operator.signer.',
         );
+    }
+}
+
+function validateChallengeBindingSecret(secret: unknown): asserts secret is string {
+    if (typeof secret !== 'string' || secret.length === 0) {
+        throw new ConfigurationError('mpp.challengeBindingSecret must be a non-empty string.');
+    }
+}
+
+/**
+ * Whether a process-local, in-memory store is permitted on this cluster:
+ * always on localnet, and on devnet only under the explicit
+ * `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1` development opt-in. Mainnet never
+ * qualifies. The single gate every in-memory fallback (charge replay store and
+ * session store) consults so the policy cannot drift between them.
+ */
+export function inMemoryStoresAllowed(network: Network): boolean {
+    return (
+        network === 'solana_localnet' ||
+        (network === 'solana_devnet' && process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1')
+    );
+}
+
+/**
+ * Every accepted protocol that settles an on-chain transaction needs a shared,
+ * durable replay store: both MPP charge/subscription and x402 exact/upto fence
+ * a broadcast signature against replay. An x402-only server is as exposed to a
+ * double-settlement as an MPP one, so the config-layer requirement covers both.
+ */
+function requiresSettlementReplayStore(accept: readonly Protocol[]): boolean {
+    return accept.includes('mpp') || accept.includes('x402');
+}
+
+function validateReplayStore(config: Pick<PayKitConfig, 'accept' | 'network' | 'replayStore'>): void {
+    if (!requiresSettlementReplayStore(config.accept) || config.network === 'solana_localnet') return;
+
+    const store = config.replayStore;
+    if (store === undefined) {
+        if (inMemoryStoresAllowed(config.network)) return;
+        throw new ConfigurationError(
+            `no shared replay store configured outside localnet; provide replayStore` +
+                ` or, on devnet only, set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
+        );
+    }
+    if (store === null || typeof store !== 'object' || typeof (store as { reserve?: unknown }).reserve !== 'function') {
+        throw new ConfigurationError('replayStore outside localnet must provide an atomic reserve() operation.');
+    }
+    const replayStore = store as AtomicSubscriptionReplayStore;
+    if (replayStore.isShared !== true || replayStore.isDurable !== true) {
+        // A process-local in-memory replay store keeps charge/x402 replay
+        // protection within a single process; permit it only under the dev
+        // opt-in. Subscription gates still require durable+shared (enforced in
+        // the MPP adapter), so this opt-in never weakens subscription
+        // activation replay.
+        if (inMemoryStoresAllowed(config.network)) return;
+        throw new ConfigurationError('replayStore outside localnet must set isShared=true and isDurable=true.');
     }
 }
 
@@ -143,6 +202,7 @@ export function validateMppConfig(
     },
 ): void {
     const { challengeBindingSecret, expiresIn } = config.mpp;
+    if (config.accept.includes('mpp')) validateChallengeBindingSecret(challengeBindingSecret);
     if (expiresIn < 0 || !Number.isInteger(expiresIn)) {
         throw new ConfigurationError('mpp.expiresIn must be a non-negative integer number of seconds.');
     }
@@ -167,16 +227,17 @@ export function validatePayKitConfig(config: PayKitConfig): void {
     validateStablecoins(config.stablecoins);
     validateOperator(config.network, config.operator);
     validateMppConfig(config);
-    if (
-        config.accept.includes('mpp') &&
-        config.network !== 'solana_localnet' &&
-        config.replayStore === undefined &&
-        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] !== '1'
-    ) {
-        throw new ConfigurationError(
-            `no shared replay store configured outside localnet; provide replayStore or set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
-        );
-    }
+    validateReplayStore(config);
+}
+
+function freezePayKitSigner(signer: PayKitSigner): PayKitSigner {
+    return Object.freeze({
+        isDemo: signer.isDemo,
+        isFeePayer: signer.isFeePayer,
+        pubkey: signer.pubkey,
+        sign: signer.sign.bind(signer),
+        signer: signer.signer,
+    });
 }
 
 /** Take an immutable snapshot so caller mutation cannot drift adapter policy. */
@@ -185,15 +246,22 @@ export function freezePayKitConfig(config: PayKitConfig): PayKitConfig {
         ...config,
         accept: Object.freeze([...config.accept]),
         mpp: Object.freeze({ ...config.mpp }),
-        operator: Object.freeze({ ...config.operator }),
+        operator: Object.freeze({
+            ...config.operator,
+            signer: freezePayKitSigner(config.operator.signer),
+        }),
         stablecoins: Object.freeze([...config.stablecoins]),
         x402: Object.freeze({ ...config.x402 }),
     });
 }
 
-function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
-    const secret = provided ?? process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
-    if (secret) return secret;
+function resolveChallengeBindingSecret(network: Network, provided: unknown): string {
+    if (provided !== undefined) {
+        validateChallengeBindingSecret(provided);
+        return provided;
+    }
+    const secret = process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
+    if (secret !== undefined && secret.length > 0) return secret;
     if (network !== 'solana_localnet') {
         throw new ConfigurationError(
             'mpp.challengeBindingSecret is required outside localnet. Provide it in configure() ' +
@@ -254,6 +322,21 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
 
+    // When the devnet in-memory opt-in is set and no replay store was supplied,
+    // materialize ONE process-local store so the same instance reaches every
+    // settlement adapter (charge, subscription, x402). Charge/x402 then run with
+    // in-memory replay protection; the subscription adapter still rejects it
+    // (non-durable) with a clear error, so this never silently boots a
+    // subscription unprotected. Localnet is left untouched (adapters build
+    // their own).
+    const replayStore =
+        params.replayStore === undefined &&
+        requiresSettlementReplayStore(accept) &&
+        network === 'solana_devnet' &&
+        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1'
+            ? createUnsafeMemorySubscriptionReplayStore()
+            : params.replayStore;
+
     const resolved: PayKitConfig = {
         accept,
         mpp: {
@@ -266,7 +349,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         network,
         operator,
         preflight: params.preflight ?? true,
-        replayStore: params.replayStore,
+        replayStore,
         rpcUrl: params.rpcUrl ?? DEFAULT_RPC_URLS[toSolanaNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet,
         stablecoins,
         x402: {},

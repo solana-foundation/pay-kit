@@ -6,6 +6,26 @@ import { Signer } from '../signer.js';
 
 const SECRET = { mpp: { challengeBindingSecret: 's'.repeat(32) } };
 
+function createSharedReplayStore() {
+    const entries = new Map<string, unknown>();
+    return {
+        delete: async (key: string) => {
+            entries.delete(key);
+        },
+        get: async (key: string) => entries.get(key) ?? null,
+        isDurable: true as const,
+        isShared: true as const,
+        put: async (key: string, value: unknown) => {
+            entries.set(key, value);
+        },
+        reserve: async (key: string, value: unknown = true) => {
+            if (entries.has(key)) return false;
+            entries.set(key, value);
+            return true;
+        },
+    };
+}
+
 describe('configure', () => {
     it('applies the canonical defaults', async () => {
         const config = await configure(SECRET);
@@ -24,13 +44,27 @@ describe('configure', () => {
     it('refuses the demo signer on mainnet', async () => {
         await expect(configure({ ...SECRET, network: 'solana_mainnet' })).rejects.toThrow(DemoSignerOnMainnetError);
         const signer = await Signer.generate();
-        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
-        try {
-            const config = await configure({ ...SECRET, network: 'solana_mainnet', operator: { signer } });
-            expect(config.operator.recipient).toBe(signer.pubkey);
-        } finally {
-            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
-        }
+        const config = await configure({
+            ...SECRET,
+            network: 'solana_mainnet',
+            operator: { signer },
+            replayStore: createSharedReplayStore(),
+        });
+        expect(config.operator.recipient).toBe(signer.pubkey);
+    });
+
+    it('refuses a demo key wrapped with a forged isDemo marker on mainnet', async () => {
+        const demo = await Signer.demo();
+        const signer = { ...demo, isDemo: false };
+
+        await expect(
+            configure({
+                ...SECRET,
+                network: 'solana_mainnet',
+                operator: { signer },
+                replayStore: createSharedReplayStore(),
+            }),
+        ).rejects.toThrow(DemoSignerOnMainnetError);
     });
 
     it('accepts the shipped protocols (mpp + x402)', async () => {
@@ -66,66 +100,139 @@ describe('configure', () => {
         delete process.env.MPP_SECRET_KEY;
         await expect(configure({ network: 'solana_devnet', operator: { signer } })).rejects.toThrow(ConfigurationError);
         process.env.MPP_SECRET_KEY = 'e'.repeat(32);
-        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
-            const config = await configure({ network: 'solana_devnet', operator: { signer } });
+            const config = await configure({
+                network: 'solana_devnet',
+                operator: { signer },
+                replayStore: createSharedReplayStore(),
+            });
             expect(config.mpp.challengeBindingSecret).toBe('e'.repeat(32));
         } finally {
             delete process.env.MPP_SECRET_KEY;
-            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
     });
 
     it('requires a 32-byte UTF-8 challenge secret outside localnet', async () => {
         const signer = await Signer.generate();
+        await expect(
+            configure({
+                mpp: { challengeBindingSecret: 's'.repeat(31) },
+                network: 'solana_devnet',
+                operator: { signer },
+                replayStore: createSharedReplayStore(),
+            }),
+        ).rejects.toThrow('mpp.challengeBindingSecret must be at least 32 UTF-8 bytes outside localnet.');
+
+        await expect(
+            configure({
+                mpp: { challengeBindingSecret: '\ud83d\ude00'.repeat(8) },
+                network: 'solana_devnet',
+                operator: { signer },
+                replayStore: createSharedReplayStore(),
+            }),
+        ).resolves.toMatchObject({ network: 'solana_devnet' });
+
+        await expect(configure({ mpp: { challengeBindingSecret: 'short' } })).resolves.toMatchObject({
+            network: 'solana_localnet',
+        });
+    });
+
+    it('rejects missing, non-atomic, or unsafe MPP replay stores outside localnet', async () => {
+        const signer = await Signer.generate();
+        const options = { ...SECRET, network: 'solana_devnet' as const, operator: { signer } };
+        await expect(configure(options)).rejects.toThrow('no shared replay store configured outside localnet');
+        await expect(configure({ ...options, replayStore: null as never })).rejects.toThrow(
+            'replayStore outside localnet must provide an atomic reserve() operation.',
+        );
+        await expect(
+            configure({
+                ...options,
+                replayStore: {
+                    delete: async () => undefined,
+                    get: async () => null,
+                    isDurable: true,
+                    isShared: true,
+                    put: async () => undefined,
+                },
+            }),
+        ).rejects.toThrow('replayStore outside localnet must provide an atomic reserve() operation.');
+        await expect(
+            configure({ ...options, replayStore: { ...createSharedReplayStore(), isShared: false } }),
+        ).rejects.toThrow('replayStore outside localnet must set isShared=true and isDurable=true.');
+        await expect(
+            configure({ ...options, replayStore: { ...createSharedReplayStore(), isDurable: false } }),
+        ).rejects.toThrow('replayStore outside localnet must set isShared=true and isDurable=true.');
+        await expect(configure({ ...options, replayStore: createSharedReplayStore() })).resolves.toMatchObject({
+            network: 'solana_devnet',
+        });
+
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
-            await expect(
-                configure({
-                    mpp: { challengeBindingSecret: 's'.repeat(31) },
-                    network: 'solana_devnet',
-                    operator: { signer },
-                }),
-            ).rejects.toThrow('mpp.challengeBindingSecret must be at least 32 UTF-8 bytes outside localnet.');
-
-            await expect(
-                configure({
-                    mpp: { challengeBindingSecret: '\ud83d\ude00'.repeat(8) },
-                    network: 'solana_devnet',
-                    operator: { signer },
-                }),
-            ).resolves.toMatchObject({ network: 'solana_devnet' });
-
-            await expect(configure({ mpp: { challengeBindingSecret: 'short' } })).resolves.toMatchObject({
-                network: 'solana_localnet',
-            });
+            await expect(configure(options)).resolves.toMatchObject({ network: 'solana_devnet' });
+            await expect(configure({ ...options, network: 'solana_mainnet' })).rejects.toThrow(
+                'no shared replay store configured outside localnet',
+            );
+            await expect(configure({ ...options, replayStore: null as never })).rejects.toThrow(
+                'replayStore outside localnet must provide an atomic reserve() operation.',
+            );
         } finally {
             delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
     });
 
-    it('requires a shared MPP replay store outside localnet unless explicitly opted in', async () => {
+    it('requires a shared durable replay store for x402-only servers outside localnet', async () => {
         const signer = await Signer.generate();
+        // x402 settles an on-chain transaction and fences the signature against
+        // replay exactly like MPP, so an x402-only server must not boot off
+        // localnet without a shared durable replay store.
+        const options = {
+            accept: ['x402'] as const,
+            network: 'solana_devnet' as const,
+            operator: { signer },
+        };
+        await expect(configure(options)).rejects.toThrow('no shared replay store configured outside localnet');
         await expect(
-            configure({
-                ...SECRET,
-                network: 'solana_devnet',
-                operator: { signer },
-            }),
-        ).rejects.toThrow(/PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE/);
+            configure({ ...options, replayStore: { ...createSharedReplayStore(), isDurable: false } }),
+        ).rejects.toThrow('replayStore outside localnet must set isShared=true and isDurable=true.');
+        await expect(configure({ ...options, replayStore: createSharedReplayStore() })).resolves.toMatchObject({
+            network: 'solana_devnet',
+        });
+        // localnet stays permissive for x402 too.
+        await expect(configure({ ...options, network: 'solana_localnet' })).resolves.toMatchObject({
+            network: 'solana_localnet',
+        });
+    });
+
+    it('materializes a shared in-memory replay store on devnet under the opt-in', async () => {
+        const signer = await Signer.generate();
+        const options = { ...SECRET, network: 'solana_devnet' as const, operator: { signer } };
 
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
-            await expect(
-                configure({
-                    ...SECRET,
-                    network: 'solana_devnet',
-                    operator: { signer },
-                }),
-            ).resolves.toMatchObject({ network: 'solana_devnet' });
+            const config = await configure(options);
+            const store = config.replayStore as { isDurable?: boolean; reserve?: unknown } | undefined;
+            expect(store).toBeDefined();
+            expect(typeof store?.reserve).toBe('function');
+            // Not durable: the subscription adapter must still reject it downstream.
+            expect(store?.isDurable).toBe(false);
         } finally {
             delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
+
+        // Without the opt-in nothing is materialized; configure fails closed.
+        await expect(configure(options)).rejects.toThrow('no shared replay store configured outside localnet');
+    });
+
+    it('rejects malformed explicit MPP challenge secrets before expiry validation on localnet', async () => {
+        await expect(configure({ mpp: { challengeBindingSecret: '' } })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+        await expect(configure({ mpp: { challengeBindingSecret: null as never, expiresIn: -1 } })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+        await expect(configure({ mpp: { challengeBindingSecret: 1 as never, expiresIn: -1 } })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
     });
 
     it('configures from prefixed environment variables', async () => {
@@ -136,7 +243,7 @@ describe('configure', () => {
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
-            const config = await configureFromEnv();
+            const config = await configureFromEnv('PAY_KIT_');
             expect(config.network).toBe('solana_devnet');
             expect(config.mpp.challengeBindingSecret).toBe('e'.repeat(32));
             expect(config.mpp.expiresIn).toBe(60);

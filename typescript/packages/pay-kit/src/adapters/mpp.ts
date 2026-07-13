@@ -107,7 +107,11 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                     !config.replayStore ||
                     typeof (config.replayStore as { reserve?: unknown }).reserve !== 'function'
                 ) {
-                    throw new ConfigurationError('Subscription gates require a replay store with atomic reserve().');
+                    throw new ConfigurationError(
+                        'Subscription gates require a durable, shared replay store with an atomic reserve(); ' +
+                            'provide replayStore. The in-memory opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE) does ' +
+                            'not cover subscription activation replay.',
+                    );
                 }
                 const replayStore = config.replayStore as AtomicSubscriptionReplayStore;
                 if (
@@ -115,7 +119,9 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                     (replayStore.isShared !== true || replayStore.isDurable !== true)
                 ) {
                     throw new ConfigurationError(
-                        'Non-local subscription gates require a replay store with isShared=true and isDurable=true.',
+                        'Subscription gates outside localnet require a replay store that reports isShared=true and ' +
+                            'isDurable=true; the in-memory opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE) does not ' +
+                            'cover subscription activation replay.',
                     );
                 }
                 const mppx = Mppx.create({
@@ -174,13 +180,12 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     }
 
     function optionsFor(gate: Gate, description: string | undefined) {
+        const expires = expirationFor(config.mpp.expiresIn);
         return {
             amount: totalAmount(gate).toString(),
             ...(description !== undefined ? { description } : {}),
             ...(gate.externalId ? { externalId: gate.externalId } : {}),
-            ...(config.mpp.expiresIn > 0
-                ? { expires: new Date(Date.now() + config.mpp.expiresIn * 1000).toISOString() }
-                : {}),
+            ...(expires === undefined ? {} : { expires }),
         };
     }
 
@@ -263,6 +268,16 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
             };
         },
     };
+}
+
+/** Validate the configured TTL at issuance, when the clock actually matters. */
+function expirationFor(expiresIn: number): string | undefined {
+    if (expiresIn === 0) return undefined;
+    const expires = new Date(Date.now() + expiresIn * 1000);
+    if (!Number.isFinite(expires.getTime())) {
+        throw new ConfigurationError('mpp.expiresIn must produce a valid expiration date at challenge issuance.');
+    }
+    return expires.toISOString();
 }
 
 /** Extracts a canonical (code, detail) pair from an mppx problem-details 402. */

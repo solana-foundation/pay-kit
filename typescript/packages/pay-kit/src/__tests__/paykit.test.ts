@@ -6,8 +6,47 @@ import { ConfigurationError, InvalidProofError, UnknownGateError } from '../erro
 import type { Payment } from '../payment.js';
 import { createPayKit } from '../paykit.js';
 import { usd } from '../price.js';
+import { Signer, type PayKitSigner } from '../signer.js';
 
 const CREDENTIAL_HEADER = 'x-fake-credential';
+
+function createSharedReplayStore() {
+    const entries = new Map<string, unknown>();
+    return {
+        delete: async (key: string) => {
+            entries.delete(key);
+        },
+        get: async (key: string) => entries.get(key) ?? null,
+        isDurable: true as const,
+        isShared: true as const,
+        put: async (key: string, value: unknown) => {
+            entries.set(key, value);
+        },
+        reserve: async (key: string, value: unknown = true) => {
+            if (entries.has(key)) return false;
+            entries.set(key, value);
+            return true;
+        },
+    };
+}
+
+class ClassBasedSigner implements PayKitSigner {
+    readonly isDemo = false;
+    readonly isFeePayer = true;
+    readonly pubkey: string;
+    readonly signer: PayKitSigner['signer'];
+    calls = 0;
+
+    constructor(private readonly delegate: PayKitSigner) {
+        this.pubkey = delegate.pubkey;
+        this.signer = delegate.signer;
+    }
+
+    async sign(message: Uint8Array): Promise<Uint8Array> {
+        this.calls += 1;
+        return await this.delegate.sign(message);
+    }
+}
 
 function fakeAdapter(config: PayKitConfig): ProtocolAdapter {
     return {
@@ -87,30 +126,93 @@ describe('createPayKit', () => {
         await expect(
             createPayKit({ config: Object.freeze({ ...base, stablecoins: Object.freeze([]) }) }),
         ).rejects.toThrow('stablecoins must list at least one coin.');
-
-        const previousOptIn = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
-        delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
-        try {
-            await expect(
-                createPayKit({ config: Object.freeze({ ...base, network: 'solana_devnet' }) }),
-            ).rejects.toThrow('no shared replay store configured outside localnet');
-        } finally {
-            if (previousOptIn === undefined) delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
-            else process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = previousOptIn;
-        }
+        await expect(createPayKit({ config: Object.freeze({ ...base, network: 'solana_devnet' }) })).rejects.toThrow(
+            'no shared replay store configured outside localnet',
+        );
+        await expect(
+            createPayKit({
+                config: Object.freeze({
+                    ...base,
+                    network: 'solana_devnet',
+                    replayStore: { ...createSharedReplayStore(), isDurable: false },
+                }),
+            }),
+        ).rejects.toThrow('replayStore outside localnet must set isShared=true and isDurable=true.');
     });
 
-    it('snapshots mutable prebuilt config before adapters observe it', async () => {
+    it('rejects a forged demo wrapper in a prebuilt mainnet config', async () => {
+        const demo = await Signer.demo();
+        const forgedSigner = { ...demo, isDemo: false };
+        const local = await configure({
+            mpp: { challengeBindingSecret: 's'.repeat(32) },
+            operator: { signer: forgedSigner },
+        });
+
+        await expect(
+            createPayKit({
+                config: Object.freeze({
+                    ...local,
+                    network: 'solana_mainnet',
+                    replayStore: createSharedReplayStore(),
+                }),
+            }),
+        ).rejects.toThrow('The demo signer is public and must not be used on mainnet. Provide operator.signer.');
+    });
+
+    it('rejects malformed localnet challenge secrets in prebuilt configs before expiry validation', async () => {
+        const base = await configure({ mpp: { challengeBindingSecret: 's'.repeat(32) } });
+        const config = Object.freeze({
+            ...base,
+            mpp: Object.freeze({ ...base.mpp, challengeBindingSecret: undefined as never, expiresIn: -1 }),
+        });
+
+        await expect(createPayKit({ config })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+    });
+
+    it('snapshots mutable prebuilt configuration wrappers before adapters observe them', async () => {
         const base = await configure({ mpp: { challengeBindingSecret: 's'.repeat(32) } });
         const mutableMpp = { ...base.mpp };
-        const config: PayKitConfig = { ...base, mpp: mutableMpp };
+        const mutableSigner = { ...base.operator.signer };
+        const replayStore = createSharedReplayStore();
+        const config: PayKitConfig = {
+            ...base,
+            mpp: mutableMpp,
+            operator: { ...base.operator, signer: mutableSigner },
+            replayStore,
+        };
 
         const paykit = await createPayKit({ config });
         mutableMpp.realm = 'changed-after-construction';
+        mutableSigner.isDemo = false;
+        mutableSigner.pubkey = 'changed-after-construction';
 
         expect(paykit.config.mpp.realm).toBe('App');
+        expect(paykit.config.operator.signer.isDemo).toBe(true);
+        expect(paykit.config.operator.signer.pubkey).toBe(base.operator.signer.pubkey);
+        expect(paykit.config.operator.signer.signer).toBe(mutableSigner.signer);
+        expect(paykit.config.replayStore).toBe(replayStore);
         expect(Object.isFrozen(paykit.config)).toBe(true);
         expect(Object.isFrozen(paykit.config.mpp)).toBe(true);
+        expect(Object.isFrozen(paykit.config.operator)).toBe(true);
+        expect(Object.isFrozen(paykit.config.operator.signer)).toBe(true);
+    });
+
+    it('retains a class-based signer sign method in an immutable config snapshot', async () => {
+        const classSigner = new ClassBasedSigner(await Signer.generate());
+        const config = await configure({
+            mpp: { challengeBindingSecret: 's'.repeat(32) },
+            operator: { signer: classSigner },
+        });
+        const paykit = await createPayKit({ config });
+
+        const signature = await paykit.config.operator.signer.sign(new TextEncoder().encode('snapshot compatibility'));
+
+        expect(signature).toHaveLength(64);
+        expect(classSigner.calls).toBe(1);
+        expect(paykit.config.operator.signer.signer).toBe(classSigner.signer);
+        expect(Object.isFrozen(paykit.config.operator.signer)).toBe(true);
     });
 
     it('renders a 402 challenge when no credential is present', async () => {

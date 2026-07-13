@@ -8,7 +8,6 @@ import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { subscription } from '../pricing.js';
 import { Signer } from '../signer.js';
-import { createUnsafeMemorySubscriptionReplayStore } from '../subscription-replay-store.js';
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
 const PLATFORM = 'CXG3Pq3DwZb1HVckhPQbVxiwoNGM3jNGYvC2BSdkj1pK';
@@ -81,42 +80,6 @@ function gate(params: Parameters<typeof Gate.create>[0]['feeWithin'] = undefined
 }
 
 describe('createMppAdapter', () => {
-    it('rejects a process-local subscription replay store outside localnet', async () => {
-        const config = await configure({
-            accept: ['mpp'],
-            mpp: { challengeBindingSecret: 's'.repeat(32) },
-            network: 'solana_devnet',
-            operator: { feePayer: true, recipient: SELLER, signer: await Signer.generate() },
-            replayStore: createUnsafeMemorySubscriptionReplayStore(),
-        });
-        const subscriptionGate = createSubscriptionGate(config.operator.signer.pubkey);
-
-        await expect(
-            createMppAdapter(config).challengeHeaders(subscriptionGate, new Request('http://t/feed')),
-        ).rejects.toThrow(/isShared=true and isDurable=true/);
-    });
-
-    it.each([
-        ['shared but not durable', { isDurable: false, isShared: true }],
-        ['durable but not shared', { isDurable: true, isShared: false }],
-    ])('rejects a %s subscription replay store outside localnet', async (_label, replayStoreOptions) => {
-        const signer = await Signer.generate();
-        const config = await configure({
-            accept: ['mpp'],
-            mpp: { challengeBindingSecret: 's'.repeat(32) },
-            network: 'solana_devnet',
-            operator: { feePayer: true, recipient: SELLER, signer },
-            replayStore: createTestReplayStore(replayStoreOptions),
-        });
-
-        await expect(
-            createMppAdapter(config).challengeHeaders(
-                createSubscriptionGate(signer.pubkey),
-                new Request('http://t/feed'),
-            ),
-        ).rejects.toThrow('Non-local subscription gates require a replay store with isShared=true and isDurable=true.');
-    });
-
     it('binds subscription credentials to the exact request without serializing query values', async () => {
         const signer = await Signer.generate();
         const config = await configure({
@@ -235,6 +198,75 @@ describe('createMppAdapter', () => {
         const challenge = Challenge.deserialize(headers['www-authenticate']);
 
         expect(challenge.expires).toBe(new Date(issuedAt + expectedExpiresIn * 1000).toISOString());
+    });
+
+    it('threads a durable replay store into the subscription adapter outside localnet', async () => {
+        const signer = await Signer.generate();
+        const config = await configure({
+            accept: ['mpp'],
+            mpp: { challengeBindingSecret: 's'.repeat(32), realm: 'Adapter test' },
+            network: 'solana_devnet',
+            operator: { feePayer: true, recipient: SELLER, signer },
+            replayStore: createTestReplayStore(),
+        });
+        globalThis.fetch = async () =>
+            new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+        const headers = await createMppAdapter(config).challengeHeaders(
+            createSubscriptionGate(signer.pubkey),
+            new Request('http://t/feed'),
+        );
+
+        expect(headers['www-authenticate']).toMatch(/^Payment /);
+        // Deserializes to the exact subscription plan, proving the durable store
+        // reached the adapter and challenge issuance succeeded.
+        expect(Challenge.deserialize(headers['www-authenticate']).request.resource).toMatch(
+            /^pay-kit:mpp-subscription-resource:v1:hmac-sha256:[a-f0-9]{64}$/,
+        );
+    });
+
+    it('fails closed with a clear error for subscription gates on devnet under the in-memory opt-in', async () => {
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const signer = await Signer.generate();
+            const config = await configure({
+                accept: ['mpp'],
+                mpp: { challengeBindingSecret: 's'.repeat(32), realm: 'Adapter test' },
+                network: 'solana_devnet',
+                operator: { feePayer: true, recipient: SELLER, signer },
+            });
+            // The opt-in materializes a shared in-memory replay store: it boots the
+            // charge path AND reaches the subscription adapter, which rejects it as
+            // non-durable. The error is the durable-store one (not the generic
+            // no-store one), proving the materialized store was threaded through.
+            globalThis.fetch = async () =>
+                new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                    headers: { 'Content-Type': 'application/json' },
+                });
+
+            await expect(
+                createMppAdapter(config).challengeHeaders(
+                    createSubscriptionGate(signer.pubkey),
+                    new Request('http://t/feed'),
+                ),
+            ).rejects.toThrow(/isShared=true and isDurable=true[\s\S]*does not[\s\S]*cover subscription activation/);
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+
+    it('revalidates expiry at challenge issuance instead of leaking a RangeError', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'adapter-test-secret', expiresIn: 2, realm: 'Adapter test' },
+            operator: { recipient: SELLER, signer: await Signer.generate() },
+        });
+        vi.spyOn(Date, 'now').mockReturnValue(8_640_000_000_000_000 - 1_000);
+
+        await expect(
+            createMppAdapter(config).challengeHeaders(gate(), new Request('http://t/marketplace')),
+        ).rejects.toThrow('mpp.expiresIn must produce a valid expiration date at challenge issuance.');
     });
 
     it('detects MPP payment credentials', async () => {
