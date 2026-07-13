@@ -287,10 +287,6 @@ func NewSession(options SessionOptions) (*Session, error) {
 				storeDescription, options.Network, allowInMemoryReplayStoreEnvVar))
 	}
 	if store == nil {
-		if options.Network != "localnet" {
-			return nil, core.NewError(core.ErrCodeInvalidConfig,
-				"session store is required off localnet; inject a durable shared ChannelStore")
-		}
 		store = NewMemoryChannelStore()
 	}
 	if options.Logger == nil {

@@ -329,9 +329,20 @@ func registerSignatureOnlyOpenTransaction(
 		t.Fatalf("build fetched signature-only transaction: %v", err)
 	}
 	// Sign the fetched transaction for real so the hardened open verifier can
-	// cryptographically bind the fee-payer signature. The payload signature is
-	// then the confirmed transaction's real signature.
-	if err := solanatx.SignTransaction(tx, payer); err != nil {
+	// cryptographically bind every required signer. The fee payer is the funder
+	// (payer) and the rentPayer (operator) co-signs; both keys are supplied so a
+	// confirmed on-chain open reproduces a fully signed transaction. The payload
+	// signature is then the confirmed transaction's real fee-payer signature.
+	if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		switch key {
+		case payer.PublicKey():
+			return &payer
+		case sessionTestOperatorKey.PublicKey():
+			return &sessionTestOperatorKey
+		default:
+			return nil
+		}
+	}); err != nil {
 		t.Fatalf("sign fetched signature-only transaction: %v", err)
 	}
 	payload.Signature = tx.Signatures[0].String()
