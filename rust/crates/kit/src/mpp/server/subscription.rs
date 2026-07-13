@@ -92,6 +92,13 @@ pub struct SubscriptionConfig {
     /// value rather than inheriting an SDK-side default that's
     /// invisible at config-review time.
     pub realm: String,
+    /// Route/resource this endpoint protects. When set, it is embedded in the
+    /// challenge (HMAC-bound) and re-checked at verify time so a challenge
+    /// issued for one route cannot be redeemed against another that shares this
+    /// server's challenge-binding secret, realm, mint, and recipient. `None`
+    /// disables the check for single-route deployments. Mirrors the TypeScript
+    /// MPP server's `resource` binding.
+    pub resource: Option<String>,
     /// If `true`, the server pays activation transaction fees.
     pub fee_payer: bool,
     /// Fee-payer signer (used when `fee_payer` is `true`). Required at
@@ -148,6 +155,7 @@ impl Default for SubscriptionConfig {
             rpc_url: None,
             challenge_binding_secret: String::new(),
             realm: String::new(),
+            resource: None,
             fee_payer: false,
             fee_payer_signer: None,
             fee_payer_pubkey: None,
@@ -320,6 +328,7 @@ impl SubscriptionServer {
             recipient: self.config.recipient.clone(),
             subscription_expires: self.config.subscription_expires.clone(),
             description: self.config.description.clone(),
+            resource: self.config.resource.clone(),
             method_details: Some(method_details_value),
             ..Default::default()
         };
@@ -420,6 +429,17 @@ impl SubscriptionServer {
         if request.recipient != self.config.recipient {
             return Err(VerificationError::credential_mismatch(
                 "Credential recipient does not match this server",
+            ));
+        }
+        // Route binding: the challenge's resource must match this route's
+        // resource, so a challenge issued for one route cannot be redeemed
+        // against another that shares this server's challenge-binding secret,
+        // realm, mint, and recipient. Fail closed on any mismatch (including a
+        // resource-bound challenge presented to an unbound route and vice
+        // versa). Mirrors the TypeScript MPP server's `resource` binding.
+        if request.resource != self.config.resource {
+            return Err(VerificationError::credential_mismatch(
+                "Credential resource does not match this server's route",
             ));
         }
 
@@ -768,7 +788,8 @@ fn extract_subscriber_from_tx(
         // account_keys[0] is the fee-payer (the server's wallet); the
         // subscriber is the next signer that's neither the fee-payer
         // nor the puller.
-        for k in keys.iter().skip(1) {
+        let signer_count = tx.message.header.num_required_signatures as usize;
+        for k in keys.iter().take(signer_count).skip(1) {
             if *k != puller && *k != fp {
                 return Ok(*k);
             }
@@ -997,6 +1018,12 @@ fn now_unix_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::x402::server::mock_rpc::{MockRpc, TransactionExpectation};
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use solana_hash::Hash;
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_message::Message;
     use solana_pubkey::Pubkey;
 
     fn keypair_base58() -> String {
@@ -1017,6 +1044,53 @@ mod tests {
         }
     }
 
+    fn transaction_with_instructions(payer: Pubkey, instructions: Vec<Instruction>) -> Transaction {
+        Transaction::new_unsigned(Message::new(&instructions, Some(&payer)))
+    }
+
+    fn subscription_instruction(program_id: Pubkey, discriminator: u8) -> Instruction {
+        Instruction {
+            program_id,
+            accounts: Vec::new(),
+            data: vec![discriminator],
+        }
+    }
+
+    fn subscription_delegation_data(
+        subscriber: Pubkey,
+        plan_pda: Pubkey,
+        amount: u64,
+        period_hours: u64,
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(SUBSCRIPTION_DELEGATION_LEN);
+        data.extend_from_slice(&[2, 1, 255]);
+        data.extend_from_slice(subscriber.as_ref());
+        data.extend_from_slice(plan_pda.as_ref());
+        data.extend_from_slice(Pubkey::new_unique().as_ref());
+        data.extend_from_slice(&77i64.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&period_hours.to_le_bytes());
+        data.extend_from_slice(&1_700_000_000i64.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&1_700_000_000i64.to_le_bytes());
+        data.extend_from_slice(&0i64.to_le_bytes());
+        assert_eq!(data.len(), SUBSCRIPTION_DELEGATION_LEN);
+        data
+    }
+
+    fn bind_echo_id(challenge: &mut crate::mpp::protocol::core::ChallengeEcho) {
+        challenge.id = compute_challenge_id(
+            "test-secret",
+            &challenge.realm,
+            challenge.method.as_str(),
+            challenge.intent.as_str(),
+            challenge.request.raw(),
+            challenge.expires.as_deref(),
+            challenge.digest.as_deref(),
+            challenge.opaque.as_ref().map(|opaque| opaque.raw()),
+        );
+    }
+
     #[test]
     fn rejects_missing_required_fields() {
         let mut cfg = make_config();
@@ -1029,6 +1103,23 @@ mod tests {
         let mut cfg = make_config();
         cfg.plan_id = "not-a-pubkey".into();
         assert!(SubscriptionServer::new(cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_configured_pubkeys() {
+        type ConfigMutation = Box<dyn Fn(&mut SubscriptionConfig)>;
+
+        let cases: Vec<ConfigMutation> = vec![
+            Box::new(|config| config.mint = "not-a-pubkey".into()),
+            Box::new(|config| config.token_program = "not-a-pubkey".into()),
+            Box::new(|config| config.puller = "not-a-pubkey".into()),
+            Box::new(|config| config.recipient = "not-a-pubkey".into()),
+        ];
+        for mutate in cases {
+            let mut config = make_config();
+            mutate(&mut config);
+            assert!(SubscriptionServer::new(config).is_err());
+        }
     }
 
     #[test]
@@ -1268,6 +1359,7 @@ mod tests {
         );
         // Epoch.
         assert_eq!(format_rfc3339_seconds(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_rfc3339_seconds(-1), "1969-12-31T23:59:59Z");
     }
 
     #[test]
@@ -1310,6 +1402,465 @@ mod tests {
         );
         // ActivatePayload has `type` as required; this should not parse.
         assert!(decode_activate_payload(&credential).is_err());
+    }
+
+    #[test]
+    fn decode_base64_transaction_accepts_a_serialized_transaction_and_rejects_invalid_input() {
+        let payer = Pubkey::new_unique();
+        let tx = transaction_with_instructions(payer, Vec::new());
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+
+        let decoded = decode_base64_transaction(&encoded).expect("serialized transaction");
+        assert_eq!(decoded.message.account_keys, tx.message.account_keys);
+        assert!(decode_base64_transaction("not base64").is_err());
+        assert!(decode_base64_transaction("AQ==").is_err());
+    }
+
+    #[test]
+    fn extract_subscriber_rejects_empty_or_puller_transactions() {
+        let config = make_config();
+        let request = SubscriptionRequest::default();
+
+        let empty = Transaction::new_unsigned(Message::default());
+        assert!(extract_subscriber_from_tx(&empty, &request, &config).is_err());
+
+        let puller = parse_pubkey(&config.puller, "puller").unwrap();
+        let puller_paid = transaction_with_instructions(puller, Vec::new());
+        assert!(extract_subscriber_from_tx(&puller_paid, &request, &config).is_err());
+    }
+
+    #[test]
+    fn extract_subscriber_uses_payer_without_fee_sponsorship() {
+        let config = make_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = transaction_with_instructions(subscriber, Vec::new());
+
+        assert_eq!(
+            extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).unwrap(),
+            subscriber
+        );
+    }
+
+    #[test]
+    fn extract_subscriber_skips_fee_payer_and_puller_when_sponsored() {
+        let mut config = make_config();
+        let fee_payer = Pubkey::new_unique();
+        let subscriber = Pubkey::new_unique();
+        let puller = parse_pubkey(&config.puller, "puller").unwrap();
+        config.fee_payer = true;
+        config.fee_payer_pubkey = Some(fee_payer.to_string());
+
+        let instruction = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![
+                AccountMeta::new_readonly(puller, false),
+                AccountMeta::new_readonly(subscriber, true),
+            ],
+            data: Vec::new(),
+        };
+        let tx = transaction_with_instructions(fee_payer, vec![instruction]);
+
+        assert_eq!(
+            extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).unwrap(),
+            subscriber
+        );
+
+        config.fee_payer_pubkey = Some("not-a-pubkey".into());
+        assert!(extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).is_err());
+    }
+
+    #[test]
+    fn extract_subscriber_rejects_sponsored_transaction_without_a_subscriber() {
+        let mut config = make_config();
+        let fee_payer = Pubkey::new_unique();
+        let puller = parse_pubkey(&config.puller, "puller").unwrap();
+        config.fee_payer = true;
+        config.fee_payer_pubkey = Some(fee_payer.to_string());
+        let instruction = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta::new_readonly(puller, false)],
+            data: Vec::new(),
+        };
+        let tx = transaction_with_instructions(fee_payer, vec![instruction]);
+
+        assert!(extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).is_err());
+    }
+
+    #[test]
+    fn validate_activation_scope_enforces_presence_uniqueness_and_order() {
+        let program_id = Pubkey::new_unique();
+        let program_id_string = program_id.to_string();
+        let payer = Pubkey::new_unique();
+        let request = SubscriptionRequest::default();
+        let subscribe = subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE);
+        let transfer = subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION);
+
+        let valid = transaction_with_instructions(payer, vec![subscribe.clone(), transfer.clone()]);
+        validate_activation_scope(&valid, &request, &program_id_string)
+            .expect("valid activation scope");
+
+        for instructions in [
+            vec![],
+            vec![subscribe.clone()],
+            vec![transfer.clone(), subscribe.clone()],
+            vec![subscribe.clone(), subscribe.clone(), transfer.clone()],
+            vec![subscribe.clone(), transfer.clone(), transfer.clone()],
+        ] {
+            let tx = transaction_with_instructions(payer, instructions);
+            assert!(validate_activation_scope(&tx, &request, &program_id_string).is_err());
+        }
+
+        let foreign = transaction_with_instructions(
+            payer,
+            vec![
+                subscription_instruction(Pubkey::new_unique(), INSTRUCTION_SUBSCRIBE),
+                subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
+                subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
+            ],
+        );
+        validate_activation_scope(&foreign, &request, &program_id_string)
+            .expect("foreign instructions are outside the activation scope");
+    }
+
+    #[tokio::test]
+    async fn co_sign_as_fee_payer_signs_matching_slot_and_rejects_bad_transactions() {
+        use solana_keychain::MemorySigner;
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        let signer: Arc<dyn solana_keychain::SolanaSigner> =
+            Arc::new(MemorySigner::from_bytes(&keypair).expect("signer"));
+
+        let mut tx = transaction_with_instructions(signer.pubkey(), Vec::new());
+        co_sign_as_fee_payer(&mut tx, &signer)
+            .await
+            .expect("co-sign");
+        assert_ne!(tx.signatures[0], Signature::default());
+
+        let mut missing_signer = transaction_with_instructions(Pubkey::new_unique(), Vec::new());
+        assert!(co_sign_as_fee_payer(&mut missing_signer, &signer)
+            .await
+            .is_err());
+
+        let mut missing_signature_slot = transaction_with_instructions(signer.pubkey(), Vec::new());
+        missing_signature_slot.signatures.clear();
+        assert!(co_sign_as_fee_payer(&mut missing_signature_slot, &signer)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_broadcasts_and_validates_a_subscription_activation() {
+        let rpc = MockRpc::start().await;
+        let mut config = make_config();
+        config.rpc_url = Some(rpc.url());
+        let server = SubscriptionServer::new(config).expect("server");
+
+        let signing_key = SigningKey::from_bytes(&[19u8; 32]);
+        let subscriber = Pubkey::new_from_array(signing_key.verifying_key().to_bytes());
+        let plan_pda = parse_pubkey(server.plan_id(), "plan_id").unwrap();
+        let program_id = parse_pubkey(server.program_id(), "program_id").unwrap();
+        let (delegation_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
+        let valid_delegation = subscription_delegation_data(subscriber, plan_pda, 100, 720);
+
+        rpc.set_account(delegation_pda.to_string(), vec![0], program_id.to_string());
+        let instructions = vec![
+            subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
+            subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
+        ];
+        rpc.expect_transaction(
+            TransactionExpectation::new(subscriber, instructions.clone())
+                .with_account_data_transition(
+                    delegation_pda.to_string(),
+                    vec![0],
+                    valid_delegation,
+                ),
+        );
+
+        let mut transaction = Transaction::new_unsigned(Message::new_with_blockhash(
+            &instructions,
+            Some(&subscriber),
+            &Hash::default(),
+        ));
+        transaction.signatures[0] =
+            Signature::from(signing_key.sign(&transaction.message_data()).to_bytes());
+        let encoded_transaction = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&transaction).expect("serialize transaction"));
+
+        let challenge = server.subscription_challenge("100").expect("challenge");
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(encoded_transaction),
+                signature: None,
+            },
+        );
+
+        let receipt = server
+            .verify_credential(&credential)
+            .await
+            .expect("activation receipt");
+        let ReceiptKind::Subscription { extensions, .. } = receipt else {
+            panic!("expected subscription receipt");
+        };
+        assert_eq!(extensions.subscription_id, delegation_pda.to_string());
+        assert!(extensions.activation_signature.is_some());
+        rpc.assert_transaction_consumed();
+    }
+
+    // A challenge issued for one route (resource) must not verify against
+    // another route that only happens to share this server's challenge-binding
+    // secret, realm, mint, and recipient. The mismatch is caught at the
+    // pinned-field stage, before any RPC. Regression for the cross-language
+    // route-binding finding (mirrors the TypeScript MPP server's resource
+    // binding).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn challenge_bound_to_one_route_is_rejected_on_another() {
+        let rpc = MockRpc::start().await;
+        let mut route_a = make_config();
+        route_a.rpc_url = Some(rpc.url());
+        route_a.resource = Some("solana-subscription:/premium/articles".to_string());
+        // Route B shares every binding input with route A except the resource.
+        let mut route_b = route_a.clone();
+        route_b.resource = Some("solana-subscription:/premium/videos".to_string());
+
+        let server_a = SubscriptionServer::new(route_a).expect("route a server");
+        let server_b = SubscriptionServer::new(route_b).expect("route b server");
+
+        let challenge = server_a.subscription_challenge("100").expect("challenge");
+        let payload = || ActivatePayload {
+            payload_type: "transaction".into(),
+            transaction: Some("AQ==".into()),
+            signature: None,
+        };
+
+        // Cross-route redemption fails closed on the resource binding.
+        let cross_route = server_b
+            .verify_credential(&PaymentCredential::new(challenge.to_echo(), payload()))
+            .await
+            .expect_err("cross-route challenge must be rejected");
+        assert!(
+            cross_route.to_string().contains("resource does not match"),
+            "expected a resource-binding rejection, got: {cross_route}"
+        );
+
+        // The same challenge clears the resource gate on its issuing route: it
+        // advances past the pinned-field checks and only then fails on the
+        // deliberately malformed activation payload, never on resource.
+        let same_route = server_a
+            .verify_credential(&PaymentCredential::new(challenge.to_echo(), payload()))
+            .await
+            .expect_err("malformed activation payload must still fail");
+        assert!(
+            !same_route.to_string().contains("resource does not match"),
+            "issuing route must not reject its own challenge on resource: {same_route}"
+        );
+    }
+
+    // The resource binding fails closed in BOTH directions: a resource-bound
+    // route rejects a challenge that carries no resource, and a route with no
+    // configured resource rejects a resource-bound challenge.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resource_binding_fails_closed_in_both_directions() {
+        let rpc = MockRpc::start().await;
+        let mut bound_cfg = make_config();
+        bound_cfg.rpc_url = Some(rpc.url());
+        bound_cfg.resource = Some("solana-subscription:/paid".to_string());
+        let mut unbound_cfg = bound_cfg.clone();
+        unbound_cfg.resource = None;
+
+        let bound = SubscriptionServer::new(bound_cfg).expect("bound server");
+        let unbound = SubscriptionServer::new(unbound_cfg).expect("unbound server");
+        let payload = || ActivatePayload {
+            payload_type: "transaction".into(),
+            transaction: Some("AQ==".into()),
+            signature: None,
+        };
+
+        // Resource-less challenge must not satisfy a resource-bound route.
+        let unbound_challenge = unbound.subscription_challenge("100").expect("challenge");
+        let bound_rejects = bound
+            .verify_credential(&PaymentCredential::new(
+                unbound_challenge.to_echo(),
+                payload(),
+            ))
+            .await
+            .expect_err("resource-less challenge must not satisfy a bound route");
+        assert!(
+            bound_rejects
+                .to_string()
+                .contains("resource does not match"),
+            "got: {bound_rejects}"
+        );
+
+        // Resource-bound challenge must not satisfy a route with no resource.
+        let bound_challenge = bound.subscription_challenge("100").expect("challenge");
+        let unbound_rejects = unbound
+            .verify_credential(&PaymentCredential::new(
+                bound_challenge.to_echo(),
+                payload(),
+            ))
+            .await
+            .expect_err("bound challenge must not satisfy an unbound route");
+        assert!(
+            unbound_rejects
+                .to_string()
+                .contains("resource does not match"),
+            "got: {unbound_rejects}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_rejects_hmac_valid_tampering_before_rpc() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let challenge = server.subscription_challenge("100").expect("challenge");
+
+        let mut wrong_method = challenge.to_echo();
+        wrong_method.method = "other".into();
+        bind_echo_id(&mut wrong_method);
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                wrong_method,
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some("AQ==".into()),
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+
+        let mut wrong_intent = challenge.to_echo();
+        wrong_intent.intent = "charge".into();
+        bind_echo_id(&mut wrong_intent);
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                wrong_intent,
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some("AQ==".into()),
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+
+        let mut wrong_realm = challenge.to_echo();
+        wrong_realm.realm = "other-realm".into();
+        bind_echo_id(&mut wrong_realm);
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                wrong_realm,
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some("AQ==".into()),
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+
+        let mut wrong_currency = challenge.to_echo();
+        let mut request: SubscriptionRequest = wrong_currency.request.decode().unwrap();
+        request.currency = Pubkey::new_unique().to_string();
+        wrong_currency.request = Base64UrlJson::from_typed(&request).unwrap();
+        bind_echo_id(&mut wrong_currency);
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                wrong_currency,
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some("AQ==".into()),
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+
+        let mut wrong_recipient = challenge.to_echo();
+        let mut request: SubscriptionRequest = wrong_recipient.request.decode().unwrap();
+        request.recipient = Pubkey::new_unique().to_string();
+        wrong_recipient.request = Base64UrlJson::from_typed(&request).unwrap();
+        bind_echo_id(&mut wrong_recipient);
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                wrong_recipient,
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some("AQ==".into()),
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                challenge.to_echo(),
+                serde_json::json!({"type": "unknown"}),
+            ))
+            .await
+            .is_err());
+
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                challenge.to_echo(),
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: None,
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+
+        let payer = Pubkey::new_unique();
+        let malformed_scope = transaction_with_instructions(payer, Vec::new());
+        let malformed_scope = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&malformed_scope).unwrap());
+        assert!(server
+            .verify_credential(&PaymentCredential::new(
+                challenge.to_echo(),
+                ActivatePayload {
+                    payload_type: "transaction".into(),
+                    transaction: Some(malformed_scope),
+                    signature: None,
+                },
+            ))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_rejects_signature_payload_with_fee_sponsorship() {
+        use solana_keychain::MemorySigner;
+
+        let signing_key = SigningKey::from_bytes(&[23u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        let mut config = make_config();
+        config.fee_payer = true;
+        config.fee_payer_signer = Some(Arc::new(MemorySigner::from_bytes(&keypair).unwrap()));
+        let server = SubscriptionServer::new(config).expect("server");
+        let challenge = server.subscription_challenge("100").expect("challenge");
+
+        let error = server
+            .verify_credential(&PaymentCredential::new(
+                challenge.to_echo(),
+                ActivatePayload {
+                    payload_type: "signature".into(),
+                    transaction: None,
+                    signature: Some("already-sent".into()),
+                },
+            ))
+            .await
+            .expect_err("fee-sponsored push credentials must be rejected");
+        assert!(format!("{error}").contains("fee sponsorship"));
     }
 
     fn make_test_challenge_for_payload() -> crate::mpp::protocol::core::PaymentChallenge {

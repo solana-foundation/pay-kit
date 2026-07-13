@@ -87,6 +87,15 @@ pub struct SubscriptionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
 
+    /// Route/resource this challenge is bound to. Mirrors the TypeScript MPP
+    /// `resource` field: it is carried inside the HMAC-bound request (so it is
+    /// tamper-evident) and re-checked at verify time, so a challenge issued for
+    /// one route cannot be redeemed against another that happens to share the
+    /// same challenge-binding secret, realm, mint, and recipient. `None` leaves
+    /// the binding disabled for single-route servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+
     /// Solana-specific extension fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method_details: Option<serde_json::Value>,
