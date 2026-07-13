@@ -103,6 +103,11 @@ export interface ListChannelsFilter {
  */
 export type ChannelMutator = (current: ChannelState | undefined) => ChannelState | Promise<ChannelState>;
 
+/** Explicit storage safety declaration for session channel state. */
+export type SessionStoreDurability = 'durable-shared' | 'ephemeral';
+
+const MEMORY_SESSION_STORE = Symbol('solana-mpp-memory-session-store');
+
 /**
  * Async store for per-channel state.
  *
@@ -111,6 +116,7 @@ export type ChannelMutator = (current: ChannelState | undefined) => ChannelState
  * read-modify-write to avoid double-spend under concurrent vouchers.
  */
 export interface SessionStore {
+    readonly [MEMORY_SESSION_STORE]?: true;
     /** Remove a channel from the store. */
     deleteChannel(channelId: string): Promise<void>;
     /** Read a channel. Returns `undefined` if it doesn't exist. */
@@ -122,8 +128,15 @@ export interface SessionStore {
      * not found, matching the Rust behavior.
      */
     markSealed(channelId: string): Promise<ChannelState>;
+    /** Off localnet, production stores must explicitly declare durable sharing. */
+    readonly sessionStoreDurability?: SessionStoreDurability | undefined;
     /** Atomically read-modify-write a channel's state. */
     updateChannel(channelId: string, mutator: ChannelMutator): Promise<ChannelState>;
+}
+
+/** True only for the built-in process-local implementation. */
+export function isMemorySessionStore(store: SessionStore): boolean {
+    return (store as unknown as Record<symbol, unknown>)[MEMORY_SESSION_STORE] === true;
 }
 
 /**
@@ -152,6 +165,7 @@ export function createMemorySessionStore(): SessionStore {
     }
 
     return {
+        [MEMORY_SESSION_STORE]: true,
         deleteChannel(channelId) {
             data.delete(channelId);
             return Promise.resolve();
@@ -189,6 +203,8 @@ export function createMemorySessionStore(): SessionStore {
                 return Promise.resolve(next);
             });
         },
+
+        sessionStoreDurability: 'ephemeral' as const,
 
         async updateChannel(channelId, mutator) {
             return await withLock(channelId, async () => {
