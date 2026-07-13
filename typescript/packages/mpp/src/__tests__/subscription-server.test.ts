@@ -392,9 +392,23 @@ describe('settlement proof and replay', () => {
                 request: {} as never,
             });
         const results = await Promise.allSettled([run(first), run(second)]);
-        expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+        const fulfilled = results.filter(result => result.status === 'fulfilled');
+        expect(fulfilled).toHaveLength(1);
         expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
         expect(sendCalls).toBe(1);
+        expect(fulfilled[0]).toMatchObject({
+            status: 'fulfilled',
+            value: {
+                challengeId: 'challenge-id',
+                externalId: 'invoice-42',
+                periodIndex: '0',
+                planId: PLAN_ID,
+            },
+        });
+        if (fulfilled[0]?.status !== 'fulfilled') throw new Error('expected one successful activation receipt');
+        expect(fulfilled[0].value).toHaveProperty('subscriptionId');
+        expect(fulfilled[0].value).toHaveProperty('periodStartTs');
+        expect(fulfilled[0].value).toHaveProperty('periodEndTs');
     });
 });
 

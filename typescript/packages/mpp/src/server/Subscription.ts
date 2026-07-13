@@ -265,27 +265,23 @@ export function subscription(parameters: subscription.Parameters) {
 
                 const subscriptionId = base64UrlEncodeNoPadding(decodeBase58(subscriptionPda.toString()));
 
-                return Receipt.from({
+                const receipt = Receipt.from({
                     method: 'solana',
-                    ...(cred.challenge.id ? { challengeId: cred.challenge.id } : {}),
-                    ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-                    // Subscription-specific receipt extensions live alongside the
-                    // Receipt's standard fields. The mppx framework treats unknown
-                    // fields as opaque metadata.
-                    // @ts-expect-error subscription extensions are not in the base Receipt type
-                    expiresAt: challenge.subscriptionExpires,
-
-                    periodEndTs: new Date(periodEndTs * 1000).toISOString(),
-
-                    periodIndex: '0',
-
-                    periodStartTs: new Date(periodStartTs * 1000).toISOString(),
-                    planId: challenge.methodDetails.planId,
                     reference: subscriptionPda.toString(),
                     status: 'success',
-                    subscriptionId,
                     timestamp: new Date().toISOString(),
                 });
+                return {
+                    ...receipt,
+                    ...(cred.challenge.id ? { challengeId: cred.challenge.id } : {}),
+                    ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+                    ...(challenge.subscriptionExpires ? { expiresAt: challenge.subscriptionExpires } : {}),
+                    periodEndTs: new Date(periodEndTs * 1000).toISOString(),
+                    periodIndex: '0',
+                    periodStartTs: new Date(periodStartTs * 1000).toISOString(),
+                    planId: challenge.methodDetails.planId,
+                    subscriptionId,
+                };
             } catch (err) {
                 // A post-settlement failure (PDA fetch, on-chain terms mismatch)
                 // means no receipt was issued, so release the reservation the
