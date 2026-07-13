@@ -1262,7 +1262,7 @@ describe("mpp harness", () => {
     // The x402-upto settle path prepends idempotent createPayee + createTreasury
     // ATA instructions (see expectPaymentChannelSettlement); the SDK session
     // close path builds exactly [ed25519, settle, distribute] with NO create-ATA
-    // (see expectSessionChannelSettlement). Against the pinned d1dee6b program a
+    // (see expectSessionChannelSettlement). Against the pinned 0c07d575 program a
     // session close to a payee with no ATA does not revert — it returns 200 with
     // a settledSignature — but the on-chain distribute neither creates the payee
     // ATA nor delivers the payout: the recipient receives 0 and no ATA is

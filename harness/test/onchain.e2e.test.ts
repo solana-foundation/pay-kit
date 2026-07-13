@@ -14,7 +14,7 @@
  * (same as the rest of the surfpool CI; defaults to public mainnet).
  */
 import { generateKeyPairSigner, type KeyPairSigner } from "@solana/kit";
-import { createPayKit, usage, usd } from "@solana/pay-kit";
+import { createPayKit, Store, usage, usd } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
 import express, { type Request, type Response } from "express";
 import type { Server } from "node:http";
@@ -43,9 +43,23 @@ describe("on-chain datasource RPC config", () => {
     expect(resolveDatasourceRpc("   ")).toBe("https://api.mainnet-beta.solana.com");
     expect(resolveDatasourceRpc(" https://rpc.example.test ")).toBe("https://rpc.example.test");
   });
+
+  it("uses the supported replay-store API for the single-process harness", async () => {
+    const replayStore = createHarnessReplayStore();
+    await replayStore.put("onchain-harness", { ready: true });
+    await expect(replayStore.get("onchain-harness")).resolves.toEqual({ ready: true });
+    expect(replayStore.isShared).toBe(true);
+  });
 });
 
+function createHarnessReplayStore() {
+  // The forked on-chain suite owns a single server process; the marker keeps
+  // that deliberate test-only topology explicit to the SDK's replay-store gate.
+  return { ...Store.memory(), isShared: true as const };
+}
+
 async function startServer(): Promise<void> {
+  const replayStore = createHarnessReplayStore();
   const pay = await createPayKit({
     accept: ["x402", "mpp"],
     mpp: { challengeBindingSecret: crypto.randomBytes(32).toString("hex") },
@@ -58,6 +72,7 @@ async function startServer(): Promise<void> {
       // Fixed charge baseline (MPP / x402 exact — SPL transfer).
       fortune: { amount: usd("0.01"), description: "A fortune cookie" },
     },
+    replayStore,
     rpcUrl: net.rpcUrl,
   });
 

@@ -397,7 +397,13 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "go",
     label: "Go PayKit umbrella server (dual protocol)",
     role: "server",
-    command: ["sh", "-c", "cd go-server && ./paykit-server"],
+    // The test fixture is intentionally process-local. Keep the production
+    // default fail-closed; boot-policy.test.ts starts this binary without it.
+    command: [
+      "sh",
+      "-c",
+      "cd go-server && PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 ./paykit-server",
+    ],
     enabled: isEnabled("go", "MPP_HARNESS_SERVERS", true),
     intents: ["charge", "x402-exact"],
     // The Go umbrella server fixture reports the bare language tag

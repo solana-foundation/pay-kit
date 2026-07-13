@@ -19,7 +19,10 @@ import {
   discoverProtocolRunners,
   spawnedProtocolAdapter,
 } from "../src/protocol/runners/spawn";
-import { parseLanguageAllowlist } from "../src/conformance/select";
+import {
+  assertRequestedLanguagesResolved,
+  parseLanguageAllowlist,
+} from "../src/conformance/select";
 
 const cases = collectProtocolCases();
 
@@ -58,9 +61,9 @@ describe("mpp-protocol conformance (canonical vectors / TypeScript runner)", () 
   });
 
   it("rejects over-budget constructed wire before adapter spawn", () => {
-    expect(() =>
-      materializeWire({ repeat: "x", count: 100_001 }),
-    ).toThrow(/resource-bound: constructed wire repeat count/);
+    expect(() => materializeWire({ repeat: "x", count: 100_001 })).toThrow(
+      /resource-bound: constructed wire repeat count/,
+    );
   });
 
   for (const testCase of cases) {
@@ -75,7 +78,10 @@ describe("mpp-protocol conformance (canonical vectors / TypeScript runner)", () 
         const result = await runCase(typescriptProtocolAdapter, testCase);
         // Assert the divergence persists. Remove the entry from
         // KNOWN_TS_DIVERGENCES once the TS core conforms.
-        expect(result.ok, `${key} now conforms — remove from KNOWN_TS_DIVERGENCES`).toBe(false);
+        expect(
+          result.ok,
+          `${key} now conforms — remove from KNOWN_TS_DIVERGENCES`,
+        ).toBe(false);
       });
       continue;
     }
@@ -181,9 +187,7 @@ describe("mpp-protocol conformance (pay-kit extra: adversarial cases vs TS refer
 // (loudly) the moment an SDK is fixed so its entry must be removed. php
 // conforms fully.
 const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
-  typescript: new Set([
-    ...KNOWN_TS_DIVERGENCES,
-  ]),
+  typescript: new Set([...KNOWN_TS_DIVERGENCES]),
   go: new Set([
     "challenge.format :: error_format_crlf_in_description",
     "challenge.parse :: error_uppercase_method",
@@ -215,29 +219,52 @@ const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
 // in-process TypeScript-reference describe blocks above run regardless, so
 // wiring this file with `=typescript` already un-blinds the WWW-Authenticate /
 // receipt / canonical vectors against the reference verifier in CI.
-const runnerAllowlist = parseLanguageAllowlist(process.env.MPP_CONFORMANCE_LANGUAGES);
-const runners = discoverProtocolRunners().filter(
+const runnerAllowlist = parseLanguageAllowlist(
+  process.env.MPP_CONFORMANCE_LANGUAGES,
+);
+const discoveredRunners = discoverProtocolRunners();
+const runners = discoveredRunners.filter(
   (runner) => !runnerAllowlist || runnerAllowlist.has(runner.language),
 );
 
-// Anti-vacuous-pass guard (mirrors conformance.test.ts): at least one spawned
-// protocol runner MUST be selected. The in-process TypeScript blocks above
-// always run, so a typo like "rustt" or deleting every manifest would otherwise
-// exercise zero spawned SDKs and still pass.
+// Anti-vacuous-pass guard (mirrors conformance.test.ts): every requested
+// language must have a spawned protocol runner. The in-process TypeScript blocks
+// above cannot make a partially stale allowlist count as cross-SDK coverage.
 describe("protocol conformance runner selection", () => {
-  it("resolves at least one spawned protocol runner", () => {
+  it("resolves every requested spawned protocol runner", () => {
     if (runnerAllowlist) {
-      const available = discoverProtocolRunners().map((r) => r.language).join(", ");
-      expect(
-        runners.length,
-        `MPP_CONFORMANCE_LANGUAGES=${process.env.MPP_CONFORMANCE_LANGUAGES} matched no ` +
-          `discovered protocol runner (available: ${available}). A typo or a missing ` +
-          `manifest would otherwise run zero spawned SDKs and pass green.`,
-      ).toBeGreaterThan(0);
+      assertRequestedLanguagesResolved(
+        runnerAllowlist,
+        runners.map((runner) => runner.language),
+        discoveredRunners.map((runner) => runner.language),
+        `MPP_CONFORMANCE_LANGUAGES=${process.env.MPP_CONFORMANCE_LANGUAGES ?? ""} protocol runners`,
+      );
     } else {
       expect(
         runners.length,
         "no protocol runners discovered under harness/protocol-runners/ — deleting every manifest would run zero spawned SDKs while the in-process TS blocks kept the file green",
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("gives every selected runner positive and error cases", () => {
+    for (const runner of runners) {
+      const eligibleCases = cases.filter((testCase) =>
+        caseRunsOnAdapter(testCase, runner.language),
+      );
+      const positive = eligibleCases.filter(
+        (testCase) => testCase.expectSuccess,
+      );
+      const errors = eligibleCases.filter(
+        (testCase) => !testCase.expectSuccess,
+      );
+      expect(
+        positive.length,
+        `${runner.language} protocol runner has no eligible positive case`,
+      ).toBeGreaterThan(0);
+      expect(
+        errors.length,
+        `${runner.language} protocol runner has no eligible error case`,
       ).toBeGreaterThan(0);
     }
   });
