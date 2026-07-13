@@ -1,6 +1,6 @@
 //! Test-only Solana JSON-RPC fixture for x402 server integration tests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::{extract::State, routing::post, Json, Router};
@@ -15,6 +15,7 @@ const BLOCKHASH: &str = "11111111111111111111111111111111";
 #[derive(Default)]
 struct StateData {
     accounts: HashMap<String, Account>,
+    accepted_signatures: HashSet<String>,
     send_error: Option<String>,
     blockhash_error: Option<String>,
 }
@@ -88,7 +89,7 @@ async fn dispatch(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let params = request.get("params").cloned().unwrap_or(Value::Null);
-    let state = state.lock().expect("mock rpc state");
+    let mut state = state.lock().expect("mock rpc state");
 
     let response = match method {
         "getLatestBlockhash" => match &state.blockhash_error {
@@ -103,23 +104,24 @@ async fn dispatch(
         },
         "sendTransaction" => match &state.send_error {
             Some(message) => error(id, -32002, message),
-            None => signature_of(&params)
-                .map(|signature| result(id.clone(), Value::String(signature)))
-                .unwrap_or_else(|| error(id, -32602, "could not decode transaction")),
+            None => match verified_signature_of(&params) {
+                Ok(signature) => {
+                    state.accepted_signatures.insert(signature.clone());
+                    result(id, Value::String(signature))
+                }
+                Err(message) => error(id, -32602, message),
+            },
         },
-        "getSignatureStatuses" => result(
-            id,
-            json!({
-                "context": { "slot": 314 },
-                "value": [{
-                    "slot": 314,
-                    "confirmations": null,
-                    "status": { "Ok": null },
-                    "err": null,
-                    "confirmationStatus": "finalized",
-                }],
-            }),
-        ),
+        "getSignatureStatuses" => match signature_statuses(&params, &state.accepted_signatures) {
+            Ok(value) => result(
+                id,
+                json!({
+                    "context": { "slot": 314 },
+                    "value": value,
+                }),
+            ),
+            Err(message) => error(id, -32602, message),
+        },
         "getAccountInfo" => {
             let key = params.get(0).and_then(Value::as_str).unwrap_or_default();
             match state.accounts.get(key) {
@@ -149,13 +151,65 @@ async fn dispatch(
     Json(response)
 }
 
-fn signature_of(params: &Value) -> Option<String> {
-    let encoded = params.get(0)?.as_str()?;
+fn verified_signature_of(params: &Value) -> Result<String, &'static str> {
+    let encoded = params
+        .get(0)
+        .and_then(Value::as_str)
+        .ok_or("missing encoded transaction")?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .ok()?;
-    let transaction: VersionedTransaction = bincode::deserialize(&bytes).ok()?;
-    transaction.signatures.first().map(ToString::to_string)
+        .map_err(|_| "transaction is not valid base64")?;
+    let transaction: VersionedTransaction =
+        bincode::deserialize(&bytes).map_err(|_| "could not decode transaction")?;
+    transaction
+        .sanitize()
+        .map_err(|_| "transaction failed sanitization")?;
+
+    let message = transaction.message.serialize();
+    let signer_keys = transaction.message.static_account_keys();
+    if !transaction
+        .signatures
+        .iter()
+        .zip(signer_keys)
+        .all(|(signature, pubkey)| signature.verify(pubkey.as_ref(), &message))
+    {
+        return Err("transaction signature verification failed");
+    }
+
+    transaction
+        .signatures
+        .first()
+        .map(ToString::to_string)
+        .ok_or("transaction has no fee-payer signature")
+}
+
+fn signature_statuses(
+    params: &Value,
+    accepted_signatures: &HashSet<String>,
+) -> Result<Vec<Value>, &'static str> {
+    let signatures = params
+        .get(0)
+        .and_then(Value::as_array)
+        .ok_or("missing signature list")?;
+
+    Ok(signatures
+        .iter()
+        .map(|signature| {
+            signature
+                .as_str()
+                .filter(|signature| accepted_signatures.contains(*signature))
+                .map(|_| {
+                    json!({
+                        "slot": 314,
+                        "confirmations": null,
+                        "status": { "Ok": null },
+                        "err": null,
+                        "confirmationStatus": "finalized",
+                    })
+                })
+                .unwrap_or(Value::Null)
+        })
+        .collect())
 }
 
 fn result(id: Value, result: Value) -> Value {
@@ -168,4 +222,58 @@ fn error(id: Value, code: i64, message: &str) -> Value {
         "error": { "code": code, "message": message },
         "id": id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use solana_message::Message;
+    use solana_pubkey::Pubkey;
+    use solana_signature::Signature;
+    use solana_transaction::Transaction;
+
+    fn transaction_params(transaction: &VersionedTransaction) -> Value {
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(transaction).expect("serialize transaction"));
+        json!([encoded])
+    }
+
+    #[test]
+    fn only_returns_a_signature_for_a_fully_signed_transaction() {
+        let fee_payer = SigningKey::from_bytes(&[71; 32]);
+        let fee_payer_pubkey = Pubkey::new_from_array(fee_payer.verifying_key().to_bytes());
+        let message = Message::new(&[], Some(&fee_payer_pubkey));
+        let unsigned = VersionedTransaction::from(Transaction::new_unsigned(message.clone()));
+        assert_eq!(
+            verified_signature_of(&transaction_params(&unsigned)),
+            Err("transaction signature verification failed")
+        );
+
+        let mut signed = Transaction::new_unsigned(message);
+        let signature = fee_payer.sign(&signed.message_data());
+        signed.signatures[0] = Signature::from(signature.to_bytes());
+        let signed = VersionedTransaction::from(signed);
+        assert_eq!(
+            verified_signature_of(&transaction_params(&signed)),
+            signed
+                .signatures
+                .first()
+                .map(ToString::to_string)
+                .ok_or("missing")
+        );
+    }
+
+    #[test]
+    fn only_reports_status_for_an_accepted_signature() {
+        let accepted = HashSet::from(["accepted-signature".to_string()]);
+        let statuses = signature_statuses(
+            &json!([["accepted-signature", "unknown-signature"]]),
+            &accepted,
+        )
+        .expect("valid status request");
+
+        assert!(statuses[0].is_object());
+        assert!(statuses[1].is_null());
+    }
 }

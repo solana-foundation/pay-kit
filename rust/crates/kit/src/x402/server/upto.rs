@@ -1204,7 +1204,7 @@ mod tests {
     use crate::x402::protocol::schemes::upto::UptoPayload;
     use crate::x402::server::mock_rpc::MockRpc;
     use async_trait::async_trait;
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer as _, SigningKey};
     use solana_keychain::memory::MemorySigner;
     use solana_keychain::{SignTransactionResult, SignerError};
     use solana_signature::Signature;
@@ -2014,7 +2014,8 @@ mod tests {
         let signer = memory_signer(61);
         let operator = signer.pubkey();
         let handler = rpc_engine(mock.url(), signer);
-        let payer = Pubkey::new_unique();
+        let payer_signer = SigningKey::from_bytes(&[64; 32]);
+        let payer = Pubkey::new_from_array(payer_signer.verifying_key().to_bytes());
         let mint = handler
             .mint_for(handler.primary_currency())
             .expect("USDC mint");
@@ -2033,7 +2034,19 @@ mod tests {
             program_id: pc::default_program_id(),
         };
         let channel_id = derive_channel_addresses(&params).channel;
-        let transaction = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
+        let mut transaction =
+            unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
+        let payer_index = transaction
+            .message
+            .static_account_keys()
+            .iter()
+            .take(usize::from(
+                transaction.message.header().num_required_signatures,
+            ))
+            .position(|key| key == &payer)
+            .expect("payer must occupy a required signer slot");
+        let payer_signature = payer_signer.sign(&transaction.message.serialize());
+        transaction.signatures[payer_index] = Signature::from(payer_signature.to_bytes());
         let requirements = handler.upto_requirements("1.00").expect("requirements");
         let envelope = UptoSignatureEnvelope {
             x402_version: X402_VERSION_V2,
