@@ -234,6 +234,13 @@ class TestValidateNetwork:
 
         validate_network("mainnet-beta")
 
+    def test_accepts_public_network_enum_values(self):
+        from solana_pay_kit import Network
+        from solana_pay_kit._paycore.solana import validate_network
+
+        for network in Network:
+            validate_network(network.value)
+
     def test_rejects_unknown_network(self):
         import pytest
 

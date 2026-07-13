@@ -377,6 +377,33 @@ def test_new_session_rejects_unknown_network_before_store_policy(monkeypatch: py
         )
 
 
+@pytest.mark.parametrize(
+    ("network", "canonical"),
+    [
+        ("solana_mainnet", "mainnet"),
+        ("solana_devnet", "devnet"),
+        ("solana_localnet", "localnet"),
+    ],
+)
+def test_new_session_accepts_public_network_enum_values(
+    monkeypatch: pytest.MonkeyPatch, network: str, canonical: str
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    store = None if canonical != "mainnet" else _NominalChannelStore()
+
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            network=network,
+            secret_key=SESSION_METHOD_SECRET,
+            store=store,
+        )
+    )
+
+    assert session._network == canonical
+
+
 def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None:
     assert isinstance(_new_test_session().core().store(), MemoryChannelStore)
 

@@ -38,6 +38,9 @@ def harness_modules() -> tuple[ModuleType, ModuleType]:
         ("devnet", Network.SOLANA_DEVNET),
         (SOLANA_DEVNET_CAIP2, Network.SOLANA_DEVNET),
         ("localnet", Network.SOLANA_LOCALNET),
+        ("solana_mainnet", Network.SOLANA_MAINNET),
+        ("solana_devnet", Network.SOLANA_DEVNET),
+        ("solana_localnet", Network.SOLANA_LOCALNET),
     ],
 )
 def test_harness_networks_normalize_to_canonical_enum(
@@ -49,7 +52,7 @@ def test_harness_networks_normalize_to_canonical_enum(
     assert boot._resolve_network(raw) is expected
 
 
-@pytest.mark.parametrize("raw", ["solana:unknown-network", "testnet", "solana_mainnet"])
+@pytest.mark.parametrize("raw", ["solana:unknown-network", "testnet", "solana_testnet"])
 def test_harness_networks_reject_unknown_inputs_without_fallback(
     harness_modules: tuple[ModuleType, ModuleType], raw: str
 ) -> None:
