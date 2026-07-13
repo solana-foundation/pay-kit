@@ -124,20 +124,16 @@ describe('createMppAdapter', () => {
         const adapter = createMppAdapter(config);
         const requested = 'http://t/feed?api_key=secret&tier=basic&tier=preview';
         const gateA = await adapter.challengeHeaders(subscriptionGate, new Request(requested));
-        const challenge = Challenge.deserialize(gateA['www-authenticate'] as string);
-        const resource = (challenge.request as { resource?: string }).resource;
+        const challenge = Challenge.deserialize(gateA['www-authenticate']);
+        const resource = challenge.request.resource;
 
         expect(resource).toMatch(/^pay-kit:mpp-subscription-resource:v1:hmac-sha256:[a-f0-9]{64}$/);
         expect(resource).not.toContain('api_key=secret');
         expect(resource).not.toContain('secret');
 
-        const sameResource = (
-            Challenge.deserialize(
-                (await adapter.challengeHeaders(subscriptionGate, new Request(requested)))[
-                    'www-authenticate'
-                ] as string,
-            ).request as { resource?: string }
-        ).resource;
+        const sameResource = Challenge.deserialize(
+            (await adapter.challengeHeaders(subscriptionGate, new Request(requested)))['www-authenticate'],
+        ).request.resource;
         expect(sameResource).toBe(resource);
 
         const mismatchedRequests = [
@@ -147,13 +143,9 @@ describe('createMppAdapter', () => {
             'http://t/feed?api_key=sec%72et&tier=basic&tier=preview',
         ];
         for (const currentRequest of mismatchedRequests) {
-            const currentResource = (
-                Challenge.deserialize(
-                    (await adapter.challengeHeaders(subscriptionGate, new Request(currentRequest)))[
-                        'www-authenticate'
-                    ] as string,
-                ).request as { resource?: string }
-            ).resource;
+            const currentResource = Challenge.deserialize(
+                (await adapter.challengeHeaders(subscriptionGate, new Request(currentRequest)))['www-authenticate'],
+            ).request.resource;
             expect(currentResource).not.toBe(resource);
         }
 
@@ -165,13 +157,11 @@ describe('createMppAdapter', () => {
                 replayStore: createSharedTestReplayStore(),
             }),
         );
-        const resourceWithDifferentSecret = (
-            Challenge.deserialize(
-                (await adapterWithDifferentSecret.challengeHeaders(subscriptionGate, new Request(requested)))[
-                    'www-authenticate'
-                ] as string,
-            ).request as { resource?: string }
-        ).resource;
+        const resourceWithDifferentSecret = Challenge.deserialize(
+            (await adapterWithDifferentSecret.challengeHeaders(subscriptionGate, new Request(requested)))[
+                'www-authenticate'
+            ],
+        ).request.resource;
         expect(resourceWithDifferentSecret).not.toBe(resource);
 
         const credential = Credential.serialize({
