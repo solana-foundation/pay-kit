@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
-import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,7 +25,7 @@ from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store, is_production_replay_store
+from solana_pay_kit._paycore.store import ReplayStoreConfigurationError, Store, resolve_replay_store
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.x402.exact.legacy import (
@@ -63,59 +61,14 @@ _RESPONSE_HEADER = "payment-response"
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
 _REPLAY_PREFIX = "x402-svm-exact:consumed:"
-_ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
-
-logger = logging.getLogger("solana_pay_kit")
 
 
 def _resolve_replay_store(config: Config, replay_store: Store | None) -> Store:
-    """Resolve x402 replay storage without weakening the non-localnet fence."""
-    network = config.network.mints_label()
-    is_localnet = network == "localnet"
-    is_mainnet = network == "mainnet"
-    allow_inmemory = os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
-
-    if is_mainnet and allow_inmemory:
-        raise ConfigurationError(
-            f"solana_pay_kit: {_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 is forbidden on mainnet; "
-            "inject a ProductionReplayStore backed by atomic, shared, durable storage"
-        )
-    if replay_store is not None:
-        if is_localnet:
-            return replay_store
-        if isinstance(replay_store, FileReplayStore):
-            raise ConfigurationError(
-                "solana_pay_kit: FileReplayStore is limited to single-host localnet development; "
-                "inject a ProductionReplayStore backed by atomic, shared, durable storage"
-            )
-        if is_production_replay_store(replay_store):
-            return replay_store
-        if isinstance(replay_store, MemoryStore) and allow_inmemory:
-            logger.warning(
-                "solana_pay_kit: x402 is using a process-local MemoryStore on devnet because %s=1; "
-                "replay protection will not survive restarts or span replicas",
-                _ALLOW_INMEMORY_REPLAY_STORE_ENV,
-            )
-            return replay_store
-        raise ConfigurationError(
-            "solana_pay_kit: x402 requires a ProductionReplayStore outside localnet; its put_if_absent must be "
-            "atomic, shared, and durable. Set "
-            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
-        )
-    if is_localnet:
-        return MemoryStore()
-    if allow_inmemory:
-        logger.warning(
-            "solana_pay_kit: x402 is using a process-local MemoryStore on devnet because %s=1; "
-            "replay protection will not survive restarts or span replicas",
-            _ALLOW_INMEMORY_REPLAY_STORE_ENV,
-        )
-        return MemoryStore()
-    raise ConfigurationError(
-        "solana_pay_kit: x402 requires an injected ProductionReplayStore outside localnet; its put_if_absent must "
-        "be atomic, shared, and durable. Set "
-        f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
-    )
+    """Resolve x402 replay storage through the shared non-localnet policy."""
+    try:
+        return resolve_replay_store(config.network.mints_label(), replay_store, protocol="x402")
+    except ReplayStoreConfigurationError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
 
 class X402Adapter:

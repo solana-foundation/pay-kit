@@ -6,7 +6,7 @@ import asyncio
 import threading
 from pathlib import Path
 from queue import Queue
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -17,6 +17,29 @@ from solana_pay_kit._paycore.store import (
     Store,
     is_production_replay_store,
 )
+
+
+class _ProductionStore(ProductionReplayStore):
+    """Test double for an application-asserted production backend."""
+
+    def __init__(self) -> None:
+        self._delegate = MemoryStore()
+
+    async def get(self, key: str) -> Any | None:
+        return await self._delegate.get(key)
+
+    async def put(self, key: str, value: Any) -> None:
+        await self._delegate.put(key, value)
+
+    async def delete(self, key: str) -> None:
+        await self._delegate.delete(key)
+
+    async def put_if_absent(self, key: str, value: Any) -> bool:
+        return await self._delegate.put_if_absent(key, value)
+
+
+class _ProductionMemoryStore(MemoryStore, ProductionReplayStore):
+    """Attempts to relabel the known unsafe in-memory store as production."""
 
 
 @pytest.mark.parametrize("store_kind", ["memory", "file"])
@@ -57,6 +80,13 @@ def test_production_replay_store_contract_rejects_mutable_capability_flags():
     for capability in ("is_atomic", "is_shared", "is_durable"):
         setattr(store, capability, True)
 
+    assert not is_production_replay_store(store)
+
+
+def test_production_replay_store_contract_rejects_memory_multiple_inheritance_spoof():
+    store = _ProductionMemoryStore()
+
+    assert isinstance(store, ProductionReplayStore)
     assert not is_production_replay_store(store)
 
 
@@ -229,5 +259,98 @@ class TestMppRequiresExplicitStore:
                 Config(
                     recipient="11111111111111111111111111111112",
                     secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                )
+            )
+
+    @pytest.mark.parametrize("network", ["mainnet", "devnet"])
+    def test_nonlocal_memory_store_is_rejected(self, network: str):
+        from solana_pay_kit._paycore.errors import PaymentError
+        from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+
+        with pytest.raises(PaymentError, match="ProductionReplayStore"):
+            Mpp(
+                Config(
+                    recipient="11111111111111111111111111111112",
+                    network=network,
+                    secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                    store=MemoryStore(),
+                )
+            )
+
+    @pytest.mark.parametrize("network", ["mainnet", "devnet"])
+    def test_nonlocal_file_store_is_rejected(self, tmp_path: Path, network: str):
+        from solana_pay_kit._paycore.errors import PaymentError
+        from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+
+        with pytest.raises(PaymentError, match="FileReplayStore.*localnet"):
+            Mpp(
+                Config(
+                    recipient="11111111111111111111111111111112",
+                    network=network,
+                    secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                    store=FileReplayStore(tmp_path / "replay.json"),
+                )
+            )
+
+    @pytest.mark.parametrize("network", ["mainnet", "devnet"])
+    def test_nonlocal_accepts_nominal_production_store(self, network: str):
+        from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+
+        store = _ProductionStore()
+        mpp = Mpp(
+            Config(
+                recipient="11111111111111111111111111111112",
+                network=network,
+                secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                store=store,
+            )
+        )
+
+        assert mpp._store is store
+
+    @pytest.mark.parametrize("network", ["mainnet", "devnet"])
+    def test_nonlocal_rejects_memory_production_multiple_inheritance_spoof(self, network: str):
+        from solana_pay_kit._paycore.errors import PaymentError
+        from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+
+        with pytest.raises(PaymentError, match="ProductionReplayStore"):
+            Mpp(
+                Config(
+                    recipient="11111111111111111111111111111112",
+                    network=network,
+                    secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                    store=_ProductionMemoryStore(),
+                )
+            )
+
+    def test_devnet_allows_explicit_memory_store_escape(self, monkeypatch: pytest.MonkeyPatch):
+        from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+        store = MemoryStore()
+        mpp = Mpp(
+            Config(
+                recipient="11111111111111111111111111111112",
+                network="devnet",
+                secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                store=store,
+            )
+        )
+
+        assert mpp._store is store
+
+    def test_mainnet_rejects_inmemory_store_escape(self, monkeypatch: pytest.MonkeyPatch):
+        from solana_pay_kit._paycore.errors import PaymentError
+        from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+        with pytest.raises(PaymentError, match="forbidden on mainnet"):
+            Mpp(
+                Config(
+                    recipient="11111111111111111111111111111112",
+                    network="mainnet",
+                    secret_key="long-enough-secret-key-for-hmac-sha256-tests",
+                    store=MemoryStore(),
                 )
             )

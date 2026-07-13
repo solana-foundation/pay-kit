@@ -12,12 +12,13 @@ import pytest
 
 from solana_pay_kit import Gate, MppConfig, Operator, Price, Protocol, Signer, Stablecoin, configure
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, ProductionReplayStore
 from solana_pay_kit.config import reset
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.mpp import MppAdapter, SecretResolver
 from solana_pay_kit.protocols.mpp.core.headers import format_authorization
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
+from solana_pay_kit.protocols.x402 import X402Adapter
 
 SECRET = "challenge-binding-secret-long-enough-for-hmac"
 FEE_A = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ"
@@ -129,6 +130,40 @@ def test_mainnet_forbids_inmemory_replay_store_opt_in(monkeypatch):
 
     with pytest.raises(PaymentError, match="forbidden on mainnet"):
         MppAdapter(_cfg(network="solana_mainnet"), replay_store=MemoryStore())
+
+
+class _ProductionMemoryStore(MemoryStore, ProductionReplayStore):
+    """Attempts to make MemoryStore pass the nominal production assertion."""
+
+
+@pytest.mark.parametrize(
+    ("network", "allow_inmemory"),
+    [
+        ("solana_devnet", False),
+        ("solana_devnet", True),
+        ("solana_mainnet", False),
+        ("solana_mainnet", True),
+    ],
+)
+def test_mpp_and_x402_replay_store_policy_parity_for_memory_spoofs(monkeypatch, network, allow_inmemory):
+    if allow_inmemory:
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    cfg = _cfg(network=network)
+    mpp_store = _ProductionMemoryStore()
+    x402_store = _ProductionMemoryStore()
+
+    if network == "solana_devnet" and allow_inmemory:
+        assert MppAdapter(cfg, replay_store=mpp_store)._replay_store is mpp_store
+        assert X402Adapter(cfg, replay_store=x402_store)._store is x402_store
+        return
+
+    with pytest.raises(PaymentError):
+        MppAdapter(cfg, replay_store=mpp_store)
+    with pytest.raises(ConfigurationError):
+        X402Adapter(cfg, replay_store=x402_store)
 
 
 def test_localnet_allows_explicit_file_replay_store(tmp_path):

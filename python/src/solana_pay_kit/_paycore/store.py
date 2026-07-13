@@ -28,12 +28,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import tempfile
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
+
+_ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 
 
 @runtime_checkable
@@ -68,9 +73,18 @@ class ProductionReplayStore(ABC):
     async def put_if_absent(self, key: str, value: Any) -> bool: ...
 
 
+class ReplayStoreConfigurationError(ValueError):
+    """Raised when a replay store violates the deployment safety policy."""
+
+
 def is_production_replay_store(store: Store) -> bool:
-    """Return whether ``store`` explicitly implements the production contract."""
-    return isinstance(store, ProductionReplayStore)
+    """Return whether ``store`` explicitly implements the production contract.
+
+    The SDK's bundled stores are known local implementations. Check them
+    before the nominal contract so a multiple-inheritance class cannot label
+    ``MemoryStore`` or ``FileReplayStore`` as production-safe.
+    """
+    return not isinstance(store, (MemoryStore, FileReplayStore)) and isinstance(store, ProductionReplayStore)
 
 
 class MemoryStore:
@@ -236,3 +250,72 @@ class FileReplayStore:
             self._flush(next_data)
             self._data = next_data
             return True
+
+
+def resolve_replay_store(network: str, replay_store: Store | None, *, protocol: str) -> Store:
+    """Apply the shared replay-store policy for raw servers and adapters.
+
+    ``network`` must already be the canonical ``mainnet``, ``devnet``, or
+    ``localnet`` label. Localnet may use either bundled store. Outside
+    localnet, only a caller's explicit :class:`ProductionReplayStore` is
+    accepted, except for the existing explicit devnet ``MemoryStore`` escape.
+    The nominal contract is a deployment assertion: callers remain responsible
+    for providing an atomic, shared, durable backend.
+    """
+    is_localnet = network == "localnet"
+    is_mainnet = network == "mainnet"
+    allow_inmemory = os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
+
+    if is_mainnet and allow_inmemory:
+        raise ReplayStoreConfigurationError(
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 is forbidden on mainnet; "
+            "inject a ProductionReplayStore backed by atomic, shared, durable storage"
+        )
+
+    if replay_store is not None:
+        if is_localnet:
+            return replay_store
+        # Built-ins are checked before the nominal contract. A class that
+        # inherits MemoryStore and ProductionReplayStore is still memory-only.
+        if isinstance(replay_store, FileReplayStore):
+            raise ReplayStoreConfigurationError(
+                "FileReplayStore is limited to single-host localnet development; "
+                "inject a ProductionReplayStore backed by atomic, shared, durable storage"
+            )
+        if isinstance(replay_store, MemoryStore):
+            if allow_inmemory:
+                logger.warning(
+                    "solana_pay_kit: %s is using a process-local MemoryStore on devnet because %s=1; "
+                    "replay protection will not survive restarts or span replicas",
+                    protocol,
+                    _ALLOW_INMEMORY_REPLAY_STORE_ENV,
+                )
+                return replay_store
+            raise ReplayStoreConfigurationError(
+                f"{protocol} requires a ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+                "shared, and durable. Set "
+                f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
+            )
+        if is_production_replay_store(replay_store):
+            return replay_store
+        raise ReplayStoreConfigurationError(
+            f"{protocol} requires a ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+            "shared, and durable. Set "
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
+        )
+
+    if is_localnet:
+        return MemoryStore()
+    if allow_inmemory:
+        logger.warning(
+            "solana_pay_kit: %s is using a process-local MemoryStore on devnet because %s=1; "
+            "replay protection will not survive restarts or span replicas",
+            protocol,
+            _ALLOW_INMEMORY_REPLAY_STORE_ENV,
+        )
+        return MemoryStore()
+    raise ReplayStoreConfigurationError(
+        f"{protocol} requires an injected ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+        "shared, and durable. Set "
+        f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
+    )

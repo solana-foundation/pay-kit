@@ -37,7 +37,7 @@ from solana_pay_kit._paycore.solana import (
     validate_network,
     validate_splits,
 )
-from solana_pay_kit._paycore.store import Store
+from solana_pay_kit._paycore.store import ReplayStoreConfigurationError, Store, resolve_replay_store
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
@@ -223,7 +223,10 @@ class Mpp:
                 "replay store is required; pass MemoryStore() or FileReplayStore(path) explicitly",
                 code="invalid-config",
             )
-        self._store: Store = config.store
+        try:
+            self._store: Store = resolve_replay_store(self._network, config.store, protocol="MPP")
+        except ReplayStoreConfigurationError as exc:
+            raise PaymentError(str(exc), code="invalid-config") from exc
         # Validate the RPC client contract up-front. The settlement path
         # calls ``send_raw_transaction``, ``await_confirmation`` and
         # ``get_transaction`` after the durable consume marker is
