@@ -2,11 +2,48 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
+from queue import Queue
+from typing import Literal
 
 import pytest
 
 from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store
+
+
+@pytest.mark.parametrize("store_kind", ["memory", "file"])
+def test_put_if_absent_is_atomic_across_event_loops(tmp_path: Path, store_kind: Literal["memory", "file"]):
+    """A shared store is safe when sync frameworks create independent loops."""
+    store: Store = MemoryStore() if store_kind == "memory" else FileReplayStore(tmp_path / "replay.json")
+    start = threading.Barrier(3)
+    results: Queue[bool] = Queue()
+    errors: Queue[BaseException] = Queue()
+
+    def put_from_own_loop() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            start.wait(timeout=5)
+            results.put(loop.run_until_complete(store.put_if_absent("credential", True)))
+        except BaseException as exc:
+            errors.put(exc)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    threads = [threading.Thread(target=put_from_own_loop, daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors.empty(), [repr(errors.get_nowait()) for _ in range(errors.qsize())]
+    assert sorted(results.get_nowait() for _ in range(2)) == [False, True]
+    assert asyncio.run(store.get("credential")) is True
 
 
 class TestMemoryStore:

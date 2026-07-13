@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -48,21 +49,34 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def get(self, key: str) -> Any | None:
-        return self._data.get(key)
+        return await asyncio.to_thread(self._get, key)
+
+    def _get(self, key: str) -> Any | None:
+        with self._lock:
+            return self._data.get(key)
 
     async def put(self, key: str, value: Any) -> None:
-        async with self._lock:
+        await asyncio.to_thread(self._put, key, value)
+
+    def _put(self, key: str, value: Any) -> None:
+        with self._lock:
             self._data[key] = value
 
     async def delete(self, key: str) -> None:
-        async with self._lock:
+        await asyncio.to_thread(self._delete, key)
+
+    def _delete(self, key: str) -> None:
+        with self._lock:
             self._data.pop(key, None)
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
-        async with self._lock:
+        return await asyncio.to_thread(self._put_if_absent, key, value)
+
+    def _put_if_absent(self, key: str, value: Any) -> bool:
+        with self._lock:
             if key in self._data:
                 return False
             self._data[key] = value
@@ -85,7 +99,7 @@ class FileReplayStore:
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self._path = Path(path)
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         self._data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -145,45 +159,46 @@ class FileReplayStore:
             raise
 
     async def get(self, key: str) -> Any | None:
-        return self._data.get(key)
+        return await asyncio.to_thread(self._get, key)
 
-    async def _flush_off_loop(self, data: dict[str, Any]) -> None:
-        """Run the blocking ``_flush`` in a worker thread.
-
-        ``_flush`` performs synchronous file IO and ``os.fsync()``; both
-        block the event loop if called directly from an async coroutine
-        and degrade tail latency for the whole server under load.
-        ``asyncio.to_thread`` offloads the call to the default executor
-        so other coroutines stay responsive while the page-cache
-        flushes to disk.
-        """
-        await asyncio.to_thread(self._flush, data)
+    def _get(self, key: str) -> Any | None:
+        with self._lock:
+            return self._data.get(key)
 
     async def put(self, key: str, value: Any) -> None:
+        await asyncio.to_thread(self._put, key, value)
+
+    def _put(self, key: str, value: Any) -> None:
         # Greptile P1 (follow-up): flush BEFORE committing to
         # ``self._data``. If ``_flush`` raises (disk full mid-fsync, IO
         # error during ``os.replace``), the in-memory state would
         # otherwise diverge from the on-disk store, so a subsequent
         # ``get`` would report a key that was never durably persisted.
         # We build the next dict, flush it, then swap.
-        async with self._lock:
+        with self._lock:
             next_data = {**self._data, key: value}
-            await self._flush_off_loop(next_data)
+            self._flush(next_data)
             self._data = next_data
 
     async def delete(self, key: str) -> None:
-        async with self._lock:
+        await asyncio.to_thread(self._delete, key)
+
+    def _delete(self, key: str) -> None:
+        with self._lock:
             if key not in self._data:
                 return
             next_data = {k: v for k, v in self._data.items() if k != key}
-            await self._flush_off_loop(next_data)
+            self._flush(next_data)
             self._data = next_data
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
-        async with self._lock:
+        return await asyncio.to_thread(self._put_if_absent, key, value)
+
+    def _put_if_absent(self, key: str, value: Any) -> bool:
+        with self._lock:
             if key in self._data:
                 return False
             next_data = {**self._data, key: value}
-            await self._flush_off_loop(next_data)
+            self._flush(next_data)
             self._data = next_data
             return True
