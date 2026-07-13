@@ -10,12 +10,14 @@ use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\Mpp\Adapter as MppAdapter;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
 use PayKit\Frameworks\Symfony\EventListener\RequirePaymentListener;
 use Symfony\Component\Config\Definition\Builder\TreeBuilder;
 use Symfony\Component\Config\Definition\ConfigurationInterface;
+use Symfony\Component\DependencyInjection\Argument\ServiceClosureArgument;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Extension\Extension;
 use Symfony\Component\DependencyInjection\Reference;
@@ -36,11 +38,25 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
         $client = new PayKit($payKitConfig);
         $container->set(PayKit::class, $client);
 
+        $mppFactory = null;
+        if (in_array(Protocol::Mpp, $payKitConfig->accept, true)) {
+            $storeService = $config['mpp_replay_store_service'] ?? null;
+            $definition = $container->register(MppAdapter::class)
+                ->setArgument('$config', $payKitConfig)
+                ->setPublic(true);
+            if (is_string($storeService) && $storeService !== '') {
+                $definition->setArgument('$replayStore', new Reference($storeService));
+            }
+            $mppFactory = new ServiceClosureArgument(new Reference(MppAdapter::class));
+        }
+
         $listener = $container->register(RequirePaymentListener::class)
             ->setArgument('$client', new Reference(PayKit::class))
             ->setArgument('$pricing', null)
             ->setArgument('$psrFactory', new Reference('paykit.psr_http_factory'))
             ->setArgument('$httpFactory', new Reference('paykit.http_foundation_factory'))
+            ->setArgument('$mpp', null)
+            ->setArgument('$mppFactory', $mppFactory)
             ->setAutowired(true)
             ->setPublic(true);
         $listener->addTag('kernel.event_listener', [
@@ -78,6 +94,8 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
             ->end()
             ->scalarNode('x402_facilitator_url')->defaultNull()->end()
             ->scalarNode('mpp_challenge_binding_secret')->defaultNull()->end()
+            ->scalarNode('mpp_replay_store_service')->defaultNull()->end()
+            ->booleanNode('mpp_allow_unsafe_memory_store')->defaultFalse()->end()
             ->booleanNode('preflight')->defaultTrue()->end()
         ->end();
         return $tree;
@@ -135,6 +153,7 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
                 challengeBindingSecret: isset($cfg['mpp_challenge_binding_secret']) && $cfg['mpp_challenge_binding_secret'] !== ''
                     ? (string) $cfg['mpp_challenge_binding_secret']
                     : null,
+                allowUnsafeMemoryStore: (bool) ($cfg['mpp_allow_unsafe_memory_store'] ?? false),
             ),
             preflight: (bool) ($cfg['preflight'] ?? true),
         );
