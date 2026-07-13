@@ -3,7 +3,6 @@ package wire
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -217,7 +216,7 @@ func FormatReceipt(receipt Receipt) (string, error) {
 
 // ExtractPaymentScheme returns the Payment scheme section when present.
 func ExtractPaymentScheme(header string) (string, bool) {
-	for _, part := range strings.Split(header, ",") {
+	for part := range strings.SplitSeq(header, ",") {
 		part = strings.TrimSpace(part)
 		if strings.HasPrefix(strings.ToLower(part), strings.ToLower(PaymentScheme)+" ") {
 			return part, true
@@ -432,18 +431,4 @@ func parseAuthParams(input string) (map[string]string, error) {
 
 func isSpaceRune(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\r' || r == '\n'
-}
-
-// SortedHeaderParams is a test helper for deterministic comparisons.
-func SortedHeaderParams(params map[string]string) []string {
-	keys := make([]string, 0, len(params))
-	for key := range params {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, key+"="+params[key])
-	}
-	return out
 }

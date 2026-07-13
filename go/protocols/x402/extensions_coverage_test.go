@@ -53,7 +53,7 @@ func TestPaymentExtensionsPaymentIdentifierID(t *testing.T) {
 	if p.PaymentIdentifierID() != "" {
 		t.Fatal("empty should return empty")
 	}
-	p.PaymentIdentifier = &PaymentIdentifierExtension{Info: PaymentIdentifierInfo{Id: "pay_test1234567890"}}
+	p.PaymentIdentifier = &PaymentIdentifierExtension{Info: PaymentIdentifierInfo{ID: "pay_test1234567890"}}
 	if p.PaymentIdentifierID() != "pay_test1234567890" {
 		t.Fatalf("got %q", p.PaymentIdentifierID())
 	}
@@ -65,13 +65,13 @@ func TestPaymentExtensionsWithPaymentIdentifierID(t *testing.T) {
 	if p.PaymentIdentifier == nil {
 		t.Fatal("should create identifier")
 	}
-	if p.PaymentIdentifier.Info.Id != "pay_test1234567890" {
-		t.Fatalf("id = %q", p.PaymentIdentifier.Info.Id)
+	if p.PaymentIdentifier.Info.ID != "pay_test1234567890" {
+		t.Fatalf("id = %q", p.PaymentIdentifier.Info.ID)
 	}
 	// Overwrite existing.
 	p.WithPaymentIdentifierID("pay_updated1234567890")
-	if p.PaymentIdentifier.Info.Id != "pay_updated1234567890" {
-		t.Fatalf("id = %q", p.PaymentIdentifier.Info.Id)
+	if p.PaymentIdentifier.Info.ID != "pay_updated1234567890" {
+		t.Fatalf("id = %q", p.PaymentIdentifier.Info.ID)
 	}
 }
 
@@ -96,7 +96,7 @@ func TestPaymentExtensionsMarshalUnmarshalRoundTrip(t *testing.T) {
 	req := true
 	ext := PaymentExtensions{
 		PaymentIdentifier: &PaymentIdentifierExtension{
-			Info: PaymentIdentifierInfo{Required: &req, Id: "pay_test1234567890"},
+			Info: PaymentIdentifierInfo{Required: &req, ID: "pay_test1234567890"},
 		},
 		Other: map[string]json.RawMessage{"custom": json.RawMessage(`"value"`)},
 	}
@@ -111,8 +111,8 @@ func TestPaymentExtensionsMarshalUnmarshalRoundTrip(t *testing.T) {
 	if got.PaymentIdentifier == nil {
 		t.Fatal("payment-identifier not unmarshalled")
 	}
-	if got.PaymentIdentifier.Info.Id != "pay_test1234567890" {
-		t.Fatalf("id = %q", got.PaymentIdentifier.Info.Id)
+	if got.PaymentIdentifier.Info.ID != "pay_test1234567890" {
+		t.Fatalf("id = %q", got.PaymentIdentifier.Info.ID)
 	}
 	if len(got.Other) != 1 || string(got.Other["custom"]) != `"value"` {
 		t.Fatalf("other = %v", got.Other)

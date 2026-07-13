@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -139,21 +143,25 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 	}
 	accepts := []AcceptsEntry{}
 	headers := map[string]string{}
+	var challengeErrors []error
 	if c.x402Adapter != nil && containsProtocol(accept, X402) && !gate.HasFees() {
-		accepts = append(accepts, c.x402Adapter.AcceptsEntry(gate))
-		for k, v := range c.x402Adapter.ChallengeHeaders(gate) {
-			headers[k] = v
+		if err := appendChallenge(gate, c.x402Adapter, &accepts, headers); err != nil {
+			challengeErrors = append(challengeErrors, err)
 		}
 	}
 	if c.mppAdapter != nil && containsProtocol(accept, MPP) {
-		accepts = append(accepts, c.mppAdapter.AcceptsEntry(gate))
-		for k, v := range c.mppAdapter.ChallengeHeaders(gate) {
-			headers[k] = v
+		if err := appendChallenge(gate, c.mppAdapter, &accepts, headers); err != nil {
+			challengeErrors = append(challengeErrors, err)
 		}
 	}
 	perr.Gate = gate
 	perr.Protocols = accept
 	perr.status = http.StatusPaymentRequired
+	if len(accepts) == 0 && len(challengeErrors) > 0 {
+		perr.Code = "challenge_generation_failed"
+		perr.Err = errors.Join(challengeErrors...)
+		perr.status = http.StatusInternalServerError
+	}
 	perr.resource = r.URL.Path
 	perr.accepts = accepts
 	perr.headers = headers
@@ -163,6 +171,30 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 		handler = DefaultErrorHandler
 	}
 	handler(w, r, perr)
+}
+
+// appendChallenge builds one adapter's accepts entry and challenge
+// headers for the 402 offer. A build failure is logged (with the
+// protocol and gate) and that protocol is dropped from the offer rather
+// than emitting a half-formed, unpayable entry. Both the entry and its
+// headers are added together so an offer never lists a protocol whose
+// challenge header could not be produced.
+func appendChallenge(gate *Gate, adapter Adapter, accepts *[]AcceptsEntry, headers map[string]string) error {
+	entry, err := adapter.AcceptsEntry(gate)
+	if err != nil {
+		slog.Error("paykit: building 402 accepts entry failed",
+			"protocol", adapter.Protocol(), "gate", gate.Name, "err", err)
+		return fmt.Errorf("%s accepts entry: %w", adapter.Protocol(), err)
+	}
+	challengeHeaders, err := adapter.ChallengeHeaders(gate)
+	if err != nil {
+		slog.Error("paykit: building 402 challenge headers failed",
+			"protocol", adapter.Protocol(), "gate", gate.Name, "err", err)
+		return fmt.Errorf("%s challenge headers: %w", adapter.Protocol(), err)
+	}
+	*accepts = append(*accepts, entry)
+	maps.Copy(headers, challengeHeaders)
+	return nil
 }
 
 // DefaultErrorHandler renders the canonical 402 response: every
@@ -200,19 +232,7 @@ func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func containsProtocol(list []Protocol, want Protocol) bool {
-	for _, s := range list {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
-
-// ContextWithPaymentForTests attaches a *Payment to ctx through the
-// package's private context key. Exported only for tests; production
-// callers should rely on Client.Require / Client.RequireFunc.
-func ContextWithPaymentForTests(ctx context.Context, pmt *Payment) context.Context {
-	return context.WithValue(ctx, ctxKey{}, pmt)
+	return slices.Contains(list, want)
 }
 
 // settlementWriter merges the adapter's settlement headers into the

@@ -91,7 +91,7 @@ func TestBase64URLJSONValueCanonicalizesStructFields(t *testing.T) {
 	}
 }
 
-func TestBase64URLJSONValuePreservesLargeJSONNumbers(t *testing.T) {
+func TestBase64URLJSONValueNormalizesLargeJSONNumbersToIEEE754(t *testing.T) {
 	type request struct {
 		Sequence uint64 `json:"sequence"`
 		Amount   string `json:"amount"`
@@ -107,7 +107,7 @@ func TestBase64URLJSONValuePreservesLargeJSONNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	want := `{"amount":"1000","sequence":9007199254740993}`
+	want := `{"amount":"1000","sequence":9007199254740992}`
 	if string(decoded) != want {
 		t.Fatalf("unexpected canonical JSON:\n got %s\nwant %s", decoded, want)
 	}

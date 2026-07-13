@@ -18,12 +18,13 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
 	"strconv"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
@@ -59,6 +60,13 @@ type SessionOptions struct {
 
 	// Currency identifier (e.g. "USDC" or an SPL mint address). Default USDC.
 	Currency string
+
+	// TokenProgram optionally pins the SPL token program owning Currency.
+	// Known currencies resolve from the static mapping; arbitrary mint
+	// addresses resolve their owner through RPC when this is empty. Clients
+	// opening an arbitrary Token-2022 channel must use the matching
+	// PaymentChannelOpenOptions.TokenProgram override.
+	TokenProgram string
 
 	// Decimals is the token decimals. Default 6.
 	Decimals uint8
@@ -107,13 +115,23 @@ type SessionOptions struct {
 	// server broadcasts a client-built open (OpenTxSubmitterServer).
 	PaymentChannelPayerSigner solanatx.Signer
 
-	// Store is the pluggable channel store. Defaults to in-memory.
+	// Store is the pluggable channel store. Outside localnet it must not be
+	// absent or a process-local *MemoryChannelStore unless
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly opts into development
+	// replay protection. Localnet defaults to MemoryChannelStore.
 	Store ChannelStore
 
-	// RPC is the optional RPC client used for on-chain checks, the
-	// recentBlockhash prefetch, and settlement broadcasts. Nil skips every
-	// on-chain check and trusts payload claims as provided.
+	// RPC is the optional RPC client used for on-chain checks, arbitrary-mint
+	// token-program resolution, the recentBlockhash prefetch, and settlement
+	// broadcasts. It is required when Currency is an arbitrary mint and
+	// TokenProgram is not explicitly pinned; otherwise nil skips on-chain
+	// checks and trusts payload claims as provided.
 	RPC solanatx.RPCClient
+
+	// Logger receives library-side diagnostics that have no synchronous
+	// caller to surface them, such as an idle-close settlement failure. Nil
+	// defaults to slog.Default().
+	Logger *slog.Logger
 }
 
 // Session is the server-side session method handler. Create with NewSession.
@@ -161,6 +179,10 @@ type Session struct {
 	// prefetch, and settlement broadcasts; nil skips every on-chain check
 	// and trusts payload claims as provided.
 	rpc solanatx.RPCClient
+
+	// logger receives library-side diagnostics with no synchronous caller
+	// (for example an idle-close settlement failure). Never nil.
+	logger *slog.Logger
 }
 
 // NewSession creates the server-side session method.
@@ -193,6 +215,15 @@ func NewSession(options SessionOptions) (*Session, error) {
 	if options.Network == "" {
 		options.Network = "mainnet"
 	}
+	if options.TokenProgram == "" {
+		resolved, err := resolveServerTokenProgram(context.Background(), options.RPC, options.Currency, options.Network)
+		if err != nil {
+			return nil, err
+		}
+		options.TokenProgram = resolved
+	} else if _, err := resolveSessionTokenProgram(options.TokenProgram, options.Currency, options.Network); err != nil {
+		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid session token program", err)
+	}
 	if options.Realm == "" {
 		options.Realm = DetectRealm(options.Recipient)
 	}
@@ -216,8 +247,24 @@ func NewSession(options SessionOptions) (*Session, error) {
 			"pullVoucherStrategy is required when modes includes pull")
 	}
 	store := options.Store
+	usesMemoryChannelStore := false
+	if store != nil {
+		_, usesMemoryChannelStore = store.(*MemoryChannelStore)
+	}
+	if options.Network != "localnet" && (store == nil || usesMemoryChannelStore) && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
+		storeDescription := "no session store"
+		if usesMemoryChannelStore {
+			storeDescription = "process-local *MemoryChannelStore"
+		}
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("%s configured for %s; configure a shared session ChannelStore or set %s=1 to allow a process-local development store",
+				storeDescription, options.Network, allowInMemoryReplayStoreEnvVar))
+	}
 	if store == nil {
 		store = NewMemoryChannelStore()
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
 	}
 
 	config := SessionConfig{
@@ -226,6 +273,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		Splits:              options.Splits,
 		MaxCap:              options.Cap,
 		Currency:            options.Currency,
+		TokenProgram:        options.TokenProgram,
 		Decimals:            options.Decimals,
 		Network:             options.Network,
 		ProgramID:           options.ProgramID,
@@ -233,6 +281,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		Modes:               options.Modes,
 		PullVoucherStrategy: options.PullVoucherStrategy,
 	}
+	config.VerifyTopUpTx = NewTopUpTxVerifier(config, options.RPC)
 	session := &Session{
 		core:            NewSessionServer(config, store),
 		secretKey:       options.SecretKey,
@@ -245,6 +294,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		signer:          options.Signer,
 		payerSigner:     options.PaymentChannelPayerSigner,
 		rpc:             options.RPC,
+		logger:          options.Logger,
 	}
 	if options.CloseDelay > 0 {
 		session.lifecycle = NewSessionLifecycle(session.closeOnIdle, options.CloseDelay)
@@ -279,7 +329,7 @@ func (s *Session) closeOnIdle(channelID string) {
 		return
 	}
 	if _, err := s.closeAndSettleChannel(context.Background(), channelID); err != nil {
-		log.Printf("[solana-mpp] idle-close settle failed for %s: %v", channelID, err)
+		s.logger.Error("idle-close settle failed", "channel", channelID, "err", err)
 	}
 }
 
@@ -388,6 +438,13 @@ func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentC
 	if err := challenge.Request.Decode(&request); err != nil {
 		return core.Receipt{}, err
 	}
+	challengeCap, capErr := parseSessionU64(request.Cap, "challenge cap")
+	if capErr != nil {
+		return core.Receipt{}, core.WrapError(core.ErrCodeInvalidPayload, "invalid challenge cap", capErr)
+	}
+	// An older still-valid challenge must not override a cap reduced in the
+	// current server configuration.
+	challengeCap = min(challengeCap, s.cap)
 	if err := s.verifyPinnedSessionFields(credential, request); err != nil {
 		return core.Receipt{}, err
 	}
@@ -409,13 +466,13 @@ func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentC
 				fmt.Sprintf("open payload recentSlot %d does not match the challenge recentSlot %d",
 					*action.Open.RecentSlot, uint64(*request.RecentSlot)))
 		}
-		reference, err = s.handleOpen(ctx, action.Open)
+		reference, err = s.handleOpen(ctx, action.Open, challengeCap)
 	case action.Voucher != nil:
 		reference, err = s.handleVoucher(ctx, action.Voucher)
 	case action.Commit != nil:
 		reference, err = s.handleCommit(ctx, action.Commit)
 	case action.TopUp != nil:
-		reference, err = s.handleTopUp(ctx, action.TopUp)
+		reference, err = s.handleTopUp(ctx, action.TopUp, challengeCap)
 	case action.Close != nil:
 		reference, err = s.handleClose(ctx, action.Close)
 	default:
@@ -469,7 +526,13 @@ func (s *Session) verifyPinnedSessionFields(credential core.PaymentCredential, r
 // payload (verifying or broadcasting the attached transaction when present),
 // enforce the deposit invariants, and insert the channel state atomically and
 // idempotently.
-func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) (string, error) {
+//
+// This intentionally does not delegate to SessionServer.ProcessOpen: it is a
+// superset that adds transaction verification/broadcast and the idle-close
+// touch on top of the same insert invariant. The duplication is deliberate;
+// keep the shared invariant (finalized/authorized-signer/deposit checks) in
+// step with ProcessOpen.
+func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload, challengeCap uint64) (string, error) {
 	mode := payload.Mode
 	if !s.core.supportsMode(mode) {
 		return "", fmt.Errorf("session mode %q is not supported by this challenge", mode)
@@ -503,11 +566,13 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		expected := VerifyOpenTxExpected{
 			AuthorizedSigner: payload.AuthorizedSigner,
 			Currency:         s.currency,
-			MaxCap:           s.cap,
+			TokenProgram:     s.core.config.TokenProgram,
+			MaxCap:           challengeCap,
 			Network:          s.network,
 			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
 			Recipient:        s.recipient,
+			Splits:           s.core.config.Splits,
 		}
 		if s.openTxSubmitter == OpenTxSubmitterServer {
 			if s.rpc == nil {
@@ -515,7 +580,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			}
 			// Decode-only first so an idempotent replay of an
 			// already-persisted open does not rebroadcast the transaction.
-			preVerified, err := VerifyOpenTx(ctx, expected, payload, nil)
+			preVerified, err := verifyOpenTx(ctx, expected, payload, nil, true)
 			if err != nil {
 				return "", err
 			}
@@ -540,6 +605,12 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				signature = submitted.Signature
 			}
 		} else {
+			if s.network != "localnet" && isPlaceholderSignature(payload.Signature) {
+				return "", fmt.Errorf("client-submitted open requires a real confirmed signature")
+			}
+			if s.network != "localnet" && s.rpc == nil {
+				return "", fmt.Errorf("client-submitted open requires an rpc client off localnet")
+			}
 			verified, err := VerifyOpenTx(ctx, expected, payload, s.rpc)
 			if err != nil {
 				return "", err
@@ -550,19 +621,41 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			openSlot = verified.OpenSlot
 		}
 	case mode == intents.SessionModePush:
-		// No transaction in the payload: the client asserts a previously
-		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting; without one the channelId/deposit
-		// fields are trusted as-is.
+		// No transaction in the payload: fetch the transaction named by the
+		// signature and bind its verified channel/deposit facts before storing.
 		channelID = *payload.ChannelID
-		var err error
-		deposit, err = payload.DepositAmount()
-		if err != nil {
-			return "", err
-		}
-		if s.rpc != nil {
-			if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
+		if s.rpc != nil && s.network != "localnet" {
+			expected := VerifyOpenTxExpected{
+				AuthorizedSigner: payload.AuthorizedSigner,
+				Currency:         s.currency,
+				TokenProgram:     s.core.config.TokenProgram,
+				MaxCap:           challengeCap,
+				Network:          s.network,
+				Operator:         s.core.config.Operator,
+				ProgramID:        s.core.config.ProgramID,
+				Recipient:        s.recipient,
+				Splits:           s.core.config.Splits,
+			}
+			verified, err := verifySignatureOnlyOpen(ctx, expected, payload, s.rpc)
+			if err != nil {
 				return "", err
+			}
+			channelID = verified.ChannelID
+			deposit = verified.Deposit
+			channelPayer = verified.Payer
+			openSlot = verified.OpenSlot
+		} else if s.network != "localnet" {
+			return "", fmt.Errorf("signature-only push open requires an rpc client off localnet")
+		} else {
+			var err error
+			deposit, err = payload.DepositAmount()
+			if err != nil {
+				return "", err
+			}
+			if s.rpc != nil {
+				if err := confirmTransactionSignature(ctx, s.rpc, signature, "open"); err != nil {
+					return "", err
+				}
 			}
 		}
 	default:
@@ -588,8 +681,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	if deposit == 0 {
 		return "", fmt.Errorf("deposit must be greater than zero")
 	}
-	if deposit > s.cap {
-		return "", fmt.Errorf("deposit %d exceeds cap %d", deposit, s.cap)
+	if deposit > challengeCap {
+		return "", fmt.Errorf("deposit %d exceeds cap %d", deposit, challengeCap)
 	}
 
 	// Prefer the payer read from the verified open transaction (account 0, what
@@ -653,37 +746,18 @@ func (s *Session) handleCommit(ctx context.Context, payload *intents.CommitPaylo
 	return fmt.Sprintf("%s:%s:%s", receipt.SessionID, receipt.DeliveryID, receipt.Cumulative), nil
 }
 
-// handleTopUp raises a channel's deposit after optional on-chain
-// confirmation of the top-up signature. The receipt reference is the top-up
-// transaction signature.
-func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
+// handleTopUp raises a channel's deposit after the core binds the confirmed
+// top-up transaction to the channel and claimed deposit delta. The receipt
+// reference is the top-up transaction signature.
+func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload, challengeCap uint64) (string, error) {
 	newDeposit, err := parseSessionU64(payload.NewDeposit, "newDeposit")
 	if err != nil {
 		return "", err
 	}
-	if newDeposit > s.cap {
-		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, s.cap)
+	if newDeposit > challengeCap {
+		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, challengeCap)
 	}
 
-	// Cheap store pre-checks before touching the network.
-	existing, err := s.core.store.GetChannel(ctx, payload.ChannelID)
-	if err != nil {
-		return "", err
-	}
-	if existing == nil {
-		return "", fmt.Errorf("channel %s not found", payload.ChannelID)
-	}
-	if existing.Sealed {
-		return "", fmt.Errorf("channel %s is already sealed", payload.ChannelID)
-	}
-	if existing.CloseRequestedAt != nil {
-		return "", fmt.Errorf("channel %s close is pending; no further top-ups accepted", payload.ChannelID)
-	}
-	if s.rpc != nil {
-		if err := confirmTransactionSignature(ctx, s.rpc, payload.Signature, "topUp"); err != nil {
-			return "", err
-		}
-	}
 	if _, err := s.core.ProcessTopUp(ctx, payload); err != nil {
 		return "", err
 	}

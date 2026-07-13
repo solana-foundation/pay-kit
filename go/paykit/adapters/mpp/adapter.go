@@ -6,21 +6,25 @@ import (
 	"strings"
 	"sync"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 type signerBridge struct {
 	signer paykit.Signer
+	// pub is the operator public key, decoded once in serverFor where the
+	// base58 error can propagate. Storing it keeps PublicKey (which the
+	// solanatx.Signer interface forbids from returning an error) from
+	// having to swallow a decode failure.
+	pub solana.PublicKey
 }
 
 func (b *signerBridge) PublicKey() solana.PublicKey {
-	pub, _ := solana.PublicKeyFromBase58(string(b.signer.Pubkey()))
-	return pub
+	return b.pub
 }
 
 func (b *signerBridge) Sign(payload []byte) (solana.Signature, error) {
@@ -69,7 +73,7 @@ type Split struct {
 
 func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.MPP }
 
-func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
+func (a *Adapter) AcceptsEntry(gate *paykit.Gate) (paykit.AcceptsEntry, error) {
 	coin := a.settlementCoin(gate)
 	payTo := a.payTo(gate)
 	entry := AcceptsEntry{
@@ -89,23 +93,23 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 			entry.Splits = append(entry.Splits, Split{Recipient: string(addr), Amount: a.priceUnits(fee)})
 		}
 	}
-	return entry
+	return entry, nil
 }
 
-func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
+func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) (map[string]string, error) {
 	srv, err := a.serverFor(gate)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	challenge, err := srv.ChargeWithOptions(context.Background(), a.amountString(gate), a.chargeOptions(gate))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/mpp: build charge challenge: %w", err)
 	}
 	wwwAuth, err := core.FormatWWWAuthenticate(challenge)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/mpp: format WWW-Authenticate: %w", err)
 	}
-	return map[string]string{core.WWWAuthenticateHeader: wwwAuth}
+	return map[string]string{core.WWWAuthenticateHeader: wwwAuth}, nil
 }
 
 func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, error) {
@@ -166,7 +170,11 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	}
 	var feePayer solanatx.Signer
 	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil {
-		feePayer = &signerBridge{signer: a.cfg.Operator.Signer}
+		pub, err := solana.PublicKeyFromBase58(string(a.cfg.Operator.Signer.Pubkey()))
+		if err != nil {
+			return nil, fmt.Errorf("protocols/mpp: fee-payer pubkey: %w", err)
+		}
+		feePayer = &signerBridge{signer: a.cfg.Operator.Signer, pub: pub}
 	}
 	srv, err := server.New(server.Config{
 		Recipient:      string(payTo),
@@ -175,7 +183,7 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 		Network:        a.cfg.Network.MintsLabel(),
 		Realm:          a.cfg.MPP.Realm,
 		RPCURL:         a.cfg.RPCURL,
-		Decimals:       uint8(decimalsFor(coin)),
+		Decimals:       paycore.DefaultDecimalsForCurrency(coin, a.cfg.Network.MintsLabel()),
 		FeePayerSigner: feePayer,
 	})
 	if err != nil {
@@ -207,14 +215,14 @@ func (a *Adapter) amountString(gate *paykit.Gate) string {
 }
 
 func (a *Adapter) totalUnits(gate *paykit.Gate, coin string) string {
-	dec := decimalsFor(coin)
+	dec := paycore.DefaultDecimalsForCurrency(coin, a.cfg.Network.MintsLabel())
 	total := gate.Total().Amount()
 	scaled := total.Shift(int32(dec))
 	return scaled.Truncate(0).String()
 }
 
 func (a *Adapter) priceUnits(p paykit.Price) string {
-	dec := decimalsFor(a.priceCoin(p))
+	dec := paycore.DefaultDecimalsForCurrency(a.priceCoin(p), a.cfg.Network.MintsLabel())
 	scaled := p.Amount().Shift(int32(dec))
 	return scaled.Truncate(0).String()
 }
@@ -250,11 +258,6 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 		})
 	}
 	return opts
-}
-
-func decimalsFor(coin string) int {
-	_ = paycore.ResolveMint
-	return 6
 }
 
 func init() {

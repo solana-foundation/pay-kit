@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // Plain legacy SVM network slugs used to construct v1 credentials in these
@@ -181,6 +181,16 @@ func TestVerifyLegacyBindingDirect(t *testing.T) {
 	}
 	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: proto.ExactScheme, Network: legacyNetworkMainnet}); err == nil {
 		t.Error("mainnet slug against devnet route must be rejected")
+	}
+}
+
+func TestNewUsageAdapterRejectsBadRecipient(t *testing.T) {
+	cfg := paykit.Config{
+		Network:  paykit.SolanaLocalnet,
+		Operator: paykit.Operator{Signer: signer.Demo(), Recipient: paykit.Address("not-a-valid-pubkey")},
+	}
+	if _, err := NewUsageAdapter(cfg); err == nil {
+		t.Fatal("expected error for invalid recipient")
 	}
 }
 

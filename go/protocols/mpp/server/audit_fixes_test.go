@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
@@ -72,6 +72,7 @@ func TestNewAcceptsSecretKeyAtMinimumLength(t *testing.T) {
 // --- #37 network allowlist ---
 
 func TestNewAcceptsCanonicalNetworks(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	for _, network := range []string{"mainnet", "devnet", "localnet"} {
 		cfg := validConfig(t)
 		cfg.Network = network
@@ -148,7 +149,7 @@ func TestChargeRejectsPrimaryRecipientSplitWithATACreation(t *testing.T) {
 	}
 	_, err = m.ChargeWithOptions(context.Background(), "1.00", ChargeOptions{
 		Splits: []paycore.Split{
-			{Recipient: cfg.Recipient, Amount: "1", AtaCreationRequired: boolp(true)},
+			{Recipient: cfg.Recipient, Amount: "1", AtaCreationRequired: new(true)},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "primary recipient") {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
@@ -77,12 +77,16 @@ func BuildChargeTransaction(
 	}
 
 	instructions := make([]solana.Instruction, 0, 2+2+len(methodDetails.Splits)*3)
-	if ix, err := solanatx.BuildComputeUnitPrice(options.ComputeUnitPrice); err == nil {
-		instructions = append(instructions, ix)
+	priceIx, err := solanatx.BuildComputeUnitPrice(options.ComputeUnitPrice)
+	if err != nil {
+		return paycore.CredentialPayload{}, err
 	}
-	if ix, err := solanatx.BuildComputeUnitLimit(options.ComputeUnitLimit); err == nil {
-		instructions = append(instructions, ix)
+	instructions = append(instructions, priceIx)
+	limitIx, err := solanatx.BuildComputeUnitLimit(options.ComputeUnitLimit)
+	if err != nil {
+		return paycore.CredentialPayload{}, err
 	}
+	instructions = append(instructions, limitIx)
 
 	recipientKey, err := solana.PublicKeyFromBase58(recipient)
 	if err != nil {
