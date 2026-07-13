@@ -7,6 +7,7 @@ export {
     type ChannelState,
     type CommittedDelivery,
     createMemorySessionStore,
+    isMemorySessionStore,
     type ListChannelsFilter,
     type PendingDelivery,
     type SessionStore,

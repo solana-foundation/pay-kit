@@ -40,11 +40,21 @@ const MAX_COMPUTE_UNIT_LIMIT = 200_000;
 const MAX_SPONSORED_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 10_000n;
 
 export interface SubscriptionReplayStore extends Store.Store {
+    readonly isDurable?: boolean;
+    readonly isShared?: boolean;
     reserve(key: string, value?: unknown, ttlSeconds?: number): Promise<boolean>;
 }
 
 async function claimConsumed(store: SubscriptionReplayStore, key: string): Promise<boolean> {
     return await store.reserve(key, true);
+}
+
+async function releaseConsumedBestEffort(store: SubscriptionReplayStore, key: string): Promise<void> {
+    try {
+        await store.delete(key);
+    } catch {
+        // Keep the reservation when cleanup is unavailable.
+    }
 }
 
 /**
@@ -114,6 +124,9 @@ export function subscription(parameters: subscription.Parameters) {
     }
     if (!store || typeof store.reserve !== 'function') {
         throw new Error('subscription store must implement atomic reserve(key, value)');
+    }
+    if (network !== 'localnet' && (store.isShared !== true || store.isDurable !== true)) {
+        throw new Error('subscription store must report isShared=true and isDurable=true outside localnet');
     }
 
     // Validate the period mapping up front so misconfigured servers fail at boot,
@@ -310,7 +323,7 @@ export function subscription(parameters: subscription.Parameters) {
                 // lagging on-chain read would permanently reject a legitimate
                 // retry of the same activation. Best-effort: a failed delete
                 // cannot make the original error any worse.
-                await store.delete(consumedKey);
+                await releaseConsumedBestEffort(store, consumedKey);
                 throw err;
             }
         },
@@ -345,6 +358,7 @@ function assertSubscriptionCredentialBinding(
         ['periodCount', challenge.periodCount, String(expected.periodCount)],
         ['periodUnit', challenge.periodUnit, expected.periodUnit],
         ['recipient', challenge.recipient, expected.recipient],
+        // `resource` is inside the HMAC-bound request and identifies the route.
         ['resource', challenge.resource, currentRequest.resource],
         ['subscriptionExpires', challenge.subscriptionExpires, expected.subscriptionExpires],
         ['methodDetails.decimals', challenge.methodDetails.decimals, expected.decimals],
@@ -453,7 +467,7 @@ async function settleActivation(
                 await waitForConfirmation(rpcUrl, broadcastSignature);
             }
         } catch (err) {
-            await store.delete(consumedKey);
+            await releaseConsumedBestEffort(store, consumedKey);
             throw err;
         }
 
@@ -1044,7 +1058,6 @@ type CredentialPayload = {
 type ChallengeRequest = {
     amount: string;
     currency: string;
-    description?: string;
     externalId?: string;
     methodDetails: {
         decimals: number;

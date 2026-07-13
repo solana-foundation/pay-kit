@@ -34,7 +34,14 @@ afterEach(() => {
 });
 
 class AtomicStore implements SubscriptionReplayStore {
+    readonly isDurable?: boolean;
+    readonly isShared?: boolean;
     readonly values = new Map<string, unknown>();
+
+    constructor(capabilities: { isDurable?: boolean; isShared?: boolean } = { isDurable: true, isShared: true }) {
+        this.isDurable = capabilities.isDurable;
+        this.isShared = capabilities.isShared;
+    }
 
     async get(key: string) {
         return this.values.get(key) ?? null;
@@ -52,6 +59,15 @@ class AtomicStore implements SubscriptionReplayStore {
         if (this.values.has(key)) return false;
         this.values.set(key, value);
         return true;
+    }
+}
+
+class DeleteFailingStore extends AtomicStore {
+    deleteCalls = 0;
+
+    async delete(key: string) {
+        this.deleteCalls += 1;
+        throw new Error(`delete failed for ${key}`);
     }
 }
 
@@ -146,10 +162,10 @@ function authorityAccount(subscriber: string, server: string) {
     );
 }
 
-function delegationAccount(subscriber: string, server: string) {
+function delegationAccount(subscriber: string, server: string, amount = 10_000_000n) {
     return getBase64Codec().decode(
         getSubscriptionDelegationEncoder().encode({
-            amountPulledInPeriod: 10_000_000n,
+            amountPulledInPeriod: amount,
             currentPeriodStartTs: 1_737_216_000n,
             expiresAtTs: 0n,
             header: {
@@ -162,7 +178,7 @@ function delegationAccount(subscriber: string, server: string) {
                 version: 1,
             },
             terms: {
-                amount: 10_000_000n,
+                amount,
                 createdAt: 1_700_000_000n,
                 periodHours: 720n,
             },
@@ -209,7 +225,7 @@ function rewriteComputeUnitLimits(transactionBase64: string, count: 0 | 2): stri
 }
 
 describe('subscription server configuration', () => {
-    test('requires a signer/puller match and an atomic reserve store', async () => {
+    test('requires a signer/puller match and durable shared atomic replay storage outside localnet', async () => {
         const signer = await generateKeyPairSigner();
         expect(() =>
             subscription({ ...serverParameters(signer, new AtomicStore()), signer: undefined as never }),
@@ -226,6 +242,21 @@ describe('subscription server configuration', () => {
                 store: { delete: async () => {}, get: async () => null, put: async () => {} } as never,
             }),
         ).toThrow(/atomic reserve/);
+        expect(() => subscription({ ...serverParameters(signer, new AtomicStore({})) })).toThrow(
+            /isShared=true and isDurable=true/,
+        );
+        expect(() => subscription({ ...serverParameters(signer, new AtomicStore({ isShared: true })) })).toThrow(
+            /isShared=true and isDurable=true/,
+        );
+        expect(() => subscription({ ...serverParameters(signer, new AtomicStore({ isDurable: true })) })).toThrow(
+            /isShared=true and isDurable=true/,
+        );
+        expect(() =>
+            subscription({
+                ...serverParameters(signer, new AtomicStore({})),
+                network: 'localnet',
+            }),
+        ).not.toThrow();
     });
 });
 
@@ -349,6 +380,80 @@ describe('settlement proof and replay', () => {
             }),
         ).rejects.toThrow(/submitted activation signature was not confirmed/);
         expect(sendCalls).toBe(0);
+    });
+
+    test('preserves an RPC failure when pre-settlement reservation cleanup fails', async () => {
+        const { authority, challengedRequest, serverSigner, subscriber, transaction } = await fixture();
+        const store = new DeleteFailingStore();
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method: string; params?: unknown[] };
+            if (body.method === 'getAccountInfo') {
+                if (String(body.params?.[0]) === authority) {
+                    return rpcSuccess(accountInfo(authorityAccount(subscriber.address, serverSigner.address)));
+                }
+                return rpcSuccess({ value: null });
+            }
+            if (body.method === 'simulateTransaction') return rpcError('simulation unavailable');
+            return rpcSuccess({});
+        };
+
+        const method = subscription(serverParameters(serverSigner, store));
+        const run = () =>
+            method.verify!({
+                credential: credential(transaction, challengedRequest) as never,
+                request: challengedRequest as never,
+            });
+
+        await expect(run()).rejects.toThrow(/RPC error: simulation unavailable/);
+        expect(store.deleteCalls).toBe(1);
+        await expect(run()).rejects.toThrow(/Activation signature already consumed/);
+        expect(store.deleteCalls).toBe(1);
+    });
+
+    test('preserves a post-settlement terms failure when reservation cleanup fails', async () => {
+        const { authority, challengedRequest, delegation, serverSigner, subscriber, transaction } = await fixture();
+        const store = new DeleteFailingStore();
+        let landed = false;
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method: string; params?: unknown[] };
+            if (body.method === 'getAccountInfo') {
+                const account = String(body.params?.[0]);
+                if (account === authority) {
+                    return rpcSuccess(accountInfo(authorityAccount(subscriber.address, serverSigner.address)));
+                }
+                if (account === delegation) {
+                    return rpcSuccess(
+                        landed
+                            ? accountInfo(delegationAccount(subscriber.address, serverSigner.address, 1n))
+                            : { value: null },
+                    );
+                }
+                return rpcSuccess({ value: null });
+            }
+            if (body.method === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+            if (body.method === 'sendTransaction') {
+                landed = true;
+                const wire = String(body.params?.[0]);
+                const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+                return rpcSuccess(getSignatureFromTransaction(decoded));
+            }
+            if (body.method === 'getSignatureStatuses') {
+                return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+            }
+            return rpcSuccess({});
+        };
+
+        const method = subscription(serverParameters(serverSigner, store));
+        const run = () =>
+            method.verify!({
+                credential: credential(transaction, challengedRequest) as never,
+                request: challengedRequest as never,
+            });
+
+        await expect(run()).rejects.toThrow(/SubscriptionDelegation amount mismatch/);
+        expect(store.deleteCalls).toBe(1);
+        await expect(run()).rejects.toThrow(/Activation signature already consumed/);
+        expect(store.deleteCalls).toBe(1);
     });
 
     test('two independent handlers sharing only an atomic store admit exactly one activation', async () => {
@@ -530,10 +635,149 @@ describe('cross-route subscription binding', () => {
             expect(fetchCalls, variant.label).toBe(0);
         }
     });
+
+    test('uses the HMAC-bound resource to bind routes, not the top-level description', async () => {
+        const { authority, delegation, serverSigner, subscriber } = await fixture();
+        const secretKey = 'subscription-description-binding-test-secret';
+        const expires = new Date(Date.now() + 60_000).toISOString();
+        let fetchCalls = 0;
+        let landed = false;
+        globalThis.fetch = async (_input, init) => {
+            fetchCalls += 1;
+            const body = JSON.parse(init?.body as string) as { method: string; params?: unknown[] };
+            if (body.method === 'getLatestBlockhash') return rpcSuccess({ value: { blockhash: BLOCKHASH } });
+            if (body.method === 'getAccountInfo') {
+                const account = String(body.params?.[0]);
+                if (account === authority) {
+                    return rpcSuccess(accountInfo(authorityAccount(subscriber.address, serverSigner.address)));
+                }
+                if (account === delegation) {
+                    return rpcSuccess(
+                        landed
+                            ? accountInfo(delegationAccount(subscriber.address, serverSigner.address))
+                            : { value: null },
+                    );
+                }
+                return rpcSuccess({ value: null });
+            }
+            if (body.method === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+            if (body.method === 'sendTransaction') {
+                landed = true;
+                const wire = String(body.params?.[0]);
+                const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+                return rpcSuccess(getSignatureFromTransaction(decoded));
+            }
+            if (body.method === 'getSignatureStatuses') {
+                return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+            }
+            return rpcSuccess({});
+        };
+
+        const gateA = Mppx.create({
+            methods: [subscription(serverParameters(serverSigner, new AtomicStore()))],
+            realm: 'subscription-description-binding-test',
+            secretKey,
+        });
+        const routeA = {
+            amount: '10000000',
+            currency: MINT,
+            description: 'subscription access for team A',
+            expires,
+            resource: '/subscriptions/team-a',
+        };
+        const issued = await gateA.subscription(routeA)(new Request('https://example.test/gate-a'));
+
+        expect(issued.status).toBe(402);
+        if (issued.status !== 402) throw new Error('expected subscription challenge');
+        const challenge = Challenge.fromResponse(issued.challenge);
+        const transaction = await buildSubscriptionActivationTransaction({
+            request: challenge.request as Parameters<typeof buildSubscriptionActivationTransaction>[0]['request'],
+            signer: subscriber,
+            subscriptionAuthorityInitId: INIT_ID,
+        });
+        const credentialFromGateA = Credential.from({
+            challenge,
+            payload: { transaction, type: 'transaction' },
+        });
+
+        fetchCalls = 0;
+        const sameRoute = await gateA.subscription(routeA)(
+            new Request('https://example.test/gate-a', {
+                headers: { Authorization: Credential.serialize(credentialFromGateA) },
+            }),
+        );
+        expect(sameRoute.status).toBe(200);
+        expect(fetchCalls).toBeGreaterThan(0);
+
+        const gateB = Mppx.create({
+            methods: [subscription(serverParameters(serverSigner, new AtomicStore()))],
+            realm: 'subscription-description-binding-test',
+            secretKey,
+        });
+        const { resource: _resource, ...requestWithoutResource } = credentialFromGateA.challenge.request;
+        const credentialVariants = [
+            { credential: credentialFromGateA, label: 'original credential' },
+            {
+                credential: {
+                    ...credentialFromGateA,
+                    challenge: { ...credentialFromGateA.challenge, description: 'subscription access for team B' },
+                },
+                label: 'mutated description',
+            },
+            {
+                credential: {
+                    ...credentialFromGateA,
+                    challenge: { ...credentialFromGateA.challenge, description: undefined },
+                },
+                label: 'stripped description',
+            },
+            {
+                credential: {
+                    ...credentialFromGateA,
+                    challenge: {
+                        ...credentialFromGateA.challenge,
+                        request: { ...credentialFromGateA.challenge.request, resource: '/subscriptions/team-b' },
+                    },
+                },
+                label: 'mutated resource',
+            },
+            {
+                credential: {
+                    ...credentialFromGateA,
+                    challenge: { ...credentialFromGateA.challenge, request: requestWithoutResource },
+                },
+                label: 'stripped resource',
+            },
+        ];
+
+        for (const variant of credentialVariants) {
+            fetchCalls = 0;
+            const result = await gateB.subscription({
+                amount: '10000000',
+                currency: MINT,
+                description: 'subscription access for team B',
+                expires,
+                resource: '/subscriptions/team-b',
+            })(
+                new Request('https://example.test/gate-b', {
+                    headers: { Authorization: Credential.serialize(variant.credential) },
+                }),
+            );
+
+            expect(result.status, variant.label).toBe(402);
+            expect(fetchCalls, variant.label).toBe(0);
+        }
+    });
 });
 
 function rpcSuccess(result: unknown) {
     return new Response(JSON.stringify({ id: 1, jsonrpc: '2.0', result }), {
+        headers: { 'Content-Type': 'application/json' },
+    });
+}
+
+function rpcError(message: string) {
+    return new Response(JSON.stringify({ error: { message }, id: 1, jsonrpc: '2.0' }), {
         headers: { 'Content-Type': 'application/json' },
     });
 }

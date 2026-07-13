@@ -127,6 +127,23 @@ export interface SessionStore {
 }
 
 /**
+ * Brand marking a store as the process-local, non-durable in-memory
+ * `SessionStore`. Uses the global symbol registry so the mark survives the
+ * `@solana/mpp` / consumer package boundary without an `instanceof` check.
+ */
+const MEMORY_SESSION_STORE = Symbol.for('@solana/mpp/server:memory-session-store');
+
+/**
+ * True when `store` was produced by {@link createMemorySessionStore}. Higher
+ * level adapters use this to keep process-local session state out of
+ * production clusters (mirrors the replay store's `isDurable`/`isShared`
+ * self-report), instead of `instanceof`, which breaks across package copies.
+ */
+export function isMemorySessionStore(store: SessionStore): boolean {
+    return (store as unknown as Record<symbol, unknown>)[MEMORY_SESSION_STORE] === true;
+}
+
+/**
  * In-memory `SessionStore`. Per-channel async locking via a promise
  * chain keyed on channel id — so `updateChannel(id, …)` calls for the
  * same `id` run strictly sequentially, but calls for different ids
@@ -151,7 +168,7 @@ export function createMemorySessionStore(): SessionStore {
         return next;
     }
 
-    return {
+    const store: SessionStore = {
         deleteChannel(channelId) {
             data.delete(channelId);
             return Promise.resolve();
@@ -199,4 +216,14 @@ export function createMemorySessionStore(): SessionStore {
             });
         },
     };
+    // Enumerable so an object spread (`{ ...store }`) copies the brand too: a
+    // shallow copy of a process-local store is still process-local, so it must
+    // stay detectable and be rejected off-localnet (fail CLOSED). A symbol key
+    // is invisible to JSON.stringify and Object.keys regardless of the
+    // enumerable flag, so nothing leaks into serialized output.
+    Object.defineProperty(store, MEMORY_SESSION_STORE, {
+        enumerable: true,
+        value: true,
+    });
+    return store;
 }
