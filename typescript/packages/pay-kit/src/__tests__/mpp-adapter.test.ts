@@ -1,5 +1,6 @@
 import { Challenge } from '@solana/mpp/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { Credential } from 'mppx';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMppAdapter } from '../adapters/mpp.js';
 import { configure } from '../config.js';
@@ -16,6 +17,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
     globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
 });
 
 async function setup() {
@@ -90,7 +92,7 @@ describe('createMppAdapter', () => {
         ).rejects.toThrow(/isShared=true or isDurable=true/);
     });
 
-    it('binds each subscription challenge to the requested resource path', async () => {
+    it('binds subscription credentials to the exact request without serializing query values', async () => {
         const signer = await Signer.generate();
         const config = await configure({
             accept: ['mpp'],
@@ -120,15 +122,92 @@ describe('createMppAdapter', () => {
             { accept: ['mpp'], payTo: SELLER },
         );
         const adapter = createMppAdapter(config);
-        const gateA = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-a?tier=basic'));
-        const gateB = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-b?tier=premium'));
+        const requested = 'http://t/feed?api_key=secret&tier=basic&tier=preview';
+        const gateA = await adapter.challengeHeaders(subscriptionGate, new Request(requested));
+        const challenge = Challenge.deserialize(gateA['www-authenticate'] as string);
+        const resource = (challenge.request as { resource?: string }).resource;
 
-        expect(
-            (Challenge.deserialize(gateA['www-authenticate'] as string).request as { resource?: string }).resource,
-        ).toBe('/gate-a?tier=basic');
-        expect(
-            (Challenge.deserialize(gateB['www-authenticate'] as string).request as { resource?: string }).resource,
-        ).toBe('/gate-b?tier=premium');
+        expect(resource).toMatch(/^pay-kit:mpp-subscription-resource:v1:hmac-sha256:[a-f0-9]{64}$/);
+        expect(resource).not.toContain('api_key=secret');
+        expect(resource).not.toContain('secret');
+
+        const sameResource = (
+            Challenge.deserialize(
+                (await adapter.challengeHeaders(subscriptionGate, new Request(requested)))[
+                    'www-authenticate'
+                ] as string,
+            ).request as { resource?: string }
+        ).resource;
+        expect(sameResource).toBe(resource);
+
+        const mismatchedRequests = [
+            'http://t/feed?api_key=other&tier=basic&tier=preview',
+            'http://t/feed?tier=basic&tier=preview&api_key=secret',
+            'http://t/feed?api_key=secret&tier=basic',
+            'http://t/feed?api_key=sec%72et&tier=basic&tier=preview',
+        ];
+        for (const currentRequest of mismatchedRequests) {
+            const currentResource = (
+                Challenge.deserialize(
+                    (await adapter.challengeHeaders(subscriptionGate, new Request(currentRequest)))[
+                        'www-authenticate'
+                    ] as string,
+                ).request as { resource?: string }
+            ).resource;
+            expect(currentResource).not.toBe(resource);
+        }
+
+        const adapterWithDifferentSecret = createMppAdapter(
+            await configure({
+                accept: ['mpp'],
+                mpp: { challengeBindingSecret: 'different-adapter-test-secret', realm: 'Adapter test' },
+                operator: { feePayer: true, recipient: SELLER, signer },
+                replayStore: createSharedTestReplayStore(),
+            }),
+        );
+        const resourceWithDifferentSecret = (
+            Challenge.deserialize(
+                (await adapterWithDifferentSecret.challengeHeaders(subscriptionGate, new Request(requested)))[
+                    'www-authenticate'
+                ] as string,
+            ).request as { resource?: string }
+        ).resource;
+        expect(resourceWithDifferentSecret).not.toBe(resource);
+
+        const credential = Credential.serialize({
+            challenge,
+            payload: { transaction: '', type: 'transaction' },
+        });
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        // The malformed transaction fails later, proving the exact query has
+        // passed resource binding without requiring an on-chain fixture.
+        await expect(
+            adapter.verifyAndSettle(
+                subscriptionGate,
+                new Request(requested, { headers: { authorization: credential } }),
+            ),
+        ).rejects.toThrow('Payment verification failed.');
+        expect(consoleError).not.toHaveBeenCalledWith(
+            'mppx: internal verification error',
+            expect.objectContaining({ message: 'Subscription credential resource does not match the current route' }),
+        );
+
+        for (const currentRequest of mismatchedRequests) {
+            consoleError.mockClear();
+            await expect(
+                adapter.verifyAndSettle(
+                    subscriptionGate,
+                    new Request(currentRequest, { headers: { authorization: credential } }),
+                ),
+            ).rejects.toThrow('Payment verification failed.');
+            expect(consoleError).toHaveBeenCalledWith(
+                'mppx: internal verification error',
+                expect.objectContaining({
+                    message: 'Subscription credential resource does not match the current route',
+                }),
+            );
+        }
     });
 
     it('detects MPP payment credentials', async () => {

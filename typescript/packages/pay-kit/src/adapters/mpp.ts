@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto';
+
 import { guardChallengeValue, resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
@@ -14,6 +16,21 @@ import type { AtomicSubscriptionReplayStore } from '../subscription-replay-store
 
 /** Settlement header mirrored by every PayKit SDK. */
 const SETTLEMENT_SIGNATURE_HEADER = 'x-payment-settlement-signature';
+const SUBSCRIPTION_RESOURCE_BINDING_DOMAIN = 'pay-kit:mpp-subscription-resource:v1';
+
+/**
+ * Produces a non-path resource identifier so subscription credentials bind to
+ * the exact current path and raw query without exposing query values on wire.
+ */
+function subscriptionResourceFor(request: Request, challengeBindingSecret: string): string {
+    const url = new URL(request.url);
+    // Keep the URL parser's path semantics, but retain raw search text rather
+    // than normalizing through URLSearchParams: ordering, duplicates, and
+    // percent-encoding are therefore all binding-significant.
+    const canonical = JSON.stringify([SUBSCRIPTION_RESOURCE_BINDING_DOMAIN, url.pathname, url.search]);
+    const digest = createHmac('sha256', challengeBindingSecret).update(canonical).digest('hex');
+    return `${SUBSCRIPTION_RESOURCE_BINDING_DOMAIN}:hmac-sha256:${digest}`;
+}
 
 type ChargeResult =
     | { readonly challenge: Response; readonly status: 402 }
@@ -126,16 +143,14 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                     realm,
                     secretKey: config.mpp.challengeBindingSecret,
                 });
-                handler = request => {
-                    const url = new URL(request.url);
-                    return mppx.subscription({
+                handler = request =>
+                    mppx.subscription({
                         amount: totalAmount(gate).toString(),
                         currency: mint,
                         ...(description !== undefined ? { description } : {}),
                         ...(gate.externalId ? { externalId: gate.externalId } : {}),
-                        resource: `${url.pathname}${url.search}`,
+                        resource: subscriptionResourceFor(request, config.mpp.challengeBindingSecret),
                     })(request);
-                };
             } else {
                 const mppx = Mppx.create({
                     methods: [
