@@ -61,18 +61,60 @@ func TestX402ExactAllowsRecipientDifferentFromSigner(t *testing.T) {
 	}
 }
 
-func TestX402UptoWiresUsageAdapter(t *testing.T) {
+func TestX402UptoOnNonLocalnetDoesNotRequireExactReplayStore(t *testing.T) {
 	c, err := paykit.New(paykit.Config{
-		Network:   paykit.SolanaLocalnet,
+		Network:   paykit.SolanaDevnet,
 		Accept:    []paykit.Protocol{paykit.X402},
 		Preflight: disabled(),
 		X402:      paykit.X402Config{Scheme: "upto"},
 	})
 	if err != nil {
-		t.Fatalf("x402 upto should wire usage adapter: %v", err)
+		t.Fatalf("non-localnet x402 upto should not require an exact replay store: %v", err)
 	}
 	if c.UsageAdapter() == nil {
 		t.Fatal("expected usage adapter for x402 upto config")
+	}
+	if c.X402Adapter() != nil {
+		t.Fatal("upto-only x402 config must not wire the exact adapter")
+	}
+}
+
+func TestX402ExactOnNonLocalnetRequiresReplayStore(t *testing.T) {
+	_, err := paykit.New(paykit.Config{
+		Network:   paykit.SolanaDevnet,
+		Accept:    []paykit.Protocol{paykit.X402},
+		Preflight: disabled(),
+		X402:      paykit.X402Config{Scheme: "exact"},
+	})
+	if err == nil {
+		t.Fatal("expected non-localnet exact x402 config without a replay store to fail closed")
+	}
+	if !strings.Contains(err.Error(), "ReplayStore") {
+		t.Fatalf("expected replay store error, got %v", err)
+	}
+}
+
+func TestNewMixedMPPAndX402UptoWiresSelectedAdapters(t *testing.T) {
+	c, err := paykit.New(paykit.Config{
+		Network:   paykit.SolanaDevnet,
+		Accept:    []paykit.Protocol{paykit.MPP, paykit.X402},
+		Preflight: disabled(),
+		MPP: paykit.MPPConfig{
+			ChallengeBindingSecret: []byte("test-secret"),
+		},
+		X402: paykit.X402Config{Scheme: "upto"},
+	})
+	if err != nil {
+		t.Fatalf("mixed MPP and x402 upto config should wire selected adapters: %v", err)
+	}
+	if c.MppAdapter() == nil {
+		t.Fatal("expected MPP adapter for mixed config")
+	}
+	if c.UsageAdapter() == nil {
+		t.Fatal("expected x402 usage adapter for mixed config")
+	}
+	if c.X402Adapter() != nil {
+		t.Fatal("mixed config with x402 upto must not wire the exact adapter")
 	}
 }
 
