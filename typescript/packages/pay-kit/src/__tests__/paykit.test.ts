@@ -70,6 +70,49 @@ describe('createPayKit', () => {
         );
     });
 
+    it('revalidates every boot invariant on frozen prebuilt configs', async () => {
+        const base = await configure({ mpp: { challengeBindingSecret: 's'.repeat(32) } });
+
+        await expect(createPayKit({ config: Object.freeze({ ...base, accept: Object.freeze([]) }) })).rejects.toThrow(
+            'accept must list at least one protocol.',
+        );
+        await expect(
+            createPayKit({
+                config: Object.freeze({
+                    ...base,
+                    network: 'solana_testnet' as PayKitConfig['network'],
+                }),
+            }),
+        ).rejects.toThrow('Unknown network "solana_testnet".');
+        await expect(
+            createPayKit({ config: Object.freeze({ ...base, stablecoins: Object.freeze([]) }) }),
+        ).rejects.toThrow('stablecoins must list at least one coin.');
+
+        const previousOptIn = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        try {
+            await expect(
+                createPayKit({ config: Object.freeze({ ...base, network: 'solana_devnet' }) }),
+            ).rejects.toThrow('no shared replay store configured outside localnet');
+        } finally {
+            if (previousOptIn === undefined) delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+            else process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = previousOptIn;
+        }
+    });
+
+    it('snapshots mutable prebuilt config before adapters observe it', async () => {
+        const base = await configure({ mpp: { challengeBindingSecret: 's'.repeat(32) } });
+        const mutableMpp = { ...base.mpp };
+        const config: PayKitConfig = { ...base, mpp: mutableMpp };
+
+        const paykit = await createPayKit({ config });
+        mutableMpp.realm = 'changed-after-construction';
+
+        expect(paykit.config.mpp.realm).toBe('App');
+        expect(Object.isFrozen(paykit.config)).toBe(true);
+        expect(Object.isFrozen(paykit.config.mpp)).toBe(true);
+    });
+
     it('renders a 402 challenge when no credential is present', async () => {
         const paykit = await setup();
         const request = new Request('http://api.test/report');

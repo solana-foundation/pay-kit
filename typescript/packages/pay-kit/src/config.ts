@@ -101,6 +101,41 @@ export type PayKitConfig = {
 const DEFAULT_EXPIRES_IN_SECONDS = 120;
 const MIN_CHALLENGE_BINDING_SECRET_BYTES = 32;
 const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
+const SUPPORTED_NETWORKS: ReadonlySet<Network> = new Set(['solana_devnet', 'solana_localnet', 'solana_mainnet']);
+
+function validateNetwork(network: Network): void {
+    if (!SUPPORTED_NETWORKS.has(network)) {
+        throw new ConfigurationError(`Unknown network "${String(network)}".`);
+    }
+}
+
+function validateAccept(accept: readonly Protocol[]): void {
+    if (accept.length === 0) throw new ConfigurationError('accept must list at least one protocol.');
+    for (const protocol of accept) {
+        if (protocol !== 'mpp' && protocol !== 'x402') {
+            throw new ProtocolNotSupportedError(
+                `Protocol "${String(protocol)}" is not available in the TypeScript SDK yet (MPP and x402 only).`,
+            );
+        }
+    }
+}
+
+function validateStablecoins(stablecoins: readonly Stablecoin[]): void {
+    if (stablecoins.length === 0) throw new ConfigurationError('stablecoins must list at least one coin.');
+    for (const coin of stablecoins) {
+        if (!STABLECOINS.includes(coin)) {
+            throw new ConfigurationError(`Unknown stablecoin "${coin}". Supported: ${STABLECOINS.join(', ')}.`);
+        }
+    }
+}
+
+function validateOperator(network: Network, operator: Operator): void {
+    if (operator.signer.isDemo && network === 'solana_mainnet') {
+        throw new DemoSignerOnMainnetError(
+            'The demo signer is public and must not be used on mainnet. Provide operator.signer.',
+        );
+    }
+}
 
 export function validateMppConfig(
     config: Pick<PayKitConfig, 'accept' | 'network'> & {
@@ -123,6 +158,37 @@ export function validateMppConfig(
             `mpp.challengeBindingSecret must be at least ${MIN_CHALLENGE_BINDING_SECRET_BYTES} UTF-8 bytes outside localnet.`,
         );
     }
+}
+
+/** Revalidate every security-relevant invariant on a resolved config. */
+export function validatePayKitConfig(config: PayKitConfig): void {
+    validateNetwork(config.network);
+    validateAccept(config.accept);
+    validateStablecoins(config.stablecoins);
+    validateOperator(config.network, config.operator);
+    validateMppConfig(config);
+    if (
+        config.accept.includes('mpp') &&
+        config.network !== 'solana_localnet' &&
+        config.replayStore === undefined &&
+        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] !== '1'
+    ) {
+        throw new ConfigurationError(
+            `no shared replay store configured outside localnet; provide replayStore or set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
+        );
+    }
+}
+
+/** Take an immutable snapshot so caller mutation cannot drift adapter policy. */
+export function freezePayKitConfig(config: PayKitConfig): PayKitConfig {
+    return Object.freeze({
+        ...config,
+        accept: Object.freeze([...config.accept]),
+        mpp: Object.freeze({ ...config.mpp }),
+        operator: Object.freeze({ ...config.operator }),
+        stablecoins: Object.freeze([...config.stablecoins]),
+        x402: Object.freeze({ ...config.x402 }),
+    });
 }
 
 function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
@@ -159,24 +225,13 @@ function resolveChallengeBindingSecret(network: Network, provided: string | unde
  */
 export async function configure(params: ConfigureParams = {}): Promise<PayKitConfig> {
     const network = toNetwork(params.network ?? 'solana_localnet');
+    validateNetwork(network);
 
     const accept = params.accept ?? ['mpp'];
-    if (accept.length === 0) throw new ConfigurationError('accept must list at least one protocol.');
-    for (const protocol of accept) {
-        if (protocol !== 'mpp' && protocol !== 'x402') {
-            throw new ProtocolNotSupportedError(
-                `Protocol "${String(protocol)}" is not available in the TypeScript SDK yet (MPP and x402 only).`,
-            );
-        }
-    }
+    validateAccept(accept);
 
     const stablecoins = params.stablecoins ?? ['USDC'];
-    if (stablecoins.length === 0) throw new ConfigurationError('stablecoins must list at least one coin.');
-    for (const coin of stablecoins) {
-        if (!STABLECOINS.includes(coin)) {
-            throw new ConfigurationError(`Unknown stablecoin "${coin}". Supported: ${STABLECOINS.join(', ')}.`);
-        }
-    }
+    validateStablecoins(stablecoins);
 
     const provided = params.operator?.signer;
     const signer =
@@ -185,16 +240,12 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
             : 'pubkey' in provided
               ? provided
               : Signer.from(provided, { feePayer: params.operator?.feePayer });
-    if (signer.isDemo && network === 'solana_mainnet') {
-        throw new DemoSignerOnMainnetError(
-            'The demo signer is public and must not be used on mainnet. Provide operator.signer.',
-        );
-    }
     const operator: Operator = {
         feePayer: params.operator?.feePayer ?? true,
         recipient: params.operator?.recipient ?? signer.pubkey,
         signer,
     };
+    validateOperator(network, operator);
 
     const expiresIn = params.mpp?.expiresIn ?? DEFAULT_EXPIRES_IN_SECONDS;
     // The MPP challenge-binding secret is only meaningful when MPP is accepted;
@@ -203,40 +254,25 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
 
-    validateMppConfig({
+    const resolved: PayKitConfig = {
         accept,
-        mpp: { challengeBindingSecret, expiresIn },
-        network,
-    });
-
-    if (
-        accept.includes('mpp') &&
-        network !== 'solana_localnet' &&
-        params.replayStore === undefined &&
-        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] !== '1'
-    ) {
-        throw new ConfigurationError(
-            `no shared replay store configured outside localnet; provide replayStore or set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
-        );
-    }
-
-    return Object.freeze({
-        accept: Object.freeze([...accept]),
-        mpp: Object.freeze({
+        mpp: {
             challengeBindingSecret,
             expiresIn,
             html: params.mpp?.html ?? false,
             realm: params.mpp?.realm ?? 'App',
             sessionStore: params.mpp?.sessionStore,
-        }),
+        },
         network,
-        operator: Object.freeze(operator),
+        operator,
         preflight: params.preflight ?? true,
         replayStore: params.replayStore,
         rpcUrl: params.rpcUrl ?? DEFAULT_RPC_URLS[toSolanaNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet,
-        stablecoins: Object.freeze([...stablecoins]),
-        x402: Object.freeze({}),
-    });
+        stablecoins,
+        x402: {},
+    };
+    validatePayKitConfig(resolved);
+    return freezePayKitConfig(resolved);
 }
 
 /**
