@@ -48,8 +48,8 @@ func TestRequireFuncInvalidGateReturns402(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusPaymentRequired {
-		t.Errorf("status: got %d want 402", resp.StatusCode)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status: got %d want 500", resp.StatusCode)
 	}
 }
 

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/system"
-	"github.com/gagliardetto/solana-go/programs/token"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/programs/system"
+	"github.com/solana-foundation/solana-go/v2/programs/token"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
@@ -186,7 +186,9 @@ func TestVerifyTransfersRejectsATACreateForUnauthorizedOwner(t *testing.T) {
 }
 
 // boolPtr is a tiny helper for the *bool ataCreationRequired field.
-func boolPtr(b bool) *bool { return &b }
+//
+//go:fix inline
+func boolPtr(b bool) *bool { return new(b) }
 
 // TestVerifyTransfersRejectsMissingRequiredATACreation is the required-ATA
 // regression: a fee-payer-sponsored charge with a split recipient pinned as
@@ -217,7 +219,7 @@ func TestVerifyTransfersRejectsMissingRequiredATACreation(t *testing.T) {
 			{
 				Recipient:           splitRecipient.String(),
 				Amount:              "300",
-				AtaCreationRequired: boolPtr(true),
+				AtaCreationRequired: new(true),
 			},
 		},
 	}
@@ -257,7 +259,7 @@ func TestVerifyTransfersAcceptsRequiredATACreation(t *testing.T) {
 			{
 				Recipient:           splitRecipient.String(),
 				Amount:              "300",
-				AtaCreationRequired: boolPtr(true),
+				AtaCreationRequired: new(true),
 			},
 		},
 	}

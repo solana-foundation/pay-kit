@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	ag_binary "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )

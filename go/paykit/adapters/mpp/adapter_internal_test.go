@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // errSigner is a paykit.Signer stub whose Sign method always returns the given
@@ -40,9 +41,37 @@ func testCfg() paykit.Config {
 	}
 }
 
+// TestAdapterProtocolAndChallengeHeaders exercises New, Protocol, and
+// ChallengeHeaders in-package. The end-to-end path is covered from
+// protocols/mpp, which runs in a separate test binary and does not attribute
+// coverage to this package.
+func TestAdapterProtocolAndChallengeHeaders(t *testing.T) {
+	a, err := New(testCfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Protocol() != paykit.MPP {
+		t.Errorf("Protocol: got %v", a.Protocol())
+	}
+	g := &paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
+	if _, err := a.ChallengeHeaders(g); err != nil {
+		t.Fatalf("ChallengeHeaders: %v", err)
+	}
+}
+
+func TestNewRejectsMissingSecret(t *testing.T) {
+	c := testCfg()
+	c.MPP.ChallengeBindingSecret = nil
+	if _, err := New(c); err == nil {
+		t.Fatal("expected error for missing challenge binding secret")
+	}
+}
+
 func TestSignerBridgeSignAndPubkey(t *testing.T) {
 	demo := signer.Demo()
-	b := &signerBridge{signer: demo}
+	// The operator pubkey is decoded once by serverFor (where the base58 error
+	// can propagate) and passed in, so construct the bridge the same way.
+	b := &signerBridge{signer: demo, pub: solana.MustPublicKeyFromBase58(string(demo.Pubkey()))}
 	if b.PublicKey() != solana.MustPublicKeyFromBase58(string(demo.Pubkey())) {
 		t.Error("bridge pubkey mismatch")
 	}
@@ -101,6 +130,9 @@ func TestCoinHelpers(t *testing.T) {
 	if got := a.priceUnits(paykit.MustParseUSD("0.30")); got != "300000" {
 		t.Errorf("priceUnits: got %s want 300000", got)
 	}
+	if got := a.totalUnits(plain, paycore.PYUSDMainnetMint); got != "100000" {
+		t.Errorf("totalUnits mint decimals: got %s want 100000", got)
+	}
 }
 
 func TestPayToFallsBackToOperatorRecipient(t *testing.T) {
@@ -120,7 +152,10 @@ func TestChallengeHeadersEmitsWWWAuthenticate(t *testing.T) {
 	cfg.RPCURL = "http://127.0.0.1:1" // unreachable; blockhash fetch is best-effort
 	a := &Adapter{cfg: cfg}
 	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/paid"}
-	headers := a.ChallengeHeaders(gate)
+	headers, err := a.ChallengeHeaders(gate)
+	if err != nil {
+		t.Fatalf("ChallengeHeaders: %v", err)
+	}
 	if headers == nil {
 		t.Fatal("expected challenge headers")
 	}
@@ -156,7 +191,11 @@ func TestAcceptsEntryEmitsSplitsAndNetwork(t *testing.T) {
 		FeeOnTop:  paykit.Fees{paykit.Address("GATEWAY"): paykit.MustParseUSD("0.50")},
 		FeeWithin: paykit.Fees{paykit.Address("PLATFORM"): paykit.MustParseUSD("0.30")},
 	}
-	entry := a.AcceptsEntry(gate).(AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(gate)
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry := rawEntry.(AcceptsEntry)
 	if entry.Network != paykit.SolanaLocalnet.CAIP2() {
 		t.Errorf("network: got %s", entry.Network)
 	}
@@ -230,8 +269,8 @@ func TestChallengeHeadersReturnsNilOnBadRecipient(t *testing.T) {
 		Amount: paykit.MustParseUSD("0.10"),
 		PayTo:  paykit.Address("!!!not-a-valid-pubkey"),
 	}
-	if headers := a.ChallengeHeaders(gate); headers != nil {
-		t.Errorf("expected nil for ChallengeHeaders with bad recipient, got %v", headers)
+	if _, err := a.ChallengeHeaders(gate); err == nil {
+		t.Error("expected an error from ChallengeHeaders with a bad recipient")
 	}
 }
 

@@ -73,6 +73,36 @@ func TestMemoryChannelStoreUpdateChannelSeesPriorWrites(t *testing.T) {
 	}
 }
 
+func TestMemoryChannelStoreClonesConsumedTopUpSignatures(t *testing.T) {
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+	result, err := store.UpdateChannel(ctx, "c1", func(*ChannelState) (ChannelState, error) {
+		state := testChannelState("c1", 1)
+		state.ConsumedTopUpSignatures = []string{"topup-a"}
+		return state, nil
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	result.ConsumedTopUpSignatures[0] = "mutated-result"
+
+	first, err := store.GetChannel(ctx, "c1")
+	if err != nil || first == nil {
+		t.Fatalf("GetChannel: state=%v err=%v", first, err)
+	}
+	if got := first.ConsumedTopUpSignatures[0]; got != "topup-a" {
+		t.Fatalf("stored signature = %q after result mutation", got)
+	}
+	first.ConsumedTopUpSignatures[0] = "mutated-read"
+	second, err := store.GetChannel(ctx, "c1")
+	if err != nil || second == nil {
+		t.Fatalf("second GetChannel: state=%v err=%v", second, err)
+	}
+	if got := second.ConsumedTopUpSignatures[0]; got != "topup-a" {
+		t.Fatalf("stored signature = %q after read mutation", got)
+	}
+}
+
 func TestMemoryChannelStoreSerializesConcurrentUpdates(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()
@@ -234,6 +264,30 @@ func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
 
 	if _, err := store.MarkSealed(ctx, "ghost"); err == nil {
 		t.Fatal("expected error marking missing channel sealed")
+	}
+}
+
+func TestMemoryChannelStoreDeleteChannelKeepsStablePerChannelLock(t *testing.T) {
+	// Regression: DeleteChannel must NOT drop the per-channel lock. If it did,
+	// a concurrent UpdateChannel already holding the old mutex would no longer
+	// serialize against a fresh mutex minted by the next channelLock call for
+	// the same id, silently losing an update. Assert the mutex identity is
+	// stable across a delete + re-observe.
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+	const id = "chan-stable-lock"
+
+	before := store.channelLock(id)
+	if _, err := store.UpdateChannel(ctx, id, func(*ChannelState) (ChannelState, error) {
+		return testChannelState(id, 100), nil
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	if err := store.DeleteChannel(ctx, id); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	if after := store.channelLock(id); before != after {
+		t.Fatal("DeleteChannel replaced the per-channel lock; a concurrent updater on the old lock would race a new one and lose updates")
 	}
 }
 

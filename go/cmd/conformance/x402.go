@@ -3,8 +3,14 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 
+	solana "github.com/solana-foundation/solana-go/v2"
+
+	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -31,13 +37,26 @@ import (
 
 // X402Offer mirrors schema.ts X402Offer.
 type X402Offer struct {
-	Scheme            string                 `json:"scheme"`
-	Network           string                 `json:"network"`
-	Amount            string                 `json:"amount"`
-	Asset             string                 `json:"asset"`
-	PayTo             string                 `json:"payTo"`
-	MaxTimeoutSeconds *int                   `json:"maxTimeoutSeconds"`
-	Extra             map[string]interface{} `json:"extra"`
+	Scheme            string         `json:"scheme"`
+	Network           string         `json:"network"`
+	Amount            string         `json:"amount"`
+	Asset             string         `json:"asset"`
+	PayTo             string         `json:"payTo"`
+	MaxTimeoutSeconds *int           `json:"maxTimeoutSeconds"`
+	Extra             map[string]any `json:"extra"`
+}
+
+// X402ExactRequirement mirrors schema.ts input.x402ExactRequirement: the
+// advertised offer fields the real x402 exact structural verifier checks the
+// signed transaction against.
+type X402ExactRequirement struct {
+	Asset  string `json:"asset"`
+	PayTo  string `json:"payTo"`
+	Amount string `json:"amount"`
+	Extra  struct {
+		TokenProgram string `json:"tokenProgram"`
+		Memo         string `json:"memo"`
+	} `json:"extra"`
 }
 
 // X402EnvelopeShape mirrors schema.ts X402EnvelopeShape: the decoded
@@ -82,9 +101,11 @@ const (
 	solanaDevnetCAIP2 = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 )
 
-// runX402 dispatches an x402-exact vector by mode. build-transaction
-// produces an envelope and emits its shape; verify-transaction runs the
-// server-side envelope gate and emits accept/reject (+ rejectCode).
+// runX402 dispatches an x402-exact vector by mode. build-transaction produces
+// an envelope and emits its shape; verify-transaction runs the server-side
+// envelope gate and emits accept/reject (+ rejectCode); verify-x402-transaction
+// runs the real exact structural verifier over the signed transaction and emits
+// accept/reject (+ x402ExactRejectCode).
 func runX402(vector Vector) RunnerResult {
 	switch vector.Mode {
 	case "build-transaction":
@@ -99,9 +120,90 @@ func runX402(vector Vector) RunnerResult {
 			return rejected(vector.ID, err)
 		}
 		return RunnerResult{ID: vector.ID, Outcome: "accept", X402EnvelopeShape: shape}
+	case "verify-x402-transaction":
+		if err := verifyX402ExactTransaction(vector); err != nil {
+			return rejectedX402Exact(vector.ID, err)
+		}
+		return RunnerResult{ID: vector.ID, Outcome: "accept"}
 	default:
 		return rejected(vector.ID, fmt.Errorf("unsupported x402 mode %q", vector.Mode))
 	}
+}
+
+// rejectedX402Exact wraps rejected, surfacing the canonical
+// invalid_exact_svm_payload_* reason code from a *x402.VerifyError into
+// X402ExactRejectCode so the cross-SDK oracle can bind the exact code.
+func rejectedX402Exact(id string, err error) RunnerResult {
+	result := rejected(id, err)
+	var verifyErr *x402.VerifyError
+	if errors.As(err, &verifyErr) {
+		result.X402ExactRejectCode = verifyErr.Code
+	}
+	return result
+}
+
+// verifyX402ExactTransaction drives the real Go exact structural verifier
+// (x402.VerifyExactTransaction) over the signed transaction. It decodes the
+// pinned base64 transaction and parses the advertised requirement plus every
+// managed signer, defaulting the token program to the SPL Token program,
+// exactly as the shared harness reference (harness/src/conformance/x402.ts).
+func verifyX402ExactTransaction(vector Vector) error {
+	in := vector.Input
+	if in.Transaction == "" {
+		return fmt.Errorf("invalid payload: verify-x402-transaction vector missing input.transaction")
+	}
+	reqIn := in.X402ExactRequirement
+	if reqIn == nil {
+		return fmt.Errorf("invalid payload: verify-x402-transaction vector missing input.x402ExactRequirement")
+	}
+	if len(in.X402ExactManagedSigners) == 0 {
+		return fmt.Errorf("invalid payload: verify-x402-transaction vector missing input.x402ExactManagedSigners")
+	}
+
+	tx, err := solanatx.DecodeTransactionBase64(in.Transaction)
+	if err != nil {
+		return x402.VerifyFail(
+			"invalid_exact_svm_payload_transaction_could_not_be_decoded",
+			err.Error(),
+		)
+	}
+	payTo, err := solana.PublicKeyFromBase58(reqIn.PayTo)
+	if err != nil {
+		return fmt.Errorf("invalid payload: x402ExactRequirement.payTo: %w", err)
+	}
+	mint, err := solana.PublicKeyFromBase58(reqIn.Asset)
+	if err != nil {
+		return fmt.Errorf("invalid payload: x402ExactRequirement.asset: %w", err)
+	}
+	amount, err := strconv.ParseUint(reqIn.Amount, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid payload: x402ExactRequirement.amount: %w", err)
+	}
+	tokenProgram := paycore.TokenProgram
+	if reqIn.Extra.TokenProgram != "" {
+		tokenProgram = reqIn.Extra.TokenProgram
+	}
+	tokenProgramKey, err := solana.PublicKeyFromBase58(tokenProgram)
+	if err != nil {
+		return fmt.Errorf("invalid payload: x402ExactRequirement.extra.tokenProgram: %w", err)
+	}
+	managedSigners := make([]solana.PublicKey, len(in.X402ExactManagedSigners))
+	for i, encoded := range in.X402ExactManagedSigners {
+		managed, err := solana.PublicKeyFromBase58(encoded)
+		if err != nil {
+			return fmt.Errorf("invalid payload: x402ExactManagedSigners[%d]: %w", i, err)
+		}
+		managedSigners[i] = managed
+	}
+
+	return x402.VerifyExactTransaction(tx, x402.TransferRequirements{
+		PayTo:          payTo,
+		Mint:           mint,
+		TokenProgram:   tokenProgramKey,
+		Amount:         amount,
+		ManagedSigners: managedSigners,
+		ExpectedMemo:   reqIn.Extra.Memo,
+	})
 }
 
 // offerToAcceptsEntry round-trips the vector offer through the production
@@ -292,7 +394,7 @@ func decodeX402EnvelopeShape(header string) (*X402EnvelopeShape, error) {
 			if r := ext.PaymentIdentifier.Info.Required; r != nil {
 				shape.PaymentIdentifierRequired = r
 			}
-			shape.PaymentIdentifierID = ext.PaymentIdentifier.Info.Id
+			shape.PaymentIdentifierID = ext.PaymentIdentifier.Info.ID
 		}
 	}
 	return shape, nil

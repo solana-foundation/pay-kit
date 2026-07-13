@@ -70,6 +70,10 @@ type ChannelState struct {
 	// (base units).
 	Deposit uint64 `json:"deposit"`
 
+	// ConsumedTopUpSignatures prevents a confirmed top-up transaction from
+	// being credited again under a later absolute newDeposit claim.
+	ConsumedTopUpSignatures []string `json:"consumed_top_up_signatures,omitempty"`
+
 	// OpenSlot is the slot recorded in the channel open args (push sessions).
 	// It is a channel PDA seed, so it is persisted to re-derive the address
 	// and to drive the post-distribute reclaim. Zero for pull sessions and
@@ -156,6 +160,9 @@ func (s *ChannelState) UnmarshalJSON(data []byte) error {
 // clone returns a deep copy so callers can never alias store-internal state.
 func (s ChannelState) clone() ChannelState {
 	out := s
+	if s.ConsumedTopUpSignatures != nil {
+		out.ConsumedTopUpSignatures = append([]string(nil), s.ConsumedTopUpSignatures...)
+	}
 	if s.HighestVoucherSignature != nil {
 		v := *s.HighestVoucherSignature
 		out.HighestVoucherSignature = &v
@@ -310,6 +317,13 @@ func (s *MemoryChannelStore) DeleteChannel(_ context.Context, channelID string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, channelID)
+	// Intentionally keep s.locks[channelID]. A concurrent UpdateChannel may
+	// already hold (or be about to acquire) this channel's mutex; deleting it
+	// here lets the next channelLock(channelID) mint a *second* mutex for the
+	// same id, so two updaters would serialize on different locks and lose
+	// updates. The lock map is bounded by the number of distinct channel ids
+	// ever seen (one small mutex each), an acceptable cost for keeping
+	// read-modify-write atomic.
 	return nil
 }
 

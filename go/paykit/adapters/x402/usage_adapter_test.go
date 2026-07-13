@@ -11,8 +11,6 @@ import (
 	"time"
 
 	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
@@ -20,6 +18,8 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // uptoTestRPC wraps testutil.FakeRPC with channel account data for the
@@ -124,7 +124,10 @@ func TestUsageAdapterDoesNotAdvertiseChannelProgramOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUsageAdapter: %v", err)
 	}
-	entry := adapter.UsageAcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"})
+	entry, err := adapter.UsageAcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"})
+	if err != nil {
+		t.Fatalf("UsageAcceptsEntry: %v", err)
+	}
 	raw, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatalf("marshal accepts entry: %v", err)
@@ -184,7 +187,10 @@ func TestUsageAdapterChallengeHeaders(t *testing.T) {
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"}
-	headers := adapter.UsageChallengeHeaders(&gate)
+	headers, err := adapter.UsageChallengeHeaders(&gate)
+	if err != nil {
+		t.Fatalf("UsageChallengeHeaders: %v", err)
+	}
 	if len(headers) == 0 {
 		t.Fatal("expected challenge headers")
 	}
@@ -202,7 +208,10 @@ func TestUsageAdapterAcceptsEntry(t *testing.T) {
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"}
-	entry := adapter.UsageAcceptsEntry(&gate)
+	entry, err := adapter.UsageAcceptsEntry(&gate)
+	if err != nil {
+		t.Fatalf("UsageAcceptsEntry: %v", err)
+	}
 	if entry == nil {
 		t.Fatal("expected accepts entry")
 	}
@@ -336,12 +345,16 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		RecentBlockhashProvider: func() (string, error) { return blockhash.String(), nil },
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	}
-	adapter, err := NewUsageAdapter(cfg)
+	uptoCfg, err := buildUptoConfig(cfg)
 	if err != nil {
-		t.Fatalf("NewUsageAdapter: %v", err)
+		t.Fatalf("buildUptoConfig: %v", err)
 	}
-	ua := adapter.(*usageAdapter)
-	ua.engine.SetRPCForTests(fakeRPC)
+	uptoCfg.RPCClient = fakeRPC
+	engine, err := proto.NewX402Upto(uptoCfg)
+	if err != nil {
+		t.Fatalf("NewX402Upto: %v", err)
+	}
+	adapter := &usageAdapter{engine: engine, cfg: cfg}
 
 	envelope := proto.UptoSignatureEnvelope{
 		X402Version: proto.X402Version,

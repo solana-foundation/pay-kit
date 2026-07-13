@@ -2,6 +2,7 @@ package paykit
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/shopspring/decimal"
 )
@@ -155,12 +156,10 @@ func (g *Gate) Validate() error {
 	}
 	// x402 explicit + fees = boom (rule 5).
 	if g.HasFees() {
-		for _, s := range g.Accept {
-			if s == X402 {
-				return &GateError{
-					Reason:   "x402 cannot settle multi-recipient gates",
-					Sentinel: ErrSchemeIncompatible,
-				}
+		if slices.Contains(g.Accept, X402) {
+			return &GateError{
+				Reason:   "x402 cannot settle multi-recipient gates",
+				Sentinel: ErrSchemeIncompatible,
 			}
 		}
 	}

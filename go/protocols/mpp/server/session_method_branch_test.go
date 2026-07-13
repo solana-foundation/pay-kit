@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
@@ -597,7 +597,7 @@ func TestVerifyOpenTxMalformedInstructions(t *testing.T) {
 
 	// Short instruction data.
 	accounts := make([]*solana.AccountMeta, 0, 8)
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		accounts = append(accounts, wallet())
 	}
 	shortData, shortExpected := buildRawOpenPayload(t, accounts, []byte{openInstructionDiscriminator, 1, 2, 3})

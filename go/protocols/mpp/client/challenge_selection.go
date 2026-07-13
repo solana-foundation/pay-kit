@@ -8,6 +8,7 @@ package client
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
@@ -91,11 +92,9 @@ func SelectSessionChallenge(
 	for _, candidate := range candidates {
 		challengeModes := SessionRequestModes(candidate.Request)
 		for _, accepted := range options.Modes {
-			for _, mode := range challengeModes {
-				if mode == accepted {
-					selected := candidate
-					return &selected, nil
-				}
+			if slices.Contains(challengeModes, accepted) {
+				selected := candidate
+				return &selected, nil
 			}
 		}
 	}
