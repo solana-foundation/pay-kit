@@ -809,6 +809,11 @@ class Session:
             if current.sealed:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
+                if current.settled_signature is not None and (self._signer is None or self._rpc is None):
+                    # A persisted broadcast can only be retried through the
+                    # reconciliation path. Never acknowledge it as closed when
+                    # this instance cannot confirm the recorded signature.
+                    raise ValueError("close already requested")
                 # Re-drive failed pre-broadcast closes and reconcile an
                 # already-broadcast signature. A sealed channel was rejected
                 # above; the settlement state machine decides whether this
