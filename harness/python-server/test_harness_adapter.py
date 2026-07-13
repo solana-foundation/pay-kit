@@ -163,6 +163,9 @@ def _x402_env() -> dict[str, str]:
         "X402_HARNESS_PAY_TO": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         "X402_HARNESS_FACILITATOR_SECRET_KEY": _fake_keypair_json(),
         "X402_HARNESS_RESOURCE_PATH": "/protected",
+        # This process-local server is an explicit devnet harness fixture.
+        # Production adapters still require a durable shared replay store.
+        "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE": "1",
     }
 
 

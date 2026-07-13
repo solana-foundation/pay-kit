@@ -245,7 +245,21 @@ class _Adapter:
             preflight=False,
         ).model_copy()
         self.config = config
-        replay_store = FileReplayStore(f"/tmp/pay-kit-python-x402-replay-{os.getpid()}.json")
+        if config.network is Network.SOLANA_LOCALNET:
+            replay_store = FileReplayStore(f"/tmp/pay-kit-python-x402-replay-{os.getpid()}.json")
+        elif (
+            config.network is Network.SOLANA_DEVNET
+            and os.getenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE") == "1"
+        ):
+            # The cross-language harness is a single process. Keep that
+            # development-only exception explicit so production construction
+            # remains fail-closed outside localnet.
+            replay_store = MemoryStore()
+        else:
+            raise RuntimeError(
+                "Python x402 harness requires a durable ProductionReplayStore outside localnet; "
+                "set PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 only for explicit devnet harness runs"
+            )
         self.adapter = X402Adapter(config, replay_store=replay_store)
         self.pay_to = pay_to
         decimals = int(optional_env("X402_HARNESS_DECIMALS", "6"))
