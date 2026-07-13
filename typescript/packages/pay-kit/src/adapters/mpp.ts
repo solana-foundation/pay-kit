@@ -126,14 +126,16 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                     realm,
                     secretKey: config.mpp.challengeBindingSecret,
                 });
-                handler = request =>
-                    mppx.subscription({
+                handler = request => {
+                    const url = new URL(request.url);
+                    return mppx.subscription({
                         amount: totalAmount(gate).toString(),
                         currency: mint,
                         ...(description !== undefined ? { description } : {}),
                         ...(gate.externalId ? { externalId: gate.externalId } : {}),
-                        resource: new URL(request.url).pathname,
+                        resource: `${url.pathname}${url.search}`,
                     })(request);
+                };
             } else {
                 const mppx = Mppx.create({
                     methods: [

@@ -415,6 +415,27 @@ describe('settlement proof and replay', () => {
 });
 
 describe('cross-route subscription binding', () => {
+    test('serializes an explicit empty split list for credential binding', async () => {
+        const serverSigner = await generateKeyPairSigner();
+        const gate = Mppx.create({
+            methods: [subscription({ ...serverParameters(serverSigner, new AtomicStore()), splits: [] })],
+            realm: 'subscription-empty-splits',
+            secretKey: 'subscription-empty-splits-secret',
+        });
+
+        const issued = await gate.subscription({
+            amount: '10000000',
+            currency: MINT,
+            expires: new Date(Date.now() + 60_000).toISOString(),
+        })(new Request('https://example.test/gate'));
+
+        expect(issued.status).toBe(402);
+        if (issued.status !== 402) throw new Error('expected subscription challenge');
+        expect((Challenge.fromResponse(issued.challenge).request.methodDetails as { splits?: unknown }).splits).toEqual(
+            [],
+        );
+    });
+
     test('rejects a valid gate-A credential before RPC when gate-B subscription fields diverge', async () => {
         const { serverSigner, transaction } = await fixture();
         const secretKey = 'subscription-binding-test-secret';

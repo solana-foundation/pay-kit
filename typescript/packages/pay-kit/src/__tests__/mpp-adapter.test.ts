@@ -120,15 +120,15 @@ describe('createMppAdapter', () => {
             { accept: ['mpp'], payTo: SELLER },
         );
         const adapter = createMppAdapter(config);
-        const gateA = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-a'));
-        const gateB = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-b'));
+        const gateA = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-a?tier=basic'));
+        const gateB = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-b?tier=premium'));
 
         expect(
             (Challenge.deserialize(gateA['www-authenticate'] as string).request as { resource?: string }).resource,
-        ).toBe('/gate-a');
+        ).toBe('/gate-a?tier=basic');
         expect(
             (Challenge.deserialize(gateB['www-authenticate'] as string).request as { resource?: string }).resource,
-        ).toBe('/gate-b');
+        ).toBe('/gate-b?tier=premium');
     });
 
     it('detects MPP payment credentials', async () => {

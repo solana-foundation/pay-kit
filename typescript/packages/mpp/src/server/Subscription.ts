@@ -187,7 +187,7 @@ export function subscription(parameters: subscription.Parameters) {
                     programId,
                     puller,
                     tokenProgram,
-                    ...(splits?.length ? { splits } : {}),
+                    ...(splits !== undefined ? { splits } : {}),
                     ...(recentBlockhash ? { recentBlockhash } : {}),
                 },
                 periodCount: request.periodCount ?? String(periodCount),
