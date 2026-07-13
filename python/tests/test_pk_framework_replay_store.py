@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import solana_pay_kit._middleware as mw
 from solana_pay_kit import MppConfig, Network, Payment, Price, Protocol, Stablecoin, configure
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.store import FileReplayStore
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, ProductionReplayStore, Store
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import ConfigurationError
 
@@ -68,6 +69,25 @@ def _payment() -> Payment:
     return Payment(protocol=Protocol.MPP, transaction="sig-abc", gate_name="report")
 
 
+class _ProductionStore(ProductionReplayStore):
+    """Test double for a production backend verified by the application."""
+
+    def __init__(self) -> None:
+        self._delegate = MemoryStore()
+
+    async def get(self, key: str) -> Any | None:
+        return await self._delegate.get(key)
+
+    async def put(self, key: str, value: Any) -> None:
+        await self._delegate.put(key, value)
+
+    async def delete(self, key: str) -> None:
+        await self._delegate.delete(key)
+
+    async def put_if_absent(self, key: str, value: Any) -> bool:
+        return await self._delegate.put_if_absent(key, value)
+
+
 def _patch_paid_process(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_process(self, gate_ref, pricing, request):  # noqa: ANN001
         return _payment()
@@ -77,8 +97,8 @@ def _patch_paid_process(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _spy_for_config(
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[list[FileReplayStore | None], list[mw.PayCore]]:
-    calls: list[FileReplayStore | None] = []
+) -> tuple[list[Store | None], list[mw.PayCore]]:
+    calls: list[Store | None] = []
     cores: list[mw.PayCore] = []
     original = mw.PayCore.for_config
 
@@ -93,11 +113,11 @@ def _spy_for_config(
 
 
 @pytest.mark.asyncio
-async def test_fastapi_dependency_forwards_durable_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_fastapi_dependency_forwards_durable_store(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_paid_process(monkeypatch)
     calls, cores = _spy_for_config(monkeypatch)
     cfg = _config("fastapi-dependency")
-    first_store = FileReplayStore(tmp_path / "first.json")
+    first_store = _ProductionStore()
     dependency = pk_fastapi.RequirePayment(
         Price.usd("0.10", Stablecoin.USDC),
         config=cfg,
@@ -109,7 +129,7 @@ async def test_fastapi_dependency_forwards_durable_store(monkeypatch: pytest.Mon
     assert payment.transaction == "sig-abc"
     assert calls == [first_store]
 
-    second_store = FileReplayStore(tmp_path / "second.json")
+    second_store = _ProductionStore()
     later_dependency = pk_fastapi.RequirePayment(
         Price.usd("0.10", Stablecoin.USDC),
         config=cfg,
@@ -126,15 +146,15 @@ async def test_fastapi_dependency_fails_closed_without_durable_store() -> None:
     cfg = _config("fastapi-missing-store")
     dependency = pk_fastapi.RequirePayment(Price.usd("0.10", Stablecoin.USDC), config=cfg)
 
-    with pytest.raises(PaymentError, match="durable replay_store is required"):
+    with pytest.raises(PaymentError, match="ProductionReplayStore"):
         await dependency(SimpleNamespace(state=SimpleNamespace()))
 
 
-def test_fastapi_paywall_uses_durable_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_fastapi_paywall_uses_durable_store(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_paid_process(monkeypatch)
     calls, _ = _spy_for_config(monkeypatch)
     cfg = _config("fastapi-paywall")
-    store = FileReplayStore(tmp_path / "paywall.json")
+    store = _ProductionStore()
     app = FastAPI()
     pk_fastapi.install_paywall_from_config(
         app,
@@ -176,13 +196,13 @@ def test_fastapi_install_paywall_forwards_replay_store(monkeypatch: pytest.Monke
     assert received == [store]
 
 
-def test_flask_decorator_uses_durable_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_flask_decorator_uses_durable_store(monkeypatch: pytest.MonkeyPatch) -> None:
     import flask
 
     _patch_paid_process(monkeypatch)
     calls, _ = _spy_for_config(monkeypatch)
     cfg = _config("flask")
-    store = FileReplayStore(tmp_path / "flask.json")
+    store = _ProductionStore()
     app = flask.Flask(__name__)
 
     @app.get("/report")
@@ -194,14 +214,14 @@ def test_flask_decorator_uses_durable_store(monkeypatch: pytest.MonkeyPatch, tmp
     assert calls == [store]
 
 
-def test_django_decorator_and_middleware_use_durable_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_django_decorator_and_middleware_use_durable_store(monkeypatch: pytest.MonkeyPatch) -> None:
     from django.http import JsonResponse
     from django.test import RequestFactory
 
     _patch_paid_process(monkeypatch)
     calls, _ = _spy_for_config(monkeypatch)
     decorator_cfg = _config("django-decorator")
-    decorator_store = FileReplayStore(tmp_path / "decorator.json")
+    decorator_store = _ProductionStore()
 
     @pk_django.require_payment(
         Price.usd("0.10", Stablecoin.USDC),
@@ -215,7 +235,7 @@ def test_django_decorator_and_middleware_use_durable_store(monkeypatch: pytest.M
     assert calls == [decorator_store]
 
     _config("django-middleware")
-    middleware_store = FileReplayStore(tmp_path / "middleware.json")
+    middleware_store = _ProductionStore()
     middleware = pk_django.PaymentMiddleware(
         lambda request: JsonResponse({"ok": True}),
         replay_store=middleware_store,
