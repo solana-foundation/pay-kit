@@ -48,10 +48,15 @@ class _RecordingProductionReplayStore(NominalProductionReplayStore):
     def __init__(self) -> None:
         super().__init__()
         self.keys: list[str] = []
+        self.deletes: list[str] = []
 
     async def put_if_absent(self, key: str, value: object) -> bool:
         self.keys.append(key)
         return await super().put_if_absent(key, value)
+
+    async def delete(self, key: str) -> None:
+        self.deletes.append(key)
+        await super().delete(key)
 
 
 class _InterleavingRpc:
@@ -282,5 +287,10 @@ async def test_legacy_settlement_marker_blocks_upgraded_workers(
     else:
         request = _Request({"authorization": _mpp_header(core, gate, transaction)})
 
-    with pytest.raises(InvalidProofError):
+    with pytest.raises(InvalidProofError) as exc_info:
         await core.process(gate, None, request)
+    assert exc_info.value.code == "signature_consumed"
+    # A losing claim must never delete another worker's marker: that would
+    # reopen the signature the old worker already settled.
+    assert store.deletes == []
+    assert await store.get(f"{legacy_prefix}{_SETTLEMENT_SIGNATURE}") is True

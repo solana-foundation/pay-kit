@@ -443,3 +443,44 @@ class TestSettlementSignatureClaim:
             assert await store.get(key) is None
         # A retry after release can claim again.
         assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is True
+
+    @pytest.mark.asyncio
+    async def test_release_deletes_in_reverse_claim_order(self):
+        """The canonical key must be deleted LAST: releasing it first opens a
+        window where an upgraded worker claims the canonical key while this
+        worker still holds a legacy marker, stranding the signature."""
+        from solana_pay_kit._paycore.store import (
+            claim_settlement_signature,
+            release_settlement_signature,
+        )
+
+        deletes: list[str] = []
+
+        class _RecordingStore(MemoryStore):
+            async def delete(self, key: str) -> None:
+                deletes.append(key)
+                await super().delete(key)
+
+        store = _RecordingStore()
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is True
+        await release_settlement_signature(store, self._NETWORK, self._SIGNATURE)
+        canonical, legacy_charge, legacy_x402 = self._keys()
+        assert deletes == [legacy_x402, legacy_charge, canonical]
+
+    @pytest.mark.asyncio
+    async def test_losing_claim_never_deletes(self):
+        """A losing claim must leave every marker untouched: deleting another
+        worker's marker would reopen the signature it settled."""
+        from solana_pay_kit._paycore.store import claim_settlement_signature
+
+        deletes: list[str] = []
+
+        class _RecordingStore(MemoryStore):
+            async def delete(self, key: str) -> None:
+                deletes.append(key)
+                await super().delete(key)
+
+        store = _RecordingStore()
+        await store.put(self._keys()[2], True)
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is False
+        assert deletes == []
