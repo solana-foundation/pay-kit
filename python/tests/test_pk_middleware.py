@@ -33,7 +33,6 @@ from solana_pay_kit import (
     require_payment,
 )
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
-from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.store import MemoryStore, ProductionReplayStore
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import (
@@ -321,7 +320,7 @@ def test_nonlocal_mpp_without_replay_store_fails_closed():
     """MPP does not fall back to process-local replay state in production."""
     cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
 
-    with pytest.raises(PaymentError, match="ProductionReplayStore"):
+    with pytest.raises(ConfigurationError, match="ProductionReplayStore"):
         PayCore(cfg)
 
 

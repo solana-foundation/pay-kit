@@ -11,7 +11,6 @@ import pytest
 
 import solana_pay_kit._middleware as mw
 from solana_pay_kit import MppConfig, Network, Payment, Price, Protocol, Stablecoin, configure
-from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, ProductionReplayStore, Store
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import ConfigurationError
@@ -146,7 +145,7 @@ async def test_fastapi_dependency_fails_closed_without_durable_store() -> None:
     cfg = _config("fastapi-missing-store")
     dependency = pk_fastapi.RequirePayment(Price.usd("0.10", Stablecoin.USDC), config=cfg)
 
-    with pytest.raises(PaymentError, match="ProductionReplayStore"):
+    with pytest.raises(ConfigurationError, match="ProductionReplayStore"):
         await dependency(SimpleNamespace(state=SimpleNamespace()))
 
 
