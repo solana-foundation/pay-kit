@@ -357,3 +357,35 @@ def test_round_trips_go_style_null_record() -> None:
     re_encoded = ChannelState.from_dict(go_record).to_dict()
     assert re_encoded["pending_deliveries"] is None
     assert re_encoded["committed_deliveries"] is None
+
+
+# ── consumed top-up signature serialization ──
+
+
+def test_consumed_top_up_signatures_round_trip_and_omit_empty() -> None:
+    """The top-up signature fence rides the shared wire shape additively: a
+    record without consumed signatures stays byte-identical to records
+    written by SDKs that predate the field."""
+    state = ChannelState(channel_id="c1", authorized_signer="signer1", deposit=1_000)
+    assert "consumed_top_up_signatures" not in state.to_dict()
+
+    state.consumed_top_up_signatures.append("topup_sig")
+    wire = state.to_dict()
+    assert wire["consumed_top_up_signatures"] == ["topup_sig"]
+
+    decoded = ChannelState.from_dict(wire)
+    assert decoded.consumed_top_up_signatures == ["topup_sig"]
+
+    absent = ChannelState.from_dict({"channel_id": "c1", "authorized_signer": "signer1"})
+    assert absent.consumed_top_up_signatures == []
+    null_field = ChannelState.from_dict(
+        {"channel_id": "c1", "authorized_signer": "signer1", "consumed_top_up_signatures": None}
+    )
+    assert null_field.consumed_top_up_signatures == []
+
+
+def test_clone_does_not_alias_consumed_top_up_signatures() -> None:
+    state = ChannelState(channel_id="c1", authorized_signer="signer1", consumed_top_up_signatures=["sig1"])
+    cloned = state.clone()
+    cloned.consumed_top_up_signatures.append("sig2")
+    assert state.consumed_top_up_signatures == ["sig1"]

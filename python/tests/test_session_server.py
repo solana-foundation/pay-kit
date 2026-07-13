@@ -32,7 +32,11 @@ from solana_pay_kit.protocols.mpp.server.session import (
     SessionServer,
     Split,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelState,
+    MemoryChannelStore,
+    ProductionChannelStore,
+)
 
 SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
@@ -464,6 +468,77 @@ async def test_process_top_up_rejects_when_sealed_or_close_pending() -> None:
         await server2.process_top_up(TopUpPayload(channel_id=channel_id2, new_deposit="2000000", signature="sig"))
 
 
+async def test_process_top_up_signature_is_single_use() -> None:
+    """A confirmed top-up transaction raises the deposit exactly once. A
+    replay of the same signature claiming a further raise must lose, no
+    matter how plausible the claimed delta is."""
+    server = new_session_test_server(session_test_config())
+    _, channel_id = await _open_test_channel(server, 1_000_000)
+
+    state = await server.process_top_up(
+        TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="topup_sig")
+    )
+    assert state.deposit == 2_000_000
+    assert state.consumed_top_up_signatures == ["topup_sig"]
+
+    with pytest.raises(ValueError, match="already consumed"):
+        await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="3000000", signature="topup_sig"))
+
+    stored = await server.store().get_channel(channel_id)
+    assert stored is not None
+    assert stored.deposit == 2_000_000
+
+
+async def test_process_top_up_distinct_signatures_accumulate() -> None:
+    server = new_session_test_server(session_test_config())
+    _, channel_id = await _open_test_channel(server, 1_000_000)
+
+    await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="topup_sig_1"))
+    state = await server.process_top_up(
+        TopUpPayload(channel_id=channel_id, new_deposit="3000000", signature="topup_sig_2")
+    )
+    assert state.deposit == 3_000_000
+    assert state.consumed_top_up_signatures == ["topup_sig_1", "topup_sig_2"]
+
+
+async def test_process_top_up_signature_fence_holds_inside_mutator() -> None:
+    """The snapshot check runs before the verifier's RPC await, so a replay
+    that lands during verification must still lose inside the atomic
+    mutator."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def verifier(_payload: TopUpPayload, _state) -> None:
+        entered.set()
+        await release.wait()
+
+    config = session_test_config()
+    config.verify_top_up_state_tx = verifier
+    server = new_session_test_server(config)
+    _, channel_id = await _open_test_channel(server, 1_000)
+
+    pending = asyncio.create_task(
+        server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000", signature="topup_sig"))
+    )
+    await entered.wait()
+
+    def consume_signature(current: ChannelState | None) -> ChannelState:
+        if current is None:
+            raise AssertionError("channel disappeared during test")
+        nxt = current.clone()
+        nxt.consumed_top_up_signatures.append("topup_sig")
+        return nxt
+
+    await server.store().update_channel(channel_id, consume_signature)
+    release.set()
+
+    with pytest.raises(ValueError, match="already consumed"):
+        await pending
+    stored = await server.store().get_channel(channel_id)
+    assert stored is not None
+    assert stored.deposit == 1_000
+
+
 async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
     """Legacy one-argument callbacks remain a supported host extension."""
 
@@ -821,3 +896,82 @@ async def test_process_close_unknown_channel_rejected() -> None:
     server = new_session_test_server(session_test_config())
     with pytest.raises(ValueError, match="not found"):
         await server.process_close(ClosePayload(channel_id="ghost"))
+
+
+# -- constructor channel-store policy --
+
+
+class _AttestedDelegatingChannelStore(ProductionChannelStore):
+    """Operator-attested production wrapper delegating to process-local memory.
+
+    The nominal contract is an attestation the SDK cannot machine-verify;
+    this store passing the policy documents exactly that boundary."""
+
+    def __init__(self) -> None:
+        self._inner = MemoryChannelStore()
+
+    async def get_channel(self, channel_id: str) -> ChannelState | None:
+        return await self._inner.get_channel(channel_id)
+
+    async def update_channel(self, channel_id: str, mutator) -> ChannelState:
+        return await self._inner.update_channel(channel_id, mutator)
+
+    async def delete_channel(self, channel_id: str) -> None:
+        await self._inner.delete_channel(channel_id)
+
+    async def list_channels(self, filter=None) -> list[ChannelState]:
+        return await self._inner.list_channels(filter)
+
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
+        return await self._inner.mark_sealed(channel_id)
+
+
+class _ProductionLabeledMemoryChannelStore(MemoryChannelStore, ProductionChannelStore):
+    """Tries to label the bundled process-local store as production-safe."""
+
+
+def _config_with_network(network: str) -> SessionConfig:
+    config = session_test_config()
+    config.network = network
+    return config
+
+
+@pytest.mark.parametrize("network", ["mainnet", "devnet", ""])
+def test_session_server_rejects_memory_store_outside_localnet(monkeypatch: pytest.MonkeyPatch, network: str) -> None:
+    """Direct construction is a public seam and must enforce the same
+    channel-store policy as the new_session factory. An unset network is
+    treated as mainnet."""
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore") as exc_info:
+        SessionServer(_config_with_network(network), MemoryChannelStore())
+    assert exc_info.value.code == "invalid-config"
+
+
+def test_session_server_devnet_memory_store_requires_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    server = SessionServer(_config_with_network("devnet"), MemoryChannelStore())
+    assert isinstance(server.store(), MemoryChannelStore)
+
+
+def test_session_server_mainnet_rejects_opt_in_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    with pytest.raises(PaymentError, match="forbidden on mainnet"):
+        SessionServer(_config_with_network("mainnet"), MemoryChannelStore())
+
+
+def test_session_server_rejects_production_labeled_memory_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        SessionServer(_config_with_network("mainnet"), _ProductionLabeledMemoryChannelStore())
+
+
+def test_session_server_accepts_attested_production_store_on_mainnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ProductionChannelStore subclass is accepted on mainnet even when it
+    delegates to process-local memory: the marker is an operator attestation,
+    not a machine-checked capability, and the policy boundary is exactly
+    that attestation."""
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    store = _AttestedDelegatingChannelStore()
+    server = SessionServer(_config_with_network("mainnet"), store)
+    assert server.store() is store

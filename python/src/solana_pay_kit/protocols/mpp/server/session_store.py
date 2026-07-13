@@ -20,10 +20,13 @@ The module uses plain dataclasses with ``to_dict()``/``from_dict()``,
 from __future__ import annotations
 
 import asyncio
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+from solana_pay_kit._paycore.errors import PaymentError
 
 __all__ = [
     "PendingDelivery",
@@ -34,8 +37,13 @@ __all__ = [
     "ChannelStore",
     "ProductionChannelStore",
     "is_production_channel_store",
+    "enforce_channel_store_policy",
     "MemoryChannelStore",
 ]
+
+# The same opt-in the replay-store policy honors: one explicit development
+# escape hatch for every process-local store, never valid on mainnet.
+_ALLOW_INMEMORY_CHANNEL_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 
 
 @dataclass
@@ -186,6 +194,15 @@ class ChannelState:
     # commit replay.
     committed_deliveries: list[CommittedDelivery] = field(default_factory=list)
 
+    # ConsumedTopUpSignatures are the on-chain top-up transaction signatures
+    # (base58) already applied to this channel's deposit. Each confirmed
+    # top-up transaction is single-use: recording it here (inside the same
+    # atomic update_channel mutation that raises the deposit) is what stops a
+    # replayed signature from raising the deposit again. Growth is bounded by
+    # the channel's lifetime and every entry costs the client a real
+    # on-chain transaction.
+    consumed_top_up_signatures: list[str] = field(default_factory=list)
+
     def clone(self) -> ChannelState:
         """Return a deep copy so callers can never alias store-internal state.
 
@@ -197,6 +214,7 @@ class ChannelState:
             self,
             pending_deliveries=[replace(d) for d in self.pending_deliveries],
             committed_deliveries=[replace(d) for d in self.committed_deliveries],
+            consumed_top_up_signatures=list(self.consumed_top_up_signatures),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -226,6 +244,10 @@ class ChannelState:
         # settled_signature is omitted from the wire form when unset.
         if self.settled_signature is not None:
             d["settled_signature"] = self.settled_signature
+        # consumed_top_up_signatures is omitted when empty so records written
+        # before the top-up replay fence stay byte-identical across SDKs.
+        if self.consumed_top_up_signatures:
+            d["consumed_top_up_signatures"] = list(self.consumed_top_up_signatures)
         return d
 
     @classmethod
@@ -260,6 +282,7 @@ class ChannelState:
             # and ``[]`` together; ``from_dict`` never iterates ``None``.
             pending_deliveries=[PendingDelivery.from_dict(p) for p in (data.get("pending_deliveries") or [])],
             committed_deliveries=[CommittedDelivery.from_dict(c) for c in (data.get("committed_deliveries") or [])],
+            consumed_top_up_signatures=[str(s) for s in (data.get("consumed_top_up_signatures") or [])],
         )
 
 
@@ -327,6 +350,14 @@ class ProductionChannelStore(ChannelStore, ABC):
     replicas, and successful writes are durable before the operation reports
     success. This deliberately uses a nominal marker rather than mutable
     instance flags so a deployment must explicitly attest to those guarantees.
+
+    Subclassing is an operator attestation, not a machine-checked capability:
+    the SDK cannot verify atomicity, sharing, or durability from inside the
+    process, and a subclass that delegates to a process-local
+    :class:`MemoryChannelStore` will pass :func:`is_production_channel_store`.
+    The marker exists to force a deliberate, greppable opt-in at the
+    deployment boundary; honoring its guarantees is the deployer's
+    responsibility.
     """
 
     @abstractmethod
@@ -352,6 +383,42 @@ def is_production_channel_store(store: ChannelStore) -> bool:
     inheritance cannot make a process-local store appear production-safe.
     """
     return not isinstance(store, MemoryChannelStore) and isinstance(store, ProductionChannelStore)
+
+
+def enforce_channel_store_policy(store: ChannelStore | None, network: str) -> None:
+    """Reject process-local channel stores outside localnet.
+
+    The channel store holds deposit and voucher watermarks, so it is a money
+    path: every construction seam (the ``new_session`` factory and a direct
+    ``SessionServer``) must route through this one policy. ``store`` may be
+    None when the caller defaults to a MemoryChannelStore afterwards.
+
+    Mirrors ``resolve_replay_store``: localnet accepts anything, an injected
+    :class:`ProductionChannelStore` (an operator attestation) is required
+    otherwise, and the ``PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1`` opt-in
+    allows a process-local store on devnet only and is forbidden on mainnet.
+    """
+    if network == "localnet":
+        return
+    inmemory_opt_in = os.getenv(_ALLOW_INMEMORY_CHANNEL_STORE_ENV) == "1"
+    if network == "mainnet" and inmemory_opt_in:
+        raise PaymentError(
+            f"{_ALLOW_INMEMORY_CHANNEL_STORE_ENV}=1 is forbidden on mainnet; "
+            "inject a ProductionChannelStore backed by atomic, shared, durable storage",
+            code="invalid-config",
+        )
+    if store is not None and is_production_channel_store(store):
+        return
+    uses_memory_store = store is None or isinstance(store, MemoryChannelStore)
+    if uses_memory_store and network == "devnet" and inmemory_opt_in:
+        return
+    raise PaymentError(
+        "an injected ProductionChannelStore is required outside localnet; its update_channel operation must be "
+        "atomic, shared, and durable. Set "
+        f"{_ALLOW_INMEMORY_CHANNEL_STORE_ENV}=1 to explicitly allow a process-local "
+        "MemoryChannelStore only for devnet development",
+        code="invalid-config",
+    )
 
 
 @dataclass

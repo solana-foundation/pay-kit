@@ -51,6 +51,7 @@ from solana_pay_kit.protocols.mpp.server.session_store import (
     ChannelStore,
     CommittedDelivery,
     PendingDelivery,
+    enforce_channel_store_policy,
 )
 from solana_pay_kit.protocols.mpp.server.session_voucher import (
     ChannelState as VoucherChannelState,
@@ -260,6 +261,12 @@ class SessionServer:
     """
 
     def __init__(self, config: SessionConfig, store: ChannelStore) -> None:
+        # The channel store holds deposit and voucher watermarks, so it is a
+        # money path. Enforce the deployment policy at construction: a direct
+        # SessionServer(...) must not accept a process-local store outside
+        # localnet just because it skipped the new_session factory guard. An
+        # unset network is treated as mainnet, matching the factory default.
+        enforce_channel_store_policy(store, config.network or "mainnet")
         # config is the immutable server configuration captured at construction.
         self._config = config
         # store persists per-channel state; every mutation goes through its
@@ -460,7 +467,10 @@ class SessionServer:
 
         The new deposit must exceed the current deposit and must not exceed the
         configured max cap. Top-ups are rejected once the channel is sealed
-        or a close has been requested.
+        or a close has been requested. Each top-up transaction signature is
+        single-use: the mutator that raises the deposit also records the
+        signature on the channel, so replaying a confirmed top-up cannot
+        raise the deposit a second time.
         """
         try:
             new_deposit = _parse_u64(payload.new_deposit)
@@ -480,6 +490,8 @@ class SessionServer:
             raise ValueError(f"channel {channel_id} is already sealed")
         if snapshot.close_requested_at is not None:
             raise ValueError(f"channel {channel_id} close is pending; no further top-ups accepted")
+        if payload.signature and payload.signature in snapshot.consumed_top_up_signatures:
+            raise ValueError(f"top-up signature {payload.signature} already consumed")
         if new_deposit <= snapshot.deposit:
             raise ValueError(f"new deposit {new_deposit} must exceed current deposit {snapshot.deposit}")
         if new_deposit > self._config.max_cap:
@@ -512,6 +524,11 @@ class SessionServer:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further top-ups accepted")
+            # Re-check the signature fence inside the atomic mutator: the
+            # snapshot check above ran before the RPC await, so a concurrent
+            # replay of the same signature must still lose here.
+            if payload.signature and payload.signature in current.consumed_top_up_signatures:
+                raise ValueError(f"top-up signature {payload.signature} already consumed")
             if verified_snapshot_deposit is not None and current.deposit != verified_snapshot_deposit:
                 raise ValueError("concurrent top-up: stored deposit changed during transaction verification")
             if new_deposit <= current.deposit:
@@ -520,6 +537,8 @@ class SessionServer:
                 raise ValueError(f"new deposit {new_deposit} exceeds max cap {max_cap}")
             nxt = current.clone()
             nxt.deposit = new_deposit
+            if payload.signature:
+                nxt.consumed_top_up_signatures.append(payload.signature)
             return nxt
 
         return await self._store.update_channel(channel_id, mutator)

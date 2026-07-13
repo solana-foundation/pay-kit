@@ -91,14 +91,13 @@ from solana_pay_kit.protocols.mpp.server.session_store import (
     ChannelState,
     ChannelStore,
     MemoryChannelStore,
-    is_production_channel_store,
+    enforce_channel_store_policy,
 )
 from solana_pay_kit.signer import LocalSigner
 
 logger = logging.getLogger(__name__)
 
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
-_ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 _U64_MAX = (1 << 64) - 1
 _OPEN_OUTBOX_PREFIX = "__pay_kit_session_open_outbox__:"
 _OPEN_OUTBOX_LEASE_SECONDS = 60
@@ -1307,17 +1306,9 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
-    allows_devnet_memory_store = network == "devnet" and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
-    uses_memory_store = options.store is None or isinstance(options.store, MemoryChannelStore)
-    is_production_store = options.store is not None and is_production_channel_store(options.store)
-    if network != "localnet" and not (is_production_store or (uses_memory_store and allows_devnet_memory_store)):
-        raise PaymentError(
-            "an injected ProductionChannelStore is required outside localnet; its update_channel operation must be "
-            "atomic, shared, and durable. Set "
-            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
-            "MemoryChannelStore only for devnet development",
-            code="invalid-config",
-        )
+    # Shared with SessionServer's constructor guard so the factory and a
+    # direct construction enforce one channel-store deployment policy.
+    enforce_channel_store_policy(options.store, network)
 
     store = options.store if options.store is not None else MemoryChannelStore()
 

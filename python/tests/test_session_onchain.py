@@ -778,8 +778,9 @@ async def test_new_top_up_state_tx_verifier_rejects_foreign_program_or_channel(m
     verifier = new_top_up_state_tx_verifier(_TopUpConfig(), fake_rpc)
     assert verifier is not None
     payload = TopUpPayload(channel_id=str(channel), new_deposit="2000000", signature=signature)
-    with pytest.raises(PaymentError, match=message):
+    with pytest.raises(PaymentError, match=message) as excinfo:
         await verifier(payload, _top_up_state(channel))
+    assert excinfo.value.code == "invalid-payload"
 
 
 async def test_new_top_up_state_tx_verifier_rejects_delta_mismatch() -> None:
@@ -790,8 +791,9 @@ async def test_new_top_up_state_tx_verifier_rejects_delta_mismatch() -> None:
     verifier = new_top_up_state_tx_verifier(_TopUpConfig(), fake_rpc)
     assert verifier is not None
     payload = TopUpPayload(channel_id=str(channel), new_deposit="2000000", signature=signature)
-    with pytest.raises(PaymentError, match="amount"):
+    with pytest.raises(PaymentError, match="amount") as excinfo:
         await verifier(payload, _top_up_state(channel))
+    assert excinfo.value.code == "invalid-payload"
 
 
 @pytest.mark.parametrize(
@@ -820,8 +822,9 @@ async def test_new_top_up_state_tx_verifier_rejects_malformed_or_overflowing_top
     verifier = new_top_up_state_tx_verifier(_TopUpConfig(), fake_rpc)
     assert verifier is not None
 
-    with pytest.raises(PaymentError, match=message):
+    with pytest.raises(PaymentError, match=message) as excinfo:
         await verifier(TopUpPayload(channel_id=str(channel), new_deposit=new_deposit, signature=signature), state)
+    assert excinfo.value.code == "invalid-payload"
 
 
 async def test_new_top_up_state_tx_verifier_surfaces_failure_and_not_found() -> None:
@@ -833,12 +836,15 @@ async def test_new_top_up_state_tx_verifier_surfaces_failure_and_not_found() -> 
     assert verifier is not None
     channel = _kp(27).pubkey()
     payload = TopUpPayload(channel_id=str(channel), new_deposit="2000000", signature=signature)
-    with pytest.raises(PaymentError, match="top-up"):
+    with pytest.raises(PaymentError, match="top-up") as excinfo:
         await verifier(payload, _top_up_state(channel))
+    assert excinfo.value.code == "transaction-failed"
 
     fake_rpc.statuses[signature] = None
-    with pytest.raises(PaymentError, match="not found"):
+    with pytest.raises(PaymentError, match="not found") as excinfo:
         await verifier(payload, _top_up_state(channel))
+    assert excinfo.value.code == "transaction-not-found"
 
-    with pytest.raises(PaymentError, match="invalid top-up tx signature"):
+    with pytest.raises(PaymentError, match="invalid top-up tx signature") as excinfo:
         await verifier(TopUpPayload(channel_id="", new_deposit="", signature="not-base58!"), _top_up_state(channel))
+    assert excinfo.value.code == "invalid-payload"

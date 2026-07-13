@@ -384,7 +384,7 @@ def test_new_session_mainnet_aliases_reject_inmemory_store_opt_in(
 ) -> None:
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
 
-    with pytest.raises(PaymentError, match="only for devnet development"):
+    with pytest.raises(PaymentError, match="forbidden on mainnet"):
         new_session(
             SessionOptions(
                 recipient=SESSION_TEST_RECIPIENT,
@@ -394,6 +394,25 @@ def test_new_session_mainnet_aliases_reject_inmemory_store_opt_in(
                 store=store,
             )
         )
+
+
+def test_new_session_mainnet_rejects_opt_in_even_with_production_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The devnet opt-in on mainnet is a misconfiguration signal and fails
+    closed even when the injected store itself is production-attested,
+    mirroring ``resolve_replay_store``."""
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="forbidden on mainnet") as exc_info:
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="mainnet",
+                secret_key=SESSION_METHOD_SECRET,
+                store=_ProductionChannelStore(),
+            )
+        )
+    assert exc_info.value.code == "invalid-config"
 
 
 @pytest.mark.parametrize("network", ["devnet", "mainnet"])
@@ -472,7 +491,12 @@ def test_new_session_rejects_unknown_network_before_store_policy(monkeypatch: py
 def test_new_session_accepts_public_network_enum_values(
     monkeypatch: pytest.MonkeyPatch, network: str, canonical: str
 ) -> None:
-    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    # The devnet memory-store escape needs the opt-in; mainnet must not see
+    # it (the opt-in is forbidden there even alongside a production store).
+    if canonical == "devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
     store = None if canonical != "mainnet" else _ProductionChannelStore()
 
     session = new_session(
@@ -499,7 +523,7 @@ def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None
 
 
 def test_new_session_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
     store = _ProductionChannelStore()
     session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="", store=store)
     assert session._currency == "USDC"
