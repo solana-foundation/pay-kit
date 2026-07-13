@@ -539,6 +539,21 @@ async def test_process_top_up_signature_fence_holds_inside_mutator() -> None:
     assert stored.deposit == 1_000
 
 
+async def test_process_top_up_without_signature_is_not_fenced() -> None:
+    """Trusted mode (no verifier configured, empty signature) performs no
+    on-chain binding, so there is nothing to fence: repeated signatureless
+    top-ups keep raising the deposit up to max_cap. Documented behavior for
+    tests and out-of-band-verified deployments only; a configured verifier
+    rejects an empty signature before the fence is ever consulted."""
+    server = new_session_test_server(session_test_config())
+    _, channel_id = await _open_test_channel(server, 1_000_000)
+
+    await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature=""))
+    state = await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="3000000", signature=""))
+    assert state.deposit == 3_000_000
+    assert state.consumed_top_up_signatures == []
+
+
 async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
     """Legacy one-argument callbacks remain a supported host extension."""
 
@@ -954,10 +969,16 @@ def test_session_server_devnet_memory_store_requires_opt_in(monkeypatch: pytest.
     assert isinstance(server.store(), MemoryChannelStore)
 
 
-def test_session_server_mainnet_rejects_opt_in_env(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("network", ["mainnet", "mainnet-beta", "solana_mainnet"])
+def test_session_server_mainnet_rejects_opt_in_env(monkeypatch: pytest.MonkeyPatch, network: str) -> None:
+    """The mainnet opt-in tripwire fires for every mainnet alias, including
+    on the direct-construction seam where nothing pre-canonicalized the
+    network, and even when the injected store itself is production-attested."""
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
     with pytest.raises(PaymentError, match="forbidden on mainnet"):
-        SessionServer(_config_with_network("mainnet"), MemoryChannelStore())
+        SessionServer(_config_with_network(network), MemoryChannelStore())
+    with pytest.raises(PaymentError, match="forbidden on mainnet"):
+        SessionServer(_config_with_network(network), _AttestedDelegatingChannelStore())
 
 
 def test_session_server_rejects_production_labeled_memory_store(monkeypatch: pytest.MonkeyPatch) -> None:

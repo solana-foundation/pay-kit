@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import _canonical_network
 
 __all__ = [
     "PendingDelivery",
@@ -397,7 +398,13 @@ def enforce_channel_store_policy(store: ChannelStore | None, network: str) -> No
     :class:`ProductionChannelStore` (an operator attestation) is required
     otherwise, and the ``PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1`` opt-in
     allows a process-local store on devnet only and is forbidden on mainnet.
+
+    ``network`` is canonicalized here so a direct construction with the
+    ``mainnet-beta`` alias trips the same mainnet arms as the factory path;
+    unknown strings pass through unchanged and fall to the final fail-closed
+    rejection.
     """
+    network = _canonical_network(network)
     if network == "localnet":
         return
     inmemory_opt_in = os.getenv(_ALLOW_INMEMORY_CHANNEL_STORE_ENV) == "1"
