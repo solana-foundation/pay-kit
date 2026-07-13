@@ -127,7 +127,11 @@ func TestServerForForwardsInjectedSharedReplayStore(t *testing.T) {
 }
 
 func TestServerForFailsClosedWithoutReplayStore(t *testing.T) {
+	// Off localnet, serverFor must fail closed without a shared replay store.
+	// (Localnet is single-process dev and permissively defaults to a
+	// MemoryStore, matching the TypeScript and Python SDKs.)
 	cfg := testCfg()
+	cfg.Network = paykit.SolanaDevnet
 	cfg.MPP.AllowUnsafeMemoryStore = false
 	_, err := (&Adapter{cfg: cfg}).serverFor(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")})
 	if err == nil {

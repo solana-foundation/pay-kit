@@ -682,17 +682,35 @@ func TestNewRejectsMemoryStoreOutsideLocalnet(t *testing.T) {
 	}
 }
 
-func TestNewRejectsImplicitLocalnetMemoryStore(t *testing.T) {
+func TestNewAcceptsImplicitLocalnetMemoryStore(t *testing.T) {
+	// Localnet is single-process development: it has no multi-replica or
+	// restart-persistence replay risk, so a process-local MemoryStore is the
+	// permissive default with no opt-in, matching the TypeScript and Python
+	// SDKs and the base behavior the Go playground relies on. Fail-closed store
+	// policy applies off localnet (see TestNewRejectsImplicitOffLocalnetStore).
 	recipient := testutil.NewPrivateKey().PublicKey().String()
-	_, err := New(Config{
+	if _, err := New(Config{
 		Recipient: recipient,
 		Currency:  "sol",
 		Network:   "localnet",
 		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       testutil.NewFakeRPC(),
+	}); err != nil {
+		t.Fatalf("New() localnet error = %v, want implicit MemoryStore accepted", err)
+	}
+}
+
+func TestNewRejectsImplicitOffLocalnetStore(t *testing.T) {
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	_, err := New(Config{
+		Recipient: recipient,
+		Currency:  "sol",
+		Network:   "devnet",
+		SecretKey: "test-secret-key-0123456789abcdef",
+		RPC:       testutil.NewFakeRPC(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "atomic shared replay store") {
-		t.Fatalf("New() localnet error = %v, want explicit-store rejection", err)
+		t.Fatalf("New() devnet error = %v, want explicit-store rejection", err)
 	}
 }
 
@@ -721,10 +739,13 @@ func TestNewRejectsInjectedUnsharedStoreWithUnsafeOptIn(t *testing.T) {
 		"custom": &unsharedTestStore{MemoryStore: core.NewMemoryStore()},
 	} {
 		t.Run(name, func(t *testing.T) {
+			// Off localnet an injected store must be shared; AllowUnsafeMemoryStore
+			// authorizes only the internally-created MemoryStore, never an injected
+			// unshared one. (Localnet is permissive, so this is asserted on devnet.)
 			_, err := New(Config{
 				Recipient:              recipient,
 				Currency:               "sol",
-				Network:                "localnet",
+				Network:                "devnet",
 				SecretKey:              "test-secret-key-0123456789abcdef",
 				RPC:                    testutil.NewFakeRPC(),
 				Store:                  store,
