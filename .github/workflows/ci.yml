@@ -327,9 +327,13 @@ jobs:
         working-directory: rust
         run: cargo test --locked -p solana-pay-kit --lib x402 --features server,client
 
+      - name: Test Rust coverage policy
+        working-directory: rust
+        run: python3 ../scripts/check-rust-coverage_test.py
+
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
-        run: python3 ../scripts/check-rust-coverage.py coverage.json
+        run: python3 ../scripts/check-rust-coverage.py coverage.json --aggregate-floor 90 --per-file-floor 75
 
       - name: Rust format check
         working-directory: rust
