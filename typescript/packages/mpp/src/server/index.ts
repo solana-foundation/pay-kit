@@ -12,6 +12,14 @@ export {
     type SessionStore,
 } from './session/store.js';
 export {
+    createAtomicReplayStoreView,
+    createUnsafeMemoryReplayStore,
+    isUnsafeMemoryReplayStore,
+    resolveReplayStore,
+    type ReplayStore,
+    type ReplayStoreCapability,
+} from './store.js';
+export {
     buildReclaimInstruction,
     encodeVoucherMessageBytes,
     type ReclaimBuildArgs,

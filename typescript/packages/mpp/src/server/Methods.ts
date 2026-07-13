@@ -10,7 +10,11 @@ import { subscription as subscription_ } from './Subscription.js';
  * import { Mppx, solana } from '@solana/mpp/server'
  *
  * const mppx = Mppx.create({
- *   methods: [solana.charge({ recipient: '...', network: 'devnet' })],
+ *   methods: [solana.charge({
+ *     recipient: '...',
+ *     network: 'devnet',
+ *     allowUnsafeMemoryStore: true, // local development only
+ *   })],
  * })
  * ```
  */

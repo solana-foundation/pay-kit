@@ -1,10 +1,48 @@
+import type { Store } from 'mppx';
 import { describe, expect, it } from 'vitest';
 
 import { configure, configureFromEnv } from '../config.js';
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from '../errors.js';
+import { createUnsafeMemoryReplayStore, declareProductionReplayStore, type ReplayStore } from '../replay-store.js';
 import { Signer } from '../signer.js';
 
-const SECRET = { mpp: { challengeBindingSecret: 'test-secret' } };
+const SECRET = { mpp: { challengeBindingSecret: 'test-secret', allowUnsafeMemoryStore: true } };
+const values = new Map<string, unknown>();
+const SHARED_STORE: ReplayStore = declareProductionReplayStore({
+    isDurable: true,
+    isShared: true,
+    async delete(key) {
+        values.delete(key);
+    },
+    async get(key) {
+        return (values.get(key) ?? null) as never;
+    },
+    async put(key, value) {
+        values.set(key, value);
+    },
+    async putIfAbsent(key, value) {
+        if (values.has(key)) return false;
+        values.set(key, value);
+        return true;
+    },
+});
+const UNKNOWN_ATOMIC_STORE: ReplayStore = {
+    async delete() {},
+    async get() {
+        return null;
+    },
+    async put() {},
+    async putIfAbsent() {
+        return true;
+    },
+};
+const LEGACY_STORE: Store.Store = {
+    async delete() {},
+    async get() {
+        return null;
+    },
+    async put() {},
+};
 
 describe('configure', () => {
     it('applies the canonical defaults', async () => {
@@ -22,20 +60,120 @@ describe('configure', () => {
     });
 
     it('refuses the demo signer on mainnet', async () => {
-        await expect(configure({ ...SECRET, network: 'solana_mainnet' })).rejects.toThrow(DemoSignerOnMainnetError);
+        const mainnetMpp = { mpp: { challengeBindingSecret: 'test-secret' }, replayStore: SHARED_STORE };
+        await expect(configure({ ...mainnetMpp, network: 'solana_mainnet' })).rejects.toThrow(DemoSignerOnMainnetError);
         const signer = await Signer.generate();
-        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
-        try {
-            const config = await configure({ ...SECRET, network: 'solana_mainnet', operator: { signer } });
-            expect(config.operator.recipient).toBe(signer.pubkey);
-        } finally {
-            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
-        }
+        const config = await configure({
+            ...mainnetMpp,
+            network: 'solana_mainnet',
+            operator: { signer },
+        });
+        expect(config.operator.recipient).toBe(signer.pubkey);
+    });
+
+    it('rejects the unsafe replay-store override on mainnet', async () => {
+        const signer = await Signer.generate();
+        await expect(configure({ ...SECRET, network: 'solana_mainnet', operator: { signer } })).rejects.toThrow(
+            /forbidden on mainnet/,
+        );
     });
 
     it('accepts the shipped protocols (mpp + x402)', async () => {
         const config = await configure({ ...SECRET, accept: ['x402', 'mpp'] });
         expect(config.accept).toEqual(['x402', 'mpp']);
+    });
+
+    it('does not require or construct an MPP replay store for x402-only config', async () => {
+        // Store.Store remains accepted by the public input type for x402 compatibility.
+        const config = await configure({ accept: ['x402'], replayStore: LEGACY_STORE });
+        expect(config.accept).toEqual(['x402']);
+        expect(config.replayStore).toBe(LEGACY_STORE);
+    });
+
+    it('does not reject the MPP-only unsafe-memory flag for x402-only mainnet config', async () => {
+        const config = await configure({
+            accept: ['x402'],
+            mpp: { allowUnsafeMemoryStore: true },
+            network: 'solana_mainnet',
+            operator: { signer: await Signer.generate() },
+        });
+        expect(config.mpp.allowUnsafeMemoryStore).toBe(true);
+    });
+
+    it('fails closed at runtime for a legacy non-atomic MPP store', async () => {
+        await expect(configure({ ...SECRET, replayStore: LEGACY_STORE as ReplayStore })).rejects.toThrow(
+            /atomic putIfAbsent/,
+        );
+    });
+
+    it.each([
+        ['isShared-only', { ...SHARED_STORE, isDurable: false }],
+        ['isDurable-only', { ...SHARED_STORE, isShared: false }],
+        ['unknown capabilities', UNKNOWN_ATOMIC_STORE],
+    ] satisfies readonly [string, ReplayStore][])(
+        'rejects an undeclared atomic store with %s',
+        async (_label, replayStore) => {
+            const signer = await Signer.generate();
+            await expect(
+                configure({
+                    ...SECRET,
+                    mpp: { challengeBindingSecret: 'test-secret' },
+                    network: 'solana_devnet',
+                    operator: { signer },
+                    replayStore,
+                }),
+            ).rejects.toThrow(/declareProductionReplayStore/);
+        },
+    );
+
+    it('requires external production stores to affirm capabilities before declaration', () => {
+        expect(() => declareProductionReplayStore(UNKNOWN_ATOMIC_STORE)).toThrow(/isShared=true and isDurable=true/);
+    });
+
+    it('rejects a spread-cloned memory store even when it claims production capabilities', async () => {
+        const replayStore = {
+            ...createUnsafeMemoryReplayStore(),
+            isDurable: true,
+            isShared: true,
+        };
+
+        expect(() => declareProductionReplayStore(createUnsafeMemoryReplayStore())).toThrow(/Process-local memory/);
+        await expect(
+            configure({
+                ...SECRET,
+                mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'test-secret' },
+                network: 'solana_devnet',
+                operator: { signer: await Signer.generate() },
+                replayStore,
+            }),
+        ).rejects.toThrow(/declareProductionReplayStore/);
+    });
+
+    it('derives MPP sponsorship from a raw non-fee-payer signer', async () => {
+        const signer = (await Signer.generate()).signer;
+        const config = await configure({
+            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'test-secret' },
+            operator: { feePayer: false, signer },
+        });
+        expect(config.operator.feePayer).toBe(false);
+        expect(config.operator.signer.isFeePayer).toBe(false);
+    });
+
+    it('rejects a prewrapped signer configured to sponsor when it cannot', async () => {
+        const signer = Signer.from((await Signer.generate()).signer, { feePayer: false });
+        await expect(
+            configure({
+                mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'test-secret' },
+                operator: { feePayer: true, signer },
+            }),
+        ).rejects.toThrow(/permits fee sponsorship/);
+    });
+
+    it('rejects an x402 configuration without a sponsoring operator', async () => {
+        const signer = Signer.from((await Signer.generate()).signer, { feePayer: false });
+        await expect(configure({ accept: ['x402'], operator: { signer } })).rejects.toThrow(
+            /x402 requires an operator fee payer/,
+        );
     });
 
     it('rejects protocols this SDK does not ship', async () => {
@@ -56,35 +194,48 @@ describe('configure', () => {
         delete process.env.MPP_SECRET_KEY;
         await expect(configure({ network: 'solana_devnet', operator: { signer } })).rejects.toThrow(ConfigurationError);
         process.env.MPP_SECRET_KEY = 'env-secret';
-        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
-        try {
-            const config = await configure({ network: 'solana_devnet', operator: { signer } });
-            expect(config.mpp.challengeBindingSecret).toBe('env-secret');
-        } finally {
-            delete process.env.MPP_SECRET_KEY;
-            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
-        }
+        const config = await configure({ network: 'solana_devnet', operator: { signer }, replayStore: SHARED_STORE });
+        expect(config.mpp.challengeBindingSecret).toBe('env-secret');
+        delete process.env.MPP_SECRET_KEY;
     });
 
-    it('requires a shared MPP replay store outside localnet unless explicitly opted in', async () => {
+    it('requires an injected replay store outside localnet and accepts both capabilities', async () => {
         const signer = await Signer.generate();
         await expect(
             configure({
                 ...SECRET,
+                mpp: { challengeBindingSecret: 'test-secret' },
                 network: 'solana_devnet',
                 operator: { signer },
             }),
-        ).rejects.toThrow(/PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE/);
+        ).rejects.toThrow(/atomic shared replayStore/);
 
+        await expect(configure({ mpp: { challengeBindingSecret: 'test-secret' } })).rejects.toThrow(
+            /atomic shared replayStore/,
+        );
+
+        const local = await configure(SECRET);
+        expect(local.replayStore).toBeDefined();
+
+        const production = await configure({
+            ...SECRET,
+            network: 'solana_devnet',
+            operator: { signer },
+            replayStore: SHARED_STORE,
+        });
+        expect(production.replayStore).toBe(SHARED_STORE);
+    });
+
+    it('honors the explicit in-memory replay-store environment opt-in', async () => {
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
-            await expect(
-                configure({
-                    ...SECRET,
-                    network: 'solana_devnet',
-                    operator: { signer },
-                }),
-            ).resolves.toMatchObject({ network: 'solana_devnet' });
+            const config = await configure({
+                mpp: { challengeBindingSecret: 'test-secret' },
+                network: 'solana_devnet',
+                operator: { signer: await Signer.generate() },
+            });
+            expect(config.mpp.allowUnsafeMemoryStore).toBe(true);
+            expect(config.replayStore).toBeDefined();
         } finally {
             delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
@@ -98,7 +249,7 @@ describe('configure', () => {
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
-            const config = await configureFromEnv();
+            const config = await configureFromEnv('PAY_KIT_', SHARED_STORE);
             expect(config.network).toBe('solana_devnet');
             expect(config.mpp.challengeBindingSecret).toBe('env-secret');
             expect(config.mpp.expiresIn).toBe(60);
@@ -111,6 +262,34 @@ describe('configure', () => {
             delete process.env.PAY_KIT_STABLECOINS;
             delete process.env.PAY_KIT_RPC_URL;
             delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+
+    it('honors a custom-prefixed unsafe-memory environment opt-in', async () => {
+        process.env.APP_NETWORK = 'solana_devnet';
+        process.env.APP_MPP_SECRET = 'app-secret';
+        process.env.APP_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const config = await configureFromEnv('APP_');
+            expect(config.mpp.allowUnsafeMemoryStore).toBe(true);
+            expect(config.replayStore).toBeDefined();
+        } finally {
+            delete process.env.APP_NETWORK;
+            delete process.env.APP_MPP_SECRET;
+            delete process.env.APP_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+
+    it('does not inherit the default prefix unsafe-memory opt-in', async () => {
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        process.env.APP_NETWORK = 'solana_devnet';
+        process.env.APP_MPP_SECRET = 'app-secret';
+        try {
+            await expect(configureFromEnv('APP_')).rejects.toThrow(/atomic shared replayStore/);
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+            delete process.env.APP_NETWORK;
+            delete process.env.APP_MPP_SECRET;
         }
     });
 });

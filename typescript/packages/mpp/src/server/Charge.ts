@@ -7,7 +7,7 @@ import {
     type TransactionPartialSigner,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
-import { Method, Receipt, Store } from 'mppx';
+import { Errors, Method, Receipt, Store } from 'mppx';
 
 import {
     ASSOCIATED_TOKEN_PROGRAM,
@@ -15,6 +15,7 @@ import {
     DEFAULT_RPC_URLS,
     defaultTokenProgramForCurrency,
     MEMO_PROGRAM,
+    normalizeNetwork,
     resolveStablecoinMint,
     stablecoinSymbolForCurrency,
     SYSTEM_PROGRAM,
@@ -27,6 +28,7 @@ import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
+import { type ReplayStore, resolveReplayStore } from './store.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -52,6 +54,8 @@ import { checkNetworkBlockhash } from './network-check.js';
  *     spl: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
  *     decimals: 6,
  *     network: 'devnet',
+ *     // Local development only; production must inject a shared store.
+ *     allowUnsafeMemoryStore: true,
  *   })],
  * })
  *
@@ -70,15 +74,19 @@ export function charge(parameters: charge.Parameters) {
         html: htmlEnabled = false,
         tokenProgram: configuredTokenProgram,
         network = 'mainnet',
-        store = Store.memory(),
+        store: configuredStore,
+        allowUnsafeMemoryStore,
         splits,
         signer,
     } = parameters;
-
     // Reject unknown network slugs at boot (spec: mainnet | devnet | localnet),
     // rather than silently falling back to mainnet for a typo. The legacy
     // `mainnet-beta` spelling is accepted as an alias and normalized below.
     validateNetwork(network);
+    if (normalizeNetwork(network) === 'mainnet' && allowUnsafeMemoryStore === true) {
+        throw new Error('solana.charge allowUnsafeMemoryStore is forbidden on mainnet');
+    }
+    const store = resolveReplayStore(configuredStore, allowUnsafeMemoryStore, 'charge');
 
     const isSplToken = currency !== undefined && currency !== 'sol';
     const tokenProgram = configuredTokenProgram ?? defaultTokenProgramForCurrency(currency, network);
@@ -737,7 +745,7 @@ async function verifyTransaction(
     challenge: ChallengeRequest,
     rpcUrl: string,
     recipient: string,
-    store: Store.Store,
+    store: ReplayStore,
     signer: TransactionPartialSigner | undefined,
     network: string,
 ) {
@@ -775,28 +783,34 @@ async function verifyTransaction(
     // Broadcast the (now fully-signed) transaction.
     const signature = await broadcastTransaction(rpcUrl, txToSend);
 
-    // Audit #3: reserve the signature BETWEEN broadcast and confirmation polling.
-    // If we only marked it consumed after confirmation+verify (as before), a tx
-    // that landed during a confirmation-poll timeout could be lost — the user
-    // pays but the signature is never recorded, so a retry re-broadcasts (double
-    // charge) or replays. Reserving here closes the replay window; the
-    // post-timeout status recovery below rescues the false-negative case.
-    await store.put(`solana-charge:consumed:${signature}`, true);
-
     // Wait for on-chain confirmation (with a definitive post-timeout status check).
     await waitForConfirmation(rpcUrl, signature);
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
 
-    return Receipt.from({
-        method: 'solana',
+    const receipt = {
+        ...Receipt.from({
+            method: 'solana',
+            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+            reference: signature,
+            status: 'success',
+            timestamp: new Date().toISOString(),
+        }),
         ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-        reference: signature,
-        ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-        status: 'success',
-        timestamp: new Date().toISOString(),
-    });
+    };
+
+    // Commit only after every fallible settlement check succeeds. Re-broadcasting
+    // identical signed Solana transaction bytes is idempotent at the transaction
+    // level, while this atomic final commit is the receipt-level single-winner
+    // gate. A broadcast ambiguity, timeout, or verification failure therefore
+    // leaves no marker to burn a legitimate retry; a committed marker is never
+    // removed and only one concurrent caller can obtain a receipt.
+    if (!(await store.putIfAbsent(`solana-charge:consumed:${signature}`, true))) {
+        throw new Errors.VerificationFailedError({ reason: 'Transaction signature already consumed' });
+    }
+
+    return receipt;
 }
 
 // ── Push mode (type="signature") ──
@@ -806,7 +820,7 @@ async function verifySignature(
     challenge: ChallengeRequest,
     rpcUrl: string,
     recipient: string,
-    store: Store.Store,
+    store: ReplayStore,
 ) {
     const { signature } = credential.payload;
     if (!signature) {
@@ -826,14 +840,14 @@ async function verifySignature(
     // Scope: single Node process. Multi-process/replica deployments sharing one
     // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
     if (await store.get(consumedKey)) {
-        throw new Error('Transaction signature already consumed');
+        throw new Errors.VerificationFailedError({ reason: 'Transaction signature already consumed' });
     }
 
     return await withKeyLock(consumedKey, async () => {
         // Re-check inside the lock: a concurrent request in this process may
         // have consumed the signature since the read above.
         if (await store.get(consumedKey)) {
-            throw new Error('Transaction signature already consumed');
+            throw new Errors.VerificationFailedError({ reason: 'Transaction signature already consumed' });
         }
 
         // Fetch and verify the transaction on-chain.
@@ -844,18 +858,24 @@ async function verifySignature(
         const instructions = tx.transaction.message.instructions;
         await verifyInstructions(instructions, challenge, recipient);
 
+        const receipt = {
+            ...Receipt.from({
+                method: 'solana',
+                ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+                reference: signature,
+                status: 'success',
+                timestamp: new Date().toISOString(),
+            }),
+            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
+        };
+
         // Mark consumed only after a successful verify, so a failed verify never
         // burns a legitimately-retryable signature.
-        await store.put(consumedKey, true);
+        if (!(await store.putIfAbsent(consumedKey, true))) {
+            throw new Errors.VerificationFailedError({ reason: 'Transaction signature already consumed' });
+        }
 
-        return Receipt.from({
-            method: 'solana',
-            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-            reference: signature,
-            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-            status: 'success',
-            timestamp: new Date().toISOString(),
-        });
+        return receipt;
     });
 }
 
@@ -1438,6 +1458,8 @@ async function fetchPostTimeoutStatus(rpcUrl: string, signature: string): Promis
 
 export declare namespace charge {
     type Parameters = {
+        /** Explicitly allow an internal process-local replay store for development/tests. */
+        allowUnsafeMemoryStore?: boolean;
         /**
          * Currency identifier. "sol" (lowercase) for native SOL, or a
          * base58-encoded SPL token mint address. Defaults to "sol".
@@ -1496,7 +1518,8 @@ export declare namespace charge {
         }>;
         /**
          * Pluggable key-value store for consumed-signature tracking (replay prevention).
-         * Defaults to in-memory. Use a persistent store in production.
+         * Required unless `allowUnsafeMemoryStore` explicitly enables an internal
+         * process-local store for development.
          */
         store?: Store.Store;
         /** Token program hint. If omitted, clients fetch the mint owner and fail closed on lookup errors. */
