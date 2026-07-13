@@ -48,6 +48,7 @@ from solana_pay_kit.protocols.mpp import MppAdapter
 from solana_pay_kit.protocols.x402 import X402Adapter
 
 if TYPE_CHECKING:
+    from solana_pay_kit._paycore.store import Store
     from solana_pay_kit.config import Config
     from solana_pay_kit.protocols.mpp import MppAcceptsEntry
     from solana_pay_kit.protocols.x402.exact.types import X402AcceptsEntry
@@ -80,10 +81,10 @@ _CORE_CACHE: weakref.WeakKeyDictionary[Config, PayCore] = weakref.WeakKeyDiction
 class PayCore:
     """Host-neutral payment-gating core shared by every framework shim.
 
-    One instance wraps a frozen :class:`~solana_pay_kit.config.Config` and lazily
-    constructs the MPP and (when x402 is accepted) x402 adapters. Callers can
-    inject pre-built adapters to override defaults, e.g. with an offline
-    ``recent_blockhash_provider`` for tests.
+    One instance wraps a frozen :class:`~solana_pay_kit.config.Config` and
+    constructs only its configured protocol adapters. Callers can inject a
+    replay store for the default protocol adapters or pre-built adapters to override
+    defaults, e.g. with an offline ``recent_blockhash_provider`` for tests.
     """
 
     def __init__(
@@ -92,33 +93,42 @@ class PayCore:
         *,
         mpp: MppAdapter | None = None,
         x402: X402Adapter | None = None,
+        replay_store: Store | None = None,
     ) -> None:
         """Bind to ``config`` and resolve (or inject) the scheme adapters."""
         self._config = config
-        self._mpp = mpp if mpp is not None else MppAdapter(config)
+        # MPP construction enforces durable replay state outside localnet. Do
+        # not construct it for x402-only configurations, where it is unused.
+        if mpp is not None:
+            self._mpp: MppAdapter | None = mpp
+        elif Protocol.MPP in config.accept:
+            self._mpp = MppAdapter(config, replay_store=replay_store)
+        else:
+            self._mpp = None
         # Auto-wire the x402 adapter only when the config accept list includes
         # it; mirrors the PHP constructor. An explicit adapter always wins.
         if x402 is not None:
             self._x402: X402Adapter | None = x402
         elif Protocol.X402 in config.accept:
-            self._x402 = X402Adapter(config)
+            self._x402 = X402Adapter(config, replay_store=replay_store)
         else:
             self._x402 = None
 
     @classmethod
-    def for_config(cls, config: Config) -> PayCore:
+    def for_config(cls, config: Config, *, replay_store: Store | None = None) -> PayCore:
         """Return the cached per-Config core, building (and caching) one on miss.
 
         The framework shims call this once per request; reusing one core per
         Config keeps the MPP/x402 adapters and their shared in-memory replay
         store alive across requests so a settled signature stays consumed and
         cannot be replayed. A fresh ``PayCore(config)`` per request (the prior
-        behaviour) reset that store on every call.
+        behaviour) reset that store on every call. Pass ``replay_store`` on the
+        first call to supply shared durable state for a nonlocal deployment.
         """
         cached = _CORE_CACHE.get(config)
         if cached is not None:
             return cached
-        core = cls(config)
+        core = cls(config, replay_store=replay_store)
         _CORE_CACHE[config] = core
         return core
 
@@ -167,7 +177,12 @@ class PayCore:
         for scheme in accept:
             if scheme == Protocol.X402 and signature and self._x402 is not None and not gate.has_fees():
                 return self._x402
-            if scheme == Protocol.MPP and authorization and authorization.strip().lower().startswith("payment "):
+            if (
+                scheme == Protocol.MPP
+                and self._mpp is not None
+                and authorization
+                and authorization.strip().lower().startswith("payment ")
+            ):
                 return self._mpp
         return None
 
@@ -214,7 +229,7 @@ class PayCore:
         if self._x402 is not None and Protocol.X402 in accept and not gate.has_fees():
             accepts.append(self._x402.accepts_entry(gate, request))
             headers.update(self._x402.challenge_headers(gate, request))
-        if Protocol.MPP in accept:
+        if self._mpp is not None and Protocol.MPP in accept:
             accepts.append(self._mpp.accepts_entry(gate, request))
             headers.update(self._mpp.challenge_headers(gate, request))
 

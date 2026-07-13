@@ -27,6 +27,8 @@ from solana_pay_kit import (
     require_payment,
 )
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.store import FileReplayStore
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import (
     ChallengeExpiredError,
@@ -49,9 +51,9 @@ def _clean(monkeypatch):
     reset()
 
 
-def _cfg(accept=(Protocol.X402, Protocol.MPP)):
+def _cfg(accept=(Protocol.X402, Protocol.MPP), *, network="solana_localnet"):
     return configure(
-        network="solana_localnet",
+        network=network,
         preflight=False,
         accept=accept,
         mpp=MppConfig(challenge_binding_secret=SECRET),
@@ -86,6 +88,8 @@ def test_for_config_returns_same_core_per_config():
     second = PayCore.for_config(cfg)
     assert first is second
     # The MPP adapter (and its replay store) is shared, not rebuilt per call.
+    assert first._mpp is not None
+    assert second._mpp is not None
     assert first._mpp is second._mpp
     assert first._mpp._replay_store is second._mpp._replay_store
 
@@ -107,15 +111,50 @@ async def test_settled_signature_not_replayable_across_requests(monkeypatch):
     """End-to-end of the cache: a signature consumed on the shared replay store
     by one request's core stays consumed for the next request's core."""
     cfg = _cfg(accept=(Protocol.MPP,))
-    store = PayCore.for_config(cfg)._mpp._replay_store
+    core = PayCore.for_config(cfg)
+    assert core._mpp is not None
+    store = core._mpp._replay_store
     key = "solana-charge:consumed:sig-xyz"
     # First request settles the signature (marks it consumed).
     assert await store.put_if_absent(key, True) is True
     # A later request resolves the SAME core/store, so the marker persists and
     # a replay of the same signature is rejected (put_if_absent returns False).
-    store_again = PayCore.for_config(cfg)._mpp._replay_store
+    next_core = PayCore.for_config(cfg)
+    assert next_core._mpp is not None
+    store_again = next_core._mpp._replay_store
     assert store_again is store
     assert await store_again.put_if_absent(key, True) is False
+
+
+def test_for_config_injects_durable_replay_store_outside_localnet(tmp_path):
+    """Framework callers can supply one durable MPP replay store at startup."""
+    cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
+    store = FileReplayStore(tmp_path / "mpp-replay.json")
+
+    core = PayCore.for_config(cfg, replay_store=store)
+
+    assert core._mpp is not None
+    assert core._mpp._replay_store is store
+    assert PayCore.for_config(cfg) is core
+
+
+def test_nonlocal_mpp_without_replay_store_fails_closed():
+    """MPP does not fall back to process-local replay state in production."""
+    cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
+
+    with pytest.raises(PaymentError, match="durable replay_store is required"):
+        PayCore(cfg)
+
+
+def test_x402_only_nonlocal_config_does_not_construct_mpp_adapter(tmp_path):
+    """An x402-only deployment does not need an unused MPP replay store."""
+    cfg = _cfg(accept=(Protocol.X402,), network="solana_devnet")
+    store = FileReplayStore(tmp_path / "x402-replay.json")
+
+    core = PayCore.for_config(cfg, replay_store=store)
+
+    assert core._mpp is None
+    assert core._x402 is not None
 
 
 # -- gate resolution ---------------------------------------------------------
@@ -208,6 +247,7 @@ def test_detect_mpp_when_payment_authorization_present():
     core = PayCore(cfg)
     g = _gate(cfg, accept=(Protocol.MPP,))
     adapter = core.detect_adapter(g, {"authorization": "Payment abc"})
+    assert core._mpp is not None
     assert adapter is core._mpp
 
 
@@ -233,6 +273,7 @@ def test_detect_x402_disabled_on_fee_gate():
     # x402 signature present but fees disable x402; no MPP auth -> None.
     assert core.detect_adapter(g, {"payment-signature": "deadbeef"}) is None
     # MPP still works on the fee gate.
+    assert core._mpp is not None
     assert core.detect_adapter(g, {"authorization": "Payment x"}) is core._mpp
 
 
@@ -291,6 +332,7 @@ async def test_process_dispatches_to_adapter(monkeypatch):
     async def fake_verify(gate, request):
         return sentinel
 
+    assert core._mpp is not None
     monkeypatch.setattr(core._mpp, "verify_and_settle", fake_verify)
     out = await core.process(g, None, _Req(headers={"authorization": "Payment abc"}))
     assert out is sentinel
