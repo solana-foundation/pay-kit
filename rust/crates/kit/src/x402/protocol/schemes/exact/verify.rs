@@ -589,7 +589,7 @@ mod tests {
     use solana_transaction::TransactionError;
     use solana_transaction_status_client_types::{
         option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
-        UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
+        UiCompiledInstruction, UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
     };
 
     fn requirements(amount: &str) -> PaymentRequirements {
@@ -712,6 +712,59 @@ mod tests {
             }))
             .unwrap(),
         );
+        tx
+    }
+
+    fn tx_with_raw_transfer_and_memos(
+        requirements: &PaymentRequirements,
+        memos: &[&str],
+    ) -> EncodedConfirmedTransactionWithStatusMeta {
+        let mut tx = tx_with_meta(None);
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let recipient = Pubkey::from_str(&requirements.recipient).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        let destination = get_associated_token_address(&recipient, &mint, &token_program);
+        let source = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let mut transfer_data = vec![12];
+        transfer_data.extend_from_slice(&requirements.amount.parse::<u64>().unwrap().to_le_bytes());
+        transfer_data.push(requirements.decimals.unwrap_or(6));
+        let mut instructions = vec![UiCompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![1, 2, 3, 4],
+            data: bs58::encode(transfer_data).into_string(),
+            stack_height: None,
+        }];
+        instructions.extend(memos.iter().map(|memo| UiCompiledInstruction {
+            program_id_index: 5,
+            accounts: vec![],
+            data: bs58::encode(memo.as_bytes()).into_string(),
+            stack_height: None,
+        }));
+
+        tx.transaction.transaction = EncodedTransaction::Json(UiTransaction {
+            signatures: vec!["sig".to_string()],
+            message: UiMessage::Raw(UiRawMessage {
+                header: MessageHeader {
+                    num_required_signatures: 1,
+                    num_readonly_signed_accounts: 0,
+                    num_readonly_unsigned_accounts: 1,
+                },
+                account_keys: vec![
+                    token_program.to_string(),
+                    source.to_string(),
+                    mint.to_string(),
+                    destination.to_string(),
+                    authority.to_string(),
+                    programs::MEMO_PROGRAM.to_string(),
+                ],
+                recent_blockhash: "blockhash".to_string(),
+                instructions,
+                address_table_lookups: None,
+            }),
+        });
         tx
     }
 
@@ -988,6 +1041,164 @@ mod tests {
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_memo_count")
         );
+    }
+
+    #[test]
+    fn verify_transaction_details_accepts_raw_transfer_and_memo() {
+        let mut requirements = requirements("1000");
+        requirements.extra = Some(serde_json::json!({ "memo": "order-42" }));
+        let tx = tx_with_raw_transfer_and_memos(&requirements, &["order-42"]);
+
+        assert!(verify_transaction_details(&tx, &requirements).is_ok());
+    }
+
+    #[test]
+    fn verify_transaction_details_rejects_invalid_raw_memo_encoding() {
+        let mut requirements = requirements("1000");
+        requirements.extra = Some(serde_json::json!({ "memo": "order-42" }));
+        let mut tx = tx_with_raw_transfer_and_memos(&requirements, &["order-42"]);
+        let EncodedTransaction::Json(ui_tx) = &mut tx.transaction.transaction else {
+            panic!("test fixture must be JSON encoded");
+        };
+        let UiMessage::Raw(message) = &mut ui_tx.message else {
+            panic!("test fixture must use a raw message");
+        };
+        message.instructions[1].data = "not base58!".to_string();
+
+        let err = verify_transaction_details(&tx, &requirements).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_memo_mismatch")
+        );
+    }
+
+    #[test]
+    fn raw_transfer_parser_rejects_malformed_or_incomplete_instructions() {
+        let requirements = requirements("1000");
+        let mint = requirements.currency.clone();
+        let recipient = Pubkey::from_str(&requirements.recipient).unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let destination = get_associated_token_address(
+            &recipient,
+            &Pubkey::from_str(&mint).unwrap(),
+            &token_program,
+        )
+        .to_string();
+        let account_keys = vec![
+            programs::TOKEN_PROGRAM.to_string(),
+            Pubkey::new_unique().to_string(),
+            mint.clone(),
+            destination.clone(),
+            Pubkey::new_unique().to_string(),
+        ];
+        let valid = UiCompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![1, 2, 3, 4],
+            data: bs58::encode([vec![12], 1000u64.to_le_bytes().to_vec(), vec![6]].concat())
+                .into_string(),
+            stack_height: None,
+        };
+        assert!(matches_raw_transfer(
+            &valid,
+            &account_keys,
+            &destination,
+            &mint,
+            1000
+        ));
+
+        let mut unknown_program = valid.clone();
+        unknown_program.program_id_index = 99;
+        assert!(!matches_raw_transfer(
+            &unknown_program,
+            &account_keys,
+            &destination,
+            &mint,
+            1000
+        ));
+
+        let mut malformed_encoding = valid.clone();
+        malformed_encoding.data = "not base58!".to_string();
+        assert!(!matches_raw_transfer(
+            &malformed_encoding,
+            &account_keys,
+            &destination,
+            &mint,
+            1000
+        ));
+
+        let mut incomplete_accounts = valid.clone();
+        incomplete_accounts.accounts.truncate(3);
+        assert!(!matches_raw_transfer(
+            &incomplete_accounts,
+            &account_keys,
+            &destination,
+            &mint,
+            1000
+        ));
+
+        let mut missing_destination = valid;
+        missing_destination.accounts[2] = 99;
+        assert!(!matches_raw_transfer(
+            &missing_destination,
+            &account_keys,
+            &destination,
+            &mint,
+            1000
+        ));
+    }
+
+    #[test]
+    fn parsed_transfer_parser_rejects_noncanonical_json_shapes() {
+        let expected_destination = "destination";
+        let expected_mint = "mint";
+        let expected_amount = "1000";
+        let valid: UiInstruction = serde_json::from_value(serde_json::json!({
+            "program": "spl-token",
+            "programId": programs::TOKEN_PROGRAM,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "destination": expected_destination,
+                    "mint": expected_mint,
+                    "tokenAmount": { "amount": expected_amount }
+                }
+            },
+            "stackHeight": null
+        }))
+        .unwrap();
+        assert!(matches_parsed_transfer(
+            &valid,
+            expected_destination,
+            expected_mint,
+            expected_amount
+        ));
+
+        let wrong_program: UiInstruction = serde_json::from_value(serde_json::json!({
+            "program": "system",
+            "programId": "11111111111111111111111111111111",
+            "parsed": { "type": "transferChecked", "info": {} },
+            "stackHeight": null
+        }))
+        .unwrap();
+        assert!(!matches_parsed_transfer(
+            &wrong_program,
+            expected_destination,
+            expected_mint,
+            expected_amount
+        ));
+
+        let malformed_info: UiInstruction = serde_json::from_value(serde_json::json!({
+            "program": "spl-token",
+            "programId": programs::TOKEN_PROGRAM,
+            "parsed": { "type": "transferChecked", "info": "not-an-object" },
+            "stackHeight": null
+        }))
+        .unwrap();
+        assert!(!matches_parsed_transfer(
+            &malformed_info,
+            expected_destination,
+            expected_mint,
+            expected_amount
+        ));
     }
 
     #[test]

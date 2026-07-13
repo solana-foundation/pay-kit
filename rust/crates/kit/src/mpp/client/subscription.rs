@@ -896,4 +896,52 @@ mod tests {
         let payload = build_with(&md).await.expect("activation tx");
         assert!(matches!(payload, CredentialPayload::Transaction { .. }));
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn default_builder_preserves_required_field_error() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.amount = None;
+
+        let err = build_subscription_activation_transaction(&*signer, &rpc, &md)
+            .await
+            .expect_err("missing amount must not reach RPC initialization");
+
+        assert!(format!("{err}").contains("methodDetails.amount"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_optional_account_keys_name_the_rejected_field() {
+        let cases = [
+            ("merchant", "merchant"),
+            ("recipient", "recipient"),
+            ("program_id", "programId"),
+        ];
+
+        for (field, expected_error) in cases {
+            let mut md = make_method_details(false, None);
+            match field {
+                "merchant" => md.merchant = Some("not-a-pubkey".into()),
+                "recipient" => md.recipient = Some("not-a-pubkey".into()),
+                "program_id" => md.program_id = Some("not-a-pubkey".into()),
+                _ => unreachable!("test cases are exhaustive"),
+            }
+
+            let err = build_with(&md)
+                .await
+                .expect_err("invalid account key must be rejected");
+            assert!(format!("{err}").contains(expected_error));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_fee_payer_key_is_rejected_before_transaction_building() {
+        let md = make_method_details(true, Some("not-a-pubkey"));
+        let err = build_with(&md)
+            .await
+            .expect_err("invalid fee payer key must fail closed");
+
+        assert!(format!("{err}").contains("feePayerKey"));
+    }
 }
