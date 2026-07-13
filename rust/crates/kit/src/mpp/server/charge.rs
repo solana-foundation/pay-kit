@@ -2409,7 +2409,10 @@ fn reject_managed_transfer_source_owners(
         if program != &token_program && program != &token_2022_program {
             continue;
         }
-        if instruction.data.len() != 10 || instruction.data.first() != Some(&12) {
+        // The SPL Token and Token-2022 decoders accept trailing bytes for
+        // TransferChecked, so inspect every instruction the offline verifier
+        // can accept rather than only the canonical ten-byte encoding.
+        if instruction.data.len() < 10 || instruction.data.first() != Some(&12) {
             continue;
         }
         let source_index = *instruction
@@ -3949,18 +3952,16 @@ mod tests {
             let signer = Arc::new(CountingSigner::new(fee_payer));
             let mpp = fee_sponsored_mpp(mock.url(), recipient, mint, signer.clone());
             let destination = derive_ata(&recipient, &mint, &token_program);
-            let transaction = dummy_tx(
-                vec![spl_transfer_checked_ix_for_program(
-                    &source,
-                    &mint,
-                    &destination,
-                    &delegate,
-                    1_000_000,
-                    6,
-                    token_program,
-                )],
-                &fee_payer,
+            let transfer = spl_transfer_checked_ix_for_program(
+                &source,
+                &mint,
+                &destination,
+                &delegate,
+                1_000_000,
+                6,
+                token_program,
             );
+            let transaction = dummy_tx(vec![transfer.clone()], &fee_payer);
             let request = charge_request(1_000_000, &mint.to_string(), &recipient);
             let method_details = fee_sponsored_method_details(fee_payer, token_program);
 
@@ -3981,6 +3982,29 @@ mod tests {
                 .broadcast_pull(&transaction_b64, &request, &method_details)
                 .await
                 .expect_err("managed token-account owner must be rejected");
+            assert_eq!(
+                err.message,
+                "Fee payer token account cannot fund the SPL payment transfer"
+            );
+            assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
+
+            // Both token programs accept trailing instruction bytes. The
+            // managed-owner guard must inspect that on-chain-valid encoding
+            // too, rather than letting it skip the source lookup.
+            let mut transfer_with_trailing_data = transfer;
+            transfer_with_trailing_data.data.push(0);
+            let trailing_transaction = dummy_tx(vec![transfer_with_trailing_data], &fee_payer);
+            verify_transaction_pre_broadcast(&trailing_transaction, &request, &method_details)
+                .expect("offline verifier accepts trailing TransferChecked bytes");
+            let trailing_transaction_b64 = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                bincode::serialize(&VersionedTransaction::from(trailing_transaction))
+                    .expect("serialize transaction"),
+            );
+            let err = mpp
+                .broadcast_pull(&trailing_transaction_b64, &request, &method_details)
+                .await
+                .expect_err("trailing bytes must not bypass managed owner rejection");
             assert_eq!(
                 err.message,
                 "Fee payer token account cannot fund the SPL payment transfer"

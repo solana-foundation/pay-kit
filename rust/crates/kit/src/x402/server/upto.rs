@@ -2089,7 +2089,6 @@ mod tests {
             operator,
             vec![open_instruction],
         ));
-
         RpcFixture {
             mock,
             handler,
@@ -2394,6 +2393,7 @@ mod tests {
             .settle_actual(&open, 250_000)
             .await
             .expect("settlement broadcast");
+        fixture.mock.assert_transaction_consumed();
         assert!(settlement.success);
         assert_eq!(settlement.amount, "250000");
         assert_eq!(

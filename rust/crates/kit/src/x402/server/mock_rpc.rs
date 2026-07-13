@@ -148,10 +148,23 @@ impl MockRpc {
     }
 
     pub(crate) fn expect_transaction(&self, expectation: TransactionExpectation) {
-        self.state
-            .lock()
-            .expect("mock rpc state")
-            .expected_transaction = Some(expectation);
+        let mut state = self.state.lock().expect("mock rpc state");
+        assert!(
+            state.expected_transaction.is_none(),
+            "cannot replace an unconsumed transaction expectation"
+        );
+        state.expected_transaction = Some(expectation);
+    }
+
+    pub(crate) fn assert_transaction_consumed(&self) {
+        assert!(
+            self.state
+                .lock()
+                .expect("mock rpc state")
+                .expected_transaction
+                .is_none(),
+            "transaction expectation was not consumed"
+        );
     }
 
     pub(crate) fn account_data(&self, pubkey: &str) -> Option<Vec<u8>> {
@@ -435,6 +448,15 @@ mod tests {
             .expect("mock rpc state")
             .accepted_signatures
             .is_empty());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "cannot replace an unconsumed transaction expectation")]
+    async fn refuses_to_replace_an_unconsumed_expectation() {
+        let mock = MockRpc::start().await;
+        let fee_payer = Pubkey::new_unique();
+        mock.expect_transaction(TransactionExpectation::new(fee_payer, Vec::new()));
+        mock.expect_transaction(TransactionExpectation::new(fee_payer, Vec::new()));
     }
 
     #[tokio::test]
