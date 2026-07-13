@@ -1,4 +1,6 @@
-import { createSolanaRpc } from '@solana/kit';
+import { createHash } from 'node:crypto';
+
+import { getBase64Codec, getTransactionDecoder } from '@solana/kit';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -13,11 +15,17 @@ import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
 import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { InvalidProofError } from '../errors.js';
+import { ConfigurationError, InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2 } from '../protocol.js';
-import { errorMessage, x402PaymentHeader } from './x402-shared.js';
+import {
+    assertPaymentHeaderWithinCap,
+    ChallengeBlockhashCache,
+    errorMessage,
+    isReservingReplayStore,
+    x402PaymentHeader,
+} from './x402-shared.js';
 
 /** x402 v2 protocol version advertised in the challenge envelope. */
 const X402_VERSION = 2;
@@ -27,6 +35,24 @@ const MAX_TIMEOUT_SECONDS = 300;
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 /** 402 challenge header read by x402 clients (alongside the JSON body). */
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
+const CONSUMED_PREFIX = 'x402-svm-exact:consumed:';
+
+const RELEASE_SAFE_SETTLE_REASONS: ReadonlySet<string> = new Set([
+    'verification_failed',
+    'unsupported_scheme',
+    'network_mismatch',
+    'fee_payer_not_managed_by_facilitator',
+    'invalid_exact_svm_payload_missing_fee_payer',
+    'invalid_exact_svm_payload_transaction_could_not_be_decoded',
+    'invalid_exact_svm_payload_transaction_instructions_length',
+    'invalid_exact_svm_payload_no_transfer_instruction',
+    'invalid_exact_svm_payload_mint_mismatch',
+    'invalid_exact_svm_payload_recipient_mismatch',
+    'invalid_exact_svm_payload_amount_mismatch',
+    'invalid_exact_svm_payload_memo_count',
+    'invalid_exact_svm_payload_memo_mismatch',
+    'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
+]);
 
 /**
  * The x402 `exact` protocol adapter: wraps `@x402/svm`'s exact scheme behind
@@ -39,6 +65,7 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
 export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = caip2(config.network) as Network;
     const operator = config.operator.signer.pubkey;
+    const blockhashCache = new ChallengeBlockhashCache();
 
     // In-process facilitator: the operator both fee-pays and signs settlement.
     const facilitator = new x402Facilitator().register(
@@ -47,6 +74,40 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
         ),
     );
+    if (config.replayStore === undefined || !isReservingReplayStore(config.replayStore)) {
+        throw new ConfigurationError('x402 exact requires a replayStore with atomic reserve capability.');
+    }
+    const reserveStore = config.replayStore;
+
+    async function claimPayload(key: string): Promise<boolean> {
+        return await reserveStore.reserve(`${CONSUMED_PREFIX}${key}`, true, MAX_TIMEOUT_SECONDS);
+    }
+
+    async function releasePayload(key: string): Promise<void> {
+        await reserveStore.delete(`${CONSUMED_PREFIX}${key}`);
+    }
+
+    function payloadKey(header: string, payload: PaymentPayload, requirements: PaymentRequirements): string {
+        const transaction = (payload.payload as { transaction?: unknown } | undefined)?.transaction;
+        if (typeof transaction !== 'string' || transaction === '') return `header:${header}`;
+        try {
+            const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transaction));
+            const identity = JSON.stringify({
+                amount: requirements.amount,
+                asset: requirements.asset,
+                extra: requirements.extra,
+                maxTimeoutSeconds: requirements.maxTimeoutSeconds,
+                message: getBase64Codec().decode(decoded.messageBytes),
+                network: requirements.network,
+                payTo: requirements.payTo,
+                scheme: requirements.scheme,
+            });
+            return `msg:${createHash('sha256').update(identity).digest('hex')}`;
+        } catch {
+            // Verification remains authoritative; malformed transactions fall back to raw bytes.
+        }
+        return `tx:${transaction}`;
+    }
 
     function mintFor(gate: Gate): string {
         const coin = resolveCoin(gate.amount, config.stablecoins);
@@ -54,11 +115,11 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     }
 
     /** The route's pinned requirements — the credential is bound to this exact amount. */
-    function requirementsFor(gate: Gate): PaymentRequirements {
+    function requirementsFor(gate: Gate, request: Request): PaymentRequirements {
         return {
             amount: gate.total().baseUnits().toString(),
             asset: mintFor(gate),
-            extra: { feePayer: operator },
+            extra: { feePayer: operator, memo: new URL(request.url).pathname },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network,
             payTo: gate.payTo,
@@ -72,32 +133,29 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
      * round-trip (mirroring MPP's `recentBlockhash`). Falls back to the bare
      * requirements if the fetch fails (the client then fetches its own).
      */
-    async function challengeRequirements(gate: Gate): Promise<PaymentRequirements> {
-        const base = requirementsFor(gate);
-        try {
-            const { value } = await createSolanaRpc(config.rpcUrl).getLatestBlockhash().send();
-            return {
-                ...base,
-                extra: {
-                    ...base.extra,
-                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                    recentBlockhash: value.blockhash,
-                },
-            };
-        } catch {
-            return base;
-        }
+    async function challengeRequirements(gate: Gate, request: Request): Promise<PaymentRequirements> {
+        const base = requirementsFor(gate, request);
+        const cached = await blockhashCache.recentBlockhash(config.rpcUrl);
+        if (cached === undefined) return base;
+        return {
+            ...base,
+            extra: {
+                ...base.extra,
+                lastValidBlockHeight: cached.lastValidBlockHeight,
+                recentBlockhash: cached.blockhash,
+            },
+        };
     }
 
     return {
-        acceptsEntry(gate: Gate): Promise<AcceptsEntry> {
-            const requirements = requirementsFor(gate);
+        acceptsEntry(gate: Gate, request: Request): Promise<AcceptsEntry> {
+            const requirements = requirementsFor(gate, request);
             return Promise.resolve({ ...requirements, protocol: 'x402' });
         },
 
         async challengeHeaders(gate: Gate, request: Request): Promise<Readonly<Record<string, string>>> {
             const paymentRequired: PaymentRequired = {
-                accepts: [await challengeRequirements(gate)],
+                accepts: [await challengeRequirements(gate, request)],
                 resource: { url: new URL(request.url).pathname },
                 x402Version: X402_VERSION,
             };
@@ -114,6 +172,7 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
         async verifyAndSettle(gate: Gate, request: Request): Promise<Payment> {
             const header = x402PaymentHeader(request);
             if (!header) throw new InvalidProofError('missing_x402_payment_header');
+            assertPaymentHeaderWithinCap(header);
 
             let payload: PaymentPayload;
             try {
@@ -122,15 +181,30 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
                 throw new InvalidProofError('invalid_x402_payment_header', errorMessage(error));
             }
 
-            const requirements = requirementsFor(gate);
+            const requirements = requirementsFor(gate, request);
             const verification = await facilitator.verify(payload, requirements);
             if (!verification.isValid) {
                 throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
             }
 
-            const settlement = await facilitator.settle(payload, requirements);
+            const key = payloadKey(header, payload, requirements);
+            if (!(await claimPayload(key))) {
+                throw new InvalidProofError('x402_payment_replayed', 'payment payload already used or in flight');
+            }
+
+            let settlement: Awaited<ReturnType<typeof facilitator.settle>>;
+            try {
+                settlement = await facilitator.settle(payload, requirements);
+            } catch (error) {
+                // A facilitator can throw after broadcast (for example while
+                // awaiting confirmation), so its side-effect boundary is
+                // ambiguous. Preserve the reservation and fail closed.
+                throw new InvalidProofError('settlement_failed', errorMessage(error));
+            }
             if (!settlement.success) {
-                throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
+                const reason = settlement.errorReason ?? 'settlement_failed';
+                if (RELEASE_SAFE_SETTLE_REASONS.has(reason)) await releasePayload(key);
+                throw new InvalidProofError(reason, settlement.errorMessage);
             }
 
             return {

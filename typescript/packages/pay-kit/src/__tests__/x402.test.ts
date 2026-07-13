@@ -32,9 +32,14 @@ import { configure, type PayKitConfig } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { gateDefaults } from '../pricing.js';
+import { createMemoryReplayStore } from '../replay-store.js';
 
 async function testConfig(): Promise<PayKitConfig> {
-    return await configure({ mpp: { challengeBindingSecret: 'x402-test-secret' }, network: 'solana_localnet' });
+    return await configure({
+        mpp: { challengeBindingSecret: 'x402-test-secret' },
+        network: 'solana_localnet',
+        replayStore: createMemoryReplayStore(),
+    });
 }
 
 function gateFor(config: PayKitConfig, amount = usd('0.10')): Gate {
@@ -54,6 +59,21 @@ describe('x402 exact adapter', () => {
         expect(typeof entry.network).toBe('string');
         expect(typeof entry.asset).toBe('string');
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
+    });
+
+    it('binds exact requirements to the request pathname', async () => {
+        const config = await testConfig();
+        const adapter = createX402ExactAdapter(config);
+        const gate = gateFor(config);
+
+        const first = await adapter.acceptsEntry(gate, new Request('http://localhost/reports/a'));
+        const second = await adapter.acceptsEntry(gate, new Request('http://localhost/reports/b'));
+        const firstMemo = (first.extra as { memo?: unknown } | undefined)?.memo;
+        const secondMemo = (second.extra as { memo?: unknown } | undefined)?.memo;
+
+        expect(firstMemo).toBe('/reports/a');
+        expect(secondMemo).toBe('/reports/b');
+        expect(firstMemo).not.toBe(secondMemo);
     });
 
     it('detects the x402 payment header', async () => {
