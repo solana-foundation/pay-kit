@@ -17,6 +17,7 @@
 //!
 //! let pay = PayKit::new(PayKitConfig {
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+//!     network: "localnet".to_string(),
 //!     ..Default::default()
 //! })
 //! .unwrap();
