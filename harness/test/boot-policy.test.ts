@@ -14,13 +14,10 @@ import { startServer, stopServer } from "../src/process";
 // never exercises store-construction / boot-time safety policy, so nothing
 // pins the audited divergence:
 //
-//   * Go fails CLOSED off-localnet when no shared replay/session store is
-//     configured and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE is unset — a
-//     process-local in-memory store silently loses double-spend protection on
-//     a multi-replica deploy (fail-OPEN).
-//   * TS and Python (the high-level server adapters the harness fixtures boot)
-//     fail OPEN today: they construct a process-local in-memory store off
-//     localnet and boot to `ready` anyway.
+//   * Go, TypeScript, and Python fail CLOSED off-localnet when no shared
+//     replay/session store is configured and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE
+//     is unset. A process-local in-memory store silently loses double-spend
+//     protection on a multi-replica deployment.
 //
 // SECURITY.md claims PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE is honored across the
 // Go, TypeScript, and Python SDKs, but no test proved it. This file is that
@@ -35,19 +32,10 @@ import { startServer, stopServer } from "../src/process";
 //      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready` — proving
 //      the development escape is honored without weakening mainnet policy.
 //
-// RED-EXPECTED-PENDING: the TS and Python fail-closed remediations are landing
-// in parallel in this same worktree. Until they land, the `typescript` and
-// `python` fail-closed cases boot to `ready` (fail-OPEN) and their tests go
-// RED on purpose — that is the pending signal. They go GREEN once the SDK
-// constructors reject an in-memory replay/session store off-localnet without
-// the opt-in. Go already fails closed and is GREEN now.
-//
 // FALSE-GREEN GUARD: the fail-closed assertion does not merely check "the boot
 // failed" — a missing toolchain, unbuilt binary, or bad RPC would fail boot for
-// the wrong reason. It requires the rejection to carry the canonical
-// fail-closed SIGNATURE (the shared PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in
-// string, or the "no shared … store configured" wording), so only a real
-// policy rejection passes.
+// the wrong reason. It requires each SDK's precise missing-store rejection, so
+// the separate mainnet opt-in-forbidden branch cannot satisfy this probe.
 // ---------------------------------------------------------------------------
 
 // A deterministic, valid ed25519 keypair (64-byte Solana secret key + its
@@ -80,13 +68,7 @@ const HMAC_SECRET = "mpp-harness-secret-key-with-32b-pad";
 const DEAD_RPC_URL = "http://127.0.0.1:1";
 
 const OPT_IN_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE";
-
-// The canonical fail-closed signature shared across SDKs. The opt-in env-var
-// name is the cross-SDK remediation string SECURITY.md guarantees every SDK
-// emits; the "no shared … store configured" wording is the Go/TS phrasing. A
-// toolchain/binary/RPC failure will NOT match either, so it cannot false-green.
-const FAIL_CLOSED_SIGNATURE =
-  /PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE|no shared[^\n]*store configured/i;
+const REQUIRE_PYTHON_BOOT_PROBE_ENV = "HARNESS_REQUIRE_PYTHON_BOOT_PROBE";
 
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -144,6 +126,9 @@ type CoveredProbe = {
   implementation: ImplementationDefinition;
   // Per-SDK env used to reach the MPP charge store-construction gate.
   mppEnv: Record<string, string>;
+  // The no-opt-in branch must reject for this exact missing-store condition.
+  // In particular, it must not pass by taking the separate mainnet opt-in path.
+  missingStoreSignature: RegExp;
 };
 
 function mppEnv(mint: string): Record<string, string> {
@@ -195,6 +180,8 @@ const coveredProbes: CoveredProbe[] = [
       "go-paykit",
     ),
     mppEnv: mppEnv("USDC"),
+    missingStoreSignature:
+      /no replay store configured for mainnet; configure a shared replay Store/i,
   },
   {
     id: "typescript",
@@ -215,6 +202,8 @@ const coveredProbes: CoveredProbe[] = [
       "typescript",
     ),
     mppEnv: mppEnv("USDC"),
+    missingStoreSignature:
+      /no shared replay store configured outside localnet; provide replayStore/i,
   },
   {
     id: "python",
@@ -236,6 +225,8 @@ const coveredProbes: CoveredProbe[] = [
     ),
     // Python MPP runs in pubkey mode: the literal mint pubkey is the currency.
     mppEnv: mppEnv(USDC_MINT),
+    missingStoreSignature:
+      /MPP requires an injected ProductionReplayStore outside localnet; its put_if_absent must be atomic, shared, and durable/i,
   },
 ];
 
@@ -286,21 +277,25 @@ console.warn(
 );
 
 // Boot the SDK at network=mainnet with NO opt-in and assert it fails CLOSED
-// with the canonical signature. If it instead boots to `ready` (the audited
-// fail-OPEN), stop the leaked server and throw loudly — that is the
-// red-expected-pending state until the SDK remediation lands.
+// with its precise missing-store signature. Explicitly deleting the opt-in from
+// the child environment keeps a parent CI environment from false-greening this
+// no-opt-in probe.
 async function assertFailsClosed(probe: CoveredProbe): Promise<void> {
   let server: RunningServer | undefined;
   try {
-    server = await startServer(probe.implementation, probe.mppEnv);
+    server = await startServer(probe.implementation, {
+      ...probe.mppEnv,
+      [OPT_IN_ENV]: undefined,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     expect(
       message,
-      `${probe.id}: boot failed but not with the fail-closed policy signature. ` +
+      `${probe.id}: boot failed but not with the missing-store rejection. ` +
         `A missing toolchain/binary/RPC would fail here too, so this is NOT a ` +
-        `valid fail-closed. Rejection was:\n${message}`,
-    ).toMatch(FAIL_CLOSED_SIGNATURE);
+        `valid fail-closed result. The mainnet opt-in-forbidden branch is also ` +
+        `not valid here. Rejection was:\n${message}`,
+    ).toMatch(probe.missingStoreSignature);
     return;
   }
   // Unexpected: the constructor booted to ready off-localnet with no store and
@@ -309,9 +304,8 @@ async function assertFailsClosed(probe: CoveredProbe): Promise<void> {
   throw new Error(
     `${probe.id}: expected fail-CLOSED boot at network=mainnet with no shared ` +
       `store and no ${OPT_IN_ENV}, but the server booted to \`ready\` (fail-OPEN). ` +
-      `This is the audited gap: the SDK must reject process-local in-memory ` +
-      `replay/session store construction off-localnet without the opt-in. ` +
-      `RED-EXPECTED-PENDING until the ${probe.id} remediation lands.`,
+      `The SDK must reject process-local in-memory replay/session store ` +
+      `construction off-localnet without the opt-in.`,
   );
 }
 
@@ -357,6 +351,19 @@ describe("boot-policy conformance: boots with the opt-in", () => {
       },
     );
   }
+});
+
+describe("boot-policy conformance: provisioned Python probe", () => {
+  it("python: requires uv when the focused Python job enables the probe", () => {
+    if (process.env[REQUIRE_PYTHON_BOOT_PROBE_ENV] !== "1") {
+      return;
+    }
+
+    expect(
+      commandExists("uv"),
+      `${REQUIRE_PYTHON_BOOT_PROBE_ENV}=1 requires uv; do not skip the Python boot-policy probe`,
+    ).toBe(true);
+  });
 });
 
 describe("boot-policy conformance: SDKs without the store fail-closed contract", () => {

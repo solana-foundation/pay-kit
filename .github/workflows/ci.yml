@@ -703,7 +703,6 @@ jobs:
             test/x402-upto-verify-open.test.ts \
             test/x402-upto-over-ceiling.test.ts \
             test/value-binding-verify.test.ts \
-            test/boot-policy.test.ts \
             test/process.test.ts \
             test/flow-conformance.test.ts \
             test/ci-coverage-gate.test.ts \
@@ -711,11 +710,9 @@ jobs:
       # value-binding-verify drives the real @solana/mpp session verifier with
       # adversarial on-chain-binding vectors (unrelated-sig + inflated deposit +
       # recipients-vs-splits) — the integration radar for the fabricated-deposit
-      # class. boot-policy asserts every SDK's server/adapter fails CLOSED when it
-      # would default to an in-memory replay store off-localnet without the
-      # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in; it self-skips any SDK whose
-      # toolchain is absent in this Node job (Go/Python get full coverage in the
-      # multi-toolchain harness.yml legs), so it degrades rather than false-greens.
+      # class. The Python replay-store boot-policy probe runs in the provisioned
+      # Python jobs in python.yml and harness.yml, where uv is required before
+      # the focused test starts. Keep this generic Node job toolchain-neutral.
       # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
       # --testNamePattern matched every one of these pairs, so it was redundant).
       # assert-run-count pins the executed pair count so a title rename or a
