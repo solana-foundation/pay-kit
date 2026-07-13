@@ -952,6 +952,13 @@ def new_session(options: SessionOptions) -> Session:
         raise PaymentError(f"invalid recipient pubkey: {exc}", code="invalid-config") from exc
     if len(options.splits) > MAX_SPLITS:
         raise PaymentError(f"splits cannot exceed {MAX_SPLITS} entries", code="invalid-config")
+    split_recipients: set[str] = set()
+    for index, split in enumerate(options.splits):
+        if split.recipient in split_recipients:
+            raise PaymentError(
+                f"splits[{index}] duplicates recipient {split.recipient}", code="invalid-config"
+            )
+        split_recipients.add(split.recipient)
 
     secret_key = options.secret_key
     if secret_key == "":

@@ -216,6 +216,22 @@ def test_new_session_validation_too_many_splits() -> None:
         )
 
 
+def test_new_session_validation_rejects_duplicate_split_recipient() -> None:
+    duplicate_recipient = _new_wallet()
+    with pytest.raises(PaymentError, match="splits\\[1\\] duplicates recipient"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                splits=[
+                    Split(recipient=duplicate_recipient, bps=1_000),
+                    Split(recipient=duplicate_recipient, bps=2_000),
+                ],
+            )
+        )
+
+
 def test_open_tx_expected_binds_configured_splits() -> None:
     split = Split(recipient=_new_wallet(), bps=3_333)
     session = _new_test_session(splits=[split])
