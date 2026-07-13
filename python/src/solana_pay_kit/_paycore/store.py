@@ -36,6 +36,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from solana_pay_kit._paycore.solana import _canonical_network, validate_network
+
 logger = logging.getLogger(__name__)
 
 _ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
@@ -255,13 +257,15 @@ class FileReplayStore:
 def resolve_replay_store(network: str, replay_store: Store | None, *, protocol: str) -> Store:
     """Apply the shared replay-store policy for raw servers and adapters.
 
-    ``network`` must already be the canonical ``mainnet``, ``devnet``, or
-    ``localnet`` label. Localnet may use either bundled store. Outside
-    localnet, only a caller's explicit :class:`ProductionReplayStore` is
-    accepted, except for the existing explicit devnet ``MemoryStore`` escape.
-    The nominal contract is a deployment assertion: callers remain responsible
-    for providing an atomic, shared, durable backend.
+    The existing server network allowlist validates and canonicalizes
+    ``network`` before policy selection. Localnet may use either bundled store.
+    Outside localnet, only a caller's explicit :class:`ProductionReplayStore`
+    is accepted, except for the existing explicit devnet ``MemoryStore``
+    escape. The nominal contract is a deployment assertion: callers remain
+    responsible for providing an atomic, shared, durable backend.
     """
+    validate_network(network)
+    network = _canonical_network(network)
     is_localnet = network == "localnet"
     is_devnet = network == "devnet"
     is_mainnet = network == "mainnet"

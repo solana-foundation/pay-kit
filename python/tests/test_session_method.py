@@ -45,11 +45,15 @@ from solana_pay_kit.protocols.mpp.server.session_method import (
     SessionOptions,
     new_session,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
 from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
+
+
+class _NominalChannelStore(ChannelStore):
+    """External-store stand-in for construction-only configuration tests."""
 
 
 class _TestVoucherSigner:
@@ -340,6 +344,39 @@ def test_new_session_inmemory_store_fails_closed_outside_localnet(monkeypatch: p
     assert isinstance(new_session(options).core().store(), MemoryChannelStore)
 
 
+@pytest.mark.parametrize("network", ["mainnet", "mainnet-beta"])
+@pytest.mark.parametrize("store", [None, MemoryChannelStore()])
+def test_new_session_mainnet_aliases_reject_inmemory_store_opt_in(
+    monkeypatch: pytest.MonkeyPatch, network: str, store: MemoryChannelStore | None
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="only for devnet development"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network=network,
+                secret_key=SESSION_METHOD_SECRET,
+                store=store,
+            )
+        )
+
+
+def test_new_session_rejects_unknown_network_before_store_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="unknown network"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="solana:unknown-network",
+                secret_key=SESSION_METHOD_SECRET,
+            )
+        )
+
+
 def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None:
     assert isinstance(_new_test_session().core().store(), MemoryChannelStore)
 
@@ -352,11 +389,13 @@ def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None
 
 def test_new_session_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
-    session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="")
+    store = _NominalChannelStore()
+    session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="", store=store)
     assert session._currency == "USDC"
     assert session._network == "mainnet"
     assert session._open_tx_submitter == "client"
     assert session.core().config.decimals == 6
+    assert session.core().store() is store
 
 
 # ── challenge ──

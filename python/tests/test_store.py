@@ -14,8 +14,10 @@ from solana_pay_kit._paycore.store import (
     FileReplayStore,
     MemoryStore,
     ProductionReplayStore,
+    ReplayStoreConfigurationError,
     Store,
     is_production_replay_store,
+    resolve_replay_store,
 )
 
 
@@ -40,6 +42,26 @@ class _ProductionStore(ProductionReplayStore):
 
 class _ProductionMemoryStore(MemoryStore, ProductionReplayStore):
     """Attempts to relabel the known unsafe in-memory store as production."""
+
+
+def test_replay_store_canonicalizes_mainnet_alias_before_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(ReplayStoreConfigurationError, match="forbidden on mainnet"):
+        resolve_replay_store("mainnet-beta", MemoryStore(), protocol="test")
+
+
+def test_replay_store_rejects_unknown_network_before_constructing_memory_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(ValueError, match="unknown network"):
+        resolve_replay_store("solana:unknown-network", None, protocol="test")
+
+
+def test_replay_store_allows_implicit_memory_only_for_explicit_devnet_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    assert isinstance(resolve_replay_store("devnet", None, protocol="test"), MemoryStore)
 
 
 @pytest.mark.parametrize("store_kind", ["memory", "file"])

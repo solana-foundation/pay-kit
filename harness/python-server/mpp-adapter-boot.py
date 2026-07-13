@@ -50,16 +50,19 @@ if _python_src.is_dir():
 
 from solana_pay_kit import Config, Network, Operator, Signer, Stablecoin  # noqa: E402
 from solana_pay_kit._paycore.errors import PaymentError  # noqa: E402
+from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2  # noqa: E402
+from solana_pay_kit._paycore.solana import _canonical_network, validate_network  # noqa: E402
 from solana_pay_kit.protocols.mpp import MppAdapter  # noqa: E402
 
 
 def _resolve_network(raw: str) -> Network:
-    """Map the harness network slug to a Network enum (off-localnet => mainnet)."""
-    return {
-        "mainnet": Network.SOLANA_MAINNET,
-        "devnet": Network.SOLANA_DEVNET,
-        "localnet": Network.SOLANA_LOCALNET,
-    }.get(raw, Network.SOLANA_LOCALNET)
+    """Map a supported harness slug or CAIP-2 id to a Network enum."""
+    if raw == SOLANA_MAINNET_CAIP2:
+        raw = "mainnet"
+    elif raw == SOLANA_DEVNET_CAIP2:
+        raw = "devnet"
+    validate_network(raw)
+    return Network(f"solana_{_canonical_network(raw)}")
 
 
 def _free_port() -> int:
@@ -70,6 +73,11 @@ def _free_port() -> int:
 
 def main() -> None:
     network_raw = os.environ.get("MPP_HARNESS_NETWORK", "mainnet")
+    try:
+        network = _resolve_network(network_raw)
+    except ValueError as exc:
+        print(f"mpp-adapter-boot: unsupported MPP_HARNESS_NETWORK: {exc}", file=sys.stderr)
+        sys.exit(2)
     pay_to = os.environ.get("MPP_HARNESS_PAY_TO")
     rpc_url = os.environ.get("MPP_HARNESS_RPC_URL", "http://127.0.0.1:1")
     signer_json = os.environ.get("MPP_HARNESS_FEE_PAYER_SECRET_KEY") or os.environ.get(
@@ -88,7 +96,7 @@ def main() -> None:
     # gate (pubkey-mode currency lives on the wire request), so USDC is a fine
     # placeholder here.
     config = Config(
-        network=_resolve_network(network_raw),
+        network=network,
         stablecoins=(Stablecoin.USDC,),
         rpc_url=rpc_url,
         operator=Operator(recipient=pay_to, signer=Signer.json(signer_json), fee_payer=True),

@@ -68,7 +68,9 @@ from solana_pay_kit import (  # noqa: E402
     Stablecoin,
 )
 from solana_pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
+from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2  # noqa: E402
 from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
+from solana_pay_kit._paycore.solana import _canonical_network, validate_network  # noqa: E402
 from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore  # noqa: E402
 from solana_pay_kit.errors import InvalidProofError  # noqa: E402
 from solana_pay_kit.protocols.mpp.core.headers import (  # noqa: E402
@@ -119,18 +121,15 @@ def _resolve_network(raw: str) -> Network:
     """Map the harness network string to a solana_pay_kit Network enum.
 
     Charge scenarios send the short slug ``localnet``; x402 scenarios send a
-    CAIP-2 string (``solana:<genesis>``). Mirrors PHP ``resolve_network``.
+    CAIP-2 string (``solana:<genesis>``). Unknown inputs are rejected instead
+    of being treated as devnet or localnet.
     """
-    if raw.startswith("solana:"):
-        if raw == "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
-            return Network.SOLANA_MAINNET
-        # Devnet genesis and any other CAIP-2 fall to devnet (the localnet
-        # surfpool fixtures are funded under the devnet genesis hash).
-        return Network.SOLANA_DEVNET
-    return {
-        "mainnet": Network.SOLANA_MAINNET,
-        "devnet": Network.SOLANA_DEVNET,
-    }.get(raw, Network.SOLANA_LOCALNET)
+    if raw == SOLANA_MAINNET_CAIP2:
+        raw = "mainnet"
+    elif raw == SOLANA_DEVNET_CAIP2:
+        raw = "devnet"
+    validate_network(raw)
+    return Network(f"solana_{_canonical_network(raw)}")
 
 
 def _base_units_to_human(base_units: str, decimals: int) -> str:
@@ -231,13 +230,14 @@ class _Adapter:
         amount_units = optional_env("X402_HARNESS_AMOUNT", "1000")
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        network = _resolve_network(network_raw)
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/protected")
         self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-fixture-settlement").lower()
         self.coin = _coin_for_mint(mint)
 
         signer = Signer.json(facilitator_json)
         config = Config(
-            network=_resolve_network(network_raw),
+            network=network,
             accept=(Protocol.X402,),
             stablecoins=(self.coin,),
             rpc_url=rpc_url,
@@ -276,6 +276,7 @@ class _Adapter:
         )
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        network = _resolve_network(network_raw)
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
         self.settlement_header = optional_env(
             "X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
@@ -288,7 +289,7 @@ class _Adapter:
 
         signer = Signer.json(fee_payer_json)
         config = Config(
-            network=_resolve_network(network_raw),
+            network=network,
             accept=(Protocol.X402,),
             stablecoins=(self.coin,),
             rpc_url=rpc_url,
@@ -315,7 +316,7 @@ class _Adapter:
         self.mint = require_env("MPP_HARNESS_MINT")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
         secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key")
-        network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
+        network = _resolve_network(optional_env("MPP_HARNESS_NETWORK", "localnet")).mints_label()
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
         realm = optional_env("MPP_HARNESS_REALM", "MPP Harness")
@@ -339,7 +340,7 @@ class _Adapter:
             recipient=pay_to,
             currency=self.mint,
             decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
-            network=network_raw,
+            network=network,
             rpc_url=self.rpc_url,
             secret_key=secret,
             realm=realm,
@@ -368,7 +369,7 @@ class _Adapter:
             sys.exit(2)
         session_cap = str(int(amount_units) + top_up_amount)
         secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad")
-        network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
+        network = _resolve_network(optional_env("MPP_HARNESS_NETWORK", "localnet")).mints_label()
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()
         # The on-chain settle_and_finalize requires the settling merchant to be
@@ -404,7 +405,7 @@ class _Adapter:
             cap=int(session_cap),
             currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
             decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
-            network=network_raw,
+            network=network,
             secret_key=secret,
             realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
             modes=["pull"],
@@ -795,7 +796,11 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    adapter = _Adapter()
+    try:
+        adapter = _Adapter()
+    except ValueError as exc:
+        print(f"python harness: invalid network configuration: {exc}", file=sys.stderr)
+        sys.exit(2)
     port = _free_port()
     server = HTTPServer(("127.0.0.1", port), HarnessHandler)
     server.adapter = adapter  # type: ignore[attr-defined]

@@ -52,7 +52,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
-from solana_pay_kit._paycore.solana import MAX_SPLITS
+from solana_pay_kit._paycore.solana import MAX_SPLITS, _canonical_network, validate_network
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
     PAYMENT_RECEIPT_HEADER,
@@ -1275,9 +1275,14 @@ def new_session(options: SessionOptions) -> Session:
     if secret_key == "":
         raise PaymentError("missing secret key", code="invalid-config")
 
+    raw_network = options.network or "mainnet"
+    try:
+        validate_network(raw_network)
+    except ValueError as exc:
+        raise PaymentError(str(exc), code="invalid-config") from exc
+    network = _canonical_network(raw_network)
     currency = options.currency or "USDC"
     decimals = options.decimals or 6
-    network = options.network or "mainnet"
     realm = options.realm or detect_realm()
 
     open_tx_submitter = options.open_tx_submitter
@@ -1298,12 +1303,14 @@ def new_session(options: SessionOptions) -> Session:
         )
 
     uses_memory_store = options.store is None or isinstance(options.store, MemoryChannelStore)
-    is_localnet = network in ("localnet", "solana_localnet")
-    if uses_memory_store and not is_localnet and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) != "1":
+    allows_devnet_memory_store = (
+        network == "devnet" and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
+    )
+    if uses_memory_store and network != "localnet" and not allows_devnet_memory_store:
         raise PaymentError(
             "a durable channel store is required outside localnet; set "
             f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
-            "MemoryChannelStore for development",
+            "MemoryChannelStore only for devnet development",
             code="invalid-config",
         )
 
