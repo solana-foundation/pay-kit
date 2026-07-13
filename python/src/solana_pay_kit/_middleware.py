@@ -159,6 +159,9 @@ class PayCore:
         """Bind to ``config`` and resolve (or inject) the scheme adapters."""
         self._config = config
         self._source_config_ref = _source_config_ref if _source_config_ref is not None else weakref.ref(config)
+        # When both adapters receive this store, their shared network-qualified
+        # settlement identity fences a co-signed Solana transaction across MPP
+        # and x402 as well as across requests.
         self._replay_store = replay_store
         # MPP construction enforces durable replay state outside localnet. Do
         # not construct it for x402-only configurations, where it is unused.

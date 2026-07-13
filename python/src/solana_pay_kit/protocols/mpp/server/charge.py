@@ -24,6 +24,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     ReplayError,
 )
+from solana_pay_kit._paycore.network import Network
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.solana import (
     MIN_SECRET_KEY_BYTES,
@@ -71,7 +72,21 @@ from solana_pay_kit.protocols.mpp.server._verify import (
 logger = logging.getLogger(__name__)
 
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
-_CONSUMED_PREFIX = "solana-charge:consumed:"
+# Settlement replay is intentionally protocol-independent. x402 exact and MPP
+# may validate and co-sign the same Solana wire transaction, so a shared store
+# must reserve one network-qualified identity across both protocol paths.
+_SETTLEMENT_REPLAY_PREFIX = "solana-settlement:consumed:"
+_SETTLEMENT_REPLAY_NETWORKS = {
+    "mainnet": Network.SOLANA_MAINNET.caip2(),
+    "devnet": Network.SOLANA_DEVNET.caip2(),
+    "localnet": Network.SOLANA_LOCALNET.caip2(),
+}
+
+
+def _settlement_replay_network(network: str) -> str:
+    """Return the CAIP-2 identity shared with the x402 settlement fence."""
+    return _SETTLEMENT_REPLAY_NETWORKS[network]
+
 
 # Re-exported from the decoder / verifier modules so the historical
 # ``solana_pay_kit.protocols.mpp.server.charge`` import surface stays intact.
@@ -200,6 +215,7 @@ class Mpp:
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-config") from exc
         self._network = _canonical_net(config.network or "mainnet")
+        self._settlement_replay_network = _settlement_replay_network(self._network)
         self._rpc_url = config.rpc_url or default_rpc_url(self._network)
         # Audit #28: resolve the token program ONCE at boot. Known stablecoins
         # resolve from the static table (Token vs Token-2022 correctly); an
@@ -574,7 +590,7 @@ class Mpp:
         # retry of the same credential always tries to insert the same key,
         # so the second attempt fails fast and the network is never asked
         # to settle the same transaction twice.
-        consumed_key = _CONSUMED_PREFIX + signature
+        consumed_key = f"{_SETTLEMENT_REPLAY_PREFIX}{self._settlement_replay_network}:{signature}"
         inserted = await self._store.put_if_absent(consumed_key, True)
         if not inserted:
             raise ReplayError()
@@ -638,7 +654,7 @@ class Mpp:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
         self._verify_confirmed_transaction(tx, request, details)
 
-        consumed_key = _CONSUMED_PREFIX + payload.signature
+        consumed_key = f"{_SETTLEMENT_REPLAY_PREFIX}{self._settlement_replay_network}:{payload.signature}"
         inserted = await self._store.put_if_absent(consumed_key, True)
         if not inserted:
             raise ReplayError()

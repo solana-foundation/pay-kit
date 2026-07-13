@@ -60,7 +60,9 @@ _RESPONSE_HEADER = "payment-response"
 # server must echo it there when it accepted a v1 credential (rust
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
-_REPLAY_PREFIX = "x402-svm-exact:consumed:"
+# Must match the MPP charge fence: a settlement signature is an on-chain Solana
+# artifact, not a protocol-local credential identity.
+_SETTLEMENT_REPLAY_PREFIX = "solana-settlement:consumed:"
 
 
 def _resolve_replay_store(config: Config, replay_store: Store | None) -> Store:
@@ -88,6 +90,7 @@ class X402Adapter:
             )
         self._config = config
         self._store = _resolve_replay_store(config, replay_store)
+        self._settlement_replay_network = config.network.caip2()
         self._recent_blockhash_provider = recent_blockhash_provider
 
     def accepts_entry(self, gate: Gate, request: Any) -> X402AcceptsEntry:
@@ -238,11 +241,10 @@ class X402Adapter:
             if not signature:
                 raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
 
-            # Replay reservation. Namespace is distinct from the MPP charge key
-            # so an x402 signature can never satisfy an MPP route and vice
-            # versa. Reserve BEFORE confirmation so a concurrent resubmit of the
-            # same signature loses the race and is rejected as consumed.
-            replay_key = _REPLAY_PREFIX + signature
+            # Reserve a protocol-independent, network-qualified settlement key
+            # BEFORE confirmation. MPP uses the same identity, so a transaction
+            # accepted by either real verifier can authorize only one protocol.
+            replay_key = f"{_SETTLEMENT_REPLAY_PREFIX}{self._settlement_replay_network}:{signature}"
             if not await self._store.put_if_absent(replay_key, True):
                 raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
