@@ -1,4 +1,4 @@
-import { resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
+import { guardChallengeValue, resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
 
@@ -71,6 +71,8 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         let handler = handlers.get(key);
         if (!handler) {
             const signer = config.operator.feePayer ? { signer: config.operator.signer.signer } : {};
+            const realm = guardChallengeValue('realm', config.mpp.realm);
+            const description = gate.description ? guardChallengeValue('description', gate.description) : undefined;
             if (gate.subscription) {
                 const { periodCount, periodUnit, planId, puller } = gate.subscription;
                 const mppx = Mppx.create({
@@ -89,14 +91,14 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             ...signer,
                         }),
                     ],
-                    realm: config.mpp.realm,
+                    realm,
                     secretKey: config.mpp.challengeBindingSecret,
                 });
                 handler = request =>
                     mppx.subscription({
                         amount: totalAmount(gate).toString(),
                         currency: mint,
-                        ...(gate.description ? { description: gate.description } : {}),
+                        ...(description !== undefined ? { description } : {}),
                         ...(gate.externalId ? { externalId: gate.externalId } : {}),
                     })(request);
             } else {
@@ -114,20 +116,20 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             ...(config.replayStore ? { store: config.replayStore } : {}),
                         }),
                     ],
-                    realm: config.mpp.realm,
+                    realm,
                     secretKey: config.mpp.challengeBindingSecret,
                 });
-                handler = request => mppx.charge(optionsFor(gate))(request);
+                handler = request => mppx.charge(optionsFor(gate, description))(request);
             }
             handlers.set(key, handler);
         }
         return handler;
     }
 
-    function optionsFor(gate: Gate) {
+    function optionsFor(gate: Gate, description: string | undefined) {
         return {
             amount: totalAmount(gate).toString(),
-            ...(gate.description ? { description: gate.description } : {}),
+            ...(description !== undefined ? { description } : {}),
             ...(gate.externalId ? { externalId: gate.externalId } : {}),
             ...(config.mpp.expiresIn > 0
                 ? { expires: new Date(Date.now() + config.mpp.expiresIn * 1000).toISOString() }

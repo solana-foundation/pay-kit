@@ -91,7 +91,7 @@ local function replay_store_is_shared(replay_store)
   if type(replay_store.is_shared) == 'function' then
     return replay_store:is_shared() == true
   end
-  return replay_store.shared == true or replay_store.durable == true
+  return replay_store.shared == true
 end
 
 --- Construct a new charge handler.
@@ -133,7 +133,7 @@ function M.new(config)
   end
   local network = config.network or 'mainnet'
   if network ~= 'localnet' and not replay_store_is_shared(config.replay_store) then
-    error('replay_store must be shared outside localnet; process-local stores are unsafe')
+    error('replay_store must declare shared=true outside localnet; durability alone does not prove atomic cross-worker reservations')
   end
   if type(config.transaction_verifier) ~= 'function' then
     error('transaction_verifier function is required')

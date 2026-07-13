@@ -24,7 +24,7 @@ use Throwable;
  *   2. ix[0] = ComputeBudget SetComputeUnitLimit
  *   3. ix[1] = ComputeBudget SetComputeUnitPrice <= MAX
  *   4. ix[2] = SPL TransferChecked
- *   5. Authority guard (no fee-payer in transfer auth)
+ *   5. Fund-mover guard (managed source, source ATA, or signer tail)
  *   6. Mint match
  *   7. Destination ATA match (re-derived)
  *   8. Amount match
@@ -203,23 +203,22 @@ final class Verifier
         $destination = self::accountAt($accountKeys, $ix, 2);
         $authority   = self::accountAt($accountKeys, $ix, 3);
 
-        // Rule 5: authority guard.
+        // Rule 5: a managed signer must never move funds. Scope this to
+        // transferChecked fund-moving roles, not every instruction account:
+        // the source itself, its ATA for the actual transfer program, and
+        // authority/multisig signer-tail accounts at positions 3 onward.
         foreach ($managedSigners as $managed) {
-            if ($managed === $authority || $managed === $source) {
+            if ($managed === $source
+                || $source === Mints::deriveAta($managed, $mint, $program)) {
                 throw new InvalidProofException(
                     'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
                 );
             }
-        }
-        foreach ($ix->accountKeyIndexes as $idx) {
-            $key = $accountKeys[$idx] ?? null;
-            if ($key === null) {
-                continue;
-            }
-            foreach ($managedSigners as $managed) {
+            foreach (array_slice($ix->accountKeyIndexes, 3) as $idx) {
+                $key = $accountKeys[$idx] ?? '';
                 if ($managed === $key) {
                     throw new InvalidProofException(
-                        'invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts',
+                        'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds',
                     );
                 }
             }

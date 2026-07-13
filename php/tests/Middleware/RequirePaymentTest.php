@@ -18,6 +18,9 @@ use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
+use PayKit\Store\MemoryStore;
+use PayKit\Store\ReplayStoreCapability;
+use PayKit\Store\Store;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -34,7 +37,10 @@ final class RequirePaymentTest extends TestCase
             network: Network::SolanaDevnet,
             operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
             preflight: false,
-            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
+            mpp: new MppConfig(
+                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+                replayStore: new MiddlewareDurableSharedReplayStore(),
+            ),
         ));
         $this->factory = new Psr17Factory();
     }
@@ -163,5 +169,25 @@ final class RequirePaymentTest extends TestCase
         $request = $this->factory->createServerRequest('GET', '/');
         $this->expectException(\PayKit\Exception\PaymentRequiredException::class);
         \PayKit\Middleware\requirePayment($request);
+    }
+}
+
+final class MiddlewareDurableSharedReplayStore implements Store, ReplayStoreCapability
+{
+    private MemoryStore $store;
+
+    public function __construct()
+    {
+        $this->store = new MemoryStore();
+    }
+
+    public function putIfAbsent(string $key, mixed $value): bool
+    {
+        return $this->store->putIfAbsent($key, $value);
+    }
+
+    public function providesDurableSharedReplayProtection(): bool
+    {
+        return true;
     }
 }

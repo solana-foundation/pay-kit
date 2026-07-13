@@ -55,8 +55,9 @@ local function replay_store_is_shared(replay_store)
     return replay_store:is_shared() == true
   end
   -- Custom Redis/Postgres adapters can declare the capability without
-  -- inheriting this package's shared-dict implementation.
-  return replay_store.shared == true or replay_store.durable == true
+  -- inheriting this package's shared-dict implementation. Durability alone
+  -- only proves restart survival, not an atomic cross-worker reservation.
+  return replay_store.shared == true
 end
 
 local function map_pay_kit_network(network)
@@ -108,7 +109,7 @@ local function build_mpp_server(config, gate, store)
     warn_volatile_replay_store(network)
   end
   if network ~= 'localnet' and not replay_store_is_shared(replay_store) then
-    error('MPP replay store must be shared outside localnet; process-local stores are unsafe')
+    error('MPP replay store must declare shared=true outside localnet; durability alone does not prove atomic cross-worker reservations')
   end
 
   -- Enforce the replay-store policy before loading or initializing transport

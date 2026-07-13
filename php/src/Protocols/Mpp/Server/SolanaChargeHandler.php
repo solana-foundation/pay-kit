@@ -12,6 +12,7 @@ use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Store\MemoryStore;
+use PayKit\Store\ReplayStoreCapability;
 use PayKit\Store\Store;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
@@ -66,10 +67,9 @@ final class SolanaChargeHandler
      *        `getSignatureStatuses` before giving up. 40 attempts at the
      *        default delay = 10 seconds.
      * @param int $confirmationDelayMicros Sleep between polls in microseconds.
-     * @param ?Store $replayStore Replay-protection store. Defaults to an
-     *        in-process {@see MemoryStore}; production deployments should
-     *        inject a shared atomic store (Redis, Postgres) so replay
-     *        protection survives restarts and worker pools.
+     * @param ?Store $replayStore Replay-protection store. Localnet defaults to
+     *        an in-process {@see MemoryStore}; all other networks require a
+     *        store that explicitly declares durable shared replay protection.
      */
     private readonly RpcGateway $rpc;
 
@@ -93,7 +93,25 @@ final class SolanaChargeHandler
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode);
         $this->transactionVerifier = $transactionVerifier
             ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier(acceptPushMode: $acceptPushMode));
-        $this->replayStore = $replayStore ?? new MemoryStore();
+        if ($replayStore === null) {
+            if ($network !== 'localnet') {
+                throw new InvalidArgumentException(
+                    'pay_kit: MPP replayStore is required outside localnet; '
+                    . 'inject a durable shared Store (for example Redis or Postgres)',
+                );
+            }
+            $replayStore = new MemoryStore();
+        }
+        if (
+            $network !== 'localnet'
+            && (!$replayStore instanceof ReplayStoreCapability
+                || !$replayStore->providesDurableSharedReplayProtection())
+        ) {
+            throw new InvalidArgumentException(
+                'pay_kit: MPP replayStore must explicitly declare durable shared replay protection outside localnet',
+            );
+        }
+        $this->replayStore = $replayStore;
     }
 
     /**

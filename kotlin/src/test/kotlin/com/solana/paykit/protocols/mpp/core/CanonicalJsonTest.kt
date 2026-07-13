@@ -3,8 +3,11 @@ package com.solana.paykit.protocols.mpp.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 
 /**
@@ -66,6 +69,39 @@ class CanonicalJsonTest {
     }
 
     @Test
+    fun preservesValidSurrogatePairsAndRejectsLoneSurrogates() {
+        assertEquals("\"😀\"", CanonicalJson.encode(JsonPrimitive("\uD83D\uDE00")))
+        assertFailsWith<IllegalArgumentException> {
+            CanonicalJson.encode(JsonPrimitive("\uD800"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            CanonicalJson.encode(buildJsonObject { put("\uDC00", JsonPrimitive(true)) })
+        }
+    }
+
+    @Test
+    fun normalizesNumbersWithEcmaScriptSemantics() {
+        val element = json.parseToJsonElement(
+            """{"a":1.0,"b":1E2,"c":100.00,"d":1.50,"zero":-0,"edge":1e21,"small":1e-7,"over":9007199254740993}""",
+        )
+        assertEquals(
+            """{"a":1,"b":100,"c":100,"d":1.5,"edge":1e+21,"over":9007199254740992,"small":1e-7,"zero":0}""",
+            CanonicalJson.encode(element),
+        )
+    }
+
+    @Test
+    fun normalizesNegativeFiniteNumbersAtEcmaScriptExponentBoundaries() {
+        val element = json.parseToJsonElement(
+            """{"integer":-42.0,"fraction":-1.5,"fixed":-1e-6,"scientific":-1e-7,"large":-1e21}""",
+        )
+        assertEquals(
+            """{"fixed":-0.000001,"fraction":-1.5,"integer":-42,"large":-1e+21,"scientific":-1e-7}""",
+            CanonicalJson.encode(element),
+        )
+    }
+
+    @Test
     fun paymentCredentialMatchesGoldenJcsOutput() {
         // Hand-canonicalized golden value computed by sorting every
         // object's keys and joining with no whitespace; this is what
@@ -92,4 +128,3 @@ class CanonicalJsonTest {
         assertEquals(expected, canonical)
     }
 }
-
