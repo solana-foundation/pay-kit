@@ -23,8 +23,10 @@ error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 ini_set('display_errors', 'stderr');
 
 require __DIR__ . '/../../php/vendor/autoload.php';
+require_once __DIR__ . '/HarnessReplayStore.php';
 
 use Nyholm\Psr7\Factory\Psr17Factory;
+use PayKitHarness\PhpServer\HarnessReplayStore;
 use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\PayCore\Currency;
@@ -140,13 +142,17 @@ if ($x402Active) {
         mpp:         new MppConfig(challengeBindingSecret: 'unused-x402'),
         preflight:   false,
     ));
-    // The X402 adapter fails closed off localnet unless it is handed a shared
-    // replay store (the default in-memory store is process-local). The harness
-    // runs the x402 matrix on a non-localnet CAIP-2 network, so inject a
-    // process-scoped FileStore here, mirroring the MPP charge path below.
+    $replayStoreDirectory = getenv('PAY_KIT_HARNESS_REPLAY_STORE_DIR');
+    if (!is_string($replayStoreDirectory) || trim($replayStoreDirectory) === '') {
+        throw new RuntimeException('PAY_KIT_HARNESS_REPLAY_STORE_DIR is required for the PHP x402 harness');
+    }
+    // Every PHP worker in this harness run receives the same temporary root.
+    // The Node harness owns its lifecycle and removes it when the run exits.
     $adapter = new X402Adapter(
         $client->config,
-        replayStore: new FileStore(sys_get_temp_dir() . '/x402-php-harness-replay-' . getmypid()),
+        replayStore: new HarnessReplayStore(
+            rtrim($replayStoreDirectory, DIRECTORY_SEPARATOR) . '/php-x402',
+        ),
     );
     $gate = new Gate(amount: Price::usd(format_decimal_amount($amountUnits)));
 } else {

@@ -10,6 +10,7 @@ use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
@@ -36,11 +37,22 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
         $client = new PayKit($payKitConfig);
         $container->set(PayKit::class, $client);
 
-        $listener = $container->register(RequirePaymentListener::class)
+        $x402 = null;
+        if (in_array(Protocol::X402, $payKitConfig->accept, true)) {
+            $adapter = $container->register(X402Adapter::class, X402Adapter::class)
+                ->setArgument('$config', $payKitConfig);
+            if ($config['x402_replay_store'] !== null) {
+                $adapter->setArgument('$replayStore', new Reference($config['x402_replay_store']));
+            }
+            $x402 = new Reference(X402Adapter::class);
+        }
+
+        $listener = $container->register(RequirePaymentListener::class, RequirePaymentListener::class)
             ->setArgument('$client', new Reference(PayKit::class))
             ->setArgument('$pricing', null)
             ->setArgument('$psrFactory', new Reference('paykit.psr_http_factory'))
             ->setArgument('$httpFactory', new Reference('paykit.http_foundation_factory'))
+            ->setArgument('$x402', $x402)
             ->setAutowired(true)
             ->setPublic(true);
         $listener->addTag('kernel.event_listener', [
@@ -77,6 +89,7 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
                 ->end()
             ->end()
             ->scalarNode('x402_facilitator_url')->defaultNull()->end()
+            ->scalarNode('x402_replay_store')->defaultNull()->end()
             ->scalarNode('mpp_challenge_binding_secret')->defaultNull()->end()
             ->booleanNode('preflight')->defaultTrue()->end()
         ->end();

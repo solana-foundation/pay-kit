@@ -13,6 +13,10 @@ return [
         'fee_payer' => true,
     ],
     'x402_facilitator_url'         => env('PAY_KIT_X402_FACILITATOR_URL'),
+    // Service id or class name for a Store with durable, shared, atomic
+    // replay protection. Required when x402 is accepted outside
+    // solana_localnet; ignored by MPP-only deployments.
+    'x402_replay_store'            => env('PAY_KIT_X402_REPLAY_STORE'),
     'mpp_challenge_binding_secret' => env('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET'),
     'mpp' => [
         // Leave unset to derive a per-recipient realm (audit #15). Set

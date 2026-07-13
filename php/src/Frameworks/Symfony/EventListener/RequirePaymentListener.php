@@ -7,6 +7,7 @@ namespace PayKit\Frameworks\Symfony\EventListener;
 use PayKit\PayKit;
 use PayKit\Middleware\RequirePayment as PsrRequirePayment;
 use PayKit\Pricing;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Frameworks\Symfony\Attribute\RequirePayment;
 use ReflectionMethod;
 use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
@@ -26,6 +27,7 @@ final class RequirePaymentListener
         private readonly ?Pricing $pricing,
         private readonly PsrHttpFactory $psrFactory,
         private readonly HttpFoundationFactory $httpFactory,
+        private readonly ?X402Adapter $x402 = null,
     ) {
     }
 
@@ -37,7 +39,7 @@ final class RequirePaymentListener
             return;
         }
         $psrRequest = $this->psrFactory->createRequest($event->getRequest());
-        $middleware = new PsrRequirePayment($this->client, $attribute->gate, $this->pricing);
+        $middleware = new PsrRequirePayment($this->client, $attribute->gate, $this->pricing, x402: $this->x402);
         $psrResponse = $middleware->process(
             $psrRequest,
             new class () implements \Psr\Http\Server\RequestHandlerInterface {

@@ -58,6 +58,9 @@ jobs:
       - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
+      - name: Verify PHP x402 replay-store startup
+        working-directory: harness
+        run: pnpm exec vitest run test/php-x402-startup.test.ts
       # Cross-SDK conformance vectors for PHP: the PHP exact verifier must execute
       # the x402 exact-reject fund-safety vectors, mirroring the python leg. The
       # conformance runner (harness/runners/php.json) launches
