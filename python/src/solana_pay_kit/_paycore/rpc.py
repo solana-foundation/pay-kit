@@ -166,8 +166,20 @@ class SolanaRpc:
             return None
         return raw, owner
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
-        result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": False}])
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[Any]:
+        """Return transaction statuses, optionally searching ledger history.
+
+        Solana nodes only retain recent signature statuses in their short-lived
+        cache by default. Reconciliation of a durable transaction intent must
+        opt into history so a confirmed transaction is not mistaken for an
+        unknown one after that cache entry expires.
+        """
+        result = await self._call(
+            "getSignatureStatuses",
+            [signatures, {"searchTransactionHistory": search_transaction_history}],
+        )
         return (result or {}).get("value") or []
 
     async def confirm_transaction(self, signature: Any, *_args: Any, **_kwargs: Any) -> Any:

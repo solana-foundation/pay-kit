@@ -52,9 +52,13 @@ if TYPE_CHECKING:
     from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 
 __all__ = [
+    "PreparedTransaction",
     "VerifyOpenTxExpected",
     "VerifyOpenTxResult",
+    "broadcast_prepared_transaction",
+    "complete_open_transaction",
     "cosign_and_broadcast_open",
+    "prepare_settle_and_seal_channel",
     "settle_and_seal_channel",
     "verify_open_tx",
     "new_open_tx_verifier",
@@ -82,7 +86,9 @@ class RpcClient(Protocol):
     method. Settle-at-close requires the :class:`AccountInfoRpc` capability so
     mint ownership and recipient ATAs can be verified before broadcast."""
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]: ...
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[dict | None]: ...
 
     async def get_latest_blockhash(self, commitment: str = ...) -> Any: ...
 
@@ -172,6 +178,19 @@ class VerifyOpenTxResult:
     payer: str
 
 
+@dataclass(frozen=True)
+class PreparedTransaction:
+    """Exact signed wire and its deterministic fee-payer signature.
+
+    The caller may durably record ``signature`` before broadcasting ``wire``.
+    That order makes an interrupted send recoverable through reconciliation
+    instead of allowing another worker to manufacture a fresh transaction.
+    """
+
+    wire: bytes
+    signature: str
+
+
 def is_placeholder_signature(signature: str) -> bool:
     """Report whether ``signature`` is the pending placeholder produced by the
     server-completed open flow (an empty string or a run of 40+ ``'1'``
@@ -245,6 +264,8 @@ async def verify_open_tx(
     expected: VerifyOpenTxExpected,
     payload: OpenPayload,
     rpc_client: RpcClient | None,
+    *,
+    allow_fee_payer_placeholder: bool = False,
 ) -> VerifyOpenTxResult:
     """Decode and validate a client-submitted payment-channel open transaction
     against the session challenge.
@@ -262,10 +283,13 @@ async def verify_open_tx(
     operator raises ``ValueError`` rather than letting a standalone verifier
     accept an open without proving the slot-1 rentPayer.
 
-    When the payload carries a non-placeholder signature, it must equal the
-    transaction's own fee-payer signature. If ``rpc_client`` is non-None, that
-    bound signature is additionally confirmed on-chain; ``None`` skips the
-    liveness check (structural validation only).
+    Client-submitted transactions must carry a non-placeholder fee-payer
+    signature in both the payload and transaction wire. The server's explicit
+    co-sign path is the only exception: it sets
+    ``allow_fee_payer_placeholder=True`` while completing the fee-payer slot.
+    If ``rpc_client`` is non-None, a bound client signature is additionally
+    confirmed on-chain; ``None`` skips the liveness check (structural
+    validation only).
 
     Raises:
         ValueError: if ``expected.operator`` is empty/None.
@@ -287,17 +311,33 @@ async def verify_open_tx(
     except Exception as exc:
         raise PaymentError(f"decode open transaction: {exc}", code="invalid-payload") from exc
 
-    # Bind the claimed signature to this transaction before trusting it.
+    # A client-submitted transaction is a settled assertion: accepting a
+    # placeholder here would let an unsigned wire pass structural checks and
+    # become trusted state. Only the server co-sign path may carry the default
+    # fee-payer slot before it is completed.
     bound_signature = payload.signature != "" and not is_placeholder_signature(payload.signature)
+    transaction_signature = signatures[0] if signatures else ""
+    missing_fee_payer_signature = transaction_signature == str(Signature.default())
+    if not allow_fee_payer_placeholder:
+        if not bound_signature:
+            raise PaymentError(
+                "client-submitted open requires a non-placeholder fee-payer signature",
+                code="invalid-payload",
+            )
+        if missing_fee_payer_signature:
+            raise PaymentError(
+                "client-submitted open transaction carries no fee-payer signature",
+                code="invalid-payload",
+            )
     if bound_signature:
-        if not signatures or signatures[0] == str(Signature.default()):
+        if missing_fee_payer_signature:
             raise PaymentError(
                 "openPayload.signature is set but the transaction carries no fee-payer signature",
                 code="invalid-payload",
             )
-        if signatures[0] != payload.signature:
+        if transaction_signature != payload.signature:
             raise PaymentError(
-                f"openPayload.signature {payload.signature} != transaction signature {signatures[0]}",
+                f"openPayload.signature {payload.signature} != transaction signature {transaction_signature}",
                 code="invalid-payload",
             )
 
@@ -679,6 +719,7 @@ async def confirm_transaction_signature(
     *,
     timeout_seconds: float = 30.0,
     poll_interval_seconds: float = 1.0,
+    search_transaction_history: bool = False,
 ) -> None:
     """Poll ``getSignatureStatuses`` until ``signature`` reaches at least
     ``confirmed`` commitment, or raise.
@@ -706,7 +747,10 @@ async def confirm_transaction_signature(
     saw_status = False
     while True:
         try:
-            statuses = await rpc_client.get_signature_statuses([signature])
+            if search_transaction_history:
+                statuses = await rpc_client.get_signature_statuses([signature], search_transaction_history=True)
+            else:
+                statuses = await rpc_client.get_signature_statuses([signature])
         except Exception as exc:
             raise PaymentError(f"RPC error verifying {label} tx: {exc}", code="transaction-not-found") from exc
 
@@ -805,23 +849,19 @@ async def _require_settlement_recipient_atas(
             )
 
 
-async def settle_and_seal_channel(
+async def prepare_settle_and_seal_channel(
     state: ChannelState,
     *,
     merchant: Keypair,
     rpc: RpcClient,
     config: SessionConfig,
-    on_broadcast: Callable[[str], Awaitable[None]] | None = None,
-) -> str:
-    """Build, sign, broadcast, and confirm the close settlement transaction;
-    return the confirmed on-chain signature.
+) -> PreparedTransaction:
+    """Build and sign the close settlement transaction without broadcasting.
 
     Mirrors the Rust/Go close path: a settle_and_seal instruction (preceded
     by the Ed25519 precompile when a voucher was recorded) plus a distribute
-    instruction in one transaction whose fee payer is the merchant. When
-    ``on_broadcast`` is set, it receives the accepted signature before
-    confirmation so callers can persist an ambiguous settlement for later
-    reconciliation.
+    instruction in one transaction whose fee payer is the merchant. Callers
+    persist the returned deterministic signature before the irreversible send.
     """
     channel = Pubkey.from_string(state.channel_id)
     program_id = Pubkey.from_string(config.program_id) if config.program_id else PROGRAM_ID
@@ -895,16 +935,74 @@ async def settle_and_seal_channel(
 
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
     tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
-    sent = await rpc.send_raw_transaction(bytes(tx))
-    signature = str(sent.value)
-    if on_broadcast is not None:
-        await on_broadcast(signature)
-    # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
-    # settle tx (blockhash expiry, congestion, duplicate-settle race) must raise
-    # here so the caller does NOT mark the channel sealed with an unconfirmed
-    # signature, which would defeat the re-drivable-close guard.
-    await confirm_transaction_signature(rpc, signature, "settle")
-    return signature
+    signatures = tx.signatures
+    if not signatures or signatures[0] == Signature.default():
+        raise PaymentError("settlement transaction is missing the fee-payer signature", code="invalid-config")
+    return PreparedTransaction(wire=bytes(tx), signature=str(signatures[0]))
+
+
+async def broadcast_prepared_transaction(
+    prepared: PreparedTransaction,
+    *,
+    rpc: RpcClient,
+    label: str,
+) -> str:
+    """Broadcast and confirm an already-signed transaction.
+
+    A Solana transaction signature is the first signature in the signed wire.
+    Reject an RPC result that does not match it so the durable intent and the
+    transaction being reconciled can never diverge.
+    """
+    sent = await rpc.send_raw_transaction(prepared.wire)
+    returned_signature = str(sent.value)
+    if returned_signature != prepared.signature:
+        raise PaymentError(
+            f"broadcast {label} signature {returned_signature} != signed transaction signature {prepared.signature}",
+            code="invalid-payload",
+        )
+    await confirm_transaction_signature(rpc, prepared.signature, label)
+    return prepared.signature
+
+
+async def settle_and_seal_channel(
+    state: ChannelState,
+    *,
+    merchant: Keypair,
+    rpc: RpcClient,
+    config: SessionConfig,
+    on_prepared: Callable[[PreparedTransaction], Awaitable[None]] | None = None,
+) -> str:
+    """Prepare, persist through ``on_prepared``, broadcast, and confirm a close.
+
+    ``on_prepared`` runs after signing but before broadcast. It is the durable
+    intent hook used by the session state machine; a failure there guarantees
+    no transaction was sent.
+    """
+    prepared = await prepare_settle_and_seal_channel(state, merchant=merchant, rpc=rpc, config=config)
+    if on_prepared is not None:
+        await on_prepared(prepared)
+    return await broadcast_prepared_transaction(prepared, rpc=rpc, label="settle")
+
+
+def complete_open_transaction(payload: OpenPayload, fee_payer: Any) -> PreparedTransaction:
+    """Complete a server-sponsored open without broadcasting it."""
+    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
+
+    from solana_pay_kit.protocols.mpp.server._verify import _co_sign_with_fee_payer
+
+    if not payload.transaction:
+        raise PaymentError(
+            "openTxSubmitter=server requires the client-built open transaction in the payload",
+            code="invalid-payload",
+        )
+    wire = base64.b64decode(_co_sign_with_fee_payer(payload.transaction, fee_payer))
+    try:
+        signatures = Transaction.from_bytes(wire).signatures
+    except Exception:
+        signatures = VersionedTransaction.from_bytes(wire).signatures
+    if not signatures or signatures[0] == Signature.default():
+        raise PaymentError("open transaction is missing the fee-payer signature", code="invalid-payload")
+    return PreparedTransaction(wire=wire, signature=str(signatures[0]))
 
 
 async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc: RpcClient) -> str:
@@ -916,15 +1014,8 @@ async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc
     signature, broadcasts, and confirms. Returns the confirmed open signature.
     Mirrors Go SubmitOpenTx (and reuses the charge fee-payer co-sign).
     """
-    from solana_pay_kit.protocols.mpp.server._verify import _co_sign_with_fee_payer
-
-    if not payload.transaction:
-        raise PaymentError(
-            "openTxSubmitter=server requires the client-built open transaction in the payload",
-            code="invalid-payload",
-        )
-    cosigned = _co_sign_with_fee_payer(payload.transaction, fee_payer)
-    sent = await rpc.send_raw_transaction(base64.b64decode(cosigned))
-    signature = str(sent.value)
-    await confirm_transaction_signature(rpc, signature, "open")
-    return signature
+    prepared = complete_open_transaction(payload, fee_payer)
+    # Keep the payload's transaction and claimed signature bound to the same
+    # completed wire before any downstream persistence.
+    payload.transaction = base64.b64encode(prepared.wire).decode("ascii")
+    return await broadcast_prepared_transaction(prepared, rpc=rpc, label="open")

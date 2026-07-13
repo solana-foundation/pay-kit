@@ -7,6 +7,8 @@ Mirrors the Go/TS closeAndSettleChannel path.
 from __future__ import annotations
 
 import asyncio
+import base64
+import copy
 from typing import Any
 
 import pytest
@@ -21,12 +23,10 @@ from solana_pay_kit.protocols.mpp.core.headers import PAYMENT_RECEIPT_HEADER, fo
 from solana_pay_kit.protocols.mpp.core.types import PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.session import ClosePayload, SessionAction
 from solana_pay_kit.protocols.mpp.server import SessionChallengeOptions, SessionOptions, new_session
-from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, MemoryChannelStore
 from solana_pay_kit.signer import LocalSigner
 
 _BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
-# A valid base58 signature the fake RPC returns; the open path confirms it.
-_SENT_SIGNATURE = str(Keypair.from_seed(bytes([99] * 32)).sign_message(b"settle"))
 
 
 class _Resp:
@@ -50,10 +50,15 @@ class _SettleRpc:
         self.accounts: dict[str, tuple[bytes, str]] = {}
         self.account_info_requests: list[str] = []
         self.sent: list[bytes] = []
+        self.sent_signatures: list[str] = []
         self.status_queries: list[list[str]] = []
+        self.search_history_queries: list[bool] = []
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[dict | None]:
         self.status_queries.append(list(signatures))
+        self.search_history_queries.append(search_transaction_history)
         return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
 
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> _Resp:
@@ -61,7 +66,9 @@ class _SettleRpc:
 
     async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
         self.sent.append(raw_tx)
-        return _Resp(_SENT_SIGNATURE)
+        signature = str(Transaction.from_bytes(raw_tx).signatures[0])
+        self.sent_signatures.append(signature)
+        return _Resp(signature)
 
     async def get_account_info(
         self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
@@ -92,6 +99,8 @@ def _session(
     currency: str = "USDC",
     token_program: str = TOKEN_PROGRAM,
     recipient_ata_exists: bool = True,
+    store: MemoryChannelStore | None = None,
+    open_tx_submitter: str = "",
 ):
     if recipient is None:
         recipient = str(operator.pubkey())
@@ -108,6 +117,8 @@ def _session(
             pull_voucher_strategy="clientVoucher",
             signer=LocalSigner.from_keypair(operator),
             rpc=rpc,
+            store=store,
+            open_tx_submitter=open_tx_submitter,
         )
     )
     _seed_settlement_mint(rpc, currency, token_program)
@@ -149,7 +160,7 @@ async def test_close_settles_with_voucher_and_records_signature() -> None:
 
     settled = await session._settle_channel(channel)
 
-    assert settled == _SENT_SIGNATURE
+    assert settled == rpc.sent_signatures[0]
     final = await session._core.store().get_channel(channel)
     assert final is not None
     assert final.sealed is True
@@ -166,7 +177,9 @@ async def test_settle_raises_and_does_not_seal_when_tx_unconfirmed() -> None:
     signature and the re-drivable-close guard still applies."""
 
     class _FailingSettleRpc(_SettleRpc):
-        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        async def get_signature_statuses(
+            self, signatures: list[str], *, search_transaction_history: bool = False
+        ) -> list[dict | None]:
             return [{"err": {"InstructionError": [0, "Custom"]}} for _ in signatures]
 
     operator = Keypair.from_seed(bytes([8] * 32))
@@ -442,7 +455,7 @@ async def test_server_broadcast_open_builds_signs_and_persists() -> None:
 
     signature = await session._handle_open(payload)
 
-    assert signature == _SENT_SIGNATURE
+    assert signature == rpc.sent_signatures[0]
     # One open transaction broadcast, a single open instruction (discriminator 1).
     assert len(rpc.sent) == 1
     assert _instruction_discriminators(rpc.sent[0]) == [1]
@@ -559,6 +572,11 @@ async def test_open_tx_submitter_client_verifies_pull_transaction() -> None:
         )
     )
     payload.deposit = "1500000"
+    from solana_pay_kit.protocols.mpp.server.session_onchain import complete_open_transaction
+
+    prepared = complete_open_transaction(payload, operator)
+    payload.transaction = base64.b64encode(prepared.wire).decode("ascii")
+    payload.signature = prepared.signature
 
     reference = await session._handle_open(payload)
 
@@ -618,7 +636,9 @@ class _PollingSettleRpc(_SettleRpc):
         self._none_left = none_rounds
         self._bounced_sig: str | None = None
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[dict | None]:
         self.status_queries.append(list(signatures))
         if self._none_left > 0 and signatures:
             self._bounced_sig = signatures[0]
@@ -656,13 +676,13 @@ async def test_settle_polls_until_confirmed_when_status_initially_none() -> None
 
     settled = await session._settle_channel(channel)
 
-    assert settled == _SENT_SIGNATURE
+    assert settled == rpc.sent_signatures[0]
     # The poll loop was entered: more than one status query for the same sig.
     assert len(rpc.status_queries) >= 3
     final = await session._core.store().get_channel(channel)
     assert final is not None
     assert final.sealed is True
-    assert final.settled_signature == _SENT_SIGNATURE
+    assert final.settled_signature == rpc.sent_signatures[0]
     assert final.settling is False
 
 
@@ -674,7 +694,9 @@ async def test_settle_not_confirmed_within_timeout_preserves_signature_for_recon
     class _StuckNoneRpc(_SettleRpc):
         confirmed = False
 
-        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        async def get_signature_statuses(
+            self, signatures: list[str], *, search_transaction_history: bool = False
+        ) -> list[dict | None]:
             self.status_queries.append(list(signatures))
             if self.confirmed:
                 return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
@@ -728,19 +750,19 @@ async def test_settle_not_confirmed_within_timeout_preserves_signature_for_recon
     final = await session._core.store().get_channel(channel)
     assert final is not None
     assert final.sealed is False
-    assert final.settled_signature == _SENT_SIGNATURE
-    assert final.settling is False
+    assert final.settled_signature == rpc.sent_signatures[0]
+    assert final.settling is True
     assert len(rpc.sent) == 1
 
     rpc.confirmed = True
     reconciled = await session._settle_channel(channel)
 
-    assert reconciled == _SENT_SIGNATURE
+    assert reconciled == rpc.sent_signatures[0]
     assert len(rpc.sent) == 1
     final = await session._core.store().get_channel(channel)
     assert final is not None
     assert final.sealed is True
-    assert final.settled_signature == _SENT_SIGNATURE
+    assert final.settled_signature == rpc.sent_signatures[0]
     assert final.settling is False
 
 
@@ -776,8 +798,8 @@ async def test_concurrent_settle_claimed_once_does_not_double_broadcast() -> Non
     first = await session._settle_channel(channel)
     second = await session._settle_channel(channel)
 
-    assert first == _SENT_SIGNATURE
-    assert second == _SENT_SIGNATURE
+    assert first == rpc.sent_signatures[0]
+    assert second == rpc.sent_signatures[0]
     assert len(rpc.sent) == 1
     final = await session._core.store().get_channel(channel)
     assert final is not None
@@ -837,7 +859,9 @@ async def test_public_concurrent_close_does_not_issue_receipt_while_claim_is_own
             await self.release.wait()
             return await super().get_latest_blockhash(commitment)
 
-        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        async def get_signature_statuses(
+            self, signatures: list[str], *, search_transaction_history: bool = False
+        ) -> list[dict | None]:
             self.status_queries.append(list(signatures))
             return [{"err": {"InstructionError": [0, "Custom"]}} for _ in signatures]
 
@@ -937,8 +961,11 @@ async def test_cancelled_post_broadcast_settle_preserves_signature_for_reconcili
             self.release = asyncio.Event()
             self.confirmed = False
 
-        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        async def get_signature_statuses(
+            self, signatures: list[str], *, search_transaction_history: bool = False
+        ) -> list[dict | None]:
             self.status_queries.append(list(signatures))
+            self.search_history_queries.append(search_transaction_history)
             if self.confirmed:
                 return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
             self.confirmation_requested.set()
@@ -970,17 +997,261 @@ async def test_cancelled_post_broadcast_settle_preserves_signature_for_reconcili
     state = await session._core.store().get_channel(channel)
     assert state is not None
     assert state.sealed is False
-    assert state.settled_signature == _SENT_SIGNATURE
-    assert state.settling is False
+    assert state.settled_signature == rpc.sent_signatures[0]
+    assert state.settling is True
     assert len(rpc.sent) == 1
 
     rpc.confirmed = True
-    assert await session._settle_channel(channel) == _SENT_SIGNATURE
+    assert await session._settle_channel(channel) == rpc.sent_signatures[0]
     assert len(rpc.sent) == 1
+    assert rpc.search_history_queries[-1] is True
     state = await session._core.store().get_channel(channel)
     assert state is not None
     assert state.sealed is True
     assert state.settling is False
+
+
+@pytest.mark.asyncio
+async def test_settlement_intent_persistence_failure_prevents_send_and_recovers() -> None:
+    """A failed durable intent write happens before send, so retry is safe."""
+
+    class _RejectIntentStore(MemoryChannelStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reject_next_intent = False
+
+        async def update_channel(self, channel_id, mutator):  # type: ignore[override]
+            def guarded(current):
+                next_state = mutator(current)
+                if (
+                    self.reject_next_intent
+                    and current is not None
+                    and current.settled_signature is None
+                    and next_state.settled_signature is not None
+                ):
+                    self.reject_next_intent = False
+                    raise OSError("durable store unavailable")
+                return next_state
+
+            return await super().update_channel(channel_id, guarded)
+
+    operator = Keypair.from_seed(bytes([60] * 32))
+    channel = str(Keypair.from_seed(bytes([61] * 32)).pubkey())
+    rpc = _SettleRpc()
+    store = _RejectIntentStore()
+    session = _session(rpc, operator, store=store)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+    store.reject_next_intent = True
+
+    with pytest.raises(OSError, match="durable store unavailable"):
+        await session._settle_channel(channel)
+
+    state = await store.get_channel(channel)
+    assert state is not None
+    assert state.settled_signature is None
+    assert state.settling is False
+    assert rpc.sent == []
+
+    signature = await session._settle_channel(channel)
+    assert signature == rpc.sent_signatures[0]
+    assert len(rpc.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_settlement_post_send_state_failure_reconciles_durable_intent() -> None:
+    """A write failure after send retains the pre-persisted intent for recovery."""
+
+    class _RejectSealStore(MemoryChannelStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reject_next_seal = False
+
+        async def update_channel(self, channel_id, mutator):  # type: ignore[override]
+            def guarded(current):
+                next_state = mutator(current)
+                if (
+                    self.reject_next_seal
+                    and current is not None
+                    and not current.sealed
+                    and current.settled_signature is not None
+                    and next_state.sealed
+                ):
+                    self.reject_next_seal = False
+                    raise OSError("durable store unavailable after broadcast")
+                return next_state
+
+            return await super().update_channel(channel_id, guarded)
+
+    operator = Keypair.from_seed(bytes([62] * 32))
+    channel = str(Keypair.from_seed(bytes([63] * 32)).pubkey())
+    rpc = _SettleRpc()
+    store = _RejectSealStore()
+    session = _session(rpc, operator, store=store)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+    store.reject_next_seal = True
+
+    with pytest.raises(OSError, match="durable store unavailable after broadcast"):
+        await session._settle_channel(channel)
+
+    state = await store.get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settling is True
+    assert state.settled_signature == rpc.sent_signatures[0]
+    assert len(rpc.sent) == 1
+
+    assert await session._settle_channel(channel) == rpc.sent_signatures[0]
+    assert len(rpc.sent) == 1
+    assert rpc.search_history_queries[-1] is True
+    state = await store.get_channel(channel)
+    assert state is not None and state.sealed is True
+
+
+@pytest.mark.asyncio
+async def test_settlement_reconciliation_searches_transaction_history() -> None:
+    """A durable intent outside the recent-status cache is still reconciled."""
+
+    class _HistoryOnlyRpc(_SettleRpc):
+        async def get_signature_statuses(
+            self, signatures: list[str], *, search_transaction_history: bool = False
+        ) -> list[dict | None]:
+            self.status_queries.append(list(signatures))
+            self.search_history_queries.append(search_transaction_history)
+            if search_transaction_history:
+                return [{"err": None, "confirmationStatus": "finalized"} for _ in signatures]
+            return [None for _ in signatures]
+
+    operator = Keypair.from_seed(bytes([62] * 32))
+    channel = str(Keypair.from_seed(bytes([63] * 32)).pubkey())
+    signature = str(operator.sign_message(b"historical-settlement"))
+    rpc = _HistoryOnlyRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            settled_signature=signature,
+            settling=True,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    assert await session._settle_channel(channel) == signature
+    assert rpc.sent == []
+    assert rpc.search_history_queries == [True]
+    state = await session._core.store().get_channel(channel)
+    assert state is not None and state.sealed is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_during_settlement_send_keeps_claim_for_reconciliation() -> None:
+    """Cancellation while send is unresolved cannot reopen a possibly sent tx."""
+
+    class _BlockedSendRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
+            self.sent.append(raw_tx)
+            self.send_started.set()
+            await self.release.wait()
+            return await super().send_raw_transaction(raw_tx)
+
+    operator = Keypair.from_seed(bytes([64] * 32))
+    channel = str(Keypair.from_seed(bytes([65] * 32)).pubkey())
+    rpc = _BlockedSendRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    pending = asyncio.create_task(session._settle_channel(channel))
+    await rpc.send_started.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settling is True
+    assert state.settled_signature == str(Transaction.from_bytes(rpc.sent[0]).signatures[0])
+
+    assert await session._settle_channel(channel) == state.settled_signature
+    assert len(rpc.sent) == 1
+    assert rpc.search_history_queries[-1] is True
+
+
+@pytest.mark.asyncio
+async def test_server_broadcast_open_claim_serializes_workers() -> None:
+    """Two workers share one signed open outbox instead of racing broadcasts."""
+
+    class _BlockedOpenRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
+            self.sent.append(raw_tx)
+            signature = str(Transaction.from_bytes(raw_tx).signatures[0])
+            self.sent_signatures.append(signature)
+            self.send_started.set()
+            await self.release.wait()
+            return _Resp(signature)
+
+    operator = Keypair.from_seed(bytes([66] * 32))
+    rpc = _BlockedOpenRpc()
+    store = MemoryChannelStore()
+    first_session = _session(rpc, operator, store=store, open_tx_submitter="server")
+    second_session = _session(rpc, operator, store=store, open_tx_submitter="server")
+    open_, payload = _server_open_payload(operator)
+    payload.deposit = "1500000"
+    competing_payload = copy.deepcopy(payload)
+
+    first = asyncio.create_task(first_session._handle_open(payload))
+    await rpc.send_started.wait()
+
+    with pytest.raises(PaymentError, match="already in progress") as excinfo:
+        await second_session._handle_open(competing_payload)
+    assert excinfo.value.retryable is True
+    assert len(rpc.sent) == 1
+
+    rpc.release.set()
+    assert await first == rpc.sent_signatures[0]
+    assert len(rpc.sent) == 1
+    persisted = await store.get_channel(str(open_.channel_id))
+    assert persisted is not None and persisted.deposit == open_.deposit
 
 
 # --- S1: server-broadcast open replay does not re-broadcast -------------------
@@ -1016,7 +1287,7 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
     payload.deposit = "1500000"
 
     first = await session._handle_open(payload)
-    assert first == _SENT_SIGNATURE
+    assert first == rpc.sent_signatures[0]
     assert len(rpc.sent) == 1
 
     replay = await session._handle_open(payload)
@@ -1024,7 +1295,7 @@ async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
     # No second broadcast on replay.
     assert len(rpc.sent) == 1
     # The replay returns the original signature (already recorded).
-    assert replay == _SENT_SIGNATURE
+    assert replay == rpc.sent_signatures[0]
     persisted = await session._core.store().get_channel(str(open_.channel_id))
     assert persisted is not None
     assert persisted.deposit == open_.deposit

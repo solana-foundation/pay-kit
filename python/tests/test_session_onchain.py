@@ -82,7 +82,9 @@ class _FakeRpc:
         self.transactions: dict[str, dict] = {}
         self.get_transaction_kwargs: list[dict[str, object]] = []
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[dict | None]:
         out: list[dict | None] = []
         for signature in signatures:
             if signature in self.statuses:
@@ -435,11 +437,31 @@ async def test_verify_open_tx_rejects_signature_without_fee_payer_signature() ->
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
-async def test_verify_open_tx_accepts_placeholder_signature_without_binding() -> None:
-    """Mirrors TestVerifyOpenTxAcceptsPlaceholderSignatureWithoutBinding."""
+@pytest.mark.parametrize("signature", ["", "1" * 64])
+async def test_verify_open_tx_rejects_client_placeholder_signature(signature: str) -> None:
+    """A client-submitted open cannot omit or defer its fee-payer signature."""
     fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.signature = "1" * 64
-    result = await verify_open_tx(fixture.expected, fixture.payload, None)
+    fixture.payload.signature = signature
+    with pytest.raises(PaymentError, match="non-placeholder fee-payer signature"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_allows_placeholder_only_for_server_cosign() -> None:
+    """The explicit server co-sign path may receive the incomplete wire."""
+    fixture = build_open_tx_fixture(v0=False)
+    assert fixture.payload.transaction is not None
+    raw = base64.b64decode(fixture.payload.transaction, validate=True)
+    tx = Transaction.from_bytes(raw)
+    stripped = Transaction.populate(tx.message, [Signature.default()])
+    fixture.payload.transaction = base64.b64encode(bytes(stripped)).decode("ascii")
+    fixture.payload.signature = ""
+
+    result = await verify_open_tx(
+        fixture.expected,
+        fixture.payload,
+        None,
+        allow_fee_payer_placeholder=True,
+    )
     assert result.channel_id == str(fixture.channel)
 
 

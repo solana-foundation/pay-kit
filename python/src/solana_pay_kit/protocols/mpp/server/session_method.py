@@ -34,8 +34,11 @@ dispatch.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
+import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -72,11 +75,13 @@ from solana_pay_kit.protocols.mpp.server.defaults import detect_realm
 from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer, Split
 from solana_pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecycle
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
+    PreparedTransaction,
     RpcClient,
     VerifyOpenTxExpected,
     _require_account_info_rpc,
+    broadcast_prepared_transaction,
+    complete_open_transaction,
     confirm_transaction_signature,
-    cosign_and_broadcast_open,
     new_top_up_state_tx_verifier,
     settle_and_seal_channel,
     verify_open_tx,
@@ -89,6 +94,8 @@ logger = logging.getLogger(__name__)
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 _U64_MAX = (1 << 64) - 1
+_OPEN_OUTBOX_PREFIX = "__pay_kit_session_open_outbox__:"
+_OPEN_OUTBOX_LEASE_SECONDS = 60
 
 
 class _AlreadySealed(Exception):
@@ -133,6 +140,49 @@ def _settlement_status(state: ChannelState) -> _SettlementStatus:
     if state.settling:
         return _SettlementStatus(_SettlementPhase.IN_PROGRESS)
     return _SettlementStatus(_SettlementPhase.READY)
+
+
+def _open_outbox_key(channel_id: str) -> str:
+    """Return the private store key for a server-broadcast open outbox."""
+    return f"{_OPEN_OUTBOX_PREFIX}{channel_id}"
+
+
+def _open_outbox_from_state(state: ChannelState, channel_id: str) -> PreparedTransaction:
+    """Decode a private server-open outbox record stored through ChannelStore.
+
+    The public channel-state schema intentionally has no open outbox fields.
+    A private record under an opaque store key keeps the exact signed wire and
+    deterministic signature durable without changing the shared state schema.
+    """
+    if state.authorized_signer != channel_id or state.settled_signature is None:
+        raise ValueError(f"invalid server-open outbox for channel {channel_id}")
+    if state.highest_voucher_signature is None:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing signed wire")
+    try:
+        wire = base64.b64decode(state.highest_voucher_signature, validate=True)
+    except Exception as exc:
+        raise ValueError(f"invalid server-open outbox wire for channel {channel_id}: {exc}") from exc
+    if not wire:
+        raise ValueError(f"server-open outbox for channel {channel_id} has empty signed wire")
+    return PreparedTransaction(wire=wire, signature=state.settled_signature)
+
+
+async def _finish_store_update(awaitable):
+    """Finish a store write even if the caller is cancelled mid-write.
+
+    Returns whether cancellation was observed. The caller records its durable
+    state transition before re-raising cancellation, so an accepted broadcast
+    is never followed by a rollback of the only recovery marker.
+    """
+    task = asyncio.create_task(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    return cancelled
 
 
 __all__ = [
@@ -603,6 +653,87 @@ class Session:
             recipients=[(split.recipient, split.bps) for split in self._core.config.splits],
         )
 
+    @staticmethod
+    def _validate_server_open_replay(state: ChannelState, payload: OpenPayload, verified: Any) -> None:
+        """Check that an already-recorded server open matches this replay."""
+        channel_id = verified.channel_id
+        if state.sealed:
+            raise PaymentError(f"channel {channel_id} is already sealed", code="invalid-payload")
+        if state.authorized_signer != payload.authorized_signer:
+            raise PaymentError(
+                f"channel {channel_id} already exists with a different authorized signer",
+                code="invalid-payload",
+            )
+        if (
+            state.deposit != verified.deposit
+            or state.operator != verified.payer
+            or state.open_slot != verified.open_slot
+        ):
+            raise PaymentError(
+                f"channel {channel_id} already exists with different verified open facts",
+                code="invalid-payload",
+            )
+
+    async def _claim_server_open_outbox(
+        self, channel_id: str, prepared: PreparedTransaction
+    ) -> tuple[PreparedTransaction, str | None]:
+        """Atomically claim or recover a server-open signed transaction.
+
+        The main channel record is created only after confirmation, so it cannot
+        protect the check-then-broadcast gap across workers. This private
+        outbox record does: it persists the exact signed wire before send and
+        grants one short lease to broadcast it. A crashed owner can be taken
+        over later, but only to submit the same transaction/signature.
+        """
+        outbox_key = _open_outbox_key(channel_id)
+        owner = secrets.token_hex(16)
+        now = int(time.time())
+        owns_claim = False
+
+        def claim(current: ChannelState | None) -> ChannelState:
+            nonlocal owns_claim
+            if current is None:
+                owns_claim = True
+                return ChannelState(
+                    channel_id=outbox_key,
+                    authorized_signer=channel_id,
+                    settled_signature=prepared.signature,
+                    highest_voucher_signature=base64.b64encode(prepared.wire).decode("ascii"),
+                    operator=owner,
+                    close_requested_at=now + _OPEN_OUTBOX_LEASE_SECONDS,
+                )
+
+            persisted = _open_outbox_from_state(current, channel_id)
+            lease_expires_at = current.close_requested_at
+            if lease_expires_at is None:
+                raise ValueError(f"server-open outbox for channel {channel_id} is missing its lease")
+            if lease_expires_at > now:
+                return current.clone()
+
+            # The previous owner may have crashed before or during send. A
+            # takeover submits only the exact persisted wire, never a fresh
+            # signature derived from a racing request.
+            nxt = current.clone()
+            nxt.settled_signature = persisted.signature
+            nxt.operator = owner
+            nxt.close_requested_at = now + _OPEN_OUTBOX_LEASE_SECONDS
+            owns_claim = True
+            return nxt
+
+        state = await self._core.store().update_channel(outbox_key, claim)
+        return _open_outbox_from_state(state, channel_id), (owner if owns_claim else None)
+
+    async def _discard_server_open_outbox(self, channel_id: str, signature: str, owner: str) -> None:
+        """Best-effort cleanup after the active channel record is persisted."""
+        outbox_key = _open_outbox_key(channel_id)
+        try:
+            state = await self._core.store().get_channel(outbox_key)
+            if state is None or state.operator != owner or state.settled_signature != signature:
+                return
+            await self._core.store().delete_channel(outbox_key)
+        except Exception:
+            logger.warning("failed to remove completed server-open outbox", extra={"channel_id": channel_id})
+
     async def _handle_open(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
@@ -652,49 +783,64 @@ class Session:
         if mode == "push" and not has_transaction and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
 
+        server_open_outbox_owner: tuple[str, str, str] | None = None
         if has_transaction and self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
             if self._signer is None or self._rpc is None:
                 raise PaymentError(
                     "openTxSubmitter=server requires a signer and an RPC client",
                     code="invalid-config",
                 )
-            # Idempotent replay guard: the store check-and-insert is the final
-            # source of truth (process_open below), but a replayed open must
-            # NOT re-broadcast the (already-landed) open transaction. TS
-            # checks the store before submitOpenTx; we mirror that here so a
-            # replay short-circuits the broadcast instead of sending it
-            # again and then no-opping in process_open.
-            session_id = payload.session_id()
-            existing = await self._core.store().get_channel(session_id)
+            # Decode before claiming so the durable key is the authoritative
+            # PDA, not an attacker-controlled payload field. The server is the
+            # sole path allowed to receive a placeholder fee-payer signature.
+            expected = self._open_tx_expected(payload, challenge_recent_slot)
+            try:
+                verified = await verify_open_tx(expected, payload, None, allow_fee_payer_placeholder=True)
+                prepared = complete_open_transaction(payload, self._signer.keypair)
+            except PaymentError:
+                raise
+            except Exception as exc:
+                raise PaymentError(f"server-broadcast open preparation failed: {exc}", code="invalid-payload") from exc
+
+            payload.payer = verified.payer
+            payload.deposit = str(verified.deposit)
+            payload.recent_slot = verified.open_slot
+            channel_id = verified.channel_id
+
+            existing = await self._core.store().get_channel(channel_id)
             if existing is not None:
-                if existing.sealed:
-                    raise PaymentError(f"channel {session_id} is already sealed", code="invalid-payload")
-                if existing.authorized_signer != payload.authorized_signer:
-                    raise PaymentError(
-                        f"channel {session_id} already exists with a different authorized signer",
-                        code="invalid-payload",
-                    )
-            else:
-                # Built lazily: only the transaction-carrying paths verify
-                # the open on-chain, so the on-chain expected facts (and the
-                # program_id pubkey parse) stay off the trust-the-channel-id
-                # paths.
-                expected = self._open_tx_expected(payload, challenge_recent_slot)
-                try:
-                    verified = await verify_open_tx(expected, payload, None)
-                    if not payload.payer:
-                        payload.payer = verified.payer
-                    payload.deposit = str(verified.deposit)
-                    # openSlot from the verified transaction is authoritative;
-                    # persist it so the channel PDA stays re-derivable.
-                    payload.recent_slot = verified.open_slot
-                    payload.signature = await cosign_and_broadcast_open(
-                        payload, fee_payer=self._signer.keypair, rpc=self._rpc
-                    )
-                except PaymentError:
-                    raise
-                except Exception as exc:
-                    raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
+                self._validate_server_open_replay(existing, payload, verified)
+                self._touch(channel_id)
+                return prepared.signature
+
+            try:
+                outbox, owner = await self._claim_server_open_outbox(channel_id, prepared)
+            except ValueError as exc:
+                raise PaymentError(str(exc), code="invalid-payload") from exc
+
+            existing = await self._core.store().get_channel(channel_id)
+            if existing is not None:
+                self._validate_server_open_replay(existing, payload, verified)
+                self._touch(channel_id)
+                return outbox.signature
+            if owner is None:
+                raise PaymentError(
+                    f"server-broadcast open for channel {channel_id} is already in progress",
+                    code="invalid-payload",
+                    retryable=True,
+                )
+
+            try:
+                await broadcast_prepared_transaction(outbox, rpc=self._rpc, label="open")
+            except BaseException:
+                # The signed wire is already durable. Retain it on every
+                # ambiguous failure or cancellation so a later lease owner can
+                # retry this exact transaction rather than make a new one.
+                raise
+
+            payload.transaction = base64.b64encode(outbox.wire).decode("ascii")
+            payload.signature = outbox.signature
+            server_open_outbox_owner = (channel_id, outbox.signature, owner)
         elif has_transaction:
             expected = self._open_tx_expected(payload, challenge_recent_slot)
             try:
@@ -730,6 +876,8 @@ class Session:
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         self._touch(state.channel_id)
+        if server_open_outbox_owner is not None:
+            await self._discard_server_open_outbox(*server_open_outbox_owner)
         if payload.signature != "":
             return payload.signature
         return state.channel_id
@@ -875,19 +1023,10 @@ class Session:
         return settled or payload.channel_id
 
     async def _settle_channel(self, channel_id: str) -> str | None:
-        """Settle and seal the channel on-chain, returning the settlement
-        signature. A no-op (returns ``None``) when no signer or RPC is configured;
-        returns the recorded signature when the channel is already sealed.
-        Mirrors the gated settle in the Go/TS servers.
-        """
+        """Settle once, persist intent before send, and reconcile ambiguity."""
         if self._signer is None or self._rpc is None:
             return None
 
-        # Atomic settle-in-progress guard: claim the channel under the
-        # per-channel store lock so a concurrent close retry or idle-watchdog
-        # fire cannot both pass the seal check and broadcast duplicate
-        # settle transactions. A durable unsealed signature is a distinct
-        # phase: it must be reconciled before any caller can broadcast again.
         claimed = False
         reconcile_signature: str | None = None
 
@@ -898,12 +1037,16 @@ class Session:
             status = _settlement_status(current)
             if status.phase is _SettlementPhase.SEALED:
                 raise _AlreadySealed(status.signature)
+            if status.phase is _SettlementPhase.AWAITING_CONFIRMATION:
+                # A durable signature is an immutable settlement intent. It
+                # may be reconciled by multiple callers, but never replaced.
+                reconcile_signature = status.signature
+                claimed = True
+                return current.clone()
             if status.phase is _SettlementPhase.IN_PROGRESS:
                 raise _AlreadySettling()
             nxt = current.clone()
             nxt.settling = True
-            if status.phase is _SettlementPhase.AWAITING_CONFIRMATION:
-                reconcile_signature = status.signature
             claimed = True
             return nxt
 
@@ -921,22 +1064,27 @@ class Session:
         if not claimed:
             return None
 
-        async def release_claim(signature: str | None, *, clear_signature: bool) -> None:
-            """Release a claimed phase without erasing an ambiguous broadcast."""
-
+        async def release_prebroadcast_claim() -> None:
             def release(current: ChannelState | None) -> ChannelState:
                 if current is None:
                     raise ValueError(f"channel {channel_id} disappeared while releasing settle-claim")
-                if current.sealed:
-                    return current
-                if signature is not None and current.settled_signature != signature:
-                    return current
-                if signature is None and current.settled_signature is not None:
+                if current.sealed or current.settled_signature is not None:
                     return current
                 nxt = current.clone()
                 nxt.settling = False
-                if clear_signature:
-                    nxt.settled_signature = None
+                return nxt
+
+            await _finish_store_update(self._core.store().update_channel(channel_id, release))
+
+        async def retire_failed_intent(signature: str) -> None:
+            def release(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared while retiring settlement intent")
+                if current.sealed or current.settled_signature != signature:
+                    return current
+                nxt = current.clone()
+                nxt.settling = False
+                nxt.settled_signature = None
                 return nxt
 
             await self._core.store().update_channel(channel_id, release)
@@ -947,7 +1095,7 @@ class Session:
                     raise ValueError(f"channel {channel_id} disappeared during settle")
                 if current.sealed:
                     return current
-                if current.settled_signature not in (None, signature):
+                if current.settled_signature != signature:
                     raise ValueError(f"channel {channel_id} settlement signature changed during confirmation")
                 nxt = current.clone()
                 nxt.sealed = True
@@ -960,48 +1108,45 @@ class Session:
 
         if reconcile_signature is not None:
             try:
-                await confirm_transaction_signature(self._rpc, reconcile_signature, "settle")
+                await confirm_transaction_signature(
+                    self._rpc,
+                    reconcile_signature,
+                    "settle",
+                    search_transaction_history=True,
+                )
             except PaymentError as exc:
-                # A known execution failure can safely open a new settlement
-                # attempt. Transport errors and timeouts remain ambiguous and
-                # keep the broadcast signature for a later reconciliation.
-                await release_claim(reconcile_signature, clear_signature=exc.code == "transaction-failed")
-                raise
-            except BaseException:
-                await release_claim(reconcile_signature, clear_signature=False)
+                # Only a confirmed execution failure proves that a fresh
+                # settlement is safe. Timeouts and transport failures keep the
+                # claim and deterministic signature for later reconciliation.
+                if exc.code == "transaction-failed":
+                    await retire_failed_intent(reconcile_signature)
                 raise
             return await seal(reconcile_signature)
 
-        broadcast_signature: str | None = None
+        intent_signature: str | None = None
+        intent_persisted = False
 
-        async def record_broadcast(signature: str) -> None:
-            nonlocal broadcast_signature
-            broadcast_signature = signature
+        async def persist_intent(prepared: PreparedTransaction) -> None:
+            nonlocal intent_persisted, intent_signature
+            intent_signature = prepared.signature
 
             def persist(current: ChannelState | None) -> ChannelState:
                 if current is None:
-                    raise ValueError(f"channel {channel_id} disappeared after settle broadcast")
+                    raise ValueError(f"channel {channel_id} disappeared before settlement broadcast")
                 if current.sealed:
                     return current
                 if not current.settling:
-                    raise ValueError(f"channel {channel_id} settle claim was released before broadcast persistence")
-                if current.settled_signature not in (None, signature):
-                    raise ValueError(f"channel {channel_id} settlement signature changed during broadcast")
+                    raise ValueError(f"channel {channel_id} settle claim was released before intent persistence")
+                if current.settled_signature not in (None, prepared.signature):
+                    raise ValueError(f"channel {channel_id} settlement signature changed before broadcast")
                 nxt = current.clone()
-                nxt.settled_signature = signature
+                nxt.settled_signature = prepared.signature
                 return nxt
 
-            # Once a broadcast returns, cancellation must not interrupt the
-            # durable record that prevents a second broadcast. Finish the store
-            # mutation, then propagate cancellation to the public caller.
-            task = asyncio.create_task(self._core.store().update_channel(channel_id, persist))
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            task.result()
+            # Finish persistence despite cancellation before propagating it.
+            # From this point a send may have happened, so the claim must stay.
+            cancelled = await _finish_store_update(self._core.store().update_channel(channel_id, persist))
+            intent_persisted = True
             if cancelled:
                 raise asyncio.CancelledError
 
@@ -1011,20 +1156,16 @@ class Session:
                 merchant=self._signer.keypair,
                 rpc=self._rpc,
                 config=self._core.config,
-                on_broadcast=record_broadcast,
+                on_prepared=persist_intent,
             )
         except BaseException as exc:
-            # Pre-broadcast failures and cancellation can release the claim.
-            # Once a signature exists, only a definitive execution failure may
-            # clear it; every other error is reconciled before a later retry.
-            await release_claim(
-                broadcast_signature,
-                clear_signature=(
-                    broadcast_signature is not None
-                    and isinstance(exc, PaymentError)
-                    and exc.code == "transaction-failed"
-                ),
-            )
+            if not intent_persisted:
+                await release_prebroadcast_claim()
+            elif isinstance(exc, PaymentError) and exc.code == "transaction-failed" and intent_signature is not None:
+                await retire_failed_intent(intent_signature)
+            # All other post-intent failures are ambiguous. Keep the claim and
+            # signature so a retry can query transaction history instead of
+            # issuing a second settlement.
             raise
         return await seal(signature)
 
