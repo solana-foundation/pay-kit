@@ -158,10 +158,9 @@ jobs:
         run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Focused Python session harness
         working-directory: harness
-        # The session close settles on-chain (settle_and_finalize + distribute on
-        # the payment-channels program), so it deploys the same localnet SBF
-        # artifact built above onto the embedded surfnet — without it the session
-        # never lands a real settlement. The same run also exercises the Tier-2
+        # The session opens, broadcasts a client-funded top-up, verifies the
+        # challenge-bound top_up action against the real transaction, then settles
+        # on-chain (settle_and_finalize + distribute). The same run exercises Tier-2
         # confirmation-gating fault guards (a settle broadcast that never
         # confirms, and one stuck at `processed`): both must leave the channel
         # un-finalized with settledSignature unset. They are not pair-titled, so

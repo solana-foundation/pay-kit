@@ -525,8 +525,9 @@ beforeAll(async () => {
       needsSolFunding = true;
     }
     // x402-upto opens a payment-channel account. The fee payer sponsors the
-    // transaction fee and channel rent.
-    if (scenario.intent === "x402-upto") {
+    // transaction fee and channel rent. Session top-ups are client-broadcast,
+    // so the funded client needs SOL for that transaction's fee as well.
+    if (scenario.intent === "x402-upto" || scenario.sessionTopUpAmount) {
       needsSolFunding = true;
     }
     if (isSolNative(scenario)) {
@@ -898,6 +899,13 @@ describe("mpp harness", () => {
               });
               expect(typeof result.settlement).toBe("string");
               expect(result.settlement).not.toHaveLength(0);
+              if (scenario.sessionTopUpAmount !== undefined) {
+                await expectSessionTopUp(
+                  scenario,
+                  scenarioEnv,
+                  result.topUp,
+                );
+              }
               if (assertsOnChainSettlement) {
                 await expectSettledTransactionShape(
                   surfnet,
@@ -1383,6 +1391,9 @@ function environmentForScenario(
   const env: Record<string, string> = {
     ...baseEnv,
     MPP_HARNESS_AMOUNT: scenario.amount,
+    ...(scenario.sessionTopUpAmount !== undefined
+      ? { MPP_HARNESS_SESSION_TOP_UP_AMOUNT: scenario.sessionTopUpAmount }
+      : {}),
     MPP_HARNESS_MINT: scenario.asset,
     MPP_HARNESS_NETWORK: scenario.network,
     MPP_HARNESS_PAYMENT_MODE: scenario.paymentMode ?? "pull",
@@ -1809,6 +1820,42 @@ function expectSessionChannelSettlement(
     accountAt(message, distribute.accountIndices[10]),
     "self program",
   ).toBe(PAYMENT_CHANNEL_PROGRAM);
+}
+
+async function expectSessionTopUp(
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+  topUp: import("../src/contracts").ClientRunResult["topUp"],
+): Promise<void> {
+  const amount = BigInt(scenario.sessionTopUpAmount ?? "0");
+  const newDeposit = BigInt(scenario.amount) + amount;
+  expect(amount, "session top-up amount").toBeGreaterThan(0n);
+  expect(topUp, "session client did not report a top-up").toBeDefined();
+  if (!topUp) return;
+
+  expect(topUp.amount).toBe(amount.toString());
+  expect(topUp.newDeposit).toBe(newDeposit.toString());
+  expect(topUp.server).toEqual({
+    channelId: topUp.channelId,
+    deposit: newDeposit.toString(),
+  });
+
+  const transaction = await fetchTransactionBase64(
+    scenarioEnv.MPP_HARNESS_RPC_URL,
+    topUp.signature,
+  );
+  const message = decodeTransactionMessage(transaction);
+  const instruction = message.instructions.find(
+    (candidate) =>
+      accountAt(message, candidate.programAddressIndex) === PAYMENT_CHANNEL_PROGRAM &&
+      candidate.data[0] === 3 &&
+      candidate.accountIndices.length === 6 &&
+      accountAt(message, candidate.accountIndices[1]) === topUp.channelId,
+  );
+  expect(instruction, "missing payment-channels topUp instruction").toBeDefined();
+  if (instruction) {
+    expect(readU64Le(instruction.data, 1), "topUp instruction amount").toBe(amount);
+  }
 }
 
 async function fetchTransactionBase64(

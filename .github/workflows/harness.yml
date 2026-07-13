@@ -204,8 +204,8 @@ jobs:
       - name: Focused Python session harness
         working-directory: harness
         # Deploys the localnet payment-channels SBF built above so the session
-        # close settles for real on-chain (settle_and_finalize + distribute).
-        # The same session run also exercises the Tier-2 confirmation-gating
+        # top-up and close run against the real payment-channels program. The
+        # same session run also exercises the Tier-2 confirmation-gating
         # fault guards registered in test/e2e.test.ts (a settle broadcast that
         # never confirms, and one stuck at `processed`): both must leave the
         # channel un-finalized with settledSignature unset, so a regression that

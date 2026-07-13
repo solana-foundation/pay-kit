@@ -236,7 +236,13 @@ class _MismatchedTopUpRpc:
     async def get_account_info(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict[str, str | None]]:
+    async def get_signature_statuses(
+        self,
+        signatures: list[str],
+        *,
+        search_transaction_history: bool = False,
+    ) -> list[dict[str, str | None]]:
+        del search_transaction_history
         return [
             {"err": None, "confirmationStatus": "confirmed"} if signature == self.signature else {"err": "not found"}
             for signature in signatures

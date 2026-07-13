@@ -77,6 +77,7 @@ from solana_pay_kit.protocols.mpp.core.headers import (  # noqa: E402
     parse_receipt,
 )
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from solana_pay_kit.protocols.mpp.intents.session import SessionAction  # noqa: E402
 from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
     MemoryChannelStore,
     Session,
@@ -347,6 +348,11 @@ class _Adapter:
         self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
         pay_to = require_env("MPP_HARNESS_PAY_TO")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
+        top_up_amount = int(optional_env("MPP_HARNESS_SESSION_TOP_UP_AMOUNT", "0"))
+        if top_up_amount < 0:
+            print("MPP_HARNESS_SESSION_TOP_UP_AMOUNT must be non-negative", file=sys.stderr)
+            sys.exit(2)
+        session_cap = str(int(amount_units) + top_up_amount)
         secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad")
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
@@ -381,7 +387,7 @@ class _Adapter:
         self.session_options = SessionOptions(
             operator=signer.pubkey(),
             recipient=pay_to,
-            cap=int(amount_units),
+            cap=int(session_cap),
             currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
             decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
             network=network_raw,
@@ -403,7 +409,7 @@ class _Adapter:
         # on-chain verification seam. Its core shares the request sessions' store.
         self.session_method = new_session(self.session_options)
         self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)
-        self.session_challenge = SessionChallengeOptions(cap=amount_units, description="Harness session")
+        self.session_challenge = SessionChallengeOptions(cap=session_cap, description="Harness session")
         decimals = int(optional_env("MPP_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
         self.replay_path = ""
@@ -658,6 +664,13 @@ class HarnessHandler(BaseHTTPRequestHandler):
         body = {"ok": True, "paid": True, "protocol": "session", "reference": reference}
         if reference:
             body["settledSignature"] = reference
+        action = SessionAction.from_dict(parse_authorization(auth).payload)
+        if action.top_up is not None:
+            state = asyncio.run(adapter.session_store.get_channel(action.top_up.channel_id))
+            if state is None:
+                self._send_json(500, {"error": "accepted top-up channel state is missing"})
+                return
+            body["topUp"] = {"channelId": action.top_up.channel_id, "deposit": str(state.deposit)}
         self._send_json(200, body, extra_headers={**result.headers, adapter.settlement_header: reference})
 
     def _handle_mpp(self, adapter: _Adapter, request: dict[str, Any]) -> None:

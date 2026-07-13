@@ -37,6 +37,10 @@ export type HarnessScenario = {
   // Optional metered amount for usage (`x402-upto`) scenarios. When omitted,
   // settlement assertions use `amount` as the final settled delta.
   actualAmount?: string;
+  // Additional deposit the Python session client must transfer after the
+  // channel open and before its first voucher. The scenario runner asserts the
+  // landed top-up transaction and the server-observed deposit.
+  sessionTopUpAmount?: string;
   // The literal value the harness sends to each adapter as
   // `MPP_HARNESS_MINT`. In `pubkey` mode (default) this is a 32+ char
   // base58 mint pubkey. In `symbol` mode this is a stablecoin symbol
@@ -136,6 +140,16 @@ export type ClientRunResult = {
   responseHeaders: Record<string, string>;
   responseBody: unknown;
   settlement?: unknown;
+  topUp?: {
+    signature: string;
+    channelId: string;
+    amount: string;
+    newDeposit: string;
+    server: {
+      channelId: string;
+      deposit: string;
+    };
+  };
 };
 
 export type AdapterMessage = ReadyMessage | ClientRunResult;
