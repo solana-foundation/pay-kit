@@ -10,9 +10,13 @@ from typing import Any
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
+from solana_pay_kit.protocols.mpp._paymentchannels import find_associated_token_address
+from solana_pay_kit.protocols.mpp.intents.session import ClosePayload
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 from solana_pay_kit.signer import LocalSigner
@@ -40,6 +44,7 @@ class _SettleRpc:
     """
 
     def __init__(self) -> None:
+        self.accounts: dict[str, tuple[bytes, str]] = {}
         self.sent: list[bytes] = []
         self.status_queries: list[list[str]] = []
 
@@ -54,11 +59,32 @@ class _SettleRpc:
         self.sent.append(raw_tx)
         return _Resp(_SENT_SIGNATURE)
 
+    async def get_account_info(
+        self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
+    ) -> tuple[bytes, str] | None:
+        return self.accounts.get(address)
 
-def _session(rpc: _SettleRpc, operator: Keypair, recipient: str | None = None):
+
+def _seed_settlement_recipient_ata(rpc: _SettleRpc, recipient: str) -> None:
+    mint = resolve_mint("USDC", "localnet")
+    assert mint is not None
+    token_program = Pubkey.from_string(default_token_program_for_currency("USDC", "localnet"))
+    recipient_ata, _ = find_associated_token_address(
+        Pubkey.from_string(recipient), Pubkey.from_string(mint), token_program
+    )
+    rpc.accounts[str(recipient_ata)] = (b"", str(token_program))
+
+
+def _session(
+    rpc: _SettleRpc,
+    operator: Keypair,
+    recipient: str | None = None,
+    *,
+    recipient_ata_exists: bool = True,
+):
     if recipient is None:
         recipient = str(operator.pubkey())
-    return new_session(
+    session = new_session(
         SessionOptions(
             operator=str(operator.pubkey()),
             recipient=recipient,
@@ -73,6 +99,9 @@ def _session(rpc: _SettleRpc, operator: Keypair, recipient: str | None = None):
             rpc=rpc,
         )
     )
+    if recipient_ata_exists:
+        _seed_settlement_recipient_ata(rpc, recipient)
+    return session
 
 
 async def _seed(session, state: ChannelState) -> None:
@@ -153,6 +182,35 @@ async def test_settle_raises_and_does_not_seal_when_tx_unconfirmed() -> None:
     assert final is not None
     assert final.sealed is False
     assert final.settled_signature is None
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_missing_recipient_ata_without_broadcast_or_receipt_reference() -> None:
+    operator = Keypair.from_seed(bytes([11] * 32))
+    recipient = str(Keypair.from_seed(bytes([12] * 32)).pubkey())
+    channel = str(Keypair.from_seed(bytes([13] * 32)).pubkey())
+    rpc = _SettleRpc()
+    session = _session(rpc, operator, recipient, recipient_ata_exists=False)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=500_000,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    with pytest.raises(PaymentError, match="settlement recipient ATA .* does not exist"):
+        await session._handle_close(ClosePayload(channel_id=channel))
+
+    assert rpc.sent == []
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settled_signature is None
+    assert state.settling is False
 
 
 @pytest.mark.asyncio

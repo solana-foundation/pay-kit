@@ -23,7 +23,7 @@ import base64
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
@@ -38,6 +38,7 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     Distribution,
     build_distribute_instruction,
     build_settle_and_seal_instructions,
+    find_associated_token_address,
     find_channel_pda,
     treasury_owner,
 )
@@ -84,6 +85,12 @@ class RpcClient(Protocol):
     async def get_latest_blockhash(self, commitment: str = ...) -> Any: ...
 
     async def send_raw_transaction(self, raw_tx: bytes) -> Any: ...
+
+
+class AccountInfoRpc(Protocol):
+    async def get_account_info(
+        self, address: str, commitment: str = ..., min_context_slot: int | None = ...
+    ) -> tuple[bytes, str] | None: ...
 
 
 #: A verifier seam installed on the session config: validates a payload (open
@@ -659,6 +666,52 @@ async def confirm_transaction_signature(
         await asyncio.sleep(poll_interval_seconds)
 
 
+def _require_account_info_rpc(rpc_client: RpcClient) -> AccountInfoRpc:
+    if not callable(getattr(rpc_client, "get_account_info", None)):
+        raise PaymentError(
+            "session settlement requires an RPC client with get_account_info",
+            code="invalid-config",
+        )
+    return cast(AccountInfoRpc, rpc_client)
+
+
+async def _require_settlement_recipient_atas(
+    rpc: RpcClient,
+    *,
+    recipients: list[Pubkey],
+    mint: Pubkey,
+    token_program: Pubkey,
+) -> None:
+    """Reject before broadcast when a session payout recipient lacks its ATA."""
+    account_rpc = _require_account_info_rpc(rpc)
+    expected_owner = str(token_program)
+    checked: set[str] = set()
+    for recipient in recipients:
+        recipient_ata, _ = find_associated_token_address(recipient, mint, token_program)
+        address = str(recipient_ata)
+        if address in checked:
+            continue
+        checked.add(address)
+        try:
+            account = await account_rpc.get_account_info(address, commitment="confirmed")
+        except Exception as exc:
+            raise PaymentError(
+                f"failed to verify settlement recipient ATA {address}: {exc}", code="transaction-not-found"
+            ) from exc
+        if account is None:
+            raise PaymentError(
+                f"settlement recipient ATA {address} does not exist; "
+                "the recipient must create it before session settlement",
+                code="invalid-payload",
+            )
+        _, owner = account
+        if owner != expected_owner:
+            raise PaymentError(
+                f"settlement recipient ATA {address} is owned by {owner}, expected {expected_owner}",
+                code="invalid-payload",
+            )
+
+
 async def settle_and_seal_channel(
     state: ChannelState,
     *,
@@ -723,6 +776,12 @@ async def settle_and_seal_channel(
     mint = Pubkey.from_string(mint_address)
     token_program = Pubkey.from_string(default_token_program_for_currency(config.currency, config.network))
     recipients = [Distribution(recipient=Pubkey.from_string(split.recipient), bps=split.bps) for split in config.splits]
+    await _require_settlement_recipient_atas(
+        rpc,
+        recipients=[payee, *(entry.recipient for entry in recipients)],
+        mint=mint,
+        token_program=token_program,
+    )
     treasury = treasury_owner()
     distribute = build_distribute_instruction(
         channel=channel,
