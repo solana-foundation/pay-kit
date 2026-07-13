@@ -23,7 +23,7 @@ from solana_pay_kit._paycore.errors import PaymentError, canonical_code
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.store import ReplayStoreConfigurationError, Store, resolve_replay_store
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.mpp.core.headers import format_receipt, format_www_authenticate, parse_authorization
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
@@ -191,7 +191,10 @@ class MppAdapter:
         recent_blockhash_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._config = config
-        self._replay_store = _resolve_replay_store(config, replay_store)
+        try:
+            self._replay_store = _resolve_replay_store(config, replay_store)
+        except PaymentError as exc:
+            raise ConfigurationError(str(exc)) from exc
         self._recent_blockhash_provider = recent_blockhash_provider
         # Cache one solana_pay_kit.protocols.mpp.Mpp per (payTo|coin) key, like the PHP
         # handlerCache, so the HMAC secret and RPC client are reused.

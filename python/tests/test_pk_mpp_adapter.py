@@ -93,11 +93,11 @@ def test_inmemory_replay_store_fails_closed_outside_localnet(monkeypatch, replay
     cfg = _cfg(network="solana_devnet")
     monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
 
-    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+    with pytest.raises(ConfigurationError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
         MppAdapter(cfg, replay_store=replay_store)
 
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
-    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+    with pytest.raises(ConfigurationError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
         MppAdapter(cfg, replay_store=replay_store)
 
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
@@ -121,15 +121,18 @@ def test_file_replay_store_is_rejected_outside_localnet(monkeypatch, tmp_path, n
         monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
     replay_store = FileReplayStore(tmp_path / "replay.json")
 
-    with pytest.raises(PaymentError, match="FileReplayStore.*localnet"):
+    with pytest.raises(ConfigurationError, match="FileReplayStore.*localnet"):
         MppAdapter(_cfg(network=network), replay_store=replay_store)
 
 
 def test_mainnet_forbids_inmemory_replay_store_opt_in(monkeypatch):
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
 
-    with pytest.raises(PaymentError, match="forbidden on mainnet"):
+    with pytest.raises(ConfigurationError, match="forbidden on mainnet") as caught:
         MppAdapter(_cfg(network="solana_mainnet"), replay_store=MemoryStore())
+
+    assert isinstance(caught.value.__cause__, PaymentError)
+    assert caught.value.__cause__.code == "invalid-config"
 
 
 class _ProductionMemoryStore(MemoryStore, ProductionReplayStore):
@@ -160,7 +163,7 @@ def test_mpp_and_x402_replay_store_policy_parity_for_memory_spoofs(monkeypatch, 
         assert X402Adapter(cfg, replay_store=x402_store)._store is x402_store
         return
 
-    with pytest.raises(PaymentError):
+    with pytest.raises(ConfigurationError):
         MppAdapter(cfg, replay_store=mpp_store)
     with pytest.raises(ConfigurationError):
         X402Adapter(cfg, replay_store=x402_store)

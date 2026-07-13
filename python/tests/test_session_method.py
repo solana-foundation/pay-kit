@@ -45,15 +45,48 @@ from solana_pay_kit.protocols.mpp.server.session_method import (
     SessionOptions,
     new_session,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelMutator,
+    ChannelState,
+    ChannelStore,
+    ListChannelsFilter,
+    MemoryChannelStore,
+    ProductionChannelStore,
+)
 from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
 
 
-class _NominalChannelStore(ChannelStore):
-    """External-store stand-in for construction-only configuration tests."""
+class _DelegatingChannelStore(ChannelStore):
+    """Process-local stand-in used to exercise the nominal production marker."""
+
+    def __init__(self) -> None:
+        self._delegate = MemoryChannelStore()
+
+    async def get_channel(self, channel_id: str) -> ChannelState | None:
+        return await self._delegate.get_channel(channel_id)
+
+    async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
+        return await self._delegate.update_channel(channel_id, mutator)
+
+    async def delete_channel(self, channel_id: str) -> None:
+        await self._delegate.delete_channel(channel_id)
+
+    async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
+        return await self._delegate.list_channels(filter)
+
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
+        return await self._delegate.mark_sealed(channel_id)
+
+
+class _ProductionChannelStore(_DelegatingChannelStore, ProductionChannelStore):
+    """Application-asserted production backend for construction tests."""
+
+
+class _ProductionMemoryChannelStore(MemoryChannelStore, ProductionChannelStore):
+    """Attempts to label the bundled process-local store as production-safe."""
 
 
 class _TestVoucherSigner:
@@ -363,6 +396,57 @@ def test_new_session_mainnet_aliases_reject_inmemory_store_opt_in(
         )
 
 
+@pytest.mark.parametrize("network", ["devnet", "mainnet"])
+@pytest.mark.parametrize("store", [ChannelStore(), _DelegatingChannelStore()])
+def test_new_session_rejects_unmarked_channel_stores_outside_localnet(
+    monkeypatch: pytest.MonkeyPatch, network: str, store: ChannelStore
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network=network,
+                secret_key=SESSION_METHOD_SECRET,
+                store=store,
+            )
+        )
+
+
+def test_new_session_rejects_memory_store_production_marker_on_mainnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="mainnet",
+                secret_key=SESSION_METHOD_SECRET,
+                store=_ProductionMemoryChannelStore(),
+            )
+        )
+
+
+@pytest.mark.parametrize("network", ["devnet", "mainnet"])
+def test_new_session_accepts_nominal_production_channel_store_outside_localnet(network: str) -> None:
+    store = _ProductionChannelStore()
+
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            network=network,
+            secret_key=SESSION_METHOD_SECRET,
+            store=store,
+        )
+    )
+
+    assert session.core().store() is store
+
+
 def test_new_session_rejects_unknown_network_before_store_policy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
 
@@ -389,7 +473,7 @@ def test_new_session_accepts_public_network_enum_values(
     monkeypatch: pytest.MonkeyPatch, network: str, canonical: str
 ) -> None:
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
-    store = None if canonical != "mainnet" else _NominalChannelStore()
+    store = None if canonical != "mainnet" else _ProductionChannelStore()
 
     session = new_session(
         SessionOptions(
@@ -416,7 +500,7 @@ def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None
 
 def test_new_session_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
-    store = _NominalChannelStore()
+    store = _ProductionChannelStore()
     session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="", store=store)
     assert session._currency == "USDC"
     assert session._network == "mainnet"

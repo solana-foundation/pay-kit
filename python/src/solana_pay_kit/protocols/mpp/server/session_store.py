@@ -20,6 +20,7 @@ The module uses plain dataclasses with ``to_dict()``/``from_dict()``,
 from __future__ import annotations
 
 import asyncio
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -31,6 +32,8 @@ __all__ = [
     "ListChannelsFilter",
     "ChannelMutator",
     "ChannelStore",
+    "ProductionChannelStore",
+    "is_production_channel_store",
     "MemoryChannelStore",
 ]
 
@@ -315,6 +318,40 @@ class ChannelStore:
     async def mark_sealed(self, channel_id: str) -> ChannelState:
         """Flip sealed to True. Raises when the channel is not found."""
         raise NotImplementedError
+
+
+class ProductionChannelStore(ChannelStore, ABC):
+    """Nominal contract for a production channel-state backend.
+
+    Subclass this only when ``update_channel`` is atomic across processes and
+    replicas, and successful writes are durable before the operation reports
+    success. This deliberately uses a nominal marker rather than mutable
+    instance flags so a deployment must explicitly attest to those guarantees.
+    """
+
+    @abstractmethod
+    async def get_channel(self, channel_id: str) -> ChannelState | None: ...
+
+    @abstractmethod
+    async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState: ...
+
+    @abstractmethod
+    async def delete_channel(self, channel_id: str) -> None: ...
+
+    @abstractmethod
+    async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]: ...
+
+    @abstractmethod
+    async def mark_sealed(self, channel_id: str) -> ChannelState: ...
+
+
+def is_production_channel_store(store: ChannelStore) -> bool:
+    """Return whether ``store`` explicitly implements the production contract.
+
+    Check bundled memory storage before the nominal marker so multiple
+    inheritance cannot make a process-local store appear production-safe.
+    """
+    return not isinstance(store, MemoryChannelStore) and isinstance(store, ProductionChannelStore)
 
 
 @dataclass

@@ -87,7 +87,12 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     settle_and_seal_channel,
     verify_open_tx,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, ChannelStore, MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelState,
+    ChannelStore,
+    MemoryChannelStore,
+    is_production_channel_store,
+)
 from solana_pay_kit.signer import LocalSigner
 
 logger = logging.getLogger(__name__)
@@ -289,8 +294,8 @@ class SessionOptions:
     # Default "client".
     open_tx_submitter: OpenTxSubmitter = ""
     # Store is the pluggable channel store. Localnet defaults to in-memory;
-    # off-localnet requires a durable store unless the development escape hatch
-    # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 is set explicitly.
+    # off-localnet requires an explicit ProductionChannelStore, except for the
+    # development-only PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 devnet escape.
     store: ChannelStore | None = None
     # RPC is the optional RPC client used for on-chain checks. None skips every
     # on-chain check and trusts payload claims as provided. When signer is also
@@ -1302,11 +1307,13 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
-    uses_memory_store = options.store is None or isinstance(options.store, MemoryChannelStore)
     allows_devnet_memory_store = network == "devnet" and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
-    if uses_memory_store and network != "localnet" and not allows_devnet_memory_store:
+    uses_memory_store = options.store is None or isinstance(options.store, MemoryChannelStore)
+    is_production_store = options.store is not None and is_production_channel_store(options.store)
+    if network != "localnet" and not (is_production_store or (uses_memory_store and allows_devnet_memory_store)):
         raise PaymentError(
-            "a durable channel store is required outside localnet; set "
+            "an injected ProductionChannelStore is required outside localnet; its update_channel operation must be "
+            "atomic, shared, and durable. Set "
             f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
             "MemoryChannelStore only for devnet development",
             code="invalid-config",
