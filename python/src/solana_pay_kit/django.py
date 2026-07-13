@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         JsonResponse,
     )
 
+    from solana_pay_kit._paycore.store import Store
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
@@ -99,6 +100,7 @@ def require_payment(
     *,
     pricing: Pricing | None = None,
     config: Config | None = None,
+    replay_store: Store | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorate a Django view to require payment for ``gate_ref``.
 
@@ -107,13 +109,15 @@ def require_payment(
     the view, then merges the settlement headers onto the returned response. On
     a missing/invalid proof returns a ``402`` :class:`~django.http.JsonResponse`
     built from the challenge; any other :class:`~solana_pay_kit.errors.PayKitError`
-    renders its :attr:`~solana_pay_kit.errors.PayKitError.http_status`.
+    renders its :attr:`~solana_pay_kit.errors.PayKitError.http_status`. Pass
+    ``replay_store`` for durable replay state before the first gated request.
+    A Config's first store owns its cached core; later values do not replace it.
     """
 
     def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(view)
         def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-            core = PayCore.for_config(config if config is not None else _config())
+            core = PayCore.for_config(config if config is not None else _config(), replay_store=replay_store)
             try:
                 payment = _run(core.process(gate_ref, pricing, request))
             except PayKitError as exc:
@@ -199,11 +203,21 @@ class PaymentMiddleware:
     it passes the request through untouched. Any :class:`PayKitError` raised by
     a downstream view (e.g. an imperative :func:`require_payment` from the
     trio) is converted to the matching JSON response.
+
+    Pass ``replay_store`` when constructing this class from a project middleware
+    factory before the first gated request. The first store for a Config owns the
+    cached core; later values do not replace it.
     """
 
-    def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
-        """Store the next handler in the Django middleware chain."""
+    def __init__(
+        self,
+        get_response: Callable[[HttpRequest], HttpResponse],
+        *,
+        replay_store: Store | None = None,
+    ) -> None:
+        """Store the next handler and its optional durable replay store."""
         self._get_response = get_response
+        self._replay_store = replay_store
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         """Gate the request when it declares a gate, else pass it through."""
@@ -211,7 +225,7 @@ class PaymentMiddleware:
         if gate_ref is None:
             return self._passthrough(request)
 
-        core = PayCore.for_config(_config())
+        core = PayCore.for_config(_config(), replay_store=self._replay_store)
         try:
             payment = _run(core.process(gate_ref, _request_pricing(request), request))
         except PayKitError as exc:

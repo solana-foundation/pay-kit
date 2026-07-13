@@ -47,6 +47,7 @@ from solana_pay_kit.payment import Payment
 from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
 
 if TYPE_CHECKING:
+    from solana_pay_kit._paycore.store import Store
     from solana_pay_kit.config import Config, PayConfig
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
@@ -182,18 +183,22 @@ def RequirePayment(  # noqa: N802 - factory reads as a dependency constructor
     *,
     pricing: Pricing | None = None,
     config: Config | None = None,
+    replay_store: Store | None = None,
 ) -> Callable[..., Any]:
     """Build a FastAPI dependency that gates a route behind ``gate_ref``.
 
     The returned coroutine resolves and verifies payment on every request.
     Pass ``config`` to gate against a specific :class:`~solana_pay_kit.config.Config`;
     otherwise the process-wide configured instance is used lazily at request
-    time. On success the verified :class:`Payment` is returned (so the handler
-    can ``Depends`` on it) and stashed on ``request.state`` for the trio.
+    time. Pass ``replay_store`` to supply durable replay state before the first
+    gated request. Cores are cached per Config, so that first store owns the
+    core; later values do not replace it. On success the verified
+    :class:`Payment` is returned (so the handler can ``Depends`` on it) and
+    stashed on ``request.state`` for the trio.
     """
 
     async def dependency(request: Request) -> Payment:
-        core = PayCore.for_config(config if config is not None else _config())
+        core = PayCore.for_config(config if config is not None else _config(), replay_store=replay_store)
         try:
             payment = await core.process(gate_ref, pricing, request)
         except PaymentRequiredError as exc:
@@ -324,6 +329,7 @@ def install_paywall_from_config(
     paywall: PaywallConfig,
     *,
     cors_origins: Sequence[str] | None = ("*",),
+    replay_store: Store | None = None,
 ) -> None:
     """Install a Django/DRF-style paywall over an existing FastAPI app.
 
@@ -331,6 +337,8 @@ def install_paywall_from_config(
     request, then applies the route metadata from :func:`pay_required`,
     :func:`pay_not_required`, route tags, and the configured default policy.
     This avoids duplicating endpoint paths in a separate payment allowlist.
+    Pass ``replay_store`` before the first gated request. The per-Config core
+    retains that first store for its lifetime; later values do not replace it.
     """
     if paywall.default_policy not in ("public", "paid"):
         raise ValueError("solana_pay_kit.fastapi: default_policy must be 'public' or 'paid'")
@@ -355,7 +363,7 @@ def install_paywall_from_config(
             )
         pricing = requirement.pricing if requirement.pricing is not None else paywall.pricing
         config = requirement.config if requirement.config is not None else paywall.config
-        core = PayCore.for_config(config if config is not None else _config())
+        core = PayCore.for_config(config if config is not None else _config(), replay_store=replay_store)
 
         try:
             verified = await core.process(gate_ref, pricing, request)
@@ -396,11 +404,14 @@ def install_paywall(
     paid_tags: tuple[str, ...] = ("paid", "pay"),
     public_tags: tuple[str, ...] = ("public", "free"),
     cors_origins: Sequence[str] | None = ("*",),
+    replay_store: Store | None = None,
 ) -> None:
     """Install a route-metadata paywall from app-level Pay settings.
 
     ``config`` may be a :class:`~solana_pay_kit.config.PayConfig` or a plain
     mapping loaded from TOML/YAML/env. Disabled configs are a no-op.
+    ``replay_store`` is forwarded to the first per-Config core construction;
+    later values do not replace that cached core's store.
     """
     from solana_pay_kit.config import PayConfig as _PayConfig
 
@@ -418,6 +429,7 @@ def install_paywall(
             public_tags=public_tags,
         ),
         cors_origins=cors_origins,
+        replay_store=replay_store,
     )
 
 
