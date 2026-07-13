@@ -63,6 +63,11 @@ export interface ChannelState {
     /** Next server-side metered delivery sequence. */
     readonly nextDeliverySequence: bigint;
     /**
+     * Confirmed signature of a server-broadcast open transaction. Replays use
+     * this instead of trusting the client payload's pre-signing placeholder.
+     */
+    readonly openSignature?: string | undefined;
+    /**
      * Slot the channel was opened at (a channel PDA seed). Needed to
      * re-derive the PDA and to gate reclaim (`slot > openSlot + 1500`).
      * `undefined` for pull sessions and bare push opens that never carried it.
@@ -72,10 +77,24 @@ export interface ChannelState {
     readonly operator?: string | undefined;
     /** Deliveries reserved but not yet committed. */
     readonly pendingDeliveries: readonly PendingDelivery[];
+    /** Authoritative channel PDA salt read from on-chain state. */
+    readonly salt?: bigint | undefined;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
-    /** On-chain settle_and_seal transaction signature (base58), once submitted. */
+    /** Confirmed on-chain settle_and_seal transaction signature (base58). */
     readonly settledSignature?: string | undefined;
+    /** Unix milliseconds when the current signature-less settlement claim expires. */
+    readonly settlementClaimExpiresAt?: bigint | undefined;
+    /** Opaque owner token for the current settlement claim. */
+    readonly settlementClaimOwner?: string | undefined;
+    /** Last valid block height of the signed settlement outbox transaction. */
+    readonly settlementPendingLastValidBlockHeight?: bigint | undefined;
+    /** Broadcast settlement awaiting a definite confirmed/failed outcome. */
+    readonly settlementPendingSignature?: string | undefined;
+    /** Exact signed base64 transaction paired with `settlementPendingSignature`. */
+    readonly settlementPendingWire?: string | undefined;
+    /** True while one server instance owns the on-chain settlement broadcast. */
+    readonly settling?: boolean | undefined;
     /**
      * Top-up transaction signatures already applied to this channel.
      * Kept in the channel record so replay rejection and the deposit increase
@@ -179,7 +198,6 @@ export function createMemorySessionStore(): SessionStore {
             data.delete(channelId);
             return Promise.resolve();
         },
-
         getChannel(channelId) {
             return Promise.resolve(data.get(channelId));
         },
@@ -214,6 +232,7 @@ export function createMemorySessionStore(): SessionStore {
         },
 
         sessionStoreDurability: 'ephemeral' as const,
+
 
         async updateChannel(channelId, mutator) {
             return await withLock(channelId, async () => {

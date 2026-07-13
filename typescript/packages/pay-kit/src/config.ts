@@ -34,8 +34,8 @@ export type MppOptions = {
     readonly html?: boolean;
     readonly realm?: string;
     /**
-     * Storage for MPP session channels. Provide a durable, shared store in
-     * production because it records voucher and delivery state.
+     * Shared store for MPP session channel state. Required for session gates
+     * outside localnet; localnet may use the adapter's ephemeral memory store.
      */
     readonly sessionStore?: SessionStore;
 };
