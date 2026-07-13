@@ -24,6 +24,7 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from typing import Any
 
 from solana_pay_kit._paycore.errors import PaymentError
@@ -35,6 +36,7 @@ __all__ = [
     "ChannelState",
     "ListChannelsFilter",
     "ChannelMutator",
+    "SessionStoreDurability",
     "ChannelStore",
     "ProductionChannelStore",
     "is_production_channel_store",
@@ -45,6 +47,23 @@ __all__ = [
 # The same opt-in the replay-store policy honors: one explicit development
 # escape hatch for every process-local store, never valid on mainnet.
 _ALLOW_INMEMORY_CHANNEL_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
+
+
+class SessionStoreDurability(StrEnum):
+    """Explicit safety capability for session-channel state stores."""
+
+    EPHEMERAL = "ephemeral"
+    DURABLE_SHARED = "durable-shared"
+
+
+def session_store_safety_message(store: ChannelStore) -> str:
+    """Return the production-safety error for an unsafe store capability."""
+    if store.session_store_durability == SessionStoreDurability.EPHEMERAL:
+        return "ephemeral session store is unsafe off localnet; inject a durable shared ChannelStore"
+    return (
+        "session store must explicitly declare durable shared capability off localnet; "
+        "inject a durable shared ChannelStore"
+    )
 
 
 @dataclass
@@ -152,6 +171,13 @@ class ChannelState:
     # distribution. Zero when unknown (e.g. pull sessions or trusted opens).
     open_slot: int = 0
 
+    # Authoritative channel PDA salt read from on-chain state.
+    salt: int = 0
+
+    # Confirmed signature of a server-broadcast open. Retries reuse it rather
+    # than confirming a newly signed transaction that was never broadcast.
+    open_signature: str | None = None
+
     # HighestVoucherSignature is the signature of the highest accepted voucher
     # (base58). Stored for idempotent replay detection.
     highest_voucher_signature: str | None = None
@@ -232,6 +258,7 @@ class ChannelState:
             "cumulative": self.cumulative,
             "sealed": self.sealed,
             "open_slot": self.open_slot,
+            "salt": self.salt,
             "highest_voucher_signature": self.highest_voucher_signature,
             "highest_voucher_expires_at": self.highest_voucher_expires_at,
             "close_requested_at": self.close_requested_at,
@@ -249,6 +276,8 @@ class ChannelState:
         # before the top-up replay fence stay byte-identical across SDKs.
         if self.consumed_top_up_signatures:
             d["consumed_top_up_signatures"] = list(self.consumed_top_up_signatures)
+        if self.open_signature is not None:
+            d["open_signature"] = self.open_signature
         return d
 
     @classmethod
@@ -270,6 +299,8 @@ class ChannelState:
             cumulative=int(data.get("cumulative", 0)),
             sealed=bool(data.get("sealed", False)),
             open_slot=int(data.get("open_slot", 0)),
+            salt=int(data.get("salt", 0)),
+            open_signature=data.get("open_signature"),
             highest_voucher_signature=data.get("highest_voucher_signature"),
             highest_voucher_expires_at=(
                 None if data.get("highest_voucher_expires_at") is None else int(data["highest_voucher_expires_at"])
@@ -319,6 +350,10 @@ class ChannelStore:
     Defined as an abstract base so pyright can check structural conformance of
     implementations.
     """
+
+    # Custom stores must opt in to durable shared behavior. An omitted marker
+    # is treated as unsafe outside localnet.
+    session_store_durability: SessionStoreDurability | None = None
 
     async def get_channel(self, channel_id: str) -> ChannelState | None:
         """Read a channel. Returns None when it does not exist."""
@@ -441,6 +476,8 @@ class MemoryChannelStore(ChannelStore):
     while calls for different ids run concurrently. Values are cloned on the way
     in and out so callers never share memory with the store.
     """
+
+    session_store_durability = SessionStoreDurability.EPHEMERAL
 
     def __init__(self) -> None:
         # _data maps channel id to stored state.
