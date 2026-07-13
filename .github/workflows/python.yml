@@ -91,7 +91,7 @@ jobs:
       - name: Checkout payment channels program
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          repository: Moonsong-Labs/solana-payment-channels
+          repository: solana-foundation/payment-channels
           ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
           path: _payment-channels
           fetch-depth: 1
@@ -177,18 +177,10 @@ jobs:
         run: |
           pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
           node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
-      - name: Focused Python session fault-injection (missing-ATA, known-red)
+      - name: Focused Python session fault-injection (missing-ATA)
         working-directory: harness
-        # RED-EXPECTED, non-blocking. Pins the missing-ATA-creation finding: the
-        # SDK session close builds [ed25519, settle, distribute] and, unlike the
-        # x402-upto settle path, omits the idempotent payee-ATA creation. A close
-        # to a recipient with no ATA returns 200 + settledSignature yet delivers
-        # nothing on-chain (recipient stays 0, no ATA created). Gated behind
-        # MPP_HARNESS_SESSION_RED_FAULTS so it never contaminates the green
-        # must-pass leg above; continue-on-error surfaces it as a non-blocking red
-        # annotation until the session close creates the payee ATA or rejects
-        # clearly.
-        continue-on-error: true
+        # This regression is blocking: a successful response must never hide a
+        # settlement that delivered no funds because the recipient ATA was absent.
         env:
           MPP_HARNESS_INTENTS: session
           MPP_HARNESS_SCENARIOS: session-basic

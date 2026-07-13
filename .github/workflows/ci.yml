@@ -52,6 +52,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          # The PR216 delivery ledger verifies an authoritative historical
+          # commit range and must not silently degrade under a shallow clone.
+          fetch-depth: 0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
@@ -75,6 +79,18 @@ jobs:
       - name: Repo hygiene guard self-test
         working-directory: .
         run: bash scripts/check-repo-hygiene_test.sh
+      - name: Payment-channels revision guard
+        working-directory: .
+        run: bash scripts/check-payment-channels-revision.sh
+      - name: Payment-channels revision guard self-test
+        working-directory: .
+        run: bash scripts/check-payment-channels-revision_test.sh
+      - name: PR216 delivery ledger gate
+        working-directory: .
+        run: node scripts/validate-pr216-ledger.mjs
+      - name: PR216 delivery ledger gate self-test
+        working-directory: .
+        run: node scripts/validate-pr216-ledger_test.mjs
       # Exercise the publish-workflow least-privilege / release-gating guard on
       # every PR, not only on a publish dispatch: the guard's "real workflows
       # pass, reverted fixtures fail" proof otherwise ran only on a developer's
@@ -216,9 +232,9 @@ jobs:
       - name: Verify committed gen files are up to date
         working-directory: .
         run: |
-          if ! git diff --quiet -- rust/crates/kit/src/mpp/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/; then
+          if ! git diff --quiet -- rust/crates/kit/src/mpp/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/solana_pay_kit/protocols/mpp/server/html/; then
             echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
-            git diff --stat -- rust/crates/kit/src/mpp/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/
+            git diff --stat -- rust/crates/kit/src/mpp/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/solana_pay_kit/protocols/mpp/server/html/
             exit 1
           fi
       - name: Upload HTML build artifacts
@@ -230,7 +246,7 @@ jobs:
             rust/crates/kit/src/mpp/server/html/
             go/protocols/mpp/server/html/
             lua/pay_kit/protocols/mpp/server/html_assets/
-            python/src/pay_kit/protocols/mpp/server/html/
+            python/src/solana_pay_kit/protocols/mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
 
   # Codama regen-diff gate: re-render every payment-channels client (Rust,
@@ -329,48 +345,11 @@ jobs:
 
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
-        run: |
-          python3 - <<'PY'
-          import json, sys
-          with open('coverage.json') as f:
-              files = json.load(f)['data'][0]['files']
-          # Both surfaces are gated at 90% on LINE and REGION (region is llvm-cov's
-          # branch-like metric). Enforced both in AGGREGATE and PER-FILE, so a weak
-          # file cannot hide behind inflated easy ones and no branch class can
-          # silently regress.
-          FLOOR = 90.0
-          is_x402 = lambda n: '/src/x402/' in n
-          def rate(f, m):
-              M = f['summary'][m]
-              return 100.0 * M['covered'] / M['count'] if M['count'] else 100.0
-          def agg(pred, m):
-              tot = cov = 0
-              for f in files:
-                  if pred(f['filename']):
-                      M = f['summary'][m]; tot += M['count']; cov += M['covered']
-              return 100.0 * cov / tot if tot else 100.0
-          fails = []
-          for label, pred in [('mpp', lambda n: not is_x402(n)), ('x402', is_x402)]:
-              for metric in ('lines', 'regions'):
-                  v = agg(pred, metric)
-                  print(f"{label} {metric}: {v:.2f}% (floor {FLOOR})")
-                  if v < FLOOR:
-                      fails.append(f"{label} aggregate {metric} {v:.2f}% < {FLOOR}")
-          for f in files:
-              n = f['filename']
-              if '/src/' not in n:
-                  continue
-              for metric in ('lines', 'regions'):
-                  v = rate(f, metric)
-                  if v < FLOOR:
-                      fails.append(f"per-file {metric} {v:.1f}% < {FLOOR}: {n.split('/src/')[-1]}")
-          if fails:
-              print("COVERAGE GATE FAILURES:")
-              for x in fails:
-                  print("  " + x)
-              sys.exit(1)
-          print("coverage gate passed (line + region >= 90, aggregate + per-file)")
-          PY
+        run: python3 ../scripts/check-rust-coverage.py coverage.json 90 crates/kit/src
+
+      - name: Test Rust coverage gate fails closed
+        working-directory: .
+        run: python3 scripts/check-rust-coverage_test.py
 
       - name: Rust format check
         working-directory: rust
@@ -700,14 +679,46 @@ jobs:
             test/adapter-identity.test.ts \
             test/x402-amount-base-units.test.ts \
             test/x402-v1-exact.test.ts \
+            test/x402-exact-managed-signer.test.ts \
             test/x402-upto-verify-open.test.ts \
             test/x402-upto-over-ceiling.test.ts \
+            test/mode-support.test.ts \
             test/value-binding-verify.test.ts \
             test/boot-policy.test.ts \
             test/process.test.ts \
             test/flow-conformance.test.ts \
             test/ci-coverage-gate.test.ts \
-            test/matrix-coverage-gate.test.ts
+            test/matrix-coverage-gate.test.ts \
+            --reporter=default --reporter=json --outputFile=vitest-unit-report.json
+          node scripts/assert-run-count.mjs --report vitest-unit-report.json --all --min 100
+      - name: Run x402 exact matrix semantics against the TypeScript reference adapters
+        working-directory: harness
+        env:
+          X402_HARNESS_MATRIX: "1"
+          X402_HARNESS_RPC_URL: http://127.0.0.1:8899
+          X402_HARNESS_MINT: So11111111111111111111111111111111111111112
+          X402_HARNESS_PAY_TO: 11111111111111111111111111111111
+          X402_HARNESS_CLIENT_SECRET_KEY: "[0]"
+          X402_HARNESS_FACILITATOR_SECRET_KEY: "[0]"
+          X402_HARNESS_CLIENTS: ts-x402
+          X402_HARNESS_SERVERS: ts-x402
+        run: |
+          pnpm exec vitest run test/x402-exact.e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-x402-exact-report.json
+          node scripts/assert-run-count.mjs --report vitest-x402-exact-report.json --all --min 2
+      - name: Run x402 cross-server semantics against the TypeScript reference adapters
+        working-directory: harness
+        env:
+          X402_HARNESS_CROSS_SERVER: "1"
+          X402_HARNESS_RPC_URL: http://127.0.0.1:8899
+          X402_HARNESS_MINT: So11111111111111111111111111111111111111112
+          X402_HARNESS_PAY_TO: 11111111111111111111111111111111
+          X402_HARNESS_CLIENT_SECRET_KEY: "[0]"
+          X402_HARNESS_FACILITATOR_SECRET_KEY: "[0]"
+          X402_HARNESS_CLIENTS: ts-x402
+          X402_HARNESS_SERVERS: ts-x402
+        run: |
+          pnpm exec vitest run test/cross-server-scenarios.test.ts --reporter=default --reporter=json --outputFile=vitest-x402-cross-server-report.json
+          node scripts/assert-run-count.mjs --report vitest-x402-cross-server-report.json --all --exact 2
       # value-binding-verify drives the real @solana/mpp session verifier with
       # adversarial on-chain-binding vectors (unrelated-sig + inflated deposit +
       # recipients-vs-splits) — the integration radar for the fabricated-deposit
