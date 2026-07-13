@@ -10,7 +10,7 @@ from typing import Literal
 
 import pytest
 
-from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store, is_production_replay_store
 
 
 @pytest.mark.parametrize("store_kind", ["memory", "file"])
@@ -44,6 +44,14 @@ def test_put_if_absent_is_atomic_across_event_loops(tmp_path: Path, store_kind: 
     assert errors.empty(), [repr(errors.get_nowait()) for _ in range(errors.qsize())]
     assert sorted(results.get_nowait() for _ in range(2)) == [False, True]
     assert asyncio.run(store.get("credential")) is True
+
+
+def test_production_replay_store_contract_rejects_mutable_capability_flags():
+    store = MemoryStore()
+    for capability in ("is_atomic", "is_shared", "is_durable"):
+        setattr(store, capability, True)
+
+    assert not is_production_replay_store(store)
 
 
 class TestMemoryStore:

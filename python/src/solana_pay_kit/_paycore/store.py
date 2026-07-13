@@ -8,9 +8,14 @@ Two implementations ship with the SDK:
 
 * :class:`MemoryStore` is fast and process-local. Suitable for tests and
   single-instance deployments where a restart is acceptable.
-* :class:`FileReplayStore` is a JSON file under a configurable path. Survives
-  process restarts. Mirrors the Ruby ``Mpp::Store::FileStore`` shape so
-  cross-language deployments stay swap-compatible.
+* :class:`FileReplayStore` is a JSON file under a configurable path for local,
+  single-host development. It survives process restarts, but does not provide
+  an interprocess replay fence and is not a production replay store.
+
+Production deployments must provide an explicit :class:`ProductionReplayStore`
+implementation. That nominal contract is reserved for backends whose
+``put_if_absent`` operation is atomic across all writers, shared by all
+replicas, and durably committed before it reports success.
 
 The :class:`Mpp` constructor requires the caller to pass a store explicitly.
 There is no silent default. A missing store is a server misconfiguration that
@@ -26,6 +31,7 @@ import json
 import os
 import tempfile
 import threading
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -38,6 +44,33 @@ class Store(Protocol):
     async def put(self, key: str, value: Any) -> None: ...
     async def delete(self, key: str) -> None: ...
     async def put_if_absent(self, key: str, value: Any) -> bool: ...
+
+
+class ProductionReplayStore(ABC):
+    """Nominal contract for an external production replay-store backend.
+
+    Subclass this only when every read-modify-write operation is coordinated
+    across processes and replicas, ``put_if_absent`` is atomic, and successful
+    writes are durable. This is intentionally a nominal contract rather than
+    mutable ``is_atomic``/``is_shared``/``is_durable`` instance flags.
+    """
+
+    @abstractmethod
+    async def get(self, key: str) -> Any | None: ...
+
+    @abstractmethod
+    async def put(self, key: str, value: Any) -> None: ...
+
+    @abstractmethod
+    async def delete(self, key: str) -> None: ...
+
+    @abstractmethod
+    async def put_if_absent(self, key: str, value: Any) -> bool: ...
+
+
+def is_production_replay_store(store: Store) -> bool:
+    """Return whether ``store`` explicitly implements the production contract."""
+    return isinstance(store, ProductionReplayStore)
 
 
 class MemoryStore:
@@ -86,9 +119,10 @@ class MemoryStore:
 class FileReplayStore:
     """File-backed replay store.
 
-    Persists the consumed-signature set to a JSON file under ``path``. Survives
-    process restarts so a credential cannot replay across a server bounce.
-    Mirrors :class:`Mpp::Store::FileStore` in the Ruby SDK.
+    Persists the consumed-signature set to a JSON file under ``path`` for a
+    single local process. It survives process restarts, but separate instances
+    cache stale data and only coordinate with their own local lock. It is never
+    safe as a replay fence outside localnet.
 
     The on-disk layout is a single JSON object ``{"<key>": <value>}``. Writes
     are write-temp-then-rename so a crash mid-write cannot leave a torn file.

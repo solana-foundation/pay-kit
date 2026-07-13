@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from solana_pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
+from solana_pay_kit import Gate, MppConfig, Operator, Price, Protocol, Signer, Stablecoin, configure
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore
 from solana_pay_kit.config import reset
@@ -33,6 +33,8 @@ def _clean(monkeypatch):
 
 def _cfg(**kw):
     kw.setdefault("network", "solana_localnet")
+    if kw["network"] == "solana_mainnet":
+        kw.setdefault("operator", Operator(signer=Signer.generate()))
     kw.setdefault("preflight", False)
     kw.setdefault("accept", (Protocol.MPP,))
     kw.setdefault("mpp", MppConfig(challenge_binding_secret=SECRET))
@@ -110,11 +112,29 @@ def test_localnet_allows_default_and_explicit_memory_replay_stores():
     assert MppAdapter(cfg, replay_store=explicit_store)._replay_store is explicit_store
 
 
-def test_durable_replay_store_is_allowed_outside_localnet(monkeypatch, tmp_path):
-    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+@pytest.mark.parametrize("network", ["solana_devnet", "solana_mainnet"])
+def test_file_replay_store_is_rejected_outside_localnet(monkeypatch, tmp_path, network):
+    if network == "solana_devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
     replay_store = FileReplayStore(tmp_path / "replay.json")
 
-    assert MppAdapter(_cfg(network="solana_devnet"), replay_store=replay_store)._replay_store is replay_store
+    with pytest.raises(PaymentError, match="FileReplayStore.*localnet"):
+        MppAdapter(_cfg(network=network), replay_store=replay_store)
+
+
+def test_mainnet_forbids_inmemory_replay_store_opt_in(monkeypatch):
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="forbidden on mainnet"):
+        MppAdapter(_cfg(network="solana_mainnet"), replay_store=MemoryStore())
+
+
+def test_localnet_allows_explicit_file_replay_store(tmp_path):
+    replay_store = FileReplayStore(tmp_path / "replay.json")
+
+    assert MppAdapter(_cfg(), replay_store=replay_store)._replay_store is replay_store
 
 
 def test_accepts_entry_includes_splits_when_fees():

@@ -21,7 +21,7 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-from solana_pay_kit import Gate, Price, Protocol, Stablecoin, configure
+from solana_pay_kit import Gate, Operator, Price, Protocol, Signer, Stablecoin, configure
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from solana_pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
 from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore
@@ -593,6 +593,12 @@ def _gate(cfg, *, accept=(Protocol.X402, Protocol.MPP)):
     )
 
 
+def _adapter_config(network: str):
+    if network == "solana_mainnet":
+        return configure(network=network, preflight=False, operator=Operator(signer=Signer.generate()))
+    return configure(network=network, preflight=False)
+
+
 def test_adapter_accepts_entry_shape():
     cfg = configure(network="solana_localnet", preflight=False)
     adapter = X402Adapter(cfg)
@@ -629,10 +635,30 @@ def test_adapter_localnet_allows_default_and_explicit_memory_replay_stores():
     assert X402Adapter(cfg, replay_store=store)._store is store
 
 
-def test_adapter_durable_replay_store_is_allowed_outside_localnet(monkeypatch, tmp_path):
-    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+@pytest.mark.parametrize("network", ["solana_devnet", "solana_mainnet"])
+def test_adapter_rejects_file_replay_store_outside_localnet(monkeypatch, tmp_path, network):
+    if network == "solana_devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
     store = FileReplayStore(tmp_path / "replay.json")
-    cfg = configure(network="solana_devnet", preflight=False)
+    cfg = _adapter_config(network)
+
+    with pytest.raises(ConfigurationError, match="FileReplayStore.*localnet"):
+        X402Adapter(cfg, replay_store=store)
+
+
+def test_adapter_forbids_inmemory_replay_store_opt_in_on_mainnet(monkeypatch):
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    cfg = _adapter_config("solana_mainnet")
+
+    with pytest.raises(ConfigurationError, match="forbidden on mainnet"):
+        X402Adapter(cfg, replay_store=MemoryStore())
+
+
+def test_adapter_localnet_allows_explicit_file_replay_store(tmp_path):
+    store = FileReplayStore(tmp_path / "replay.json")
+    cfg = configure(network="solana_localnet", preflight=False)
 
     assert X402Adapter(cfg, replay_store=store)._store is store
 

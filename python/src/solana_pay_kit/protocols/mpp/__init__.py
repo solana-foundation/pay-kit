@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from solana_pay_kit._paycore.errors import PaymentError, canonical_code
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.store import MemoryStore, Store
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store, is_production_replay_store
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.mpp.core.headers import format_receipt, format_www_authenticate, parse_authorization
@@ -87,6 +87,60 @@ _BASE_UNIT_SCALE = 1_000_000
 
 _DEFAULT_MPP_SECRET_ENV = "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET"
 _ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
+
+
+def _resolve_replay_store(config: Config, replay_store: Store | None) -> Store:
+    """Resolve MPP replay storage without weakening the non-localnet fence."""
+    network = config.network.mints_label()
+    is_localnet = network == "localnet"
+    is_mainnet = network == "mainnet"
+    allow_inmemory = os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
+
+    if is_mainnet and allow_inmemory:
+        raise PaymentError(
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 is forbidden on mainnet; "
+            "inject a ProductionReplayStore backed by atomic, shared, durable storage",
+            code="invalid-config",
+        )
+    if replay_store is not None:
+        if is_localnet:
+            return replay_store
+        if isinstance(replay_store, FileReplayStore):
+            raise PaymentError(
+                "FileReplayStore is limited to single-host localnet development; "
+                "inject a ProductionReplayStore backed by atomic, shared, durable storage",
+                code="invalid-config",
+            )
+        if is_production_replay_store(replay_store):
+            return replay_store
+        if isinstance(replay_store, MemoryStore) and allow_inmemory:
+            logger.warning(
+                "solana_pay_kit: MPP is using a process-local MemoryStore on devnet because %s=1; "
+                "replay protection will not survive restarts or span replicas",
+                _ALLOW_INMEMORY_REPLAY_STORE_ENV,
+            )
+            return replay_store
+        raise PaymentError(
+            "MPP requires a ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+            "shared, and durable. Set "
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development.",
+            code="invalid-config",
+        )
+    if is_localnet:
+        return MemoryStore()
+    if allow_inmemory:
+        logger.warning(
+            "solana_pay_kit: MPP is using a process-local MemoryStore on devnet because %s=1; "
+            "replay protection will not survive restarts or span replicas",
+            _ALLOW_INMEMORY_REPLAY_STORE_ENV,
+        )
+        return MemoryStore()
+    raise PaymentError(
+        "MPP requires an injected ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+        "shared, and durable. Set "
+        f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development.",
+        code="invalid-config",
+    )
 
 
 class SecretResolver:
@@ -184,16 +238,7 @@ class MppAdapter:
         recent_blockhash_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._config = config
-        uses_memory_store = replay_store is None or isinstance(replay_store, MemoryStore)
-        is_localnet = config.network.mints_label() == "localnet"
-        if uses_memory_store and not is_localnet and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) != "1":
-            raise PaymentError(
-                "a durable replay_store is required outside localnet; set "
-                f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 to explicitly allow a process-local "
-                "MemoryStore for development",
-                code="invalid-config",
-            )
-        self._replay_store = replay_store if replay_store is not None else MemoryStore()
+        self._replay_store = _resolve_replay_store(config, replay_store)
         self._recent_blockhash_provider = recent_blockhash_provider
         # Cache one solana_pay_kit.protocols.mpp.Mpp per (payTo|coin) key, like the PHP
         # handlerCache, so the HMAC secret and RPC client are reused.
