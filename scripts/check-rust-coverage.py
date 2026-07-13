@@ -12,22 +12,18 @@ from typing import Any
 
 METRICS = ("lines", "regions")
 AGGREGATE_FLOOR = 90.0
-PER_FILE_FLOOR = 75.0
+PER_FILE_FLOOR = 90.0
 KIT_SOURCE_MARKER = "crates/kit/src/"
 ROOT = Path(__file__).resolve().parent.parent
 KIT_SOURCE_ROOT = ROOT / "rust" / "crates" / "kit" / "src"
 
-# These legacy modules remain outside the deterministic unit-coverage baseline.
-# Each entry is deliberately explicit: a new low-coverage file must be added
-# here with a reason instead of inheriting an exemption. Exempt files are left
-# out of both the per-file gate and the non-exempt aggregate.
-FILE_EXEMPTIONS = {
-    "mpp/server/subscription.rs": "subscription runtime adapters require optional service integrations",
-    "x402/client/batch_settlement/payment.rs": "batch client construction depends on live settlement integration paths",
-    "x402/client/upto/payment.rs": "upto client construction is exercised by the cross-SDK on-chain harness",
-    "x402/error.rs": "feature-gated error display variants are not all constructed by the deterministic unit run",
-    "x402/server/batch_settlement.rs": "batch server orchestration requires service-backed settlement fixtures",
-}
+# No runtime source file is exempt: every mpp + x402 source file that emits
+# coverage counters is held to the same aggregate AND per-file floor. This
+# mirrors the original inline gate on origin/split/pr216-ci-harness-mega, which
+# gated every `/src/` file present in the llvm-cov report at the same floor.
+# The facility is kept (empty) so any future exemption must be added here with
+# an explicit reason and fails closed via the checks below if it is stale.
+FILE_EXEMPTIONS: dict[str, str] = {}
 
 # `cargo llvm-cov` deliberately ignores `src/generated/`; keep every generated
 # file named rather than applying a prefix exemption so newly generated source

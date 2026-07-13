@@ -32,7 +32,6 @@ COVERED_SOURCE_FILES = [
 ]
 MPP_SOURCE = next(filename for filename in COVERED_SOURCE_FILES if not filename.startswith("x402/"))
 X402_SOURCE = next(filename for filename in COVERED_SOURCE_FILES if filename.startswith("x402/"))
-LEGACY_SOURCE = next(iter(CHECKER.FILE_EXEMPTIONS))
 
 
 def file_record(name: str, covered: int = 10, count: int = 10) -> dict[str, object]:
@@ -87,10 +86,10 @@ def main() -> None:
         "mpp non-exempt aggregate lines 80.00% < 90.0%",
     )
     check_case(
-        "below 75 percent per-file fails",
-        complete_report(overrides={MPP_SOURCE: (7, 10)}),
+        "below 90 percent per-file fails even when the aggregate is healthy",
+        complete_report(overrides={MPP_SOURCE: (8, 10)}),
         1,
-        f"per-file lines 70.0% < 75.0%: {MPP_SOURCE}",
+        f"per-file lines 80.0% < 90.0%: {MPP_SOURCE}",
     )
     incomplete = complete_report()
     incomplete["data"][0]["files"] = [
@@ -110,12 +109,6 @@ def main() -> None:
         complete_report(overrides={X402_SOURCE: (0, 0)}),
         1,
         f"lines coverage is invalid or empty for {X402_SOURCE}",
-    )
-    check_case(
-        "explicit legacy exemption is omitted from both floors",
-        complete_report(overrides={LEGACY_SOURCE: (1, 10_000)}),
-        0,
-        f"file exemption (omitted from aggregate and per-file floors): {LEGACY_SOURCE}",
     )
     check_case(
         "nested checkout path handling passes",

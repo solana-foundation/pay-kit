@@ -333,7 +333,7 @@ jobs:
 
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
-        run: python3 ../scripts/check-rust-coverage.py coverage.json --aggregate-floor 90 --per-file-floor 75
+        run: python3 ../scripts/check-rust-coverage.py coverage.json --aggregate-floor 90 --per-file-floor 90
 
       - name: Rust format check
         working-directory: rust
