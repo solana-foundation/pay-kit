@@ -1318,6 +1318,75 @@ async def test_server_open_recovery_rejects_different_verified_facts_before_broa
     assert persisted_outbox.open_slot == old_payload.recent_slot
 
 
+@pytest.mark.asyncio
+async def test_server_open_matching_recovery_claims_one_expired_outbox_lease() -> None:
+    """Matching recoveries rebroadcast the durable wire through one lease owner."""
+
+    class _FailThenBlockRecoveryRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_first_send = True
+            self.recovery_send_started = asyncio.Event()
+            self.release_recovery = asyncio.Event()
+
+        async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
+            self.sent.append(raw_tx)
+            signature = str(Transaction.from_bytes(raw_tx).signatures[0])
+            self.sent_signatures.append(signature)
+            if self.fail_first_send:
+                self.fail_first_send = False
+                raise OSError("simulated open send failure")
+            self.recovery_send_started.set()
+            await self.release_recovery.wait()
+            return _Resp(signature)
+
+    from solana_pay_kit.protocols.mpp.server.session_method import _open_outbox_key
+
+    operator = Keypair.from_seed(bytes([68] * 32))
+    rpc = _FailThenBlockRecoveryRpc()
+    store = MemoryChannelStore()
+    first_session = _session(rpc, operator, store=store, open_tx_submitter="server")
+    second_session = _session(rpc, operator, store=store, open_tx_submitter="server")
+    open_, original_payload = _server_open_payload(operator, salt=68)
+    channel_id = str(open_.channel_id)
+
+    with pytest.raises(OSError, match="simulated open send failure"):
+        await first_session._handle_open(original_payload)
+    persisted_wire = rpc.sent[0]
+    persisted_signature = rpc.sent_signatures[0]
+
+    def expire_outbox(state: ChannelState | None) -> ChannelState:
+        assert state is not None
+        expired = state.clone()
+        expired.close_requested_at = 0
+        return expired
+
+    outbox_key = _open_outbox_key(channel_id)
+    await store.update_channel(outbox_key, expire_outbox)
+
+    recovery_open, recovery_payload = _server_open_payload(operator, salt=68)
+    assert recovery_open.channel_id == open_.channel_id
+    competing_payload = copy.deepcopy(recovery_payload)
+    recovering = asyncio.create_task(first_session._handle_open(recovery_payload))
+    await rpc.recovery_send_started.wait()
+
+    with pytest.raises(PaymentError, match="already in progress") as excinfo:
+        await second_session._handle_open(competing_payload)
+    assert excinfo.value.retryable is True
+    assert rpc.sent == [persisted_wire, persisted_wire]
+
+    rpc.release_recovery.set()
+    assert await recovering == persisted_signature
+    assert len(rpc.sent) == 2
+    persisted_channel = await store.get_channel(channel_id)
+    assert persisted_channel is not None
+    assert persisted_channel.authorized_signer == original_payload.authorized_signer
+    assert persisted_channel.deposit == open_.deposit
+    assert persisted_channel.operator == original_payload.payer
+    assert persisted_channel.open_slot == original_payload.recent_slot
+    assert await store.get_channel(outbox_key) is None
+
+
 # --- S1: server-broadcast open replay does not re-broadcast -------------------
 
 
