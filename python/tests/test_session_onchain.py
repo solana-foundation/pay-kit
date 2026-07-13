@@ -667,7 +667,7 @@ def _base58_encode(data: bytes) -> str:
     return "1" * leading_zeros + (encoded or "1")
 
 
-def _confirmed_top_up_transaction(channel: Pubkey, amount: int) -> dict:
+def _top_up_instruction(channel: Pubkey, amount: int) -> dict[str, object]:
     instruction = build_top_up_instruction(
         TopUpParams(
             payer=_kp(20).pubkey(),
@@ -678,18 +678,16 @@ def _confirmed_top_up_transaction(channel: Pubkey, amount: int) -> dict:
         )
     )
     return {
+        "programId": str(instruction.program_id),
+        "accounts": [str(account.pubkey) for account in instruction.accounts],
+        "data": _base58_encode(bytes(instruction.data)),
+    }
+
+
+def _confirmed_top_up_transaction(channel: Pubkey, *amounts: int) -> dict:
+    return {
         "meta": {"err": None},
-        "transaction": {
-            "message": {
-                "instructions": [
-                    {
-                        "programId": str(instruction.program_id),
-                        "accounts": [str(account.pubkey) for account in instruction.accounts],
-                        "data": _base58_encode(bytes(instruction.data)),
-                    }
-                ]
-            }
-        },
+        "transaction": {"message": {"instructions": [_top_up_instruction(channel, amount) for amount in amounts]}},
     }
 
 
@@ -728,6 +726,21 @@ async def test_new_top_up_state_tx_verifier_confirms_signature() -> None:
     assert fake_rpc.get_transaction_kwargs == [
         {"commitment": "confirmed", "encoding": "jsonParsed", "max_supported_transaction_version": 0}
     ]
+
+
+async def test_new_top_up_state_tx_verifier_sums_matching_top_ups() -> None:
+    """Two +500_000 top-ups fund the claimed +1_000_000 deposit delta."""
+    signature = str(_kp(32).sign_message(b"split-top-up"))
+    channel = _kp(33).pubkey()
+    fake_rpc = _FakeRpc()
+    fake_rpc.transactions[signature] = _confirmed_top_up_transaction(channel, 500_000, 500_000)
+    verifier = new_top_up_state_tx_verifier(_TopUpConfig(), fake_rpc)
+    assert verifier is not None
+
+    await verifier(
+        TopUpPayload(channel_id=str(channel), new_deposit="2000000", signature=signature),
+        _top_up_state(channel),
+    )
 
 
 async def test_new_top_up_tx_verifier_accepts_newer_state_aware_constructor() -> None:
@@ -779,6 +792,36 @@ async def test_new_top_up_state_tx_verifier_rejects_delta_mismatch() -> None:
     payload = TopUpPayload(channel_id=str(channel), new_deposit="2000000", signature=signature)
     with pytest.raises(PaymentError, match="amount"):
         await verifier(payload, _top_up_state(channel))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("malformed", "invalid length"),
+        ("overflow", "overflows total"),
+    ],
+)
+async def test_new_top_up_state_tx_verifier_rejects_malformed_or_overflowing_top_ups(
+    mutation: str, message: str
+) -> None:
+    signature = str(_kp(34).sign_message(b"adversarial-top-up"))
+    channel = _kp(35).pubkey()
+    fake_rpc = _FakeRpc()
+    if mutation == "malformed":
+        transaction = _confirmed_top_up_transaction(channel, 1_000_000)
+        transaction["transaction"]["message"]["instructions"][0]["data"] = _base58_encode(b"\x03")
+        new_deposit = "2000000"
+        state = _top_up_state(channel)
+    else:
+        transaction = _confirmed_top_up_transaction(channel, (1 << 64) - 1, 1)
+        new_deposit = "1"
+        state = _top_up_state(channel, deposit=0)
+    fake_rpc.transactions[signature] = transaction
+    verifier = new_top_up_state_tx_verifier(_TopUpConfig(), fake_rpc)
+    assert verifier is not None
+
+    with pytest.raises(PaymentError, match=message):
+        await verifier(TopUpPayload(channel_id=str(channel), new_deposit=new_deposit, signature=signature), state)
 
 
 async def test_new_top_up_state_tx_verifier_surfaces_failure_and_not_found() -> None:

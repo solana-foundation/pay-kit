@@ -72,6 +72,7 @@ __all__ = [
 # form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
 _TOP_UP_INSTRUCTION_DISCRIMINATOR = 3
+_U64_MAX = (1 << 64) - 1
 _BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
@@ -577,8 +578,8 @@ def new_top_up_state_tx_verifier(
     A top-up payload contains only a signature and target total, so confirming
     that signature alone proves neither that it targeted this channel nor that
     it added the claimed delta. The verifier fetches the confirmed transaction,
-    locates exactly one Borsh-decoded ``topUp`` instruction for the configured
-    program, binds its channel account, and compares its amount to
+    sums every Borsh-decoded ``topUp`` instruction for the configured program
+    and channel, then compares that total to
     ``newDeposit - state.deposit``. ``SessionServer.process_top_up`` then
     rechecks that ``state.deposit`` is unchanged in its atomic mutator after
     this network await.
@@ -633,7 +634,7 @@ def _verify_confirmed_top_up(
     state: ChannelState,
     program_id: Pubkey,
 ) -> None:
-    """Bind a confirmed transaction's sole ``topUp`` to the session state."""
+    """Bind confirmed channel ``topUp`` instructions to the session state."""
     meta = transaction.get("meta")
     if not isinstance(meta, dict) or meta.get("err") is not None:
         raise PaymentError("top-up transaction failed on-chain", code="transaction-failed")
@@ -642,48 +643,61 @@ def _verify_confirmed_top_up(
     if not isinstance(instructions, list):
         raise PaymentError("confirmed top-up transaction has no instructions", code="invalid-payload")
 
-    top_up_instructions: list[dict[str, Any]] = []
+    if state.channel_id != payload.channel_id:
+        raise PaymentError("top-up payload channel does not match the session", code="invalid-payload")
+    try:
+        new_deposit = _parse_u64(payload.new_deposit, "newDeposit")
+    except ValueError as exc:
+        raise PaymentError(f"decode top-up instruction: {exc}", code="invalid-payload") from exc
+    if new_deposit <= state.deposit:
+        raise PaymentError("top-up newDeposit must exceed the stored deposit", code="invalid-payload")
+
+    top_up_count = 0
+    funded = 0
     for instruction in instructions:
         if not isinstance(instruction, dict) or instruction.get("programId") != str(program_id):
             continue
         data = instruction.get("data")
         if not isinstance(data, str):
-            continue
+            raise PaymentError("top-up instruction has invalid data", code="invalid-payload")
         try:
             decoded = _base58_decode(data)
-        except ValueError:
+        except ValueError as exc:
+            raise PaymentError(f"decode top-up instruction: {exc}", code="invalid-payload") from exc
+        if not decoded or decoded[0] != _TOP_UP_INSTRUCTION_DISCRIMINATOR:
             continue
-        if decoded and decoded[0] == _TOP_UP_INSTRUCTION_DISCRIMINATOR:
-            top_up_instructions.append(instruction)
+        if len(decoded) != 1 + 8:
+            raise PaymentError(
+                f"top-up instruction data has invalid length {len(decoded)}",
+                code="invalid-payload",
+            )
+        accounts = instruction.get("accounts")
+        if (
+            not isinstance(accounts, list)
+            or len(accounts) < 2
+            or not all(isinstance(account, str) for account in accounts)
+        ):
+            raise PaymentError("top-up instruction has invalid account layout", code="invalid-payload")
+        if accounts[1] != payload.channel_id:
+            continue
+        try:
+            decoded_args = TopUpArgs.from_decoded(TopUpArgs.layout.parse(decoded[1:]))
+        except Exception as exc:
+            raise PaymentError(f"decode top-up instruction: {exc}", code="invalid-payload") from exc
+        if decoded_args.amount > _U64_MAX - funded:
+            raise PaymentError("top-up instruction amount overflows total", code="invalid-payload")
+        funded += decoded_args.amount
+        top_up_count += 1
 
-    if len(top_up_instructions) != 1:
+    if top_up_count == 0:
         raise PaymentError(
-            "confirmed transaction must contain exactly one configured topUp instruction, "
-            f"found {len(top_up_instructions)}",
+            f"no configured topUp instruction found for channel {payload.channel_id}",
             code="invalid-payload",
         )
-
-    instruction = top_up_instructions[0]
-    accounts = instruction.get("accounts")
-    if not isinstance(accounts, list) or len(accounts) < 2 or not all(isinstance(account, str) for account in accounts):
-        raise PaymentError("top-up instruction has invalid account layout", code="invalid-payload")
-    if accounts[1] != payload.channel_id or state.channel_id != payload.channel_id:
-        raise PaymentError("top-up instruction channel does not match the session", code="invalid-payload")
-
-    try:
-        raw_data = _base58_decode(instruction["data"])
-        decoded_args = TopUpArgs.from_decoded(TopUpArgs.layout.parse(raw_data[1:]))
-        if TopUpArgs.layout.build(decoded_args.to_encodable()) != raw_data[1:]:
-            raise ValueError("top-up instruction has trailing or non-canonical Borsh data")
-        new_deposit = _parse_u64(payload.new_deposit, "newDeposit")
-    except Exception as exc:
-        raise PaymentError(f"decode top-up instruction: {exc}", code="invalid-payload") from exc
-
-    if new_deposit <= state.deposit:
-        raise PaymentError("top-up newDeposit must exceed the stored deposit", code="invalid-payload")
-    if decoded_args.amount != new_deposit - state.deposit:
+    expected_delta = new_deposit - state.deposit
+    if funded != expected_delta:
         raise PaymentError(
-            f"top-up amount {decoded_args.amount} != newDeposit delta {new_deposit - state.deposit}",
+            f"top-up amount {funded} != newDeposit delta {expected_delta}",
             code="invalid-payload",
         )
 
@@ -692,7 +706,7 @@ def _parse_u64(value: str, label: str) -> int:
     if not isinstance(value, str) or not (value.isascii() and value.isdigit()):
         raise ValueError(f"{label} must be an unsigned integer string")
     parsed = int(value, 10)
-    if parsed > (1 << 64) - 1:
+    if parsed > _U64_MAX:
         raise ValueError(f"{label} exceeds u64")
     return parsed
 
