@@ -63,6 +63,29 @@ async function loadFixedSigners() {
     ]);
 }
 
+async function buildTestOpen(payer: KeyPairSigner, payee: KeyPairSigner, authorizedSigner: KeyPairSigner) {
+    return await buildOpenPaymentChannelTransaction({
+        authorizedSigner: authorizedSigner.address,
+        deposit: 1_000_000n,
+        gracePeriod: 900,
+        programAddress: PAYMENT_CHANNELS_PROGRAM_ID,
+        request: {
+            cap: '1000000',
+            currency: USDC.mainnet!,
+            decimals: 6,
+            modes: ['pull'],
+            network: 'localnet',
+            operator: payer.address,
+            pullVoucherStrategy: 'clientVoucher',
+            recentBlockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+            recentSlot: '123456',
+            recipient: payee.address,
+        },
+        salt: 7n,
+        signer: payer,
+    });
+}
+
 // ── encodeVoucherMessageBytes parity check ─────────────────────────────────
 
 describe('encodeVoucherMessageBytes', () => {
@@ -448,7 +471,7 @@ describe('verifyOpenTx', () => {
 
     test('accepts a freshly built open transaction', async () => {
         const [payer, , payee, authorizedSigner] = await loadFixedSigners();
-        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        const open = await buildTestOpen(payer, payee, authorizedSigner);
         const result = await verifyOpenTx({
             expected: {
                 authorizedSigner: authorizedSigner.address,
@@ -512,6 +535,32 @@ describe('verifyOpenTx', () => {
                 },
             }),
         ).rejects.toThrow(/challenge-issued openSlot/);
+    });
+
+    test('rejects an open whose grace period differs from the configured session window', async () => {
+        const [payer, , payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+
+        await expect(
+            verifyOpenTx({
+                expected: {
+                    authorizedSigner: authorizedSigner.address,
+                    currency: USDC.mainnet!,
+                    gracePeriod: 600,
+                    maxCap: 5_000_000n,
+                    network: 'localnet',
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
+                    recipient: payee.address,
+                },
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    mode: 'pull',
+                    signature: '1'.repeat(88),
+                    transaction: open.transaction,
+                },
+            }),
+        ).rejects.toThrow(/gracePeriod 900 != expected 600/);
     });
 
     test('rejects an open transaction that uses address-lookup tables', async () => {
@@ -617,7 +666,7 @@ describe('verifyOpenTx', () => {
             getSignatureStatuses: (sigs: readonly Signature[]) => ({
                 send: async () => {
                     calls.push([...sigs]);
-                    return { value: [{ err: null }] };
+                    return { context: { slot: 42 }, value: [{ confirmationStatus: 'confirmed', err: null }] };
                 },
             }),
         };
@@ -689,6 +738,38 @@ describe('verifyOpenTx', () => {
     });
 });
 
+describe('verifyTopUpTransaction', () => {
+    test('resolves v0 instruction accounts from static and loaded addresses', async () => {
+        const [payer, , payee, authorizedSigner] = await loadFixedSigners();
+        const open = await buildTestOpen(payer, payee, authorizedSigner);
+        const transaction = reencodeV0TopUpWithLoadedChannel(open.transaction, open.channelId, 1_234n);
+        const configs: unknown[] = [];
+
+        await verifyTopUpTransaction({
+            amount: 1_234n,
+            channelId: open.channelId,
+            programId: PAYMENT_CHANNELS_PROGRAM_ID,
+            rpc: {
+                getTransaction: (_signature, config) => ({
+                    send: async () => {
+                        configs.push(config);
+                        return {
+                            meta: {
+                                err: null,
+                                loadedAddresses: { readonly: [], writable: [open.channelId] },
+                            },
+                            transaction: [transaction, 'base64'],
+                        } as const;
+                    },
+                }),
+            },
+            signature: 'top-up-signature' as Signature,
+        });
+
+        expect(configs).toEqual([{ commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 0 }]);
+    });
+});
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
 /** Extract the first (fee-payer) signature of a base64-encoded transaction. */
@@ -721,6 +802,59 @@ function injectAddressTableLookup(transactionBase64: string): string {
         ],
     };
     const messageBytes = new Uint8Array(getCompiledTransactionMessageEncoder().encode(withAlt as never));
+    const rebuilt = getTransactionEncoder().encode({ ...tx, messageBytes } as never);
+    return getBase64Codec().decode(new Uint8Array(rebuilt));
+}
+
+function reencodeV0TopUpWithLoadedChannel(transactionBase64: string, channelId: string, amount: bigint): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as never as {
+        instructions: readonly {
+            accountIndices?: readonly number[];
+            data?: Uint8Array;
+            programAddressIndex: number;
+        }[];
+        staticAccounts: readonly string[];
+    };
+    const openInstruction = message.instructions[0];
+    if (!openInstruction?.accountIndices) throw new Error('open fixture has no account indices');
+    const channelIndex = openInstruction.accountIndices[5];
+    if (channelIndex === undefined || message.staticAccounts[channelIndex] !== channelId) {
+        throw new Error('open fixture channel account was not found');
+    }
+
+    const staticAccounts = message.staticAccounts.filter(account => account !== channelId);
+    const remap = (index: number): number => {
+        const account = message.staticAccounts[index];
+        if (account === undefined) throw new Error(`missing fixture account at index ${index}`);
+        if (account === channelId) return staticAccounts.length;
+        const mapped = staticAccounts.indexOf(account);
+        if (mapped < 0) throw new Error(`fixture account ${account} was not remapped`);
+        return mapped;
+    };
+    const data = new Uint8Array(1 + 8);
+    data[0] = 3;
+    new DataView(data.buffer).setBigUint64(1, amount, true);
+    const messageBytes = getCompiledTransactionMessageEncoder().encode({
+        ...message,
+        addressTableLookups: [
+            {
+                lookupTableAddress: '11111111111111111111111111111111',
+                readonlyIndexes: [],
+                writableIndexes: [0],
+            },
+        ],
+        instructions: [
+            {
+                ...openInstruction,
+                accountIndices: [remap(openInstruction.accountIndices[0]!), remap(channelIndex)],
+                data,
+                programAddressIndex: remap(openInstruction.programAddressIndex),
+            },
+        ],
+        staticAccounts,
+        version: 0,
+    } as never);
     const rebuilt = getTransactionEncoder().encode({ ...tx, messageBytes } as never);
     return getBase64Codec().decode(new Uint8Array(rebuilt));
 }
