@@ -145,6 +145,12 @@ type CoveredProbe = {
   implementation: ImplementationDefinition;
   // Per-SDK env used to reach the MPP charge store-construction gate.
   mppEnv: Record<string, string>;
+  // Tracked SDK source dir git-grepped for the fail-closed guard marker. The
+  // probe is REQUIRED only once this dir references OPT_IN_ENV in-tree; until
+  // then it asserts-skip (the SDK's remediation lands in a sibling leaf). This
+  // mirrors #238's sdkImplementsGuard mechanism so both converge at integration
+  // with no divergence.
+  guardSourceDir: string;
 };
 
 function mppEnv(mint: string): Record<string, string> {
@@ -196,6 +202,7 @@ const coveredProbes: CoveredProbe[] = [
       "go-paykit",
     ),
     mppEnv: mppEnv("USDC"),
+    guardSourceDir: "go",
   },
   {
     id: "typescript",
@@ -216,6 +223,7 @@ const coveredProbes: CoveredProbe[] = [
       "typescript",
     ),
     mppEnv: mppEnv("USDC"),
+    guardSourceDir: "typescript/packages/pay-kit/src",
   },
   {
     id: "python",
@@ -244,8 +252,49 @@ const coveredProbes: CoveredProbe[] = [
     ),
     // Python MPP runs in pubkey mode: the literal mint pubkey is the currency.
     mppEnv: mppEnv(USDC_MINT),
+    guardSourceDir: "python",
   },
 ];
+
+// A covered probe is REQUIRED only when its SDK's guard marker is present in
+// THIS tree; otherwise it asserts-skip with a loud PENDING note. The go/ts/
+// python SDK remediations land in sibling leaves (#227/#238/#228), so in this
+// harness leaf they are correctly skipped until integration, where the same
+// git-grep sees the marker and auto-promotes them to required probes with no
+// edit here. Mirrors #238's sdkImplementsGuard/resolvedProbes exactly.
+//
+// Repo root (defined before the probe resolution so the module-eval-time
+// resolvedProbes map can git-grep SDK source without a temporal-dead-zone
+// error). Uses `git grep` so .gitignored build/vendor trees are excluded.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+function sdkImplementsGuard(sdkDir: string): boolean {
+  return sdkFilesReferencingOptIn(sdkDir).length > 0;
+}
+
+type ResolvedProbe = CoveredProbe & {
+  guardImplemented: boolean;
+  shouldRun: boolean;
+};
+
+const resolvedProbes: ResolvedProbe[] = coveredProbes.map((probe) => {
+  const guardImplemented = sdkImplementsGuard(probe.guardSourceDir);
+  return {
+    ...probe,
+    guardImplemented,
+    shouldRun: probe.available && guardImplemented,
+  };
+});
+
+for (const probe of resolvedProbes) {
+  if (!probe.guardImplemented) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[boot-policy] PENDING ${probe.id}: SDK source (${probe.guardSourceDir}) ` +
+        `does not reference ${OPT_IN_ENV} in this tree; the fail-closed probe ` +
+        `asserts-skip until the ${probe.id} remediation lands (auto-promotes at integration).`,
+    );
+  }
+}
 
 // SDKs whose server boot surface implements NO off-localnet fail-closed replay/
 // session-store guard at all in this tree, via either the shared
@@ -325,14 +374,14 @@ async function assertBootsWithOptIn(probe: CoveredProbe): Promise<void> {
 }
 
 describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () => {
-  for (const probe of coveredProbes) {
-    if (!probe.available) {
+  for (const probe of resolvedProbes) {
+    if (probe.guardImplemented && !probe.available) {
       // eslint-disable-next-line no-console
       console.warn(
         `[boot-policy] SKIP ${probe.id} fail-closed probe: ${probe.unavailableReason}`,
       );
     }
-    it.skipIf(!probe.available)(
+    it.skipIf(!probe.shouldRun)(
       `${probe.id}: fails closed at network=mainnet with no ${OPT_IN_ENV}`,
       async () => {
         await assertFailsClosed(probe);
@@ -342,8 +391,8 @@ describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () 
 });
 
 describe("boot-policy conformance: boots with the opt-in", () => {
-  for (const probe of coveredProbes) {
-    it.skipIf(!probe.available)(
+  for (const probe of resolvedProbes) {
+    it.skipIf(!probe.shouldRun)(
       `${probe.id}: boots to ready at network=mainnet with ${OPT_IN_ENV}=1`,
       async () => {
         await assertBootsWithOptIn(probe);
@@ -371,7 +420,6 @@ describe("boot-policy conformance: SDKs without the store fail-closed contract",
 // asserts fail-closed / opt-in boot, rather than lingering half-implemented and
 // silently skipped. Uses `git grep` so .gitignored build/vendor trees (target/,
 // vendor/, .build/) are excluded automatically.
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SDK_SOURCE_DIR: Record<string, string> = {
   rust: "rust",
   kotlin: "kotlin",
