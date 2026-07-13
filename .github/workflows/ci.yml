@@ -710,9 +710,12 @@ jobs:
       # value-binding-verify drives the real @solana/mpp session verifier with
       # adversarial on-chain-binding vectors (unrelated-sig + inflated deposit +
       # recipients-vs-splits) — the integration radar for the fabricated-deposit
-      # class. The Python replay-store boot-policy probe runs in the provisioned
-      # Python jobs in python.yml and harness.yml, where uv is required before
-      # the focused test starts. Keep this generic Node job toolchain-neutral.
+      # class. boot-policy.test.ts is intentionally NOT in this Node job: it
+      # requires the TypeScript charge server to fail closed, and that
+      # remediation ships in the TypeScript subscription leaf (#238), not here.
+      # This Python leaf runs only its own Python probe, in the uv-provisioned
+      # python.yml and harness.yml jobs where HARNESS_REQUIRE_PYTHON_BOOT_PROBE=1
+      # forbids a silent skip. The Go and TypeScript probes return to CI in #238.
       # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
       # --testNamePattern matched every one of these pairs, so it was redundant).
       # assert-run-count pins the executed pair count so a title rename or a
