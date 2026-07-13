@@ -93,9 +93,7 @@ def _spy_for_config(
 
 
 @pytest.mark.asyncio
-async def test_fastapi_dependency_forwards_durable_store(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_fastapi_dependency_forwards_durable_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_paid_process(monkeypatch)
     calls, cores = _spy_for_config(monkeypatch)
     cfg = _config("fastapi-dependency")

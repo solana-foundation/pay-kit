@@ -1062,18 +1062,14 @@ def new_session(options: SessionOptions) -> Session:
         try:
             canonical_recipient = str(Pubkey.from_string(split.recipient))
         except (ValueError, TypeError) as exc:
-            raise PaymentError(
-                f"splits[{index}] has invalid recipient pubkey: {exc}", code="invalid-config"
-            ) from exc
+            raise PaymentError(f"splits[{index}] has invalid recipient pubkey: {exc}", code="invalid-config") from exc
         if split.bps <= 0:
             raise PaymentError(f"splits[{index}] bps must be positive", code="invalid-config")
         total_split_bps += split.bps
         if total_split_bps > 10_000:
             raise PaymentError("split bps total cannot exceed 10000", code="invalid-config")
         if canonical_recipient in split_recipients:
-            raise PaymentError(
-                f"splits[{index}] duplicates recipient {canonical_recipient}", code="invalid-config"
-            )
+            raise PaymentError(f"splits[{index}] duplicates recipient {canonical_recipient}", code="invalid-config")
         split_recipients.add(canonical_recipient)
 
     if options.signer is not None and options.rpc is not None:

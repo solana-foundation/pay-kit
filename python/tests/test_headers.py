@@ -304,9 +304,7 @@ class TestReceipt:
         ],
     )
     def test_rejects_out_of_range_timestamp(self, timestamp: str):
-        token = encode_json(
-            {"status": "success", "method": "tempo", "reference": "ref", "timestamp": timestamp}
-        )
+        token = encode_json({"status": "success", "method": "tempo", "reference": "ref", "timestamp": timestamp})
         with pytest.raises(ParseError, match="Invalid ISO-8601 timestamp"):
             parse_receipt(token)
 

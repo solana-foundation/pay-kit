@@ -507,18 +507,14 @@ def new_top_up_tx_verifier(
             raise TypeError("new_top_up_tx_verifier() received both config and a positional first argument")
         if rpc_client is _TOP_UP_VERIFIER_MISSING:
             raise TypeError("new_top_up_tx_verifier() missing required rpc_client argument")
-        return new_top_up_state_tx_verifier(
-            cast(TopUpVerifierConfig, config), cast(RpcClient | None, rpc_client)
-        )
+        return new_top_up_state_tx_verifier(cast(TopUpVerifierConfig, config), cast(RpcClient | None, rpc_client))
     if config_or_rpc is _TOP_UP_VERIFIER_MISSING:
         if rpc_client is _TOP_UP_VERIFIER_MISSING:
             raise TypeError("new_top_up_tx_verifier() missing required rpc_client argument")
         return _new_legacy_top_up_tx_verifier(cast(RpcClient | None, rpc_client))
     if rpc_client is _TOP_UP_VERIFIER_MISSING:
         return _new_legacy_top_up_tx_verifier(cast(RpcClient | None, config_or_rpc))
-    return new_top_up_state_tx_verifier(
-        cast(TopUpVerifierConfig, config_or_rpc), cast(RpcClient | None, rpc_client)
-    )
+    return new_top_up_state_tx_verifier(cast(TopUpVerifierConfig, config_or_rpc), cast(RpcClient | None, rpc_client))
 
 
 def _new_legacy_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
@@ -762,9 +758,7 @@ async def _resolve_settlement_token_program(rpc: RpcClient, mint: Pubkey) -> Pub
             f"failed to resolve settlement mint owner {mint_address}: {exc}", code="transaction-not-found"
         ) from exc
     if account is None:
-        raise PaymentError(
-            f"settlement mint {mint_address} does not exist", code="invalid-payload"
-        )
+        raise PaymentError(f"settlement mint {mint_address} does not exist", code="invalid-payload")
     _, owner = account
     if owner not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
         raise PaymentError(

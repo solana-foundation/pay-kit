@@ -729,9 +729,7 @@ async def test_new_top_up_tx_verifier_accepts_newer_state_aware_constructor() ->
         ("channel", "channel"),
     ],
 )
-async def test_new_top_up_state_tx_verifier_rejects_foreign_program_or_channel(
-    mutation: str, message: str
-) -> None:
+async def test_new_top_up_state_tx_verifier_rejects_foreign_program_or_channel(mutation: str, message: str) -> None:
     signature = str(_kp(23).sign_message(b"top-up"))
     channel = _kp(24).pubkey()
     fake_rpc = _FakeRpc()
