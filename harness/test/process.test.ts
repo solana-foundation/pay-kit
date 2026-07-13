@@ -1,3 +1,8 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { startServer, runClient } from "../src/process";
 import type { ImplementationDefinition } from "../src/implementations";
@@ -44,4 +49,51 @@ describe("process.startServer error enrichment", () => {
       /synthetic-fail-client.*exited with code 3.*last stderr:.*client boom: env=http:\/\/127.0.0.1:65535\/missing/s,
     );
   });
+
+  it.skipIf(process.platform === "win32")(
+    "removes the run-scoped replay directory on SIGHUP",
+    async () => {
+      const temporaryRoot = mkdtempSync(
+        join(tmpdir(), "pay-kit-harness-sighup-"),
+      );
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "--eval",
+          "await import('./src/process.ts'); console.log('ready'); setInterval(() => {}, 1000);",
+        ],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, TMPDIR: temporaryRoot },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      const replayDirectories = () =>
+        readdirSync(temporaryRoot).filter((entry) =>
+          entry.startsWith("pay-kit-harness-replay-"),
+        );
+
+      try {
+        await Promise.race([
+          once(child.stdout!, "data"),
+          once(child, "exit").then(([code]) => {
+            throw new Error(`cleanup probe exited before ready with code ${code}`);
+          }),
+        ]);
+        expect(replayDirectories()).toHaveLength(1);
+        child.kill("SIGHUP");
+        const [code, signal] = await once(child, "exit");
+        expect({ code, signal }).toEqual({ code: 129, signal: null });
+        expect(replayDirectories()).toEqual([]);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+        rmSync(temporaryRoot, { force: true, recursive: true });
+      }
+    },
+  );
 });
