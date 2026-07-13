@@ -12,6 +12,7 @@ from __future__ import annotations
 import gc
 import threading
 import weakref
+from typing import Any
 
 import pytest
 
@@ -33,7 +34,7 @@ from solana_pay_kit import (
 )
 from solana_pay_kit._middleware import PAYMENT_ATTR, PayCore
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.store import FileReplayStore
+from solana_pay_kit._paycore.store import MemoryStore, ProductionReplayStore
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import (
     ChallengeExpiredError,
@@ -78,6 +79,30 @@ class _Req:
     def __init__(self, headers=None, path="/report"):
         self.headers = headers or {}
         self.path = path
+
+
+class _ProductionStore(ProductionReplayStore):
+    """In-memory test double for an externally verified production backend.
+
+    The nominal base class is the SDK's explicit trust boundary. This class is
+    deliberately test-only; production users must provide a backend that
+    really coordinates atomic writes across workers and survives restarts.
+    """
+
+    def __init__(self) -> None:
+        self._delegate = MemoryStore()
+
+    async def get(self, key: str) -> Any | None:
+        return await self._delegate.get(key)
+
+    async def put(self, key: str, value: Any) -> None:
+        await self._delegate.put(key, value)
+
+    async def delete(self, key: str) -> None:
+        await self._delegate.delete(key)
+
+    async def put_if_absent(self, key: str, value: Any) -> bool:
+        return await self._delegate.put_if_absent(key, value)
 
 
 # -- per-config core cache (replay-store persistence) ------------------------
@@ -211,11 +236,11 @@ def test_for_config_constructs_once_across_threads(monkeypatch):
     assert cores[0]._mpp._replay_store is cores[1]._mpp._replay_store
 
 
-def test_for_config_rejects_rebinding_a_config_to_a_different_store(tmp_path):
+def test_for_config_rejects_rebinding_a_config_to_a_different_store():
     """A Config may reuse its bound durable store but cannot be rebound."""
     cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
-    first_store = FileReplayStore(tmp_path / "first.json")
-    second_store = FileReplayStore(tmp_path / "second.json")
+    first_store = _ProductionStore()
+    second_store = _ProductionStore()
 
     core = PayCore.for_config(cfg, replay_store=first_store)
 
@@ -224,12 +249,12 @@ def test_for_config_rejects_rebinding_a_config_to_a_different_store(tmp_path):
         PayCore.for_config(cfg, replay_store=second_store)
 
 
-def test_equal_nonlocal_configs_bind_independent_durable_stores(tmp_path):
+def test_equal_nonlocal_configs_bind_independent_durable_stores():
     """One nonlocal Config cannot borrow another equal Config's durable store."""
     cfg_a = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
     cfg_b = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
-    store_a = FileReplayStore(tmp_path / "a.json")
-    store_b = FileReplayStore(tmp_path / "b.json")
+    store_a = _ProductionStore()
+    store_b = _ProductionStore()
 
     assert cfg_a is not cfg_b
     assert cfg_a == cfg_b
@@ -280,10 +305,10 @@ async def test_settled_signature_not_replayable_across_requests(monkeypatch):
     assert await store_again.put_if_absent(key, True) is False
 
 
-def test_for_config_injects_durable_replay_store_outside_localnet(tmp_path):
+def test_for_config_injects_durable_replay_store_outside_localnet():
     """Framework callers can supply one durable MPP replay store at startup."""
     cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
-    store = FileReplayStore(tmp_path / "mpp-replay.json")
+    store = _ProductionStore()
 
     core = PayCore.for_config(cfg, replay_store=store)
 
@@ -296,14 +321,14 @@ def test_nonlocal_mpp_without_replay_store_fails_closed():
     """MPP does not fall back to process-local replay state in production."""
     cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
 
-    with pytest.raises(PaymentError, match="durable replay_store is required"):
+    with pytest.raises(PaymentError, match="ProductionReplayStore"):
         PayCore(cfg)
 
 
-def test_x402_only_nonlocal_config_does_not_construct_mpp_adapter(tmp_path):
+def test_x402_only_nonlocal_config_does_not_construct_mpp_adapter():
     """An x402-only deployment does not need an unused MPP replay store."""
     cfg = _cfg(accept=(Protocol.X402,), network="solana_devnet")
-    store = FileReplayStore(tmp_path / "x402-replay.json")
+    store = _ProductionStore()
 
     core = PayCore.for_config(cfg, replay_store=store)
 

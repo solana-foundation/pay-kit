@@ -10,7 +10,13 @@ from typing import Literal
 
 import pytest
 
-from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store, is_production_replay_store
+from solana_pay_kit._paycore.store import (
+    FileReplayStore,
+    MemoryStore,
+    ProductionReplayStore,
+    Store,
+    is_production_replay_store,
+)
 
 
 @pytest.mark.parametrize("store_kind", ["memory", "file"])
@@ -52,6 +58,12 @@ def test_production_replay_store_contract_rejects_mutable_capability_flags():
         setattr(store, capability, True)
 
     assert not is_production_replay_store(store)
+
+
+def test_production_replay_store_contract_is_public():
+    from solana_pay_kit import ProductionReplayStore as PublicProductionReplayStore
+
+    assert PublicProductionReplayStore is ProductionReplayStore
 
 
 class TestMemoryStore:
