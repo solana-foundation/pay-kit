@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,9 +33,13 @@ import { startServer, stopServer } from "../src/process";
 //   2. With the opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1) it boots to
 //      `ready` — proving the opt-in is honored, not merely that boot is broken.
 //
-// Rust, PHP, Ruby, and Lua use different real contracts. Their source-level
-// probes below assert the relevant capability declaration and the non-local
-// rejection path rather than pretending that they implement this env-var API.
+// PHP, Ruby, and Lua do NOT use PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE, but they
+// DO enforce the same off-localnet fail-closed policy through their native
+// config contract (reject an omitted or non-durable/non-shared replay store off
+// localnet). The source-contract probes near the end of this file pin those
+// real guards rather than pretending they implement this env-var API. Rust,
+// Kotlin, and Swift ship no such store guard in-tree yet, so they are
+// asserted-SKIPPED with an honest reason.
 //
 // FALSE-GREEN GUARD: the fail-closed assertion does not merely check "the boot
 // failed" — a missing toolchain, unbuilt binary, or bad RPC would fail boot for
@@ -243,32 +247,18 @@ const coveredProbes: CoveredProbe[] = [
   },
 ];
 
-// SDKs whose server boot surface does NOT implement the shared
-// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE fail-closed contract at all (verified: no
-// reference to the opt-in var anywhere in the SDK source). There is no
-// fail-closed boot behavior to conform to yet, so these are asserted-SKIPPED
-// with a loud note rather than silently passed. Extending the contract to them
-// is itself an open audit gap.
+// SDKs whose server boot surface implements NO off-localnet fail-closed replay/
+// session-store guard at all in this tree, via either the shared
+// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in or a native config contract
+// (verified below by source scan). There is no fail-closed behavior to conform
+// to yet, so these are asserted-SKIPPED with a loud note. php/ruby/lua are NOT
+// here: they enforce the policy natively and are covered by the source-contract
+// probes near the end of this file.
 const unimplementedProbes: Array<{ id: string; reason: string }> = [
   {
     id: "rust",
     reason:
       "Rust MPP server exposes no PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE boot-time fail-closed guard",
-  },
-  {
-    id: "php",
-    reason:
-      "PHP SolanaChargeHandler has a MemoryStore but no off-localnet fail-closed boot guard",
-  },
-  {
-    id: "ruby",
-    reason:
-      "Ruby MPP runtime has a MemoryStore but no off-localnet fail-closed boot guard",
-  },
-  {
-    id: "lua",
-    reason:
-      "Lua resty.pay_kit exposes no in-memory-store fail-closed boot guard",
   },
   {
     id: "kotlin",
@@ -283,11 +273,11 @@ const unimplementedProbes: Array<{ id: string; reason: string }> = [
 // Loud note: surface the coverage gap in the run log, not just as silent skips.
 // eslint-disable-next-line no-console
 console.warn(
-  "[boot-policy] fail-closed store contract is only implemented/remediated for " +
-    "go, typescript, python. Asserting-SKIP the rest (no PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE " +
-    "boot guard in their SDK source): " +
-    unimplementedProbes.map((p) => p.id).join(", ") +
-    ". Extending the contract cross-SDK is an open audit gap.",
+  "[boot-policy] shared PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in contract: " +
+    "go, typescript, python. php, ruby, lua enforce the same off-localnet " +
+    "fail-closed policy via their native config contract (pinned by the source " +
+    "probes below). Asserting-SKIP (no store guard in-tree): " +
+    unimplementedProbes.map((p) => p.id).join(", ") + ".",
 );
 
 // Boot the SDK at network=mainnet with NO opt-in and assert it fails CLOSED
@@ -384,9 +374,6 @@ describe("boot-policy conformance: SDKs without the store fail-closed contract",
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SDK_SOURCE_DIR: Record<string, string> = {
   rust: "rust",
-  php: "php",
-  ruby: "ruby",
-  lua: "lua",
   kotlin: "kotlin",
   swift: "swift",
 };
@@ -424,5 +411,161 @@ describe("boot-policy: asserted-skip roster stays honest (no half-implemented co
           `asserts fail-closed / opt-in boot -- not stay an asserted-skip.`,
       ).toEqual([]);
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Native (non-env-var) off-localnet fail-CLOSED store guards: php, ruby, lua.
+//
+// These SDKs do NOT use the shared PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in,
+// so the boot probes above skip them. They deliver the same money-path safety
+// through their native config contract: off-localnet, an omitted or
+// non-durable/non-shared replay store is REJECTED at adapter/server
+// construction (fail-closed). That is a real, working guard, so it is COVERED
+// here rather than mislabeled as absent.
+//
+// Detection mirrors the #238 sdkImplementsGuard mechanism (git-grep the SDK's
+// tracked source for its guard marker): a probe is REQUIRED only when its guard
+// is present in-tree, and asserts-SKIP with an honest reason otherwise (e.g. the
+// SDK is not checked out in this split). `sdkFilesReferencingOptIn` above stays
+// byte-identical to #238 for the env-var roster; this parallel helper carries
+// the per-SDK native marker. When present, the probe pins BOTH sides of the
+// contract: the missing-store rejection and the non-durable/non-shared one.
+// ---------------------------------------------------------------------------
+type NativeGuardAssertion = { file: string; mechanism: string; pattern: RegExp };
+type NativeGuardProbe = {
+  id: string;
+  label: string;
+  sdkDir: string;
+  // Stable substring of the guard's rejection message; its presence in-tree is
+  // what promotes the probe from asserted-skip to required.
+  guardMarker: string;
+  assertions: NativeGuardAssertion[];
+};
+
+// git grep -l <marker> -- <sdkDir>, same failure handling as
+// sdkFilesReferencingOptIn (kept separate so that helper stays byte-identical to
+// #238). Empty result => guard/source not in this checkout => honest skip.
+function sdkFilesMatchingMarker(sdkDir: string, marker: string): string[] {
+  try {
+    const out = execFileSync("git", ["grep", "-l", marker, "--", sdkDir], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    return out.split("\n").filter(Boolean);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    const stdout = (error as { stdout?: string }).stdout ?? "";
+    // git grep exits 1 with empty output when there are no matches -> honest skip.
+    if (status === 1 && stdout.trim() === "") return [];
+    throw error;
+  }
+}
+
+const nativeGuardProbes: NativeGuardProbe[] = [
+  {
+    id: "php",
+    label: "PHP MPP adapter/handler off-localnet replay-store guard",
+    sdkDir: "php",
+    guardMarker: "replayStore is required outside localnet",
+    assertions: [
+      {
+        file: "php/src/Protocols/Mpp/Adapter.php",
+        mechanism: "rejects an omitted replay store outside localnet",
+        pattern:
+          /\$replayStore === null[\s\S]*?network !== Network::SolanaLocalnet[\s\S]*?replayStore is required outside localnet/,
+      },
+      {
+        file: "php/src/Protocols/Mpp/Adapter.php",
+        mechanism:
+          "rejects a non-durable/non-shared replay store outside localnet",
+        pattern:
+          /network !== Network::SolanaLocalnet[\s\S]*?providesDurableSharedReplayProtection\(\)[\s\S]*?must explicitly declare durable shared replay protection outside localnet/,
+      },
+      {
+        file: "php/src/Protocols/Mpp/Server/SolanaChargeHandler.php",
+        mechanism:
+          "enforces the same off-localnet guard on direct handler construction",
+        pattern:
+          /network !== 'localnet'[\s\S]*?replayStore is required outside localnet/,
+      },
+    ],
+  },
+  {
+    id: "ruby",
+    label: "Ruby MPP runtime off-localnet replay-store guard",
+    sdkDir: "ruby",
+    guardMarker: "requires a durable replay_store",
+    assertions: [
+      {
+        file: "ruby/lib/pay_kit/protocols/mpp/runtime.rb",
+        mechanism: "rejects the implicit dev-only memory store outside localnet",
+        pattern:
+          /replay_store == DEV_ONLY_MEMORY_STORE[\s\S]*?unless localnet\?\(method\)[\s\S]*?requires a durable replay_store/,
+      },
+      {
+        file: "ruby/lib/pay_kit/protocols/mpp/runtime.rb",
+        mechanism: "rejects a supplied non-durable replay store outside localnet",
+        pattern:
+          /unless localnet\?\(method\) \|\| durable_replay_store\?\(replay_store\)[\s\S]*?requires a durable replay_store/,
+      },
+    ],
+  },
+  {
+    id: "lua",
+    label: "Lua MPP server off-localnet replay-store guard",
+    sdkDir: "lua",
+    guardMarker: "replay store is required outside localnet",
+    assertions: [
+      {
+        file: "lua/pay_kit/protocols/mpp/init.lua",
+        mechanism: "rejects an omitted replay store outside localnet",
+        pattern:
+          /if not replay_store[\s\S]*?network ~= 'localnet'[\s\S]*?replay store is required outside localnet/,
+      },
+      {
+        file: "lua/pay_kit/protocols/mpp/init.lua",
+        mechanism: "rejects a non-shared replay store outside localnet",
+        pattern:
+          /network ~= 'localnet' and not replay_store_is_shared\(replay_store\)[\s\S]*?must declare shared=true outside localnet/,
+      },
+      {
+        file: "lua/pay_kit/protocols/mpp/server/init.lua",
+        mechanism:
+          "enforces the same off-localnet guard on the low-level server entry",
+        pattern:
+          /network ~= 'localnet'[\s\S]*?replay store must be shared outside localnet/,
+      },
+    ],
+  },
+];
+
+function readSdkSource(file: string): string {
+  return readFileSync(join(REPO_ROOT, file), "utf8");
+}
+
+describe("boot-policy: native off-localnet fail-closed store guards (php, ruby, lua)", () => {
+  for (const probe of nativeGuardProbes) {
+    const guardFiles = sdkFilesMatchingMarker(probe.sdkDir, probe.guardMarker);
+    if (guardFiles.length === 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[boot-policy] SKIP ${probe.id} native guard probe: no "${probe.guardMarker}" ` +
+          `marker under ${probe.sdkDir}/ in this checkout (SDK source absent or guard moved).`,
+      );
+    }
+    for (const assertion of probe.assertions) {
+      it.skipIf(guardFiles.length === 0)(
+        `${probe.id}: ${assertion.mechanism}`,
+        () => {
+          expect(
+            readSdkSource(assertion.file),
+            `${probe.label} regressed: expected ${assertion.file} to ${assertion.mechanism}. ` +
+              `${probe.id} enforces its off-localnet fail-closed guard through this native ` +
+              `contract, not ${OPT_IN_ENV}; fix the SDK, do not delete the probe.`,
+          ).toMatch(assertion.pattern);
+        },
+      );
+    }
   }
 });
