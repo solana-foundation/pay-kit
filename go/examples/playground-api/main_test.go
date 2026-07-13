@@ -116,9 +116,14 @@ func TestPaymentClientDoesNotDeriveMemoryReplayOptInFromLocalnet(t *testing.T) {
 	if client.Config.MPP.AllowUnsafeMemoryStore {
 		t.Fatal("localnet label implicitly enabled memory replay")
 	}
+	// The opt-in flag stays off (asserted above): the localnet label must not
+	// derive the memory-replay opt-in. The challenge still succeeds because the
+	// MPP server permissively provisions a process-local MemoryStore inside
+	// New() on localnet (single-process dev, matching the TypeScript and Python
+	// SDKs). Fail-closed store policy applies off localnet, not here.
 	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.01")}
-	if headers, err := client.MppAdapter().ChallengeHeaders(gate); err == nil {
-		t.Fatalf("MPP challenge was issued without a replay store: %v", headers)
+	if _, err := client.MppAdapter().ChallengeHeaders(gate); err != nil {
+		t.Fatalf("localnet MPP challenge should succeed with the permissive default store: %v", err)
 	}
 }
 

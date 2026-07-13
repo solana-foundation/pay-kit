@@ -168,17 +168,26 @@ func New(config Config) (*Mpp, error) {
 		return nil, core.NewError(core.ErrCodeInvalidConfig,
 			"AllowUnsafeMemoryStore is forbidden on mainnet; inject an atomic shared replay store")
 	}
+	// Localnet is single-process development: a process-local MemoryStore is
+	// the permissive default (matching the TypeScript and Python SDKs), so no
+	// opt-in is required and an injected store need not report IsShared. Off
+	// localnet the store must be a shared replay backend, or the caller must
+	// explicitly opt in to a process-local store via AllowUnsafeMemoryStore.
+	isLocalnet := canonicalNetwork == paycore.NetworkLocalnet
 	createdMemoryStore := false
-	if config.Store == nil && config.AllowUnsafeMemoryStore {
-		log.Printf("pay-kit: WARNING: MPP server on %s explicitly enabled process-local MemoryStore; replay markers are lost on restart and are not shared across workers", config.Network)
-		config.Store = core.NewMemoryStore()
-		createdMemoryStore = true
-	}
 	if config.Store == nil {
-		return nil, core.NewError(core.ErrCodeInvalidConfig,
-			fmt.Sprintf("an atomic shared replay store is required on %s; inject Config.Store implementing SharedStore with IsShared() == true, or explicitly enable AllowUnsafeMemoryStore for a process-local development/test store", config.Network))
+		if isLocalnet || config.AllowUnsafeMemoryStore {
+			if !isLocalnet {
+				log.Printf("pay-kit: WARNING: MPP server on %s explicitly enabled process-local MemoryStore; replay markers are lost on restart and are not shared across workers", config.Network)
+			}
+			config.Store = core.NewMemoryStore()
+			createdMemoryStore = true
+		} else {
+			return nil, core.NewError(core.ErrCodeInvalidConfig,
+				fmt.Sprintf("an atomic shared replay store is required on %s; inject Config.Store implementing SharedStore with IsShared() == true, or explicitly enable AllowUnsafeMemoryStore for a process-local development/test store", config.Network))
+		}
 	}
-	if !createdMemoryStore {
+	if !createdMemoryStore && !isLocalnet {
 		shared, sharedOK := config.Store.(core.SharedStore)
 		if !sharedOK || !shared.IsShared() {
 			return nil, core.NewError(core.ErrCodeInvalidConfig,
