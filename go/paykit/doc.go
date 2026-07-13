@@ -19,7 +19,10 @@
 //	    Preflight: &preflight,
 //	    MPP: paykit.MPPConfig{
 //	        Realm: "MyApp",
-//	        ChallengeBindingSecret: []byte("local-dev-secret"),
+//	        ChallengeBindingSecret: []byte("local-dev-secret-0123456789abcdef"),
+//	        // Single-process local demo only; production must inject a shared
+//	        // ReplayStore and leave AllowUnsafeMemoryStore false.
+//	        AllowUnsafeMemoryStore: true,
 //	    },
 //	})
 //	if err != nil { log.Fatal(err) }

@@ -8,6 +8,7 @@ import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { subscription } from '../pricing.js';
 import { Signer } from '../signer.js';
+import { createUnsafeMemoryReplayStore, declareProductionReplayStore } from '../replay-store.js';
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
 const PLATFORM = 'CXG3Pq3DwZb1HVckhPQbVxiwoNGM3jNGYvC2BSdkj1pK';
@@ -21,15 +22,16 @@ afterEach(() => {
 
 async function setup() {
     const config = await configure({
-        mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test' },
+        mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test', allowUnsafeMemoryStore: true },
         operator: { recipient: SELLER, signer: await Signer.generate() },
+        replayStore: createUnsafeMemoryReplayStore(),
     });
     return { adapter: createMppAdapter(config), config };
 }
 
 function createTestReplayStore({ isDurable = true, isShared = true } = {}) {
     const entries = new Map<string, unknown>();
-    return {
+    return declareProductionReplayStore({
         delete: async (key: string) => {
             entries.delete(key);
         },
@@ -44,12 +46,7 @@ function createTestReplayStore({ isDurable = true, isShared = true } = {}) {
             entries.set(key, value);
             return true;
         },
-        reserve: async (key: string, value: unknown) => {
-            if (entries.has(key)) return false;
-            entries.set(key, value);
-            return true;
-        },
-    };
+    });
 }
 
 function createSubscriptionGate(puller: string) {
@@ -251,7 +248,7 @@ describe('createMppAdapter', () => {
                     createSubscriptionGate(signer.pubkey),
                     new Request('http://t/feed'),
                 ),
-            ).rejects.toThrow(/isShared=true and isDurable=true[\s\S]*does not[\s\S]*cover subscription activation/);
+            ).rejects.toThrow(/declareProductionReplayStore[\s\S]*does not[\s\S]*cover subscription activation replay/);
         } finally {
             delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
@@ -259,7 +256,12 @@ describe('createMppAdapter', () => {
 
     it('revalidates expiry at challenge issuance instead of leaking a RangeError', async () => {
         const config = await configure({
-            mpp: { challengeBindingSecret: 'adapter-test-secret', expiresIn: 2, realm: 'Adapter test' },
+            mpp: {
+                allowUnsafeMemoryStore: true,
+                challengeBindingSecret: 'adapter-test-secret',
+                expiresIn: 2,
+                realm: 'Adapter test',
+            },
             operator: { recipient: SELLER, signer: await Signer.generate() },
         });
         vi.spyOn(Date, 'now').mockReturnValue(8_640_000_000_000_000 - 1_000);
@@ -267,6 +269,47 @@ describe('createMppAdapter', () => {
         await expect(
             createMppAdapter(config).challengeHeaders(gate(), new Request('http://t/marketplace')),
         ).rejects.toThrow('mpp.expiresIn must produce a valid expiration date at challenge issuance.');
+    });
+
+    it('does not advertise fee sponsorship for a non-fee-payer signer', async () => {
+        const config = await configure({
+            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'adapter-test-secret' },
+            operator: { recipient: SELLER, signer: Signer.from((await Signer.generate()).signer, { feePayer: false }) },
+        });
+        const adapter = createMppAdapter(config);
+        const headers = await adapter.challengeHeaders(gate(), new Request('http://t/marketplace'));
+        const challenge = Challenge.deserialize(headers['www-authenticate'] as string);
+        const methodDetails = challenge.request.methodDetails as { feePayer?: boolean };
+        expect(methodDetails.feePayer).toBeUndefined();
+        expect(config.operator.feePayer).toBe(false);
+    });
+
+    it('rejects a prebuilt mainnet config carrying the demo signer', async () => {
+        const local = await configure({
+            mpp: { challengeBindingSecret: 'adapter-test-secret' },
+            replayStore: createTestReplayStore(),
+        });
+        expect(() => createMppAdapter({ ...local, network: 'solana_mainnet' })).toThrow(/demo signer is public/);
+    });
+
+    it('rejects a hand-built non-local config without a replay store', async () => {
+        const { config } = await setup();
+        expect(() => createMppAdapter({ ...config, network: 'solana_devnet', replayStore: undefined })).toThrow(
+            /replayStore resolved by configure/,
+        );
+    });
+
+    it('requires an explicit unsafe flag before allocating a process-local store', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            await configure({
+                mpp: { challengeBindingSecret: 'adapter-test-secret', allowUnsafeMemoryStore: true },
+                operator: { recipient: SELLER, signer: await Signer.generate() },
+            });
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining('process-local replay store'));
+        } finally {
+            warn.mockRestore();
+        }
     });
 
     it('detects MPP payment credentials', async () => {

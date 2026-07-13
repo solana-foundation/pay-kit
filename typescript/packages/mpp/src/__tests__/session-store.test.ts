@@ -517,7 +517,9 @@ describe('isMemorySessionStore brand detection', () => {
     test('is invisible to JSON / Object.keys (symbol brand)', () => {
         const store = createMemorySessionStore();
         expect(Object.keys(store)).not.toContain('memory-session-store');
-        expect(JSON.stringify(store)).toBe('{}');
+        // The symbol brand never serializes; only the explicit durability
+        // declaration (a plain string field) is visible.
+        expect(JSON.stringify(store)).toBe('{"sessionStoreDurability":"ephemeral"}');
     });
 
     test('a shallow spread copy stays detected (fail CLOSED)', () => {

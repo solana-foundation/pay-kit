@@ -22,6 +22,11 @@ boots on the in-memory demo signer (it logs a warning) and defaults to
 Surfpool localnet; pass a real `Operator.Signer` and `RPCURL` in
 `paykit.Config` for anything beyond a smoke test.
 
+This example also explicitly enables `AllowUnsafeMemoryStore` because it is a
+single-process local demo. MPP otherwise fails closed unless `MPP.ReplayStore`
+implements `SharedStore` and reports `IsShared() == true`; leave the unsafe
+flag disabled when deploying more than one process.
+
 ## DX check
 
 In another terminal:

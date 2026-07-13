@@ -23,14 +23,7 @@ import {
     getBase58Encoder,
     type KeyPairSigner,
 } from '@solana/kit';
-import {
-    createPayKit,
-    createUnsafeMemorySubscriptionReplayStore,
-    session,
-    subscription,
-    usage,
-    usd,
-} from '@solana/pay-kit';
+import { createPayKit, session, subscription, usage, usd } from '@solana/pay-kit';
 
 import { registerDocs } from './docs.js';
 import { fundSandbox, fundUsdc, registerFaucet, subscriptionPlanFromEnv } from './sandbox.js';
@@ -51,17 +44,21 @@ const PLATFORM = (await generateKeyPairSigner()).address;
 // Subscription activation is exposed only when a complete snapshot from a real
 // on-chain Plan is supplied. Partial or synthetic plan data is never advertised.
 const PLAN = subscriptionPlanFromEnv();
-const subscriptionReplayStore = createUnsafeMemorySubscriptionReplayStore();
 
 // ── PayKit: one config object declares the server + the priced routes ──
 const pay = await createPayKit({
     accept: ['x402', 'mpp'],
     // `html: true` serves the interactive pay.sh payment page (+ service worker)
     // on 402s for browser requests; API clients still get the JSON 402.
-    mpp: { challengeBindingSecret: SECRET_KEY, html: true },
+    // On localnet, opt into the process-local replay store; off localnet the
+    // operator must inject a durable shared store (declareProductionReplayStore).
+    mpp: {
+        challengeBindingSecret: SECRET_KEY,
+        html: true,
+        ...(NETWORK === 'localnet' ? { allowUnsafeMemoryStore: true } : {}),
+    },
     network: NETWORK,
     operator: { recipient: RECIPIENT, signer: operator },
-    replayStore: subscriptionReplayStore,
     pricing: {
         ...(PLAN
             ? {

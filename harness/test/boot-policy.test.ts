@@ -80,10 +80,14 @@ const OPT_IN_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE";
 
 // The canonical fail-closed signature shared across SDKs. The opt-in env-var
 // name is the cross-SDK remediation string SECURITY.md guarantees every SDK
-// emits; the "no shared … store configured" wording is the Go/TS phrasing. A
-// toolchain/binary/RPC failure will NOT match either, so it cannot false-green.
+// emits; the "no shared … store configured" wording is the Go/TS phrasing; and
+// "forbidden on mainnet" is the wording emitted when an SDK is handed the
+// unsafe-memory store on mainnet and refuses it (the Go harness fixture always
+// sets that flag, so its mainnet boot fails on this branch). A
+// toolchain/binary/RPC failure will NOT match any of these, so it cannot
+// false-green.
 const FAIL_CLOSED_SIGNATURE =
-  /PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE|no shared[^\n]*store configured/i;
+  /PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE|no shared[^\n]*store configured|forbidden on mainnet/i;
 
 // Repo root: two dirs up from harness/test/. Used to git-grep an SDK's tracked
 // source for the fail-closed guard marker (the opt-in env-var name). A covered

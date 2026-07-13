@@ -21,6 +21,10 @@ type errSigner struct {
 	raw    []byte // when non-nil, Sign returns this slice without error
 }
 
+type sharedReplayStore struct{ *core.MemoryStore }
+
+func (*sharedReplayStore) IsShared() bool { return true }
+
 func (e *errSigner) Pubkey() paykit.Address { return paykit.Address(e.pubkey) }
 func (e *errSigner) IsDemo() bool           { return false }
 func (e *errSigner) Sign(_ context.Context, _ []byte) ([]byte, error) {
@@ -36,8 +40,12 @@ func testCfg() paykit.Config {
 		Network:     paykit.SolanaLocalnet,
 		Stablecoins: []paykit.Stablecoin{paykit.USDC},
 		Operator:    paykit.Operator{Signer: demo, Recipient: demo.Pubkey(), FeePayer: true},
-		MPP:         paykit.MPPConfig{Realm: "Unit", ChallengeBindingSecret: []byte("unit-test-binding-secret-0123456789abcdef")},
-		RPCURL:      "https://example.invalid", // never dialed in these tests
+		MPP: paykit.MPPConfig{
+			Realm:                  "Unit",
+			ChallengeBindingSecret: []byte("unit-test-binding-secret-0123456789abcdef"),
+			AllowUnsafeMemoryStore: true,
+		},
+		RPCURL: "https://example.invalid", // never dialed in these tests
 	}
 }
 
@@ -106,6 +114,24 @@ func TestServerForCachesPerKey(t *testing.T) {
 	}
 	if s3 == s1 {
 		t.Error("different payTo should map to a distinct server instance")
+	}
+}
+
+func TestServerForForwardsInjectedSharedReplayStore(t *testing.T) {
+	cfg := testCfg()
+	cfg.MPP.AllowUnsafeMemoryStore = false
+	cfg.MPP.ReplayStore = &sharedReplayStore{MemoryStore: core.NewMemoryStore()}
+	if _, err := (&Adapter{cfg: cfg}).serverFor(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")}); err != nil {
+		t.Fatalf("serverFor() rejected injected shared replay store: %v", err)
+	}
+}
+
+func TestServerForFailsClosedWithoutReplayStore(t *testing.T) {
+	cfg := testCfg()
+	cfg.MPP.AllowUnsafeMemoryStore = false
+	_, err := (&Adapter{cfg: cfg}).serverFor(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")})
+	if err == nil {
+		t.Fatal("serverFor() accepted MPP without a shared replay store")
 	}
 }
 

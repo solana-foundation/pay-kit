@@ -5,14 +5,18 @@ import type { Store } from 'mppx';
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
 import { type Stablecoin, STABLECOINS } from './price.js';
 import { type Network, type NetworkSlug, type Protocol, toNetwork, toSolanaNetwork } from './protocol.js';
-import { DEMO_SIGNER_PUBLIC_KEY, type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
 import {
-    type AtomicSubscriptionReplayStore,
-    createUnsafeMemorySubscriptionReplayStore,
-} from './subscription-replay-store.js';
+    createUnsafeMemoryReplayStore,
+    isAtomicReplayStore,
+    isAuthorizedUnsafeMemoryReplayStore,
+    isProductionReplayStore,
+} from './replay-store.js';
+import { DEMO_SIGNER_PUBLIC_KEY, type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
 
 /** MPP protocol options. */
 export type MppOptions = {
+    /** Explicitly permit process-local replay state for development/tests. */
+    readonly allowUnsafeMemoryStore?: boolean;
     /**
      * HMAC secret binding challenges to their contents. Resolved from
      * `PAY_KIT_MPP_SECRET` or `MPP_SECRET_KEY` when omitted; auto-generated
@@ -41,7 +45,11 @@ export type X402Options = Record<string, never>;
 
 /** Merchant identity: where money lands and which key signs. */
 export type OperatorParams = {
-    /** Whether the operator signer sponsors transaction fees. */
+    /**
+     * Whether the operator signer sponsors transaction fees. Defaults to the
+     * signer's `isFeePayer` capability and cannot be true when it is false.
+     * x402 SVM methods require sponsorship.
+     */
     readonly feePayer?: boolean;
     /** Settlement address. Defaults to the signer's public key. */
     readonly recipient?: string;
@@ -69,12 +77,8 @@ export type ConfigureParams = {
     readonly operator?: OperatorParams;
     /** Run boot-time safety checks. */
     readonly preflight?: boolean;
-    /**
-     * Replay-protection store. Subscription gates require the atomic
-     * {@link AtomicSubscriptionReplayStore} contract; use a shared, durable
-     * implementation in production.
-     */
-    readonly replayStore?: AtomicSubscriptionReplayStore | Store.Store;
+    /** Replay-protection store. MPP validates atomic/shared capability at runtime. */
+    readonly replayStore?: Store.Store;
     /** Defaults to the public RPC endpoint for the network. */
     readonly rpcUrl?: string;
     /** Ordered settlement preference. */
@@ -86,6 +90,7 @@ export type ConfigureParams = {
 export type PayKitConfig = {
     readonly accept: readonly Protocol[];
     readonly mpp: {
+        readonly allowUnsafeMemoryStore: boolean;
         readonly challengeBindingSecret: string;
         readonly expiresIn: number;
         readonly html: boolean;
@@ -95,7 +100,7 @@ export type PayKitConfig = {
     readonly network: Network;
     readonly operator: Operator;
     readonly preflight: boolean;
-    readonly replayStore: AtomicSubscriptionReplayStore | Store.Store | undefined;
+    readonly replayStore: Store.Store | undefined;
     readonly rpcUrl: string;
     readonly stablecoins: readonly Stablecoin[];
     readonly x402: Record<string, never>;
@@ -132,8 +137,16 @@ function validateStablecoins(stablecoins: readonly Stablecoin[]): void {
     }
 }
 
+/**
+ * Refuse the package-shipped demo signer on mainnet, detecting it by its public
+ * address rather than only the `isDemo` flag so a caller cannot smuggle the
+ * public demo key past the check by wrapping it with `isDemo=false`.
+ */
 function validateOperator(network: Network, operator: Operator): void {
-    if (network === 'solana_mainnet' && operator.signer.signer.address === DEMO_SIGNER_PUBLIC_KEY) {
+    if (
+        network === 'solana_mainnet' &&
+        (operator.signer.isDemo || operator.signer.signer.address === DEMO_SIGNER_PUBLIC_KEY)
+    ) {
         throw new DemoSignerOnMainnetError(
             'The demo signer is public and must not be used on mainnet. Provide operator.signer.',
         );
@@ -147,53 +160,17 @@ function validateChallengeBindingSecret(secret: unknown): asserts secret is stri
 }
 
 /**
- * Whether a process-local, in-memory store is permitted on this cluster:
- * always on localnet, and on devnet only under the explicit
+ * Whether a process-local, in-memory session store is permitted on this
+ * cluster: always on localnet, and on devnet only under the explicit
  * `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1` development opt-in. Mainnet never
- * qualifies. The single gate every in-memory fallback (charge replay store and
- * session store) consults so the policy cannot drift between them.
+ * qualifies. Consulted by the session adapter so its in-memory fallback policy
+ * cannot drift from the config-layer stance.
  */
 export function inMemoryStoresAllowed(network: Network): boolean {
     return (
         network === 'solana_localnet' ||
         (network === 'solana_devnet' && process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1')
     );
-}
-
-/**
- * Every accepted protocol that settles an on-chain transaction needs a shared,
- * durable replay store: both MPP charge/subscription and x402 exact/upto fence
- * a broadcast signature against replay. An x402-only server is as exposed to a
- * double-settlement as an MPP one, so the config-layer requirement covers both.
- */
-function requiresSettlementReplayStore(accept: readonly Protocol[]): boolean {
-    return accept.includes('mpp') || accept.includes('x402');
-}
-
-function validateReplayStore(config: Pick<PayKitConfig, 'accept' | 'network' | 'replayStore'>): void {
-    if (!requiresSettlementReplayStore(config.accept) || config.network === 'solana_localnet') return;
-
-    const store = config.replayStore;
-    if (store === undefined) {
-        if (inMemoryStoresAllowed(config.network)) return;
-        throw new ConfigurationError(
-            `no shared replay store configured outside localnet; provide replayStore` +
-                ` or, on devnet only, set ${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1`,
-        );
-    }
-    if (store === null || typeof store !== 'object' || typeof (store as { reserve?: unknown }).reserve !== 'function') {
-        throw new ConfigurationError('replayStore outside localnet must provide an atomic reserve() operation.');
-    }
-    const replayStore = store as AtomicSubscriptionReplayStore;
-    if (replayStore.isShared !== true || replayStore.isDurable !== true) {
-        // A process-local in-memory replay store keeps charge/x402 replay
-        // protection within a single process; permit it only under the dev
-        // opt-in. Subscription gates still require durable+shared (enforced in
-        // the MPP adapter), so this opt-in never weakens subscription
-        // activation replay.
-        if (inMemoryStoresAllowed(config.network)) return;
-        throw new ConfigurationError('replayStore outside localnet must set isShared=true and isDurable=true.');
-    }
 }
 
 export function validateMppConfig(
@@ -220,14 +197,85 @@ export function validateMppConfig(
     }
 }
 
-/** Revalidate every security-relevant invariant on a resolved config. */
+/**
+ * Revalidate resolved configuration safety when it crosses an API boundary.
+ *
+ * The atomic/shared replay-store requirement is the nominal policy shared with
+ * every MPP settlement adapter: an injected store must implement atomic
+ * `putIfAbsent` and be declared production via `declareProductionReplayStore()`,
+ * or be the SDK's own unsafe-memory store used only under the explicit
+ * development opt-in. Unknown stores fail closed.
+ */
+export function assertReplayStorePolicy(
+    config: Pick<PayKitConfig, 'accept' | 'mpp' | 'network' | 'operator' | 'replayStore'>,
+): void {
+    if (
+        config.network === 'solana_mainnet' &&
+        (config.operator.signer.isDemo || config.operator.signer.signer.address === DEMO_SIGNER_PUBLIC_KEY)
+    ) {
+        throw new DemoSignerOnMainnetError(
+            'The demo signer is public and must not be used on mainnet. Provide operator.signer.',
+        );
+    }
+    if (config.operator.feePayer && !config.operator.signer.isFeePayer) {
+        throw new ConfigurationError(
+            'operator.feePayer=true requires an operator signer that permits fee sponsorship.',
+        );
+    }
+    if (config.accept.includes('x402') && !config.operator.feePayer) {
+        throw new ConfigurationError(
+            'x402 requires an operator fee payer; its SVM challenge cannot be completed without one.',
+        );
+    }
+    if (config.network === 'solana_mainnet' && config.accept.includes('mpp') && config.mpp.allowUnsafeMemoryStore) {
+        throw new ConfigurationError(
+            'mpp.allowUnsafeMemoryStore is forbidden on mainnet; inject an atomic shared replayStore.',
+        );
+    }
+    // x402 replay coverage is deferred to the x402 adapter's own fail-closed
+    // fence: its facilitator settles a specifically bound transaction and the
+    // x402 store uses reserve()/putIfAbsent semantics that do not fit the MPP
+    // putIfAbsent production marker. Forcing that marker here would reject the
+    // legacy Store.Store x402 servers still inject, so the config-layer atomic
+    // requirement stays MPP-scoped.
+    if (!config.accept.includes('mpp')) return;
+
+    const store = config.replayStore;
+    if (store === undefined) {
+        throw new ConfigurationError(
+            'MPP requires an injected atomic shared replayStore; ' +
+                'mpp.allowUnsafeMemoryStore or PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 is development-only.',
+        );
+    }
+    if (!isAtomicReplayStore(store)) {
+        throw new ConfigurationError(
+            'MPP replayStore must implement atomic putIfAbsent(key, value); legacy non-atomic stores fail closed.',
+        );
+    }
+    if (
+        !isProductionReplayStore(store) &&
+        !(config.mpp.allowUnsafeMemoryStore && isAuthorizedUnsafeMemoryReplayStore(store))
+    ) {
+        throw new ConfigurationError(
+            'MPP replayStore must be declared with declareProductionReplayStore() after verifying atomic shared durability; ' +
+                'unknown stores fail closed.',
+        );
+    }
+}
+
+/**
+ * Revalidate every security-relevant invariant on a resolved config. The
+ * replay-store / signer policy runs before the MPP challenge-secret length
+ * check so a mainnet or missing-store misconfiguration is reported ahead of a
+ * secret that is merely too short; both are fail-closed either way.
+ */
 export function validatePayKitConfig(config: PayKitConfig): void {
     validateNetwork(config.network);
     validateAccept(config.accept);
     validateStablecoins(config.stablecoins);
     validateOperator(config.network, config.operator);
+    assertReplayStorePolicy(config);
     validateMppConfig(config);
-    validateReplayStore(config);
 }
 
 function freezePayKitSigner(signer: PayKitSigner): PayKitSigner {
@@ -309,11 +357,10 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
               ? provided
               : Signer.from(provided, { feePayer: params.operator?.feePayer });
     const operator: Operator = {
-        feePayer: params.operator?.feePayer ?? true,
+        feePayer: params.operator?.feePayer ?? signer.isFeePayer,
         recipient: params.operator?.recipient ?? signer.pubkey,
         signer,
     };
-    validateOperator(network, operator);
 
     const expiresIn = params.mpp?.expiresIn ?? DEFAULT_EXPIRES_IN_SECONDS;
     // The MPP challenge-binding secret is only meaningful when MPP is accepted;
@@ -322,24 +369,28 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
 
-    // When the devnet in-memory opt-in is set and no replay store was supplied,
-    // materialize ONE process-local store so the same instance reaches every
-    // settlement adapter (charge, subscription, x402). Charge/x402 then run with
-    // in-memory replay protection; the subscription adapter still rejects it
-    // (non-durable) with a clear error, so this never silently boots a
-    // subscription unprotected. Localnet is left untouched (adapters build
-    // their own).
-    const replayStore =
-        params.replayStore === undefined &&
-        requiresSettlementReplayStore(accept) &&
-        network === 'solana_devnet' &&
-        process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1'
-            ? createUnsafeMemorySubscriptionReplayStore()
-            : params.replayStore;
+    const allowUnsafeMemoryStore =
+        params.mpp?.allowUnsafeMemoryStore ?? process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1';
+    if (network === 'solana_mainnet' && accept.includes('mpp') && allowUnsafeMemoryStore) {
+        throw new ConfigurationError(
+            'mpp.allowUnsafeMemoryStore is forbidden on mainnet; inject an atomic shared replayStore.',
+        );
+    }
+    let replayStore: Store.Store | undefined = params.replayStore;
+    if (accept.includes('mpp')) {
+        if (replayStore === undefined && allowUnsafeMemoryStore) {
+            console.warn(
+                '[pay-kit] MPP explicitly enabled a process-local replay store. ' +
+                    'Replay markers are lost on restart and are not shared across workers.',
+            );
+            replayStore = createUnsafeMemoryReplayStore();
+        }
+    }
 
     const resolved: PayKitConfig = {
         accept,
         mpp: {
+            allowUnsafeMemoryStore,
             challengeBindingSecret,
             expiresIn,
             html: params.mpp?.html ?? false,
@@ -363,16 +414,20 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
  * variables: `NETWORK`, `RPC_URL`, `ACCEPT` and `STABLECOINS`
  * (comma-separated), `OPERATOR_KEY` (any encoding {@link Signer.env}
  * accepts), `RECIPIENT`, `FEE_PAYER`, `MPP_REALM`, `MPP_SECRET`,
- * `MPP_EXPIRES_IN`, and `PREFLIGHT`.
+ * `MPP_EXPIRES_IN`, `PREFLIGHT`, and `ALLOW_INMEMORY_REPLAY_STORE`. Pass
+ * `replayStore` separately because a shared store is an application object,
+ * not an environment scalar.
  */
-export async function configureFromEnv(prefix = 'PAY_KIT_'): Promise<PayKitConfig> {
+export async function configureFromEnv(prefix = 'PAY_KIT_', replayStore?: Store.Store): Promise<PayKitConfig> {
     const env = (name: string) => process.env[`${prefix}${name}`]?.trim() || undefined;
     const list = (value: string | undefined) => value?.split(',').map(entry => entry.trim()) ?? undefined;
 
+    const allowUnsafeMemoryStore = env('ALLOW_INMEMORY_REPLAY_STORE');
     const expiresIn = env('MPP_EXPIRES_IN');
     return await configure({
         accept: list(env('ACCEPT')) as readonly Protocol[] | undefined,
         mpp: {
+            allowUnsafeMemoryStore: allowUnsafeMemoryStore === '1',
             challengeBindingSecret: env('MPP_SECRET'),
             expiresIn: expiresIn === undefined ? undefined : Number(expiresIn),
             realm: env('MPP_REALM'),
@@ -384,6 +439,7 @@ export async function configureFromEnv(prefix = 'PAY_KIT_'): Promise<PayKitConfi
             signer: await Signer.env(`${prefix}OPERATOR_KEY`),
         },
         preflight: env('PREFLIGHT') === undefined ? undefined : env('PREFLIGHT') !== 'false',
+        replayStore,
         rpcUrl: env('RPC_URL'),
     });
 }

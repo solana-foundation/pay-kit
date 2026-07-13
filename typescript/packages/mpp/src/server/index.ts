@@ -1,7 +1,7 @@
 export * from '../constants.js';
 export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge.js';
 export { solana } from './Methods.js';
-export { type RpcLike, session, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
+export { ConfigurationError, type RpcLike, session, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
 export {
     type ChannelMutator,
     type ChannelState,
@@ -11,7 +11,16 @@ export {
     type ListChannelsFilter,
     type PendingDelivery,
     type SessionStore,
+    type SessionStoreDurability,
 } from './session/store.js';
+export {
+    createAtomicReplayStoreView,
+    createUnsafeMemoryReplayStore,
+    isUnsafeMemoryReplayStore,
+    resolveReplayStore,
+    type ReplayStore,
+    type ReplayStoreCapability,
+} from './store.js';
 export {
     buildReclaimInstruction,
     encodeVoucherMessageBytes,

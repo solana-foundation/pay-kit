@@ -103,6 +103,16 @@ export interface ListChannelsFilter {
  */
 export type ChannelMutator = (current: ChannelState | undefined) => ChannelState | Promise<ChannelState>;
 
+/** Explicit storage safety declaration for session channel state. */
+export type SessionStoreDurability = 'durable-shared' | 'ephemeral';
+
+/**
+ * Brand marking a store as the process-local, non-durable in-memory
+ * `SessionStore`. Uses the global symbol registry so the mark survives the
+ * `@solana/mpp` / consumer package boundary without an `instanceof` check.
+ */
+const MEMORY_SESSION_STORE = Symbol.for('@solana/mpp/server:memory-session-store');
+
 /**
  * Async store for per-channel state.
  *
@@ -111,6 +121,7 @@ export type ChannelMutator = (current: ChannelState | undefined) => ChannelState
  * read-modify-write to avoid double-spend under concurrent vouchers.
  */
 export interface SessionStore {
+    readonly [MEMORY_SESSION_STORE]?: true;
     /** Remove a channel from the store. */
     deleteChannel(channelId: string): Promise<void>;
     /** Read a channel. Returns `undefined` if it doesn't exist. */
@@ -122,16 +133,11 @@ export interface SessionStore {
      * not found, matching the Rust behavior.
      */
     markSealed(channelId: string): Promise<ChannelState>;
+    /** Off localnet, production stores must explicitly declare durable sharing. */
+    readonly sessionStoreDurability?: SessionStoreDurability | undefined;
     /** Atomically read-modify-write a channel's state. */
     updateChannel(channelId: string, mutator: ChannelMutator): Promise<ChannelState>;
 }
-
-/**
- * Brand marking a store as the process-local, non-durable in-memory
- * `SessionStore`. Uses the global symbol registry so the mark survives the
- * `@solana/mpp` / consumer package boundary without an `instanceof` check.
- */
-const MEMORY_SESSION_STORE = Symbol.for('@solana/mpp/server:memory-session-store');
 
 /**
  * True when `store` was produced by {@link createMemorySessionStore}. Higher
@@ -206,6 +212,8 @@ export function createMemorySessionStore(): SessionStore {
                 return Promise.resolve(next);
             });
         },
+
+        sessionStoreDurability: 'ephemeral' as const,
 
         async updateChannel(channelId, mutator) {
             return await withLock(channelId, async () => {

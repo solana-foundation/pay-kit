@@ -1,18 +1,23 @@
 import { createHmac } from 'node:crypto';
 
-import { guardChallengeValue, resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
+import { defaultTokenProgramForCurrency, guardChallengeValue, resolveStablecoinMint } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
 import { requireMint, resolveCoin } from '../coin.js';
-import type { PayKitConfig } from '../config.js';
+import { assertReplayStorePolicy, type PayKitConfig } from '../config.js';
 import { ConfigurationError, InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2, toSolanaNetwork } from '../protocol.js';
-import type { AtomicSubscriptionReplayStore } from '../subscription-replay-store.js';
+import {
+    atomicReplayStoreView,
+    isAtomicReplayStore,
+    isProductionReplayStore,
+    type ReplayStore,
+} from '../replay-store.js';
 
 /** Settlement header mirrored by every PayKit SDK. */
 const SETTLEMENT_SIGNATURE_HEADER = 'x-payment-settlement-signature';
@@ -73,6 +78,23 @@ function schemeFor(gate: Gate): 'charge' | 'subscription' {
  * distinct (recipient, splits) shape and cached.
  */
 export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
+    if (config.replayStore === undefined) {
+        throw new ConfigurationError('MPP adapter requires the replayStore resolved by configure().');
+    }
+    if (!isAtomicReplayStore(config.replayStore)) {
+        throw new ConfigurationError('MPP adapter replayStore must implement atomic putIfAbsent(key, value).');
+    }
+    // Explicitly typed so the atomic narrowing survives into the nested
+    // handler closures below (control-flow narrowing does not cross them).
+    const injectedStore: ReplayStore = config.replayStore;
+    assertReplayStorePolicy(config);
+    // One atomic view feeds both charge and subscription methods. The view
+    // exposes reserve() (aliasing putIfAbsent) so the subscription server's
+    // claimConsumed reservation runs against the same cross-instance atomic
+    // marker as charge replay. Production status is tracked on the injected
+    // store (not the view), so subscription durability is checked on
+    // injectedStore below.
+    const replayStore = atomicReplayStoreView(injectedStore);
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
 
@@ -103,25 +125,19 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 if (!config.operator.feePayer) {
                     throw new ConfigurationError('Subscription gates require an operator fee payer.');
                 }
-                if (
-                    !config.replayStore ||
-                    typeof (config.replayStore as { reserve?: unknown }).reserve !== 'function'
-                ) {
+                // Subscription activation replay needs a durable, shared store.
+                // The nominal marker is #237's production declaration: outside
+                // localnet the injected store must be declared production via
+                // declareProductionReplayStore(). The unsafe-memory opt-in
+                // (createUnsafeMemoryReplayStore) is authorized-unsafe but never
+                // production, so it is rejected here even under
+                // PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE: the opt-in covers charge
+                // replay, never subscription activation replay.
+                if (config.network !== 'solana_localnet' && !isProductionReplayStore(injectedStore)) {
                     throw new ConfigurationError(
-                        'Subscription gates require a durable, shared replay store with an atomic reserve(); ' +
-                            'provide replayStore. The in-memory opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE) does ' +
-                            'not cover subscription activation replay.',
-                    );
-                }
-                const replayStore = config.replayStore as AtomicSubscriptionReplayStore;
-                if (
-                    config.network !== 'solana_localnet' &&
-                    (replayStore.isShared !== true || replayStore.isDurable !== true)
-                ) {
-                    throw new ConfigurationError(
-                        'Subscription gates outside localnet require a replay store that reports isShared=true and ' +
-                            'isDurable=true; the in-memory opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE) does not ' +
-                            'cover subscription activation replay.',
+                        'Subscription gates outside localnet require a durable shared replay store declared with ' +
+                            'declareProductionReplayStore(); the in-memory opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE) ' +
+                            'does not cover subscription activation replay.',
                     );
                 }
                 const mppx = Mppx.create({
@@ -140,9 +156,11 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             puller,
                             recipient: gate.payTo,
                             rpcUrl: config.rpcUrl,
+                            // feePayer is required for subscriptions (asserted above), so
+                            // the operator signer is always threaded through.
                             signer: config.operator.signer.signer,
                             store: replayStore,
-                            tokenProgram: TOKEN_PROGRAM,
+                            tokenProgram: defaultTokenProgramForCurrency(mint, network),
                         }),
                     ],
                     realm,
@@ -158,6 +176,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 const mppx = Mppx.create({
                     methods: [
                         solana.charge({
+                            allowUnsafeMemoryStore: config.mpp.allowUnsafeMemoryStore === true,
                             currency: mint,
                             decimals: 6,
                             ...(config.mpp.html ? { html: true } : {}),
@@ -166,7 +185,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             rpcUrl: config.rpcUrl,
                             ...signer,
                             ...(splits.length > 0 ? { splits: [...splits] } : {}),
-                            ...(config.replayStore ? { store: config.replayStore } : {}),
+                            store: replayStore,
                         }),
                     ],
                     realm,

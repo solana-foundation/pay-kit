@@ -7,26 +7,31 @@ import { Gate } from '../gate.js';
 import { createPayKit } from '../paykit.js';
 import { usd } from '../price.js';
 import { session } from '../pricing.js';
+import { declareProductionReplayStore, type ReplayStore } from '../replay-store.js';
 import { Signer } from '../signer.js';
 
-function createSharedReplayStore() {
-    const entries = new Map<string, unknown>();
-    return {
-        delete: async (key: string) => {
-            entries.delete(key);
+// Satisfies the replay-store policy so configure() succeeds; the session-store
+// assertions below exercise the session engine's own store policy.
+function sharedReplayStore(): ReplayStore {
+    const values = new Map<string, unknown>();
+    return declareProductionReplayStore({
+        isDurable: true,
+        isShared: true,
+        async delete(key) {
+            values.delete(key);
         },
-        get: async (key: string) => entries.get(key) ?? null,
-        isDurable: true as const,
-        isShared: true as const,
-        put: async (key: string, value: unknown) => {
-            entries.set(key, value);
+        async get(key) {
+            return (values.get(key) ?? null) as never;
         },
-        reserve: async (key: string, value: unknown = true) => {
-            if (entries.has(key)) return false;
-            entries.set(key, value);
+        async put(key, value) {
+            values.set(key, value);
+        },
+        async putIfAbsent(key, value) {
+            if (values.has(key)) return false;
+            values.set(key, value);
             return true;
         },
-    };
+    });
 }
 
 /** A durable (non in-memory-branded) SessionStore, delegating to the in-memory impl. */
@@ -50,12 +55,17 @@ async function setup(
     const signer = await Signer.generate();
     const config = await configure({
         mpp: {
+            // A production replay store is always injected, so the charge-level
+            // unsafe-memory flag stays off; this keeps the process-wide session
+            // opt-in env from tripping the mainnet charge-policy guard, letting
+            // these tests reach the session-store engine assertions.
+            allowUnsafeMemoryStore: false,
             challengeBindingSecret: 's'.repeat(32),
             ...(options.sessionStore ? { sessionStore: options.sessionStore } : {}),
         },
         network: options.network ?? 'solana_localnet',
         operator: { signer },
-        replayStore: createSharedReplayStore(),
+        replayStore: sharedReplayStore(),
     });
     const gate = Gate.create(
         {
