@@ -1199,7 +1199,13 @@ mod tests {
     use crate::core::payment_channels::{
         build_open_instruction, derive_channel_addresses, OpenChannelParams,
     };
+    use crate::generated::payment_channels::generated::types::SettlementWatermarks;
+    use crate::x402::protocol::schemes::exact::SOLANA_DEVNET;
+    use crate::x402::protocol::schemes::upto::UptoPayload;
+    use crate::x402::server::mock_rpc::MockRpc;
     use async_trait::async_trait;
+    use ed25519_dalek::SigningKey;
+    use solana_keychain::memory::MemorySigner;
     use solana_keychain::{SignTransactionResult, SignerError};
     use solana_signature::Signature;
 
@@ -1965,5 +1971,312 @@ mod tests {
         assert!(serde_json::to_value(&req).unwrap()["extra"]
             .get("facilitatorAddress")
             .is_none());
+    }
+
+    fn memory_signer(seed: u8) -> Arc<dyn SolanaSigner> {
+        let keypair = SigningKey::from_bytes(&[seed; 32]).to_keypair_bytes();
+        Arc::new(MemorySigner::from_bytes(&keypair).expect("memory signer"))
+    }
+
+    fn rpc_engine(rpc_url: String, signer: Arc<dyn SolanaSigner>) -> X402Upto {
+        X402Upto::new(UptoConfig {
+            payout: UptoPayout::ReceiverKeepsAll,
+            currencies: vec![CurrencyConfig {
+                currency: "USDC".to_string(),
+                decimals: 6,
+                token_program: None,
+            }],
+            cluster: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            resource: "/usage".to_string(),
+            description: Some("metered endpoint".to_string()),
+            max_timeout_seconds: 300,
+            program_id: None,
+            withdraw_delay: 900,
+            fee_payer_signer: signer,
+            receiver_authorizer_signer: None,
+        })
+        .expect("rpc test engine")
+    }
+
+    struct RpcFixture {
+        mock: MockRpc,
+        handler: X402Upto,
+        header: String,
+        channel_id: Pubkey,
+        payer: Pubkey,
+        operator: Pubkey,
+        mint: Pubkey,
+    }
+
+    async fn rpc_fixture() -> RpcFixture {
+        let mock = MockRpc::start().await;
+        let signer = memory_signer(61);
+        let operator = signer.pubkey();
+        let handler = rpc_engine(mock.url(), signer);
+        let payer = Pubkey::new_unique();
+        let mint = handler
+            .mint_for(handler.primary_currency())
+            .expect("USDC mint");
+        let params = OpenChannelParams {
+            payer,
+            rent_payer: operator,
+            payee: operator,
+            mint,
+            authorized_signer: operator,
+            salt: 7,
+            open_slot: 314,
+            deposit: 1_000_000,
+            grace_period: 900,
+            recipients: vec![],
+            token_program: token_program(),
+            program_id: pc::default_program_id(),
+        };
+        let channel_id = derive_channel_addresses(&params).channel;
+        let transaction = unsigned_tx_with_fee_payer(&[build_open_instruction(&params)], operator);
+        let requirements = handler.upto_requirements("1.00").expect("requirements");
+        let envelope = UptoSignatureEnvelope {
+            x402_version: X402_VERSION_V2,
+            accepted: serde_json::to_value(requirements).expect("accepted requirements"),
+            payload: UptoPayload {
+                from: pc::pubkey_string(&payer),
+                max_amount: "1000000".to_string(),
+                expires_at: 4_102_444_800,
+                valid_after: 0,
+                nonce: "7".to_string(),
+                channel_id: pc::pubkey_string(&channel_id),
+                deposit: "1000000".to_string(),
+                authorized_signer: pc::pubkey_string(&operator),
+                open_slot: "314".to_string(),
+                open_transaction: Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    bincode::serialize(&transaction).expect("serialize open transaction"),
+                )),
+            },
+        };
+        let header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).expect("serialize signature envelope"),
+        );
+
+        RpcFixture {
+            mock,
+            handler,
+            header,
+            channel_id,
+            payer,
+            operator,
+            mint,
+        }
+    }
+
+    fn matching_channel(fixture: &RpcFixture) -> Channel {
+        Channel {
+            discriminator: 0,
+            version: 1,
+            bump: 255,
+            status: CHANNEL_STATUS_OPEN,
+            salt: 7,
+            deposit: 1_000_000,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash: pc::distribution_hash(&[]),
+            payer: pc::to_address(&fixture.payer),
+            payee: pc::to_address(&fixture.operator),
+            authorized_signer: pc::to_address(&fixture.operator),
+            mint: pc::to_address(&fixture.mint),
+            rent_payer: pc::to_address(&fixture.operator),
+            open_slot: 314,
+        }
+    }
+
+    fn bind_channel(fixture: &RpcFixture, channel: &Channel) {
+        fixture.mock.set_account(
+            pc::pubkey_string(&fixture.channel_id),
+            borsh::to_vec(channel).expect("serialize channel account"),
+            pc::pubkey_string(&pc::default_program_id()),
+        );
+    }
+
+    async fn verify_error(mutator: impl FnOnce(&mut Channel)) -> Error {
+        let fixture = rpc_fixture().await;
+        let mut channel = matching_channel(&fixture);
+        mutator(&mut channel);
+        bind_channel(&fixture, &channel);
+        fixture
+            .handler
+            .verify_open(&fixture.header, "1.00")
+            .await
+            .expect_err("mutated channel must be rejected")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_binds_channel_and_settlement_covers_zero_and_voucher_paths() {
+        let fixture = rpc_fixture().await;
+        bind_channel(&fixture, &matching_channel(&fixture));
+
+        let open = fixture
+            .handler
+            .verify_open(&fixture.header, "1.00")
+            .await
+            .expect("valid open is accepted");
+        assert_eq!(open.channel_id, fixture.channel_id);
+        assert_eq!(open.payer, fixture.payer);
+        assert_eq!(open.max_amount, 1_000_000);
+        assert_eq!(open.distribution, Vec::<pc::Distribution>::new());
+
+        let voucher_instructions = fixture
+            .handler
+            .settlement_instructions(&open, 250_000)
+            .await
+            .expect("voucher settlement instructions");
+        let zero_instructions = fixture
+            .handler
+            .settlement_instructions(&open, 0)
+            .await
+            .expect("zero settlement instructions");
+        assert_eq!(voucher_instructions.len(), 5);
+        assert_eq!(zero_instructions.len(), 4);
+        assert!(fixture
+            .handler
+            .settlement_instructions(&open, 1_000_001)
+            .await
+            .is_err());
+
+        let settlement = fixture
+            .handler
+            .settle_actual(&open, 250_000)
+            .await
+            .expect("settlement broadcast");
+        assert!(settlement.success);
+        assert_eq!(settlement.amount, "250000");
+        assert_eq!(
+            settlement.payer.as_deref(),
+            Some(pc::pubkey_string(&fixture.payer).as_str())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verify_open_rejects_every_bound_channel_identity() {
+        let status = verify_error(|channel| channel.status = 2).await;
+        assert!(status.to_string().contains("not open"), "{status}");
+
+        let mint =
+            verify_error(|channel| channel.mint = pc::to_address(&Pubkey::new_unique())).await;
+        assert!(matches!(mint, Error::MintMismatch { .. }), "{mint:?}");
+
+        let payee =
+            verify_error(|channel| channel.payee = pc::to_address(&Pubkey::new_unique())).await;
+        assert!(
+            matches!(payee, Error::RecipientMismatch { .. }),
+            "{payee:?}"
+        );
+
+        let distribution = verify_error(|channel| {
+            channel.distribution_hash = pc::distribution_hash(&[pc::Distribution {
+                recipient: Pubkey::new_unique(),
+                bps: 10_000,
+            }]);
+        })
+        .await;
+        assert!(distribution
+            .to_string()
+            .contains("distribution does not match"));
+
+        let signer = verify_error(|channel| {
+            channel.authorized_signer = pc::to_address(&Pubkey::new_unique());
+        })
+        .await;
+        assert!(signer.to_string().contains("receiver authorizer"));
+
+        let rent_payer = verify_error(|channel| {
+            channel.rent_payer = pc::to_address(&Pubkey::new_unique());
+        })
+        .await;
+        assert!(rent_payer.to_string().contains("fee payer"));
+
+        let grace_period = verify_error(|channel| channel.grace_period = 901).await;
+        assert!(grace_period.to_string().contains("withdraw delay"));
+
+        let deposit = verify_error(|channel| channel.deposit = 999_999).await;
+        assert!(deposit.to_string().contains("authorized maximum"));
+
+        let payer =
+            verify_error(|channel| channel.payer = pc::to_address(&Pubkey::new_unique())).await;
+        assert!(payer.to_string().contains("does not match payload.from"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rpc_failures_are_exposed_before_serving_or_settling() {
+        let mock = MockRpc::start().await;
+        mock.fail_blockhash("node unhealthy");
+        let challenge_error = rpc_engine(mock.url(), memory_signer(62))
+            .upto("1.00")
+            .expect_err("blockhash fetch failure");
+        assert!(matches!(challenge_error, Error::Rpc(_)));
+
+        let fixture = rpc_fixture().await;
+        fixture.mock.fail_send("preflight failed");
+        let open_error = fixture
+            .handler
+            .verify_open(&fixture.header, "1.00")
+            .await
+            .expect_err("open broadcast failure");
+        assert!(matches!(open_error, Error::Rpc(_)));
+    }
+
+    #[test]
+    fn headers_and_payment_signature_parsing_preserve_the_wire_contract() {
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        cache.set("11111111111111111111111111111111".to_string(), 1000, 314);
+        let engine = rpc_engine("http://127.0.0.1:1".to_string(), memory_signer(63))
+            .with_blockhash_cache(cache);
+        let (name, value) = engine
+            .payment_required_header("1.00")
+            .expect("challenge header");
+        assert_eq!(name, PAYMENT_REQUIRED_HEADER);
+        let challenge: UptoRequiredEnvelope = serde_json::from_slice(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
+                .expect("decode challenge header"),
+        )
+        .expect("parse challenge envelope");
+        assert_eq!(
+            challenge.accepts[0].extra.recent_slot.as_deref(),
+            Some("314")
+        );
+
+        let settlement = UptoSettlementResponse {
+            success: true,
+            error_reason: None,
+            payer: Some(engine.fee_payer()),
+            transaction: "settle-signature".to_string(),
+            network: SOLANA_DEVNET.to_string(),
+            amount: "42".to_string(),
+        };
+        let (name, value) = engine
+            .settlement_header(&settlement)
+            .expect("settlement header");
+        assert_eq!(name, PAYMENT_RESPONSE_HEADER);
+        let decoded: UptoSettlementResponse = serde_json::from_slice(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value)
+                .expect("decode settlement header"),
+        )
+        .expect("parse settlement response");
+        assert_eq!(decoded.transaction, settlement.transaction);
+
+        assert!(engine.parse_payment_signature("not-base64").is_err());
+        let wrong_scheme = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            br#"{"x402Version":2,"accepted":{"scheme":"exact"},"payload":{"from":"x","maxAmount":"1","expiresAt":1,"validAfter":0,"nonce":"1","channelId":"x","deposit":"1","authorizedSigner":"x","openSlot":"1"}}"#,
+        );
+        assert!(matches!(
+            engine.parse_payment_signature(&wrong_scheme),
+            Err(Error::InvalidPayloadType(_))
+        ));
     }
 }

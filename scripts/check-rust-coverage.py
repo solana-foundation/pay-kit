@@ -23,7 +23,6 @@ FILE_EXEMPTIONS = {
     "x402/client/upto/payment.rs": "upto client construction is exercised by the cross-SDK on-chain harness",
     "x402/error.rs": "feature-gated error display variants are not all constructed by the deterministic unit run",
     "x402/server/batch_settlement.rs": "batch server orchestration requires service-backed settlement fixtures",
-    "x402/server/upto.rs": "upto server RPC branches are covered by the dedicated on-chain harness",
 }
 
 

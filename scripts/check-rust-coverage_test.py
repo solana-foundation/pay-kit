@@ -43,27 +43,27 @@ def check_case(name: str, payload: dict[str, object], expected: int, needle: str
 def main() -> None:
     mpp = "/tmp/rust/crates/kit/src/mpp/verify.rs"
     x402 = "/tmp/rust/crates/kit/src/x402/verify.rs"
-    legacy_x402 = "/tmp/rust/crates/kit/src/x402/server/upto.rs"
-    nested_src_legacy_x402 = "/tmp/src/work/rust/crates/kit/src/x402/server/upto.rs"
+    covered_x402 = "/tmp/rust/crates/kit/src/x402/server/upto.rs"
+    nested_src_covered_x402 = "/tmp/src/work/rust/crates/kit/src/x402/server/upto.rs"
     check_case("healthy report passes", report(file_record(mpp), file_record(x402)), 0, "coverage gate passed")
     check_case("missing x402 scope fails", report(file_record(mpp)), 1, "x402 scope contains no")
     check_case("empty metric fails", report(file_record(mpp, 0, 0), file_record(x402)), 1, "invalid or empty")
     check_case("below-floor file fails", report(file_record(mpp, 7, 10), file_record(x402)), 1, "per-file lines 70.0%")
     check_case(
-        "documented legacy exemption passes",
-        report(file_record(mpp), file_record(x402, 1_000, 1_000), file_record(legacy_x402, 1, 10)),
-        0,
-        "exempt per-file lines 10.0%",
+        "formerly exempt file now fails below floor",
+        report(file_record(mpp), file_record(x402, 1_000, 1_000), file_record(covered_x402, 1, 10)),
+        1,
+        "per-file lines 10.0%",
     )
     check_case(
-        "exemption is stable under a checkout path containing src",
+        "covered file still fails under a checkout path containing src",
         report(
             file_record(mpp),
             file_record(x402, 1_000, 1_000),
-            file_record(nested_src_legacy_x402, 1, 10),
+            file_record(nested_src_covered_x402, 1, 10),
         ),
-        0,
-        "exempt per-file lines 10.0%",
+        1,
+        "per-file lines 10.0%",
     )
     check_case("malformed report fails", {"data": []}, 1, "coverage report is malformed")
 

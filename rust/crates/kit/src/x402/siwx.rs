@@ -1281,4 +1281,43 @@ Issued At: 2026-04-27T00:00:00Z"
             UNIX_EPOCH
         );
     }
+
+    #[test]
+    fn rejects_malformed_siwx_header_and_signature_encodings() {
+        assert!(parse_siwx_header("%%%not-base64%%%").is_err());
+
+        let mut payload = SiwxPayload {
+            domain: "example.com".to_string(),
+            address: "4BuiY9QUUfPoAGNJBja3JapAuVWMc9c7in6UCgyC2zPR".to_string(),
+            uri: "https://example.com/reports".to_string(),
+            statement: None,
+            version: "1".to_string(),
+            chain_id: SOLANA_DEVNET.to_string(),
+            nonce: "nonce-123".to_string(),
+            issued_at: "2026-04-27T00:00:00Z".to_string(),
+            expiration_time: None,
+            not_before: None,
+            request_id: None,
+            resources: None,
+            signature_type: SIWX_SIGNATURE_TYPE_ED25519.to_string(),
+            signature_scheme: Some(SIWX_SIGNATURE_SCHEME_SIWS.to_string()),
+            signature: bs58::encode([1_u8; 64]).into_string(),
+        };
+
+        payload.address = "%%%".to_string();
+        let error = verify_siwx_payload(&payload).unwrap_err();
+        assert!(error.to_string().contains("Invalid SIWX address"));
+
+        payload.address = "4BuiY9QUUfPoAGNJBja3JapAuVWMc9c7in6UCgyC2zPR".to_string();
+        payload.signature = "%%%".to_string();
+        let error = verify_siwx_payload(&payload).unwrap_err();
+        assert!(error.to_string().contains("Invalid SIWX signature"));
+
+        payload.signature = bs58::encode([1_u8; 63]).into_string();
+        let error = verify_siwx_payload(&payload).unwrap_err();
+        assert!(error.to_string().contains("siwx_invalid_signature"));
+
+        payload.signature_scheme = Some("eip191".to_string());
+        assert!(!verify_siwx_payload(&payload).unwrap());
+    }
 }
