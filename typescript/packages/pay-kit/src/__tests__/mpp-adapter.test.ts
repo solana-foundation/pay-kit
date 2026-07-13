@@ -1,5 +1,5 @@
 import { Challenge } from '@solana/mpp/client';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMppAdapter } from '../adapters/mpp.js';
 import { configure } from '../config.js';
@@ -11,6 +11,12 @@ import { createUnsafeMemorySubscriptionReplayStore } from '../subscription-repla
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
 const PLATFORM = 'CXG3Pq3DwZb1HVckhPQbVxiwoNGM3jNGYvC2BSdkj1pK';
+const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N';
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+    globalThis.fetch = originalFetch;
+});
 
 async function setup() {
     const config = await configure({
@@ -33,6 +39,11 @@ function createSharedTestReplayStore() {
             entries.set(key, value);
         },
         putIfAbsent: async (key: string, value: unknown) => {
+            if (entries.has(key)) return false;
+            entries.set(key, value);
+            return true;
+        },
+        reserve: async (key: string, value: unknown) => {
             if (entries.has(key)) return false;
             entries.set(key, value);
             return true;
@@ -77,6 +88,47 @@ describe('createMppAdapter', () => {
         await expect(
             createMppAdapter(config).challengeHeaders(subscriptionGate, new Request('http://t/feed')),
         ).rejects.toThrow(/isShared=true or isDurable=true/);
+    });
+
+    it('binds each subscription challenge to the requested resource path', async () => {
+        const signer = await Signer.generate();
+        const config = await configure({
+            accept: ['mpp'],
+            mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test' },
+            operator: { feePayer: true, recipient: SELLER, signer },
+            replayStore: createSharedTestReplayStore(),
+        });
+        globalThis.fetch = async () =>
+            new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+        const subscriptionGate = Gate.create(
+            {
+                ...subscription(usd('0.10'), {
+                    merchant: SELLER,
+                    periodCount: 1,
+                    periodUnit: 'day',
+                    planBump: 255,
+                    planCreatedAt: 1_700_000_000n,
+                    planId: PLATFORM,
+                    planIdNumeric: 1n,
+                    puller: signer.pubkey,
+                }),
+                name: 'feed',
+                payTo: SELLER,
+            },
+            { accept: ['mpp'], payTo: SELLER },
+        );
+        const adapter = createMppAdapter(config);
+        const gateA = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-a'));
+        const gateB = await adapter.challengeHeaders(subscriptionGate, new Request('http://t/gate-b'));
+
+        expect(
+            (Challenge.deserialize(gateA['www-authenticate'] as string).request as { resource?: string }).resource,
+        ).toBe('/gate-a');
+        expect(
+            (Challenge.deserialize(gateB['www-authenticate'] as string).request as { resource?: string }).resource,
+        ).toBe('/gate-b');
     });
 
     it('detects MPP payment credentials', async () => {

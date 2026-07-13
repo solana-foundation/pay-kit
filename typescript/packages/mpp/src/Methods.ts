@@ -197,6 +197,8 @@ export const subscription = Method.from({
             periodUnit: subscriptionPeriodUnit,
             /** Primary recipient's wallet pubkey (base58). */
             recipient: z.string(),
+            /** Canonical resource path this subscription authorizes. */
+            resource: z.optional(z.string()),
             /** RFC3339 expiry of the recurring authorization. */
             subscriptionExpires: z.optional(z.string()),
         }),

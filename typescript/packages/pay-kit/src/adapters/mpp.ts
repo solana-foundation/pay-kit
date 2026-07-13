@@ -132,6 +132,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                         currency: mint,
                         ...(description !== undefined ? { description } : {}),
                         ...(gate.externalId ? { externalId: gate.externalId } : {}),
+                        resource: new URL(request.url).pathname,
                     })(request);
             } else {
                 const mppx = Mppx.create({

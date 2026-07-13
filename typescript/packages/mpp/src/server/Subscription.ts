@@ -197,7 +197,7 @@ export function subscription(parameters: subscription.Parameters) {
             };
         },
 
-        async verify({ credential }) {
+        async verify({ credential, request }) {
             const cred = credential as unknown as CredentialPayload;
             const challenge = cred.challenge.request;
             const payloadType = resolvePayloadType(cred.payload);
@@ -205,6 +205,27 @@ export function subscription(parameters: subscription.Parameters) {
             if (payloadType === 'signature') {
                 throw new Error('Subscription signature-mode activation is unsupported; submit the signed transaction');
             }
+
+            assertSubscriptionCredentialBinding(challenge, request as unknown as ChallengeRequest, {
+                decimals,
+                expectedCreatedAt: String(planCreatedAt),
+                expectedPeriodHours: String(expectedPeriodHours),
+                merchant,
+                mint,
+                network,
+                periodCount,
+                periodUnit,
+                planBump,
+                planId,
+                planIdNumeric: String(planIdNumeric),
+                programId,
+                puller,
+                recipient,
+                signerAddress: signer.address,
+                splits,
+                subscriptionExpires,
+                tokenProgram,
+            });
 
             // `settleActivation` atomically claims the activation signature's
             // replay marker before broadcasting and hands the claimed key back.
@@ -308,6 +329,66 @@ function resolvePayloadType(payload: {
     if (payload.type === 'signature') return 'signature';
     if (payload.type === 'transaction') return 'transaction';
     throw new Error('Missing or invalid payload type: must be "transaction" or "signature"');
+}
+
+// Mppx binds only generic payment fields across routes. Subscription authority
+// and resource fields must also match the route that is currently verifying.
+function assertSubscriptionCredentialBinding(
+    challenge: ChallengeRequest,
+    currentRequest: ChallengeRequest,
+    expected: SubscriptionCredentialBinding,
+): void {
+    const bindings: Array<[field: string, actual: unknown, expected: unknown]> = [
+        ['amount', challenge.amount, currentRequest.amount],
+        ['currency', challenge.currency, expected.mint],
+        ['externalId', challenge.externalId, currentRequest.externalId],
+        ['periodCount', challenge.periodCount, String(expected.periodCount)],
+        ['periodUnit', challenge.periodUnit, expected.periodUnit],
+        ['recipient', challenge.recipient, expected.recipient],
+        ['resource', challenge.resource, currentRequest.resource],
+        ['subscriptionExpires', challenge.subscriptionExpires, expected.subscriptionExpires],
+        ['methodDetails.decimals', challenge.methodDetails.decimals, expected.decimals],
+        ['methodDetails.expectedCreatedAt', challenge.methodDetails.expectedCreatedAt, expected.expectedCreatedAt],
+        [
+            'methodDetails.expectedPeriodHours',
+            challenge.methodDetails.expectedPeriodHours,
+            expected.expectedPeriodHours,
+        ],
+        ['methodDetails.feePayer', challenge.methodDetails.feePayer, true],
+        ['methodDetails.feePayerKey', challenge.methodDetails.feePayerKey, expected.signerAddress],
+        ['methodDetails.merchant', challenge.methodDetails.merchant, expected.merchant],
+        ['methodDetails.mint', challenge.methodDetails.mint, expected.mint],
+        ['methodDetails.network', challenge.methodDetails.network, expected.network],
+        ['methodDetails.planBump', challenge.methodDetails.planBump, expected.planBump],
+        ['methodDetails.planId', challenge.methodDetails.planId, expected.planId],
+        ['methodDetails.planIdNumeric', challenge.methodDetails.planIdNumeric, expected.planIdNumeric],
+        ['methodDetails.programId', challenge.methodDetails.programId, expected.programId],
+        ['methodDetails.puller', challenge.methodDetails.puller, expected.puller],
+        ['methodDetails.tokenProgram', challenge.methodDetails.tokenProgram, expected.tokenProgram],
+    ];
+
+    for (const [field, actual, expectedValue] of bindings) {
+        if (actual !== expectedValue) {
+            throw new Error(`Subscription credential ${field} does not match the current route`);
+        }
+    }
+
+    if (!subscriptionSplitsMatch(challenge.methodDetails.splits, expected.splits)) {
+        throw new Error('Subscription credential methodDetails.splits does not match the current route');
+    }
+}
+
+function subscriptionSplitsMatch(
+    actual: Array<{ bps: number; recipient: string }> | undefined,
+    expected: Array<{ bps: number; recipient: string }> | undefined,
+): boolean {
+    if (actual === undefined || expected === undefined) return actual === expected;
+    return (
+        actual.length === expected.length &&
+        actual.every(
+            (split, index) => split.bps === expected[index]?.bps && split.recipient === expected[index]?.recipient,
+        )
+    );
 }
 
 // ── Activation settlement ──
@@ -986,7 +1067,29 @@ type ChallengeRequest = {
     periodCount: string;
     periodUnit: 'day' | 'week';
     recipient: string;
+    resource?: string;
     subscriptionExpires?: string;
+};
+
+type SubscriptionCredentialBinding = {
+    decimals: number;
+    expectedCreatedAt: string;
+    expectedPeriodHours: string;
+    merchant: string;
+    mint: string;
+    network: string;
+    periodCount: number;
+    periodUnit: 'day' | 'week';
+    planBump: number;
+    planId: string;
+    planIdNumeric: string;
+    programId: string;
+    puller: string;
+    recipient: string;
+    signerAddress: string;
+    splits?: Array<{ bps: number; recipient: string }>;
+    subscriptionExpires?: string;
+    tokenProgram: string;
 };
 
 // ── Test exports ──

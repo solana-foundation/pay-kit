@@ -11,9 +11,11 @@ import {
     getTransactionEncoder,
     type TransactionPartialSigner,
 } from '@solana/kit';
+import { Challenge, Credential } from 'mppx';
+import { Mppx } from 'mppx/server';
 
 import { buildSubscriptionActivationTransaction } from '../client/Subscription.js';
-import { COMPUTE_BUDGET_PROGRAM, SUBSCRIPTIONS_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
+import { COMPUTE_BUDGET_PROGRAM, SUBSCRIPTIONS_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
 import { getSubscriptionAuthorityEncoder } from '../generated/subscriptions/accounts/subscriptionAuthority.js';
 import { getSubscriptionDelegationEncoder } from '../generated/subscriptions/accounts/subscriptionDelegation.js';
 import { __testing, subscription, type SubscriptionReplayStore } from '../server/Subscription.js';
@@ -343,7 +345,7 @@ describe('settlement proof and replay', () => {
         await expect(
             method.verify!({
                 credential: credential(transaction, challengedRequest) as never,
-                request: {} as never,
+                request: challengedRequest as never,
             }),
         ).rejects.toThrow(/submitted activation signature was not confirmed/);
         expect(sendCalls).toBe(0);
@@ -389,7 +391,7 @@ describe('settlement proof and replay', () => {
         const run = (method: ReturnType<typeof subscription>) =>
             method.verify!({
                 credential: credential(transaction, challengedRequest) as never,
-                request: {} as never,
+                request: challengedRequest as never,
             });
         const results = await Promise.allSettled([run(first), run(second)]);
         const fulfilled = results.filter(result => result.status === 'fulfilled');
@@ -409,6 +411,103 @@ describe('settlement proof and replay', () => {
         expect(fulfilled[0].value).toHaveProperty('subscriptionId');
         expect(fulfilled[0].value).toHaveProperty('periodStartTs');
         expect(fulfilled[0].value).toHaveProperty('periodEndTs');
+    });
+});
+
+describe('cross-route subscription binding', () => {
+    test('rejects a valid gate-A credential before RPC when gate-B subscription fields diverge', async () => {
+        const { serverSigner, transaction } = await fixture();
+        const secretKey = 'subscription-binding-test-secret';
+        const expires = new Date(Date.now() + 60_000).toISOString();
+        let fetchCalls = 0;
+        globalThis.fetch = async () => {
+            fetchCalls += 1;
+            return rpcSuccess({});
+        };
+
+        const gateA = Mppx.create({
+            methods: [subscription(serverParameters(serverSigner, new AtomicStore()))],
+            realm: 'subscription-binding-test',
+            secretKey,
+        });
+        const issued = await gateA.subscription({
+            amount: '10000000',
+            currency: MINT,
+            expires,
+            externalId: 'invoice-42',
+            resource: '/gate-a',
+        })(new Request('https://example.test/gate-a'));
+        expect(issued.status).toBe(402);
+        if (issued.status !== 402) throw new Error('expected subscription challenge');
+
+        const credentialFromGateA = Credential.from({
+            challenge: Challenge.fromResponse(issued.challenge),
+            payload: { transaction, type: 'transaction' },
+        });
+        fetchCalls = 0;
+
+        const alternateFeePayer = await generateKeyPairSigner();
+        const variants = [
+            {
+                label: 'plan',
+                parameters: {
+                    ...serverParameters(serverSigner, new AtomicStore()),
+                    planId: RECIPIENT,
+                    planIdNumeric: 8n,
+                },
+            },
+            {
+                label: 'period',
+                parameters: { ...serverParameters(serverSigner, new AtomicStore()), periodCount: 1 },
+            },
+            {
+                label: 'puller and fee payer',
+                parameters: {
+                    ...serverParameters(alternateFeePayer, new AtomicStore()),
+                    puller: alternateFeePayer.address,
+                },
+            },
+            {
+                label: 'token program',
+                parameters: { ...serverParameters(serverSigner, new AtomicStore()), tokenProgram: TOKEN_2022_PROGRAM },
+            },
+            {
+                label: 'subscription program',
+                parameters: { ...serverParameters(serverSigner, new AtomicStore()), programId: RECIPIENT },
+            },
+            {
+                label: 'external id',
+                parameters: serverParameters(serverSigner, new AtomicStore()),
+                request: { externalId: 'invoice-43' },
+            },
+            {
+                label: 'resource',
+                parameters: serverParameters(serverSigner, new AtomicStore()),
+                request: { resource: '/gate-b' },
+            },
+        ];
+
+        for (const variant of variants) {
+            const gateB = Mppx.create({
+                methods: [subscription(variant.parameters)],
+                realm: 'subscription-binding-test',
+                secretKey,
+            });
+            const result = await gateB.subscription({
+                amount: '10000000',
+                currency: MINT,
+                expires,
+                externalId: variant.request?.externalId ?? 'invoice-42',
+                resource: variant.request?.resource ?? '/gate-a',
+            })(
+                new Request('https://example.test/gate-b', {
+                    headers: { Authorization: Credential.serialize(credentialFromGateA) },
+                }),
+            );
+
+            expect(result.status, variant.label).toBe(402);
+            expect(fetchCalls, variant.label).toBe(0);
+        }
     });
 });
 
