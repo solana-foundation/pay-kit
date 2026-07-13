@@ -50,6 +50,16 @@ describe('configure', () => {
         );
     });
 
+    it('rejects expirations that overflow Date while preserving expiresIn=0', async () => {
+        await expect(
+            configure({ ...SECRET, mpp: { ...SECRET.mpp, expiresIn: Number.MAX_SAFE_INTEGER } }),
+        ).rejects.toThrow('mpp.expiresIn must produce a valid expiration date.');
+
+        await expect(configure({ ...SECRET, mpp: { ...SECRET.mpp, expiresIn: 0 } })).resolves.toMatchObject({
+            mpp: { expiresIn: 0 },
+        });
+    });
+
     it('requires a challenge secret outside localnet', async () => {
         const signer = await Signer.generate();
         delete process.env.PAY_KIT_MPP_SECRET;

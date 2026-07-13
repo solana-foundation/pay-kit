@@ -102,19 +102,32 @@ const DEFAULT_EXPIRES_IN_SECONDS = 120;
 const MIN_CHALLENGE_BINDING_SECRET_BYTES = 32;
 const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
 
+export function validateMppConfig(
+    config: Pick<PayKitConfig, 'accept' | 'network'> & {
+        readonly mpp: Pick<PayKitConfig['mpp'], 'challengeBindingSecret' | 'expiresIn'>;
+    },
+): void {
+    const { challengeBindingSecret, expiresIn } = config.mpp;
+    if (expiresIn < 0 || !Number.isInteger(expiresIn)) {
+        throw new ConfigurationError('mpp.expiresIn must be a non-negative integer number of seconds.');
+    }
+    if (expiresIn > 0 && !Number.isFinite(new Date(Date.now() + expiresIn * 1000).getTime())) {
+        throw new ConfigurationError('mpp.expiresIn must produce a valid expiration date.');
+    }
+    if (
+        config.accept.includes('mpp') &&
+        config.network !== 'solana_localnet' &&
+        new TextEncoder().encode(challengeBindingSecret).byteLength < MIN_CHALLENGE_BINDING_SECRET_BYTES
+    ) {
+        throw new ConfigurationError(
+            `mpp.challengeBindingSecret must be at least ${MIN_CHALLENGE_BINDING_SECRET_BYTES} UTF-8 bytes outside localnet.`,
+        );
+    }
+}
+
 function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
     const secret = provided ?? process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
-    if (secret) {
-        if (
-            network !== 'solana_localnet' &&
-            new TextEncoder().encode(secret).byteLength < MIN_CHALLENGE_BINDING_SECRET_BYTES
-        ) {
-            throw new ConfigurationError(
-                `mpp.challengeBindingSecret must be at least ${MIN_CHALLENGE_BINDING_SECRET_BYTES} UTF-8 bytes outside localnet.`,
-            );
-        }
-        return secret;
-    }
+    if (secret) return secret;
     if (network !== 'solana_localnet') {
         throw new ConfigurationError(
             'mpp.challengeBindingSecret is required outside localnet. Provide it in configure() ' +
@@ -184,15 +197,17 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
     };
 
     const expiresIn = params.mpp?.expiresIn ?? DEFAULT_EXPIRES_IN_SECONDS;
-    if (expiresIn < 0 || !Number.isInteger(expiresIn)) {
-        throw new ConfigurationError('mpp.expiresIn must be a non-negative integer number of seconds.');
-    }
-
     // The MPP challenge-binding secret is only meaningful when MPP is accepted;
     // an x402-only server must not be forced to provide one.
     const challengeBindingSecret = accept.includes('mpp')
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
+
+    validateMppConfig({
+        accept,
+        mpp: { challengeBindingSecret, expiresIn },
+        network,
+    });
 
     if (
         accept.includes('mpp') &&

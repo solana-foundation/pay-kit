@@ -57,6 +57,19 @@ async function setup() {
 }
 
 describe('createPayKit', () => {
+    it('rejects a frozen prebuilt non-local config with a one-byte challenge binding secret', async () => {
+        const base = await configure({ mpp: { challengeBindingSecret: 's'.repeat(32) } });
+        const config: PayKitConfig = Object.freeze({
+            ...base,
+            mpp: Object.freeze({ ...base.mpp, challengeBindingSecret: 'x' }),
+            network: 'solana_devnet',
+        });
+
+        await expect(createPayKit({ config })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be at least 32 UTF-8 bytes outside localnet.',
+        );
+    });
+
     it('renders a 402 challenge when no credential is present', async () => {
         const paykit = await setup();
         const request = new Request('http://api.test/report');
