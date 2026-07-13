@@ -17,14 +17,14 @@ import { UptoSvmScheme as UptoSvmFacilitator } from '@x402/svm/upto/facilitator'
 
 import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
 import {
     assertPaymentHeaderWithinCap,
     ChallengeBlockhashCache,
     errorMessage,
-    isReservingReplayStore,
+    resolveX402ReplayStore,
     x402PaymentHeader,
 } from './x402-shared.js';
 
@@ -35,6 +35,13 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
 const DEFAULT_WITHDRAW_DELAY_SECONDS = 900;
+/**
+ * Hard ceiling on a replay reservation's TTL. `expiresAt` is payer-signed and
+ * unbounded above; without a cap a far-future value would mint effectively
+ * permanent route/consumed keys. 24h comfortably covers any real open-to-settle
+ * window while keeping stale keys self-expiring.
+ */
+const MAX_RESERVATION_TTL_SECONDS = 24 * 60 * 60;
 const BASIS_POINTS_DENOMINATOR = 10_000;
 const CONSUMED_PREFIX = 'x402-svm-upto:consumed:';
 const ROUTE_PREFIX = 'x402-svm-upto:route:';
@@ -123,10 +130,7 @@ export class X402Upto {
         this.#signer = config.operator.signer;
         this.#recipient = config.operator.recipient;
         this.#rpcUrl = config.rpcUrl;
-        if (config.replayStore === undefined || !isReservingReplayStore(config.replayStore)) {
-            throw new ConfigurationError('x402 upto requires a replayStore with atomic reserve capability.');
-        }
-        this.#replayStore = config.replayStore;
+        this.#replayStore = resolveX402ReplayStore(config, 'upto');
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
             this.#network,
@@ -193,7 +197,8 @@ export class X402Upto {
             throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
         }
         const channel = parseUptoPayload(payload);
-        const ttlSeconds = Math.max(MAX_TIMEOUT_SECONDS, channel.expiresAt - Math.floor(Date.now() / 1000));
+        const remaining = channel.expiresAt - Math.floor(Date.now() / 1000);
+        const ttlSeconds = Math.min(Math.max(MAX_TIMEOUT_SECONDS, remaining), MAX_RESERVATION_TTL_SECONDS);
         await this.#bindChannelRoute(channel.channelId, request, ttlSeconds);
         const channelId = channel.channelId;
         const replayKey = `${CONSUMED_PREFIX}${channelId}`;
