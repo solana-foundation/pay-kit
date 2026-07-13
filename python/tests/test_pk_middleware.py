@@ -9,8 +9,13 @@ attribute / mapping / ``.state`` request shapes.
 
 from __future__ import annotations
 
+import gc
+import threading
+import weakref
+
 import pytest
 
+import solana_pay_kit._middleware as mw
 from solana_pay_kit import (
     Gate,
     MppConfig,
@@ -104,6 +109,155 @@ def test_for_config_distinct_cores_for_distinct_configs():
     cfg_b = _cfg(accept=(Protocol.X402, Protocol.MPP))
     assert cfg_a != cfg_b
     assert PayCore.for_config(cfg_a) is not PayCore.for_config(cfg_b)
+
+
+def test_for_config_does_not_merge_equal_distinct_configs():
+    """Equal frozen Config values still own separate replay stores by identity."""
+    cfg_a = _cfg(accept=(Protocol.MPP,))
+    cfg_b = _cfg(accept=(Protocol.MPP,))
+
+    assert cfg_a is not cfg_b
+    assert cfg_a == cfg_b
+
+    core_a = PayCore.for_config(cfg_a)
+    core_b = PayCore.for_config(cfg_b)
+
+    assert core_a is not core_b
+    assert core_a.config is cfg_a
+    assert core_b.config is cfg_b
+    assert core_a._mpp is not None
+    assert core_b._mpp is not None
+    assert core_a._mpp._replay_store is not core_b._mpp._replay_store
+
+
+def test_for_config_constructs_once_across_threads(monkeypatch):
+    """First concurrent requests share one atomically bound core and store."""
+    cfg = _cfg(accept=(Protocol.MPP,))
+    original_init = PayCore.__init__
+    first_init_started = threading.Event()
+    second_lock_attempted = threading.Event()
+    release_first_init = threading.Event()
+    init_count = 0
+    init_count_lock = threading.Lock()
+
+    class _SignallingLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+            self._attempts = 0
+            self._attempts_lock = threading.Lock()
+
+        def __enter__(self):
+            with self._attempts_lock:
+                self._attempts += 1
+                if self._attempts == 2:
+                    second_lock_attempted.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self._lock.release()
+
+    def delayed_init(self, config, *, mpp=None, x402=None, replay_store=None, _source_config_ref=None):  # noqa: ANN001
+        nonlocal init_count
+        with init_count_lock:
+            init_count += 1
+            is_first = init_count == 1
+        if is_first:
+            first_init_started.set()
+            assert release_first_init.wait(timeout=5)
+        original_init(
+            self,
+            config,
+            mpp=mpp,
+            x402=x402,
+            replay_store=replay_store,
+            _source_config_ref=_source_config_ref,
+        )
+
+    monkeypatch.setattr(mw._CORE_CACHE, "_lock", _SignallingLock())
+    monkeypatch.setattr(PayCore, "__init__", delayed_init)
+    cores: list[PayCore] = []
+    failures: list[BaseException] = []
+
+    def lookup() -> None:
+        try:
+            cores.append(PayCore.for_config(cfg))
+        except BaseException as exc:  # pragma: no cover - assertion below reports it.
+            failures.append(exc)
+
+    first = threading.Thread(target=lookup)
+    second = threading.Thread(target=lookup)
+    second_started = False
+    first.start()
+    try:
+        assert first_init_started.wait(timeout=5)
+        second.start()
+        second_started = True
+        assert second_lock_attempted.wait(timeout=5)
+    finally:
+        release_first_init.set()
+        first.join(timeout=5)
+        if second_started:
+            second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not failures
+    assert init_count == 1
+    assert len(cores) == 2
+    assert cores[0] is cores[1]
+    assert cores[0]._mpp is not None
+    assert cores[1]._mpp is not None
+    assert cores[0]._mpp._replay_store is cores[1]._mpp._replay_store
+
+
+def test_for_config_rejects_rebinding_a_config_to_a_different_store(tmp_path):
+    """A Config may reuse its bound durable store but cannot be rebound."""
+    cfg = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
+    first_store = FileReplayStore(tmp_path / "first.json")
+    second_store = FileReplayStore(tmp_path / "second.json")
+
+    core = PayCore.for_config(cfg, replay_store=first_store)
+
+    assert PayCore.for_config(cfg, replay_store=first_store) is core
+    with pytest.raises(ConfigurationError, match="different replay_store is already bound"):
+        PayCore.for_config(cfg, replay_store=second_store)
+
+
+def test_equal_nonlocal_configs_bind_independent_durable_stores(tmp_path):
+    """One nonlocal Config cannot borrow another equal Config's durable store."""
+    cfg_a = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
+    cfg_b = _cfg(accept=(Protocol.MPP,), network="solana_devnet")
+    store_a = FileReplayStore(tmp_path / "a.json")
+    store_b = FileReplayStore(tmp_path / "b.json")
+
+    assert cfg_a is not cfg_b
+    assert cfg_a == cfg_b
+
+    core_a = PayCore.for_config(cfg_a, replay_store=store_a)
+    core_b = PayCore.for_config(cfg_b, replay_store=store_b)
+
+    assert core_a is not core_b
+    assert core_a._mpp is not None
+    assert core_b._mpp is not None
+    assert core_a._mpp._replay_store is store_a
+    assert core_b._mpp._replay_store is store_b
+
+
+def test_for_config_cache_releases_dropped_config_and_core():
+    """The identity cache must not retain a Config after reset drops it."""
+    cfg = _cfg(accept=(Protocol.MPP,))
+    core = PayCore.for_config(cfg)
+    config_ref = weakref.ref(cfg)
+    core_ref = weakref.ref(core)
+
+    reset()
+    del cfg
+    del core
+    gc.collect()
+
+    assert config_ref() is None
+    assert core_ref() is None
 
 
 @pytest.mark.asyncio
