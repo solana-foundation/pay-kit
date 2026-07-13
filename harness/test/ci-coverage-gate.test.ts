@@ -238,7 +238,11 @@ describe("workflow hygiene gate: direct non-publish workflows are read-only by d
   });
 
   it("keeps the repaired missing-ATA settlement regression blocking", () => {
-    for (const workflow of ["python.yml", "harness.yml"]) {
+    // This harness leaf owns the harness.yml missing-ATA step; python.yml's
+    // equivalent step is owned by the Python leaf (#228) and gated there, so
+    // this gate only asserts the file this leaf modifies. Both leaves make the
+    // step blocking; the step-name reconciliation lands at #216 integration.
+    for (const workflow of ["harness.yml"]) {
       const source = readFileSync(join(workflowsDir, workflow), "utf8");
       const step = source.match(
         /- name: Focused Python session fault-injection \(missing-ATA\)([\s\S]*?)(?=\n\s*- name:|$)/,
