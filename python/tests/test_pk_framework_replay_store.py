@@ -13,6 +13,7 @@ from solana_pay_kit import MppConfig, Network, Payment, Price, Protocol, Stablec
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.store import FileReplayStore
 from solana_pay_kit.config import reset
+from solana_pay_kit.errors import ConfigurationError
 
 pytest.importorskip("fastapi")
 pytest.importorskip("flask")
@@ -116,9 +117,10 @@ async def test_fastapi_dependency_forwards_durable_store(
         config=cfg,
         replay_store=second_store,
     )
-    await later_dependency(SimpleNamespace(state=SimpleNamespace()))
+    with pytest.raises(ConfigurationError, match="different replay_store is already bound"):
+        await later_dependency(SimpleNamespace(state=SimpleNamespace()))
     assert calls == [first_store, second_store]
-    assert cores[0] is cores[1]
+    assert len(cores) == 1
 
 
 @pytest.mark.asyncio

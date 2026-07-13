@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit.errors import (
+    ConfigurationError,
     InvalidProofError,
     PaymentRequiredError,
     ProtocolNotSupportedError,
@@ -97,6 +98,7 @@ class PayCore:
     ) -> None:
         """Bind to ``config`` and resolve (or inject) the scheme adapters."""
         self._config = config
+        self._replay_store = replay_store
         # MPP construction enforces durable replay state outside localnet. Do
         # not construct it for x402-only configurations, where it is unused.
         if mpp is not None:
@@ -127,6 +129,11 @@ class PayCore:
         """
         cached = _CORE_CACHE.get(config)
         if cached is not None:
+            if replay_store is not None and cached._replay_store is not replay_store:
+                raise ConfigurationError(
+                    "a different replay_store is already bound to this Config; "
+                    "reuse the original store or construct a new Config"
+                )
             return cached
         core = cls(config, replay_store=replay_store)
         _CORE_CACHE[config] = core

@@ -111,7 +111,7 @@ def require_payment(
     built from the challenge; any other :class:`~solana_pay_kit.errors.PayKitError`
     renders its :attr:`~solana_pay_kit.errors.PayKitError.http_status`. Pass
     ``replay_store`` for durable replay state before the first gated request.
-    A Config's first store owns its cached core; later values do not replace it.
+    A Config's first store owns its cached core; a different later store fails closed.
     """
 
     def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
@@ -206,7 +206,7 @@ class PaymentMiddleware:
 
     Pass ``replay_store`` when constructing this class from a project middleware
     factory before the first gated request. The first store for a Config owns the
-    cached core; later values do not replace it.
+    cached core; a different later store fails closed.
     """
 
     def __init__(

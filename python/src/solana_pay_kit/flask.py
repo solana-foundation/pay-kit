@@ -93,7 +93,7 @@ def require_payment(
     the challenge headers + JSON body for :class:`PaymentRequiredError`, otherwise
     the error's :attr:`~solana_pay_kit.errors.PayKitError.http_status`. Pass
     ``replay_store`` for durable replay state before the first gated request.
-    A Config's first store owns its cached core; later values do not replace it.
+    A Config's first store owns its cached core; a different later store fails closed.
     """
 
     def decorator(view: _F) -> _F:

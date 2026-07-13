@@ -192,7 +192,7 @@ def RequirePayment(  # noqa: N802 - factory reads as a dependency constructor
     otherwise the process-wide configured instance is used lazily at request
     time. Pass ``replay_store`` to supply durable replay state before the first
     gated request. Cores are cached per Config, so that first store owns the
-    core; later values do not replace it. On success the verified
+    core; a different later store fails closed. On success the verified
     :class:`Payment` is returned (so the handler can ``Depends`` on it) and
     stashed on ``request.state`` for the trio.
     """
@@ -338,7 +338,7 @@ def install_paywall_from_config(
     :func:`pay_not_required`, route tags, and the configured default policy.
     This avoids duplicating endpoint paths in a separate payment allowlist.
     Pass ``replay_store`` before the first gated request. The per-Config core
-    retains that first store for its lifetime; later values do not replace it.
+    retains that first store for its lifetime; a different later store fails closed.
     """
     if paywall.default_policy not in ("public", "paid"):
         raise ValueError("solana_pay_kit.fastapi: default_policy must be 'public' or 'paid'")
@@ -411,7 +411,7 @@ def install_paywall(
     ``config`` may be a :class:`~solana_pay_kit.config.PayConfig` or a plain
     mapping loaded from TOML/YAML/env. Disabled configs are a no-op.
     ``replay_store`` is forwarded to the first per-Config core construction;
-    later values do not replace that cached core's store.
+    a different later value fails closed instead of replacing the cached store.
     """
     from solana_pay_kit.config import PayConfig as _PayConfig
 
