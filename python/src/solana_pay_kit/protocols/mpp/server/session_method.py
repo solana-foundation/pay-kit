@@ -78,6 +78,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     PreparedTransaction,
     RpcClient,
     VerifyOpenTxExpected,
+    VerifyOpenTxResult,
     _require_account_info_rpc,
     broadcast_prepared_transaction,
     complete_open_transaction,
@@ -96,6 +97,7 @@ _ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 _U64_MAX = (1 << 64) - 1
 _OPEN_OUTBOX_PREFIX = "__pay_kit_session_open_outbox__:"
 _OPEN_OUTBOX_LEASE_SECONDS = 60
+_OPEN_OUTBOX_RECORD_VERSION = 1
 
 
 class _AlreadySealed(Exception):
@@ -129,6 +131,17 @@ class _SettlementStatus:
     signature: str | None = None
 
 
+@dataclass(frozen=True)
+class _ServerOpenOutbox:
+    """The immutable signed open transaction and facts it was verified against."""
+
+    prepared: PreparedTransaction
+    authorized_signer: str
+    deposit: int
+    payer: str
+    open_slot: int
+
+
 def _settlement_status(state: ChannelState) -> _SettlementStatus:
     """Classify settlement without conflating a broadcast with a receipt."""
     if state.sealed:
@@ -147,15 +160,25 @@ def _open_outbox_key(channel_id: str) -> str:
     return f"{_OPEN_OUTBOX_PREFIX}{channel_id}"
 
 
-def _open_outbox_from_state(state: ChannelState, channel_id: str) -> PreparedTransaction:
+def _open_outbox_from_state(state: ChannelState, channel_id: str) -> _ServerOpenOutbox:
     """Decode a private server-open outbox record stored through ChannelStore.
 
     The public channel-state schema intentionally has no open outbox fields.
     A private record under an opaque store key keeps the exact signed wire and
-    deterministic signature durable without changing the shared state schema.
+    its verified facts durable without changing the shared state schema. Its
+    otherwise-unused fields are a private format: ``cumulative`` is the format
+    version and ``next_delivery_sequence`` is the current lease owner token.
     """
-    if state.authorized_signer != channel_id or state.settled_signature is None:
-        raise ValueError(f"invalid server-open outbox for channel {channel_id}")
+    if state.channel_id != _open_outbox_key(channel_id):
+        raise ValueError(f"invalid server-open outbox key for channel {channel_id}")
+    if state.cumulative != _OPEN_OUTBOX_RECORD_VERSION:
+        raise ValueError(f"legacy or invalid server-open outbox for channel {channel_id}; refusing recovery")
+    if not state.authorized_signer or state.deposit <= 0 or not state.operator:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing verified open facts")
+    if state.next_delivery_sequence <= 0:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing its lease owner")
+    if state.settled_signature is None:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing its signature")
     if state.highest_voucher_signature is None:
         raise ValueError(f"server-open outbox for channel {channel_id} is missing signed wire")
     try:
@@ -164,7 +187,25 @@ def _open_outbox_from_state(state: ChannelState, channel_id: str) -> PreparedTra
         raise ValueError(f"invalid server-open outbox wire for channel {channel_id}: {exc}") from exc
     if not wire:
         raise ValueError(f"server-open outbox for channel {channel_id} has empty signed wire")
-    return PreparedTransaction(wire=wire, signature=state.settled_signature)
+    return _ServerOpenOutbox(
+        prepared=PreparedTransaction(wire=wire, signature=state.settled_signature),
+        authorized_signer=state.authorized_signer,
+        deposit=state.deposit,
+        payer=state.operator,
+        open_slot=state.open_slot,
+    )
+
+
+def _server_open_outbox_matches_verified(
+    outbox: _ServerOpenOutbox, payload: OpenPayload, verified: VerifyOpenTxResult
+) -> bool:
+    """Report whether a recovery request has the outbox transaction's facts."""
+    return (
+        outbox.authorized_signer == payload.authorized_signer
+        and outbox.deposit == verified.deposit
+        and outbox.payer == verified.payer
+        and outbox.open_slot == verified.open_slot
+    )
 
 
 async def _finish_store_update(awaitable):
@@ -654,7 +695,7 @@ class Session:
         )
 
     @staticmethod
-    def _validate_server_open_replay(state: ChannelState, payload: OpenPayload, verified: Any) -> None:
+    def _validate_server_open_replay(state: ChannelState, payload: OpenPayload, verified: VerifyOpenTxResult) -> None:
         """Check that an already-recorded server open matches this replay."""
         channel_id = verified.channel_id
         if state.sealed:
@@ -675,8 +716,8 @@ class Session:
             )
 
     async def _claim_server_open_outbox(
-        self, channel_id: str, prepared: PreparedTransaction
-    ) -> tuple[PreparedTransaction, str | None]:
+        self, channel_id: str, prepared: PreparedTransaction, payload: OpenPayload, verified: VerifyOpenTxResult
+    ) -> tuple[_ServerOpenOutbox, int | None]:
         """Atomically claim or recover a server-open signed transaction.
 
         The main channel record is created only after confirmation, so it cannot
@@ -686,7 +727,7 @@ class Session:
         over later, but only to submit the same transaction/signature.
         """
         outbox_key = _open_outbox_key(channel_id)
-        owner = secrets.token_hex(16)
+        owner = secrets.randbits(63) + 1
         now = int(time.time())
         owns_claim = False
 
@@ -696,14 +737,20 @@ class Session:
                 owns_claim = True
                 return ChannelState(
                     channel_id=outbox_key,
-                    authorized_signer=channel_id,
+                    authorized_signer=payload.authorized_signer,
+                    deposit=verified.deposit,
+                    cumulative=_OPEN_OUTBOX_RECORD_VERSION,
+                    open_slot=verified.open_slot,
                     settled_signature=prepared.signature,
                     highest_voucher_signature=base64.b64encode(prepared.wire).decode("ascii"),
-                    operator=owner,
+                    operator=verified.payer,
                     close_requested_at=now + _OPEN_OUTBOX_LEASE_SECONDS,
+                    next_delivery_sequence=owner,
                 )
 
             persisted = _open_outbox_from_state(current, channel_id)
+            if not _server_open_outbox_matches_verified(persisted, payload, verified):
+                raise ValueError(f"server-open outbox for channel {channel_id} has different verified open facts")
             lease_expires_at = current.close_requested_at
             if lease_expires_at is None:
                 raise ValueError(f"server-open outbox for channel {channel_id} is missing its lease")
@@ -711,11 +758,10 @@ class Session:
                 return current.clone()
 
             # The previous owner may have crashed before or during send. A
-            # takeover submits only the exact persisted wire, never a fresh
-            # signature derived from a racing request.
+            # takeover submits only the exact persisted transaction and its
+            # verified facts, never values derived from a racing request.
             nxt = current.clone()
-            nxt.settled_signature = persisted.signature
-            nxt.operator = owner
+            nxt.next_delivery_sequence = owner
             nxt.close_requested_at = now + _OPEN_OUTBOX_LEASE_SECONDS
             owns_claim = True
             return nxt
@@ -723,12 +769,12 @@ class Session:
         state = await self._core.store().update_channel(outbox_key, claim)
         return _open_outbox_from_state(state, channel_id), (owner if owns_claim else None)
 
-    async def _discard_server_open_outbox(self, channel_id: str, signature: str, owner: str) -> None:
+    async def _discard_server_open_outbox(self, channel_id: str, signature: str, owner: int) -> None:
         """Best-effort cleanup after the active channel record is persisted."""
         outbox_key = _open_outbox_key(channel_id)
         try:
             state = await self._core.store().get_channel(outbox_key)
-            if state is None or state.operator != owner or state.settled_signature != signature:
+            if state is None or state.next_delivery_sequence != owner or state.settled_signature != signature:
                 return
             await self._core.store().delete_channel(outbox_key)
         except Exception:
@@ -783,7 +829,7 @@ class Session:
         if mode == "push" and not has_transaction and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
 
-        server_open_outbox_owner: tuple[str, str, str] | None = None
+        server_open_outbox_owner: tuple[str, str, int] | None = None
         if has_transaction and self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
             if self._signer is None or self._rpc is None:
                 raise PaymentError(
@@ -806,6 +852,7 @@ class Session:
             payload.deposit = str(verified.deposit)
             payload.recent_slot = verified.open_slot
             channel_id = verified.channel_id
+            payload.channel_id = channel_id
 
             existing = await self._core.store().get_channel(channel_id)
             if existing is not None:
@@ -814,7 +861,7 @@ class Session:
                 return prepared.signature
 
             try:
-                outbox, owner = await self._claim_server_open_outbox(channel_id, prepared)
+                outbox, owner = await self._claim_server_open_outbox(channel_id, prepared, payload, verified)
             except ValueError as exc:
                 raise PaymentError(str(exc), code="invalid-payload") from exc
 
@@ -822,7 +869,7 @@ class Session:
             if existing is not None:
                 self._validate_server_open_replay(existing, payload, verified)
                 self._touch(channel_id)
-                return outbox.signature
+                return outbox.prepared.signature
             if owner is None:
                 raise PaymentError(
                     f"server-broadcast open for channel {channel_id} is already in progress",
@@ -831,16 +878,22 @@ class Session:
                 )
 
             try:
-                await broadcast_prepared_transaction(outbox, rpc=self._rpc, label="open")
+                await broadcast_prepared_transaction(outbox.prepared, rpc=self._rpc, label="open")
             except BaseException:
                 # The signed wire is already durable. Retain it on every
                 # ambiguous failure or cancellation so a later lease owner can
                 # retry this exact transaction rather than make a new one.
                 raise
 
-            payload.transaction = base64.b64encode(outbox.wire).decode("ascii")
-            payload.signature = outbox.signature
-            server_open_outbox_owner = (channel_id, outbox.signature, owner)
+            # Process exactly the transaction and verified facts that the
+            # outbox has durably bound together, including after lease takeover.
+            payload.authorized_signer = outbox.authorized_signer
+            payload.payer = outbox.payer
+            payload.deposit = str(outbox.deposit)
+            payload.recent_slot = outbox.open_slot
+            payload.transaction = base64.b64encode(outbox.prepared.wire).decode("ascii")
+            payload.signature = outbox.prepared.signature
+            server_open_outbox_owner = (channel_id, outbox.prepared.signature, owner)
         elif has_transaction:
             expected = self._open_tx_expected(payload, challenge_recent_slot)
             try:

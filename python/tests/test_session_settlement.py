@@ -101,6 +101,7 @@ def _session(
     recipient_ata_exists: bool = True,
     store: MemoryChannelStore | None = None,
     open_tx_submitter: str = "",
+    cap: int = 1_000_000,
 ):
     if recipient is None:
         recipient = str(operator.pubkey())
@@ -108,7 +109,7 @@ def _session(
         SessionOptions(
             operator=str(operator.pubkey()),
             recipient=recipient,
-            cap=1_000_000,
+            cap=cap,
             currency=currency,
             decimals=6,
             network="localnet",
@@ -401,9 +402,10 @@ async def test_settle_is_noop_without_signer_or_rpc() -> None:
 # --- A4: server-broadcast open --------------------------------------------------
 
 
-def _server_open_payload(operator: Keypair):
+def _server_open_payload(operator: Keypair, cap: str = "1000000", *, salt: int | None = None):
     """A client-built open whose fee-payer (operator) slot the server completes."""
     from solana_pay_kit.protocols.mpp.client.payment_channels import (
+        PaymentChannelOpenOptions,
         PaymentChannelSessionOpenOptions,
         create_payment_channel_session_opener,
     )
@@ -412,7 +414,7 @@ def _server_open_payload(operator: Keypair):
     payer = Keypair.from_seed(bytes([11] * 32))
     session_signer = Keypair.from_seed(bytes([9] * 32))
     request = SessionRequest(
-        cap="1000000",
+        cap=cap,
         currency="USDC",
         operator=str(operator.pubkey()),
         recipient=str(operator.pubkey()),
@@ -423,7 +425,11 @@ def _server_open_payload(operator: Keypair):
         recent_slot=4242,
     )
     opener = create_payment_channel_session_opener(
-        request, payer, session_signer, _BLOCKHASH, PaymentChannelSessionOpenOptions()
+        request,
+        payer,
+        session_signer,
+        _BLOCKHASH,
+        PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=salt)),
     )
     payload = opener.action.open
     assert payload is not None
@@ -1252,6 +1258,64 @@ async def test_server_broadcast_open_claim_serializes_workers() -> None:
     assert len(rpc.sent) == 1
     persisted = await store.get_channel(str(open_.channel_id))
     assert persisted is not None and persisted.deposit == open_.deposit
+
+
+@pytest.mark.asyncio
+async def test_server_open_recovery_rejects_different_verified_facts_before_broadcast() -> None:
+    """An expired outbox cannot bind its old signed wire to new open facts."""
+
+    class _FailFirstOpenSendRpc(_SettleRpc):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_first_send = True
+
+        async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
+            self.sent.append(raw_tx)
+            signature = str(Transaction.from_bytes(raw_tx).signatures[0])
+            self.sent_signatures.append(signature)
+            if self.fail_first_send:
+                self.fail_first_send = False
+                raise OSError("simulated open send failure")
+            return _Resp(signature)
+
+    from solana_pay_kit.protocols.mpp.server.session_method import _open_outbox_key
+
+    operator = Keypair.from_seed(bytes([67] * 32))
+    rpc = _FailFirstOpenSendRpc()
+    store = MemoryChannelStore()
+    session = _session(rpc, operator, store=store, open_tx_submitter="server", cap=2_000_000)
+    old_open, old_payload = _server_open_payload(operator, salt=67)
+    recovery_open, recovery_payload = _server_open_payload(operator, cap="1500000", salt=67)
+    channel_id = str(old_open.channel_id)
+    assert recovery_open.channel_id == old_open.channel_id
+    assert recovery_open.deposit != old_open.deposit
+
+    with pytest.raises(OSError, match="simulated open send failure"):
+        await session._handle_open(old_payload)
+    old_wire = rpc.sent[0]
+
+    def expire_outbox(state: ChannelState | None) -> ChannelState:
+        assert state is not None
+        expired = state.clone()
+        expired.close_requested_at = 0
+        return expired
+
+    outbox_key = _open_outbox_key(channel_id)
+    expired_outbox = await store.update_channel(outbox_key, expire_outbox)
+    assert expired_outbox.deposit == old_open.deposit
+    assert expired_outbox.open_slot == old_payload.recent_slot
+
+    with pytest.raises(PaymentError, match="different verified open facts"):
+        await session._handle_open(recovery_payload)
+
+    # The recovery request neither re-broadcasts the old wire nor persists its
+    # new facts under the old transaction's receipt/signature.
+    assert rpc.sent == [old_wire]
+    assert await store.get_channel(channel_id) is None
+    persisted_outbox = await store.get_channel(outbox_key)
+    assert persisted_outbox is not None
+    assert persisted_outbox.deposit == old_open.deposit
+    assert persisted_outbox.open_slot == old_payload.recent_slot
 
 
 # --- S1: server-broadcast open replay does not re-broadcast -------------------
