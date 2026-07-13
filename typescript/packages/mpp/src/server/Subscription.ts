@@ -319,7 +319,7 @@ export function subscription(parameters: subscription.Parameters) {
             } catch (err) {
                 // A post-settlement failure (PDA fetch, on-chain terms mismatch)
                 // means no receipt was issued, so release the reservation the
-                // successful claim took — otherwise a transient RPC error or a
+                // successful claim took. Otherwise a transient RPC error or a
                 // lagging on-chain read would permanently reject a legitimate
                 // retry of the same activation. Best-effort: a failed delete
                 // cannot make the original error any worse.
@@ -480,7 +480,7 @@ async function settleActivation(
 /**
  * The first (fee-payer) signature of a signed base64 wire transaction,
  * base58-encoded. This equals the value `sendTransaction` returns, so it is a
- * stable replay key known before broadcast — letting the activation guard claim
+ * stable replay key known before broadcast, letting the activation guard claim
  * the consumed marker atomically up front rather than after confirmation.
  */
 function signatureFromWireTransaction(wireTxBase64: string): string {

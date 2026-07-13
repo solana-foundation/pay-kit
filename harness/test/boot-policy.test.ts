@@ -32,7 +32,7 @@ import { startServer, stopServer } from "../src/process";
 //      WITHOUT PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 => it MUST fail CLOSED
 //      (the process errors/throws before readiness).
 //   2. On devnet, with the opt-in
-//      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready` — proving
+//      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready`, proving
 //      the development escape is honored without weakening mainnet policy.
 //
 // These are blocking regression probes: Go, TypeScript, and Python must reject

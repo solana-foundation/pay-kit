@@ -120,7 +120,7 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
 function resolveSessionStore(config: PayKitConfig): SessionStore {
     const provided = config.mpp.sessionStore;
     // A durable, caller-supplied store is honored everywhere. A process-local
-    // in-memory store — whether defaulted here or passed explicitly — is subject
+    // in-memory store, whether defaulted here or passed explicitly, is subject
     // to the same cluster policy, so an explicit createMemorySessionStore() can
     // never smuggle process-local session state onto mainnet.
     if (provided && !isMemorySessionStore(provided)) return provided;
