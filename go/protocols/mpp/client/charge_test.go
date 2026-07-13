@@ -3,11 +3,12 @@ package client
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
@@ -28,12 +29,7 @@ func memoTexts(t *testing.T, tx *solana.Transaction) []string {
 }
 
 func hasMemoText(texts []string, want string) bool {
-	for _, text := range texts {
-		if text == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(texts, want)
 }
 
 func TestBuildChargeTransactionSOLPull(t *testing.T) {

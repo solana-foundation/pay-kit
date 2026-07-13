@@ -1,9 +1,11 @@
 name: Python
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_call:
 
 jobs:
@@ -11,26 +13,33 @@ jobs:
     name: Python tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-          cache: pip
-      - name: Install Python SDK
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # uv owns the frozen dependency cache; a pip cache is absent after uv sync.
+          cache-dependency-glob: python/uv.lock
+          enable-cache: true
+      - name: Verify uv.lock is up to date
         working-directory: python
-        # Framework extras bring fastapi/flask/django so the solana_pay_kit shim tests
-        # import and pyright can resolve them; dev brings ruff, pyright, pytest.
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,fastapi,flask,django]"
+        run: uv lock --check
+      - name: Install Python SDK (frozen)
+        working-directory: python
+        # Install from the committed uv.lock (not a floating `pip install -e`) so
+        # the release-gating Python CI is reproducible like every other SDK gate.
+        # Framework extras bring fastapi/flask/django so the solana_pay_kit shim
+        # tests import and pyright can resolve them; dev brings ruff, pyright, pytest.
+        run: uv sync --frozen --extra dev --extra fastapi --extra flask --extra django
       - name: Lint with ruff
         working-directory: python
-        run: ruff check src tests
+        run: uv run ruff check src tests
       - name: Type check with pyright
         working-directory: python
-        # Point pyright at the interpreter the extras were installed into; it
-        # does not reliably auto-detect the active env on the runner.
-        run: pyright --pythonpath "$(python -c 'import sys; print(sys.executable)')"
+        # Point pyright at the frozen venv interpreter the extras were installed
+        # into; it does not reliably auto-detect the active env on the runner.
+        run: uv run pyright --pythonpath "$(uv run python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
         # Coverage gate: line coverage at 90% over solana_pay_kit (the MPP wire layer
@@ -38,7 +47,7 @@ jobs:
         # pyproject (live-RPC paths). Branch coverage gate is follow-up work,
         # tracked in #108.
         run: |
-          pytest \
+          uv run pytest \
             --cov=solana_pay_kit \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
@@ -46,7 +55,7 @@ jobs:
             --ignore=tests/test_server_html.py
       - name: Upload Python coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: python-coverage
           path: python/coverage.json
@@ -56,17 +65,22 @@ jobs:
     runs-on: ubuntu-latest
     needs: test-python
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-          cache: pip
-      - uses: astral-sh/setup-uv@v5
-      - name: Install Python SDK
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # uv owns the frozen dependency cache; a pip cache is absent after uv sync.
+          cache-dependency-glob: python/uv.lock
+          enable-cache: true
+      - name: Verify uv.lock is up to date
         working-directory: python
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv lock --check
+      - name: Install Python SDK (frozen)
+        working-directory: python
+        # Frozen install from the committed uv.lock, matching every other SDK gate.
+        run: uv sync --frozen --extra dev
       - uses: ./.github/actions/setup-harness
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
@@ -75,16 +89,26 @@ jobs:
       # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors
       # the harness-go job in .github/workflows/go.yml.
       - name: Checkout payment channels program
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: Moonsong-Labs/solana-payment-channels
           ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
           path: _payment-channels
           fetch-depth: 1
+      # Pinned Agave release, fetched as a tarball and checksum-verified —
+      # `curl https://release.anza.xyz/stable/install | sh` executed whatever
+      # script and toolchain the mutable "stable" channel served that day.
+      # Bump AGAVE_VERSION + AGAVE_SHA256 together to take upgrades.
       - name: Install Anza CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          AGAVE_VERSION="v4.1.1"
+          AGAVE_SHA256="a5c8e74b8ffa9ce906872b812849057c7fb21cf036ba08f219eb335e20fa4fb3"
+          curl -sSfL -o /tmp/solana-release.tar.bz2 \
+            "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          echo "${AGAVE_SHA256}  /tmp/solana-release.tar.bz2" | sha256sum -c -
+          mkdir -p "$HOME/.local/share/solana/install"
+          tar -xjf /tmp/solana-release.tar.bz2 -C "$HOME/.local/share/solana/install"
+          echo "$HOME/.local/share/solana/install/solana-release/bin" >> "$GITHUB_PATH"
       - name: Patch payment channels treasury owner
         working-directory: _payment-channels
         run: |
@@ -110,11 +134,11 @@ jobs:
         run: cargo build-sbf --tools-version v1.52 --arch v1
       # Sync the uv environment the conformance runner (runners/python.json:
       # ``uv run python conformance_runner.py``) executes in, so the cross-SDK
-      # vectors - including the frozen 48-byte session voucher preimage - run
+      # vectors - including the canonical 50-byte session voucher preimage - run
       # without a per-vector cold install.
       - name: Sync Python uv environment
         working-directory: python
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
       # Cross-SDK conformance vectors for Python: charge, x402-exact, and the
       # session voucher-preimage byte-vector (runners/python.json declares the
       # session intent). Pins the Python session wire bytes against the frozen
@@ -124,26 +148,73 @@ jobs:
         env:
           MPP_CONFORMANCE_LANGUAGES: python
         run: pnpm exec vitest run test/conformance.test.ts
+      # Cross-SDK mpp-PROTOCOL conformance through the real Python protocol codec.
+      # Known Python divergences (empty-realm / empty-intent not rejected) are
+      # tracked in KNOWN_RUNNER_DIVERGENCES[python]; a RED is a NEW divergence.
+      - name: Run Python protocol conformance (canonical challenge/receipt vectors)
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: python
+        run: pnpm exec vitest run test/protocol-conformance.test.ts
       - name: Focused Python session harness
         working-directory: harness
+        # The session close settles on-chain (settle_and_finalize + distribute on
+        # the payment-channels program), so it deploys the same localnet SBF
+        # artifact built above onto the embedded surfnet — without it the session
+        # never lands a real settlement. The same run also exercises the Tier-2
+        # confirmation-gating fault guards (a settle broadcast that never
+        # confirms, and one stuck at `processed`): both must leave the channel
+        # un-finalized with settledSignature unset. They are not pair-titled, so
+        # --exact 1 is unchanged.
         env:
           MPP_HARNESS_INTENTS: session
           MPP_HARNESS_SCENARIOS: session-basic
           MPP_HARNESS_CLIENTS: python-session
           MPP_HARNESS_SERVERS: python
-        run: pnpm exec vitest run test/e2e.test.ts
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
+      - name: Focused Python session fault-injection (missing-ATA, known-red)
+        working-directory: harness
+        # RED-EXPECTED, non-blocking. Pins the missing-ATA-creation finding: the
+        # SDK session close builds [ed25519, settle, distribute] and, unlike the
+        # x402-upto settle path, omits the idempotent payee-ATA creation. A close
+        # to a recipient with no ATA returns 200 + settledSignature yet delivers
+        # nothing on-chain (recipient stays 0, no ATA created). Gated behind
+        # MPP_HARNESS_SESSION_RED_FAULTS so it never contaminates the green
+        # must-pass leg above; continue-on-error surfaces it as a non-blocking red
+        # annotation until the session close creates the payee ATA or rejects
+        # clearly.
+        continue-on-error: true
+        env:
+          MPP_HARNESS_INTENTS: session
+          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_CLIENTS: python-session
+          MPP_HARNESS_SERVERS: python
+          MPP_HARNESS_SESSION_RED_FAULTS: "1"
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts -t "no ATA" --testTimeout 180000
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:
           MPP_HARNESS_CLIENTS: typescript
           MPP_HARNESS_SERVERS: python
-        run: pnpm exec vitest run test/e2e.test.ts
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 8
       - name: Focused Rust-to-Python harness
         working-directory: harness
         env:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: python
-        run: pnpm exec vitest run test/e2e.test.ts
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 5
       # x402 exact: drive the Python solana_pay_kit x402 client (a real signed v0
       # VersionedTransaction) against the full-settling rust and python x402
       # servers. test/e2e.test.ts self-hosts surfnet and threads the funded
@@ -154,7 +225,7 @@ jobs:
       # payload.challengeId and never broadcasts a real transaction, so it
       # cannot settle a genuine signed tx (same reason rust-x402 skips it). The
       # x402 client adapter imports solana_pay_kit from python/src on sys.path (no
-      # extra install beyond the editable SDK above).
+      # extra install beyond the frozen SDK above).
       - name: Focused python-x402 -> rust/python x402 servers
         working-directory: harness
         env:
@@ -164,7 +235,9 @@ jobs:
           MPP_HARNESS_SERVERS: rust-x402,python
           X402_HARNESS_CLIENTS: python-x402
           X402_HARNESS_SERVERS: rust-x402,python
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 2
       # x402 upto: drive the Python solana_pay_kit upto client + PayKit upto server
       # (channel open + voucher settle on the embedded surfnet) against the Rust
       # upto reference. x402-upto-basic runs every active client x server; the
@@ -183,4 +256,6 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
-        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+        run: |
+          pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
+          node scripts/assert-run-count.mjs --report vitest-report.json --exact 6

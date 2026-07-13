@@ -5,8 +5,12 @@ on:
     workflows: [CI]
     types: [completed]
 
+# This job runs in the privileged `workflow_run` context and consumes artifacts
+# produced by the (possibly fork-PR) CI run, so it holds the minimum scope it
+# needs: read the repo and the run's artifacts, and comment on the PR. It does
+# NOT push, tag, or otherwise mutate repo contents, so `contents` is read-only.
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   actions: read
 
@@ -20,31 +24,31 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       # Download artifacts from the CI run
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: ts-coverage
           path: ts-cov
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: rust-coverage
           path: rust-cov
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: surfpool-reports-rust
           path: surfpool-reports
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: surfpool-reports-ts
           path: surfpool-reports
@@ -53,8 +57,8 @@ jobs:
         continue-on-error: true
 
       # Generate merged Surfpool report
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/registry
@@ -69,15 +73,19 @@ jobs:
             echo "Generating report from $COUNT surfpool instances..."
             mkdir -p rust/target
             ln -sfn "$PWD/surfpool-reports" rust/target/surfpool-reports
-            cd rust && cargo test --test charge_integration generate_report -- --nocapture 2>&1 || true
+            cd rust && cargo test --locked --test charge_integration generate_report -- --nocapture 2>&1 || true
             [ -f target/surfpool-report.html ] && cp target/surfpool-report.html ../surfpool-report.html
           fi
 
-      # Fetch the reusable action
-      - uses: actions/checkout@v5
+      # Fetch the reusable test-report action, pinned to an immutable commit
+      # (feat/sdk-report head; the earlier feat/sdk branch no longer exists).
+      # This workflow runs with elevated permissions on workflow_run, so the
+      # third-party action it executes must not be a mutable ref an upstream
+      # push could silently swap. Bump the SHA deliberately to take updates.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: solana-foundation/surfpool
-          ref: feat/sdk
+          ref: e0204c21c59e225fab81075a91ffc8d9c0b20d02 # feat/sdk-report
           sparse-checkout: .github/actions
           path: _surfpool
 

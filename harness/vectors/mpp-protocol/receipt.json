@@ -107,6 +107,30 @@
           "error_type": "parse_error"
         }
       }
+    },
+    {
+      "name": "error_out_of_range_timestamp_month_day",
+      "description": "Rejects a receipt whose timestamp is ISO-8601-SHAPED but semantically out of range: 2026-13-45T12:00:30Z (month 13, day 45). Agreed outcome: reject. Discriminating: a parser that validates only the digit shape / regex (not calendar ranges) accepts it and fails RED. RED-EXPECTED for the TS reference (mppx Receipt.deserialize accepts it — no range check) until a timestamp-range guard lands; the Python-timestamp fix in this worktree is the sibling gap.",
+      "tags": ["error", "invalid-value", "timestamp", "divergence"],
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMTMtNDVUMTI6MDA6MzBaIn0",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_out_of_range_timestamp_feb30",
+      "description": "Rejects a receipt whose timestamp is ISO-8601-SHAPED but a non-existent calendar date: 2026-02-30T12:00:30Z (February 30). Agreed outcome: reject. Discriminating: a parser that validates only field ranges but not day-of-month-vs-month accepts it and fails RED. RED-EXPECTED for the TS reference (mppx Receipt.deserialize accepts it — no calendar check) until a timestamp-range guard lands; the Python-timestamp fix in this worktree is the sibling gap.",
+      "tags": ["error", "invalid-value", "timestamp", "divergence"],
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDItMzBUMTI6MDA6MzBaIn0",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
     }
   ]
 }

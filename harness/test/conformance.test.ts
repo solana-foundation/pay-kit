@@ -1,16 +1,19 @@
 // Cross-SDK conformance-vector driver.
 //
-// Loads every vector under harness/vectors/, spawns the TypeScript
-// reference runner once per vector over stdin/stdout, and asserts the
-// runner output against the vector's `expect` block. The oracle is the
-// DECODED SEMANTIC SHAPE for build/verify vectors and EXACT BYTES for
-// canonical-bytes vectors.
+// Loads the top-level vector files under harness/vectors/ (subdirectories are
+// owned by other drivers; see vector-accounting.test.ts), then spawns EVERY
+// SDK runner discovered from harness/runners/*.json once per vector over
+// stdin/stdout and asserts each runner's output against the vector's `expect`
+// block. The oracle is the DECODED SEMANTIC SHAPE for build/verify vectors and
+// EXACT BYTES for canonical-bytes vectors. Because every runner is held to the
+// SAME expected outcome and reject code, a divergence — one SDK accepting a
+// vector another rejects, or rejecting for a different reason — turns this
+// suite red. That cross-SDK agreement is the point.
 //
-// This suite is deterministic and RPC-free: it needs no surfpool, no
-// loopback socket, and no live validator. Only the TS reference runner
-// ships in this change; runners for the other SDKs are a tracked
-// follow-up (see harness/vectors/README.md), at which point this driver
-// gains a `RUNNERS` table and asserts every runner agrees per vector.
+// This suite is deterministic and RPC-free: it needs no surfpool, no loopback
+// socket, and no live validator. CI narrows the runner set to the languages a
+// PR touches via MPP_CONFORMANCE_LANGUAGES (unset = every runner); each runner
+// resolves against its own SDK toolchain/deps, which the setup actions provide.
 
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -18,30 +21,176 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { address } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  CANONICAL_CODE_CLASSIFICATION_FIXTURES,
+  CANONICAL_CODE_COVERAGE_EXCEPTIONS,
+  CANONICAL_CODES,
+  classifyMessageToCanonicalCode,
+} from "../src/canonical-codes";
 import {
   assertConformanceVector,
   assertRunnerResult,
 } from "../src/conformance/contract-schema";
+import { classifyReject } from "../src/conformance/reject";
 import { discoverRunners } from "../src/conformance/runners";
 import { parseLanguageAllowlist } from "../src/conformance/select";
+import { chargeScenarios } from "../src/intents/charge";
+import { x402ExactScenarios } from "../src/intents/x402-exact";
 import type {
   ConformanceVector,
+  RejectCode,
   RunnerResult,
   TransactionShape,
   X402EnvelopeShape,
 } from "../src/conformance/schema";
+import {
+  assertJsonResourceBudget,
+  REQUIRED_REJECT_CODES,
+} from "../src/conformance/schema";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vectorsDir = join(here, "..", "vectors");
+const MAX_VECTOR_FILE_BYTES = 2_000_000;
+const MAX_VECTOR_FILES = 128;
+const MAX_VECTORS_PER_FILE = 5_000;
+const MAX_TOTAL_VECTORS = 20_000;
+
+const REJECT_CODE_CLASSIFICATION_FIXTURES: Partial<Record<RejectCode, string>> = {
+  "compute-price-over-cap": "compute unit price 5000001 exceeds maximum",
+  "compute-limit-over-cap": "compute unit limit 250000 exceeds maximum",
+  "fee-payer-not-authority": "fee payer cannot authorize transfer",
+  "fee-payer-is-funds-source": "fee payer is funds source",
+  "splits-exceed-amount": "splits consume the entire amount",
+  "too-many-splits": "too many splits",
+  "unexpected-instruction": "unexpected program instruction",
+  "no-matching-transfer": "no matching transfer",
+  "amount-mismatch": "amount value mismatch",
+  "invalid-payload": "invalid payload",
+  "unsupported-version": "unsupported x402 version",
+  "wrong-network": "network mismatch",
+  "payment-identifier-required": "payment-identifier required",
+};
+
+const REJECT_CODE_VECTOR_EXCEPTIONS: Partial<
+  Record<RejectCode, { owner: string; date: string; reason: string }>
+> = {
+  "fee-payer-is-funds-source": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Covered by the exact x402 fund-safety code today; add a shared-vector binding when the non-exact verifier exposes a distinct message.",
+  },
+  "decimals-mismatch": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "The shared verifier honestly surfaces decimals drift as no-matching-transfer; paired accept/reject vectors isolate the field.",
+  },
+  "too-many-splits": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Build-time SDK caps are classifier-pinned here until a cross-SDK vector is promoted.",
+  },
+  "unexpected-instruction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Instruction allow-list violations are covered in the matrix taxonomy; promote a shared vector before removing this exception.",
+  },
+  "amount-mismatch": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Route amount mismatch is covered by behavioral scenarios; promote a shared vector before removing this exception.",
+  },
+  "invalid-payload": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Malformed-payload handling is classifier-pinned until a deterministic cross-SDK vector is promoted.",
+  },
+};
+
+const UNSUPPORTED_MODE_EXEMPTIONS: Record<
+  string,
+  { owner: string; date: string; reason: string }
+> = {
+  "ruby:charge:build-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "Ruby is currently server-only in the conformance runner.",
+  },
+  "ruby:x402-exact:build-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "Ruby is currently server-only in the conformance runner.",
+  },
+  "php:charge:build-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "PHP is currently server-only in the conformance runner.",
+  },
+  "php:x402-exact:build-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "PHP is currently server-only in the conformance runner.",
+  },
+  "lua:charge:build-transaction": {
+    owner: "harness",
+    date: "2026-07-10",
+    reason:
+      "Lua is currently server-only; its real charge verifier remains required.",
+  },
+  "lua:x402-exact:build-transaction": {
+    owner: "harness",
+    date: "2026-07-10",
+    reason:
+      "Lua is currently server-only; its real exact verifier remains required.",
+  },
+  "swift:charge:verify-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "Swift is currently client-only in the conformance runner.",
+  },
+  "swift:x402-exact:verify-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "Swift is currently client-only in the conformance runner.",
+  },
+  "swift:x402-exact:verify-x402-transaction": {
+    owner: "harness",
+    date: "2026-07-09",
+    reason: "Swift is currently client-only in the conformance runner.",
+  },
+};
 
 function loadVectors(): ConformanceVector[] {
   const files = readdirSync(vectorsDir).filter((name) => name.endsWith(".json"));
+  if (files.length > MAX_VECTOR_FILES) {
+    throw new Error(
+      `resource-bound: vector file count ${files.length} exceeds ${MAX_VECTOR_FILES}`,
+    );
+  }
   const vectors: ConformanceVector[] = [];
   for (const file of files) {
-    const parsed = JSON.parse(
-      readFileSync(join(vectorsDir, file), "utf8"),
-    ) as ConformanceVector[];
+    const text = readFileSync(join(vectorsDir, file), "utf8");
+    if (Buffer.byteLength(text, "utf8") > MAX_VECTOR_FILE_BYTES) {
+      throw new Error(
+        `resource-bound: ${file} exceeds ${MAX_VECTOR_FILE_BYTES} bytes`,
+      );
+    }
+    const parsed = JSON.parse(text) as ConformanceVector[];
+    assertJsonResourceBudget(parsed, file);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`vector ${file} must be a JSON array`);
+    }
+    if (parsed.length > MAX_VECTORS_PER_FILE) {
+      throw new Error(
+        `resource-bound: ${file} vector count ${parsed.length} exceeds ${MAX_VECTORS_PER_FILE}`,
+      );
+    }
     for (const vector of parsed) {
       // Validate the vector against the ABI at load so an authoring mistake
       // (wrong mode, missing expect.outcome, stray envelope key) fails here
@@ -49,6 +198,11 @@ function loadVectors(): ConformanceVector[] {
       assertConformanceVector(vector, `${file}:${vector?.id ?? "(no id)"}`);
       vectors.push(vector);
     }
+  }
+  if (vectors.length > MAX_TOTAL_VECTORS) {
+    throw new Error(
+      `resource-bound: total vector count ${vectors.length} exceeds ${MAX_TOTAL_VECTORS}`,
+    );
   }
   return vectors;
 }
@@ -67,10 +221,30 @@ const RUNNERS = discoverRunners().filter(
   (runner) => !allowlist || allowlist.has(runner.language),
 );
 
+// Anti-vacuous-pass guard: when MPP_CONFORMANCE_LANGUAGES pins an allowlist, at
+// least one discovered runner MUST match it. A typo (e.g. "ruts"), a deleted or
+// renamed manifest, or a stale language name would otherwise leave RUNNERS empty
+// and every conformance describe below would register ZERO tests — a green run
+// that exercised no SDK at all. This turns that into a hard RED.
+describe("conformance runner selection", () => {
+  it("resolves at least one runner for the configured allowlist", () => {
+    if (allowlist) {
+      const available = discoverRunners().map((r) => r.language).join(", ");
+      expect(
+        RUNNERS.length,
+        `MPP_CONFORMANCE_LANGUAGES=${process.env.MPP_CONFORMANCE_LANGUAGES} matched no ` +
+          `discovered runner (available: ${available}). A typo or a missing manifest ` +
+          `would otherwise run zero SDKs and pass green.`,
+      ).toBeGreaterThan(0);
+    }
+  });
+});
+
 function runVector(
   command: string[],
   vector: ConformanceVector,
   cwd: string,
+  expectedIdentity: string,
 ): Promise<RunnerResult> {
   const [bin, ...args] = command;
   return new Promise((resolve, reject) => {
@@ -115,7 +289,17 @@ function runVector(
         reject(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      resolve(parsed as RunnerResult);
+      const result = parsed as RunnerResult;
+      const reported = result.language ?? result.implementation;
+      if (reported !== expectedIdentity) {
+        reject(
+          new Error(
+            `runner identity mismatch for ${vector.id}: expected ${expectedIdentity}, got ${reported ?? "(missing)"}`,
+          ),
+        );
+        return;
+      }
+      resolve(result);
     });
     child.stdin.write(JSON.stringify(vector));
     child.stdin.end();
@@ -263,6 +447,22 @@ function assertEnvelopeShape(
 
 const vectors = loadVectors();
 
+// Every canonical x402 exact reject code the verify-x402-transaction vectors
+// must exercise. If a rule ships without a binding vector, the fund-safety
+// guard can silently drift across the six hand-rolled SDK verifiers; this
+// list forces at least one cross-SDK vector per reject family.
+const REQUIRED_X402_EXACT_REJECT_CODES = [
+  "invalid_exact_svm_payload_mint_mismatch",
+  "invalid_exact_svm_payload_amount_mismatch",
+  "invalid_exact_svm_payload_recipient_mismatch",
+  "invalid_exact_svm_payload_no_transfer_instruction",
+  "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+  "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+  "invalid_exact_svm_payload_memo_count",
+  "invalid_exact_svm_payload_memo_mismatch",
+  "invalid_exact_svm_payload_unknown_fourth_instruction",
+] as const;
+
 describe("cross-SDK conformance vectors", () => {
   it("loaded at least the seeded vector classes", () => {
     expect(vectors.length).toBeGreaterThanOrEqual(10);
@@ -272,8 +472,128 @@ describe("cross-SDK conformance vectors", () => {
     expect(modes.has("canonical-bytes")).toBe(true);
   });
 
-  for (const { language, command, cwd: runnerCwd, intents } of RUNNERS) {
+  it("requires spawned runner stdout to report implementation identity", () => {
+    expect(() =>
+      assertRunnerResult({ id: "identity-smoke", outcome: "accept" }, "identity-smoke"),
+    ).toThrow(/violates the conformance ABI/);
+  });
+
+  it("x402-exact reject vectors cover every canonical reject code", () => {
+    const exactVectors = vectors.filter(
+      (v) => v.mode === "verify-x402-transaction",
+    );
+    // Both the drain vector (fee-payer-as-source) and at least one accept
+    // vector (the Lighthouse-guard uniform-verdict case) must be present.
+    expect(
+      exactVectors.some((v) => v.id.includes("fee-payer-as-source")),
+      "missing the fee-payer-as-source drain vector",
+    ).toBe(true);
+    expect(
+      exactVectors.some(
+        (v) => v.expect.outcome === "accept" && v.id.includes("lighthouse"),
+      ),
+      "missing the Lighthouse-guard-referencing-fee-payer accept vector",
+    ).toBe(true);
+    const covered = new Set(
+      exactVectors
+        .filter((v) => v.expect.outcome === "reject")
+        .map((v) => v.expect.x402ExactRejectCode),
+    );
+    for (const code of REQUIRED_X402_EXACT_REJECT_CODES) {
+      expect(covered.has(code), `no x402-exact reject vector for ${code}`).toBe(
+        true,
+      );
+    }
+  });
+
+  it("shared reject-code vocabulary is vector-covered or explicitly exceptioned", () => {
+    const covered = new Set(
+      vectors
+        .filter((v) => v.mode !== "verify-x402-transaction")
+        .filter((v) => v.expect.outcome === "reject")
+        .map((v) => v.expect.rejectCode)
+        .filter((code): code is RejectCode => code !== undefined),
+    );
+    for (const code of REQUIRED_REJECT_CODES) {
+      const fixture = REJECT_CODE_CLASSIFICATION_FIXTURES[code];
+      if (fixture !== undefined) {
+        expect(classifyReject(fixture)).toBe(code);
+      }
+      const exception = REJECT_CODE_VECTOR_EXCEPTIONS[code];
+      expect(
+        covered.has(code) || exception !== undefined,
+        `no shared reject vector for ${code} and no owned/dated exception`,
+      ).toBe(true);
+      if (exception) {
+        expect(exception.owner).toBeTruthy();
+        expect(exception.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(exception.reason).toBeTruthy();
+      }
+    }
+  });
+
+  it("canonical L6 codes are covered by scenarios or explicit exceptions", () => {
+    for (const fixture of CANONICAL_CODE_CLASSIFICATION_FIXTURES) {
+      expect(classifyMessageToCanonicalCode(fixture.message)).toBe(fixture.code);
+    }
+    const scenarioCodes = new Set(
+      [...chargeScenarios, ...x402ExactScenarios]
+        .map((scenario) => scenario.expectedCode)
+        .filter((code): code is (typeof CANONICAL_CODES)[number] => code !== undefined),
+    );
+    for (const code of CANONICAL_CODES) {
+      const exception = CANONICAL_CODE_COVERAGE_EXCEPTIONS[code];
+      expect(
+        scenarioCodes.has(code) || exception !== undefined,
+        `canonical code ${code} is not covered by a behavioral scenario/vector and has no owned/dated exception`,
+      ).toBe(true);
+      if (exception) {
+        expect(exception.owner).toBeTruthy();
+        expect(exception.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(exception.reason).toBeTruthy();
+      }
+    }
+  });
+
+  it("rejects over-budget JSON vector resources deterministically", () => {
+    const deep = { a: { b: { c: { d: true } } } };
+    expect(() =>
+      assertJsonResourceBudget(deep, "planted-depth-vector", {
+        maxDepth: 2,
+        maxObjectKeys: 8,
+        maxArrayLength: 8,
+        maxStringLength: 128,
+        maxNodes: 128,
+      }),
+    ).toThrow(/resource-bound: planted-depth-vector exceeds max JSON depth/);
+  });
+
+  for (const { language, command, cwd: runnerCwd, intents, reportsAs } of RUNNERS) {
     describe(`${language} reference runner`, () => {
+      const expectedIdentity = reportsAs ?? language;
+      const executedByGroup = new Map<string, number>();
+      for (const vector of vectors) {
+        if (intents.includes(vector.intent)) {
+          executedByGroup.set(`${vector.intent}:${vector.mode}`, 0);
+        }
+      }
+
+      afterAll(() => {
+        for (const [group, executed] of executedByGroup) {
+          const key = `${language}:${group}`;
+          const exception = UNSUPPORTED_MODE_EXEMPTIONS[key];
+          expect(
+            executed > 0 || exception !== undefined,
+            `${language} skipped every ${group} vector; add support or an owned/dated unsupported-mode exemption`,
+          ).toBe(true);
+          if (exception) {
+            expect(exception.owner).toBeTruthy();
+            expect(exception.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+            expect(exception.reason).toBeTruthy();
+          }
+        }
+      });
+
       for (const vector of vectors) {
         it(`${vector.id} (${vector.mode}) -> ${vector.expect.outcome}`, async (ctx) => {
           // Skip vectors for an intent this runner does not declare. Lets a new
@@ -284,7 +604,7 @@ describe("cross-SDK conformance vectors", () => {
             ctx.skip();
             return;
           }
-          const result = await runVector(command, vector, runnerCwd);
+          const result = await runVector(command, vector, runnerCwd, expectedIdentity);
           expect(result.id).toBe(vector.id);
 
           // A runner that does not support a vector's mode for this SDK's
@@ -305,6 +625,8 @@ describe("cross-SDK conformance vectors", () => {
             ctx.skip();
             return;
           }
+          const group = `${vector.intent}:${vector.mode}`;
+          executedByGroup.set(group, (executedByGroup.get(group) ?? 0) + 1);
 
           expect(
             result.outcome,
@@ -323,6 +645,16 @@ describe("cross-SDK conformance vectors", () => {
                 result.rejectCode,
                 `expected reject category ${vector.expect.rejectCode} but runner emitted ${result.rejectCode ?? "(none)"}: ${result.error ?? ""}`,
               ).toBe(vector.expect.rejectCode);
+            }
+            // verify-x402-transaction: assert the EXACT canonical reject
+            // string (byte-identical to the Rust spine) so a fund-safety
+            // divergence between the six hand-rolled exact verifiers turns
+            // this vector red instead of passing on outcome alone.
+            if (vector.expect.x402ExactRejectCode !== undefined) {
+              expect(
+                result.x402ExactRejectCode,
+                `expected exact reject code ${vector.expect.x402ExactRejectCode} but runner emitted ${result.x402ExactRejectCode ?? "(none)"}: ${result.error ?? ""}`,
+              ).toBe(vector.expect.x402ExactRejectCode);
             }
             return;
           }

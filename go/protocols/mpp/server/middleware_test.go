@@ -39,7 +39,7 @@ func constantCharge(amount string) ChargeFunc {
 
 func hasVaryAuthorization(header http.Header) bool {
 	for _, value := range header.Values("Vary") {
-		for _, field := range strings.Split(value, ",") {
+		for field := range strings.SplitSeq(value, ",") {
 			if strings.EqualFold(strings.TrimSpace(field), "Authorization") {
 				return true
 			}

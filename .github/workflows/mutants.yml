@@ -1,0 +1,70 @@
+name: Mutation testing (radar L4)
+
+# "Guard coverage meter" for the x402 exact structural verifier.
+#
+# Line/region coverage proves a line RAN under test; it does not prove the test
+# would FAIL if that line were wrong. cargo-mutants injects small defects
+# (flip a comparison, drop a `!`, stub a function to `Ok(())`) into the x402
+# `exact` verifier and re-runs the suite. A mutant the suite still passes =
+# "MISSED" = a real bug the tests would not catch = a concrete CI blind spot.
+#
+# Scope + config live in rust/.cargo/mutants.toml (the x402 exact verifier).
+#
+# This is intentionally NOT a per-PR blocking gate: a full mutation sweep is
+# slower than a normal test run, and a newly-surfaced survivor should be
+# triaged, not used to block unrelated PRs. It runs nightly + on demand and
+# uploads the survivor list as an artifact. The `known-blind-spots` step is
+# advisory today; flip `continue-on-error` off (and lower the threshold) once
+# the survivor set is driven to the intended floor to make regressions block.
+
+on:
+  schedule:
+    - cron: '0 6 * * *' # nightly 06:00 UTC
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: x402 exact verifier — guard meter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: taiki-e/install-action@c6d51ded7cde3c421f6cd6046cd601f2248f3710 # cargo-mutants
+        with:
+          tool: cargo-mutants
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-mutants-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-mutants-
+
+      - name: Run mutation sweep on the x402 exact verifier
+        working-directory: rust
+        # Scope, features, and timeouts come from rust/.cargo/mutants.toml.
+        run: cargo mutants -j 4 --timeout 120 --output ../mutants-report
+
+      - name: Upload survivor report
+        if: always()
+        uses: actions/upload-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: mutants-report
+          path: mutants-report/
+
+      - name: Surface surviving mutants (advisory)
+        if: always()
+        continue-on-error: true
+        run: |
+          missed="mutants-report/mutants.out/missed.txt"
+          if [ -s "$missed" ]; then
+            echo "::warning::x402 exact verifier has surviving mutants (guard blind spots):"
+            cat "$missed"
+            exit 1
+          fi
+          echo "No surviving mutants."

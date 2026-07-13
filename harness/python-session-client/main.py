@@ -23,7 +23,7 @@ if _python_src.is_dir():
 from solders.keypair import Keypair  # type: ignore[import-untyped]  # noqa: E402
 
 from solana_pay_kit.protocols.mpp.client.payment_channels import (  # noqa: E402
-    create_server_opened_payment_channel_session_opener,
+    create_payment_channel_session_opener,
 )
 from solana_pay_kit.protocols.mpp.client.session import serialize_session_credential  # noqa: E402
 from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate  # noqa: E402
@@ -91,8 +91,24 @@ def main() -> None:
     challenge = parse_www_authenticate(headers.get("www-authenticate", ""))
     request = SessionRequest.from_dict(challenge.decode_request())
 
+    # The client funds the channel: build a payer-signed open transaction (payer
+    # = the funded harness client wallet, fee payer = the challenge operator) and
+    # ship it in the open action. With openTxSubmitter=server the operator
+    # completes the fee-payer signature and broadcasts it, so the payment channel
+    # is actually created on-chain (escrow funded from the client's ATA) before
+    # any voucher. The challenge carries the operator-prefetched recentBlockhash.
+    payer_signer = Keypair.from_bytes(bytes(json.loads(os.environ["MPP_HARNESS_CLIENT_SECRET_KEY"])))
     session_signer = Keypair()
-    opener = create_server_opened_payment_channel_session_opener(request, session_signer)
+    recent_blockhash = request.recent_blockhash
+    if not recent_blockhash:
+        _result(500, headers, {"error": "challenge did not carry a recentBlockhash for the open transaction"})
+        return
+    opener = create_payment_channel_session_opener(
+        request,
+        payer_signer,
+        session_signer,
+        recent_blockhash,
+    )
     open_auth = serialize_session_credential(challenge, opener.action)
     status, headers, raw = _request("GET", target, auth=open_auth)
     if status != 200:

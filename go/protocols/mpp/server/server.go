@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/system"
-	"github.com/gagliardetto/solana-go/programs/token"
-	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/programs/system"
+	"github.com/solana-foundation/solana-go/v2/programs/token"
+	token2022 "github.com/solana-foundation/solana-go/v2/programs/token-2022"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	secretKeyEnvVar = "MPP_SECRET_KEY"
-	consumedPrefix  = "solana-charge:consumed:"
+	secretKeyEnvVar                = "MPP_SECRET_KEY"
+	allowInMemoryReplayStoreEnvVar = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
+	consumedPrefix                 = "solana-charge:consumed:"
 
 	// minSecretKeyBytes is the minimum length of the HMAC-SHA256 secret
 	// that binds challenge IDs. 32 bytes matches NIST SP 800-107 guidance
@@ -70,8 +71,12 @@ type Config struct {
 	Realm          string
 	HTML           bool
 	FeePayerSigner solanatx.Signer
-	Store          core.Store
-	RPC            solanatx.RPCClient
+	// Store holds replay markers. Outside localnet it must be shared and
+	// durable: an absent store or *core.MemoryStore is rejected unless
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly permits a
+	// process-local development store.
+	Store core.Store
+	RPC   solanatx.RPCClient
 
 	// AcceptPushMode opts in to accepting type="signature" (push mode)
 	// credentials, where the client broadcasts the transaction itself and
@@ -155,6 +160,22 @@ func New(config Config) (*Mpp, error) {
 		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid network", err)
 	}
 	config.Network = string(canonicalNetwork)
+	usesMemoryReplayStore := false
+	if config.Store != nil {
+		_, usesMemoryReplayStore = config.Store.(*core.MemoryStore)
+	}
+	if canonicalNetwork != paycore.NetworkLocalnet && (config.Store == nil || usesMemoryReplayStore) && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
+		storeDescription := "no replay store"
+		if usesMemoryReplayStore {
+			storeDescription = "process-local *core.MemoryStore"
+		}
+		return nil, core.NewError(core.ErrCodeInvalidConfig,
+			fmt.Sprintf("%s configured for %s; configure a shared replay Store or set %s=1 to allow a process-local development store",
+				storeDescription, config.Network, allowInMemoryReplayStoreEnvVar))
+	}
+	if config.Store == nil {
+		config.Store = core.NewMemoryStore()
+	}
 	// Derive a per-recipient default realm when none is configured (and reject
 	// an explicitly-empty realm). A shared literal default would let two
 	// servers sharing MPP_SECRET_KEY participate in one credential namespace.
@@ -167,9 +188,6 @@ func New(config Config) (*Mpp, error) {
 	}
 	if config.RPC == nil {
 		config.RPC = rpc.New(rpcURL)
-	}
-	if config.Store == nil {
-		config.Store = core.NewMemoryStore()
 	}
 	// Resolve the token program once at boot. Known stablecoins answer from
 	// the static table; an arbitrary mint address is looked up on-chain and
@@ -215,6 +233,10 @@ func resolveServerTokenProgram(ctx context.Context, rpcClient solanatx.RPCClient
 	if err != nil {
 		return "", core.WrapError(core.ErrCodeInvalidConfig,
 			"currency must be a known stablecoin symbol or a valid SPL mint address", err)
+	}
+	if rpcClient == nil {
+		return "", core.NewError(core.ErrCodeInvalidConfig,
+			"an RPC client is required to resolve the token program for an arbitrary mint")
 	}
 	program, err := solanatx.ResolveTokenProgram(ctx, rpcClient, mint, "")
 	if err != nil {
@@ -642,6 +664,12 @@ func (m *Mpp) verifyTransaction(
 	if err := solanatx.SimulateTransaction(ctx, m.rpc, tx); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "simulate transaction", err)
 	}
+	// A transport error from SendTransaction is ambiguous: the RPC may have
+	// accepted the transaction before losing the response. Retain the marker
+	// before the first send attempt so a retry cannot broadcast the same
+	// credential a second time. Simulation and validation failures remain
+	// rollback-safe because they return before this point.
+	cleanupConsumed = false
 	signature, err := solanatx.SendTransaction(ctx, m.rpc, tx)
 	if err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
@@ -653,7 +681,6 @@ func (m *Mpp) verifyTransaction(
 	// same credential for a second submission while the original lands and
 	// double-pays. Mirrors the rust reference, which consumes the signature
 	// after broadcast and never deletes it on a confirmation timeout.
-	cleanupConsumed = false
 	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}

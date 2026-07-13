@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // parseEntry runs the canonical AcceptsEntry parse so these tests see the

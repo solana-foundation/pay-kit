@@ -46,16 +46,18 @@ type PaymentRequirement = {
 
 function buildRequirements(
   env: ReturnType<typeof readX402ServerEnvironment>,
+  resourcePath = env.resourcePath,
+  price = env.price,
 ): PaymentRequirement[] {
   // The wire `amount` is atomic base units, not the decimal price. Mirror the
   // Rust spine so Rust/Swift/Kotlin clients (which parse it as a u64) accept
   // the offer.
-  const maxAmountRequired = toBaseUnits(env.price, TOKEN_DECIMALS);
+  const maxAmountRequired = toBaseUnits(price, TOKEN_DECIMALS);
 
   const primary: PaymentRequirement = {
     scheme: "exact",
     network: env.network,
-    resource: env.resourcePath,
+    resource: resourcePath,
     description: "Surfpool-backed protected content",
     mimeType: "application/json",
     payTo: env.payTo,
@@ -71,7 +73,7 @@ function buildRequirements(
   const extras: PaymentRequirement[] = env.extraOfferedMints.map(mint => ({
     scheme: "exact",
     network: env.network,
-    resource: env.resourcePath,
+    resource: resourcePath,
     description: "Surfpool-backed protected content",
     mimeType: "application/json",
     payTo: env.payTo,
@@ -220,8 +222,6 @@ function classifyCredential(
 
 async function main() {
   const env = readX402ServerEnvironment();
-  const accepts = buildRequirements(env);
-  const paymentRequiredHeader = encodePaymentRequiredHeader(accepts);
 
   // Track consumed credentials by challengeId to surface
   // `signature_consumed` on idempotent resubmit.
@@ -243,11 +243,18 @@ async function main() {
       return;
     }
 
-    if (url.pathname !== env.resourcePath) {
+    if (!isProtectedPath(url.pathname, env)) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "not_found" }));
       return;
     }
+
+    const accepts = buildRequirements(
+      env,
+      url.pathname,
+      priceForPath(url.pathname, env),
+    );
+    const paymentRequiredHeader = encodePaymentRequiredHeader(accepts);
 
     const paymentHeader = request.headers[PAYMENT_SIGNATURE_HEADER] as
       | string
@@ -307,11 +314,10 @@ async function main() {
       return;
     }
 
-    // Cross-server portability check: when the client supplies a payload
-    // challengeId, it must be one this server issued (or this server
-    // never required HMAC issuance). The first paid request that didn't
-    // come from this server's 402 will be missing from `issued`.
-    if (issued.size > 0 && !issued.has(credentialKey)) {
+    // Cross-server portability check: the payload challengeId must be one this
+    // server issued. A credential paid to server A and replayed to server B is
+    // missing from B's issuance set and must fail closed.
+    if (!issued.has(credentialKey)) {
       response.writeHead(402, {
         "content-type": "application/json",
         [PAYMENT_REQUIRED_HEADER]: paymentRequiredHeader,
@@ -376,6 +382,28 @@ async function main() {
   const shutdown = () => server.close(() => process.exit(0));
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+}
+
+function isProtectedPath(
+  path: string,
+  env: ReturnType<typeof readX402ServerEnvironment>,
+): boolean {
+  return path === env.resourcePath || path === replaySourcePath();
+}
+
+function priceForPath(
+  path: string,
+  env: ReturnType<typeof readX402ServerEnvironment>,
+): string {
+  if (path === replaySourcePath()) {
+    return process.env.MPP_HARNESS_REPLAY_SOURCE_PRICE ?? env.price;
+  }
+  return env.price;
+}
+
+function replaySourcePath(): string | undefined {
+  const value = process.env.MPP_HARNESS_REPLAY_SOURCE_PATH;
+  return value && value.trim() !== "" ? value : undefined;
 }
 
 void main();

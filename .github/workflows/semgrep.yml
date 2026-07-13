@@ -1,0 +1,44 @@
+name: Semgrep (radar L7)
+
+# Static-analysis security lint for the bug CLASSES that escaped review in this
+# repo: fail-open default stores, security checks gated on an optional field
+# (the "C1" pattern), and non-constant-time secret compares / catch-as-accept.
+#
+# Rules + fixtures + local runner live under harness/semgrep/.
+#   - self-test: every *.bad.* fixture MUST fire, every *.good.* MUST stay clean
+#   - scan:      run the ruleset over the real source tree (typescript/, go/, python/)
+#
+# The scan step is advisory (does not fail the build) so a newly surfaced,
+# to-be-triaged finding doesn't block unrelated PRs. The self-test step IS
+# blocking: it guarantees the rules keep catching their known-bad and stay quiet
+# on their known-good. Flip `continue-on-error` off once the tree is clean.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: radar L7 rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install semgrep
+        run: pip install semgrep==1.168.0
+
+      - name: Self-test rules against fixtures (blocking)
+        run: bash harness/semgrep/run.sh --test
+
+      - name: Scan real source (advisory)
+        continue-on-error: true
+        run: bash harness/semgrep/run.sh typescript go python

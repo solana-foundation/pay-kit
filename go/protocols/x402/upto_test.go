@@ -9,14 +9,14 @@ import (
 	"time"
 
 	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // ── Pure validation tests (no RPC) ──
@@ -426,7 +426,8 @@ func TestValidateUptoOpenInstructionAcceptsWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
+	recentSlot := uint64(55_555)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", &recentSlot)
 	if err != nil {
 		t.Fatalf("expected valid open to pass, got %v", err)
 	}
@@ -452,7 +453,8 @@ func TestValidateUptoOpenInstructionRejectsWrongRentPayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
+	recentSlot := uint64(55_555)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", &recentSlot)
 	if err == nil || !strings.Contains(err.Error(), "rent_payer mismatch") {
 		t.Fatalf("expected rent_payer mismatch, got %v", err)
 	}
@@ -489,7 +491,8 @@ func TestValidateUptoOpenInstructionRejectsExtraInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
+	recentSlot := uint64(55_555)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", &recentSlot)
 	if err == nil || !strings.Contains(err.Error(), "exactly one instruction") {
 		t.Fatalf("expected extra instruction rejection, got %v", err)
 	}
@@ -509,13 +512,12 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	wrongPayee := testutil.NewPrivateKey().PublicKey()
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, wrongPayee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
+	recentSlot := uint64(55_555)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, wrongPayee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", &recentSlot)
 	if err == nil || !strings.Contains(err.Error(), "payee mismatch") {
 		t.Fatalf("expected payee mismatch, got %v", err)
 	}
 }
-
-func uint64Ptr(v uint64) *uint64 { return &v }
 
 func TestValidateUptoOpenInstructionBindsOpenArgs(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
@@ -534,30 +536,34 @@ func TestValidateUptoOpenInstructionBindsOpenArgs(t *testing.T) {
 	check := func(maxAmount uint64, recentSlot *uint64) error {
 		return validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, maxAmount, DefaultUptoWithdrawDelaySeconds, "7", "55555", recentSlot)
 	}
+	recentSlot := uint64(55_555)
 	// Payload nonce and openSlot bind to the open instruction seeds.
-	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "8", "55555", uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "payload nonce") {
+	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "8", "55555", &recentSlot); err == nil || !strings.Contains(err.Error(), "payload nonce") {
 		t.Fatalf("expected nonce binding rejection, got %v", err)
 	}
-	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55556", uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "payload openSlot") {
+	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55556", &recentSlot); err == nil || !strings.Contains(err.Error(), "payload openSlot") {
 		t.Fatalf("expected openSlot binding rejection, got %v", err)
 	}
-	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds+1, "7", "55555", uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "withdraw delay") {
+	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds+1, "7", "55555", &recentSlot); err == nil || !strings.Contains(err.Error(), "withdraw delay") {
 		t.Fatalf("expected withdraw delay binding rejection, got %v", err)
 	}
+	priorSlot := uint64(55_554)
+	staleSlot := uint64(55_555 + 1501)
+	windowEdgeSlot := uint64(55_555 + 1500)
 	// Deposit must equal the authorized maximum.
-	if err := check(1_000_001, uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "authorized maximum") {
+	if err := check(1_000_001, &recentSlot); err == nil || !strings.Contains(err.Error(), "authorized maximum") {
 		t.Fatalf("expected deposit binding rejection, got %v", err)
 	}
 	// openSlot ahead of the challenged recentSlot rejects.
-	if err := check(1_000_000, uint64Ptr(55_554)); err == nil || !strings.Contains(err.Error(), "ahead of the challenged") {
+	if err := check(1_000_000, &priorSlot); err == nil || !strings.Contains(err.Error(), "ahead of the challenged") {
 		t.Fatalf("expected future-slot rejection, got %v", err)
 	}
 	// openSlot outside the 1500-slot freshness window rejects.
-	if err := check(1_000_000, uint64Ptr(55_555+1501)); err == nil || !strings.Contains(err.Error(), "freshness window") {
+	if err := check(1_000_000, &staleSlot); err == nil || !strings.Contains(err.Error(), "freshness window") {
 		t.Fatalf("expected stale-slot rejection, got %v", err)
 	}
 	// At the window edge (and with an unknown challenged slot) it verifies.
-	if err := check(1_000_000, uint64Ptr(55_555+1500)); err != nil {
+	if err := check(1_000_000, &windowEdgeSlot); err != nil {
 		t.Fatalf("window edge must verify: %v", err)
 	}
 	if err := check(1_000_000, nil); err != nil {
@@ -566,7 +572,7 @@ func TestValidateUptoOpenInstructionBindsOpenArgs(t *testing.T) {
 	// A channel account that is not the PDA derived from the args fails the
 	// bind (the slot-5 account check fires first on the mismatch).
 	other, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7, 55_556)
-	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, other, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555)); err == nil || !strings.Contains(err.Error(), "channel") {
+	if err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, other, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", &recentSlot); err == nil || !strings.Contains(err.Error(), "channel") {
 		t.Fatalf("expected channel PDA binding rejection, got %v", err)
 	}
 }
@@ -585,7 +591,8 @@ func TestValidateUptoOpenInstructionRejectsWrongTokenProgram(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.Token2022ProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", uint64Ptr(55_555))
+	recentSlot := uint64(55_555)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.Token2022ProgramID, channel, 1_000_000, DefaultUptoWithdrawDelaySeconds, "7", "55555", &recentSlot)
 	if err == nil || (!strings.Contains(err.Error(), "payer_token_account mismatch") && !strings.Contains(err.Error(), "token_program mismatch")) {
 		t.Fatalf("expected token program binding rejection, got %v", err)
 	}
@@ -720,13 +727,13 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 		MaxTimeoutSeconds:       300,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return blockhash.String(), nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	}
 	engine, err := NewX402Upto(uptoCfg)
 	if err != nil {
 		t.Fatalf("NewX402Upto: %v", err)
 	}
-	engine.SetRPCForTests(fakeRPC)
 
 	// Build the payment signature header.
 	envelope := UptoSignatureEnvelope{
@@ -829,9 +836,9 @@ func TestUptoVerifyOpenRejectsClientFeePayer(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	envelope := UptoSignatureEnvelope{
 		X402Version: X402Version,
 		Scheme:      UptoScheme,
@@ -890,9 +897,9 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 
 	envelope := UptoSignatureEnvelope{
 		X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
@@ -1230,9 +1237,9 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1276,9 +1283,9 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1321,9 +1328,9 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1366,9 +1373,9 @@ func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1411,9 +1418,9 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1448,9 +1455,9 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1492,9 +1499,9 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RPCClient:               fakeRPC,
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",

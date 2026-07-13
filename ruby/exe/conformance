@@ -350,7 +350,7 @@ REJECT_PATTERNS = [
   [/too many splits/i, "too-many-splits"],
   [/no matching (spl )?(transfer|transferchecked|sol transfer)/i, "no-matching-transfer"],
   [/unexpected .* (instruction|transfer)/i, "unexpected-instruction"],
-  [/amount .* (mismatch|does not match)/i, "amount-mismatch"]
+  [/(?:amount mismatch|amount .* does not match)/i, "amount-mismatch"]
 ].freeze
 
 def classify_reject(message)
@@ -487,9 +487,13 @@ module X402
         raise "Network mismatch: expected #{expected_network}, got #{accepted_network}"
       end
 
-      # accepted-vs-route field comparison (rust verify_envelope_payload).
-      if accepted["amount"].to_s != route.fetch("amount").to_s
-        raise "Amount mismatch: expected #{route.fetch("amount")}, got #{accepted["amount"]}"
+      # Production x402 accepts either amount spelling and permits old
+      # credentials that omitted both. Every supplied amount remains binding.
+      ["amount", "maxAmountRequired"].each do |field|
+        next unless accepted.key?(field)
+        next if accepted[field].to_s == route.fetch("amount").to_s
+
+        raise "Amount mismatch: expected #{route.fetch("amount")}, got #{accepted[field]}"
       end
       if accepted["payTo"].to_s != route.fetch("recipient").to_s
         raise "Recipient mismatch: credential claims a different recipient"
@@ -567,8 +571,53 @@ def x402_reject_result(id, message)
   result
 end
 
+# Drive the production x402 SVM-exact verifier over a base64 transaction. The
+# verifier raises canonical invalid_exact_svm_payload_* tokens, which must be
+# preserved separately for the exact conformance contract.
+def run_x402_exact_verify(vector)
+  input = vector["input"] || {}
+  transaction_b64 = input["transaction"]
+  raise "verify-x402-transaction vector missing input.transaction" if transaction_b64.to_s.empty?
+
+  requirement = input["x402ExactRequirement"]
+  unless requirement.is_a?(Hash)
+    raise "verify-x402-transaction vector missing input.x402ExactRequirement"
+  end
+
+  unless defined?(PayKit::Protocols::X402::Protocol::Schemes::Exact::Verifier)
+    return {
+      "id" => vector["id"],
+      "outcome" => "unsupported-mode",
+      "error" => "ruby SDK does not expose the x402 exact verifier"
+    }
+  end
+
+  managed_signers = Array(input["x402ExactManagedSigners"]).map do |key|
+    PayKit::Protocols::X402::Protocol::Schemes::Exact.base58_decode(key)
+  end
+
+  begin
+    PayKit::Protocols::X402::Protocol::Schemes::Exact::Verifier.verify(
+      Base64.decode64(transaction_b64),
+      requirement,
+      managed_signers: managed_signers
+    )
+  rescue => error
+    return {
+      "id" => vector["id"],
+      "outcome" => "reject",
+      "error" => error.message,
+      "x402ExactRejectCode" => error.message
+    }
+  end
+
+  {"id" => vector["id"], "outcome" => "accept"}
+end
+
 def run_x402_vector(vector)
   input = vector["input"] || {}
+
+  return run_x402_exact_verify(vector) if vector["mode"] == "verify-x402-transaction"
 
   if vector["mode"] == "build-transaction"
     # Client-only build path: a server-only SDK has no x402 client builder, so
@@ -695,7 +744,17 @@ end
 
 raw = $stdin.read.to_s.strip
 abort "ruby conformance runner received empty stdin" if raw.empty?
-vector = JSON.parse(raw)
+
+vector =
+  begin
+    JSON.parse(raw)
+  rescue JSON::ParserError => error
+    id = raw[/"id"\s*:\s*"([A-Za-z0-9._-]+)"/, 1]
+    raise unless id
+
+    $stdout.puts(JSON.generate({"id" => id, "outcome" => "reject", "error" => error.message, "language" => "ruby"}))
+    exit 0
+  end
 
 result =
   begin
@@ -704,4 +763,5 @@ result =
     reject_result(vector["id"], error.message)
   end
 
+result["language"] = "ruby"
 $stdout.puts(JSON.generate(result))

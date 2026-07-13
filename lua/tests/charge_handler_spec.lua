@@ -52,10 +52,13 @@ end
 local function new_handler(opts)
   opts = opts or {}
   local rpc = opts.rpc or fake_rpc({})
+  local network = opts.network or 'localnet'
+  local replay_store = opts.replay_store
+    or (network == 'localnet' and store.memory() or t.shared_replay_store())
   return charge_handler.new({
     rpc = rpc,
-    network = opts.network or 'localnet',
-    replay_store = opts.replay_store or store.memory(),
+    network = network,
+    replay_store = replay_store,
     transaction_verifier = opts.transaction_verifier or function() end,
     pull_transaction_signer = opts.pull_transaction_signer,
     pull_blockhash_extractor = opts.pull_blockhash_extractor,
@@ -87,8 +90,33 @@ end)
 
 t.test('handler constructor rejects missing transaction_verifier', function()
   t.assert_error(function()
-    charge_handler.new({ rpc = fake_rpc({}), replay_store = store.memory() })
+    charge_handler.new({ rpc = fake_rpc({}), network = 'localnet', replay_store = store.memory() })
   end, 'transaction_verifier function is required')
+end)
+
+t.test('handler constructor rejects a process-local replay store outside localnet', function()
+  t.assert_error(function()
+    charge_handler.new({
+      rpc = fake_rpc({}),
+      network = 'devnet',
+      replay_store = store.memory(),
+      transaction_verifier = function() end,
+    })
+  end, 'replay_store must declare shared=true outside localnet')
+end)
+
+t.test('handler constructor rejects a durable-only replay store outside localnet', function()
+  t.assert_error(function()
+    charge_handler.new({
+      rpc = fake_rpc({}),
+      network = 'devnet',
+      replay_store = {
+        durable = true,
+        put_if_absent = function() return true end,
+      },
+      transaction_verifier = function() end,
+    })
+  end, 'replay_store must declare shared=true outside localnet')
 end)
 
 -- ─── Pull mode ────────────────────────────────────────────────────────────
@@ -466,11 +494,12 @@ t.test('as_callback returns a function usable by mpp.server', function()
   local cb = handler:as_callback()
   local result = cb({ payload = { type = 'transaction', transaction = 'tx' }, request = {} })
   t.assert_equal(result.reference, 'cb-sig')
-  t.assert_true(result.replay_key:find('server-noop', 1, true) ~= nil)
-  -- The callback must signal that the durable replay marker is already in
-  -- place so the outer `Server:_finalize_verification` skips its own
-  -- `put_if_absent` call against the (potentially shared) store. Without
-  -- this signal the Kong wiring would double-consume the same key.
+  t.assert_equal(result.replay_key, 'solana-charge:consumed:cb-sig')
+  local _value, present = handler.replay_store:get(result.replay_key)
+  t.assert_true(present, 'callback must return the replay marker it wrote')
+  -- The callback signals that the durable replay marker is already in place;
+  -- the outer server independently checks this marker before skipping its
+  -- own put_if_absent call.
   t.assert_equal(result.consumed, true)
 end)
 

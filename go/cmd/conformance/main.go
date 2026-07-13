@@ -29,7 +29,7 @@ import (
 	"strconv"
 	"strings"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
@@ -137,6 +137,14 @@ type VectorInput struct {
 	// X402ServerRequiresPaymentIdentifier makes verify reject envelopes
 	// whose echoed extensions carry no valid payment-identifier id.
 	X402ServerRequiresPaymentIdentifier bool `json:"x402ServerRequiresPaymentIdentifier"`
+	// X402ExactRequirement drives verify-x402-transaction mode: the offer
+	// fields the real x402 exact structural verifier checks the signed
+	// transaction against.
+	X402ExactRequirement *X402ExactRequirement `json:"x402ExactRequirement"`
+	// X402ExactManagedSigners are the server-managed signer pubkeys (normally
+	// the facilitator fee payer) that must not move funds in the exact
+	// verifier.
+	X402ExactManagedSigners []string `json:"x402ExactManagedSigners"`
 }
 
 // ChargeRequest is the charge-intent request carried in a vector input.
@@ -323,6 +331,8 @@ type ExactBytes struct {
 type RunnerResult struct {
 	// ID echoes the vector's id so the harness can pair result to vector.
 	ID string `json:"id"`
+	// Language proves the spawned process identity against the manifest.
+	Language string `json:"language"`
 	// Outcome is "accept" or "reject".
 	Outcome string `json:"outcome"`
 	// TransactionShape is the decoded semantic shape for accepted MPP
@@ -341,6 +351,9 @@ type RunnerResult struct {
 	// classifyReject; empty when the message is unclassified so the
 	// harness can surface it instead of silently passing.
 	RejectCode string `json:"rejectCode,omitempty"`
+	// X402ExactRejectCode is the canonical invalid_exact_svm_payload_* code
+	// returned by verify-x402-transaction mode; empty on accept.
+	X402ExactRejectCode string `json:"x402ExactRejectCode,omitempty"`
 }
 
 // rejectPattern pairs a compiled regex with the normalized RejectCode it
@@ -440,6 +453,7 @@ func run() error {
 	}
 
 	result := runVector(vector)
+	result.Language = "go"
 	out, err := json.Marshal(result)
 	if err != nil {
 		return err
@@ -636,13 +650,9 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 	eb := &ExactBytes{}
 	in := vector.Input
 	if len(in.Value) > 0 {
-		decoder := json.NewDecoder(strings.NewReader(string(in.Value)))
-		decoder.UseNumber()
-		var value any
-		if err := decoder.Decode(&value); err != nil {
-			return nil, err
-		}
-		canonical, err := wire.NewBase64URLJSONValue(value)
+		// Preserve raw escapes until the wire encoder has rejected unpaired
+		// surrogates; decoding here would silently substitute U+FFFD first.
+		canonical, err := wire.NewBase64URLJSONValue(in.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -742,7 +752,7 @@ func shapeFromTransaction(transactionBase64 string) (*TransactionShape, error) {
 				shape.MaxComputeUnitLimit = &limit
 			} else if len(data) == 9 && data[0] == 3 {
 				price := binary.LittleEndian.Uint64(data[1:9])
-				shape.MaxComputeUnitPrice = fmt.Sprintf("%d", price)
+				shape.MaxComputeUnitPrice = strconv.FormatUint(price, 10)
 			}
 		case memoProgram:
 			shape.Memo = append(shape.Memo, string(data))
@@ -759,7 +769,7 @@ func shapeFromTransaction(transactionBase64 string) (*TransactionShape, error) {
 				shape.Transfers = append(shape.Transfers, Transfer{
 					Kind:        "sol",
 					Destination: dest,
-					Amount:      fmt.Sprintf("%d", binary.LittleEndian.Uint64(data[4:12])),
+					Amount:      strconv.FormatUint(binary.LittleEndian.Uint64(data[4:12]), 10),
 				})
 			}
 		case tokenProgram, token2022Program:
@@ -775,7 +785,7 @@ func shapeFromTransaction(transactionBase64 string) (*TransactionShape, error) {
 					Kind:         "spl",
 					Destination:  dest,
 					Mint:         mint,
-					Amount:       fmt.Sprintf("%d", binary.LittleEndian.Uint64(data[1:9])),
+					Amount:       strconv.FormatUint(binary.LittleEndian.Uint64(data[1:9]), 10),
 					Decimals:     &decimals,
 					TokenProgram: program,
 				})
@@ -798,8 +808,8 @@ func accountAt(keys []solana.PublicKey, accounts []uint16, pos int) string {
 }
 
 func parseUint64(value string) (uint64, error) {
-	var out uint64
-	if _, err := fmt.Sscanf(strings.TrimSpace(value), "%d", &out); err != nil {
+	out, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	if err != nil {
 		return 0, fmt.Errorf("invalid uint64 %q: %w", value, err)
 	}
 	return out, nil

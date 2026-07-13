@@ -1,0 +1,49 @@
+name: Go consumer guard
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  consumer-guard:
+    name: Downstream module consumer guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Verify downstream consumers resolve the pinned upstream solana-go
+        if: ${{ hashFiles('go/scripts/check_module_consumer.sh') != '' }}
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: |
+          ./scripts/check_module_consumer_test.sh
+          ./scripts/check_module_consumer.sh
+      # This is a one-time bootstrap while the Go migration PR introduces the
+      # guard script. Once the base branch has the script, a PR cannot delete it
+      # and turn this check into a silent pass.
+      - name: Require an established consumer guard
+        if: ${{ hashFiles('go/scripts/check_module_consumer.sh') == '' }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git cat-file -e 'FETCH_HEAD:go/scripts/check_module_consumer.sh' 2>/dev/null; then
+              echo "::error::go/scripts/check_module_consumer.sh was removed from a branch that already had the consumer guard"
+              exit 1
+            fi
+            echo "consumer guard bootstrap: the base branch has not introduced the Go migration guard yet"
+            exit 0
+          fi
+
+          echo "::error::go/scripts/check_module_consumer.sh is required on main"
+          exit 1

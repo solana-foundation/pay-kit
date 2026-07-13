@@ -1,0 +1,6 @@
+{
+  "language": "rust",
+  "command": ["cargo", "run", "-q", "-p", "solana-pay-kit", "--example", "conformance_runner", "--features", "x402,client"],
+  "cwd": "rust",
+  "intents": ["x402-exact"]
+}

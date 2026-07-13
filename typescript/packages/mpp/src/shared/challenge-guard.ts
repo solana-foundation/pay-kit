@@ -47,6 +47,14 @@ function assertWithinSizeCap(value: string): void {
     }
 }
 
+/** Guard a value before mppx interpolates it into a quoted auth parameter. */
+export function guardChallengeValue(field: string, value: string): string {
+    if (/[\r\n]/.test(value)) {
+        throw new Error(`challenge field "${field}" must not contain a carriage-return or newline`);
+    }
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 /**
  * Deserializes a `WWW-Authenticate` header value to a challenge, rejecting a
  * challenge whose `id` is empty (canonical mpp-tools requires a non-empty,

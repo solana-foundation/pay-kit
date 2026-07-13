@@ -16,6 +16,13 @@
 // against. Constants and resolution rules are copied verbatim from
 // `rust/crates/x402/src/{constants.rs, protocol/schemes/exact/types.rs}`.
 
+import {
+  address,
+  getBase64Codec,
+  getCompiledTransactionMessageDecoder,
+  getTransactionDecoder,
+} from "@solana/kit";
+import { findAssociatedTokenPda } from "@solana-program/token";
 import type { X402EnvelopeShape, X402Offer } from "./schema";
 
 // ── Canonical network identifiers (rust types.rs) ──
@@ -177,6 +184,7 @@ type PaymentSignatureEnvelope = {
   x402Version: number;
   accepted?: Record<string, unknown>;
   payload: PaymentProof;
+  resource?: unknown;
   extensions?: PaymentExtensions;
 };
 
@@ -400,15 +408,59 @@ export type X402ServerRoute = {
   recipient: string;
   currency: string;
   amount: string; // base units
+  resource?: string;
+  maxTimeoutSeconds?: number;
+  extra?: Record<string, unknown>;
+  decimals?: number;
+  tokenProgram?: string;
   // When true the route advertised payment-identifier with
   // info.required=true: the credential MUST echo back a valid
   // `pay_`-shaped id or the server rejects.
   requiresPaymentIdentifier?: boolean;
 };
 
+function normalizedJson(value: unknown): string {
+  const normalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(normalize);
+    if (input && typeof input === "object") {
+      const entries = Object.entries(input as Record<string, unknown>)
+        .filter(
+          ([key]) =>
+            key !== "recentBlockhash" && key !== "lastValidBlockHeight",
+        )
+        .sort(([a], [b]) => a.localeCompare(b));
+      return Object.fromEntries(entries.map(([key, val]) => [key, normalize(val)]));
+    }
+    return input;
+  };
+  return JSON.stringify(normalize(value));
+}
+
+function acceptedExtra(accepted: Record<string, unknown>): Record<string, unknown> {
+  const extra = accepted.extra;
+  if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+    return extra as Record<string, unknown>;
+  }
+  return {};
+}
+
+function assertAcceptedField(
+  field: string,
+  expected: unknown,
+  actual: unknown,
+): void {
+  if (normalizedJson(actual) !== normalizedJson(expected)) {
+    throw new Error(
+      `Accepted ${field} mismatch: expected ${normalizedJson(expected)}, got ${normalizedJson(actual)}`,
+    );
+  }
+}
+
 // Verify a payment header against a server route. Mirrors the version
 // dispatch + network gate in rust `parse_payment_signature` and the
-// `accepted`-vs-route field comparison in `verify_envelope_payload`.
+// `accepted`-vs-route field comparison in `verify_envelope_payload`, including
+// the structural fields Rust compares after the targeted amount/payTo/asset
+// checks. Transient blockhash hints are ignored, matching strip_blockhash_hints.
 // RPC-free: the signed-transaction settlement (decode/transferChecked
 // validation) is out of scope for the envelope oracle, so a structurally
 // valid, route-matching envelope is accepted here.
@@ -469,6 +521,34 @@ export function verifyPaymentHeader(
         `Currency mismatch: expected ${route.currency}, got ${acceptedAsset}`,
       );
     }
+    if (route.resource !== undefined) {
+      assertAcceptedField("resource", route.resource, accepted.resource);
+    }
+    if (route.maxTimeoutSeconds !== undefined) {
+      assertAcceptedField(
+        "maxTimeoutSeconds",
+        route.maxTimeoutSeconds,
+        accepted.maxTimeoutSeconds,
+      );
+    }
+    const extra = acceptedExtra(accepted);
+    if (route.extra !== undefined) {
+      assertAcceptedField("extra", route.extra, extra);
+    }
+    if (route.decimals !== undefined) {
+      assertAcceptedField(
+        "extra.decimals",
+        route.decimals,
+        extra.decimals ?? accepted.decimals,
+      );
+    }
+    if (route.tokenProgram !== undefined) {
+      assertAcceptedField(
+        "extra.tokenProgram",
+        route.tokenProgram,
+        extra.tokenProgram ?? accepted.tokenProgram,
+      );
+    }
     // Extensions reject gate: when the route requires a payment-identifier,
     // the echoed credential must carry a valid `pay_`-shaped id. Missing,
     // empty, or pattern-violating ids are rejected (coinbase spec: 400).
@@ -501,4 +581,212 @@ export function verifyPaymentHeader(
   }
 
   return { ok: true };
+}
+
+// ── x402 `exact` structural fund-safety verifier (TS reference) ──────────────
+//
+// A faithful port of the Rust spine `verify_exact_instructions`
+// (rust/crates/kit/src/x402/protocol/schemes/exact/verify.rs). Decodes the
+// base64 versioned transaction, runs the 11-rule structural pass, and throws
+// an Error whose message is the canonical `invalid_exact_svm_payload_*` reject
+// string — byte-identical to the Rust spine — so the cross-SDK vectors bind
+// the exact reject code. There is no production TS x402 SDK in this tree, so
+// this reference IS the TS contract every per-SDK exact runner is validated
+// against.
+
+const EXACT_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const EXACT_TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const EXACT_COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
+const EXACT_MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+const EXACT_LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
+const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
+
+export type X402ExactRequirement = {
+  asset: string;
+  payTo: string;
+  amount: string;
+  extra?: { tokenProgram?: string; memo?: string };
+};
+
+type ExactCompiledInstruction = {
+  accountIndices: readonly number[];
+  data: Uint8Array;
+  programAddressIndex: number;
+};
+
+type ExactCompiledMessage = {
+  instructions: readonly ExactCompiledInstruction[];
+  staticAccounts: readonly string[];
+};
+
+function u64Le(data: Uint8Array, offset: number): bigint {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  return view.getBigUint64(offset, true);
+}
+
+async function deriveAta(
+  owner: string,
+  mint: string,
+  tokenProgram: string,
+): Promise<string> {
+  const [ata] = await findAssociatedTokenPda({
+    mint: address(mint),
+    owner: address(owner),
+    tokenProgram: address(tokenProgram),
+  });
+  return String(ata);
+}
+
+// Run the 11-rule exact structural pass over a base64 versioned transaction.
+// Resolves on accept; rejects with a canonical `invalid_exact_svm_payload_*`
+// Error on the first rule failure.
+export async function verifyExactTransaction(
+  transactionBase64: string,
+  requirement: X402ExactRequirement,
+  managedSigners: string[],
+): Promise<void> {
+  const txBytes = getBase64Codec().encode(transactionBase64);
+  const decoded = getTransactionDecoder().decode(txBytes);
+  const message = getCompiledTransactionMessageDecoder().decode(
+    decoded.messageBytes,
+  ) as unknown as ExactCompiledMessage;
+
+  const keys = message.staticAccounts.map(String);
+  const ixs = message.instructions;
+  const keyAt = (index: number): string => keys[index] ?? "";
+  const programOf = (ix: ExactCompiledInstruction): string =>
+    keyAt(ix.programAddressIndex);
+
+  // Rule 1: instruction count 3..=6.
+  if (ixs.length < 3 || ixs.length > 6) {
+    throw new Error("invalid_exact_svm_payload_transaction_instructions_length");
+  }
+
+  // Rule 2: ix[0] = ComputeBudget SetComputeUnitLimit (disc 2, 5 bytes).
+  const limit = ixs[0];
+  if (
+    programOf(limit) !== EXACT_COMPUTE_BUDGET_PROGRAM ||
+    limit.data.length !== 5 ||
+    limit.data[0] !== 2
+  ) {
+    throw new Error(
+      "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
+    );
+  }
+
+  // Rule 3: ix[1] = ComputeBudget SetComputeUnitPrice (disc 3, 9 bytes, <= MAX).
+  const price = ixs[1];
+  if (
+    programOf(price) !== EXACT_COMPUTE_BUDGET_PROGRAM ||
+    price.data.length !== 9 ||
+    price.data[0] !== 3
+  ) {
+    throw new Error(
+      "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction",
+    );
+  }
+  if (u64Le(price.data, 1) > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
+    throw new Error(
+      "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+    );
+  }
+
+  // Rules 4-8 + 11: transferChecked at ix[2].
+  const transfer = ixs[2];
+  const transferProgram = programOf(transfer);
+  if (
+    transferProgram !== EXACT_TOKEN_PROGRAM &&
+    transferProgram !== EXACT_TOKEN_2022_PROGRAM
+  ) {
+    throw new Error("invalid_exact_svm_payload_no_transfer_instruction");
+  }
+  if (
+    transfer.accountIndices.length < 4 ||
+    transfer.data.length !== 10 ||
+    transfer.data[0] !== 12
+  ) {
+    throw new Error("invalid_exact_svm_payload_no_transfer_instruction");
+  }
+  const source = keyAt(transfer.accountIndices[0]);
+  const mint = keyAt(transfer.accountIndices[1]);
+  const destination = keyAt(transfer.accountIndices[2]);
+  const authority = keyAt(transfer.accountIndices[3]);
+
+  // Rule 5: fee-payer/managed-signer fund-mover guard (authority + source,
+  // and the managed signer's own source ATA for the mint). An appended
+  // instruction that merely references the fee-payer is NOT a fund move.
+  for (const managed of managedSigners) {
+    if (managed === authority || managed === source) {
+      throw new Error(
+        "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+      );
+    }
+    let managedAta: string | undefined;
+    try {
+      managedAta = await deriveAta(managed, mint, transferProgram);
+    } catch {
+      managedAta = undefined; // an unparseable managed key can't be the source ATA
+    }
+    if (managedAta !== undefined && source === managedAta) {
+      throw new Error(
+        "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+      );
+    }
+  }
+
+  // Rule 6: mint match.
+  if (mint !== requirement.asset) {
+    throw new Error("invalid_exact_svm_payload_mint_mismatch");
+  }
+
+  // Rule 7: destination ATA match (re-derive owner+mint+program).
+  const expectedDestination = await deriveAta(
+    requirement.payTo,
+    requirement.asset,
+    transferProgram,
+  );
+  if (destination !== expectedDestination) {
+    throw new Error("invalid_exact_svm_payload_recipient_mismatch");
+  }
+
+  // Rule 8: amount match.
+  if (u64Le(transfer.data, 1) !== BigInt(requirement.amount)) {
+    throw new Error("invalid_exact_svm_payload_amount_mismatch");
+  }
+
+  // Rule 9: ix[3..] allowlist (Memo / Lighthouse only), positional reject codes.
+  const reasons = [
+    "invalid_exact_svm_payload_unknown_fourth_instruction",
+    "invalid_exact_svm_payload_unknown_fifth_instruction",
+    "invalid_exact_svm_payload_unknown_sixth_instruction",
+  ];
+  for (let i = 3; i < ixs.length; i += 1) {
+    const program = programOf(ixs[i]);
+    if (program === EXACT_MEMO_PROGRAM || program === EXACT_LIGHTHOUSE_PROGRAM) {
+      continue;
+    }
+    throw new Error(
+      reasons[i - 3] ??
+        "invalid_exact_svm_payload_unknown_optional_instruction",
+    );
+  }
+
+  // Rule 10: memo binding (exactly one Memo == extra.memo when the offer pins it).
+  const expectedMemo = requirement.extra?.memo;
+  if (expectedMemo !== undefined && expectedMemo !== "") {
+    let memoCount = 0;
+    let lastMemo: string | undefined;
+    for (let i = 3; i < ixs.length; i += 1) {
+      if (programOf(ixs[i]) === EXACT_MEMO_PROGRAM) {
+        memoCount += 1;
+        lastMemo = new TextDecoder().decode(ixs[i].data);
+      }
+    }
+    if (memoCount !== 1) {
+      throw new Error("invalid_exact_svm_payload_memo_count");
+    }
+    if (lastMemo !== expectedMemo) {
+      throw new Error("invalid_exact_svm_payload_memo_mismatch");
+    }
+  }
 }

@@ -27,6 +27,42 @@ export const CANONICAL_CODES: readonly CanonicalErrorCode[] = [
   "signature_consumed",
 ];
 
+export const CANONICAL_CODE_CLASSIFICATION_FIXTURES: readonly {
+  message: string;
+  code: CanonicalErrorCode;
+}[] = [
+  { message: "amount mismatch", code: "charge_request_mismatch" },
+  { message: "credential method does not match", code: "challenge_route_mismatch" },
+  { message: "challenge verification failed", code: "challenge_verification_failed" },
+  { message: "challenge expired", code: "challenge_expired" },
+  { message: "malformed-credential", code: "payment_invalid" },
+  { message: "wrong network", code: "wrong_network" },
+  { message: "signature already consumed", code: "signature_consumed" },
+];
+
+export const CANONICAL_CODE_COVERAGE_EXCEPTIONS: Partial<
+  Record<CanonicalErrorCode, { owner: string; date: string; reason: string }>
+> = {
+  challenge_route_mismatch: {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "No cross-SDK behavioral scenario yet drives a same-secret wrong-route credential; classifier fixture pins the canonical mapping until that scenario is added.",
+  },
+  challenge_expired: {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Expired challenge coverage currently lives below the matrix; classifier fixture pins the canonical mapping until a behavioral scenario/vector is promoted.",
+  },
+  payment_invalid: {
+    owner: "harness",
+    date: "2026-07-09",
+    reason:
+      "Generic malformed payment coverage is classifier-pinned until a cross-SDK behavioral invalid-payment scenario is promoted.",
+  },
+};
+
 // Map well-known legacy or per-language codes to canonical codes. Mirrors
 // _LEGACY_TO_CANONICAL in the Python and Ruby SDKs.
 const LEGACY_TO_CANONICAL: Record<string, CanonicalErrorCode> = {

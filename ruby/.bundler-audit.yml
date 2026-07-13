@@ -1,0 +1,13 @@
+---
+# Documented bundler-audit exceptions. Each entry needs a reason and a removal
+# trigger (constitution exception discipline).
+#
+# CVE-2026-38969 — WEBrick (<= 1.9.2) re-parses trailers. webrick is now a
+# dev-only dependency (moved out of the gemspec runtime deps): the SDK does not
+# require it at runtime (puma is the production server) and downstream consumers
+# no longer receive it. It stays in the dev lockfile (also pulled transitively by
+# yard), and bundle-audit checks the whole lockfile, so this documented ignore
+# keeps CI green without exposing consumers. REMOVE once a patched webrick
+# (> 1.9.2) ships.
+ignore:
+  - CVE-2026-38969

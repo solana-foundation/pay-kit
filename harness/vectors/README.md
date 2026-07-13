@@ -18,6 +18,20 @@ RPC mint-owner resolution, real Token-2022 extension behavior, rent/ATA
 effects, fee-payer lamport drain, simulation/broadcast failures, and
 confirmation. Those stay in the surfpool matrix.
 
+## Regression Bank Policy
+
+Escaped CI bugs must enter the regression bank before the fix is considered
+covered. The minimum bar is a minimal repro scenario/vector that names the
+protocol, owner lane, bug-class label, expected rejection class, and expected
+status. A schema repro is acceptable when a full signed artifact would be too
+large or would require unsupported language execution; it should be promoted
+to an executable conformance vector once practical.
+
+The known-bad corpus lives under `harness/vectors/known-bad/`. New regressions
+should add the smallest case that would have failed before the fix and should
+keep the owner lane set to `regression-vectors` unless another lane owns the
+protocol-specific executable follow-up.
+
 ## Oracle
 
 - `build-transaction` / `verify-transaction` (`intent: "charge"`): the

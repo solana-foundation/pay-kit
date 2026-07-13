@@ -38,6 +38,7 @@ import socket
 import sys
 import threading
 import urllib.request
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -342,8 +343,27 @@ class _Adapter:
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()
-        fee_payer_raw = require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
-        signer = Signer.json(fee_payer_raw)
+        # The on-chain settle_and_finalize requires the settling merchant to be
+        # the channel payee, while the server-broadcast open requires that same
+        # signer to be the operator/fee-payer (rentPayer). So the session model
+        # uses ONE keypair as operator == recipient == settle signer. The harness
+        # provides a dedicated funded merchant key; the recipient (pay_to) is set
+        # to that merchant's pubkey by the orchestrator, so operator and recipient
+        # already agree here.
+        merchant_raw = optional_env(
+            "MPP_HARNESS_SESSION_MERCHANT_SECRET_KEY",
+            require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY"),
+        )
+        signer = Signer.json(merchant_raw)
+        self.session_signer = signer
+        if signer.pubkey() != pay_to:
+            print(
+                "session merchant signer pubkey "
+                f"{signer.pubkey()} must equal the recipient {pay_to} "
+                "(operator == recipient == settle signer)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         self.session_method = new_session(
             SessionOptions(
                 operator=signer.pubkey(),
@@ -356,6 +376,15 @@ class _Adapter:
                 realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
                 modes=["pull"],
                 pull_voucher_strategy="clientVoucher",
+                # Merge resolution: kept main's client-submit model. main (#218)
+                # adopted the epoch-addressed payment-channels program, where the
+                # client derives the channel PDA from the challenge recentSlot
+                # (openSlot). The branch's earlier server-broadcast variant
+                # (open_tx_submitter="server", signer set) targeted the
+                # pre-openSlot program and would emit invalid instruction data
+                # against the adopted one, so it is superseded here. Driving the
+                # session settle on-chain again is a separate effort against the
+                # new program.
                 open_tx_submitter="client",
                 # The session challenge must carry recentBlockhash + recentSlot
                 # (the client derives the channel PDA from the challenge slot
@@ -401,8 +430,59 @@ class _Adapter:
 class HarnessHandler(BaseHTTPRequestHandler):
     server_version = "python-harness/1.0"
 
+    # Input caps. The hand-rolled server must not read unbounded input: a
+    # request whose headers exceed the cap is rejected with 431 before any
+    # protocol handling, and a body past the cap is rejected with 413 before
+    # the declared Content-Length is allocated/read. These mirror the Ruby
+    # harness server so both reject the same hostile inputs identically. The
+    # 16 KiB per-header cap matches the MPP token cap (``MAX_TOKEN_LENGTH``);
+    # every legitimate harness header -- a base64 Solana transaction is
+    # ~1.6 KiB -- fits comfortably under it.
+    MAX_HEADER_VALUE_BYTES = 16 * 1024
+    MAX_TOTAL_HEADER_BYTES = 64 * 1024
+    MAX_HEADER_COUNT = 100
+    MAX_BODY_BYTES = 1024 * 1024
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
+
+    def parse_request(self) -> bool:  # noqa: D401
+        # Enforce the header caps after the base parser populates
+        # ``self.headers`` but before any handler runs. On overflow the base
+        # ``send_error`` writes the 431 response and we refuse the request.
+        if not super().parse_request():
+            return False
+        headers = self.headers
+        if len(headers) > self.MAX_HEADER_COUNT:
+            self.send_error(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, "Too many headers")
+            return False
+        total = 0
+        for name, value in headers.items():
+            value_len = len(value.encode("latin-1", "replace"))
+            if value_len > self.MAX_HEADER_VALUE_BYTES:
+                self.send_error(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, "Header value too large")
+                return False
+            total += len(name.encode("latin-1", "replace")) + value_len
+            if total > self.MAX_TOTAL_HEADER_BYTES:
+                self.send_error(HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE, "Headers too large")
+                return False
+        return True
+
+    def _read_capped_body(self) -> bytes | None:
+        """Read the request body, clamped to ``MAX_BODY_BYTES``.
+
+        Rejects (with 413) and returns ``None`` when the declared
+        Content-Length exceeds the cap, so the server never allocates or
+        streams an oversized body. Returns the body bytes otherwise.
+        """
+        try:
+            declared = int(self.headers.get("content-length", "0") or "0")
+        except ValueError:
+            declared = 0
+        if declared < 0 or declared > self.MAX_BODY_BYTES:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
+            return None
+        return self.rfile.read(declared)
 
     @property
     def adapter(self) -> _Adapter:
@@ -457,7 +537,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
             if self.path == adapter.resource_path:
                 self._handle_session(adapter)
                 return
-            raw = self.rfile.read(int(self.headers.get("content-length", "0") or "0"))
+            raw = self._read_capped_body()
+            if raw is None:
+                return
             if self.path == "/__402/session/deliveries":
                 response = asyncio.run(adapter.session_routes.deliveries("POST", raw or b"{}"))
                 self._send_json(response.status, response.body)
@@ -541,11 +623,34 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
     def _handle_session(self, adapter: _Adapter) -> None:
         auth = self.headers.get("authorization", "")
-        result = asyncio.run(adapter.session_method.handle(auth or None, adapter.session_challenge))
+
+        async def _handle_with_fresh_rpc():
+            # A request-lifetime RPC bound to THIS event loop drives both the
+            # server-broadcast open (openTxSubmitter=server) and the
+            # settle_and_finalize + distribute at close, so the session settles
+            # for real on-chain and ``settledSignature`` is a landed tx. Mirror
+            # the charge path: build a fresh SolanaRpc, scope it onto the
+            # session for the request, and always close it.
+            fresh_rpc = SolanaRpc(adapter.rpc_url)
+            session = adapter.session_method
+            previous = session._rpc
+            # Reaches private session state because there is no public per-request rpc-injection API; safe only in this synchronous single-threaded harness, never production.
+            session._rpc = fresh_rpc
+            try:
+                return await session.handle(auth or None, adapter.session_challenge)
+            finally:
+                session._rpc = previous
+                await fresh_rpc.aclose()
+
+        result = asyncio.run(_handle_with_fresh_rpc())
         if not result.ok:
             self._send_json(result.status, result.body or {"error": "payment_required"}, extra_headers=result.headers)
             return
         receipt_header = result.headers.get("payment-receipt", "")
+        # For the open GET this reference is the on-chain open signature; for the
+        # close POST it is the on-chain settle_and_finalize signature. The client
+        # only reads the settlement off the close response, so the settlement
+        # header surfaces the landed settle tx.
         reference = parse_receipt(receipt_header).reference if receipt_header else ""
         body = {"ok": True, "paid": True, "protocol": "session", "reference": reference}
         if reference:

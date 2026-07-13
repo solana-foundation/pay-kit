@@ -1,8 +1,32 @@
 packages:
   - 'packages/*'
 
-# Force transitive `ws` past GHSA-58qx-3vcg-4xpx (uninitialized memory
-# disclosure, patched in 8.20.1). Reaches us via
-# @solana/kit > @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket.
+# Dependency overrides. pnpm v10 reads them from THIS file only (it no longer
+# reads package.json's `pnpm` field), so every pin lives here to actually take
+# effect. `@x402/core` is forced to the vendored, audited tarball so a
+# transitive range cannot resolve the npm release; the rest are security floors
+# that push vulnerable transitive dependencies past their advisories.
+# `ws` reaches us via @solana/kit > @solana/rpc-subscriptions >
+# @solana/rpc-subscriptions-channel-websocket (GHSA-58qx-3vcg-4xpx,
+# uninitialized memory disclosure, patched in 8.20.1).
 overrides:
-  ws: '^8.20.1'
+  ws: '^8.21.0'
+  '@x402/core': 'file:.x402-vendor/x402-core-2.16.0.tgz'
+  '@hono/node-server': '>=1.19.13'
+  fast-uri: '>=3.1.2'
+  hono: '>=4.12.25'
+  ip-address: '>=10.1.1'
+  js-yaml: '>=4.2.0'
+  path-to-regexp: '>=8.4.0'
+  qs: '>=6.15.2'
+  yaml: '>=2.8.3'
+
+# Explicit postinstall-script allowlist: only these packages may run build
+# scripts on install. Every other dependency's scripts stay ignored by
+# default, so an unexpected native postinstall cannot execute silently.
+# esbuild is the only workspace build tool that legitimately needs its
+# postinstall (it downloads the platform binary for vite/vitest).
+# Lives here, not in package.json's `pnpm` field: pnpm v10 no longer reads
+# that field (it warns "the pnpm field ... is no longer read").
+onlyBuiltDependencies:
+  - esbuild

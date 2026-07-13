@@ -26,9 +26,12 @@ on:
         default: true
         type: boolean
 
+# Least privilege at the workflow level: read-only. The release-gate fan-out
+# (every SDK's test/build job, run via the reusable release-gate.yml) inherits
+# this default and gets no write token. contents: write and id-token: write are
+# granted explicitly on the individual publish jobs below, and nowhere else.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 # Prevent concurrent publishes
 concurrency:
@@ -36,9 +39,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
-    name: CI
-    uses: ./.github/workflows/ci.yml
+  # Guard the publish workflow's own hardening: fail early if the top-level
+  # permissions ever regain a write grant or a tag/release step loses its
+  # publish-success gate. This is the release-integrity self-check.
+  guards:
+    name: Publish workflow guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Assert least-privilege permissions and publish-success gating
+        run: |
+          scripts/check-publish-workflow-guards.sh \
+            .github/workflows/npm-publish.yml \
+            .github/workflows/pypi-publish.yml
+
+  # Full release gate: core CI + cross-language harness + on-chain legs +
+  # every SDK matrix (see release-gate.yml). Publishing must never gate on
+  # a single workflow's view of the commit.
+  gate:
+    name: Release gate
+    needs: [guards]
+    uses: ./.github/workflows/release-gate.yml
     secrets: inherit
 
   # Deprecated: @solana/mpp is superseded by @solana/pay-kit. This job is kept
@@ -47,14 +69,25 @@ jobs:
   publish:
     name: Publish @solana/mpp (deprecated)
     runs-on: ubuntu-latest
-    needs: [ci]
+    needs: [gate]
     if: ${{ github.event.inputs.package == 'mpp' || github.event.inputs.package == 'all' }}
+    # Protected environment gate (add required reviewers in repo settings),
+    # mirroring the pypi-publish job. Publishing uses npm OIDC trusted
+    # publishing: id-token:write below plus NPM_CONFIG_PROVENANCE authenticates
+    # via the OIDC exchange, so no NPM_TOKEN is stored. This requires a trusted
+    # publisher configured for @solana/mpp on npmjs.org and npm CLI >= 11.5.
+    environment: npm
+    # Write scope lives only on the publish job: contents: write for the git
+    # tag + GitHub Release, id-token: write for npm OIDC trusted publishing.
+    permissions:
+      contents: write
+      id-token: write
     env:
       NPM_CONFIG_PROVENANCE: true
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -65,12 +98,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 'lts/*'
           registry-url: 'https://registry.npmjs.org'
@@ -86,6 +119,16 @@ jobs:
           VERSION=$(node -p "require('./typescript/packages/mpp/package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
+
+      - name: Guard - refuse to republish an existing version
+        if: ${{ github.event.inputs.publish-to-npm == 'true' }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "@solana/mpp@${VERSION}" version >/dev/null 2>&1; then
+            echo "FAIL: @solana/mpp@${VERSION} is already published to npm; refusing to republish."
+            exit 1
+          fi
+          echo "Version ${VERSION} is not yet on npm; proceeding."
 
       - name: Check if prerelease
         id: prerelease
@@ -157,6 +200,7 @@ jobs:
           echo "dist/index.js and dist/index.d.ts present"
 
       - name: Publish to npm
+        id: publish
         if: ${{ github.event.inputs.publish-to-npm == 'true' }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -173,8 +217,12 @@ jobs:
             exit 1
           fi
 
+      # Tag + Release only after a real, successful publish. Gating on the input
+      # alone let a dry run (publish-to-npm=false) tag and release a version that
+      # was never published; requiring steps.publish.outcome == 'success' closes
+      # that (the publish step is skipped on a dry run, so outcome != success).
       - name: Create and push tag
-        if: ${{ github.event.inputs.publish-to-npm == 'true' }}
+        if: ${{ steps.publish.outcome == 'success' && github.event.inputs.publish-to-npm == 'true' }}
         run: |
           TAG="v${{ steps.version.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -186,8 +234,8 @@ jobs:
           git push origin "$TAG" 2>/dev/null || echo "Tag already pushed"
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create-github-release == 'true' }}
-        uses: actions/github-script@v7
+        if: ${{ steps.publish.outcome == 'success' && github.event.inputs.publish-to-npm == 'true' && github.event.inputs.create-github-release == 'true' }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -266,14 +314,21 @@ jobs:
   publish-pay-kit:
     name: Publish @solana/pay-kit
     runs-on: ubuntu-latest
-    needs: [ci]
+    needs: [gate]
     if: ${{ github.event.inputs.package == 'pay-kit' || github.event.inputs.package == 'all' }}
+    # Protected environment gate + npm OIDC trusted publishing (see the mpp
+    # publish job). Requires a trusted publisher for @solana/pay-kit on npmjs.org.
+    environment: npm
+    # Write scope lives only on the publish job (see the mpp job above).
+    permissions:
+      contents: write
+      id-token: write
     env:
       NPM_CONFIG_PROVENANCE: true
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -284,12 +339,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           package_json_file: package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 'lts/*'
           registry-url: 'https://registry.npmjs.org'
@@ -307,6 +362,16 @@ jobs:
           VERSION=$(node -p "require('./typescript/packages/pay-kit/package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
+
+      - name: Guard - refuse to republish an existing version
+        if: ${{ github.event.inputs.publish-to-npm == 'true' }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "@solana/pay-kit@${VERSION}" version >/dev/null 2>&1; then
+            echo "FAIL: @solana/pay-kit@${VERSION} is already published to npm; refusing to republish."
+            exit 1
+          fi
+          echo "Version ${VERSION} is not yet on npm; proceeding."
 
       - name: Check if prerelease
         id: prerelease
@@ -390,6 +455,7 @@ jobs:
           echo "dist artifacts present"
 
       - name: Publish to npm
+        id: publish
         if: ${{ github.event.inputs.publish-to-npm == 'true' }}
         run: |
           NPM_TAG="${{ steps.prerelease.outputs.npm_tag }}"
@@ -403,8 +469,9 @@ jobs:
             exit 1
           fi
 
+      # Tag + Release only after a real, successful publish (see the mpp job).
       - name: Create and push tag
-        if: ${{ github.event.inputs.publish-to-npm == 'true' }}
+        if: ${{ steps.publish.outcome == 'success' && github.event.inputs.publish-to-npm == 'true' }}
         run: |
           TAG="pay-kit-v${{ steps.version.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -416,8 +483,8 @@ jobs:
           git push origin "$TAG" 2>/dev/null || echo "Tag already pushed"
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create-github-release == 'true' }}
-        uses: actions/github-script@v7
+        if: ${{ steps.publish.outcome == 'success' && github.event.inputs.publish-to-npm == 'true' && github.event.inputs.create-github-release == 'true' }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

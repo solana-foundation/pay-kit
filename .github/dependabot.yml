@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep third-party GitHub Actions pinned to fresh commit SHAs. Actions are
+  # pinned by SHA (not tag) for supply-chain safety; Dependabot bumps the SHA
+  # and updates the `# vX.Y.Z` comment when a new release ships.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

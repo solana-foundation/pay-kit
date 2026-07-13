@@ -28,6 +28,10 @@ local function make_gate(price_str)
   return assert(require('pay_kit.internal.registry').materialize('paid'))
 end
 
+local function test_store()
+  return { put_if_absent = function() return true end }
+end
+
 -- --- detect ---------------------------------------------------------
 
 helper.test('detect: returns true for non-empty PAYMENT-SIGNATURE header', function()
@@ -43,7 +47,7 @@ end)
 
 -- --- matcher --------------------------------------------------------
 
-helper.test('matcher: identity tuple match ignores amount/maxTimeoutSeconds', function()
+helper.test('matcher: identity tuple match permits omitted amount/maxTimeoutSeconds', function()
   local client = {
     scheme  = 'exact',
     network = 'solana:dev',
@@ -62,6 +66,12 @@ helper.test('matcher: identity tuple match ignores amount/maxTimeoutSeconds', fu
     extra             = {feePayer = 'Fp', tokenProgram = 'Tk', memo = '/paid', decimals = 6},
   }
   helper.assert_equal(x402._private.accepted_requirement_matches(client, server), true)
+end)
+
+helper.test('x402.new requires replay store with put_if_absent', function()
+  local adapter, err = x402.new({config_resolver = pay_kit.config})
+  helper.assert_equal(adapter, nil)
+  helper.assert_true(err and err:find('replay store', 1, true), err)
 end)
 
 helper.test('matcher: scheme/network/asset/payTo mismatch returns false', function()
@@ -155,7 +165,10 @@ end)
 helper.test('verify_and_settle rejects unmatched accepted', function()
   setup()
   local gate = make_gate('0.001')
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({
+    config_resolver = pay_kit.config,
+    store = { put_if_absent = function() return true end },
+  }))
   local base64 = require('pay_kit.util.base64_std')
   local cred = {
     x402Version = 2,
@@ -272,7 +285,7 @@ end)
 helper.test('verify_and_settle rejects a v1 credential signed for the wrong network', function()
   setup()  -- server configured for solana_devnet
   local gate = make_gate('0.001')
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({config_resolver = pay_kit.config, store = test_store()}))
   local base64 = require('pay_kit.util.base64_std')
   -- v1 envelope with plain "solana" (mainnet) presented to a devnet route.
   local v1 = base64.encode(cjson.encode({
@@ -288,7 +301,7 @@ end)
 helper.test('verify_and_settle passes a matching-network v1 credential past the network gate', function()
   setup()  -- server configured for solana_devnet
   local gate = make_gate('0.001')
-  local adapter = assert(x402.new({config_resolver = pay_kit.config}))
+  local adapter = assert(x402.new({config_resolver = pay_kit.config, store = test_store()}))
   local base64 = require('pay_kit.util.base64_std')
   -- v1 envelope with plain "solana-devnet" against a devnet route: the
   -- network gate passes, so the failure must come from the missing payload

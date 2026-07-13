@@ -48,6 +48,7 @@ local instructions = require('pay_kit.solana.instructions')
 local base58 = require('pay_kit.solana.base58')
 local ata = require('pay_kit.solana.ata')
 local mints = require('pay_kit.solana.mints')
+local x402_exact_verify = require('pay_kit.protocols.x402.exact.verify')
 
 local UNSUPPORTED_MODE = 'unsupported-mode'
 
@@ -82,6 +83,7 @@ end
 -- encoder; key order is canonical, which is fine because the driver parses
 -- the line with JSON.parse and reads fields by name.
 local function emit(result)
+  result.language = 'lua'
   io.write(json.encode(result) .. '\n')
 end
 
@@ -472,6 +474,8 @@ end
 --
 -- The Lua SDK is SERVER-only, so:
 --   * build-transaction (x402) -> unsupported-mode (driver SKIPs).
+--   * verify-x402-transaction -> run the real 11-rule SVM exact verifier
+--     directly against the vector transaction / requirement / managed keys.
 --   * verify-transaction (x402) -> run the server-side credential decode
 --     (version dispatch + per-version network gate) + the v2 accepted-vs-
 --     route field comparison, emit accept/reject (+ rejectCode), and
@@ -704,10 +708,40 @@ local function run_x402_verify(vector)
   }
 end
 
+-- verify-x402-transaction is deliberately separate from the HTTP envelope
+-- oracle above. It drives the production exact verifier directly, so neither
+-- a fabricated payment header nor an envelope-shaped success result can mask
+-- a transaction-level fund-safety regression.
+local function run_x402_exact_transaction(vector)
+  local input = vector.input or {}
+  if type(input.transaction) ~= 'string' or input.transaction == '' then
+    error('invalid payload: verify-x402-transaction vector missing input.transaction')
+  end
+  if type(input.x402ExactRequirement) ~= 'table' then
+    error('invalid payload: verify-x402-transaction vector missing input.x402ExactRequirement')
+  end
+  local managed_signers = input.x402ExactManagedSigners
+  if managed_signers == nil then
+    managed_signers = {}
+  elseif type(managed_signers) ~= 'table' then
+    error('invalid payload: x402ExactManagedSigners must be an array')
+  end
+
+  x402_exact_verify.verify(
+    input.transaction,
+    input.x402ExactRequirement,
+    managed_signers
+  )
+  return { id = vector.id, outcome = 'accept' }
+end
+
 -- x402-exact dispatch. build vectors have no server-only equivalent
 -- (the Lua SDK ships no client builder), so they emit unsupported-mode
 -- and the driver SKIPs them. verify vectors exercise the real verifier.
 local function run_x402_vector(vector)
+  if vector.mode == 'verify-x402-transaction' then
+    return run_x402_exact_transaction(vector)
+  end
   if vector.mode == 'build-transaction' then
     return {
       id = vector.id,
@@ -823,6 +857,11 @@ local function main()
 
   local ok, vector = pcall(json.decode, raw)
   if not ok then
+    local id = raw:match('"id"%s*:%s*"([%w%._%-]+)"')
+    if id ~= nil then
+      emit({ id = id, outcome = 'reject', error = tostring(vector) })
+      return
+    end
     io.stderr:write('failed to parse vector: ' .. tostring(vector) .. '\n')
     os.exit(1)
   end
@@ -842,6 +881,9 @@ local function main()
       message = tostring(run_err)
     end
     result = { id = vector.id, outcome = 'reject', error = message }
+    if vector.intent == 'x402-exact' and vector.mode == 'verify-x402-transaction' then
+      result.x402ExactRejectCode = message:match('invalid_exact_svm_payload_[%w_]+')
+    end
     local code = classify_reject(message)
     if code ~= nil then
       result.rejectCode = code

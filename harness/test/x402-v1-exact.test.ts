@@ -31,6 +31,8 @@ const devnetOffer: X402Offer = {
   extra: { feePayer: "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ" },
 };
 
+const tokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
 const mainnetOffer: X402Offer = {
   scheme: "exact",
   network: SOLANA_MAINNET,
@@ -108,6 +110,47 @@ describe("x402 v1 server verify (dual-accept)", () => {
   it("still accepts a v2 PAYMENT-SIGNATURE on the same server (emit-v2-default peer)", () => {
     const header = buildPaymentHeaderV2(devnetOffer, "AA==");
     expect(verifyPaymentHeader(header, devnetRoute)).toEqual({ ok: true });
+  });
+});
+
+describe("x402 v2 server verify route binding", () => {
+  const route = {
+    network: "devnet",
+    recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+    currency: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    amount: "1000",
+    resource: "/x402/joke",
+    maxTimeoutSeconds: 60,
+    extra: { decimals: 6, tokenProgram },
+    decimals: 6,
+    tokenProgram,
+  };
+
+  const boundOffer: X402Offer = {
+    ...devnetOffer,
+    maxTimeoutSeconds: route.maxTimeoutSeconds,
+    extra: route.extra,
+  };
+
+  function mutateAccepted(header: string, mutate: (accepted: Record<string, unknown>) => void): string {
+    const env = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as {
+      accepted: Record<string, unknown>;
+    };
+    env.accepted.resource = route.resource;
+    mutate(env.accepted);
+    return Buffer.from(JSON.stringify(env), "utf8").toString("base64");
+  }
+
+  it("accepts a v2 credential whose accepted fields structurally match the route", () => {
+    const header = mutateAccepted(buildPaymentHeaderV2(boundOffer, "AA=="), () => {});
+    expect(verifyPaymentHeader(header, route)).toEqual({ ok: true });
+  });
+
+  it("rejects drift only in accepted.extra", () => {
+    const header = mutateAccepted(buildPaymentHeaderV2(boundOffer, "AA=="), (accepted) => {
+      accepted.extra = { decimals: 9, tokenProgram };
+    });
+    expect(() => verifyPaymentHeader(header, route)).toThrow(/Accepted extra/i);
   });
 });
 

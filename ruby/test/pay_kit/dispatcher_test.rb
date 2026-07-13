@@ -14,6 +14,11 @@ class PayKitDispatcherTest < Minitest::Test
     yield middleware, env[::PayKit::Rack::PaymentRequired::ENV_DISPATCHER_KEY]
   end
 
+  def with_mpp_cache_config(**overrides, &block)
+    store = ::PayKit::Protocols::Mpp::MemoryStore.new
+    PayKitTestHelpers.with_config(network: :solana_localnet, **overrides, mpp_replay_store: store, &block)
+  end
+
   def make_gate(name:, pay_to:)
     amount = ::PayKit::Helpers::Pricing.build_price(:USD, "0.10", [:USDC])
     ::PayKit::Gate.new(
@@ -36,7 +41,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_self_hosted_x402_mode_does_not_raise
-    PayKitTestHelpers.with_config do
+    PayKitTestHelpers.with_config(network: :solana_localnet) do
       with_dispatcher do |_middleware, dispatcher|
         refute_nil dispatcher.send(:x402_adapter)
       end
@@ -44,7 +49,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_x402_settlement_cache_is_shared_across_requests
-    PayKitTestHelpers.with_config do
+    PayKitTestHelpers.with_config(network: :solana_localnet) do
       with_dispatcher do |middleware, _dispatcher|
         cache = middleware.instance_variable_get(:@x402_settlement_cache)
         refute_nil cache
@@ -57,7 +62,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_returns_same_server_for_identical_gates
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       with_dispatcher do |_middleware, dispatcher|
         gate_a = make_gate(name: :report_a, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         gate_b = make_gate(name: :report_b, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
@@ -71,7 +76,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_separates_servers_for_distinct_recipients
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       with_dispatcher do |_middleware, dispatcher|
         gate_a = make_gate(name: :a, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         gate_b = make_gate(name: :b, pay_to: "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
@@ -86,7 +91,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_operator_fee_payer_true_wires_signer_account_into_mpp_method
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       with_dispatcher do |_middleware, dispatcher|
         gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         server = dispatcher.send(:mpp_server_for, gate)
@@ -100,7 +105,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_operator_fee_payer_false_leaves_mpp_method_fee_payer_nil
-    PayKitTestHelpers.with_config(fee_payer: false) do
+    with_mpp_cache_config(fee_payer: false) do
       with_dispatcher do |_middleware, dispatcher|
         gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         server = dispatcher.send(:mpp_server_for, gate)
@@ -111,7 +116,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_threads_expires_in_into_challenge_store
-    PayKitTestHelpers.with_config(mpp_expires_in: 42) do
+    with_mpp_cache_config(mpp_expires_in: 42) do
       with_dispatcher do |_middleware, dispatcher|
         gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
         server = dispatcher.send(:mpp_server_for, gate)
@@ -122,7 +127,7 @@ class PayKitDispatcherTest < Minitest::Test
   end
 
   def test_mpp_method_cache_survives_across_dispatchers_on_the_same_middleware
-    PayKitTestHelpers.with_config do
+    with_mpp_cache_config do
       middleware = ::PayKit::Rack::PaymentRequired.new(->(_env) { [200, {}, [""]] }, config: PayKit.config)
       env1 = {"PATH_INFO" => "/", "REQUEST_METHOD" => "GET", "rack.input" => StringIO.new}
       env2 = {"PATH_INFO" => "/", "REQUEST_METHOD" => "GET", "rack.input" => StringIO.new}
@@ -137,6 +142,59 @@ class PayKitDispatcherTest < Minitest::Test
       s1 = dispatcher1.send(:mpp_server_for, gate)
       s2 = dispatcher2.send(:mpp_server_for, gate)
       assert_same s1, s2, "method cache is per-middleware, so two dispatchers must hit the same cached server"
+    end
+  end
+
+  def test_mpp_dispatcher_uses_a_configured_durable_replay_store
+    Dir.mktmpdir do |dir|
+      store = PayKit::Protocols::Mpp::FileStore.new(File.join(dir, "replay.json"))
+      PayKitTestHelpers.with_config(mpp_replay_store: store) do
+        with_dispatcher do |_middleware, dispatcher|
+          gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+          server = dispatcher.send(:mpp_server_for, gate)
+          assert_same store, server.instance_variable_get(:@handler).instance_variable_get(:@replay_store)
+        end
+      end
+    end
+  end
+
+  # P1 regression: a dev running on localnet with NO durable replay_store
+  # configured must NOT trip Mpp.create's explicit-nil guard. mpp_server_for
+  # omits the replay_store option entirely when none is configured, so
+  # Mpp.create sees its DEV_ONLY_MEMORY_STORE sentinel and falls back to a
+  # volatile MemoryStore instead of raising on an explicit `replay_store: nil`.
+  def test_mpp_dispatcher_falls_back_to_memory_store_on_localnet_without_replay_store
+    PayKitTestHelpers.with_config(network: :solana_localnet) do
+      with_dispatcher do |_middleware, dispatcher|
+        assert_nil PayKit.config.mpp.replay_store, "precondition: no replay_store configured"
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+
+        server = nil
+        _out, _err = capture_io do
+          server = dispatcher.send(:mpp_server_for, gate)
+        end
+
+        store = server.instance_variable_get(:@handler).instance_variable_get(:@replay_store)
+        assert_kind_of PayKit::Protocols::Mpp::MemoryStore, store,
+          "localnet with no configured store must fall back to the dev MemoryStore"
+      end
+    end
+  end
+
+  # Companion: the localnet fallback must NOT leak off localnet. With no
+  # replay_store configured on devnet, mpp_server_for must still raise
+  # ConfigurationError — the fix only relaxes the explicit-nil footgun, it does
+  # not weaken the durable-store requirement for non-localnet networks.
+  def test_mpp_dispatcher_still_requires_durable_store_off_localnet
+    PayKitTestHelpers.with_config(network: :solana_devnet) do
+      with_dispatcher do |_middleware, dispatcher|
+        assert_nil PayKit.config.mpp.replay_store, "precondition: no replay_store configured"
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        err = assert_raises(PayKit::ConfigurationError) do
+          dispatcher.send(:mpp_server_for, gate)
+        end
+        assert_match(/durable replay_store/, err.message)
+      end
     end
   end
 end
