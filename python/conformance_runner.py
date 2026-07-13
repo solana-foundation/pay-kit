@@ -676,6 +676,18 @@ def _classify_reject(message: str) -> str | None:
     return None
 
 
+def _x402_exact_reject_code(exc: Exception) -> str | None:
+    """Return the verifier's canonical x402-exact code, when present.
+
+    The conformance ABI pins these codes byte-for-byte. Preserve the typed
+    verifier code instead of relying on its diagnostic text, which may gain
+    useful detail without changing the canonical reject family.
+    """
+    if isinstance(exc, InvalidProofError) and exc.code.startswith("invalid_exact_svm_payload_"):
+        return exc.code
+    return None
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -686,12 +698,17 @@ def main() -> None:
         result = _run_vector(vector)
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
-        result = {"id": vector.get("id", ""), "outcome": "reject", "error": message}
+        exact_reject_code = _x402_exact_reject_code(exc)
+        result = {
+            "id": vector.get("id", ""),
+            "outcome": "reject",
+            "error": exact_reject_code or message,
+        }
         code = _classify_reject(message)
         if code is not None:
             result["rejectCode"] = code
-        if isinstance(exc, InvalidProofError) and exc.code.startswith("invalid_exact_svm_payload_"):
-            result["x402ExactRejectCode"] = exc.code
+        if exact_reject_code is not None:
+            result["x402ExactRejectCode"] = exact_reject_code
 
     result["language"] = "python"
     sys.stdout.write(json.dumps(result) + "\n")
