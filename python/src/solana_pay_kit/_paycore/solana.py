@@ -44,13 +44,20 @@ KNOWN_MINTS: dict[str, dict[str, str]] = {
 
 
 def _canonical_network(network: str) -> str:
-    """Normalize ``mainnet-beta`` to the canonical ``mainnet`` slug.
+    """Normalize supported aliases to canonical network slugs.
 
     L1 lock from PR #96 / #102 picked ``mainnet`` as the canonical network slug
     across every SDK. ``mainnet-beta`` is accepted as a backward compatible
-    alias so credentials issued against either spelling round-trip cleanly.
+    alias. The public :class:`Network` enum exposes ``solana_*`` values, so
+    server APIs that accept strings must preserve those exact known aliases
+    without admitting arbitrary network names.
     """
-    return "mainnet" if network == "mainnet-beta" else network
+    return {
+        "mainnet-beta": "mainnet",
+        "solana_mainnet": "mainnet",
+        "solana_devnet": "devnet",
+        "solana_localnet": "localnet",
+    }.get(network, network)
 
 
 # Audit #37: canonical Solana network allowlist. The server rejects anything
