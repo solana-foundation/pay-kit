@@ -2340,14 +2340,20 @@ fn verify_spl_transfer_instructions(
         if mint != expected_mint {
             continue;
         }
-        let authority = account_keys
-            .get(ix.accounts[3] as usize)
-            .ok_or_else(|| VerificationError::invalid_payload("Invalid authority index"))?;
         if let Some(fee_payer) = fee_payer {
-            if authority == fee_payer {
-                return Err(VerificationError::invalid_payload(
-                    "Fee payer cannot authorize the SPL payment transfer",
-                ));
+            // A transferChecked multisig appends signer accounts after the
+            // authority. Any managed signer in that full tail can authorize
+            // the debit, even when the stored token-account owner is a
+            // separate multisig address.
+            for signer_index in ix.accounts.iter().skip(3) {
+                let signer = account_keys.get(*signer_index as usize).ok_or_else(|| {
+                    VerificationError::invalid_payload("Invalid authority or multisig signer index")
+                })?;
+                if signer == fee_payer {
+                    return Err(VerificationError::invalid_payload(
+                        "Fee payer cannot authorize the SPL payment transfer",
+                    ));
+                }
             }
 
             let (fee_payer_ata, _) = Pubkey::find_program_address(
@@ -3999,6 +4005,57 @@ mod tests {
                 1,
                 "customer source must remain signable"
             );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_pull_rejects_managed_multisig_signer_tail_before_signing_for_both_token_programs(
+    ) {
+        for (mint, token_program) in mpp_token_program_cases() {
+            let mock = MockRpc::start().await;
+            let fee_payer = Pubkey::new_unique();
+            let recipient = Pubkey::new_unique();
+            let source = Pubkey::new_unique();
+            let multisig = Pubkey::new_unique();
+            let signer = Arc::new(CountingSigner::new(fee_payer));
+            let mpp = fee_sponsored_mpp(mock.url(), recipient, mint, signer.clone());
+            let destination = derive_ata(&recipient, &mint, &token_program);
+            let mut transfer = spl_transfer_checked_ix_for_program(
+                &source,
+                &mint,
+                &destination,
+                &multisig,
+                1_000_000,
+                6,
+                token_program,
+            );
+            transfer.accounts[3].is_signer = false;
+            transfer
+                .accounts
+                .push(AccountMeta::new_readonly(fee_payer, true));
+            let transaction = dummy_tx(vec![transfer], &fee_payer);
+            let transaction_b64 = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                bincode::serialize(&VersionedTransaction::from(transaction))
+                    .expect("serialize transaction"),
+            );
+            let request = charge_request(1_000_000, &mint.to_string(), &recipient);
+            let method_details = fee_sponsored_method_details(fee_payer, token_program);
+
+            mock.set_account(
+                source.to_string(),
+                token_account_data(mint, multisig),
+                token_program.to_string(),
+            );
+            let err = mpp
+                .broadcast_pull(&transaction_b64, &request, &method_details)
+                .await
+                .expect_err("managed multisig signer tail must be rejected");
+            assert_eq!(
+                err.message,
+                "Fee payer cannot authorize the SPL payment transfer"
+            );
+            assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
         }
     }
 
