@@ -14,7 +14,7 @@ from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
+from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM, resolve_mint
 from solana_pay_kit.protocols.mpp._paymentchannels import find_associated_token_address
 from solana_pay_kit.protocols.mpp.intents.session import ClosePayload
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
@@ -45,6 +45,7 @@ class _SettleRpc:
 
     def __init__(self) -> None:
         self.accounts: dict[str, tuple[bytes, str]] = {}
+        self.account_info_requests: list[str] = []
         self.sent: list[bytes] = []
         self.status_queries: list[list[str]] = []
 
@@ -62,17 +63,26 @@ class _SettleRpc:
     async def get_account_info(
         self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
     ) -> tuple[bytes, str] | None:
+        self.account_info_requests.append(address)
         return self.accounts.get(address)
 
 
-def _seed_settlement_recipient_ata(rpc: _SettleRpc, recipient: str) -> None:
-    mint = resolve_mint("USDC", "localnet")
+def _seed_settlement_mint(rpc: _SettleRpc, currency: str, token_program: str) -> None:
+    mint = resolve_mint(currency, "localnet")
     assert mint is not None
-    token_program = Pubkey.from_string(default_token_program_for_currency("USDC", "localnet"))
+    rpc.accounts[mint] = (b"", token_program)
+
+
+def _seed_settlement_recipient_ata(
+    rpc: _SettleRpc, recipient: str, currency: str, token_program: str
+) -> None:
+    mint = resolve_mint(currency, "localnet")
+    assert mint is not None
+    program = Pubkey.from_string(token_program)
     recipient_ata, _ = find_associated_token_address(
-        Pubkey.from_string(recipient), Pubkey.from_string(mint), token_program
+        Pubkey.from_string(recipient), Pubkey.from_string(mint), program
     )
-    rpc.accounts[str(recipient_ata)] = (b"", str(token_program))
+    rpc.accounts[str(recipient_ata)] = (b"", token_program)
 
 
 def _session(
@@ -80,6 +90,8 @@ def _session(
     operator: Keypair,
     recipient: str | None = None,
     *,
+    currency: str = "USDC",
+    token_program: str = TOKEN_PROGRAM,
     recipient_ata_exists: bool = True,
 ):
     if recipient is None:
@@ -89,7 +101,7 @@ def _session(
             operator=str(operator.pubkey()),
             recipient=recipient,
             cap=1_000_000,
-            currency="USDC",
+            currency=currency,
             decimals=6,
             network="localnet",
             secret_key="a" * 64,
@@ -99,8 +111,9 @@ def _session(
             rpc=rpc,
         )
     )
+    _seed_settlement_mint(rpc, currency, token_program)
     if recipient_ata_exists:
-        _seed_settlement_recipient_ata(rpc, recipient)
+        _seed_settlement_recipient_ata(rpc, recipient, currency, token_program)
     return session
 
 
@@ -206,6 +219,69 @@ async def test_close_rejects_missing_recipient_ata_without_broadcast_or_receipt_
         await session._handle_close(ClosePayload(channel_id=channel))
 
     assert rpc.sent == []
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.sealed is False
+    assert state.settled_signature is None
+    assert state.settling is False
+
+
+@pytest.mark.asyncio
+async def test_close_uses_raw_token_2022_mint_owner_for_recipient_ata_and_distribute() -> None:
+    operator = Keypair.from_seed(bytes([14] * 32))
+    recipient = str(Keypair.from_seed(bytes([15] * 32)).pubkey())
+    mint = str(Keypair.from_seed(bytes([16] * 32)).pubkey())
+    channel = str(Keypair.from_seed(bytes([17] * 32)).pubkey())
+    rpc = _SettleRpc()
+    session = _session(rpc, operator, recipient, currency=mint, token_program=TOKEN_2022_PROGRAM)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=500_000,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    await session._settle_channel(channel)
+
+    message = Transaction.from_bytes(rpc.sent[0]).message
+    distribute = message.instructions[-1]
+    recipient_ata, _ = find_associated_token_address(
+        Pubkey.from_string(recipient), Pubkey.from_string(mint), Pubkey.from_string(TOKEN_2022_PROGRAM)
+    )
+    assert str(message.account_keys[distribute.accounts[5]]) == str(recipient_ata)
+    assert str(message.account_keys[distribute.accounts[8]]) == TOKEN_2022_PROGRAM
+    assert rpc.account_info_requests[:2] == [mint, str(recipient_ata)]
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_mint_owned_by_unexpected_program_before_broadcast() -> None:
+    operator = Keypair.from_seed(bytes([18] * 32))
+    recipient = str(Keypair.from_seed(bytes([19] * 32)).pubkey())
+    mint = str(Keypair.from_seed(bytes([20] * 32)).pubkey())
+    channel = str(Keypair.from_seed(bytes([21] * 32)).pubkey())
+    unexpected_owner = str(Keypair.from_seed(bytes([22] * 32)).pubkey())
+    rpc = _SettleRpc()
+    session = _session(rpc, operator, recipient, currency=mint, token_program=unexpected_owner)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=500_000,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    with pytest.raises(PaymentError, match="owned by unsupported token program"):
+        await session._settle_channel(channel)
+
+    assert rpc.sent == []
+    assert rpc.account_info_requests == [mint]
     state = await session._core.store().get_channel(channel)
     assert state is not None
     assert state.sealed is False

@@ -32,7 +32,7 @@ from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
+from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM, resolve_mint
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     Distribution,
@@ -675,6 +675,29 @@ def _require_account_info_rpc(rpc_client: RpcClient) -> AccountInfoRpc:
     return cast(AccountInfoRpc, rpc_client)
 
 
+async def _resolve_settlement_token_program(rpc: RpcClient, mint: Pubkey) -> Pubkey:
+    """Return the supported program that actually owns the settlement mint."""
+    account_rpc = _require_account_info_rpc(rpc)
+    mint_address = str(mint)
+    try:
+        account = await account_rpc.get_account_info(mint_address, commitment="confirmed")
+    except Exception as exc:
+        raise PaymentError(
+            f"failed to resolve settlement mint owner {mint_address}: {exc}", code="transaction-not-found"
+        ) from exc
+    if account is None:
+        raise PaymentError(
+            f"settlement mint {mint_address} does not exist", code="invalid-payload"
+        )
+    _, owner = account
+    if owner not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+        raise PaymentError(
+            f"settlement mint {mint_address} is owned by unsupported token program {owner}",
+            code="invalid-payload",
+        )
+    return Pubkey.from_string(owner)
+
+
 async def _require_settlement_recipient_atas(
     rpc: RpcClient,
     *,
@@ -774,7 +797,7 @@ async def settle_and_seal_channel(
         )
     payee = Pubkey.from_string(config.recipient)
     mint = Pubkey.from_string(mint_address)
-    token_program = Pubkey.from_string(default_token_program_for_currency(config.currency, config.network))
+    token_program = await _resolve_settlement_token_program(rpc, mint)
     recipients = [Distribution(recipient=Pubkey.from_string(split.recipient), bps=split.bps) for split in config.splits]
     await _require_settlement_recipient_atas(
         rpc,
