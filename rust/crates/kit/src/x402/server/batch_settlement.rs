@@ -486,6 +486,8 @@ impl X402BatchSettlement {
                     close_requested_at: None,
                     // Persisted for PDA re-derivation and the reclaim gate.
                     open_slot: Some(open_slot),
+                    salt: Some(channel.salt),
+                    open_signature: None,
                     // Stash the payer here so settlement/distribute can refund it
                     // without an extra account fetch.
                     operator: Some(pc::pubkey_string(&payer)),
@@ -959,6 +961,8 @@ mod tests {
             highest_voucher_expires_at: None,
             close_requested_at: None,
             open_slot: None,
+            salt: None,
+            open_signature: None,
             operator: None,
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
