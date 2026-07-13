@@ -1,5 +1,10 @@
 {
   "language": "lua",
   "command": ["luajit", "cmd/conformance/main.lua"],
-  "cwd": "lua"
+  "cwd": "lua",
+  "intents": ["charge", "x402-exact"],
+  "modesByIntent": {
+    "charge": ["canonical-bytes"],
+    "x402-exact": ["verify-x402-transaction"]
+  }
 }
