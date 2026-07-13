@@ -9,7 +9,7 @@ export type AtomicSubscriptionReplayStore = SubscriptionReplayStore & {
 /**
  * Explicit process-local store for local development only.
  *
- * Production deployments must provide a shared or durable implementation of
+ * Production deployments must provide a shared, durable implementation of
  * {@link AtomicSubscriptionReplayStore} so reservations survive restarts and
  * coordinate across server instances.
  */

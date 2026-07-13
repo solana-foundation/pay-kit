@@ -18,7 +18,7 @@ async function setup(
     const signer = await Signer.generate();
     const config = await configure({
         mpp: {
-            challengeBindingSecret: 'session-store-test-secret',
+            challengeBindingSecret: 's'.repeat(32),
             ...(options.sessionStore ? { sessionStore: options.sessionStore } : {}),
         },
         network: options.network ?? 'solana_localnet',

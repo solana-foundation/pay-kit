@@ -16,7 +16,7 @@ export type MppOptions = {
      * (with a warning) on localnet only.
      */
     readonly challengeBindingSecret?: string;
-    /** Challenge TTL in seconds. `0` means never expires (dev only). */
+    /** Challenge TTL in seconds. `0` uses Mppx's fail-closed default TTL. */
     readonly expiresIn?: number;
     /**
      * Serve the interactive HTML payment page (the "Continue with Solana"
@@ -68,7 +68,7 @@ export type ConfigureParams = {
     readonly preflight?: boolean;
     /**
      * Replay-protection store. Subscription gates require the atomic
-     * {@link AtomicSubscriptionReplayStore} contract; use a shared or durable
+     * {@link AtomicSubscriptionReplayStore} contract; use a shared, durable
      * implementation in production.
      */
     readonly replayStore?: AtomicSubscriptionReplayStore | Store.Store;
@@ -99,11 +99,22 @@ export type PayKitConfig = {
 };
 
 const DEFAULT_EXPIRES_IN_SECONDS = 120;
+const MIN_CHALLENGE_BINDING_SECRET_BYTES = 32;
 const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
 
 function resolveChallengeBindingSecret(network: Network, provided: string | undefined): string {
     const secret = provided ?? process.env.PAY_KIT_MPP_SECRET ?? process.env.MPP_SECRET_KEY;
-    if (secret) return secret;
+    if (secret) {
+        if (
+            network !== 'solana_localnet' &&
+            new TextEncoder().encode(secret).byteLength < MIN_CHALLENGE_BINDING_SECRET_BYTES
+        ) {
+            throw new ConfigurationError(
+                `mpp.challengeBindingSecret must be at least ${MIN_CHALLENGE_BINDING_SECRET_BYTES} UTF-8 bytes outside localnet.`,
+            );
+        }
+        return secret;
+    }
     if (network !== 'solana_localnet') {
         throw new ConfigurationError(
             'mpp.challengeBindingSecret is required outside localnet. Provide it in configure() ' +

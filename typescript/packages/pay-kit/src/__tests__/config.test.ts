@@ -4,7 +4,7 @@ import { configure, configureFromEnv } from '../config.js';
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from '../errors.js';
 import { Signer } from '../signer.js';
 
-const SECRET = { mpp: { challengeBindingSecret: 'test-secret' } };
+const SECRET = { mpp: { challengeBindingSecret: 's'.repeat(32) } };
 
 describe('configure', () => {
     it('applies the canonical defaults', async () => {
@@ -55,13 +55,41 @@ describe('configure', () => {
         delete process.env.PAY_KIT_MPP_SECRET;
         delete process.env.MPP_SECRET_KEY;
         await expect(configure({ network: 'solana_devnet', operator: { signer } })).rejects.toThrow(ConfigurationError);
-        process.env.MPP_SECRET_KEY = 'env-secret';
+        process.env.MPP_SECRET_KEY = 'e'.repeat(32);
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
             const config = await configure({ network: 'solana_devnet', operator: { signer } });
-            expect(config.mpp.challengeBindingSecret).toBe('env-secret');
+            expect(config.mpp.challengeBindingSecret).toBe('e'.repeat(32));
         } finally {
             delete process.env.MPP_SECRET_KEY;
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+
+    it('requires a 32-byte UTF-8 challenge secret outside localnet', async () => {
+        const signer = await Signer.generate();
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            await expect(
+                configure({
+                    mpp: { challengeBindingSecret: 's'.repeat(31) },
+                    network: 'solana_devnet',
+                    operator: { signer },
+                }),
+            ).rejects.toThrow('mpp.challengeBindingSecret must be at least 32 UTF-8 bytes outside localnet.');
+
+            await expect(
+                configure({
+                    mpp: { challengeBindingSecret: '\ud83d\ude00'.repeat(8) },
+                    network: 'solana_devnet',
+                    operator: { signer },
+                }),
+            ).resolves.toMatchObject({ network: 'solana_devnet' });
+
+            await expect(configure({ mpp: { challengeBindingSecret: 'short' } })).resolves.toMatchObject({
+                network: 'solana_localnet',
+            });
+        } finally {
             delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
         }
     });
@@ -92,7 +120,7 @@ describe('configure', () => {
 
     it('configures from prefixed environment variables', async () => {
         process.env.PAY_KIT_NETWORK = 'solana_devnet';
-        process.env.PAY_KIT_MPP_SECRET = 'env-secret';
+        process.env.PAY_KIT_MPP_SECRET = 'e'.repeat(32);
         process.env.PAY_KIT_MPP_EXPIRES_IN = '60';
         process.env.PAY_KIT_STABLECOINS = '';
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
@@ -100,7 +128,7 @@ describe('configure', () => {
         try {
             const config = await configureFromEnv();
             expect(config.network).toBe('solana_devnet');
-            expect(config.mpp.challengeBindingSecret).toBe('env-secret');
+            expect(config.mpp.challengeBindingSecret).toBe('e'.repeat(32));
             expect(config.mpp.expiresIn).toBe(60);
             expect(config.rpcUrl).toBe('http://rpc.example');
             expect(config.x402).toEqual({});

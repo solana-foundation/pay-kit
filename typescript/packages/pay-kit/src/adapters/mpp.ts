@@ -112,11 +112,10 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 const replayStore = config.replayStore as AtomicSubscriptionReplayStore;
                 if (
                     config.network !== 'solana_localnet' &&
-                    replayStore.isShared !== true &&
-                    replayStore.isDurable !== true
+                    (replayStore.isShared !== true || replayStore.isDurable !== true)
                 ) {
                     throw new ConfigurationError(
-                        'Non-local subscription gates require a replay store with isShared=true or isDurable=true.',
+                        'Non-local subscription gates require a replay store with isShared=true and isDurable=true.',
                     );
                 }
                 const mppx = Mppx.create({
@@ -145,10 +144,8 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 });
                 handler = request =>
                     mppx.subscription({
-                        amount: totalAmount(gate).toString(),
+                        ...optionsFor(gate, description),
                         currency: mint,
-                        ...(description !== undefined ? { description } : {}),
-                        ...(gate.externalId ? { externalId: gate.externalId } : {}),
                         resource: subscriptionResourceFor(request, config.mpp.challengeBindingSecret),
                     })(request);
             } else {
