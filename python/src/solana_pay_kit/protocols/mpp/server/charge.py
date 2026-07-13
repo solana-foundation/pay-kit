@@ -38,7 +38,12 @@ from solana_pay_kit._paycore.solana import (
     validate_network,
     validate_splits,
 )
-from solana_pay_kit._paycore.store import ReplayStoreConfigurationError, Store, resolve_replay_store
+from solana_pay_kit._paycore.store import (
+    ReplayStoreConfigurationError,
+    Store,
+    claim_settlement_signature,
+    resolve_replay_store,
+)
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
@@ -75,7 +80,6 @@ _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 # Settlement replay is intentionally protocol-independent. x402 exact and MPP
 # may validate and co-sign the same Solana wire transaction, so a shared store
 # must reserve one network-qualified identity across both protocol paths.
-_SETTLEMENT_REPLAY_PREFIX = "solana-settlement:consumed:"
 _SETTLEMENT_REPLAY_NETWORKS = {
     "mainnet": Network.SOLANA_MAINNET.caip2(),
     "devnet": Network.SOLANA_DEVNET.caip2(),
@@ -589,9 +593,10 @@ class Mpp:
         # cluster. Keying by signature (not by the credential bytes) means a
         # retry of the same credential always tries to insert the same key,
         # so the second attempt fails fast and the network is never asked
-        # to settle the same transaction twice.
-        consumed_key = f"{_SETTLEMENT_REPLAY_PREFIX}{self._settlement_replay_network}:{signature}"
-        inserted = await self._store.put_if_absent(consumed_key, True)
+        # to settle the same transaction twice. The claim covers the
+        # canonical cross-protocol key plus the rolling-upgrade legacy
+        # markers, so workers on the previous key scheme stay fenced.
+        inserted = await claim_settlement_signature(self._store, self._settlement_replay_network, signature)
         if not inserted:
             raise ReplayError()
 
@@ -654,8 +659,7 @@ class Mpp:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
         self._verify_confirmed_transaction(tx, request, details)
 
-        consumed_key = f"{_SETTLEMENT_REPLAY_PREFIX}{self._settlement_replay_network}:{payload.signature}"
-        inserted = await self._store.put_if_absent(consumed_key, True)
+        inserted = await claim_settlement_signature(self._store, self._settlement_replay_network, payload.signature)
         if not inserted:
             raise ReplayError()
 

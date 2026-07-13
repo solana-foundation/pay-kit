@@ -60,6 +60,13 @@ class ProductionReplayStore(ABC):
     across processes and replicas, ``put_if_absent`` is atomic, and successful
     writes are durable. This is intentionally a nominal contract rather than
     mutable ``is_atomic``/``is_shared``/``is_durable`` instance flags.
+
+    Subclassing is an operator attestation, not a machine-checked capability:
+    the SDK cannot verify atomicity, sharing, or durability from inside the
+    process, and a subclass that delegates to process-local memory will pass
+    :func:`is_production_replay_store`. The marker exists to force a
+    deliberate, greppable opt-in at the deployment boundary; honoring its
+    guarantees is the deployer's responsibility.
     """
 
     @abstractmethod
@@ -325,3 +332,61 @@ def resolve_replay_store(network: str, replay_store: Store | None, *, protocol: 
         "shared, and durable. Set "
         f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
     )
+
+
+SETTLEMENT_REPLAY_PREFIX = "solana-settlement:consumed:"
+
+# Markers written by workers that predate the canonical cross-protocol key.
+# During a rolling upgrade old MPP charge workers still claim the
+# solana-charge marker and old x402 workers the x402-svm-exact marker, so a
+# new worker must claim those too: otherwise a signature settled by an old
+# worker under a legacy key would settle again under the canonical key (and
+# a canonical settlement would replay against an old worker). Remove these
+# once every deployed worker writes the canonical key.
+LEGACY_SETTLEMENT_REPLAY_PREFIXES = (
+    "solana-charge:consumed:",
+    "x402-svm-exact:consumed:",
+)
+
+
+def settlement_replay_keys(network: str, signature: str) -> tuple[str, ...]:
+    """Return the canonical settlement key plus rolling-upgrade legacy keys.
+
+    ``network`` is the CAIP-2 identity shared by the MPP and x402 settlement
+    fences. The canonical network-qualified key comes first: among upgraded
+    workers it is the single authoritative claim. The un-qualified legacy
+    keys follow so upgraded and not-yet-upgraded workers fence each other in
+    both directions.
+    """
+    return (
+        f"{SETTLEMENT_REPLAY_PREFIX}{network}:{signature}",
+        *(f"{prefix}{signature}" for prefix in LEGACY_SETTLEMENT_REPLAY_PREFIXES),
+    )
+
+
+async def claim_settlement_signature(store: Store, network: str, signature: str) -> bool:
+    """Claim ``signature`` for exactly one settlement across worker versions.
+
+    Claims the canonical key first, then each legacy marker, all through the
+    store's atomic ``put_if_absent``. Returns False as soon as any claim
+    loses: another worker (old or new, either protocol) already consumed the
+    signature. Markers inserted before the losing claim are intentionally
+    left in place; they truthfully record that the signature is consumed.
+    """
+    for key in settlement_replay_keys(network, signature):
+        if not await store.put_if_absent(key, True):
+            return False
+    return True
+
+
+async def release_settlement_signature(store: Store, network: str, signature: str) -> None:
+    """Roll back a fully successful claim after a settlement that never landed.
+
+    Only call this after :func:`claim_settlement_signature` returned True and
+    the broadcast is known to have failed on-chain, so every marker being
+    deleted is one this worker inserted. Deletes in reverse claim order so
+    the canonical key is released last and a concurrent upgraded worker can
+    never observe a half-released signature as free.
+    """
+    for key in reversed(settlement_replay_keys(network, signature)):
+        await store.delete(key)

@@ -232,5 +232,55 @@ async def test_concurrent_cross_protocol_replay_consumes_one_network_qualified_s
     assert replay_errors[0].code == "signature_consumed"
     assert len(wires) == 2
     assert wires[0] == wires[1]
-    expected_key = f"solana-settlement:consumed:{config.network.caip2()}:{_SETTLEMENT_SIGNATURE}"
-    assert store.keys == [expected_key, expected_key]
+    canonical_key = f"solana-settlement:consumed:{config.network.caip2()}:{_SETTLEMENT_SIGNATURE}"
+    legacy_charge_key = f"solana-charge:consumed:{_SETTLEMENT_SIGNATURE}"
+    legacy_x402_key = f"x402-svm-exact:consumed:{_SETTLEMENT_SIGNATURE}"
+    # Both workers race the canonical key first; only the winner goes on to
+    # claim the rolling-upgrade legacy markers.
+    assert sorted(store.keys) == sorted([canonical_key, canonical_key, legacy_charge_key, legacy_x402_key])
+    for key in (canonical_key, legacy_charge_key, legacy_x402_key):
+        assert await store.get(key) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_prefix", ["solana-charge:consumed:", "x402-svm-exact:consumed:"])
+@pytest.mark.parametrize("protocol_header", ["x402", "mpp"])
+async def test_legacy_settlement_marker_blocks_upgraded_workers(
+    monkeypatch: pytest.MonkeyPatch, legacy_prefix: str, protocol_header: str
+):
+    """Rolling upgrade: a signature consumed by a not-yet-upgraded worker
+    (which wrote only its protocol's legacy un-qualified marker) must not
+    settle again through an upgraded worker of either protocol."""
+    operator_keypair = Keypair()
+    config = configure(
+        network="solana_devnet",
+        preflight=False,
+        accept=(Protocol.X402, Protocol.MPP),
+        rpc_url="http://127.0.0.1:8899",
+        mpp=MppConfig(challenge_binding_secret=_MPP_SECRET),
+        operator=Operator(
+            signer=LocalSigner.from_keypair(operator_keypair),
+            recipient=str(Keypair().pubkey()),
+            fee_payer=True,
+        ),
+    )
+    store = _RecordingProductionReplayStore()
+    await store.put(f"{legacy_prefix}{_SETTLEMENT_SIGNATURE}", True)
+    core = PayCore(config, replay_store=store)
+    gate = _gate(config)
+    transaction = _transaction_b64(operator_keypair, gate, config)
+    wires: list[bytes] = []
+
+    def rpc_factory(*_args: object, **_kwargs: object) -> _InterleavingRpc:
+        return _InterleavingRpc(wires, _confirmed_transaction(config))
+
+    monkeypatch.setattr(x402_module, "SolanaRpc", rpc_factory)
+    monkeypatch.setattr(mpp_module, "SolanaRpc", rpc_factory)
+
+    if protocol_header == "x402":
+        request = _Request({"payment-signature": _x402_header(core, gate, transaction)})
+    else:
+        request = _Request({"authorization": _mpp_header(core, gate, transaction)})
+
+    with pytest.raises(InvalidProofError):
+        await core.process(gate, None, request)

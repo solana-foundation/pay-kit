@@ -376,3 +376,70 @@ class TestMppRequiresExplicitStore:
                     store=MemoryStore(),
                 )
             )
+
+
+class TestSettlementSignatureClaim:
+    """Rolling-upgrade settlement claim: canonical key plus legacy markers."""
+
+    _NETWORK = "solana:test-caip2"
+    _SIGNATURE = "SIG-claim"
+
+    def _keys(self) -> list[str]:
+        return [
+            f"solana-settlement:consumed:{self._NETWORK}:{self._SIGNATURE}",
+            f"solana-charge:consumed:{self._SIGNATURE}",
+            f"x402-svm-exact:consumed:{self._SIGNATURE}",
+        ]
+
+    def test_keys_are_canonical_first_then_legacy(self):
+        from solana_pay_kit._paycore.store import settlement_replay_keys
+
+        assert list(settlement_replay_keys(self._NETWORK, self._SIGNATURE)) == self._keys()
+
+    @pytest.mark.asyncio
+    async def test_claim_inserts_canonical_and_legacy_markers(self):
+        from solana_pay_kit._paycore.store import claim_settlement_signature
+
+        store = MemoryStore()
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is True
+        for key in self._keys():
+            assert await store.get(key) is True
+
+    @pytest.mark.asyncio
+    async def test_claim_loses_against_canonical_marker(self):
+        from solana_pay_kit._paycore.store import claim_settlement_signature
+
+        store = MemoryStore()
+        await store.put(self._keys()[0], True)
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is False
+        # The losing claim stops at the canonical key; the legacy markers
+        # remain untouched for the worker that owns the settlement.
+        assert await store.get(self._keys()[1]) is None
+        assert await store.get(self._keys()[2]) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("legacy_index", [1, 2])
+    async def test_claim_loses_against_legacy_marker(self, legacy_index: int):
+        from solana_pay_kit._paycore.store import claim_settlement_signature
+
+        store = MemoryStore()
+        await store.put(self._keys()[legacy_index], True)
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is False
+        # Markers inserted before the losing claim stay: they truthfully
+        # record that the signature is consumed.
+        assert await store.get(self._keys()[0]) is True
+
+    @pytest.mark.asyncio
+    async def test_release_removes_every_marker(self):
+        from solana_pay_kit._paycore.store import (
+            claim_settlement_signature,
+            release_settlement_signature,
+        )
+
+        store = MemoryStore()
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is True
+        await release_settlement_signature(store, self._NETWORK, self._SIGNATURE)
+        for key in self._keys():
+            assert await store.get(key) is None
+        # A retry after release can claim again.
+        assert await claim_settlement_signature(store, self._NETWORK, self._SIGNATURE) is True
