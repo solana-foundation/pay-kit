@@ -16,8 +16,10 @@ from solders.transaction import Transaction  # type: ignore[import-untyped]
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM, resolve_mint
 from solana_pay_kit.protocols.mpp._paymentchannels import find_associated_token_address
-from solana_pay_kit.protocols.mpp.intents.session import ClosePayload
-from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
+from solana_pay_kit.protocols.mpp.core.headers import PAYMENT_RECEIPT_HEADER, format_authorization
+from solana_pay_kit.protocols.mpp.core.types import PaymentCredential
+from solana_pay_kit.protocols.mpp.intents.session import ClosePayload, SessionAction
+from solana_pay_kit.protocols.mpp.server import SessionChallengeOptions, SessionOptions, new_session
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 from solana_pay_kit.signer import LocalSigner
 
@@ -73,15 +75,11 @@ def _seed_settlement_mint(rpc: _SettleRpc, currency: str, token_program: str) ->
     rpc.accounts[mint] = (b"", token_program)
 
 
-def _seed_settlement_recipient_ata(
-    rpc: _SettleRpc, recipient: str, currency: str, token_program: str
-) -> None:
+def _seed_settlement_recipient_ata(rpc: _SettleRpc, recipient: str, currency: str, token_program: str) -> None:
     mint = resolve_mint(currency, "localnet")
     assert mint is not None
     program = Pubkey.from_string(token_program)
-    recipient_ata, _ = find_associated_token_address(
-        Pubkey.from_string(recipient), Pubkey.from_string(mint), program
-    )
+    recipient_ata, _ = find_associated_token_address(Pubkey.from_string(recipient), Pubkey.from_string(mint), program)
     rpc.accounts[str(recipient_ata)] = (b"", token_program)
 
 
@@ -224,6 +222,22 @@ async def test_close_rejects_missing_recipient_ata_without_broadcast_or_receipt_
     assert state.sealed is False
     assert state.settled_signature is None
     assert state.settling is False
+
+    challenge_options = SessionChallengeOptions()
+    challenge = await session.challenge(challenge_options)
+    credential = PaymentCredential(
+        challenge=challenge.to_echo(),
+        payload=SessionAction.close_action(ClosePayload(channel_id=channel)).to_dict(),
+    )
+    result = await session.handle(format_authorization(credential), challenge_options)
+
+    assert result.ok is False
+    assert result.status == 402
+    assert PAYMENT_RECEIPT_HEADER not in result.headers
+    assert result.body is not None
+    assert result.body["code"] == "payment_invalid"
+    assert "settlement recipient ATA" in result.body["message"]
+    assert rpc.sent == []
 
 
 @pytest.mark.asyncio
