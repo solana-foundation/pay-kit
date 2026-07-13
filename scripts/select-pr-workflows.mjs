@@ -18,56 +18,79 @@ export const WORKFLOWS = [
 ];
 
 const LANGUAGE_PATHS = {
-  typescript: ["typescript/", "html/"],
-  rust: ["rust/"],
-  go: [
-    "go/",
-    "harness/go-client/",
-    "harness/go-server/",
-    ".github/workflows/go.yml",
-    ".github/workflows/go-consumer.yml",
-  ],
-  python: [
-    "python/",
-    "harness/python-server/",
-    ".github/workflows/python.yml",
-  ],
-  ruby: ["ruby/", "harness/ruby-server/", ".github/workflows/ruby.yml"],
-  lua: ["lua/", "harness/lua-server/", ".github/workflows/lua.yml"],
-  php: ["php/", "harness/php-server/", ".github/workflows/php.yml"],
-  swift: [
-    "swift/",
-    "Package.swift",
-    "harness/swift-client/",
-    "harness/swift-x402-client/",
-    "harness/swift-x402-upto-client/",
-    ".github/workflows/swift.yml",
-  ],
-  kotlin: [
-    "kotlin/",
-    "harness/kotlin-client/",
-    "harness/kotlin-conformance/",
-    "harness/kotlin-x402-client/",
-    "harness/kotlin-x402-upto-client/",
-    ".github/workflows/kotlin.yml",
-  ],
+  typescript: { directories: ["typescript", "html"] },
+  rust: { directories: ["rust"] },
+  go: {
+    directories: ["go", "harness/go-client", "harness/go-server"],
+    files: [".github/workflows/go.yml", ".github/workflows/go-consumer.yml"],
+  },
+  python: {
+    directories: [
+      "python",
+      "harness/python-server",
+      "harness/python-session-client",
+      "harness/python-x402-client",
+      "harness/python-x402-upto-client",
+    ],
+    files: [".github/workflows/python.yml"],
+  },
+  ruby: {
+    directories: ["ruby", "harness/ruby-server"],
+    files: [".github/workflows/ruby.yml"],
+  },
+  lua: {
+    directories: ["lua", "harness/lua-server", "harness/lua-protocol-runner"],
+    files: [".github/workflows/lua.yml"],
+  },
+  php: {
+    directories: ["php", "harness/php-server"],
+    files: [".github/workflows/php.yml"],
+  },
+  swift: {
+    directories: [
+      "swift",
+      "harness/swift-client",
+      "harness/swift-x402-client",
+      "harness/swift-x402-upto-client",
+    ],
+    files: ["Package.swift", ".github/workflows/swift.yml"],
+  },
+  kotlin: {
+    directories: [
+      "kotlin",
+      "harness/kotlin-client",
+      "harness/kotlin-conformance",
+      "harness/kotlin-x402-client",
+      "harness/kotlin-x402-upto-client",
+    ],
+    files: [".github/workflows/kotlin.yml"],
+  },
 };
 
-const HARNESS_PATHS = [
-  "harness/",
-  ".github/actions/setup-harness/",
-  ".github/actions/setup-harness-leg/",
-  ".github/workflows/harness.yml",
-];
+const SHARED_HARNESS_PATHS = {
+  directories: [
+    "harness",
+    ".github/actions/setup-harness",
+    ".github/actions/setup-harness-leg",
+  ],
+  files: [".github/workflows/harness.yml"],
+};
 
-function matches(path, prefixes) {
-  return prefixes.some((prefix) => path === prefix || path.startsWith(prefix));
+function matchesDirectory(path, directory) {
+  return path.startsWith(`${directory}/`);
+}
+
+function matches(path, { directories = [], files = [] }) {
+  return (
+    files.includes(path) ||
+    directories.some((directory) => matchesDirectory(path, directory))
+  );
 }
 
 function isDocumentation(path) {
   return (
-    path.startsWith("docs/") ||
-    path.startsWith(".github/ISSUE_TEMPLATE/") ||
+    matchesDirectory(path, "docs") ||
+    matchesDirectory(path, ".github/ISSUE_TEMPLATE") ||
     path.endsWith(".md")
   );
 }
@@ -89,16 +112,16 @@ export function selectWorkflows(files) {
     }
 
     const language = WORKFLOWS.find(
-      (name) => name !== "harness" && matches(changedPath, LANGUAGE_PATHS[name]),
+      (name) =>
+        name !== "harness" && matches(changedPath, LANGUAGE_PATHS[name]),
     );
     if (language) {
       selected[language] = true;
       continue;
     }
 
-    if (matches(changedPath, HARNESS_PATHS)) {
-      selected.harness = true;
-      continue;
+    if (matches(changedPath, SHARED_HARNESS_PATHS)) {
+      return allWorkflows();
     }
 
     // An unclassified source or CI path must never silently skip verification.
@@ -114,6 +137,7 @@ function main() {
     .map((path) => path.trim())
     .filter(Boolean);
   const selected = selectWorkflows(files);
+  const docsOnly = files.length > 0 && Object.values(selected).every((enabled) => !enabled);
   const outputIndex = process.argv.indexOf("--github-output");
 
   if (outputIndex === -1) {
@@ -128,12 +152,20 @@ function main() {
   for (const [name, enabled] of Object.entries(selected)) {
     appendFileSync(outputPath, `${name}=${enabled}\n`);
   }
-  process.stdout.write(`selected: ${Object.entries(selected)
-    .filter(([, enabled]) => enabled)
-    .map(([name]) => name)
-    .join(", ") || "none"}\n`);
+  appendFileSync(outputPath, `docs_only=${docsOnly}\n`);
+  process.stdout.write(
+    `selected: ${
+      Object.entries(selected)
+        .filter(([, enabled]) => enabled)
+        .map(([name]) => name)
+        .join(", ") || "none"
+    }\n`,
+  );
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   main();
 }

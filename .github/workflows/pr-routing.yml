@@ -24,6 +24,7 @@ jobs:
       swift: ${{ steps.select.outputs.swift }}
       kotlin: ${{ steps.select.outputs.kotlin }}
       harness: ${{ steps.select.outputs.harness }}
+      docs_only: ${{ steps.select.outputs.docs_only }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -40,7 +41,9 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - name: Test path classifier
-        run: node scripts/select-pr-workflows_test.mjs
+        run: |
+          node scripts/select-pr-workflows_test.mjs
+          node scripts/verify-routed-sdk-gate_test.mjs
       - id: select
         name: Select SDK workflows
         run: |
@@ -49,7 +52,7 @@ jobs:
             echo "::error::PR verification router requires a synthetic merge commit with a base parent"
             exit 1
           fi
-          git diff --name-only HEAD^1 HEAD | \
+          git diff --no-renames --name-only HEAD^1 HEAD | \
             node scripts/select-pr-workflows.mjs --github-output "$GITHUB_OUTPUT"
 
   go:
@@ -122,37 +125,8 @@ jobs:
     needs: [classify, core, go, go_consumer, python, ruby, lua, php, swift, kotlin, harness]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Require every selected workflow to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          node <<'NODE'
-          const needs = JSON.parse(process.env.NEEDS);
-          if (needs.classify.result !== "success") {
-            throw new Error(`classifier did not pass: ${needs.classify.result}`);
-          }
-
-          const selected = needs.classify.outputs;
-          const required = {
-            typescript: ["core"],
-            rust: ["core"],
-            go: ["go", "go_consumer"],
-            python: ["python"],
-            ruby: ["ruby"],
-            lua: ["lua"],
-            php: ["php"],
-            swift: ["swift"],
-            kotlin: ["kotlin"],
-            harness: ["core", "harness"],
-          };
-
-          for (const [surface, jobs] of Object.entries(required)) {
-            if (selected[surface] !== "true") continue;
-            for (const job of jobs) {
-              if (needs[job].result !== "success") {
-                throw new Error(`${surface} selected ${job}, which finished ${needs[job].result}`);
-              }
-            }
-          }
-          console.log("all selected SDK workflows passed");
-          NODE
+        run: node scripts/verify-routed-sdk-gate.mjs
