@@ -103,9 +103,9 @@ func (d *SseDecoder) processLine(line string) (SseEvent, bool) {
 
 	field := line
 	value := ""
-	if index := strings.IndexByte(line, ':'); index >= 0 {
-		field = line[:index]
-		value = strings.TrimPrefix(line[index+1:], " ")
+	if before, after, ok := strings.Cut(line, ":"); ok {
+		field = before
+		value = strings.TrimPrefix(after, " ")
 	}
 
 	switch field {

@@ -8,7 +8,8 @@ import (
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
-func boolPtr(b bool) *bool { return &b }
+//go:fix inline
+func boolPtr(b bool) *bool { return new(b) }
 
 func TestAdvertisedExtensions(t *testing.T) {
 	t.Run("nil when payment-identifier not required", func(t *testing.T) {
@@ -59,7 +60,7 @@ func TestPaymentExtensionsMarshalJSON(t *testing.T) {
 	t.Run("payment-identifier under kebab key", func(t *testing.T) {
 		ext := proto.PaymentExtensions{
 			PaymentIdentifier: &proto.PaymentIdentifierExtension{
-				Info: proto.PaymentIdentifierInfo{Required: boolPtr(true)},
+				Info: proto.PaymentIdentifierInfo{Required: new(true)},
 			},
 		}
 		raw, err := json.Marshal(ext)
@@ -111,8 +112,8 @@ func TestPaymentExtensionsUnmarshalJSON(t *testing.T) {
 	if ext.PaymentIdentifier == nil {
 		t.Fatal("payment-identifier not split out")
 	}
-	if ext.PaymentIdentifier.Info.Id != "pay_0123456789abcdef" {
-		t.Fatalf("id = %q", ext.PaymentIdentifier.Info.Id)
+	if ext.PaymentIdentifier.Info.ID != "pay_0123456789abcdef" {
+		t.Fatalf("id = %q", ext.PaymentIdentifier.Info.ID)
 	}
 	if got := string(ext.Other["future-extension"]); got != `{"x":1}` {
 		t.Fatalf("unknown extension verbatim = %s", got)
@@ -161,8 +162,8 @@ func TestRequiresPaymentIdentifier(t *testing.T) {
 		{"nil", nil, false},
 		{"no payment-identifier", &proto.PaymentExtensions{}, false},
 		{"required nil", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{}}, false},
-		{"required false", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: boolPtr(false)}}}, false},
-		{"required true", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: boolPtr(true)}}}, true},
+		{"required false", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: new(false)}}}, false},
+		{"required true", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: new(true)}}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -181,7 +182,7 @@ func TestPaymentIdentifierID(t *testing.T) {
 	if (&proto.PaymentExtensions{}).PaymentIdentifierID() != "" {
 		t.Fatal("absent id must be empty")
 	}
-	ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Id: "pay_0123456789abcdef"}}}
+	ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{ID: "pay_0123456789abcdef"}}}
 	if ext.PaymentIdentifierID() != "pay_0123456789abcdef" {
 		t.Fatalf("id = %q", ext.PaymentIdentifierID())
 	}
@@ -196,7 +197,7 @@ func TestWithPaymentIdentifierID(t *testing.T) {
 		}
 	})
 	t.Run("preserves server required when filling id", func(t *testing.T) {
-		ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: boolPtr(true)}}}
+		ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: new(true)}}}
 		ext.WithPaymentIdentifierID("pay_0123456789abcdef")
 		if !ext.RequiresPaymentIdentifier() {
 			t.Fatal("required flag dropped")
@@ -306,7 +307,7 @@ func TestGeneratePaymentIdentifierID(t *testing.T) {
 	}
 	// Distinct across calls (idempotency keys must be unique per request).
 	seen := map[string]bool{}
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		g := proto.GeneratePaymentIdentifierID()
 		if seen[g] {
 			t.Fatalf("collision: %q", g)

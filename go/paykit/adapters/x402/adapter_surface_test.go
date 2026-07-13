@@ -24,12 +24,18 @@ func TestAdapterProtocolSurfaceAndChallengeHeaders(t *testing.T) {
 	}
 
 	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/paid"}
-	entry := adapter.AcceptsEntry(gate)
+	entry, err := adapter.AcceptsEntry(gate)
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
 	if entry.AcceptsProtocol() != paykit.X402 {
 		t.Errorf("AcceptsProtocol() = %v, want %v", entry.AcceptsProtocol(), paykit.X402)
 	}
 
-	headers := adapter.ChallengeHeaders(gate)
+	headers, err := adapter.ChallengeHeaders(gate)
+	if err != nil {
+		t.Fatalf("ChallengeHeaders: %v", err)
+	}
 	value := headers[proto.PaymentRequiredHeader]
 	if value == "" {
 		t.Fatalf("ChallengeHeaders missing %s", proto.PaymentRequiredHeader)

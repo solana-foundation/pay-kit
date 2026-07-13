@@ -14,10 +14,12 @@ type captureAdapter struct {
 	seen     *AdapterRequest
 }
 
-func (a *captureAdapter) Protocol() Protocol              { return a.protocol }
-func (a *captureAdapter) AcceptsEntry(*Gate) AcceptsEntry { return fakeAccepts{a.protocol} }
-func (a *captureAdapter) ChallengeHeaders(*Gate) map[string]string {
-	return map[string]string{"payment-required": "x"}
+func (a *captureAdapter) Protocol() Protocol { return a.protocol }
+func (a *captureAdapter) AcceptsEntry(*Gate) (AcceptsEntry, error) {
+	return fakeAccepts{a.protocol}, nil
+}
+func (a *captureAdapter) ChallengeHeaders(*Gate) (map[string]string, error) {
+	return map[string]string{"payment-required": "x"}, nil
 }
 func (a *captureAdapter) VerifyAndSettle(req *AdapterRequest) (*Payment, error) {
 	a.seen = req

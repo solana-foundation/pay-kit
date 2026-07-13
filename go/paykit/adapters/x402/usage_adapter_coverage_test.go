@@ -7,6 +7,7 @@ package x402
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
@@ -35,7 +36,11 @@ func TestUsageAdapterChallengeHeadersNilOnLifetimeFailure(t *testing.T) {
 		t.Fatalf("NewUsageAdapter: %v", err)
 	}
 	gate := usageCoverageGate()
-	if headers := adapter.UsageChallengeHeaders(&gate); headers != nil {
+	headers, err := adapter.UsageChallengeHeaders(&gate)
+	if err == nil || !strings.Contains(err.Error(), "RecentSlotProvider") {
+		t.Fatalf("error = %v, want missing RecentSlotProvider", err)
+	}
+	if headers != nil {
 		t.Fatalf("headers = %v, want nil on lifetime failure", headers)
 	}
 }
@@ -53,10 +58,18 @@ func TestUsageAdapterAcceptsEntryNilForNativeSOL(t *testing.T) {
 		t.Fatalf("NewUsageAdapter: %v", err)
 	}
 	gate := usageCoverageGate()
-	if entry := adapter.UsageAcceptsEntry(&gate); entry != nil {
+	entry, err := adapter.UsageAcceptsEntry(&gate)
+	if err == nil {
+		t.Fatal("expected native SOL accepts-entry error")
+	}
+	if entry != nil {
 		t.Fatalf("entry = %v, want nil for native SOL (no SPL mint)", entry)
 	}
-	if headers := adapter.UsageChallengeHeaders(&gate); headers != nil {
+	headers, err := adapter.UsageChallengeHeaders(&gate)
+	if err == nil {
+		t.Fatal("expected native SOL challenge-header error")
+	}
+	if headers != nil {
 		t.Fatalf("headers = %v, want nil for native SOL (no SPL mint)", headers)
 	}
 }

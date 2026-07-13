@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
@@ -526,6 +526,25 @@ func TestProcessTopUpRaisesDeposit(t *testing.T) {
 	}
 }
 
+func TestProcessTopUpRejectsReplayedOlderSignature(t *testing.T) {
+	server := newSessionTestServer(sessionTestConfig())
+	_, channelID := openTestChannel(t, server, 1_000_000)
+	for _, topUp := range []intents.TopUpPayload{
+		{ChannelID: channelID, NewDeposit: "2000000", Signature: "topup-a"},
+		{ChannelID: channelID, NewDeposit: "3000000", Signature: "topup-b"},
+	} {
+		if _, err := server.ProcessTopUp(context.Background(), &topUp); err != nil {
+			t.Fatalf("ProcessTopUp(%s): %v", topUp.Signature, err)
+		}
+	}
+	_, err := server.ProcessTopUp(context.Background(), &intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "4000000", Signature: "topup-a",
+	})
+	if err == nil || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("replayed top-up error = %v", err)
+	}
+}
+
 func TestProcessTopUpRejectsNonIncreasingDeposit(t *testing.T) {
 	server := newSessionTestServer(sessionTestConfig())
 	_, channelID := openTestChannel(t, server, 1_000_000)
@@ -579,11 +598,14 @@ func TestProcessTopUpRejectsWhenSealedOrClosePending(t *testing.T) {
 func TestProcessTopUpInvokesVerifyTopUpTxSeam(t *testing.T) {
 	wantErr := errors.New("topup tx unknown")
 	config := sessionTestConfig()
-	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload) (string, error) {
+	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error {
 		if payload.Signature != "topup_sig" {
 			t.Fatalf("verifier got signature %q", payload.Signature)
 		}
-		return "", wantErr
+		if currentDeposit != 1_000_000 {
+			t.Fatalf("verifier got deposit %d, want 1000000", currentDeposit)
+		}
+		return wantErr
 	}
 	server := newSessionTestServer(config)
 	_, channelID := openTestChannel(t, server, 1_000_000)

@@ -12,15 +12,25 @@ type fakeAccepts struct{ s Protocol }
 func (a fakeAccepts) AcceptsProtocol() Protocol { return a.s }
 
 type fakeAdapter struct {
-	protocol Protocol
-	pmt      *Payment
-	err      error
+	protocol  Protocol
+	pmt       *Payment
+	err       error
+	entryErr  error
+	headerErr error
 }
 
-func (f *fakeAdapter) Protocol() Protocol              { return f.protocol }
-func (f *fakeAdapter) AcceptsEntry(*Gate) AcceptsEntry { return fakeAccepts{f.protocol} }
-func (f *fakeAdapter) ChallengeHeaders(*Gate) map[string]string {
-	return map[string]string{"x-fake": "1"}
+func (f *fakeAdapter) Protocol() Protocol { return f.protocol }
+func (f *fakeAdapter) AcceptsEntry(*Gate) (AcceptsEntry, error) {
+	if f.entryErr != nil {
+		return nil, f.entryErr
+	}
+	return fakeAccepts{f.protocol}, nil
+}
+func (f *fakeAdapter) ChallengeHeaders(*Gate) (map[string]string, error) {
+	if f.headerErr != nil {
+		return nil, f.headerErr
+	}
+	return map[string]string{"x-fake": "1"}, nil
 }
 func (f *fakeAdapter) VerifyAndSettle(*AdapterRequest) (*Payment, error) {
 	return f.pmt, f.err
@@ -66,6 +76,32 @@ func TestRequireFuncSuccess(t *testing.T) {
 	}
 	if rec.Header().Get("x-payment-settlement-signature") != "sig123" {
 		t.Error("settlement header not stamped")
+	}
+}
+
+func TestAppendChallengeDropsProtocolOnBuildError(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter *fakeAdapter
+	}{
+		{"accepts entry error", &fakeAdapter{protocol: MPP, entryErr: errors.New("boom")}},
+		{"challenge header error", &fakeAdapter{protocol: MPP, headerErr: errors.New("boom")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestClient(tc.adapter)
+			rec := httptest.NewRecorder()
+			c.RequireFunc(func(*http.Request) (Gate, error) {
+				return Gate{Amount: MustParseUSD("0.10"), Name: "g"}, nil
+			})(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status: got %d", rec.Code)
+			}
+			// The failed protocol is dropped, so it contributes no header.
+			if rec.Header().Get("x-fake") != "" {
+				t.Error("dropped protocol should not contribute a challenge header")
+			}
+		})
 	}
 }
 
