@@ -15,7 +15,7 @@ import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
 import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2 } from '../protocol.js';
@@ -23,7 +23,7 @@ import {
     assertPaymentHeaderWithinCap,
     ChallengeBlockhashCache,
     errorMessage,
-    isReservingReplayStore,
+    resolveX402ReplayStore,
     x402PaymentHeader,
 } from './x402-shared.js';
 
@@ -74,10 +74,7 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
         ),
     );
-    if (config.replayStore === undefined || !isReservingReplayStore(config.replayStore)) {
-        throw new ConfigurationError('x402 exact requires a replayStore with atomic reserve capability.');
-    }
-    const reserveStore = config.replayStore;
+    const reserveStore = resolveX402ReplayStore(config, 'exact');
 
     async function claimPayload(key: string): Promise<boolean> {
         return await reserveStore.reserve(`${CONSUMED_PREFIX}${key}`, true, MAX_TIMEOUT_SECONDS);

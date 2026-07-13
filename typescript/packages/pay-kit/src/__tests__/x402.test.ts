@@ -174,3 +174,31 @@ describe('Charge meter', () => {
         expect(charge.settledBaseUnits()).toBe(250_000n);
     });
 });
+
+describe('x402 replay-store provisioning', () => {
+    it('boots on localnet with no explicit replayStore (exact + upto)', async () => {
+        const config = await configure({ accept: ['x402'], network: 'solana_localnet' });
+        expect(config.replayStore).toBeUndefined();
+        expect(() => createX402ExactAdapter(config)).not.toThrow();
+        expect(() => new X402Upto(config)).not.toThrow();
+    });
+
+    it('fails closed off localnet without a store or the opt-in (exact + upto)', async () => {
+        delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        const config = await configure({ accept: ['x402'], network: 'solana_devnet' });
+        expect(config.replayStore).toBeUndefined();
+        expect(() => createX402ExactAdapter(config)).toThrow(/atomic reserve capability/);
+        expect(() => new X402Upto(config)).toThrow(/atomic reserve capability/);
+    });
+
+    it('permits an in-memory store off localnet under the explicit opt-in', async () => {
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const config = await configure({ accept: ['x402'], network: 'solana_devnet' });
+            expect(() => createX402ExactAdapter(config)).not.toThrow();
+            expect(() => new X402Upto(config)).not.toThrow();
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+});

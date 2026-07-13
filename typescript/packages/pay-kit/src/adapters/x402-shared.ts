@@ -1,8 +1,36 @@
 import { createSolanaRpc } from '@solana/kit';
 
-import { InvalidProofError } from '../errors.js';
+import type { PayKitConfig } from '../config.js';
+import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { createMemoryReplayStore, isReservingReplayStore, type ReservingReplayStore } from '../replay-store.js';
 
 export { isReservingReplayStore, type ReservingReplayStore } from '../replay-store.js';
+
+/** Env opt-in that permits a process-local in-memory replay store off localnet. */
+const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
+
+/**
+ * Resolve the reserving replay store an x402 adapter fences settlement against.
+ *
+ * A caller-supplied store wins (it must expose the atomic `reserve` capability).
+ * With none supplied, localnet (or the explicit off-localnet opt-in) gets a
+ * process-local in-memory store so a dev boot needs no wiring, mirroring how
+ * the MPP session adapter provisions its store. Off localnet without the opt-in
+ * this fails closed: no silent memory store on devnet/mainnet.
+ */
+export function resolveX402ReplayStore(config: PayKitConfig, scheme: string): ReservingReplayStore {
+    const store = config.replayStore;
+    if (store !== undefined) {
+        if (!isReservingReplayStore(store)) {
+            throw new ConfigurationError(`x402 ${scheme} requires a replayStore with atomic reserve capability.`);
+        }
+        return store;
+    }
+    if (config.network === 'solana_localnet' || process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1') {
+        return createMemoryReplayStore();
+    }
+    throw new ConfigurationError(`x402 ${scheme} requires a replayStore with atomic reserve capability.`);
+}
 
 /** The x402 payment credential header, read from either accepted name. */
 export function x402PaymentHeader(request: Request): string | undefined {
