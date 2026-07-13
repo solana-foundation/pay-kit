@@ -56,6 +56,17 @@ func TestStablecoinSymbol(t *testing.T) {
 	}
 }
 
+func TestDefaultDecimalsForCurrency(t *testing.T) {
+	for _, currency := range []string{"USDC", USDCMainnetMint, "PYUSD", PYUSDDevnetMint, "EURC"} {
+		if DefaultDecimalsForCurrency(currency, "devnet") != DefaultStablecoinDecimals {
+			t.Fatalf("expected %s to default to %d decimals", currency, DefaultStablecoinDecimals)
+		}
+	}
+	if DefaultDecimalsForCurrency("SomeMint1111111111111111111111111111111111", "localnet") != DefaultStablecoinDecimals {
+		t.Fatal("expected unknown mint to use the stablecoin default decimals")
+	}
+}
+
 func TestDefaultTokenProgramForCurrency(t *testing.T) {
 	for _, currency := range []string{"PYUSD", PYUSDMainnetMint, "USDG", USDGMainnetMint, "CASH", CASHMainnetMint} {
 		if DefaultTokenProgramForCurrency(currency, "mainnet-beta") != Token2022Program {

@@ -33,7 +33,11 @@ func TestAcceptsEntryTokenProgramByCurrency(t *testing.T) {
 			Amount: paykit.MustParseUSD("0.10", paykit.Stablecoin(tc.coin)),
 			Desc:   "/x",
 		}
-		entry := a.AcceptsEntry(&g).(x402adapter.AcceptsEntry)
+		rawEntry, err := a.AcceptsEntry(&g)
+		if err != nil {
+			t.Fatalf("%s: AcceptsEntry: %v", tc.coin, err)
+		}
+		entry := rawEntry.(x402adapter.AcceptsEntry)
 		if entry.Extra.TokenProgram != tc.want {
 			t.Errorf("%s: token program got %s want %s", tc.coin, entry.Extra.TokenProgram, tc.want)
 		}

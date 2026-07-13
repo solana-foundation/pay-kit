@@ -60,6 +60,15 @@ func TestFromBytesRejectsWrongLength(t *testing.T) {
 	}
 }
 
+func TestFromBytesRejectsMismatchedPublicKey(t *testing.T) {
+	secret := testSecret(t)
+	secret[ed25519.SeedSize] ^= 0x01
+
+	if _, err := signer.FromBytes(secret); err == nil {
+		t.Fatal("expected inconsistent seed/public key to be rejected")
+	}
+}
+
 func TestFromBytesRoundTrip(t *testing.T) {
 	sk := testSecret(t)
 	ref, err := signer.FromBytes(sk)

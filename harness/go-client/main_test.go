@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 func TestReadPrivateKeyEnvParsesJSONByteArray(t *testing.T) {
@@ -40,6 +40,24 @@ func TestReadPrivateKeyEnvRejectsInvalidLength(t *testing.T) {
 	_, err := readPrivateKeyEnv("MPP_HARNESS_CLIENT_SECRET_KEY")
 	if err == nil {
 		t.Fatal("expected invalid private key length to fail")
+	}
+}
+
+func TestReadPrivateKeyEnvRejectsMismatchedSeedAndPublicKey(t *testing.T) {
+	privateKey, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatalf("new private key: %v", err)
+	}
+	invalid := append([]byte(nil), privateKey...)
+	invalid[len(invalid)-1] ^= 0xff
+	raw, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatalf("marshal invalid private key: %v", err)
+	}
+	t.Setenv("MPP_HARNESS_CLIENT_SECRET_KEY", string(raw))
+
+	if _, err := readPrivateKeyEnv("MPP_HARNESS_CLIENT_SECRET_KEY"); err == nil {
+		t.Fatal("expected mismatched seed/public key to fail as configuration")
 	}
 }
 

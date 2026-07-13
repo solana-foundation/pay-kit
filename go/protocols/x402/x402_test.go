@@ -40,7 +40,11 @@ func TestAcceptsEntryShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
-	entry := a.AcceptsEntry(&g).(x402adapter.AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(&g)
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry := rawEntry.(x402adapter.AcceptsEntry)
 	if entry.Protocol != "x402" || entry.Scheme != "exact" {
 		t.Errorf("protocol/scheme: got %s/%s", entry.Protocol, entry.Scheme)
 	}
@@ -67,7 +71,10 @@ func TestChallengeHeadersEmitsPaymentRequiredBase64(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
-	h := a.ChallengeHeaders(&g)
+	h, err := a.ChallengeHeaders(&g)
+	if err != nil {
+		t.Fatalf("ChallengeHeaders: %v", err)
+	}
 	if h["payment-required"] == "" {
 		t.Fatal("missing header")
 	}

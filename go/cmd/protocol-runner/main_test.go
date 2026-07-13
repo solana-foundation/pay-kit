@@ -6,7 +6,7 @@ import (
 )
 
 // req builds an adapter-ABI request from an op and an input value.
-func req(t *testing.T, op string, input interface{}) request {
+func req(t *testing.T, op string, input any) request {
 	t.Helper()
 	raw, err := json.Marshal(input)
 	if err != nil {
@@ -34,7 +34,7 @@ func TestDispatchBase64URLRoundtrip(t *testing.T) {
 }
 
 func TestDispatchChallengeID(t *testing.T) {
-	resp := dispatch(req(t, "challenge.id", map[string]interface{}{
+	resp := dispatch(req(t, "challenge.id", map[string]any{
 		"secretKey": "test-vector-secret",
 		"realm":     "api.example.com",
 		"method":    "tempo",
@@ -62,7 +62,7 @@ func TestDispatchChallengeParseRoundtrip(t *testing.T) {
 	if obj.ID != "ch_abc123" || obj.Method != "tempo" || obj.Intent != "charge" {
 		t.Fatalf("parsed challenge fields mismatch: %+v", obj)
 	}
-	if reqMap, okType := obj.Request.(map[string]interface{}); !okType || reqMap["amount"] != "1000000" {
+	if reqMap, okType := obj.Request.(map[string]any); !okType || reqMap["amount"] != "1000000" {
 		t.Fatalf("parsed request not decoded to object: %#v", obj.Request)
 	}
 }

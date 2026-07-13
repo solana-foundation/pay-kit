@@ -23,7 +23,9 @@ jobs:
         working-directory: go
         env:
           GOCACHE: /tmp/go-build-cache
-        run: ./scripts/check_module_consumer.sh
+        run: |
+          ./scripts/check_module_consumer_test.sh
+          ./scripts/check_module_consumer.sh
       # This is a one-time bootstrap while the Go migration PR introduces the
       # guard script. Once the base branch has the script, a PR cannot delete it
       # and turn this check into a silent pass.

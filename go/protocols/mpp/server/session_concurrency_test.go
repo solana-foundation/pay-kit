@@ -99,6 +99,41 @@ func TestVerifyVoucherDetectsConcurrentSeal(t *testing.T) {
 	}
 }
 
+func TestProcessTopUpRejectsConcurrentDepositChangeAfterVerification(t *testing.T) {
+	racing := &racingChannelStore{ChannelStore: NewMemoryChannelStore()}
+	config := sessionTestConfig()
+	verified := false
+	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error {
+		if currentDeposit != 1_000_000 {
+			t.Fatalf("verified deposit = %d, want 1000000", currentDeposit)
+		}
+		verified = true
+		return nil
+	}
+	server := NewSessionServer(config, racing)
+	_, channelID := openTestChannel(t, server, 1_000_000)
+
+	racing.interleave = func(ctx context.Context, store ChannelStore) {
+		if _, err := store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
+			next := *current
+			next.Deposit = 1_500_000
+			return next, nil
+		}); err != nil {
+			t.Fatalf("interleaved top-up: %v", err)
+		}
+	}
+
+	_, err := server.ProcessTopUp(context.Background(), &intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "2000000", Signature: "topup_sig",
+	})
+	if err == nil || !strings.Contains(err.Error(), "deposit changed during top-up verification") {
+		t.Fatalf("err = %v, want concurrent-deposit rejection", err)
+	}
+	if !verified {
+		t.Fatal("top-up verifier was not called")
+	}
+}
+
 func TestVerifyVoucherConcurrentIdenticalReplayInsideMutator(t *testing.T) {
 	racing := &racingChannelStore{ChannelStore: NewMemoryChannelStore()}
 	server := NewSessionServer(sessionTestConfig(), racing)

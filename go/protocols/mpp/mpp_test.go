@@ -37,7 +37,11 @@ func TestAcceptsEntryShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
-	entry, ok := a.AcceptsEntry(&g).(mppadapter.AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(&g)
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry, ok := rawEntry.(mppadapter.AcceptsEntry)
 	if !ok {
 		t.Fatal("expected mppadapter.AcceptsEntry")
 	}
@@ -70,7 +74,11 @@ func TestAcceptsEntryAddsSplitsForFeeGate(t *testing.T) {
 			paykit.Address("PLATFORM"): paykit.MustParseUSD("0.30"),
 		},
 	}
-	entry := a.AcceptsEntry(&g).(mppadapter.AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(&g)
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry := rawEntry.(mppadapter.AcceptsEntry)
 	if len(entry.Splits) == 0 {
 		t.Fatal("expected splits[]")
 	}
