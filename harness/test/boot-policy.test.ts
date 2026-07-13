@@ -31,8 +31,9 @@ import { startServer, stopServer } from "../src/process";
 //   1. Constructed off-localnet (network=mainnet) with NO shared store and
 //      WITHOUT PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 => it MUST fail CLOSED
 //      (the process errors/throws before readiness).
-//   2. With the opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1) it boots to
-//      `ready` — proving the opt-in is honored, not merely that boot is broken.
+//   2. On devnet, with the opt-in
+//      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready` — proving
+//      the development escape is honored without weakening mainnet policy.
 //
 // RED-EXPECTED-PENDING: the TS and Python fail-closed remediations are landing
 // in parallel in this same worktree. Until they land, the `typescript` and
@@ -198,15 +199,15 @@ const coveredProbes: CoveredProbe[] = [
   {
     id: "typescript",
     label: "TypeScript Mppx.create / solana.charge server",
-    available: commandExists("pnpm"),
-    unavailableReason: commandExists("pnpm") ? undefined : "pnpm missing",
+    // The harness already runs under Node with tsx installed. Spawn that exact
+    // runtime directly so Corepack/package-manager failures cannot masquerade
+    // as an SDK boot-policy result.
+    available: true,
     implementation: serverImpl(
       "typescript",
       "TypeScript Mppx.create / solana.charge server",
       [
-        "pnpm",
-        "exec",
-        "node",
+        process.execPath,
         "--import",
         "tsx",
         "src/fixtures/typescript/charge-server.ts",
@@ -314,12 +315,14 @@ async function assertFailsClosed(probe: CoveredProbe): Promise<void> {
   );
 }
 
-// Boot the SAME SDK/env but WITH the opt-in and assert it reaches `ready` — the
-// only difference from the fail-closed run is the single env var, so a green
-// here proves the opt-in (not a broken boot) is what gates the store.
+// Boot the same SDK on devnet WITH the opt-in and assert it reaches `ready`.
+// Mainnet is intentionally not used for this positive path: SDKs may and should
+// reject process-local replay state there even when the development escape is
+// set.
 async function assertBootsWithOptIn(probe: CoveredProbe): Promise<void> {
   const server = await startServer(probe.implementation, {
     ...probe.mppEnv,
+    MPP_HARNESS_NETWORK: "devnet",
     [OPT_IN_ENV]: "1",
   });
   runningServers.push(server);
@@ -348,7 +351,7 @@ describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () 
 describe("boot-policy conformance: boots with the opt-in", () => {
   for (const probe of coveredProbes) {
     it.skipIf(!probe.available)(
-      `${probe.id}: boots to ready at network=mainnet with ${OPT_IN_ENV}=1`,
+      `${probe.id}: boots to ready at network=devnet with ${OPT_IN_ENV}=1`,
       async () => {
         await assertBootsWithOptIn(probe);
       },

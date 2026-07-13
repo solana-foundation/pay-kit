@@ -1303,9 +1303,7 @@ def new_session(options: SessionOptions) -> Session:
         )
 
     uses_memory_store = options.store is None or isinstance(options.store, MemoryChannelStore)
-    allows_devnet_memory_store = (
-        network == "devnet" and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
-    )
+    allows_devnet_memory_store = network == "devnet" and os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
     if uses_memory_store and network != "localnet" and not allows_devnet_memory_store:
         raise PaymentError(
             "a durable channel store is required outside localnet; set "
