@@ -1322,8 +1322,9 @@ def new_session(options: SessionOptions) -> Session:
     # below is only reachable on localnet or under the acknowledged opt-in.
     enforce_channel_store_policy(options.store, network)
 
-    # nosemgrep: failopen-default-store-python  -- fail-closed via the shared
-    # enforce_channel_store_policy guard above (not the rule's inline if/raise).
+    # Fail-closed via the shared enforce_channel_store_policy guard above
+    # (a form the radar rule's inline if/raise pattern cannot see).
+    # nosemgrep: failopen-default-store-python
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(
