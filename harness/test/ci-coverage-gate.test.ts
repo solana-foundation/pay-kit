@@ -241,11 +241,11 @@ describe("workflow hygiene gate: direct non-publish workflows are read-only by d
     // This harness leaf owns the harness.yml missing-ATA step; python.yml's
     // equivalent step is owned by the Python leaf (#228) and gated there, so
     // this gate only asserts the file this leaf modifies. Both leaves make the
-    // step blocking; the step-name reconciliation lands at #216 integration.
+    // step blocking; the step name is the reconciled #216-integration one (deliver-or-reject invariant).
     for (const workflow of ["harness.yml"]) {
       const source = readFileSync(join(workflowsDir, workflow), "utf8");
       const step = source.match(
-        /- name: Focused Python session fault-injection \(missing-ATA\)([\s\S]*?)(?=\n\s*- name:|$)/,
+        /- name: Focused Python session missing-ATA settlement invariant \(deliver-or-reject\)([\s\S]*?)(?=\n\s*- name:|$)/,
       )?.[1];
       expect(step, `${workflow} missing-ATA step`).toBeTruthy();
       expect(step, `${workflow} missing-ATA step must not swallow fund-loss failures`).not.toMatch(

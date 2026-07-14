@@ -567,7 +567,7 @@ const nativeGuardProbes: NativeGuardProbe[] = [
         file: "ruby/lib/pay_kit/protocols/mpp/runtime.rb",
         mechanism: "rejects a supplied non-durable replay store outside localnet",
         pattern:
-          /unless localnet\?\(method\) \|\| durable_replay_store\?\(replay_store\)[\s\S]*?requires a durable replay_store/,
+          /unless localnet\?\(method\) \|\| durable_shared_replay_store\?\(replay_store\)[\s\S]*?requires a durable replay_store/,
       },
     ],
   },
