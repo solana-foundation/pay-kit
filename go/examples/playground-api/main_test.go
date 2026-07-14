@@ -76,13 +76,14 @@ func newTestServer(t *testing.T) (*httptest.Server, *app) {
 	stub := newStubRPC(t, blockhash.PublicKey().String())
 
 	a := &app{
-		network:   "localnet",
-		rpcURL:    stub.URL,
-		recipient: feePayer.PublicKey().String(),
-		secretKey: "playground-smoke-secret-0123456789ab",
-		feePayer:  feePayer,
-		rpcClient: rpc.New(stub.URL),
-		repoRoot:  t.TempDir(), // empty root: no docs generated, no SPA dist
+		network:                "localnet",
+		rpcURL:                 stub.URL,
+		recipient:              feePayer.PublicKey().String(),
+		secretKey:              "playground-smoke-secret-0123456789ab",
+		feePayer:               feePayer,
+		rpcClient:              rpc.New(stub.URL),
+		repoRoot:               t.TempDir(), // empty root: no docs generated, no SPA dist
+		allowUnsafeMemoryStore: true,
 	}
 	handler, shutdown, err := newApp(a)
 	if err != nil {
@@ -92,6 +93,33 @@ func newTestServer(t *testing.T) (*httptest.Server, *app) {
 	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
 	return httpServer, a
+}
+
+func TestPaymentClientDoesNotDeriveMemoryReplayOptInFromLocalnet(t *testing.T) {
+	t.Setenv("PAY_KIT_DISABLE_PREFLIGHT", "1")
+	feePayer, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatalf("generate fee payer: %v", err)
+	}
+	a := &app{
+		network:   "localnet",
+		rpcURL:    "https://api.mainnet-beta.solana.com",
+		recipient: feePayer.PublicKey().String(),
+		secretKey: "playground-smoke-secret-0123456789ab",
+		feePayer:  feePayer,
+	}
+
+	client, err := newPaymentClient(a, []paykit.Protocol{paykit.MPP}, "exact")
+	if err != nil {
+		t.Fatalf("newPaymentClient: %v", err)
+	}
+	if client.Config.MPP.AllowUnsafeMemoryStore {
+		t.Fatal("localnet label implicitly enabled memory replay")
+	}
+	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.01")}
+	if headers, err := client.MppAdapter().ChallengeHeaders(gate); err == nil {
+		t.Fatalf("MPP challenge was issued without a replay store: %v", headers)
+	}
 }
 
 // doRequest performs a request and returns the response with its body read.

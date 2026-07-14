@@ -30,12 +30,15 @@ The request-scoped trio (:func:`require_payment`, :func:`is_paid`,
 
 from __future__ import annotations
 
+import threading
 import weakref
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit.errors import (
+    ConfigurationError,
     InvalidProofError,
     PaymentRequiredError,
     ProtocolNotSupportedError,
@@ -48,6 +51,7 @@ from solana_pay_kit.protocols.mpp import MppAdapter
 from solana_pay_kit.protocols.x402 import X402Adapter
 
 if TYPE_CHECKING:
+    from solana_pay_kit._paycore.store import Store
     from solana_pay_kit.config import Config
     from solana_pay_kit.protocols.mpp import MppAcceptsEntry
     from solana_pay_kit.protocols.x402.exact.types import X402AcceptsEntry
@@ -67,23 +71,80 @@ PAYMENT_ATTR = "paykit_payment"
 #: Gate reference shapes accepted by the middleware.
 GateRef = "Gate | DynamicGate | Price | str | Callable[[Any], Gate]"
 
-#: One ``PayCore`` (and its adapters + shared replay store) per Config. The
-#: framework shims construct a gate per request, but a fresh adapter would mean
-#: a fresh in-memory replay store, so a settled MPP signature could be replayed.
-#: Caching the core per Config keeps the consumed-signature marker durable for
-#: the lifetime of that config. Weak keys let a dropped config (e.g. a test
-#: ``reset()``) and its cached core be collected. The Config is frozen, so a
-#: cached core never observes stale settings.
-_CORE_CACHE: weakref.WeakKeyDictionary[Config, PayCore] = weakref.WeakKeyDictionary()
+
+@dataclass
+class _CoreCacheEntry:
+    """One identity-bound cached core and the weak Config that owns it."""
+
+    config_ref: weakref.ReferenceType[Config]
+    core: PayCore
+    replay_store: Store | None
+
+
+class _IdentityCoreCache:
+    """Thread-safe, identity-keyed cache whose entries follow Config lifetime."""
+
+    def __init__(self) -> None:
+        self._entries: dict[int, _CoreCacheEntry] = {}
+        self._lock = threading.RLock()
+
+    def get_or_create(
+        self,
+        core_type: type[PayCore],
+        config: Config,
+        replay_store: Store | None,
+    ) -> PayCore:
+        """Return the one core bound to this exact Config instance.
+
+        ``WeakKeyDictionary`` compares keys by value, which lets two distinct
+        but equal Config instances share a replay store. Indexing by object id
+        and confirming the live referent with ``is`` preserves per-instance
+        ownership. The critical section also makes first-use construction and
+        replay-store binding atomic across framework request threads.
+        """
+        key = id(config)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                cached_config = entry.config_ref()
+                if cached_config is config:
+                    if replay_store is not None and entry.replay_store is not replay_store:
+                        raise ConfigurationError(
+                            "a different replay_store is already bound to this Config; "
+                            "reuse the original store or construct a new Config"
+                        )
+                    return entry.core
+                if cached_config is None:
+                    self._entries.pop(key, None)
+
+            def evict(config_ref: weakref.ReferenceType[Config]) -> None:
+                with self._lock:
+                    current = self._entries.get(key)
+                    if current is not None and current.config_ref is config_ref:
+                        self._entries.pop(key, None)
+
+            config_ref = weakref.ref(config, evict)
+            # A cached core keeps adapters and their replay state alive, but
+            # those adapters retain their Config. Use an equal frozen snapshot
+            # so the caller's Config remains weakly owned by this cache.
+            core = core_type(config.model_copy(), replay_store=replay_store, _source_config_ref=config_ref)
+            self._entries[key] = _CoreCacheEntry(config_ref=config_ref, core=core, replay_store=replay_store)
+            return core
+
+
+#: One ``PayCore`` (and its adapters + shared replay store) per Config object.
+#: Framework shims construct a gate per request, so this cache keeps replay
+#: markers durable for a Config's lifetime without merging equal Config values.
+_CORE_CACHE = _IdentityCoreCache()
 
 
 class PayCore:
     """Host-neutral payment-gating core shared by every framework shim.
 
-    One instance wraps a frozen :class:`~solana_pay_kit.config.Config` and lazily
-    constructs the MPP and (when x402 is accepted) x402 adapters. Callers can
-    inject pre-built adapters to override defaults, e.g. with an offline
-    ``recent_blockhash_provider`` for tests.
+    One instance wraps a frozen :class:`~solana_pay_kit.config.Config` and
+    constructs only its configured protocol adapters. Callers can inject a
+    replay store for the default protocol adapters or pre-built adapters to override
+    defaults, e.g. with an offline ``recent_blockhash_provider`` for tests.
     """
 
     def __init__(
@@ -92,40 +153,50 @@ class PayCore:
         *,
         mpp: MppAdapter | None = None,
         x402: X402Adapter | None = None,
+        replay_store: Store | None = None,
+        _source_config_ref: weakref.ReferenceType[Config] | None = None,
     ) -> None:
         """Bind to ``config`` and resolve (or inject) the scheme adapters."""
         self._config = config
-        self._mpp = mpp if mpp is not None else MppAdapter(config)
+        self._source_config_ref = _source_config_ref if _source_config_ref is not None else weakref.ref(config)
+        # When both adapters receive this store, their shared network-qualified
+        # settlement identity fences a co-signed Solana transaction across MPP
+        # and x402 as well as across requests.
+        self._replay_store = replay_store
+        # MPP construction enforces durable replay state outside localnet. Do
+        # not construct it for x402-only configurations, where it is unused.
+        if mpp is not None:
+            self._mpp: MppAdapter | None = mpp
+        elif Protocol.MPP in config.accept:
+            self._mpp = MppAdapter(config, replay_store=replay_store)
+        else:
+            self._mpp = None
         # Auto-wire the x402 adapter only when the config accept list includes
         # it; mirrors the PHP constructor. An explicit adapter always wins.
         if x402 is not None:
             self._x402: X402Adapter | None = x402
         elif Protocol.X402 in config.accept:
-            self._x402 = X402Adapter(config)
+            self._x402 = X402Adapter(config, replay_store=replay_store)
         else:
             self._x402 = None
 
     @classmethod
-    def for_config(cls, config: Config) -> PayCore:
+    def for_config(cls, config: Config, *, replay_store: Store | None = None) -> PayCore:
         """Return the cached per-Config core, building (and caching) one on miss.
 
         The framework shims call this once per request; reusing one core per
         Config keeps the MPP/x402 adapters and their shared in-memory replay
         store alive across requests so a settled signature stays consumed and
         cannot be replayed. A fresh ``PayCore(config)`` per request (the prior
-        behaviour) reset that store on every call.
+        behaviour) reset that store on every call. Pass ``replay_store`` on the
+        first call to supply shared durable state for a nonlocal deployment.
         """
-        cached = _CORE_CACHE.get(config)
-        if cached is not None:
-            return cached
-        core = cls(config)
-        _CORE_CACHE[config] = core
-        return core
+        return _CORE_CACHE.get_or_create(cls, config, replay_store)
 
     @property
     def config(self) -> Config:
         """The frozen configuration this core gates against."""
-        return self._config
+        return self._source_config_ref() or self._config
 
     def resolve_gate(
         self,
@@ -167,7 +238,12 @@ class PayCore:
         for scheme in accept:
             if scheme == Protocol.X402 and signature and self._x402 is not None and not gate.has_fees():
                 return self._x402
-            if scheme == Protocol.MPP and authorization and authorization.strip().lower().startswith("payment "):
+            if (
+                scheme == Protocol.MPP
+                and self._mpp is not None
+                and authorization
+                and authorization.strip().lower().startswith("payment ")
+            ):
                 return self._mpp
         return None
 
@@ -214,7 +290,7 @@ class PayCore:
         if self._x402 is not None and Protocol.X402 in accept and not gate.has_fees():
             accepts.append(self._x402.accepts_entry(gate, request))
             headers.update(self._x402.challenge_headers(gate, request))
-        if Protocol.MPP in accept:
+        if self._mpp is not None and Protocol.MPP in accept:
             accepts.append(self._mpp.accepts_entry(gate, request))
             headers.update(self._mpp.challenge_headers(gate, request))
 

@@ -607,6 +607,9 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server"
           cargo-cache-key: ts
+          # boot-policy executes the real createPayKit + requirePayment fixture,
+          # so it needs the ordered @solana/mpp -> @solana/pay-kit build.
+          build-pay-kit: "true"
       - name: Build Rust conformance runner once
         working-directory: rust
         run: |
@@ -713,9 +716,12 @@ jobs:
       # recipients-vs-splits) — the integration radar for the fabricated-deposit
       # class. boot-policy asserts every SDK's server/adapter fails CLOSED when it
       # would default to an in-memory replay store off-localnet without the
-      # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in; it self-skips any SDK whose
-      # toolchain is absent in this Node job (Go/Python get full coverage in the
-      # multi-toolchain harness.yml legs), so it degrades rather than false-greens.
+      # PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in. The TypeScript high-level
+      # probe is mandatory in this job. A covered probe is REQUIRED only once its
+      # SDK carries the fail-closed guard marker in-tree (boot-policy git-greps
+      # the SDK source): Go+TS ship it, so they run wherever their toolchain is
+      # present; Python asserts-SKIP until its remediation lands, then the same
+      # grep auto-promotes it to a required probe in harness.yml.
       # Selection is by the MPP_HARNESS_* env selectors alone (the old free-text
       # --testNamePattern matched every one of these pairs, so it was redundant).
       # assert-run-count pins the executed pair count so a title rename or a

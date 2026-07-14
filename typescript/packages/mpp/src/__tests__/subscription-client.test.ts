@@ -1,389 +1,383 @@
-/**
- * Behavioral tests for the client-side Solana subscription activation
- * transaction builder.
- *
- * Mocks `globalThis.fetch` to stand in for `createSolanaRpc()` so each test
- * controls exactly which RPC calls succeed and what they return.
- */
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 import {
-    type Address,
     address,
     type Blockhash,
+    generateKeyPairSigner,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
-    generateKeyPairSigner,
     getTransactionDecoder,
 } from '@solana/kit';
 
 import {
-    SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
+    ASSOCIATED_TOKEN_PROGRAM,
+    PYUSD,
     SUBSCRIPTIONS_PROGRAM,
-    SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
-    SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
+    TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
 } from '../constants.js';
-import { buildSubscriptionActivationTransaction, subscription as subscriptionClient } from '../client/Subscription.js';
+import {
+    buildSubscriptionActivationTransaction,
+    initializeSubscriptionAuthority,
+    subscription,
+} from '../client/Subscription.js';
+import { getSubscriptionAuthorityEncoder } from '../generated/subscriptions/accounts/subscriptionAuthority.js';
+import {
+    getSubscribeInstructionDataDecoder,
+    SUBSCRIBE_DISCRIMINATOR,
+} from '../generated/subscriptions/instructions/subscribe.js';
+import {
+    getTransferSubscriptionInstructionDataDecoder,
+    TRANSFER_SUBSCRIPTION_DISCRIMINATOR,
+} from '../generated/subscriptions/instructions/transferSubscription.js';
+import { findEventAuthorityPda } from '../generated/subscriptions/pdas/eventAuthority.js';
 
+const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as Blockhash;
 const PLAN_ID = '8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT';
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const PULLER = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
+const MERCHANT = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
 const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
-const FEE_PAYER = 'FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
-const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N';
+const INIT_ID = 9123n;
 
-// ── Test setup ──
-
-let originalFetch: typeof globalThis.fetch;
-
-beforeEach(() => {
-    originalFetch = globalThis.fetch;
-});
-
+const originalFetch = globalThis.fetch;
 afterEach(() => {
     globalThis.fetch = originalFetch;
 });
 
-// ── Helpers ──
-
-function rpcSuccess(result: unknown) {
-    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), {
-        headers: { 'Content-Type': 'application/json' },
-    });
-}
-
-/**
- * Default RPC mock: pretend the SubscriptionAuthority does not exist, return a
- * blockhash for getLatestBlockhash, accept sendTransaction, and report the
- * signature as confirmed.
- */
-function defaultMockFetch(opts: { authorityExists?: boolean } = {}): typeof globalThis.fetch {
-    return async (_input: RequestInfo | URL, init?: RequestInit) => {
-        const body = JSON.parse(init?.body as string) as { method?: string };
-        switch (body.method) {
-            case 'getAccountInfo':
-                return rpcSuccess(
-                    opts.authorityExists
-                        ? {
-                              context: { slot: 1 },
-                              value: {
-                                  data: ['', 'base64'],
-                                  executable: false,
-                                  lamports: 1,
-                                  owner: SUBSCRIPTIONS_PROGRAM,
-                                  rentEpoch: 0,
-                                  space: 0,
-                              },
-                          }
-                        : { context: { slot: 1 }, value: null },
-                );
-            case 'getLatestBlockhash':
-                return rpcSuccess({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
-            case 'sendTransaction':
-                return rpcSuccess(
-                    '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq',
-                );
-            case 'getSignatureStatuses':
-                return rpcSuccess({ context: { slot: 1 }, value: [{ confirmationStatus: 'confirmed', err: null }] });
-            default:
-                return rpcSuccess({});
-        }
-    };
-}
-
-type CompiledMessage = {
-    instructions: readonly { data: Uint8Array; programAddressIndex: number }[];
-    staticAccounts: readonly { toString(): string }[];
-};
-
-function decodeMessage(base64Tx: string): CompiledMessage {
-    const txBytes = getBase64Codec().encode(base64Tx);
-    const decoded = getTransactionDecoder().decode(txBytes);
-    return getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
-}
-
-function instructionDiscriminatorsByProgram(message: CompiledMessage, programId: string): number[] {
-    return message.instructions
-        .filter(ix => message.staticAccounts[ix.programAddressIndex].toString() === programId)
-        .map(ix => ix.data[0]);
-}
-
-function baseRequest(): Parameters<typeof buildSubscriptionActivationTransaction>[0]['request'] {
+function request(feePayerKey: string, tokenProgram = TOKEN_PROGRAM) {
     return {
         amount: '10000000',
         currency: MINT,
+        externalId: 'invoice-42',
         methodDetails: {
             decimals: 6,
+            expectedCreatedAt: '1700000000',
+            expectedPeriodHours: '720',
+            feePayer: true,
+            feePayerKey,
+            merchant: MERCHANT,
             mint: MINT,
             network: 'devnet',
+            planBump: 254,
             planId: PLAN_ID,
-            puller: PULLER,
-            tokenProgram: TOKEN_PROGRAM,
+            planIdNumeric: '7',
+            programId: SUBSCRIPTIONS_PROGRAM,
+            puller: feePayerKey,
+            recentBlockhash: BLOCKHASH,
+            tokenProgram,
         },
         periodCount: '30',
-        periodUnit: 'day',
+        periodUnit: 'day' as const,
         recipient: RECIPIENT,
     };
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// buildSubscriptionActivationTransaction
-// ══════════════════════════════════════════════════════════════════════
+function decodeWire(encoded: string) {
+    const transaction = getTransactionDecoder().decode(getBase64Codec().encode(encoded));
+    return getCompiledTransactionMessageDecoder().decode(transaction.messageBytes) as unknown as {
+        header: { numSignerAccounts: number };
+        instructions: Array<{ accountIndices: number[]; data: Uint8Array; programAddressIndex: number }>;
+        staticAccounts: string[];
+    };
+}
 
-describe('buildSubscriptionActivationTransaction', () => {
-    test('includes initialize_subscription_authority when the authority does not exist', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const tx = await buildSubscriptionActivationTransaction({
-            request: baseRequest(),
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        const message = decodeMessage(tx);
-        const discriminators = instructionDiscriminatorsByProgram(message, SUBSCRIPTIONS_PROGRAM);
-        expect(discriminators).toEqual([
-            SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
-            SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
-            SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
-        ]);
-    });
-
-    test('omits initialize_subscription_authority when the authority already exists', async () => {
-        globalThis.fetch = defaultMockFetch({ authorityExists: true });
-        const signer = await generateKeyPairSigner();
-        const tx = await buildSubscriptionActivationTransaction({
-            request: baseRequest(),
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        const message = decodeMessage(tx);
-        const discriminators = instructionDiscriminatorsByProgram(message, SUBSCRIPTIONS_PROGRAM);
-        expect(discriminators).toEqual([SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR, SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR]);
-    });
-
-    test('uses the server-provided recentBlockhash when present', async () => {
-        let blockhashFetched = false;
-        globalThis.fetch = async (_input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            if (body.method === 'getLatestBlockhash') {
-                blockhashFetched = true;
-            }
-            return defaultMockFetch()(_input, init);
+describe('canonical subscription activation builder', () => {
+    test('uses generated canonical data/account layouts and never broadcasts', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        let fetchCalls = 0;
+        globalThis.fetch = async () => {
+            fetchCalls += 1;
+            throw new Error('builder must not access the network when the challenge pins a blockhash');
         };
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        req.methodDetails.recentBlockhash = BLOCKHASH;
-        await buildSubscriptionActivationTransaction({
-            request: req,
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        expect(blockhashFetched).toBe(false);
-    });
 
-    test('appends a memo instruction when externalId is supplied', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        req.externalId = 'order-42';
-        const tx = await buildSubscriptionActivationTransaction({
-            request: req,
-            rpcUrl: 'https://mock-rpc',
-            signer,
+        const encoded = await buildSubscriptionActivationTransaction({
+            request: request(server.address),
+            signer: subscriber,
+            subscriptionAuthorityInitId: INIT_ID,
         });
-        const message = decodeMessage(tx);
-        const memoAddress = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-        const memoIxs = message.instructions.filter(
-            ix => message.staticAccounts[ix.programAddressIndex].toString() === memoAddress,
+        expect(fetchCalls).toBe(0);
+
+        const message = decodeWire(encoded);
+        expect(message.staticAccounts[0]).toBe(server.address);
+        expect(message.header.numSignerAccounts).toBe(2);
+
+        const programInstructions = message.instructions.filter(
+            ix => message.staticAccounts[ix.programAddressIndex] === SUBSCRIPTIONS_PROGRAM,
         );
-        expect(memoIxs).toHaveLength(1);
-        expect(new TextDecoder().decode(memoIxs[0].data)).toBe('order-42');
+        expect(programInstructions).toHaveLength(2);
+
+        const subscribeIx = programInstructions.find(ix => ix.data[0] === SUBSCRIBE_DISCRIMINATOR)!;
+        const subscribeData = getSubscribeInstructionDataDecoder().decode(subscribeIx.data).subscribeData;
+        expect(subscribeIx.accountIndices).toHaveLength(9);
+        expect(subscribeData).toMatchObject({
+            expectedAmount: 10_000_000n,
+            expectedCreatedAt: 1_700_000_000n,
+            expectedMint: address(MINT),
+            expectedPeriodHours: 720n,
+            expectedSubscriptionAuthorityInitId: INIT_ID,
+            planBump: 254,
+            planId: 7n,
+        });
+
+        const transferIx = programInstructions.find(ix => ix.data[0] === TRANSFER_SUBSCRIPTION_DISCRIMINATOR)!;
+        const transferData = getTransferSubscriptionInstructionDataDecoder().decode(transferIx.data).transferData;
+        expect(transferIx.accountIndices).toHaveLength(10);
+        expect(transferData).toEqual({
+            amount: 10_000_000n,
+            delegator: subscriber.address,
+            mint: address(MINT),
+        });
+
+        const ataInstructions = message.instructions.filter(
+            ix => message.staticAccounts[ix.programAddressIndex] === ASSOCIATED_TOKEN_PROGRAM,
+        );
+        expect(ataInstructions).toHaveLength(2);
+        expect(ataInstructions.every(ix => ix.data.length === 1 && ix.data[0] === 1)).toBe(true);
     });
 
-    test('rejects feePayer=true without a feePayerKey', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        req.methodDetails.feePayer = true;
+    test('allows a known Token-2022 stablecoin for both ATA layouts', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const challenged = request(server.address, TOKEN_2022_PROGRAM);
+        challenged.methodDetails.mint = PYUSD.mainnet;
+        const message = decodeWire(
+            await buildSubscriptionActivationTransaction({
+                request: challenged,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        );
+        const ataInstructions = message.instructions.filter(
+            ix => message.staticAccounts[ix.programAddressIndex] === ASSOCIATED_TOKEN_PROGRAM,
+        );
+        for (const ix of ataInstructions) {
+            expect(message.staticAccounts[ix.accountIndices[5]]).toBe(TOKEN_2022_PROGRAM);
+        }
+    });
+
+    test('rejects a server-selected custom token program', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const customTokenProgram = (await generateKeyPairSigner()).address;
+
         await expect(
             buildSubscriptionActivationTransaction({
-                request: req,
-                rpcUrl: 'https://mock-rpc',
-                signer,
+                request: request(server.address, customTokenProgram),
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
             }),
-        ).rejects.toThrow(/feePayerKey/);
+        ).rejects.toThrow(/Unsupported token program/);
     });
 
-    test('uses the server fee-payer when feePayer=true with a feePayerKey', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        req.methodDetails.feePayer = true;
-        req.methodDetails.feePayerKey = FEE_PAYER;
-        const tx = await buildSubscriptionActivationTransaction({
-            request: req,
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        const message = decodeMessage(tx);
-        // First static account is the fee payer in a v0 message.
-        expect(message.staticAccounts[0].toString()).toBe(FEE_PAYER);
-    });
+    test('rejects an unknown Token-2022 mint unless explicitly opted in', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const challenged = request(server.address, TOKEN_2022_PROGRAM);
+        challenged.methodDetails.mint = (await generateKeyPairSigner()).address;
 
-    test('rejects periodUnit="month" through the helper', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        (req as unknown as { periodUnit: string }).periodUnit = 'month';
         await expect(
             buildSubscriptionActivationTransaction({
-                request: req,
-                rpcUrl: 'https://mock-rpc',
-                signer,
+                request: challenged,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
             }),
-        ).rejects.toThrow(/rejects periodUnit/);
-    });
+        ).rejects.toThrow(/unknown Token-2022 mint/);
 
-    test('rejects periodCount out of range for day', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        req.periodCount = '400';
         await expect(
             buildSubscriptionActivationTransaction({
-                request: req,
-                rpcUrl: 'https://mock-rpc',
-                signer,
+                allowUnknownToken2022: true,
+                request: challenged,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
             }),
-        ).rejects.toThrow(/exceeds 365/);
+        ).resolves.toEqual(expect.any(String));
     });
 
-    test('invokes onProgress callbacks during build', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const events: string[] = [];
-        await buildSubscriptionActivationTransaction({
-            onProgress: ev => events.push((ev as { type: string }).type),
-            request: baseRequest(),
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        expect(events).toContain('challenge');
-        expect(events).toContain('signing');
+    test('derives event authority and self-program from a challenged custom program', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const customProgram = (await generateKeyPairSigner()).address;
+        const challenged = request(server.address);
+        challenged.methodDetails.programId = customProgram;
+
+        const message = decodeWire(
+            await buildSubscriptionActivationTransaction({
+                request: challenged,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        );
+        const [eventAuthority] = await findEventAuthorityPda({ programAddress: address(customProgram) });
+        const transferIx = message.instructions.find(ix => ix.data[0] === TRANSFER_SUBSCRIPTION_DISCRIMINATOR)!;
+
+        expect(message.staticAccounts[transferIx.accountIndices[8]]).toBe(eventAuthority);
+        expect(message.staticAccounts[transferIx.accountIndices[9]]).toBe(customProgram);
     });
 
-    test('falls back to the default RPC URL when no rpcUrl is provided', async () => {
-        const urls: string[] = [];
-        globalThis.fetch = async (input, init) => {
-            urls.push(String(input));
-            return defaultMockFetch()(input, init);
-        };
-        const signer = await generateKeyPairSigner();
-        await buildSubscriptionActivationTransaction({
-            request: baseRequest(),
-            signer,
-        });
-        // devnet network → public devnet RPC
-        expect(urls.some(u => u.includes('devnet'))).toBe(true);
+    test('rejects inconsistent snapshots and noncanonical fee-payer configuration', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const wrongPeriod = request(server.address);
+        wrongPeriod.methodDetails.expectedPeriodHours = '24';
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request: wrongPeriod,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        ).rejects.toThrow(/expectedPeriodHours/);
+
+        const wrongPuller = request(server.address);
+        wrongPuller.methodDetails.puller = MERCHANT;
+        await expect(
+            buildSubscriptionActivationTransaction({
+                request: wrongPuller,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            }),
+        ).rejects.toThrow(/feePayerKey must equal puller/);
     });
 
-    test('normalizes a mixed-case network slug when resolving the default RPC URL', async () => {
-        const urls: string[] = [];
-        globalThis.fetch = async (input, init) => {
-            urls.push(String(input));
-            return defaultMockFetch()(input, init);
-        };
-        const signer = await generateKeyPairSigner();
-        const req = baseRequest();
-        // Upper-case mainnet slug must normalize (mainnet/mainnet-beta → mainnet)
-        // and resolve to the mainnet default RPC rather than falling through.
-        (req.methodDetails as { network: string }).network = 'MAINNET';
-        await buildSubscriptionActivationTransaction({
-            request: req,
-            signer,
-        });
-        expect(urls.some(u => u.includes('api.mainnet-beta.solana.com'))).toBe(true);
-        expect(urls.some(u => u.includes('devnet'))).toBe(false);
-    });
-});
-
-// ══════════════════════════════════════════════════════════════════════
-// subscription() — Method.toClient wrapper (createCredential)
-// ══════════════════════════════════════════════════════════════════════
-
-describe('subscription() client wrapper', () => {
-    async function buildChallenge() {
-        return {
-            id: 'test-id',
-            realm: 'realm',
-            method: 'solana',
-            intent: 'subscription',
-            request: baseRequest(),
-            expires: undefined,
-        } as never;
-    }
-
-    test('emits a credential in pull mode without broadcasting', async () => {
-        const calls: string[] = [];
-        globalThis.fetch = async (input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            calls.push(body.method ?? '');
-            return defaultMockFetch()(input, init);
-        };
-        const signer = await generateKeyPairSigner();
-        const method = subscriptionClient({
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        const cred = await method.createCredential!({ challenge: await buildChallenge() });
-        // The mppx framework's Credential envelope is opaque; we assert the
-        // builder ran end-to-end and that no broadcast happened.
-        expect(typeof cred).toBe('string');
-        expect(cred.length).toBeGreaterThan(0);
-        expect(calls).not.toContain('sendTransaction');
+    test('rejects broadcast:true instead of producing unsupported signature credentials', async () => {
+        const subscriber = await generateKeyPairSigner();
+        expect(() =>
+            subscription({
+                broadcast: true,
+                signer: subscriber,
+                subscriptionAuthorityInitId: INIT_ID,
+            } as never),
+        ).toThrow(/push activation is unsupported/i);
     });
 
-    test('broadcasts and emits a type="signature" credential when broadcast=true', async () => {
-        const calls: string[] = [];
-        globalThis.fetch = async (input, init) => {
-            const body = JSON.parse(init?.body as string) as { method?: string };
-            calls.push(body.method ?? '');
-            return defaultMockFetch()(input, init);
-        };
-        const signer = await generateKeyPairSigner();
-        const method = subscriptionClient({
-            broadcast: true,
-            rpcUrl: 'https://mock-rpc',
-            signer,
+    test('uses the challenged network RPC for initialization and activation', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const server = await generateKeyPairSigner();
+        const encodedAuthority = getSubscriptionAuthorityEncoder().encode({
+            bump: 253,
+            discriminator: 4,
+            initId: INIT_ID,
+            payer: subscriber.address,
+            tokenMint: address(MINT),
+            user: subscriber.address,
         });
-        const cred = await method.createCredential!({ challenge: await buildChallenge() });
-        expect(cred).toBeTruthy();
-        expect(calls).toContain('sendTransaction');
-        expect(calls).toContain('getSignatureStatuses');
-    });
-
-    test('rejects broadcast=true combined with feePayer sponsorship', async () => {
-        globalThis.fetch = defaultMockFetch();
-        const signer = await generateKeyPairSigner();
-        const method = subscriptionClient({
-            broadcast: true,
-            rpcUrl: 'https://mock-rpc',
-            signer,
-        });
-        const challenge = {
-            id: 'test-id',
-            realm: 'realm',
-            method: 'solana',
-            intent: 'subscription',
-            request: {
-                ...baseRequest(),
-                methodDetails: {
-                    ...baseRequest().methodDetails,
-                    feePayer: true,
-                    feePayerKey: FEE_PAYER,
+        const requestedUrls: string[] = [];
+        globalThis.fetch = async input => {
+            requestedUrls.push(String(input));
+            return rpcSuccess({
+                value: {
+                    data: [getBase64Codec().decode(encodedAuthority), 'base64'],
+                    executable: false,
+                    lamports: 1,
+                    owner: SUBSCRIPTIONS_PROGRAM,
+                    rentEpoch: 0,
                 },
-            },
-        } as never;
-        await expect(method.createCredential!({ challenge })).rejects.toThrow(/fee sponsorship/);
+            });
+        };
+
+        const method = subscription({ initializeSubscriptionAuthority: true, signer: subscriber });
+        await method.createCredential({
+            challenge: {
+                id: 'challenge-id',
+                intent: 'subscription',
+                method: 'solana',
+                realm: 'test',
+                request: request(server.address),
+            } as never,
+        });
+
+        expect(requestedUrls).toEqual(['https://api.devnet.solana.com', 'https://api.devnet.solana.com']);
     });
 });
+
+describe('explicit SubscriptionAuthority initialization', () => {
+    test('returns the existing init id without broadcasting', async () => {
+        const signer = await generateKeyPairSigner();
+        const encoded = getSubscriptionAuthorityEncoder().encode({
+            bump: 253,
+            discriminator: 4,
+            initId: INIT_ID,
+            payer: signer.address,
+            tokenMint: address(MINT),
+            user: signer.address,
+        });
+        const methods: string[] = [];
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method: string };
+            methods.push(body.method);
+            return rpcSuccess({
+                value: {
+                    data: [getBase64Codec().decode(encoded), 'base64'],
+                    executable: false,
+                    lamports: 1,
+                    owner: SUBSCRIPTIONS_PROGRAM,
+                    rentEpoch: 0,
+                },
+            });
+        };
+
+        await expect(
+            initializeSubscriptionAuthority({
+                mint: MINT,
+                rpcUrl: 'https://mock-rpc',
+                signer,
+                tokenProgram: TOKEN_PROGRAM,
+            }),
+        ).resolves.toBe(INIT_ID);
+        expect(methods).toEqual(['getAccountInfo']);
+    });
+
+    test('broadcasts only when the explicit helper is invoked for a missing authority', async () => {
+        const signer = await generateKeyPairSigner();
+        const encoded = getSubscriptionAuthorityEncoder().encode({
+            bump: 253,
+            discriminator: 4,
+            initId: INIT_ID,
+            payer: signer.address,
+            tokenMint: address(MINT),
+            user: signer.address,
+        });
+        let accountReads = 0;
+        const methods: string[] = [];
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method: string };
+            methods.push(body.method);
+            if (body.method === 'getAccountInfo') {
+                accountReads += 1;
+                if (accountReads === 1) return rpcSuccess({ value: null });
+                return rpcSuccess({
+                    value: {
+                        data: [getBase64Codec().decode(encoded), 'base64'],
+                        executable: false,
+                        lamports: 1,
+                        owner: SUBSCRIPTIONS_PROGRAM,
+                        rentEpoch: 0,
+                    },
+                });
+            }
+            if (body.method === 'getLatestBlockhash') {
+                return rpcSuccess({ value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
+            }
+            if (body.method === 'sendTransaction') return rpcSuccess('init-signature');
+            if (body.method === 'getSignatureStatuses') {
+                return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+            }
+            return rpcSuccess({});
+        };
+
+        await expect(
+            initializeSubscriptionAuthority({
+                mint: MINT,
+                rpcUrl: 'https://mock-rpc',
+                signer,
+                tokenProgram: TOKEN_PROGRAM,
+            }),
+        ).resolves.toBe(INIT_ID);
+        expect(methods).toContain('sendTransaction');
+    });
+});
+
+function rpcSuccess(result: unknown) {
+    return new Response(JSON.stringify({ id: 1, jsonrpc: '2.0', result }), {
+        headers: { 'Content-Type': 'application/json' },
+    });
+}

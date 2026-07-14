@@ -38,6 +38,7 @@ import socket
 import sys
 import threading
 import urllib.request
+from dataclasses import replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -67,12 +68,21 @@ from solana_pay_kit import (  # noqa: E402
     Stablecoin,
 )
 from solana_pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
+from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2  # noqa: E402
 from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
-from solana_pay_kit._paycore.store import MemoryStore  # noqa: E402
+from solana_pay_kit._paycore.solana import _canonical_network, validate_network  # noqa: E402
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore  # noqa: E402
 from solana_pay_kit.errors import InvalidProofError  # noqa: E402
-from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
+from solana_pay_kit.protocols.mpp.core.headers import (  # noqa: E402
+    format_www_authenticate,
+    parse_authorization,
+    parse_receipt,
+)
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from solana_pay_kit.protocols.mpp.intents.session import SessionAction  # noqa: E402
 from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
+    MemoryChannelStore,
+    Session,
     SessionChallengeOptions,
     SessionOptions,
     new_session,
@@ -111,18 +121,15 @@ def _resolve_network(raw: str) -> Network:
     """Map the harness network string to a solana_pay_kit Network enum.
 
     Charge scenarios send the short slug ``localnet``; x402 scenarios send a
-    CAIP-2 string (``solana:<genesis>``). Mirrors PHP ``resolve_network``.
+    CAIP-2 string (``solana:<genesis>``). Unknown inputs are rejected instead
+    of being treated as devnet or localnet.
     """
-    if raw.startswith("solana:"):
-        if raw == "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
-            return Network.SOLANA_MAINNET
-        # Devnet genesis and any other CAIP-2 fall to devnet (the localnet
-        # surfpool fixtures are funded under the devnet genesis hash).
-        return Network.SOLANA_DEVNET
-    return {
-        "mainnet": Network.SOLANA_MAINNET,
-        "devnet": Network.SOLANA_DEVNET,
-    }.get(raw, Network.SOLANA_LOCALNET)
+    if raw == SOLANA_MAINNET_CAIP2:
+        raw = "mainnet"
+    elif raw == SOLANA_DEVNET_CAIP2:
+        raw = "devnet"
+    validate_network(raw)
+    return Network(f"solana_{_canonical_network(raw)}")
 
 
 def _base_units_to_human(base_units: str, decimals: int) -> str:
@@ -223,13 +230,14 @@ class _Adapter:
         amount_units = optional_env("X402_HARNESS_AMOUNT", "1000")
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        network = _resolve_network(network_raw)
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/protected")
         self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-fixture-settlement").lower()
         self.coin = _coin_for_mint(mint)
 
         signer = Signer.json(facilitator_json)
         config = Config(
-            network=_resolve_network(network_raw),
+            network=network,
             accept=(Protocol.X402,),
             stablecoins=(self.coin,),
             rpc_url=rpc_url,
@@ -237,7 +245,22 @@ class _Adapter:
             preflight=False,
         ).model_copy()
         self.config = config
-        self.adapter = X402Adapter(config)
+        if config.network is Network.SOLANA_LOCALNET:
+            replay_store = FileReplayStore(f"/tmp/pay-kit-python-x402-replay-{os.getpid()}.json")
+        elif (
+            config.network is Network.SOLANA_DEVNET
+            and os.getenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE") == "1"
+        ):
+            # The cross-language harness is a single process. Keep that
+            # development-only exception explicit so production construction
+            # remains fail-closed outside localnet.
+            replay_store = MemoryStore()
+        else:
+            raise RuntimeError(
+                "Python x402 harness requires a durable ProductionReplayStore outside localnet; "
+                "set PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 only for explicit devnet harness runs"
+            )
+        self.adapter = X402Adapter(config, replay_store=replay_store)
         self.pay_to = pay_to
         decimals = int(optional_env("X402_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
@@ -253,6 +276,7 @@ class _Adapter:
         )
         mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        network = _resolve_network(network_raw)
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
         self.settlement_header = optional_env(
             "X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
@@ -265,7 +289,7 @@ class _Adapter:
 
         signer = Signer.json(fee_payer_json)
         config = Config(
-            network=_resolve_network(network_raw),
+            network=network,
             accept=(Protocol.X402,),
             stablecoins=(self.coin,),
             rpc_url=rpc_url,
@@ -292,7 +316,7 @@ class _Adapter:
         self.mint = require_env("MPP_HARNESS_MINT")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
         secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key")
-        network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
+        network = _resolve_network(optional_env("MPP_HARNESS_NETWORK", "localnet")).mints_label()
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
         realm = optional_env("MPP_HARNESS_REALM", "MPP Harness")
@@ -316,7 +340,7 @@ class _Adapter:
             recipient=pay_to,
             currency=self.mint,
             decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
-            network=network_raw,
+            network=network,
             rpc_url=self.rpc_url,
             secret_key=secret,
             realm=realm,
@@ -339,8 +363,13 @@ class _Adapter:
         self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
         pay_to = require_env("MPP_HARNESS_PAY_TO")
         amount_units = require_env("MPP_HARNESS_AMOUNT")
+        top_up_amount = int(optional_env("MPP_HARNESS_SESSION_TOP_UP_AMOUNT", "0"))
+        if top_up_amount < 0:
+            print("MPP_HARNESS_SESSION_TOP_UP_AMOUNT must be non-negative", file=sys.stderr)
+            sys.exit(2)
+        session_cap = str(int(amount_units) + top_up_amount)
         secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad")
-        network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
+        network = _resolve_network(optional_env("MPP_HARNESS_NETWORK", "localnet")).mints_label()
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()
         # The on-chain settle_and_finalize requires the settling merchant to be
@@ -364,46 +393,45 @@ class _Adapter:
                 file=sys.stderr,
             )
             sys.exit(2)
-        self.session_method = new_session(
-            SessionOptions(
-                operator=signer.pubkey(),
-                recipient=pay_to,
-                cap=int(amount_units),
-                currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
-                decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
-                network=network_raw,
-                secret_key=secret,
-                realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
-                modes=["pull"],
-                pull_voucher_strategy="clientVoucher",
-                # Merge resolution: kept main's client-submit model. main (#218)
-                # adopted the epoch-addressed payment-channels program, where the
-                # client derives the channel PDA from the challenge recentSlot
-                # (openSlot). The branch's earlier server-broadcast variant
-                # (open_tx_submitter="server", signer set) targeted the
-                # pre-openSlot program and would emit invalid instruction data
-                # against the adopted one, so it is superseded here. Driving the
-                # session settle on-chain again is a separate effort against the
-                # new program.
-                open_tx_submitter="client",
-                # The session challenge must carry recentBlockhash + recentSlot
-                # (the client derives the channel PDA from the challenge slot
-                # and never fetches it), but this scenario's surfnet runs no
-                # payment-channels program, so the wire-level trust model must
-                # stay intact: rpc=None keeps open verification / broadcast /
-                # settle-at-close off, and the recent-state provider stamps the
-                # challenge fields from one blocking getLatestBlockhash call
-                # (the slot rides in its context).
-                signer=None,
-                rpc=None,
-                recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
-            )
+        # Keep the channel state across HTTP requests while constructing each
+        # request handler with its own event-loop-bound RPC client. ``new_session``
+        # captures ``options.rpc`` in both the method and the core's top-up
+        # verifier, so changing ``Session._rpc`` later would leave that verifier
+        # disabled.
+        self.session_store = MemoryChannelStore()
+        self.session_options = SessionOptions(
+            operator=signer.pubkey(),
+            recipient=pay_to,
+            cap=int(session_cap),
+            currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
+            decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
+            network=network,
+            secret_key=secret,
+            realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            # The client builds an open tied to the challenge recentSlot; the
+            # server checks that slot, signs the fee-payer slot, and broadcasts
+            # before it accepts any vouchers. The verifier persists the
+            # transaction's openSlot, so this path is compatible with the
+            # epoch-addressed program.
+            open_tx_submitter="server",
+            signer=signer,
+            store=self.session_store,
+            recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
         )
+        # SessionRoutes handles delivery/commit endpoints, which do not use the
+        # on-chain verification seam. Its core shares the request sessions' store.
+        self.session_method = new_session(self.session_options)
         self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)
-        self.session_challenge = SessionChallengeOptions(cap=amount_units, description="Harness session")
+        self.session_challenge = SessionChallengeOptions(cap=session_cap, description="Harness session")
         decimals = int(optional_env("MPP_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
         self.replay_path = ""
+
+    def session_for_request(self, rpc: SolanaRpc) -> Session:
+        """Build a request-loop session with on-chain verification enabled."""
+        return new_session(replace(self.session_options, rpc=rpc))
 
     def charge_options(self) -> ChargeOptions:
         options = ChargeOptions(
@@ -628,18 +656,14 @@ class HarnessHandler(BaseHTTPRequestHandler):
             # A request-lifetime RPC bound to THIS event loop drives both the
             # server-broadcast open (openTxSubmitter=server) and the
             # settle_and_finalize + distribute at close, so the session settles
-            # for real on-chain and ``settledSignature`` is a landed tx. Mirror
-            # the charge path: build a fresh SolanaRpc, scope it onto the
-            # session for the request, and always close it.
+            # for real on-chain and ``settledSignature`` is a landed tx. Build a
+            # fresh public Session so ``new_session`` also installs its top-up
+            # transaction/delta verifier with this RPC client.
             fresh_rpc = SolanaRpc(adapter.rpc_url)
-            session = adapter.session_method
-            previous = session._rpc
-            # Reaches private session state because there is no public per-request rpc-injection API; safe only in this synchronous single-threaded harness, never production.
-            session._rpc = fresh_rpc
+            session = adapter.session_for_request(fresh_rpc)
             try:
                 return await session.handle(auth or None, adapter.session_challenge)
             finally:
-                session._rpc = previous
                 await fresh_rpc.aclose()
 
         result = asyncio.run(_handle_with_fresh_rpc())
@@ -655,6 +679,13 @@ class HarnessHandler(BaseHTTPRequestHandler):
         body = {"ok": True, "paid": True, "protocol": "session", "reference": reference}
         if reference:
             body["settledSignature"] = reference
+        action = SessionAction.from_dict(parse_authorization(auth).payload)
+        if action.top_up is not None:
+            state = asyncio.run(adapter.session_store.get_channel(action.top_up.channel_id))
+            if state is None:
+                self._send_json(500, {"error": "accepted top-up channel state is missing"})
+                return
+            body["topUp"] = {"channelId": action.top_up.channel_id, "deposit": str(state.deposit)}
         self._send_json(200, body, extra_headers={**result.headers, adapter.settlement_header: reference})
 
     def _handle_mpp(self, adapter: _Adapter, request: dict[str, Any]) -> None:
@@ -765,7 +796,11 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    adapter = _Adapter()
+    try:
+        adapter = _Adapter()
+    except ValueError as exc:
+        print(f"python harness: invalid network configuration: {exc}", file=sys.stderr)
+        sys.exit(2)
     port = _free_port()
     server = HTTPServer(("127.0.0.1", port), HarnessHandler)
     server.adapter = adapter  # type: ignore[attr-defined]

@@ -35,6 +35,7 @@ from solana_pay_kit.protocols.mpp.server.session_store import (
     ListChannelsFilter,
     MemoryChannelStore,
     PendingDelivery,
+    ProductionChannelStore,
 )
 from solana_pay_kit.protocols.mpp.server.session_stream import (
     MeteredStream,
@@ -54,6 +55,7 @@ __all__ = [
     "MeteredStream",
     "Mpp",
     "PendingDelivery",
+    "ProductionChannelStore",
     "RouteResponse",
     "Session",
     "SessionChallengeOptions",

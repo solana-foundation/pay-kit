@@ -15,6 +15,8 @@ use PayKit\Operator;
 use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\Mpp\Adapter as MppAdapter;
+use PayKit\Store\Store;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
@@ -32,6 +34,8 @@ use PayKit\PayCore\Stablecoin;
  */
 final class PayKitServiceProvider extends ServiceProvider
 {
+    public const MPP_REPLAY_STORE = 'paykit.mpp_replay_store';
+
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/config/paykit.php', 'paykit');
@@ -40,6 +44,14 @@ final class PayKitServiceProvider extends ServiceProvider
             /** @var array<string,mixed> $cfg */
             $cfg = $app['config']->get('paykit', []);
             return new PayKit(self::buildConfig($cfg));
+        });
+        $this->app->singleton(MppAdapter::class, function (Application $app): MppAdapter {
+            $client = $app->make(PayKit::class);
+            $store = $app->bound(self::MPP_REPLAY_STORE) ? $app->make(self::MPP_REPLAY_STORE) : null;
+            if ($store !== null && !$store instanceof Store) {
+                throw new \LogicException(self::MPP_REPLAY_STORE . ' must implement ' . Store::class);
+            }
+            return new MppAdapter($client->config, $store);
         });
     }
 
@@ -83,6 +95,7 @@ final class PayKitServiceProvider extends ServiceProvider
                     ? (string) $cfg['mpp_challenge_binding_secret']
                     : null,
             expiresIn: MppConfig::resolveExpiresIn($cfg['mpp']['expires_in'] ?? null),
+            allowUnsafeMemoryStore: (bool) ($cfg['mpp']['allow_unsafe_memory_store'] ?? false),
         );
         $x402 = new X402Config(
             facilitatorUrl: isset($cfg['x402_facilitator_url']) && $cfg['x402_facilitator_url'] !== ''

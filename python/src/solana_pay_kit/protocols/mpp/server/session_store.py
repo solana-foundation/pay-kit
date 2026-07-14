@@ -20,9 +20,15 @@ The module uses plain dataclasses with ``to_dict()``/``from_dict()``,
 from __future__ import annotations
 
 import asyncio
+import os
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from typing import Any
+
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import _canonical_network
 
 __all__ = [
     "PendingDelivery",
@@ -30,9 +36,34 @@ __all__ = [
     "ChannelState",
     "ListChannelsFilter",
     "ChannelMutator",
+    "SessionStoreDurability",
     "ChannelStore",
+    "ProductionChannelStore",
+    "is_production_channel_store",
+    "enforce_channel_store_policy",
     "MemoryChannelStore",
 ]
+
+# The same opt-in the replay-store policy honors: one explicit development
+# escape hatch for every process-local store, never valid on mainnet.
+_ALLOW_INMEMORY_CHANNEL_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
+
+
+class SessionStoreDurability(StrEnum):
+    """Explicit safety capability for session-channel state stores."""
+
+    EPHEMERAL = "ephemeral"
+    DURABLE_SHARED = "durable-shared"
+
+
+def session_store_safety_message(store: ChannelStore) -> str:
+    """Return the production-safety error for an unsafe store capability."""
+    if store.session_store_durability == SessionStoreDurability.EPHEMERAL:
+        return "ephemeral session store is unsafe off localnet; inject a durable shared ChannelStore"
+    return (
+        "session store must explicitly declare durable shared capability off localnet; "
+        "inject a durable shared ChannelStore"
+    )
 
 
 @dataclass
@@ -140,6 +171,13 @@ class ChannelState:
     # distribution. Zero when unknown (e.g. pull sessions or trusted opens).
     open_slot: int = 0
 
+    # Authoritative channel PDA salt read from on-chain state.
+    salt: int = 0
+
+    # Confirmed signature of a server-broadcast open. Retries reuse it rather
+    # than confirming a newly signed transaction that was never broadcast.
+    open_signature: str | None = None
+
     # HighestVoucherSignature is the signature of the highest accepted voucher
     # (base58). Stored for idempotent replay detection.
     highest_voucher_signature: str | None = None
@@ -183,6 +221,15 @@ class ChannelState:
     # commit replay.
     committed_deliveries: list[CommittedDelivery] = field(default_factory=list)
 
+    # ConsumedTopUpSignatures are the on-chain top-up transaction signatures
+    # (base58) already applied to this channel's deposit. Each confirmed
+    # top-up transaction is single-use: recording it here (inside the same
+    # atomic update_channel mutation that raises the deposit) is what stops a
+    # replayed signature from raising the deposit again. Growth is bounded by
+    # the channel's lifetime and every entry costs the client a real
+    # on-chain transaction.
+    consumed_top_up_signatures: list[str] = field(default_factory=list)
+
     def clone(self) -> ChannelState:
         """Return a deep copy so callers can never alias store-internal state.
 
@@ -194,6 +241,7 @@ class ChannelState:
             self,
             pending_deliveries=[replace(d) for d in self.pending_deliveries],
             committed_deliveries=[replace(d) for d in self.committed_deliveries],
+            consumed_top_up_signatures=list(self.consumed_top_up_signatures),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -210,6 +258,7 @@ class ChannelState:
             "cumulative": self.cumulative,
             "sealed": self.sealed,
             "open_slot": self.open_slot,
+            "salt": self.salt,
             "highest_voucher_signature": self.highest_voucher_signature,
             "highest_voucher_expires_at": self.highest_voucher_expires_at,
             "close_requested_at": self.close_requested_at,
@@ -223,6 +272,12 @@ class ChannelState:
         # settled_signature is omitted from the wire form when unset.
         if self.settled_signature is not None:
             d["settled_signature"] = self.settled_signature
+        # consumed_top_up_signatures is omitted when empty so records written
+        # before the top-up replay fence stay byte-identical across SDKs.
+        if self.consumed_top_up_signatures:
+            d["consumed_top_up_signatures"] = list(self.consumed_top_up_signatures)
+        if self.open_signature is not None:
+            d["open_signature"] = self.open_signature
         return d
 
     @classmethod
@@ -244,6 +299,8 @@ class ChannelState:
             cumulative=int(data.get("cumulative", 0)),
             sealed=bool(data.get("sealed", False)),
             open_slot=int(data.get("open_slot", 0)),
+            salt=int(data.get("salt", 0)),
+            open_signature=data.get("open_signature"),
             highest_voucher_signature=data.get("highest_voucher_signature"),
             highest_voucher_expires_at=(
                 None if data.get("highest_voucher_expires_at") is None else int(data["highest_voucher_expires_at"])
@@ -257,6 +314,7 @@ class ChannelState:
             # and ``[]`` together; ``from_dict`` never iterates ``None``.
             pending_deliveries=[PendingDelivery.from_dict(p) for p in (data.get("pending_deliveries") or [])],
             committed_deliveries=[CommittedDelivery.from_dict(c) for c in (data.get("committed_deliveries") or [])],
+            consumed_top_up_signatures=[str(s) for s in (data.get("consumed_top_up_signatures") or [])],
         )
 
 
@@ -293,6 +351,10 @@ class ChannelStore:
     implementations.
     """
 
+    # Custom stores must opt in to durable shared behavior. An omitted marker
+    # is treated as unsafe outside localnet.
+    session_store_durability: SessionStoreDurability | None = None
+
     async def get_channel(self, channel_id: str) -> ChannelState | None:
         """Read a channel. Returns None when it does not exist."""
         raise NotImplementedError
@@ -317,6 +379,96 @@ class ChannelStore:
         raise NotImplementedError
 
 
+class ProductionChannelStore(ChannelStore, ABC):
+    """Nominal contract for a production channel-state backend.
+
+    Subclass this only when ``update_channel`` is atomic across processes and
+    replicas, and successful writes are durable before the operation reports
+    success. This deliberately uses a nominal marker rather than mutable
+    instance flags so a deployment must explicitly attest to those guarantees.
+
+    Subclassing is an operator attestation, not a machine-checked capability:
+    the SDK cannot verify atomicity, sharing, or durability from inside the
+    process, and a subclass that delegates to a process-local
+    :class:`MemoryChannelStore` will pass :func:`is_production_channel_store`.
+    The marker exists to force a deliberate, greppable opt-in at the
+    deployment boundary; honoring its guarantees is the deployer's
+    responsibility.
+    """
+
+    @abstractmethod
+    async def get_channel(self, channel_id: str) -> ChannelState | None: ...
+
+    @abstractmethod
+    async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState: ...
+
+    @abstractmethod
+    async def delete_channel(self, channel_id: str) -> None: ...
+
+    @abstractmethod
+    async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]: ...
+
+    @abstractmethod
+    async def mark_sealed(self, channel_id: str) -> ChannelState: ...
+
+
+def is_production_channel_store(store: ChannelStore) -> bool:
+    """Return whether ``store`` explicitly implements the production contract.
+
+    Check bundled memory storage before the nominal marker so multiple
+    inheritance cannot make a process-local store appear production-safe.
+    """
+    return not isinstance(store, MemoryChannelStore) and isinstance(store, ProductionChannelStore)
+
+
+def enforce_channel_store_policy(store: ChannelStore | None, network: str) -> None:
+    """Reject process-local channel stores outside localnet.
+
+    The channel store holds deposit and voucher watermarks, so it is a money
+    path: every construction seam (the ``new_session`` factory and a direct
+    ``SessionServer``) must route through this one policy. ``store`` may be
+    None when the caller defaults to a MemoryChannelStore afterwards.
+
+    Mirrors ``resolve_replay_store``: localnet accepts anything, an injected
+    :class:`ProductionChannelStore` (an operator attestation) is required
+    otherwise, and the ``PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1`` opt-in
+    allows a process-local store on devnet only and is forbidden on mainnet.
+
+    ``network`` is canonicalized here so a direct construction with the
+    ``mainnet-beta`` alias trips the same mainnet arms as the factory path;
+    unknown strings pass through unchanged and fall to the final fail-closed
+    rejection.
+    """
+    network = _canonical_network(network)
+    if network == "localnet":
+        return
+    inmemory_opt_in = os.getenv(_ALLOW_INMEMORY_CHANNEL_STORE_ENV) == "1"
+    if network == "mainnet" and inmemory_opt_in:
+        raise PaymentError(
+            f"{_ALLOW_INMEMORY_CHANNEL_STORE_ENV}=1 is forbidden on mainnet; "
+            "inject a ProductionChannelStore backed by atomic, shared, durable storage",
+            code="invalid-config",
+        )
+    if store is not None and is_production_channel_store(store):
+        return
+    uses_memory_store = store is None or isinstance(store, MemoryChannelStore)
+    if uses_memory_store and network == "devnet" and inmemory_opt_in:
+        return
+    raise PaymentError(
+        "an injected ProductionChannelStore is required outside localnet; its update_channel operation must be "
+        "atomic, shared, and durable. Set "
+        f"{_ALLOW_INMEMORY_CHANNEL_STORE_ENV}=1 to explicitly allow a process-local "
+        "MemoryChannelStore only for devnet development",
+        code="invalid-config",
+    )
+
+
+@dataclass
+class _ChannelLockEntry:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    refs: int = 0
+
+
 class MemoryChannelStore(ChannelStore):
     """In-memory :class:`ChannelStore` with per-channel locking.
 
@@ -325,23 +477,39 @@ class MemoryChannelStore(ChannelStore):
     in and out so callers never share memory with the store.
     """
 
+    session_store_durability = SessionStoreDurability.EPHEMERAL
+
     def __init__(self) -> None:
         # _data maps channel id to stored state.
         self._data: dict[str, ChannelState] = {}
-        # _locks holds the per-channel lock serializing update_channel calls
-        # for the same channel id.
-        self._locks: dict[str, asyncio.Lock] = {}
+        # Active holders and waiters keep entries alive; idle entries are evicted.
+        self._locks: dict[str, _ChannelLockEntry] = {}
         # _mu guards _data and _locks.
         self._mu = asyncio.Lock()
 
-    async def _channel_lock(self, channel_id: str) -> asyncio.Lock:
-        """Return the lock serializing updates for ``channel_id``."""
+    async def _acquire_channel_lock(self, channel_id: str) -> _ChannelLockEntry:
         async with self._mu:
-            lock = self._locks.get(channel_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._locks[channel_id] = lock
-            return lock
+            entry = self._locks.get(channel_id)
+            if entry is None:
+                entry = _ChannelLockEntry()
+                self._locks[channel_id] = entry
+            entry.refs += 1
+        try:
+            await entry.lock.acquire()
+        except BaseException:
+            await asyncio.shield(self._drop_channel_lock_ref(channel_id, entry))
+            raise
+        return entry
+
+    async def _drop_channel_lock_ref(self, channel_id: str, entry: _ChannelLockEntry) -> None:
+        async with self._mu:
+            entry.refs -= 1
+            if entry.refs == 0 and self._locks.get(channel_id) is entry:
+                del self._locks[channel_id]
+
+    async def _release_channel_lock(self, channel_id: str, entry: _ChannelLockEntry) -> None:
+        entry.lock.release()
+        await asyncio.shield(self._drop_channel_lock_ref(channel_id, entry))
 
     async def get_channel(self, channel_id: str) -> ChannelState | None:
         async with self._mu:
@@ -349,8 +517,8 @@ class MemoryChannelStore(ChannelStore):
             return None if state is None else state.clone()
 
     async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
-        lock = await self._channel_lock(channel_id)
-        async with lock:
+        entry = await self._acquire_channel_lock(channel_id)
+        try:
             async with self._mu:
                 current = self._data.get(channel_id)
                 current_snapshot = None if current is None else current.clone()
@@ -362,6 +530,8 @@ class MemoryChannelStore(ChannelStore):
             async with self._mu:
                 self._data[channel_id] = next_state.clone()
             return next_state
+        finally:
+            await self._release_channel_lock(channel_id, entry)
 
     async def delete_channel(self, channel_id: str) -> None:
         # Take the per-channel lock before mutating _data, in the same
@@ -369,13 +539,12 @@ class MemoryChannelStore(ChannelStore):
         # in-flight mutator that would otherwise write the channel back after
         # the pop. Matching the order means no deadlock.
         #
-        # The lock entry is intentionally NOT removed: popping it while another
-        # task is still queued on it would let a later operation create a fresh
-        # lock for the same id and run unserialized against the queued one. Locks
-        # persist for the store's lifetime (as they already do for update_channel).
-        lock = await self._channel_lock(channel_id)
-        async with lock, self._mu:
-            self._data.pop(channel_id, None)
+        entry = await self._acquire_channel_lock(channel_id)
+        try:
+            async with self._mu:
+                self._data.pop(channel_id, None)
+        finally:
+            await self._release_channel_lock(channel_id, entry)
 
     async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
         async with self._mu:

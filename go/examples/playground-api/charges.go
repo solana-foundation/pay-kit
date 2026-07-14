@@ -291,15 +291,16 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client, dualClie
 	// protocol-layer MPP server so the HTML challenge and service worker flow
 	// remain available for the payment-link E2E.
 	fortuneMpp, err := server.New(server.Config{
-		Recipient:      a.recipient,
-		Currency:       paycore.USDCMainnetMint,
-		Decimals:       usdcDecimals,
-		Network:        a.network,
-		RPCURL:         a.rpcURL,
-		SecretKey:      a.secretKey,
-		HTML:           true,
-		FeePayerSigner: a.feePayer,
-		RPC:            a.rpcClient,
+		Recipient:              a.recipient,
+		Currency:               paycore.USDCMainnetMint,
+		Decimals:               usdcDecimals,
+		Network:                a.network,
+		RPCURL:                 a.rpcURL,
+		SecretKey:              a.secretKey,
+		HTML:                   true,
+		AllowUnsafeMemoryStore: a.allowUnsafeMemoryStore,
+		FeePayerSigner:         a.feePayer,
+		RPC:                    a.rpcClient,
 	})
 	if err != nil {
 		return fmt.Errorf("fortune mpp server: %w", err)

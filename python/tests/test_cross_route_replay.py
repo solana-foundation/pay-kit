@@ -10,12 +10,12 @@ from __future__ import annotations
 import pytest
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.challenge import compute_challenge_id
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+from tests.replay_store_test_support import NominalProductionReplayStore
 
 TEST_SECRET = "cross-route-replay-test-secret-key"
 TEST_RECIPIENT = "11111111111111111111111111111112"
@@ -29,7 +29,7 @@ def _make_mpp() -> Mpp:
             decimals=6,
             network="devnet",
             secret_key=TEST_SECRET,
-            store=MemoryStore(),
+            store=NominalProductionReplayStore(),
         )
     )
 

@@ -5,12 +5,19 @@
 // vouchers. The 402 challenge body is also snapshotted against the
 // canonical Methods.ts schema so future schema drifts are caught here.
 
-import { generateKeyPairSigner, getBase58Decoder, type KeyPairSigner } from '@solana/kit';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+    generateKeyPairSigner,
+    getBase58Decoder,
+    getBase64Codec,
+    getSignatureFromTransaction,
+    getTransactionDecoder,
+    type KeyPairSigner,
+} from '@solana/kit';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import * as Methods from '../Methods.js';
 import { session } from '../server/Session.js';
-import { type ChannelState, createMemorySessionStore } from '../server/session/store.js';
+import { type ChannelState, createMemorySessionStore, type SessionStore } from '../server/session/store.js';
 import type { SignedVoucher, VoucherData } from '../shared/session-types.js';
 import { encodeVoucherMessage } from '../shared/voucher.js';
 
@@ -18,6 +25,22 @@ import { encodeVoucherMessage } from '../shared/voucher.js';
 
 const OPERATOR = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 const RECIPIENT = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
+
+// These unit tests build devnet sessions that intentionally rely on the SDK's
+// process-local store. Opt in to it explicitly; the durability guard is
+// exercised on its own in session-store-durability.test.ts.
+const priorInMemoryOptIn = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+beforeAll(() => {
+    process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+});
+afterAll(() => {
+    if (priorInMemoryOptIn === undefined) delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+    else process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = priorInMemoryOptIn;
+});
+
+function signedWireSignature(wire: string): string {
+    return getSignatureFromTransaction(getTransactionDecoder().decode(getBase64Codec().encode(wire)));
+}
 
 /**
  * Minimal RPC mock exposing `getSignatureStatuses` driven by a lookup
@@ -30,7 +53,13 @@ function mockStatusRpc(statuses: Record<string, { err: unknown } | null | undefi
         getSignatureStatuses: (sigs: readonly string[]) => ({
             send: async () => {
                 calls.push(...sigs);
-                return { value: sigs.map(sig => statuses[sig] ?? null) };
+                return {
+                    context: { slot: 42 },
+                    value: sigs.map(sig => {
+                        const status = statuses[sig];
+                        return status ? { ...status, confirmationStatus: 'confirmed' } : null;
+                    }),
+                };
             },
         }),
     };
@@ -202,7 +231,7 @@ describe('session() verify() open', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -235,7 +264,7 @@ describe('session() verify() open', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -261,7 +290,7 @@ describe('session() verify() open', () => {
             cap: 1_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -293,7 +322,7 @@ describe('session() verify() voucher', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -330,7 +359,7 @@ describe('session() verify() voucher', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -352,7 +381,7 @@ describe('session() verify() voucher', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -395,7 +424,7 @@ describe('session() verify() topUp', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -528,7 +557,7 @@ describe('session() verify() close', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -566,7 +595,7 @@ describe('session() verify() close', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -605,7 +634,7 @@ describe('session() verify() commit', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -627,6 +656,7 @@ describe('session() verify() commit', () => {
         const routes = session.routes({
             cap: 1_000_000n,
             currency: 'USDC',
+            network: 'devnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -662,6 +692,7 @@ describe('session.routes()', () => {
         const routes = session.routes({
             cap: 1_000n,
             currency: 'USDC',
+            network: 'devnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -683,7 +714,7 @@ describe('session.routes()', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -705,6 +736,7 @@ describe('session.routes()', () => {
         const routes = session.routes({
             cap: 1_000_000n,
             currency: 'USDC',
+            network: 'devnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -753,7 +785,7 @@ describe('session() verify() open replay', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -831,7 +863,7 @@ describe('session() verify() open signature verification', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -863,7 +895,7 @@ describe('session() verify() open signature verification', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -895,7 +927,7 @@ describe('session() verify() open signature verification', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -930,7 +962,7 @@ describe('session() verify() pull open keying', () => {
             currency: 'USDC',
             decimals: 6,
             modes: ['pull'],
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             pullVoucherStrategy: 'clientVoucher',
@@ -968,7 +1000,7 @@ describe('session() verify() voucher wire compatibility', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1046,7 +1078,7 @@ describe('session() verify() voucher wire compatibility', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1104,7 +1136,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1128,7 +1160,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1153,7 +1185,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1185,7 +1217,7 @@ describe('session() verify() topUp hardening', () => {
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1221,7 +1253,7 @@ describe('session() verify() close monotonicity', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1291,15 +1323,71 @@ describe('session() verify() close monotonicity', () => {
 // ── verify() — close retry after a failed settlement ────────────────────
 
 describe('session() verify() close retry', () => {
-    test('a failed settlement leaves close re-drivable; the retry settles', async () => {
+    test('construction rejects signer-driven settlement without getBlockHeight before store or lifecycle use', async () => {
+        const store = createMemorySessionStore();
+        const merchant = await generateKeyPairSigner();
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 100n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
+            }),
+            sendTransaction: () => ({ send: async () => 'unused' }),
+        };
+
+        expect(() =>
+            session({
+                cap: 1_000_000n,
+                closeDelayMs: 1,
+                currency: 'USDC',
+                decimals: 6,
+                network: 'localnet',
+                operator: OPERATOR,
+                pricing: {},
+                recipient: RECIPIENT,
+                rpc: rpc as never,
+                signer: merchant,
+                store,
+            }),
+        ).toThrow(/requires rpc\.getBlockHeight/);
+        expect(await store.listChannels()).toEqual([]);
+
+        expect(() =>
+            session({
+                cap: 1_000_000n,
+                closeDelayMs: 1,
+                currency: 'USDC',
+                decimals: 6,
+                network: 'localnet',
+                operator: OPERATOR,
+                pricing: {},
+                recipient: RECIPIENT,
+                rpc: rpc as never,
+                store,
+            }),
+        ).not.toThrow();
+    });
+
+    test('an uncertain confirmation retries by rebroadcasting the persisted wire', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
+        let settleSignature: string | undefined;
 
-        let sendFailures = 1;
+        let settlementStatusCalls = 0;
         const sends: string[] = [];
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: {
@@ -1309,16 +1397,25 @@ describe('session() verify() close retry', () => {
                 }),
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
-                send: async () => ({ value: sigs.map(() => ({ err: null })) }),
+                send: async () => {
+                    if (
+                        settleSignature !== undefined &&
+                        sigs.includes(settleSignature) &&
+                        settlementStatusCalls++ === 0
+                    ) {
+                        throw new Error('status RPC unavailable');
+                    }
+                    return {
+                        context: { slot: 42 },
+                        value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                    };
+                },
             }),
             sendTransaction: (wire: string) => ({
                 send: async () => {
-                    if (sendFailures > 0) {
-                        sendFailures -= 1;
-                        throw new Error('blockhash not found');
-                    }
                     sends.push(wire);
-                    return 'SettleSig11111111111111111111111111111111111111111111111111111111';
+                    settleSignature = signedWireSignature(wire);
+                    return settleSignature;
                 },
             }),
         };
@@ -1327,7 +1424,7 @@ describe('session() verify() close retry', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1349,30 +1446,524 @@ describe('session() verify() close retry', () => {
             request: {} as never,
         });
 
-        // First close: settlement submit fails — close stays pending.
+        // The broadcast succeeded but confirmation is uncertain. The outbox
+        // retains the exact signed transaction for idempotent recovery.
         await expect(
             method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
-        ).rejects.toThrow(/blockhash not found/);
+        ).rejects.toThrow(/status RPC unavailable/);
         let state = await store.getChannel(channelId);
         expect(state?.closeRequestedAt).toBeDefined();
         expect(state?.sealed).toBe(false);
+        expect(state?.settlementPendingLastValidBlockHeight).toBe(0n);
+        expect(state?.settlementPendingSignature).toBe(settleSignature);
+        expect(state?.settlementPendingWire).toBe(sends[0]);
+        expect(state?.settling).toBe(false);
         expect(state?.settledSignature).toBeUndefined();
+        expect(sends).toHaveLength(1);
 
-        // Retry succeeds and seals the channel.
+        // Retry rebroadcasts the exact same signed transaction, never a newly
+        // built transaction with a different signature.
+        const receipt = await method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
+        expect(sends).toHaveLength(2);
+        expect(new Set(sends).size).toBe(1);
+        state = await store.getChannel(channelId);
+        expect(state?.sealed).toBe(true);
+        expect(state?.settlementPendingLastValidBlockHeight).toBeUndefined();
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settlementPendingWire).toBeUndefined();
+        expect(state?.settling).toBe(false);
+        expect(state?.settledSignature).toBe(settleSignature);
+
+        // A third close on the sealed channel rejects.
+        await expect(
+            method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/sealed/);
+    });
+
+    test('a send error still seals when the persisted signature is already confirmed', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const sends: string[] = [];
+        const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 100n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    throw new Error('already processed');
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        await method.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                payer: signer.address,
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+
         const receipt = await method.verify({
             credential: makeCred({ action: 'close', channelId }),
             request: {} as never,
         });
         expect(receipt.status).toBe('success');
         expect(sends).toHaveLength(1);
-        state = await store.getChannel(channelId);
+        const state = await store.getChannel(channelId);
         expect(state?.sealed).toBe(true);
-        expect(state?.settledSignature).toBeDefined();
+        expect(state?.settledSignature).toBe(signedWireSignature(sends[0]!));
+        expect(state?.settlementPendingLastValidBlockHeight).toBeUndefined();
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settlementPendingWire).toBeUndefined();
+    });
 
-        // A third close on the sealed channel rejects.
+    test('an expired unsent outbox is retired and rebuilt after restart', async () => {
+        const durableStore = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const sends: string[] = [];
+        let blockhashCalls = 0;
+        let crashBeforeSend = true;
+        let phase: 'crash' | 'expired' | 'fresh' = 'crash';
+        const crashingStore: SessionStore = {
+            ...durableStore,
+            async updateChannel(id, mutator) {
+                const previous = await durableStore.getChannel(id);
+                const next = await durableStore.updateChannel(id, mutator);
+                if (
+                    crashBeforeSend &&
+                    previous?.settlementPendingWire === undefined &&
+                    next.settlementPendingWire !== undefined
+                ) {
+                    crashBeforeSend = false;
+                    throw new Error('simulated crash after outbox persistence');
+                }
+                return next;
+            },
+        };
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => {
+                    blockhashCalls += 1;
+                    return {
+                        value: {
+                            blockhash:
+                                blockhashCalls === 1
+                                    ? 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N'
+                                    : '11111111111111111111111111111111',
+                            lastValidBlockHeight: blockhashCalls === 1 ? 100n : 200n,
+                        },
+                    };
+                },
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() =>
+                        phase === 'expired' ? null : { confirmationStatus: 'confirmed', err: null },
+                    ),
+                }),
+            }),
+            getBlockHeight: () => ({ send: async () => 101n }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    if (phase === 'expired') throw new Error('blockhash not found');
+                    return signedWireSignature(wire);
+                },
+            }),
+        };
+        const createMethod = (store: SessionStore) =>
+            session({
+                cap: 1_000_000n,
+                currency: 'USDC',
+                decimals: 6,
+                network: 'localnet',
+                operator: OPERATOR,
+                pricing: {},
+                recipient: RECIPIENT,
+                rpc: rpc as never,
+                settlementConfirmation: { pollIntervalMs: 1, timeoutMs: 20 },
+                signer: merchant,
+                store,
+            });
+        const crashedMethod = createMethod(crashingStore);
+        await crashedMethod.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                payer: signer.address,
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+
+        await expect(
+            crashedMethod.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/simulated crash/);
+        const pending = await durableStore.getChannel(channelId);
+        expect(pending?.settlementPendingSignature).toBeDefined();
+        expect(pending?.settlementPendingWire).toBeDefined();
+        expect(pending?.settlementPendingLastValidBlockHeight).toBe(100n);
+        expect(sends).toHaveLength(0);
+        expect(blockhashCalls).toBe(1);
+
+        const restartedMethod = createMethod(durableStore);
+        phase = 'expired';
+        await expect(
+            restartedMethod.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/timed out/);
+        expect(sends).toEqual([pending?.settlementPendingWire]);
+        const recovered = await durableStore.getChannel(channelId);
+        expect(recovered?.sealed).toBe(false);
+        expect(recovered?.settlementPendingLastValidBlockHeight).toBeUndefined();
+        expect(recovered?.settlementPendingSignature).toBeUndefined();
+        expect(recovered?.settlementPendingWire).toBeUndefined();
+
+        phase = 'fresh';
+        const receipt = await restartedMethod.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
+        expect(sends).toHaveLength(2);
+        expect(sends[0]).toBe(pending?.settlementPendingWire);
+        expect(sends[1]).not.toBe(pending?.settlementPendingWire);
+        expect(blockhashCalls).toBe(2);
+        const sealed = await durableStore.getChannel(channelId);
+        expect(sealed?.sealed).toBe(true);
+        expect(sealed?.settledSignature).toBe(signedWireSignature(sends[1]!));
+        expect(sealed?.settlementPendingLastValidBlockHeight).toBeUndefined();
+        expect(sealed?.settlementPendingSignature).toBeUndefined();
+        expect(sealed?.settlementPendingWire).toBeUndefined();
+    });
+
+    test('a definite on-chain failure clears the pending signature for a fresh retry', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const failedSignature = 'FailedSig11111111111111111111111111111111111111111111111111111111';
+        let retrySignature: string | undefined;
+        const sends: string[] = [];
+        const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 0n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(signature =>
+                        signature === failedSignature
+                            ? { confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Custom'] } }
+                            : { confirmationStatus: 'confirmed', err: null },
+                    ),
+                }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    retrySignature = signedWireSignature(wire);
+                    return retrySignature;
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        await store.updateChannel(channelId, () => ({
+            authorizedSigner: signer.address,
+            channelId,
+            closeRequestedAt: 1n,
+            committedDeliveries: [],
+            cumulative: 0n,
+            deposit: 1_000n,
+            nextDeliverySequence: 0n,
+            operator: signer.address,
+            pendingDeliveries: [],
+            sealed: false,
+            settlementPendingSignature: failedSignature,
+        }));
+
         await expect(
             method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
-        ).rejects.toThrow(/sealed/);
+        ).rejects.toThrow(/failed on-chain/);
+        let state = await store.getChannel(channelId);
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settling).toBe(false);
+        expect(state?.sealed).toBe(false);
+        expect(sends).toHaveLength(0);
+
+        const receipt = await method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        expect(receipt.status).toBe('success');
+        state = await store.getChannel(channelId);
+        expect(state?.sealed).toBe(true);
+        expect(state?.settledSignature).toBe(retrySignature);
+        expect(sends).toHaveLength(1);
+    });
+
+    test('restart recovery re-confirms pending signatures and only takes over stale claim-only leases', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const pendingChannelId = '11111111111111111111111111111111';
+        const claimOnlyChannelId = OPERATOR;
+        const pendingSignature = 'PendingSig1111111111111111111111111111111111111111111111111111111';
+        const sends: string[] = [];
+        const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 0n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    return signedWireSignature(wire);
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        const restartedState = (channelId: string): ChannelState => ({
+            authorizedSigner: signer.address,
+            channelId,
+            closeRequestedAt: 1n,
+            committedDeliveries: [],
+            cumulative: 0n,
+            deposit: 1_000n,
+            nextDeliverySequence: 0n,
+            operator: signer.address,
+            pendingDeliveries: [],
+            sealed: false,
+            settlementClaimExpiresAt: BigInt(Date.now() + 60_000),
+            settlementClaimOwner: 'crashed-instance',
+            settling: true,
+        });
+        await store.updateChannel(pendingChannelId, () => ({
+            ...restartedState(pendingChannelId),
+            settlementPendingSignature: pendingSignature,
+        }));
+        await store.updateChannel(claimOnlyChannelId, () => restartedState(claimOnlyChannelId));
+
+        const recovered = await method.verify({
+            credential: makeCred({ action: 'close', channelId: pendingChannelId }),
+            request: {} as never,
+        });
+        expect(recovered.status).toBe('success');
+        expect((await store.getChannel(pendingChannelId))?.settledSignature).toBe(pendingSignature);
+        expect(sends).toHaveLength(0);
+
+        const blocked = await method.verify({
+            credential: makeCred({ action: 'close', channelId: claimOnlyChannelId }),
+            request: {} as never,
+        });
+        expect(blocked.status).toBe('success');
+        expect((await store.getChannel(claimOnlyChannelId))?.sealed).toBe(false);
+        expect(sends).toHaveLength(0);
+
+        await store.updateChannel(claimOnlyChannelId, current => ({
+            ...current!,
+            settlementClaimExpiresAt: 0n,
+        }));
+        const takenOver = await method.verify({
+            credential: makeCred({ action: 'close', channelId: claimOnlyChannelId }),
+            request: {} as never,
+        });
+        expect(takenOver.status).toBe('success');
+        expect((await store.getChannel(claimOnlyChannelId))?.sealed).toBe(true);
+        expect(sends).toHaveLength(1);
+    });
+
+    test('concurrent closes broadcast once and seal only after confirmation', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        let settleSignature: string | undefined;
+        const sends: string[] = [];
+        let releaseConfirmation!: () => void;
+        let secondStatusRequested!: () => void;
+        let statusRequested!: () => void;
+        let statusRequests = 0;
+        const confirmationGate = new Promise<void>(resolve => {
+            releaseConfirmation = resolve;
+        });
+        const statusRequest = new Promise<void>(resolve => {
+            statusRequested = resolve;
+        });
+        const secondStatusRequest = new Promise<void>(resolve => {
+            secondStatusRequested = resolve;
+        });
+        const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+                        lastValidBlockHeight: 0n,
+                    },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => {
+                    if (settleSignature !== undefined && sigs.includes(settleSignature)) {
+                        statusRequested();
+                        statusRequests += 1;
+                        if (statusRequests === 2) secondStatusRequested();
+                        await confirmationGate;
+                    }
+                    return {
+                        context: { slot: 42 },
+                        value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                    };
+                },
+            }),
+            sendTransaction: (wire: string) => ({
+                send: async () => {
+                    sends.push(wire);
+                    settleSignature = signedWireSignature(wire);
+                    return settleSignature;
+                },
+            }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'localnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+
+        await method.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                payer: signer.address,
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+
+        const requestAbort = new AbortController();
+        const firstClose = method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: new Request('https://api.test/session/close', { signal: requestAbort.signal }) as never,
+        });
+        await statusRequest;
+
+        let state = await store.getChannel(channelId);
+        expect(state?.settlementPendingSignature).toBe(settleSignature);
+        expect(state?.settlementPendingWire).toBe(sends[0]);
+        expect(state?.settling).toBe(true);
+        expect(state?.sealed).toBe(false);
+        expect(state?.settledSignature).toBeUndefined();
+        requestAbort.abort();
+
+        const secondClose = method.verify({
+            credential: makeCred({ action: 'close', channelId }),
+            request: {} as never,
+        });
+        await secondStatusRequest;
+        expect(sends).toHaveLength(2);
+        expect(new Set(sends).size).toBe(1);
+
+        releaseConfirmation();
+        const [firstReceipt, secondReceipt] = await Promise.all([firstClose, secondClose]);
+        expect(firstReceipt.status).toBe('success');
+        expect(secondReceipt.status).toBe('success');
+        state = await store.getChannel(channelId);
+        expect(state?.settlementPendingSignature).toBeUndefined();
+        expect(state?.settling).toBe(false);
+        expect(state?.sealed).toBe(true);
+        expect(state?.settledSignature).toBe(settleSignature);
+        expect(sends).toHaveLength(2);
+        expect(new Set(sends).size).toBe(1);
     });
 
     test('close refuses to settle when the channel payer (refund destination) was not recorded', async () => {
@@ -1381,13 +1972,17 @@ describe('session() verify() close retry', () => {
         const merchant = await generateKeyPairSigner();
         const channelId = '11111111111111111111111111111111';
         const rpc = {
+            getBlockHeight: () => ({ send: async () => 0n }),
             getLatestBlockhash: () => ({
                 send: async () => ({
                     value: { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N', lastValidBlockHeight: 0n },
                 }),
             }),
             getSignatureStatuses: (sigs: readonly string[]) => ({
-                send: async () => ({ value: sigs.map(() => ({ err: null })) }),
+                send: async () => ({
+                    context: { slot: 42 },
+                    value: sigs.map(() => ({ confirmationStatus: 'confirmed', err: null })),
+                }),
             }),
             sendTransaction: () => ({ send: async () => 'Sig' }),
         };
@@ -1395,7 +1990,7 @@ describe('session() verify() close retry', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1432,7 +2027,7 @@ describe('session() verify() commit replay', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -1483,7 +2078,7 @@ describe('session() default store sharing', () => {
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
-            network: 'devnet',
+            network: 'localnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,

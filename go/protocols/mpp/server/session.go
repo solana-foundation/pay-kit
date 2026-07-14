@@ -15,17 +15,19 @@ package server
 //    once the close-pending state is recorded.
 //
 // On-chain verification is a seam in this layer: when
-// SessionConfig.VerifyOpenTx / VerifyTopUpTx are set, ProcessOpen (push mode)
+// SessionConfig.VerifyOpenStateTx / VerifyTopUpStateTx are set, ProcessOpen
 // and ProcessTopUp invoke them before persisting channel state, binding the
-// payload to the attached transaction and confirming the signature on-chain.
-// When nil, the transaction signature and
-// deposit amount are trusted as provided, which is suitable only for unit
-// tests or deployments that verify transactions out of band.
+// payload to authoritative transaction or account facts. The legacy
+// VerifyOpenTx / VerifyTopUpTx hooks remain available for compatibility; a
+// legacy open verifier is accepted only on localnet. Off-localnet payment
+// channel opens require VerifyOpenStateTx so a confirmed signature cannot
+// authorize a payload-supplied deposit.
 
 import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"slices"
 	"strconv"
 	"time"
@@ -63,6 +65,16 @@ type SessionTxVerifier[P any] func(ctx context.Context, payload *P) (string, err
 // that deposit inside its final atomic mutation, so a concurrent top-up cannot
 // turn a correctly verified delta into a larger unbacked cap.
 type TopUpTxVerifier func(ctx context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error
+
+// SessionOpenStateTxVerifier verifies a payment-channel open and returns the
+// authoritative facts extracted from the verified transaction or channel
+// account. It is additive to SessionTxVerifier so existing integrations that
+// only return the channel payer remain source-compatible.
+type SessionOpenStateTxVerifier func(ctx context.Context, payload *intents.OpenPayload) (VerifyOpenTxResult, error)
+
+// SessionTopUpTxVerifier binds a top-up transaction to both its resulting
+// on-chain account and the channel identity already held in the store.
+type SessionTopUpTxVerifier func(ctx context.Context, payload *intents.TopUpPayload, current ChannelState) error
 
 // SessionConfig is the server configuration for the session intent.
 type SessionConfig struct {
@@ -120,14 +132,30 @@ type SessionConfig struct {
 	// Required when Modes includes pull.
 	PullVoucherStrategy *intents.SessionPullVoucherStrategy
 
-	// VerifyOpenTx, when set, confirms the open transaction on-chain (push
-	// mode) before ProcessOpen persists channel state. See SessionTxVerifier.
+	// VerifyOpenTx is the legacy payer-only hook retained for API compatibility.
+	// It may verify an open on localnet, but off-localnet payment-channel opens
+	// require VerifyOpenStateTx so payload claims are never persisted as facts.
 	VerifyOpenTx SessionTxVerifier[intents.OpenPayload]
+
+	// VerifyOpenStateTx is the stronger open verifier. When set, ProcessOpen
+	// persists its returned deposit, salt, payer, and open seeds instead of
+	// payload claims. It is required for payment-channel opens off localnet.
+	VerifyOpenStateTx SessionOpenStateTxVerifier
 
 	// VerifyTopUpTx, when set, verifies that the confirmed top-up instruction
 	// targets this channel and funds exactly the claimed deposit delta before
-	// ProcessTopUp raises the deposit.
+	// ProcessTopUp raises the deposit. New integrations should prefer
+	// VerifyTopUpStateTx, which additionally binds the resulting on-chain
+	// channel account state.
 	VerifyTopUpTx TopUpTxVerifier
+
+	// VerifyTopUpStateTx binds the top-up to the stored channel identity and
+	// resulting on-chain account state. Required for top-ups off localnet.
+	VerifyTopUpStateTx SessionTopUpTxVerifier
+
+	// AllowUnsafeEphemeralStoreOffLocalnet explicitly permits a process-local
+	// store outside localnet. This is unsafe for multi-instance deployments.
+	AllowUnsafeEphemeralStoreOffLocalnet bool
 }
 
 // DeliveryRequest is a request to reserve a metered delivery for client-side
@@ -254,6 +282,9 @@ func (s *SessionServer) supportsMode(mode intents.SessionMode) bool {
 // sealed or when the payload's authorized signer differs from the stored
 // one.
 func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPayload) (ChannelState, error) {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return ChannelState{}, err
+	}
 	if !s.supportsMode(payload.Mode) {
 		return ChannelState{}, fmt.Errorf("session mode %q is not supported by this challenge", payload.Mode)
 	}
@@ -262,9 +293,39 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 	if err != nil {
 		return ChannelState{}, err
 	}
-	deposit, err := payload.DepositAmount()
-	if err != nil {
-		return ChannelState{}, err
+	paymentChannelBacked := payload.Mode == intents.SessionModePush || payload.Transaction != nil
+	if paymentChannelBacked && s.config.Network != "localnet" && s.config.VerifyOpenStateTx == nil {
+		return ChannelState{}, fmt.Errorf("payment-channel open requires an on-chain verifier with authoritative state off localnet")
+	}
+
+	// Transaction-backed pull opens are payment-channel opens too and must pass
+	// the same verifier as push opens.
+	var verifiedPayer string
+	var verifiedState *VerifyOpenTxResult
+	var deposit uint64
+	if paymentChannelBacked && s.config.VerifyOpenStateTx != nil {
+		verified, err := s.config.VerifyOpenStateTx(ctx, payload)
+		if err != nil {
+			return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
+		}
+		if verified.ChannelID != "" && verified.ChannelID != sessionID {
+			return ChannelState{}, fmt.Errorf("verified open channel %s != session %s", verified.ChannelID, sessionID)
+		}
+		verifiedState = &verified
+		deposit = verified.Deposit
+		verifiedPayer = verified.Payer
+	} else {
+		var err error
+		deposit, err = payload.DepositAmount()
+		if err != nil {
+			return ChannelState{}, err
+		}
+		if paymentChannelBacked && s.config.VerifyOpenTx != nil {
+			verifiedPayer, err = s.config.VerifyOpenTx(ctx, payload)
+			if err != nil {
+				return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
+			}
+		}
 	}
 	if deposit == 0 {
 		return ChannelState{}, fmt.Errorf("deposit must be greater than zero")
@@ -273,15 +334,15 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		return ChannelState{}, fmt.Errorf("deposit %d exceeds max cap %d", deposit, s.config.MaxCap)
 	}
 
-	// On-chain verification seam (push mode only; pull-mode host integrations
-	// submit server-broadcast transactions or validate delegated-token state
-	// before invoking this lower-level store method).
-	var verifiedPayer string
-	if payload.Mode == intents.SessionModePush && s.config.VerifyOpenTx != nil {
-		var err error
-		verifiedPayer, err = s.config.VerifyOpenTx(ctx, payload)
-		if err != nil {
-			return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
+	if verifiedState != nil {
+		if err := validateAssertedOpenDeposit(payload, verifiedState.Deposit); err != nil {
+			return ChannelState{}, err
+		}
+		if verifiedState.Deposit == 0 {
+			return ChannelState{}, fmt.Errorf("verified open deposit must be greater than zero")
+		}
+		if verifiedState.Deposit > s.config.MaxCap {
+			return ChannelState{}, fmt.Errorf("verified open deposit %d exceeds max cap %d", verifiedState.Deposit, s.config.MaxCap)
 		}
 	}
 
@@ -298,6 +359,10 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		Deposit:          deposit,
 		OpenSlot:         openSlotFromPayload(payload),
 		Operator:         operator,
+	}
+	if verifiedState != nil {
+		fresh.OpenSlot = verifiedState.OpenSlot
+		fresh.Salt = verifiedState.Salt
 	}
 
 	// Atomic check-and-insert: a replayed open re-passes all checks above
@@ -389,6 +454,9 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 // it is the cumulative-as-nonce contract that makes a re-submitted voucher a
 // no-charge no-op rather than a fresh serve.
 func (s *SessionServer) VerifyVoucherDetailed(ctx context.Context, payload *intents.VoucherPayload) (VoucherAcceptance, error) {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return VoucherAcceptance{}, err
+	}
 	voucher := payload.Voucher
 	channelID := voucher.Data.ChannelID
 
@@ -477,6 +545,12 @@ func (s *SessionServer) VerifyVoucherDetailed(ctx context.Context, payload *inte
 // configured max cap. Top-ups are rejected once the channel is sealed or a
 // close has been requested.
 func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUpPayload) (ChannelState, error) {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return ChannelState{}, err
+	}
+	if s.config.Network != "localnet" && s.config.VerifyTopUpStateTx == nil {
+		return ChannelState{}, fmt.Errorf("payment-channel top-up requires a state-aware on-chain verifier off localnet")
+	}
 	newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
 	if err != nil {
 		return ChannelState{}, fmt.Errorf("invalid newDeposit: %s", payload.NewDeposit)
@@ -485,7 +559,8 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 	// Fetch the deposit snapshot before external transaction verification. The
 	// final mutator below insists this value is unchanged, preventing a
 	// concurrent top-up from invalidating the verified delta between RPC fetch
-	// and persistence.
+	// and persistence. The snapshot is also the channel identity bound by the
+	// resulting on-chain state check below.
 	channelID := payload.ChannelID
 	current, err := s.store.GetChannel(ctx, channelID)
 	if err != nil {
@@ -500,6 +575,11 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 	verifiedDeposit := current.Deposit
 	if s.config.VerifyTopUpTx != nil {
 		if err := s.config.VerifyTopUpTx(ctx, payload, verifiedDeposit); err != nil {
+			return ChannelState{}, fmt.Errorf("top-up tx verification failed: %w", err)
+		}
+	}
+	if s.config.VerifyTopUpStateTx != nil {
+		if err := s.config.VerifyTopUpStateTx(ctx, payload, *current); err != nil {
 			return ChannelState{}, fmt.Errorf("top-up tx verification failed: %w", err)
 		}
 	}
@@ -537,6 +617,21 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 	})
 }
 
+func (s *SessionServer) requireProductionSessionSafety() error {
+	// Localnet and the explicit config field are dev escapes. The
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE env var is the canonical opt-in the
+	// method-layer construction gate honors, so this defense-in-depth check
+	// honors it too rather than contradicting a session the constructor allowed.
+	if s.config.Network == "localnet" || s.config.AllowUnsafeEphemeralStoreOffLocalnet ||
+		os.Getenv(allowInMemoryReplayStoreEnvVar) == "1" {
+		return nil
+	}
+	if !isDurableSharedSessionStore(s.store) {
+		return fmt.Errorf("%s", sessionStoreSafetyMessage(s.store))
+	}
+	return nil
+}
+
 // BeginDelivery reserves capacity for a delivered message/response and
 // returns the metering directive the client must commit after processing it.
 //
@@ -544,6 +639,9 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 // assigns the next sequence, and defaults the delivery id to
 // "<sessionId>:<sequence>".
 func (s *SessionServer) BeginDelivery(ctx context.Context, request DeliveryRequest) (intents.MeteringDirective, error) {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return intents.MeteringDirective{}, err
+	}
 	if request.Amount == 0 {
 		return intents.MeteringDirective{}, fmt.Errorf("delivery amount must be greater than zero")
 	}
@@ -642,6 +740,9 @@ func fitsInDeposit(cumulative, pendingTotal, amount, deposit uint64) bool {
 // cached receipt with status replayed after re-verifying the voucher
 // signature.
 func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.CommitPayload) (intents.CommitReceipt, error) {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return intents.CommitReceipt{}, err
+	}
 	channelID := payload.Voucher.Data.ChannelID
 	newCumulative, err := strconv.ParseUint(payload.Voucher.Data.Cumulative, 10, 64)
 	if err != nil {
@@ -799,6 +900,9 @@ func findCommitted(deliveries []CommittedDelivery, deliveryID string) *Committed
 // by the host after this returns; see MarkSealed for the post-settlement
 // transition.
 func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.ClosePayload) (ChannelState, error) {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return ChannelState{}, err
+	}
 	now := uint64(time.Now().Unix())
 	channelID := payload.ChannelID
 	voucher := payload.Voucher
@@ -863,6 +967,9 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 // MarkSealed marks a channel as sealed. Call after the on-chain
 // seal transaction confirms.
 func (s *SessionServer) MarkSealed(ctx context.Context, channelID string) error {
+	if err := s.requireProductionSessionSafety(); err != nil {
+		return err
+	}
 	_, err := s.store.MarkSealed(ctx, channelID)
 	return err
 }
