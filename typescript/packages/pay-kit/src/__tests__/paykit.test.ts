@@ -6,8 +6,30 @@ import { ConfigurationError, InvalidProofError, UnknownGateError } from '../erro
 import type { Payment } from '../payment.js';
 import { createPayKit } from '../paykit.js';
 import { usd } from '../price.js';
+import { declareProductionReplayStore } from '../replay-store.js';
+import { Signer } from '../signer.js';
 
 const CREDENTIAL_HEADER = 'x-fake-credential';
+
+function createSharedTestReplayStore() {
+    const entries = new Map<string, unknown>();
+    return declareProductionReplayStore({
+        delete: async (key: string) => {
+            entries.delete(key);
+        },
+        get: async (key: string) => entries.get(key) ?? null,
+        isDurable: true as const,
+        isShared: true as const,
+        put: async (key: string, value: unknown) => {
+            entries.set(key, value);
+        },
+        putIfAbsent: async (key: string, value: unknown) => {
+            if (entries.has(key)) return false;
+            entries.set(key, value);
+            return true;
+        },
+    });
+}
 
 function fakeAdapter(config: PayKitConfig): ProtocolAdapter {
     return {
@@ -45,7 +67,7 @@ function fakeAdapter(config: PayKitConfig): ProtocolAdapter {
 }
 
 async function setup() {
-    const config = await configure({ mpp: { challengeBindingSecret: 's3cret' } });
+    const config = await configure({ mpp: { challengeBindingSecret: 's3cret', allowUnsafeMemoryStore: true } });
     return createPayKit({
         adapters: [fakeAdapter(config)],
         config,
@@ -57,6 +79,49 @@ async function setup() {
 }
 
 describe('createPayKit', () => {
+    it('rejects a prebuilt mainnet config carrying the unsafe replay-store escape', async () => {
+        const local = await configure({
+            mpp: { challengeBindingSecret: 's3cret', allowUnsafeMemoryStore: true },
+            operator: { signer: await Signer.generate() },
+        });
+        await expect(
+            createPayKit({
+                config: { ...local, network: 'solana_mainnet' },
+                pricing: { report: usd('0.10') },
+            }),
+        ).rejects.toThrow(/forbidden on mainnet/);
+    });
+
+    it('rejects a prebuilt mainnet config that hides its process-local replay store', async () => {
+        const local = await configure({
+            mpp: { challengeBindingSecret: 's3cret', allowUnsafeMemoryStore: true },
+            operator: { signer: await Signer.generate() },
+        });
+        await expect(
+            createPayKit({
+                config: {
+                    ...local,
+                    mpp: { ...local.mpp, allowUnsafeMemoryStore: false },
+                    network: 'solana_mainnet',
+                },
+                pricing: { report: usd('0.10') },
+            }),
+        ).rejects.toThrow(/declareProductionReplayStore/);
+    });
+
+    it('rejects a prebuilt mainnet config carrying the demo signer', async () => {
+        const local = await configure({
+            mpp: { challengeBindingSecret: 's3cret' },
+            replayStore: createSharedTestReplayStore(),
+        });
+        await expect(
+            createPayKit({
+                config: { ...local, network: 'solana_mainnet' },
+                pricing: { report: usd('0.10') },
+            }),
+        ).rejects.toThrow(/demo signer is public/);
+    });
+
     it('renders a 402 challenge when no credential is present', async () => {
         const paykit = await setup();
         const request = new Request('http://api.test/report');
@@ -111,7 +176,9 @@ describe('createPayKit', () => {
     });
 
     it('serves a protocol-owned response for browser/worker requests, JSON 402 for API', async () => {
-        const config = await configure({ mpp: { challengeBindingSecret: 's3cret', html: true } });
+        const config = await configure({
+            mpp: { challengeBindingSecret: 's3cret', html: true, allowUnsafeMemoryStore: true },
+        });
         const htmlAdapter: ProtocolAdapter = {
             ...fakeAdapter(config),
             async respond(_gate, request) {
@@ -180,7 +247,7 @@ describe('createPayKit', () => {
     });
 
     it('requires a pricing catalogue for name references', async () => {
-        const config = await configure({ mpp: { challengeBindingSecret: 's3cret' } });
+        const config = await configure({ mpp: { challengeBindingSecret: 's3cret', allowUnsafeMemoryStore: true } });
         const paykit = await createPayKit({ adapters: [fakeAdapter(config)], config });
         await expect(paykit.requirePayment(new Request('http://api.test/x'), 'report')).rejects.toThrow(
             ConfigurationError,

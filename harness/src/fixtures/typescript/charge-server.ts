@@ -71,6 +71,9 @@ async function main() {
           network: environment.network,
           rpcUrl: environment.rpcUrl,
           ...(pushMode ? {} : { signer: feePayerSigner }),
+          // The conformance fixture is a single-process test server. Production
+          // applications must inject a durable shared replay store instead.
+          allowUnsafeMemoryStore: true,
           splits: environment.splits,
         }),
       ],

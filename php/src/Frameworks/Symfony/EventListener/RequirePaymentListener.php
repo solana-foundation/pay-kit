@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace PayKit\Frameworks\Symfony\EventListener;
 
+use Closure;
 use PayKit\PayKit;
 use PayKit\Middleware\RequirePayment as PsrRequirePayment;
 use PayKit\Pricing;
+use PayKit\Protocols\Mpp\Adapter as MppAdapter;
 use PayKit\Frameworks\Symfony\Attribute\RequirePayment;
 use ReflectionMethod;
 use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
@@ -26,6 +28,8 @@ final class RequirePaymentListener
         private readonly ?Pricing $pricing,
         private readonly PsrHttpFactory $psrFactory,
         private readonly HttpFoundationFactory $httpFactory,
+        private readonly ?MppAdapter $mpp = null,
+        private readonly ?Closure $mppFactory = null,
     ) {
     }
 
@@ -37,7 +41,13 @@ final class RequirePaymentListener
             return;
         }
         $psrRequest = $this->psrFactory->createRequest($event->getRequest());
-        $middleware = new PsrRequirePayment($this->client, $attribute->gate, $this->pricing);
+        $middleware = new PsrRequirePayment(
+            client: $this->client,
+            gateRef: $attribute->gate,
+            pricing: $this->pricing,
+            mpp: $this->mpp,
+            mppFactory: $this->mppFactory,
+        );
         $psrResponse = $middleware->process(
             $psrRequest,
             new class () implements \Psr\Http\Server\RequestHandlerInterface {

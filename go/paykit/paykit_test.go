@@ -274,6 +274,7 @@ func mustClient(t *testing.T) *paykit.Client {
 		Preflight: disabled(),
 		MPP: paykit.MPPConfig{
 			ChallengeBindingSecret: []byte("test-secret-key-0123456789abcdef"),
+			AllowUnsafeMemoryStore: true,
 		},
 	})
 	if err != nil {

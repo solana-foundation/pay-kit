@@ -24,7 +24,14 @@ const REALM = 'api.example.com';
 
 function makeHandler() {
     return Mppx.create({
-        methods: [charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc' })],
+        methods: [
+            charge({
+                allowUnsafeMemoryStore: true,
+                recipient: RECIPIENT,
+                network: 'devnet',
+                rpcUrl: 'https://mock-rpc',
+            }),
+        ],
         realm: REALM,
         secretKey: SECRET_KEY,
     });
@@ -73,7 +80,14 @@ test('cross-route: credential issued for /cheap is rejected at /expensive (diffe
 test('cross-route: credential issued for one currency is rejected at another', async () => {
     // Two routes on the same handler, different currencies.
     const handler = Mppx.create({
-        methods: [charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc' })],
+        methods: [
+            charge({
+                allowUnsafeMemoryStore: true,
+                recipient: RECIPIENT,
+                network: 'devnet',
+                rpcUrl: 'https://mock-rpc',
+            }),
+        ],
         realm: REALM,
         secretKey: SECRET_KEY,
     });
