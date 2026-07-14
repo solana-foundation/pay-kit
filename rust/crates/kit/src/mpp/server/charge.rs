@@ -2429,7 +2429,11 @@ fn reject_managed_transfer_source_owners(
         let account = rpc
             .get_account_with_commitment(&source, CommitmentConfig::confirmed())
             .map_err(|e| {
-                VerificationError::invalid_payload(format!(
+                // A transient RPC failure here does not mean the payment is
+                // malformed: surface it as a retryable network error so the
+                // upstream returns a retriable response instead of permanently
+                // rejecting a valid payment. Mirrors exact.rs's Error::Rpc path.
+                VerificationError::network_error(format!(
                     "Failed to fetch transfer source token account: {e}"
                 ))
             })?
@@ -4033,6 +4037,69 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn broadcast_pull_source_owner_rpc_failure_is_retryable_not_invalid() {
+        // A transient RPC failure while fetching the transfer source token
+        // account must surface as a RETRYABLE network error, never as an
+        // invalid-payload rejection: a valid payment must not be permanently
+        // refused because a Solana node blipped during this check.
+        let (mint, token_program) = mpp_token_program_cases()
+            .into_iter()
+            .next()
+            .expect("at least one token program case");
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let delegate = Pubkey::new_unique();
+        let source = Pubkey::new_unique();
+        let signer = Arc::new(CountingSigner::new(fee_payer));
+        // Unreachable RPC: get_account_with_commitment fails with a connection
+        // error inside the managed-owner guard (the first RPC touch on this
+        // path, after the offline pre-broadcast checks).
+        let mpp = fee_sponsored_mpp(
+            "http://127.0.0.1:1".to_string(),
+            recipient,
+            mint,
+            signer.clone(),
+        );
+        let destination = derive_ata(&recipient, &mint, &token_program);
+        let transfer = spl_transfer_checked_ix_for_program(
+            &source,
+            &mint,
+            &destination,
+            &delegate,
+            1_000_000,
+            6,
+            token_program,
+        );
+        let transaction = dummy_tx(vec![transfer], &fee_payer);
+        let request = charge_request(1_000_000, &mint.to_string(), &recipient);
+        let method_details = fee_sponsored_method_details(fee_payer, token_program);
+        verify_transaction_pre_broadcast(&transaction, &request, &method_details)
+            .expect("offline verifier accepts delegated customer authority");
+        let transaction_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            bincode::serialize(&VersionedTransaction::from(transaction))
+                .expect("serialize transaction"),
+        );
+
+        let err = mpp
+            .broadcast_pull(&transaction_b64, &request, &method_details)
+            .await
+            .expect_err("unreachable RPC must surface as an error");
+        assert!(
+            err.retryable,
+            "RPC failure must be retryable, got non-retryable: {}",
+            err.message
+        );
+        assert!(
+            err.message
+                .contains("Failed to fetch transfer source token account"),
+            "unexpected error message: {}",
+            err.message
+        );
+        assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn broadcast_pull_rejects_managed_multisig_signer_tail_before_signing_for_both_token_programs(
     ) {
         for (mint, token_program) in mpp_token_program_cases() {
@@ -4148,7 +4215,15 @@ mod tests {
             .broadcast_pull(&transaction_b64, &request, &method_details)
             .await
             .expect_err("source-account RPC failures must fail closed");
-        assert_eq!(err.code, Some("malformed-credential"));
+        // The guard still fails closed (never signs), but a transient RPC
+        // failure is a RETRYABLE network error, not a malformed-credential
+        // rejection: a valid payment must not be permanently refused because a
+        // node blipped. See broadcast_pull_source_owner_rpc_failure_is_retryable_not_invalid.
+        assert!(
+            err.retryable,
+            "RPC failure must be retryable: {}",
+            err.message
+        );
         assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
     }
 
