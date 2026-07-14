@@ -1212,13 +1212,15 @@ mod tests {
     use solana_keychain::{SignTransactionResult, SignerError};
     use solana_signature::Signature;
 
-    const GOLDEN_PAYMENT_CHANNELS_PROGRAM: &str = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX";
-    const GOLDEN_ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-    const GOLDEN_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-    const GOLDEN_SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
-    const GOLDEN_ED25519_PROGRAM: &str = "Ed25519SigVerify111111111111111111111111111";
-    const GOLDEN_INSTRUCTIONS_SYSVAR: &str = "Sysvar1nstructions1111111111111111111111111";
-    const GOLDEN_TREASURY_OWNER: &str = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP";
+    // Program IDs, sysvars, and the treasury owner reuse the canonical
+    // definitions in `core::payment_channels` (aliased `pc`); the SPL token
+    // program reuses the local `token_program()` helper. Only the golden
+    // ed25519-instruction layout below is local: it has no canonical const.
+
+    // Byte offset of the voucher within the golden ed25519 verify-instruction
+    // data (16-byte header + 32-byte pubkey + 64-byte signature) and the voucher
+    // length (magic 2 + channel 32 + amount 8 + expiry 8). Local: these describe
+    // the golden reference layout this test builds, defined nowhere else.
     const GOLDEN_VOUCHER_OFFSET: usize = 112;
     const GOLDEN_VOUCHER_LEN: usize = 50;
 
@@ -2140,7 +2142,7 @@ mod tests {
     fn golden_ata(owner: &Pubkey, mint: &Pubkey, token_program: &Pubkey) -> Pubkey {
         Pubkey::find_program_address(
             &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
-            &golden_pubkey(GOLDEN_ASSOCIATED_TOKEN_PROGRAM),
+            &golden_pubkey(pc::ASSOCIATED_TOKEN_PROGRAM),
         )
         .0
     }
@@ -2152,13 +2154,13 @@ mod tests {
         token_program: Pubkey,
     ) -> Instruction {
         Instruction {
-            program_id: golden_pubkey(GOLDEN_ASSOCIATED_TOKEN_PROGRAM),
+            program_id: golden_pubkey(pc::ASSOCIATED_TOKEN_PROGRAM),
             accounts: vec![
                 AccountMeta::new(payer, true),
                 AccountMeta::new(golden_ata(&owner, &mint, &token_program), false),
                 AccountMeta::new_readonly(owner, false),
                 AccountMeta::new_readonly(mint, false),
-                AccountMeta::new_readonly(golden_pubkey(GOLDEN_SYSTEM_PROGRAM), false),
+                AccountMeta::new_readonly(golden_pubkey(pc::SYSTEM_PROGRAM), false),
                 AccountMeta::new_readonly(token_program, false),
             ],
             data: vec![1],
@@ -2189,7 +2191,7 @@ mod tests {
         data.extend_from_slice(voucher);
         assert_eq!(data.len(), GOLDEN_VOUCHER_OFFSET + GOLDEN_VOUCHER_LEN);
         Instruction {
-            program_id: golden_pubkey(GOLDEN_ED25519_PROGRAM),
+            program_id: golden_pubkey(pc::ED25519_PROGRAM_ID),
             accounts: vec![],
             data,
         }
@@ -2200,11 +2202,11 @@ mod tests {
         open: &VerifiedUptoOpen,
         actual: u64,
     ) -> Vec<Instruction> {
-        let payment_channels = golden_pubkey(GOLDEN_PAYMENT_CHANNELS_PROGRAM);
-        let instructions_sysvar = golden_pubkey(GOLDEN_INSTRUCTIONS_SYSVAR);
-        let treasury = golden_pubkey(GOLDEN_TREASURY_OWNER);
+        let payment_channels = pc::default_program_id();
+        let instructions_sysvar = golden_pubkey(pc::INSTRUCTIONS_SYSVAR_ID);
+        let treasury = pc::treasury_owner();
         assert_eq!(open.program_id, payment_channels);
-        assert_eq!(open.token_program, golden_pubkey(GOLDEN_TOKEN_PROGRAM));
+        assert_eq!(open.token_program, token_program());
         assert_eq!(open.payee, fixture.operator);
         assert_eq!(open.rent_payer, fixture.operator);
         assert!(open.distribution.is_empty());
@@ -2274,7 +2276,7 @@ mod tests {
     ) -> u64 {
         assert_eq!(instructions.len(), 5);
         let verify = &instructions[0];
-        assert_eq!(verify.program_id, golden_pubkey(GOLDEN_ED25519_PROGRAM));
+        assert_eq!(verify.program_id, golden_pubkey(pc::ED25519_PROGRAM_ID));
         assert!(verify.accounts.is_empty());
         assert_eq!(
             &verify.data[..16],
@@ -2291,22 +2293,16 @@ mod tests {
         );
 
         let settle_and_seal = &instructions[1];
-        assert_eq!(
-            settle_and_seal.program_id,
-            golden_pubkey(GOLDEN_PAYMENT_CHANNELS_PROGRAM)
-        );
+        assert_eq!(settle_and_seal.program_id, pc::default_program_id());
         assert_eq!(settle_and_seal.data, [4, 1]);
         for create_ata in &instructions[2..4] {
             assert_eq!(
                 create_ata.program_id,
-                golden_pubkey(GOLDEN_ASSOCIATED_TOKEN_PROGRAM)
+                golden_pubkey(pc::ASSOCIATED_TOKEN_PROGRAM)
             );
             assert_eq!(create_ata.data, [1]);
         }
-        assert_eq!(
-            instructions[4].program_id,
-            golden_pubkey(GOLDEN_PAYMENT_CHANNELS_PROGRAM)
-        );
+        assert_eq!(instructions[4].program_id, pc::default_program_id());
         assert_eq!(instructions[4].data, [7, 0, 0, 0, 0]);
 
         u64::from_le_bytes(
