@@ -131,6 +131,9 @@ function openRequest(recipient?: string): SessionRequest {
         network: 'localnet',
         operator: payer.address,
         recentBlockhash: RECENT_BLOCKHASH as never,
+        // The epoch-addressed channel PDA seeds include open_slot, so the
+        // server challenge now pre-fetches recentSlot alongside recentBlockhash.
+        recentSlot: '42',
         recipient: recipient ?? payee.address,
     };
 }
