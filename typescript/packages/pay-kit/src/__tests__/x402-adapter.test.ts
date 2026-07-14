@@ -100,6 +100,7 @@ const { createMemoryReplayStore } = await import('../replay-store.js');
 
 async function setup() {
     const config = await configure({
+        accept: ['x402'],
         mpp: { challengeBindingSecret: 'x402-adapter-secret' },
         network: 'solana_localnet',
         replayStore: createMemoryReplayStore(),
@@ -113,6 +114,7 @@ function paidRequest(header = 'PAYMENT_CRED'): Request {
 
 async function gateFor(amount = usd('0.10')) {
     const config = await configure({
+        accept: ['x402'],
         mpp: { challengeBindingSecret: 'x402-adapter-secret' },
         network: 'solana_localnet',
     });
@@ -574,6 +576,7 @@ describe('createX402ExactAdapter', () => {
 
     async function setupWithStore(store: unknown) {
         const config = await configure({
+            accept: ['x402'],
             mpp: { challengeBindingSecret: 'x402-adapter-secret' },
             network: 'solana_localnet',
             replayStore: store as never,

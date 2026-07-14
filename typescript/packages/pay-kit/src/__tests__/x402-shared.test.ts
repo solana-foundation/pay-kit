@@ -129,6 +129,7 @@ const { createMemoryReplayStore } = await import('../replay-store.js');
 
 async function payKitConfig() {
     return configure({
+        accept: ['x402'],
         mpp: { challengeBindingSecret: 'x402-cap-secret' },
         network: 'solana_localnet',
         replayStore: createMemoryReplayStore(),
