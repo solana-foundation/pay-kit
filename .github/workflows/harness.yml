@@ -204,8 +204,8 @@ jobs:
       - name: Focused Python session harness
         working-directory: harness
         # Deploys the localnet payment-channels SBF built above so the session
-        # close settles for real on-chain (settle_and_finalize + distribute).
-        # The same session run also exercises the Tier-2 confirmation-gating
+        # top-up and close run against the real payment-channels program. The
+        # same session run also exercises the Tier-2 confirmation-gating
         # fault guards registered in test/e2e.test.ts (a settle broadcast that
         # never confirms, and one stuck at `processed`): both must leave the
         # channel un-finalized with settledSignature unset, so a regression that
@@ -223,11 +223,14 @@ jobs:
         run: |
           pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
           node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
-      - name: Focused Python session fault-injection (missing-ATA)
+      - name: Focused Python session missing-ATA settlement invariant (deliver-or-reject)
         working-directory: harness
-        # The close transaction creates every payout ATA idempotently before
-        # distribute. A missing primary recipient ATA must therefore settle
-        # successfully and deliver funds; a regression is release-blocking.
+        # Blocking (no continue-on-error): a settle reported successful
+        # (200 + settledSignature) MUST deliver the payout to the recipient ATA,
+        # creating it idempotently when absent. A clean rejection (>= 400, no
+        # receipt surfaced, no delivery) is equally acceptable. The only failure
+        # is the false-paid condition — a confirmed receipt with no on-chain
+        # delivery — which #216 fixed and this leg keeps release-blocking.
         env:
           MPP_HARNESS_INTENTS: session
           MPP_HARNESS_SCENARIOS: session-basic
@@ -238,6 +241,13 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: pnpm exec vitest run test/e2e.test.ts -t "no ATA" --testTimeout 180000
+      - name: Run Python replay-store boot policy
+        working-directory: harness
+        env:
+          HARNESS_REQUIRE_PYTHON_BOOT_PROBE: "1"
+        run: |
+          uv --version
+          pnpm exec vitest run test/boot-policy.test.ts -t "python:"
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:

@@ -8,6 +8,7 @@ from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.protocols.mpp.core.base64url import encode_json
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+from tests.replay_store_test_support import NominalProductionReplayStore
 
 TEST_SECRET_KEY = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 
@@ -43,6 +44,6 @@ def test_mpp(monkeypatch: pytest.MonkeyPatch) -> Mpp:
         decimals=6,
         network="devnet",
         secret_key=TEST_SECRET_KEY,
-        store=MemoryStore(),
+        store=NominalProductionReplayStore(),
     )
     return Mpp(config)

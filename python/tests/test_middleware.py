@@ -9,6 +9,7 @@ from solana_pay_kit.protocols.mpp.core.headers import format_authorization
 from solana_pay_kit.protocols.mpp.core.types import PaymentCredential
 from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
 from solana_pay_kit.protocols.mpp.server.middleware import pay
+from tests.replay_store_test_support import NominalProductionReplayStore
 from tests.test_server import (
     TEST_RECIPIENT,
     TEST_SECRET,
@@ -150,7 +151,7 @@ class TestPayDecorator:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
 

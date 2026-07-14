@@ -42,6 +42,7 @@ from solana_pay_kit._paycore.solana import (
     is_native_sol,
     resolve_mint,
 )
+from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.mpp.client.charge import build_charge_transaction
 from solana_pay_kit.protocols.mpp.core import json as wire_json
 from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
@@ -62,6 +63,7 @@ from solana_pay_kit.protocols.x402.exact.verify import (
     EXACT_SCHEME,
     X402_VERSION_V1,
     X402_VERSION_V2,
+    ExactVerifier,
 )
 from solana_pay_kit.signer import LocalSigner
 
@@ -373,7 +375,7 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
 
     vp = inp.get("voucherPreimage")
     if vp:
-        # The 48-byte session voucher preimage,
+        # The 50-byte session voucher preimage: magic([0x56, 0x01]) ||
         # channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64,
         # computed by the production SDK packer (VoucherData.message_bytes ->
         # _paymentchannels.voucher_message_bytes) so a byte mismatch is caught
@@ -580,6 +582,20 @@ def _run_x402(vector: dict[str, Any]) -> dict[str, Any]:
     vector_id = vector.get("id", "")
     mode = vector.get("mode")
 
+    if mode == "verify-x402-transaction":
+        inp = vector.get("input") or {}
+        transaction = inp.get("transaction")
+        if not isinstance(transaction, str) or transaction == "":
+            raise ValueError("invalid payload: verify-x402-transaction vector missing input.transaction")
+        requirement = inp.get("x402ExactRequirement")
+        if not isinstance(requirement, dict):
+            raise ValueError("invalid payload: verify-x402-transaction vector missing input.x402ExactRequirement")
+        managed_signers = inp.get("x402ExactManagedSigners", [])
+        if not isinstance(managed_signers, list) or not all(isinstance(signer, str) for signer in managed_signers):
+            raise ValueError("invalid payload: x402ExactManagedSigners must be an array of strings")
+        ExactVerifier.verify(transaction, requirement, managed_signers)
+        return {"id": vector_id, "outcome": "accept"}
+
     if mode == "build-transaction":
         header = asyncio.run(_x402_build_header(vector))
         return {
@@ -660,6 +676,18 @@ def _classify_reject(message: str) -> str | None:
     return None
 
 
+def _x402_exact_reject_code(exc: Exception) -> str | None:
+    """Return the verifier's canonical x402-exact code, when present.
+
+    The conformance ABI pins these codes byte-for-byte. Preserve the typed
+    verifier code instead of relying on its diagnostic text, which may gain
+    useful detail without changing the canonical reject family.
+    """
+    if isinstance(exc, InvalidProofError) and exc.code.startswith("invalid_exact_svm_payload_"):
+        return exc.code
+    return None
+
+
 def main() -> None:
     raw = sys.stdin.read().strip()
     if not raw:
@@ -670,10 +698,17 @@ def main() -> None:
         result = _run_vector(vector)
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
-        result = {"id": vector.get("id", ""), "outcome": "reject", "error": message}
+        exact_reject_code = _x402_exact_reject_code(exc)
+        result = {
+            "id": vector.get("id", ""),
+            "outcome": "reject",
+            "error": exact_reject_code or message,
+        }
         code = _classify_reject(message)
         if code is not None:
             result["rejectCode"] = code
+        if exact_reject_code is not None:
+            result["x402ExactRejectCode"] = exact_reject_code
 
     result["language"] = "python"
     sys.stdout.write(json.dumps(result) + "\n")

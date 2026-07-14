@@ -278,9 +278,7 @@ def _apply_pay_config_env(
     preflight_raw = environ.get(f"{env_prefix}PREFLIGHT")
     no_preflight_raw = environ.get(f"{env_prefix}NO_PREFLIGHT")
     if preflight_raw is not None and no_preflight_raw is not None:
-        raise ConfigurationError(
-            f"solana_pay_kit: set only one of {env_prefix}PREFLIGHT or {env_prefix}NO_PREFLIGHT"
-        )
+        raise ConfigurationError(f"solana_pay_kit: set only one of {env_prefix}PREFLIGHT or {env_prefix}NO_PREFLIGHT")
 
     if preflight_raw is not None:
         values["preflight"] = _parse_bool_env(f"{env_prefix}PREFLIGHT", preflight_raw)

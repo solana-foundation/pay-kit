@@ -570,6 +570,10 @@ const COVERED: Record<string, { test: string; tier: Tier }> = {
     test: "value-binding-verify.test.ts (c) / vector topup-c-onchain-delta-mismatch",
     tier: "T1",
   },
+  "mpp-session-topup::accept": {
+    test: "e2e.test.ts session-basic (Python client broadcasts a real top-up, submits the challenge-bound action, and asserts the server-observed deposit)",
+    tier: "T2",
+  },
   "mpp-session-topup::deposit-over-cap": {
     test: "value-binding-verify.test.ts (a) / vector topup-a-unrelated-confirmed-inflated-deposit",
     tier: "T1",
@@ -871,13 +875,6 @@ const KNOWN_GAP: Record<string, { tier: Tier; severity: Sev; likelihood: Sev; re
     likelihood: "low",
     reason: "operatedVoucher multi-delegator program delegation (MultiDelegate.ts, MULTI_DELEGATOR_PROGRAM) is entirely untested.",
     how: "Add an onchain.e2e vector exercising initMultiDelegate/updateDelegation delegation.",
-  },
-  "mpp-session-topup::accept": {
-    tier: "T2",
-    severity: "high",
-    likelihood: "medium",
-    reason: "No green top-up accept; the session never settles/tops-up on-chain in CI (harness rpc=None, program absent).",
-    how: "Add an onchain.e2e session top-up vector raising the cap and asserting verifyTopUpBySignature accepts.",
   },
   "mpp-session-topup::tx-failed-onchain": {
     tier: "T1",
