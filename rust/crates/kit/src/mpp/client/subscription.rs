@@ -1090,13 +1090,8 @@ mod tests {
     async fn build_with(md: &SubscriptionMethodDetails) -> Result<CredentialPayload, Error> {
         let signer = make_signer();
         let rpc = RpcClient::new_mock("succeeds".to_string());
-        build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
+        build_subscription_activation_transaction_with_options(&*signer, &rpc, md, test_options())
+            .await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1152,11 +1147,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn missing_recent_blockhash_errors() {
+    async fn missing_recent_blockhash_fetches_a_fresh_one() {
+        // Contract change (2bcee2d8, subscription activation hardening): a
+        // challenge that omits recentBlockhash no longer fails the build; the
+        // client fetches a fresh blockhash from the RPC instead. The fetch is
+        // the ONLY blockhash source here, so a successful build proves the
+        // fallback ran; a failed fetch still propagates (fail closed).
         let mut md = make_method_details(false, None);
         md.recent_blockhash = None;
-        let err = build_with(&md).await.expect_err("missing recentBlockhash");
-        assert!(format!("{err}").contains("recentBlockhash"));
+        let payload = build_with(&md)
+            .await
+            .expect("activation tx with a freshly fetched blockhash");
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
     }
 
     #[tokio::test(flavor = "multi_thread")]

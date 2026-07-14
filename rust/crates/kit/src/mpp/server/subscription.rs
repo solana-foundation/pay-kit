@@ -1906,6 +1906,19 @@ mod tests {
         }
     }
 
+    /// The canonical explicit compute-unit limit every activation transaction
+    /// must carry: the scope validator requires exactly one SetComputeUnitLimit
+    /// instruction, capped at MAX_COMPUTE_UNIT_LIMIT.
+    fn compute_unit_limit_instruction() -> Instruction {
+        let mut data = vec![2u8];
+        data.extend_from_slice(&MAX_COMPUTE_UNIT_LIMIT.to_le_bytes());
+        Instruction {
+            program_id: parse_pubkey(COMPUTE_BUDGET_PROGRAM_ID, "compute budget").unwrap(),
+            accounts: Vec::new(),
+            data,
+        }
+    }
+
     fn subscription_delegation_data(
         subscriber: Pubkey,
         plan_pda: Pubkey,
@@ -1958,6 +1971,7 @@ mod tests {
             rpc_url: None,
             challenge_binding_secret: "test-secret".to_string(),
             realm: "test-realm".to_string(),
+            resource: None,
             fee_payer: false,
             fee_payer_signer: None,
             fee_payer_pubkey: None,
@@ -2413,38 +2427,70 @@ mod tests {
 
     #[test]
     fn validate_activation_scope_enforces_presence_uniqueness_and_order() {
-        let program_id = Pubkey::new_unique();
-        let program_id_string = program_id.to_string();
-        let payer = Pubkey::new_unique();
-        let request = SubscriptionRequest::default();
-        let subscribe = subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE);
-        let transfer = subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION);
+        let subscriber = scope_subscriber();
+        let config = scope_config();
+        let program = program_id_str();
 
-        let valid = transaction_with_instructions(payer, vec![subscribe.clone(), transfer.clone()]);
-        validate_activation_scope(&valid, &request, &program_id_string)
+        // `build_tx` prepends the canonical SetComputeUnitLimit instruction that
+        // the validator now requires on every activation transaction.
+        let valid = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        validate_activation_scope(&valid, &dummy_request(), &program, &config, &subscriber)
             .expect("valid activation scope");
 
         for instructions in [
             vec![],
-            vec![subscribe.clone()],
-            vec![transfer.clone(), subscribe.clone()],
-            vec![subscribe.clone(), subscribe.clone(), transfer.clone()],
-            vec![subscribe.clone(), transfer.clone(), transfer.clone()],
+            vec![(INSTRUCTION_SUBSCRIBE, vec![])],
+            vec![
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+            ],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
         ] {
-            let tx = transaction_with_instructions(payer, instructions);
-            assert!(validate_activation_scope(&tx, &request, &program_id_string).is_err());
+            let tx = build_tx(&[subscriber], instructions);
+            assert!(validate_activation_scope(
+                &tx,
+                &dummy_request(),
+                &program,
+                &config,
+                &subscriber
+            )
+            .is_err());
         }
 
+        // #227 fee-payer allowlist hardening: an instruction on a program
+        // OUTSIDE the activation allowlist is now rejected outright, not
+        // silently ignored as "out of scope" (the pre-hardening behavior a
+        // blind fee-payer co-sign made unsafe). The subscribe/transfer pair on
+        // the real program is otherwise well-formed.
+        let canonical = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "program").unwrap();
         let foreign = transaction_with_instructions(
-            payer,
+            subscriber,
             vec![
                 subscription_instruction(Pubkey::new_unique(), INSTRUCTION_SUBSCRIBE),
-                subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
-                subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
+                subscription_instruction(canonical, INSTRUCTION_SUBSCRIBE),
+                subscription_instruction(canonical, INSTRUCTION_TRANSFER_SUBSCRIPTION),
             ],
         );
-        validate_activation_scope(&foreign, &request, &program_id_string)
-            .expect("foreign instructions are outside the activation scope");
+        assert!(
+            validate_activation_scope(&foreign, &dummy_request(), &program, &config, &subscriber)
+                .is_err(),
+            "an instruction on a non-allowlisted program must be rejected"
+        );
     }
 
     #[tokio::test]
@@ -2490,18 +2536,19 @@ mod tests {
         let (delegation_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
         let valid_delegation = subscription_delegation_data(subscriber, plan_pda, 100, 720);
 
-        rpc.set_account(delegation_pda.to_string(), vec![0], program_id.to_string());
         let instructions = vec![
+            compute_unit_limit_instruction(),
             subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
             subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
         ];
+        // The delegation PDA is absent before the broadcast (the idempotency
+        // pre-read must take the fresh path); the accepted send creates it.
         rpc.expect_transaction(
-            TransactionExpectation::new(subscriber, instructions.clone())
-                .with_account_data_transition(
-                    delegation_pda.to_string(),
-                    vec![0],
-                    valid_delegation,
-                ),
+            TransactionExpectation::new(subscriber, instructions.clone()).with_account_creation(
+                delegation_pda.to_string(),
+                valid_delegation,
+                program_id.to_string(),
+            ),
         );
 
         let mut transaction = Transaction::new_unsigned(Message::new_with_blockhash(
@@ -2769,6 +2816,9 @@ mod tests {
         keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
         let mut config = make_config();
         config.fee_payer = true;
+        // Sponsored subscriptions now require the fee payer to equal the puller,
+        // so pin the puller to the fee-payer signer's pubkey.
+        config.puller = Pubkey::new_from_array(signing_key.verifying_key().to_bytes()).to_string();
         config.fee_payer_signer = Some(Arc::new(MemorySigner::from_bytes(&keypair).unwrap()));
         let server = SubscriptionServer::new(config).expect("server");
         let challenge = server.subscription_challenge("100").expect("challenge");
@@ -5264,20 +5314,22 @@ mod tests {
         let program_id = parse_pubkey(server.program_id(), "program_id").unwrap();
         let (delegation_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
         let instructions = vec![
+            compute_unit_limit_instruction(),
             subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
             subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
         ];
 
-        rpc.set_account(delegation_pda.to_string(), vec![0], program_id.to_string());
+        // The delegation PDA is absent before the broadcast (the idempotency
+        // pre-read must take the fresh path); the accepted send creates it.
         if broadcast_fails {
             rpc.fail_send("fixture rejects the activation broadcast");
         } else {
             rpc.expect_transaction(
                 TransactionExpectation::new(subscriber, instructions.clone())
-                    .with_account_data_transition(
+                    .with_account_creation(
                         delegation_pda.to_string(),
-                        vec![0],
                         delegation(subscriber, plan_pda),
+                        program_id.to_string(),
                     ),
             );
         }
@@ -5385,13 +5437,9 @@ mod tests {
             subscription_delegation_data(subscriber, plan_pda, 100, 720),
             program_id.to_string(),
         );
-        // Newest-first history; the oldest entry is the creation signature.
-        rpc.set_signatures(
-            delegation_pda.to_string(),
-            vec!["RenewSig222".to_string(), "CreationSig111".to_string()],
-        );
 
         let instructions = vec![
+            compute_unit_limit_instruction(),
             subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
             subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
         ];
@@ -5402,6 +5450,11 @@ mod tests {
         ));
         transaction.signatures[0] =
             Signature::from(signing_key.sign(&transaction.message_data()).to_bytes());
+        // The retried activation's signature already landed on-chain (the
+        // receipt round-trip failed after a successful broadcast); only that
+        // exact confirmed signature entitles the client to an idempotent
+        // receipt, so pre-confirm it in the fixture.
+        rpc.accept_signature(transaction.signatures[0].to_string());
         let encoded = base64::engine::general_purpose::STANDARD
             .encode(bincode::serialize(&transaction).expect("serialize transaction"));
         let challenge = server.subscription_challenge("100").expect("challenge");
@@ -5423,8 +5476,8 @@ mod tests {
         };
         assert_eq!(
             extensions.activation_signature.as_deref(),
-            Some("CreationSig111"),
-            "must recover the original creation signature, not a renewal"
+            Some(transaction.signatures[0].to_string().as_str()),
+            "must re-issue the receipt for the exact confirmed activation signature"
         );
     }
 
@@ -5445,6 +5498,9 @@ mod tests {
         config.rpc_url = Some(rpc.url());
         config.fee_payer = true;
         config.fee_payer_signer = Some(Arc::new(MemorySigner::from_bytes(&keypair).unwrap()));
+        // Fee-sponsored activations require the sponsor to BE the puller (the
+        // constructor invariant `fee_payer == puller`).
+        config.puller = fee_payer.to_string();
         let server = SubscriptionServer::new(config).expect("server");
 
         let sub_sk = SigningKey::from_bytes(&[42u8; 32]);
@@ -5452,17 +5508,108 @@ mod tests {
         let plan_pda = parse_pubkey(server.plan_id(), "plan_id").unwrap();
         let program_id = parse_pubkey(server.program_id(), "program_id").unwrap();
         let (delegation_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
-        rpc.set_account(delegation_pda.to_string(), vec![0], program_id.to_string());
 
-        // Fee payer signs first (account_keys[0]); the subscriber is the second
-        // required signer. A subscribe ix references both so both are signers.
-        let subscribe = Instruction {
-            program_id,
-            accounts: vec![AccountMeta::new(subscriber, true)],
-            data: vec![INSTRUCTION_SUBSCRIBE],
+        // The sponsored path co-signs only a fully-canonical activation: the
+        // production subscribe/transfer builders plus the two idempotent ATA
+        // creations, all funded by the sponsor and signed by exactly the
+        // sponsor (fee payer == puller == merchant) and the subscriber.
+        let (activation_instructions, _) = {
+            use crate::mpp::program::subscriptions::{
+                build_subscribe_ix, build_transfer_subscription_ix, find_event_authority_pda,
+                find_subscription_authority_pda, SubscribeAccounts, SubscribeData, TransferData,
+                TransferSubscriptionAccounts,
+            };
+            let mint = parse_pubkey(server.config.mint.as_str(), "mint").unwrap();
+            let token_program =
+                parse_pubkey(server.config.token_program.as_str(), "token_program").unwrap();
+            let recipient = parse_pubkey(server.config.recipient.as_str(), "recipient").unwrap();
+            let system_program = parse_pubkey(SYSTEM_PROGRAM_ID, "system").unwrap();
+            let ata_program = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "ata").unwrap();
+            let (authority, _) = find_subscription_authority_pda(&subscriber, &mint, &program_id);
+            let (event_authority, _) = find_event_authority_pda(&program_id);
+            // The sponsor verifies the live SubscriptionAuthority init id (106
+            // bytes, i64 at [98..106]) against the subscribe data before
+            // co-signing; seed it to match expected_subscription_authority_init_id.
+            let mut authority_account = vec![0u8; 106];
+            authority_account[98..106].copy_from_slice(&77i64.to_le_bytes());
+            rpc.set_account(
+                authority.to_string(),
+                authority_account,
+                program_id.to_string(),
+            );
+            let derive_ata = |owner: &Pubkey| {
+                Pubkey::find_program_address(
+                    &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+                    &ata_program,
+                )
+                .0
+            };
+            let subscriber_ata = derive_ata(&subscriber);
+            let recipient_ata = derive_ata(&recipient);
+            let create_ata = |owner: Pubkey, ata: Pubkey| Instruction {
+                program_id: ata_program,
+                accounts: vec![
+                    AccountMeta::new(fee_payer, true),
+                    AccountMeta::new(ata, false),
+                    AccountMeta::new_readonly(owner, false),
+                    AccountMeta::new_readonly(mint, false),
+                    AccountMeta::new_readonly(system_program, false),
+                    AccountMeta::new_readonly(token_program, false),
+                ],
+                data: vec![1],
+            };
+            let subscribe = build_subscribe_ix(
+                program_id,
+                SubscribeAccounts {
+                    subscriber,
+                    merchant: fee_payer,
+                    plan_pda,
+                    subscription_pda: delegation_pda,
+                    subscription_authority_pda: authority,
+                    event_authority,
+                    payer: Some(fee_payer),
+                },
+                &SubscribeData {
+                    plan_id: 1,
+                    plan_bump: 255,
+                    expected_mint: mint,
+                    expected_amount: 100,
+                    expected_period_hours: 720,
+                    expected_created_at: 1_700_000_000,
+                    expected_subscription_authority_init_id: 77,
+                },
+            );
+            let transfer = build_transfer_subscription_ix(
+                program_id,
+                TransferSubscriptionAccounts {
+                    subscription_pda: delegation_pda,
+                    plan_pda,
+                    subscription_authority: authority,
+                    delegator_ata: subscriber_ata,
+                    receiver_ata: recipient_ata,
+                    caller: fee_payer,
+                    token_mint: mint,
+                    token_program,
+                    event_authority,
+                },
+                &TransferData {
+                    amount: 100,
+                    delegator: subscriber,
+                    mint,
+                },
+            );
+            (
+                vec![
+                    compute_unit_limit_instruction(),
+                    create_ata(subscriber, subscriber_ata),
+                    create_ata(recipient, recipient_ata),
+                    subscribe,
+                    transfer,
+                ],
+                subscriber_ata,
+            )
         };
-        let transfer = subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION);
-        let instructions = vec![subscribe, transfer];
+        let instructions = activation_instructions;
         let mut transaction = Transaction::new_unsigned(Message::new_with_blockhash(
             &instructions,
             Some(&fee_payer),
@@ -5481,13 +5628,14 @@ mod tests {
         // The broadcast the fixture expects is the fully-signed message.
         let mut expected = transaction.clone();
         expected.signatures[0] = Signature::from(fee_sk.sign(&expected.message_data()).to_bytes());
+        // The delegation PDA is absent before the broadcast (the idempotency
+        // pre-read must take the fresh path); the accepted send creates it.
         rpc.expect_transaction(
-            TransactionExpectation::matching(expected.message.clone())
-                .with_account_data_transition(
-                    delegation_pda.to_string(),
-                    vec![0],
-                    subscription_delegation_data(subscriber, plan_pda, 100, 720),
-                ),
+            TransactionExpectation::matching(expected.message.clone()).with_account_creation(
+                delegation_pda.to_string(),
+                subscription_delegation_data(subscriber, plan_pda, 100, 720),
+                program_id.to_string(),
+            ),
         );
 
         let encoded = base64::engine::general_purpose::STANDARD
@@ -5549,11 +5697,13 @@ mod tests {
         );
     }
 
-    // Idempotent path with an empty signature history: the delegation exists but
-    // no creation signature can be recovered, so the receipt omits it rather
-    // than failing.
+    // An existing delegation does NOT entitle an unproven activation to a
+    // receipt: when the submitted signature never confirmed on-chain, the
+    // server fails closed (the pre-#216 behavior issued a signatureless
+    // receipt here, a false-paid). The rejection must also release the
+    // consumed-signature claim so a later legitimate retry is not bricked.
     #[tokio::test(flavor = "multi_thread")]
-    async fn verify_credential_idempotent_without_history_omits_signature() {
+    async fn verify_credential_rejects_unconfirmed_activation_and_releases_the_claim() {
         let rpc = MockRpc::start().await;
         let mut config = make_config();
         config.rpc_url = Some(rpc.url());
@@ -5569,9 +5719,10 @@ mod tests {
             subscription_delegation_data(subscriber, plan_pda, 100, 720),
             program_id.to_string(),
         );
-        // No signatures seeded → getSignaturesForAddress returns an empty list.
+        // The submitted activation signature is never marked confirmed.
 
         let instructions = vec![
+            compute_unit_limit_instruction(),
             subscription_instruction(program_id, INSTRUCTION_SUBSCRIBE),
             subscription_instruction(program_id, INSTRUCTION_TRANSFER_SUBSCRIPTION),
         ];
@@ -5585,21 +5736,28 @@ mod tests {
         let encoded = base64::engine::general_purpose::STANDARD
             .encode(bincode::serialize(&transaction).expect("serialize transaction"));
         let challenge = server.subscription_challenge("100").expect("challenge");
-        let receipt = server
-            .verify_credential(&PaymentCredential::new(
-                challenge.to_echo(),
-                ActivatePayload {
-                    payload_type: "transaction".into(),
-                    transaction: Some(encoded),
-                    signature: None,
-                },
-            ))
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(encoded),
+                signature: None,
+            },
+        );
+
+        let err = server
+            .verify_credential(&credential)
             .await
-            .expect("idempotent activation receipt");
-        let ReceiptKind::Subscription { extensions, .. } = receipt else {
-            panic!("expected subscription receipt");
-        };
-        assert!(extensions.activation_signature.is_none());
+            .expect_err("unconfirmed activation signature must fail closed");
+        assert!(err.to_string().contains("not confirmed"), "{err}");
+
+        // The claim was released: an identical retry hits the SAME rejection
+        // (not "already consumed"), so a later broadcast-backed retry can win.
+        let retry = server
+            .verify_credential(&credential)
+            .await
+            .expect_err("retry must also fail closed while unconfirmed");
+        assert!(retry.to_string().contains("not confirmed"), "{retry}");
     }
 
     // The subscriber is the fee payer's derived pubkey path: fee sponsorship is
