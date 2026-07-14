@@ -41,6 +41,9 @@ rules:
             - pattern-not: $X.length
             - pattern-not: $X.byteLength
             - pattern-not: $X.size
+            # A runtime type check (`typeof secret !== 'string'`) inspects the
+            # value's type tag, not its bytes; it cannot leak match progress.
+            - pattern-not: typeof $X
       - metavariable-pattern:
           metavariable: $B
           patterns:
