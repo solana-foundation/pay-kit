@@ -2,7 +2,13 @@ import { createSolanaRpc } from '@solana/kit';
 
 import type { PayKitConfig } from '../config.js';
 import { ConfigurationError, InvalidProofError } from '../errors.js';
-import { createMemoryReplayStore, isReservingReplayStore, type ReservingReplayStore } from '../replay-store.js';
+import {
+    atomicReplayStoreView,
+    createMemoryReplayStore,
+    isAtomicReplayStore,
+    isReservingReplayStore,
+    type ReservingReplayStore,
+} from '../replay-store.js';
 
 export { isReservingReplayStore, type ReservingReplayStore } from '../replay-store.js';
 
@@ -21,10 +27,17 @@ const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
 export function resolveX402ReplayStore(config: PayKitConfig, scheme: string): ReservingReplayStore {
     const store = config.replayStore;
     if (store !== undefined) {
-        if (!isReservingReplayStore(store)) {
-            throw new ConfigurationError(`x402 ${scheme} requires a replayStore with atomic reserve capability.`);
+        if (isReservingReplayStore(store)) {
+            return store;
         }
-        return store;
+        // A store built for MPP's atomic `putIfAbsent` contract (e.g. the shared
+        // process-local store a dual x402+mpp config provisions from the unsafe
+        // opt-in) is upgraded to the reserve surface via the atomic view, so both
+        // protocols fence against the same underlying consumed-signature markers.
+        if (isAtomicReplayStore(store)) {
+            return atomicReplayStoreView(store);
+        }
+        throw new ConfigurationError(`x402 ${scheme} requires a replayStore with atomic reserve capability.`);
     }
     if (config.network === 'solana_localnet' || process.env[ALLOW_INMEMORY_REPLAY_STORE_ENV] === '1') {
         return createMemoryReplayStore();
