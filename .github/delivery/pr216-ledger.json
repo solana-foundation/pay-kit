@@ -64,7 +64,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup; PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #214 and PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214, #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "272190cfc022eb728d74dd6506846cbbf004822d",
@@ -81,7 +81,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "cd9d245302c92672476eae8fde299d4169bc51be",
@@ -149,7 +149,7 @@
         }
       ],
       "owner": "PR #230 / fix/kotlin-canonical-json-hardening",
-      "followUp": "Land PR #230, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #230 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "a99a571adb19dc913de91b1cc7e0159132fea3d2",
@@ -224,7 +224,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "51d1c4a1bd66be82db2539a7fe959078030f445d",
@@ -241,7 +241,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "8fd892bf66ff827772c709a46905bbd77723b77a",
@@ -343,7 +343,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "ca15d9498b5b5c04251b9b6bc57c648a176e5130",
@@ -360,7 +360,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "4efd4bbb60e64f12e6b453f26826f2e9a69b744e",
@@ -394,7 +394,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "sha": "36d493f05ccb34ced2cbb06008d1d21dfb1d7c4c",
@@ -3818,7 +3818,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/paykit/adapters/x402/binding_test.go",
@@ -3834,7 +3834,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/paykit/adapters/x402/exact.go",
@@ -3876,7 +3876,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/paykit/types.go",
@@ -3892,7 +3892,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/protocols/mpp/server/server_replay_durability_test.go",
@@ -4116,7 +4116,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/protocols/mpp/server/session_voucher.go",
@@ -4158,7 +4158,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/protocols/x402/verify.go",
@@ -4200,7 +4200,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "go/protocols/x402/verify_full_coverage_test.go",
@@ -4320,7 +4320,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "harness/go-client/go.sum",
@@ -4336,7 +4336,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "harness/go-server/go.mod",
@@ -4352,7 +4352,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "harness/go-server/go.sum",
@@ -4368,7 +4368,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "harness/package.json",
@@ -4987,7 +4987,7 @@
         }
       ],
       "owner": "PR #230 / fix/kotlin-canonical-json-hardening",
-      "followUp": "Land PR #230, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #230 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "kotlin/src/test/kotlin/com/solana/paykit/protocols/mpp/client/ChargeCredentialTest.kt",
@@ -5003,7 +5003,7 @@
         }
       ],
       "owner": "PR #230 / fix/kotlin-canonical-json-hardening",
-      "followUp": "Land PR #230, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #230 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "lua/cmd/conformance/main.lua",
@@ -5201,7 +5201,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "php/src/Protocols/Mpp/Adapter.php",
@@ -5243,7 +5243,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "php/src/Protocols/X402/Exact/Verifier.php",
@@ -5337,7 +5337,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "php/tests/Protocols/X402/AdapterTest.php",
@@ -5353,7 +5353,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "php/tests/Protocols/X402/ConfirmationTest.php",
@@ -5369,7 +5369,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "php/tests/Protocols/X402/Exact/AtaCreateRejectTest.php",
@@ -5411,7 +5411,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "php/tests/Protocols/X402/LegacyWireTest.php",
@@ -5427,7 +5427,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "playground/package.json",
@@ -6849,7 +6849,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/HttpClientPerformTests.swift",
@@ -6865,7 +6865,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/InstructionsTests.swift",
@@ -6881,7 +6881,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/PayCoreEdgeCaseTests.swift",
@@ -6897,7 +6897,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/RpcClientTests.swift",
@@ -6939,7 +6939,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/X402TypesCoverageTests.swift",
@@ -6955,7 +6955,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "swift/scripts/check_coverage.sh",
@@ -7055,7 +7055,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/challenge-guard-serialize.test.ts",
@@ -7071,7 +7071,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/charge-client-branches.test.ts",
@@ -7087,7 +7087,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/charge.test.ts",
@@ -7103,7 +7103,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/mpp-cosign-verify-guards.test.ts",
@@ -7119,7 +7119,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/multi-delegate-branches.test.ts",
@@ -7135,7 +7135,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/on-chain-branches.test.ts",
@@ -7151,7 +7151,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/payment-channels-branches.test.ts",
@@ -7167,7 +7167,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/replay-reserve.test.ts",
@@ -7449,7 +7449,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/client/Subscription.ts",
@@ -7465,7 +7465,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/index.ts",
@@ -7481,7 +7481,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/server/Charge.ts",
@@ -7497,7 +7497,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/server/Session.ts",
@@ -7539,7 +7539,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/server/index.ts",
@@ -7649,7 +7649,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/mpp/src/utils/transactions.ts",
@@ -7665,7 +7665,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/config-replay-x402.test.ts",
@@ -7723,7 +7723,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/express-routes.test.ts",
@@ -7739,7 +7739,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/mpp-adapter-settle.test.ts",
@@ -7755,7 +7755,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/mpp-adapter.test.ts",
@@ -7771,7 +7771,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/mpp-session.test.ts",
@@ -7813,7 +7813,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/paykit-usage-branches.test.ts",
@@ -7829,7 +7829,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/protocol.test.ts",
@@ -7845,7 +7845,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/repo-hygiene.test.ts",
@@ -7893,7 +7893,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-adapter.test.ts",
@@ -7909,7 +7909,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-shared.test.ts",
@@ -7925,7 +7925,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-upto-blockhash-cache.test.ts",
@@ -7941,7 +7941,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-upto-engine.test.ts",
@@ -7957,7 +7957,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/adapters/mpp.ts",
@@ -7973,7 +7973,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/adapters/x402-shared.ts",
@@ -7989,7 +7989,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/adapters/x402-upto.ts",
@@ -8031,7 +8031,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     },
     {
       "path": "typescript/packages/pay-kit/src/config.ts",
@@ -8099,7 +8099,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
+      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
     }
   ]
 }
