@@ -106,7 +106,12 @@ export type ChannelMutator = (current: ChannelState | undefined) => ChannelState
 /** Explicit storage safety declaration for session channel state. */
 export type SessionStoreDurability = 'durable-shared' | 'ephemeral';
 
-const MEMORY_SESSION_STORE = Symbol('solana-mpp-memory-session-store');
+/**
+ * Brand marking a store as the process-local, non-durable in-memory
+ * `SessionStore`. Uses the global symbol registry so the mark survives the
+ * `@solana/mpp` / consumer package boundary without an `instanceof` check.
+ */
+const MEMORY_SESSION_STORE = Symbol.for('@solana/mpp/server:memory-session-store');
 
 /**
  * Async store for per-channel state.
@@ -134,7 +139,12 @@ export interface SessionStore {
     updateChannel(channelId: string, mutator: ChannelMutator): Promise<ChannelState>;
 }
 
-/** True only for the built-in process-local implementation. */
+/**
+ * True when `store` was produced by {@link createMemorySessionStore}. Higher
+ * level adapters use this to keep process-local session state out of
+ * production clusters (mirrors the replay store's `isDurable`/`isShared`
+ * self-report), instead of `instanceof`, which breaks across package copies.
+ */
 export function isMemorySessionStore(store: SessionStore): boolean {
     return (store as unknown as Record<symbol, unknown>)[MEMORY_SESSION_STORE] === true;
 }
@@ -164,8 +174,7 @@ export function createMemorySessionStore(): SessionStore {
         return next;
     }
 
-    return {
-        [MEMORY_SESSION_STORE]: true,
+    const store: SessionStore = {
         deleteChannel(channelId) {
             data.delete(channelId);
             return Promise.resolve();
@@ -215,4 +224,14 @@ export function createMemorySessionStore(): SessionStore {
             });
         },
     };
+    // Enumerable so an object spread (`{ ...store }`) copies the brand too: a
+    // shallow copy of a process-local store is still process-local, so it must
+    // stay detectable and be rejected off-localnet (fail CLOSED). A symbol key
+    // is invisible to JSON.stringify and Object.keys regardless of the
+    // enumerable flag, so nothing leaks into serialized output.
+    Object.defineProperty(store, MEMORY_SESSION_STORE, {
+        enumerable: true,
+        value: true,
+    });
+    return store;
 }

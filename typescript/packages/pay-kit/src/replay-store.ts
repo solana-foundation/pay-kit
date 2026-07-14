@@ -68,8 +68,14 @@ export function createUnsafeMemoryReplayStore(): ReplayStore {
  *
  * #211 already serializes charge verification inside one process. This view
  * leaves that lock untouched and upgrades only the final consumed-marker write
- * to a cross-instance atomic reservation.
+ * to a cross-instance atomic reservation. It also exposes `reserve` (aliasing
+ * `putIfAbsent`) so the same view satisfies the subscription server's store
+ * contract without the operator having to implement two atomic primitives.
  */
-export function atomicReplayStoreView(store: ReplayStore): ReplayStore {
-    return createAtomicReplayStoreView(store) as ReplayStore;
+export function atomicReplayStoreView(
+    store: ReplayStore,
+): ReplayStore & { reserve(key: string, value?: unknown, ttlSeconds?: number): Promise<boolean> } {
+    return createAtomicReplayStoreView(store) as ReplayStore & {
+        reserve(key: string, value?: unknown, ttlSeconds?: number): Promise<boolean>;
+    };
 }

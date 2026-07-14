@@ -5,7 +5,13 @@ import { createX402ExactAdapter } from './adapters/x402.js';
 import { Charge, X402Upto } from './adapters/x402-upto.js';
 import type { AcceptsEntry, Challenge } from './challenge.js';
 import { resolveCoin } from './coin.js';
-import { assertReplayStorePolicy, configure, type ConfigureParams, type PayKitConfig } from './config.js';
+import {
+    configure,
+    type ConfigureParams,
+    freezePayKitConfig,
+    type PayKitConfig,
+    validatePayKitConfig,
+} from './config.js';
 import { ConfigurationError, InvalidProofError } from './errors.js';
 import { type ExpressRoutesApp, GATE_METADATA, introspectExpressRoutes } from './express-routes.js';
 import { Gate } from './gate.js';
@@ -226,8 +232,11 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         pricing: pricingDef,
         ...configureParams
     } = options;
-    const config = prebuilt ?? (await configure(configureParams));
-    assertReplayStorePolicy(config);
+    let config = prebuilt ?? (await configure(configureParams));
+    if (prebuilt) {
+        validatePayKitConfig(prebuilt);
+        config = freezePayKitConfig(prebuilt);
+    }
     const handleSettleFailure = onSettleError ?? warnSettleFailure;
 
     const adapters =
