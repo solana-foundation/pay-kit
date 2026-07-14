@@ -83,6 +83,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     broadcast_prepared_transaction,
     complete_open_transaction,
     confirm_transaction_signature,
+    new_open_state_tx_verifier,
     new_top_up_state_tx_verifier,
     settle_and_seal_channel,
     verify_open_tx,
@@ -921,6 +922,14 @@ class Session:
                 code="invalid-payload",
             )
         elif mode == "push" and self._rpc is not None:
+            # Off localnet the authoritative state verifier (process_open) binds
+            # the confirmed on-chain Channel account, so propagate the challenge
+            # incarnation onto the payload first: the verifier rejects a channel
+            # opened against a different recentSlot before state is persisted.
+            if payload.recent_slot in (None, 0):
+                payload.recent_slot = challenge_recent_slot
+            # Confirm liveness inline as well so a localnet signature-only push
+            # (where no state verifier is installed) still verifies on-chain.
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
         # else: no transaction is attached. Reachable by a pull open (the channel
         # id / token account and deposit are trusted as provided, mirroring the TS
@@ -1308,8 +1317,13 @@ def new_session(options: SessionOptions) -> Session:
 
     # Shared with SessionServer's constructor guard so the factory and a
     # direct construction enforce one channel-store deployment policy.
+    # enforce_channel_store_policy has already rejected an absent/in-memory
+    # store off-localnet without the explicit opt-in, so the memory fallback
+    # below is only reachable on localnet or under the acknowledged opt-in.
     enforce_channel_store_policy(options.store, network)
 
+    # nosemgrep: failopen-default-store-python  -- fail-closed via the shared
+    # enforce_channel_store_policy guard above (not the rule's inline if/raise).
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(
@@ -1325,10 +1339,18 @@ def new_session(options: SessionOptions) -> Session:
         modes=options.modes,
         pull_voucher_strategy=options.pull_voucher_strategy,
     )
-    # Open verification remains in the method layer because server-broadcast
-    # opens need request-specific signing. Top-ups use the state-aware core
-    # seam so it can bind the confirmed transaction's delta to the exact
-    # channel snapshot and recheck that snapshot atomically after the RPC await.
+    config.open_tx_submitter = open_tx_submitter
+    # Off localnet the authoritative open verifier binds the confirmed on-chain
+    # Channel account so payload economics are never persisted as facts. It
+    # needs an RPC client; when absent the core fail-closes for non-localnet
+    # payment-channel opens instead of trusting the payload. On localnet the
+    # method layer keeps its existing structural/liveness checks, so the state
+    # seam is left unset to preserve the in-memory development flow.
+    if options.rpc is not None and network != "localnet":
+        config.verify_open_state_tx = new_open_state_tx_verifier(config, options.rpc)
+    # Top-ups use the state-aware core seam so it can bind the confirmed
+    # transaction's delta to the exact channel snapshot and recheck that
+    # snapshot atomically after the RPC await.
     config.verify_top_up_state_tx = new_top_up_state_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(

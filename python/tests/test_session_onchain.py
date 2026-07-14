@@ -596,6 +596,7 @@ class _OpenConfig:
     recipient: str
     max_cap: int
     operator: str = ""
+    settlement_window: int = 0
     program_id: Pubkey | None = None
     splits: list[Split] = field(default_factory=list)
 

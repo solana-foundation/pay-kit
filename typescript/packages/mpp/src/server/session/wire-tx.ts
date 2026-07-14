@@ -34,6 +34,15 @@ export async function buildAndSignWireTransaction(
     signer: TransactionSigner,
     instructions: readonly ServerInstruction[],
 ): Promise<string> {
+    return (await buildAndSignWireTransactionWithLifetime(rpc, signer, instructions)).wire;
+}
+
+/** Session-internal builder that also returns the signed blockhash lifetime. */
+export async function buildAndSignWireTransactionWithLifetime(
+    rpc: RpcWithBlockhash,
+    signer: TransactionSigner,
+    instructions: readonly ServerInstruction[],
+): Promise<{ readonly lastValidBlockHeight: bigint; readonly wire: string }> {
     const { value: latestBlockhash } = await rpc.getLatestBlockhash({ commitment: 'confirmed' }).send();
     const message = pipe(
         createTransactionMessage({ version: 0 }),
@@ -42,5 +51,8 @@ export async function buildAndSignWireTransaction(
         m => appendTransactionMessageInstructions(instructions, m),
     );
     const signed = await signTransactionMessageWithSigners(message);
-    return getBase64EncodedWireTransaction(signed);
+    return {
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        wire: getBase64EncodedWireTransaction(signed),
+    };
 }
