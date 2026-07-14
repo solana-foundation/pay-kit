@@ -19,11 +19,14 @@ test it mirrors in the docstring.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
@@ -42,14 +45,52 @@ from solana_pay_kit.protocols.mpp.server.session_method import (
     SessionOptions,
     new_session,
 )
+from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelMutator,
+    ChannelState,
+    ChannelStore,
+    ListChannelsFilter,
+    MemoryChannelStore,
+    ProductionChannelStore,
+)
 from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
 
 
+class _DelegatingChannelStore(ChannelStore):
+    """Process-local stand-in used to exercise the nominal production marker."""
+
+    def __init__(self) -> None:
+        self._delegate = MemoryChannelStore()
+
+    async def get_channel(self, channel_id: str) -> ChannelState | None:
+        return await self._delegate.get_channel(channel_id)
+
+    async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
+        return await self._delegate.update_channel(channel_id, mutator)
+
+    async def delete_channel(self, channel_id: str) -> None:
+        await self._delegate.delete_channel(channel_id)
+
+    async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
+        return await self._delegate.list_channels(filter)
+
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
+        return await self._delegate.mark_sealed(channel_id)
+
+
+class _ProductionChannelStore(_DelegatingChannelStore, ProductionChannelStore):
+    """Application-asserted production backend for construction tests."""
+
+
+class _ProductionMemoryChannelStore(MemoryChannelStore, ProductionChannelStore):
+    """Attempts to label the bundled process-local store as production-safe."""
+
+
 class _TestVoucherSigner:
-    """An Ed25519 keypair signing canonical 48-byte vouchers. Mirrors
+    """An Ed25519 keypair signing canonical 50-byte vouchers. Mirrors
     ``testVoucherSigner`` in the Go suite."""
 
     def __init__(self, seed: int) -> None:
@@ -84,6 +125,7 @@ class _FakeRpc:
 
     def __init__(self, blockhash: str = "FakeBlockhash1111111111111111111111111111111") -> None:
         self.statuses: dict[str, dict | None] = {}
+        self.transactions: dict[str, dict] = {}
         self.blockhash = blockhash
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
@@ -105,6 +147,41 @@ class _FakeRpc:
                 self.value = _Value(blockhash)
 
         return _Resp(self.blockhash)
+
+    async def get_transaction(self, signature: str, **_kwargs):
+        return self.transactions.get(str(signature))
+
+    async def get_account_info(
+        self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
+    ) -> tuple[bytes, str] | None:
+        return None
+
+
+def _base58_encode(data: bytes) -> str:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    number = int.from_bytes(data, "big")
+    encoded = ""
+    while number:
+        number, remainder = divmod(number, 58)
+        encoded = alphabet[remainder] + encoded
+    return encoded or "1"
+
+
+def _confirmed_top_up_transaction(channel_id: str, delta: int) -> dict:
+    return {
+        "meta": {"err": None},
+        "transaction": {
+            "message": {
+                "instructions": [
+                    {
+                        "programId": str(PROGRAM_ID),
+                        "accounts": [_new_wallet(), channel_id],
+                        "data": _base58_encode(b"\x03" + delta.to_bytes(8, "little")),
+                    }
+                ]
+            }
+        },
+    }
 
 
 def _new_test_session(**overrides) -> Session:
@@ -183,6 +260,71 @@ def test_new_session_validation_too_many_splits() -> None:
         )
 
 
+def test_new_session_validation_rejects_duplicate_split_recipient() -> None:
+    duplicate_recipient = _new_wallet()
+    with pytest.raises(PaymentError, match="splits\\[1\\] duplicates recipient"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                splits=[
+                    Split(recipient=duplicate_recipient, bps=1_000),
+                    Split(recipient=duplicate_recipient, bps=2_000),
+                ],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("splits", "message"),
+    [
+        ([Split(recipient="not-base58!", bps=1)], "invalid recipient pubkey"),
+        ([Split(recipient=SESSION_TEST_RECIPIENT, bps=0)], "bps must be positive"),
+        (
+            [
+                Split(recipient=SESSION_TEST_RECIPIENT, bps=6_000),
+                Split(recipient=_new_wallet(), bps=4_001),
+            ],
+            "split bps total cannot exceed 10000",
+        ),
+    ],
+)
+def test_new_session_validation_rejects_invalid_split_config(splits: list[Split], message: str) -> None:
+    with pytest.raises(PaymentError, match=message):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                splits=splits,
+            )
+        )
+
+
+def test_new_session_validation_requires_account_info_for_settlement_rpc() -> None:
+    signer = LocalSigner.from_keypair(Keypair.from_seed(bytes([55] * 32)))
+    with pytest.raises(PaymentError, match="settlement requires an RPC client with get_account_info"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                signer=signer,
+                rpc=cast(Any, object()),
+            )
+        )
+
+
+def test_open_tx_expected_binds_configured_splits() -> None:
+    split = Split(recipient=_new_wallet(), bps=3_333)
+    session = _new_test_session(splits=[split])
+    expected = session._open_tx_expected(
+        OpenPayload.push(_new_wallet(), "1000", _new_wallet(), _confirmed_signature(0x24))
+    )
+    assert expected.recipients == [(split.recipient, split.bps)]
+
+
 def test_new_session_validation_pull_requires_strategy() -> None:
     with pytest.raises(PaymentError, match="pullVoucherStrategy is required"):
         new_session(
@@ -213,15 +355,182 @@ def test_new_session_validation_missing_secret(monkeypatch: pytest.MonkeyPatch) 
         new_session(SessionOptions(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=""))
 
 
+@pytest.mark.parametrize("store", [None, MemoryChannelStore()])
+def test_new_session_inmemory_store_fails_closed_outside_localnet(monkeypatch: pytest.MonkeyPatch, store) -> None:
+    options = SessionOptions(
+        recipient=SESSION_TEST_RECIPIENT,
+        cap=1_000,
+        network="devnet",
+        secret_key=SESSION_METHOD_SECRET,
+        store=store,
+    )
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        new_session(options)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        new_session(options)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    assert isinstance(new_session(options).core().store(), MemoryChannelStore)
+
+
+@pytest.mark.parametrize("network", ["mainnet", "mainnet-beta"])
+@pytest.mark.parametrize("store", [None, MemoryChannelStore()])
+def test_new_session_mainnet_aliases_reject_inmemory_store_opt_in(
+    monkeypatch: pytest.MonkeyPatch, network: str, store: MemoryChannelStore | None
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="forbidden on mainnet"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network=network,
+                secret_key=SESSION_METHOD_SECRET,
+                store=store,
+            )
+        )
+
+
+def test_new_session_mainnet_rejects_opt_in_even_with_production_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The devnet opt-in on mainnet is a misconfiguration signal and fails
+    closed even when the injected store itself is production-attested,
+    mirroring ``resolve_replay_store``."""
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="forbidden on mainnet") as exc_info:
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="mainnet",
+                secret_key=SESSION_METHOD_SECRET,
+                store=_ProductionChannelStore(),
+            )
+        )
+    assert exc_info.value.code == "invalid-config"
+
+
+@pytest.mark.parametrize("network", ["devnet", "mainnet"])
+@pytest.mark.parametrize("store", [ChannelStore(), _DelegatingChannelStore()])
+def test_new_session_rejects_unmarked_channel_stores_outside_localnet(
+    monkeypatch: pytest.MonkeyPatch, network: str, store: ChannelStore
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network=network,
+                secret_key=SESSION_METHOD_SECRET,
+                store=store,
+            )
+        )
+
+
+def test_new_session_rejects_memory_store_production_marker_on_mainnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="mainnet",
+                secret_key=SESSION_METHOD_SECRET,
+                store=_ProductionMemoryChannelStore(),
+            )
+        )
+
+
+@pytest.mark.parametrize("network", ["devnet", "mainnet"])
+def test_new_session_accepts_nominal_production_channel_store_outside_localnet(network: str) -> None:
+    store = _ProductionChannelStore()
+
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            network=network,
+            secret_key=SESSION_METHOD_SECRET,
+            store=store,
+        )
+    )
+
+    assert session.core().store() is store
+
+
+def test_new_session_rejects_unknown_network_before_store_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="unknown network"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="solana:unknown-network",
+                secret_key=SESSION_METHOD_SECRET,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("network", "canonical"),
+    [
+        ("solana_mainnet", "mainnet"),
+        ("solana_devnet", "devnet"),
+        ("solana_localnet", "localnet"),
+    ],
+)
+def test_new_session_accepts_public_network_enum_values(
+    monkeypatch: pytest.MonkeyPatch, network: str, canonical: str
+) -> None:
+    # The devnet memory-store escape needs the opt-in; mainnet must not see
+    # it (the opt-in is forbidden there even alongside a production store).
+    if canonical == "devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    store = None if canonical != "mainnet" else _ProductionChannelStore()
+
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            network=network,
+            secret_key=SESSION_METHOD_SECRET,
+            store=store,
+        )
+    )
+
+    assert session._network == canonical
+
+
+def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None:
+    assert isinstance(_new_test_session().core().store(), MemoryChannelStore)
+
+    store = MemoryChannelStore()
+    assert _new_test_session(store=store).core().store() is store
+
+
 # ── new_session defaults (TestNewSessionDefaults) ──
 
 
-def test_new_session_defaults() -> None:
-    session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="")
+def test_new_session_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    store = _ProductionChannelStore()
+    session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="", store=store)
     assert session._currency == "USDC"
     assert session._network == "mainnet"
     assert session._open_tx_submitter == "client"
     assert session.core().config.decimals == 6
+    assert session.core().store() is store
 
 
 # ── challenge ──
@@ -662,6 +971,7 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
     signer = _TestVoucherSigner(1)
     channel_id = _new_wallet()
     await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
+    fake.transactions[topup_sig] = _confirmed_top_up_transaction(channel_id, 4_000)
 
     receipt = await _verify_session_action(
         session,

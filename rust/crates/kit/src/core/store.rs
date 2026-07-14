@@ -45,6 +45,19 @@ pub enum StoreError {
     Serialization(String),
 }
 
+/// Explicit safety capability for session-channel state stores.
+///
+/// Custom stores default to [`SessionStoreDurability::Unknown`], which is
+/// rejected off localnet. Production session servers require an affirmative
+/// `DurableShared` declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionStoreDurability {
+    #[default]
+    Unknown,
+    Ephemeral,
+    DurableShared,
+}
+
 /// In-memory store backed by a HashMap.
 pub struct MemoryStore {
     data: std::sync::Mutex<std::collections::HashMap<String, String>>,
@@ -200,6 +213,14 @@ pub struct ChannelState {
     #[serde(default)]
     pub open_slot: Option<u64>,
 
+    /// Authoritative channel PDA salt read from on-chain state.
+    #[serde(default)]
+    pub salt: Option<u64>,
+
+    /// Confirmed signature of a server-broadcast open, when supported.
+    #[serde(default)]
+    pub open_signature: Option<String>,
+
     /// Pull-mode only: the client's wallet pubkey (base58).
     ///
     /// `Some` for pull sessions (SPL delegation); `None` for push sessions.
@@ -225,6 +246,12 @@ pub struct ChannelState {
 /// Implementations MUST guarantee that `advance_cumulative` is atomic to
 /// prevent double-spend under concurrent requests.
 pub trait ChannelStore: Send + Sync {
+    /// Explicit session-store capability. Unknown is safe-by-default for
+    /// custom implementations: production session construction rejects it.
+    fn session_store_durability(&self) -> SessionStoreDurability {
+        SessionStoreDurability::Unknown
+    }
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -292,6 +319,10 @@ impl MemoryChannelStore {
 }
 
 impl ChannelStore for MemoryChannelStore {
+    fn session_store_durability(&self) -> SessionStoreDurability {
+        SessionStoreDurability::Ephemeral
+    }
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -419,6 +450,8 @@ mod tests {
             highest_voucher_expires_at: None,
             close_requested_at: None,
             open_slot: None,
+            salt: None,
+            open_signature: None,
             operator: None,
             next_delivery_sequence: 0,
             pending_deliveries: vec![],

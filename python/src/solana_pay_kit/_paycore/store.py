@@ -8,9 +8,14 @@ Two implementations ship with the SDK:
 
 * :class:`MemoryStore` is fast and process-local. Suitable for tests and
   single-instance deployments where a restart is acceptable.
-* :class:`FileReplayStore` is a JSON file under a configurable path. Survives
-  process restarts. Mirrors the Ruby ``Mpp::Store::FileStore`` shape so
-  cross-language deployments stay swap-compatible.
+* :class:`FileReplayStore` is a JSON file under a configurable path for local,
+  single-host development. It survives process restarts, but does not provide
+  an interprocess replay fence and is not a production replay store.
+
+Production deployments must provide an explicit :class:`ProductionReplayStore`
+implementation. That nominal contract is reserved for backends whose
+``put_if_absent`` operation is atomic across all writers, shared by all
+replicas, and durably committed before it reports success.
 
 The :class:`Mpp` constructor requires the caller to pass a store explicitly.
 There is no silent default. A missing store is a server misconfiguration that
@@ -23,10 +28,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import tempfile
+import threading
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from solana_pay_kit._paycore.solana import _canonical_network, validate_network
+
+logger = logging.getLogger(__name__)
+
+_ALLOW_INMEMORY_REPLAY_STORE_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"
 
 
 @runtime_checkable
@@ -39,6 +53,49 @@ class Store(Protocol):
     async def put_if_absent(self, key: str, value: Any) -> bool: ...
 
 
+class ProductionReplayStore(ABC):
+    """Nominal contract for an external production replay-store backend.
+
+    Subclass this only when every read-modify-write operation is coordinated
+    across processes and replicas, ``put_if_absent`` is atomic, and successful
+    writes are durable. This is intentionally a nominal contract rather than
+    mutable ``is_atomic``/``is_shared``/``is_durable`` instance flags.
+
+    Subclassing is an operator attestation, not a machine-checked capability:
+    the SDK cannot verify atomicity, sharing, or durability from inside the
+    process, and a subclass that delegates to process-local memory will pass
+    :func:`is_production_replay_store`. The marker exists to force a
+    deliberate, greppable opt-in at the deployment boundary; honoring its
+    guarantees is the deployer's responsibility.
+    """
+
+    @abstractmethod
+    async def get(self, key: str) -> Any | None: ...
+
+    @abstractmethod
+    async def put(self, key: str, value: Any) -> None: ...
+
+    @abstractmethod
+    async def delete(self, key: str) -> None: ...
+
+    @abstractmethod
+    async def put_if_absent(self, key: str, value: Any) -> bool: ...
+
+
+class ReplayStoreConfigurationError(ValueError):
+    """Raised when a replay store violates the deployment safety policy."""
+
+
+def is_production_replay_store(store: Store) -> bool:
+    """Return whether ``store`` explicitly implements the production contract.
+
+    The SDK's bundled stores are known local implementations. Check them
+    before the nominal contract so a multiple-inheritance class cannot label
+    ``MemoryStore`` or ``FileReplayStore`` as production-safe.
+    """
+    return not isinstance(store, (MemoryStore, FileReplayStore)) and isinstance(store, ProductionReplayStore)
+
+
 class MemoryStore:
     """Thread-safe in-memory store for development and tests.
 
@@ -48,21 +105,34 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def get(self, key: str) -> Any | None:
-        return self._data.get(key)
+        return await asyncio.to_thread(self._get, key)
+
+    def _get(self, key: str) -> Any | None:
+        with self._lock:
+            return self._data.get(key)
 
     async def put(self, key: str, value: Any) -> None:
-        async with self._lock:
+        await asyncio.to_thread(self._put, key, value)
+
+    def _put(self, key: str, value: Any) -> None:
+        with self._lock:
             self._data[key] = value
 
     async def delete(self, key: str) -> None:
-        async with self._lock:
+        await asyncio.to_thread(self._delete, key)
+
+    def _delete(self, key: str) -> None:
+        with self._lock:
             self._data.pop(key, None)
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
-        async with self._lock:
+        return await asyncio.to_thread(self._put_if_absent, key, value)
+
+    def _put_if_absent(self, key: str, value: Any) -> bool:
+        with self._lock:
             if key in self._data:
                 return False
             self._data[key] = value
@@ -72,9 +142,10 @@ class MemoryStore:
 class FileReplayStore:
     """File-backed replay store.
 
-    Persists the consumed-signature set to a JSON file under ``path``. Survives
-    process restarts so a credential cannot replay across a server bounce.
-    Mirrors :class:`Mpp::Store::FileStore` in the Ruby SDK.
+    Persists the consumed-signature set to a JSON file under ``path`` for a
+    single local process. It survives process restarts, but separate instances
+    cache stale data and only coordinate with their own local lock. It is never
+    safe as a replay fence outside localnet.
 
     The on-disk layout is a single JSON object ``{"<key>": <value>}``. Writes
     are write-temp-then-rename so a crash mid-write cannot leave a torn file.
@@ -85,7 +156,7 @@ class FileReplayStore:
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self._path = Path(path)
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         self._data: dict[str, Any] = self._load()
 
     def _load(self) -> dict[str, Any]:
@@ -145,45 +216,177 @@ class FileReplayStore:
             raise
 
     async def get(self, key: str) -> Any | None:
-        return self._data.get(key)
+        return await asyncio.to_thread(self._get, key)
 
-    async def _flush_off_loop(self, data: dict[str, Any]) -> None:
-        """Run the blocking ``_flush`` in a worker thread.
-
-        ``_flush`` performs synchronous file IO and ``os.fsync()``; both
-        block the event loop if called directly from an async coroutine
-        and degrade tail latency for the whole server under load.
-        ``asyncio.to_thread`` offloads the call to the default executor
-        so other coroutines stay responsive while the page-cache
-        flushes to disk.
-        """
-        await asyncio.to_thread(self._flush, data)
+    def _get(self, key: str) -> Any | None:
+        with self._lock:
+            return self._data.get(key)
 
     async def put(self, key: str, value: Any) -> None:
+        await asyncio.to_thread(self._put, key, value)
+
+    def _put(self, key: str, value: Any) -> None:
         # Greptile P1 (follow-up): flush BEFORE committing to
         # ``self._data``. If ``_flush`` raises (disk full mid-fsync, IO
         # error during ``os.replace``), the in-memory state would
         # otherwise diverge from the on-disk store, so a subsequent
         # ``get`` would report a key that was never durably persisted.
         # We build the next dict, flush it, then swap.
-        async with self._lock:
+        with self._lock:
             next_data = {**self._data, key: value}
-            await self._flush_off_loop(next_data)
+            self._flush(next_data)
             self._data = next_data
 
     async def delete(self, key: str) -> None:
-        async with self._lock:
+        await asyncio.to_thread(self._delete, key)
+
+    def _delete(self, key: str) -> None:
+        with self._lock:
             if key not in self._data:
                 return
             next_data = {k: v for k, v in self._data.items() if k != key}
-            await self._flush_off_loop(next_data)
+            self._flush(next_data)
             self._data = next_data
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
-        async with self._lock:
+        return await asyncio.to_thread(self._put_if_absent, key, value)
+
+    def _put_if_absent(self, key: str, value: Any) -> bool:
+        with self._lock:
             if key in self._data:
                 return False
             next_data = {**self._data, key: value}
-            await self._flush_off_loop(next_data)
+            self._flush(next_data)
             self._data = next_data
             return True
+
+
+def resolve_replay_store(network: str, replay_store: Store | None, *, protocol: str) -> Store:
+    """Apply the shared replay-store policy for raw servers and adapters.
+
+    The existing server network allowlist validates and canonicalizes
+    ``network`` before policy selection. Localnet may use either bundled store.
+    Outside localnet, only a caller's explicit :class:`ProductionReplayStore`
+    is accepted, except for the existing explicit devnet ``MemoryStore``
+    escape. The nominal contract is a deployment assertion: callers remain
+    responsible for providing an atomic, shared, durable backend.
+    """
+    validate_network(network)
+    network = _canonical_network(network)
+    is_localnet = network == "localnet"
+    is_devnet = network == "devnet"
+    is_mainnet = network == "mainnet"
+    inmemory_opt_in = os.getenv(_ALLOW_INMEMORY_REPLAY_STORE_ENV) == "1"
+    allow_inmemory = is_devnet and inmemory_opt_in
+
+    if is_mainnet and inmemory_opt_in:
+        raise ReplayStoreConfigurationError(
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 is forbidden on mainnet; "
+            "inject a ProductionReplayStore backed by atomic, shared, durable storage"
+        )
+
+    if replay_store is not None:
+        if is_localnet:
+            return replay_store
+        # Built-ins are checked before the nominal contract. A class that
+        # inherits MemoryStore and ProductionReplayStore is still memory-only.
+        if isinstance(replay_store, FileReplayStore):
+            raise ReplayStoreConfigurationError(
+                "FileReplayStore is limited to single-host localnet development; "
+                "inject a ProductionReplayStore backed by atomic, shared, durable storage"
+            )
+        if isinstance(replay_store, MemoryStore):
+            if allow_inmemory:
+                logger.warning(
+                    "solana_pay_kit: %s is using a process-local MemoryStore on devnet because %s=1; "
+                    "replay protection will not survive restarts or span replicas",
+                    protocol,
+                    _ALLOW_INMEMORY_REPLAY_STORE_ENV,
+                )
+                return replay_store
+            raise ReplayStoreConfigurationError(
+                f"{protocol} requires a ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+                "shared, and durable. Set "
+                f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
+            )
+        if is_production_replay_store(replay_store):
+            return replay_store
+        raise ReplayStoreConfigurationError(
+            f"{protocol} requires a ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+            "shared, and durable. Set "
+            f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
+        )
+
+    if is_localnet:
+        return MemoryStore()
+    if allow_inmemory:
+        logger.warning(
+            "solana_pay_kit: %s is using a process-local MemoryStore on devnet because %s=1; "
+            "replay protection will not survive restarts or span replicas",
+            protocol,
+            _ALLOW_INMEMORY_REPLAY_STORE_ENV,
+        )
+        return MemoryStore()
+    raise ReplayStoreConfigurationError(
+        f"{protocol} requires an injected ProductionReplayStore outside localnet; its put_if_absent must be atomic, "
+        "shared, and durable. Set "
+        f"{_ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 only for explicit devnet MemoryStore development."
+    )
+
+
+SETTLEMENT_REPLAY_PREFIX = "solana-settlement:consumed:"
+
+# Markers written by workers that predate the canonical cross-protocol key.
+# During a rolling upgrade old MPP charge workers still claim the
+# solana-charge marker and old x402 workers the x402-svm-exact marker, so a
+# new worker must claim those too: otherwise a signature settled by an old
+# worker under a legacy key would settle again under the canonical key (and
+# a canonical settlement would replay against an old worker). Remove these
+# once every deployed worker writes the canonical key.
+LEGACY_SETTLEMENT_REPLAY_PREFIXES = (
+    "solana-charge:consumed:",
+    "x402-svm-exact:consumed:",
+)
+
+
+def settlement_replay_keys(network: str, signature: str) -> tuple[str, ...]:
+    """Return the canonical settlement key plus rolling-upgrade legacy keys.
+
+    ``network`` is the CAIP-2 identity shared by the MPP and x402 settlement
+    fences. The canonical network-qualified key comes first: among upgraded
+    workers it is the single authoritative claim. The un-qualified legacy
+    keys follow so upgraded and not-yet-upgraded workers fence each other in
+    both directions.
+    """
+    return (
+        f"{SETTLEMENT_REPLAY_PREFIX}{network}:{signature}",
+        *(f"{prefix}{signature}" for prefix in LEGACY_SETTLEMENT_REPLAY_PREFIXES),
+    )
+
+
+async def claim_settlement_signature(store: Store, network: str, signature: str) -> bool:
+    """Claim ``signature`` for exactly one settlement across worker versions.
+
+    Claims the canonical key first, then each legacy marker, all through the
+    store's atomic ``put_if_absent``. Returns False as soon as any claim
+    loses: another worker (old or new, either protocol) already consumed the
+    signature. Markers inserted before the losing claim are intentionally
+    left in place; they truthfully record that the signature is consumed.
+    """
+    for key in settlement_replay_keys(network, signature):
+        if not await store.put_if_absent(key, True):
+            return False
+    return True
+
+
+async def release_settlement_signature(store: Store, network: str, signature: str) -> None:
+    """Roll back a fully successful claim after a settlement that never landed.
+
+    Only call this after :func:`claim_settlement_signature` returned True and
+    the broadcast is known to have failed on-chain, so every marker being
+    deleted is one this worker inserted. Deletes in reverse claim order so
+    the canonical key is released last and a concurrent upgraded worker can
+    never observe a half-released signature as free.
+    """
+    for key in reversed(settlement_replay_keys(network, signature)):
+        await store.delete(key)

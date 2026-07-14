@@ -25,6 +25,8 @@ type RunningServer = {
   ready: ReadyMessage;
 };
 
+type AdapterEnvironment = Record<string, string | undefined>;
+
 const ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
 const STDERR_RING_BUFFER_BYTES = 1024;
 const REPLAY_STORE_DIRECTORY = mkdtempSync(
@@ -177,18 +179,21 @@ async function waitForJsonMessage<T extends AdapterMessage>(
 
 function spawnAdapter(
   implementation: ImplementationDefinition,
-  extraEnv: Record<string, string> = {},
+  extraEnv: AdapterEnvironment = {},
 ): ChildProcess {
   const [command, ...args] = implementation.command;
+  const env = { ...process.env, ...extraEnv };
+  for (const [name, value] of Object.entries(extraEnv)) {
+    if (value === undefined) {
+      delete env[name];
+    }
+  }
+  // Reserved harness capability: callers cannot split workers onto
+  // process-local replay roots by overriding this value per child.
+  env.PAY_KIT_HARNESS_REPLAY_STORE_DIR = REPLAY_STORE_DIRECTORY;
   const child = spawn(command, args, {
     cwd: process.cwd(),
-    env: {
-      ...process.env,
-      ...extraEnv,
-      // Reserved harness capability: callers cannot split workers onto
-      // process-local replay roots by overriding this value per child.
-      PAY_KIT_HARNESS_REPLAY_STORE_DIR: REPLAY_STORE_DIRECTORY,
-    },
+    env,
     // Capture stderr to a ring buffer so adapter failures can attach the
     // last 1 KiB of stderr to the rejection. We also forward to the parent
     // stderr so vitest output keeps its full log.
@@ -208,7 +213,7 @@ function spawnAdapter(
 
 export async function startServer(
   implementation: ImplementationDefinition,
-  extraEnv: Record<string, string> = {},
+  extraEnv: AdapterEnvironment = {},
 ): Promise<RunningServer> {
   const child = spawnAdapter(implementation, extraEnv);
   const ready = await waitForJsonMessage<ReadyMessage>(
@@ -230,7 +235,7 @@ export async function startServer(
 export async function runClient(
   implementation: ImplementationDefinition,
   targetUrl: string,
-  extraEnv: Record<string, string> = {},
+  extraEnv: AdapterEnvironment = {},
 ): Promise<ClientRunResult> {
   const child = spawnAdapter(implementation, {
     // Inject both protocol-namespaced TARGET_URLs so an MPP client and
