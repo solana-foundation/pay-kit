@@ -48,6 +48,35 @@ FILE_EXEMPTIONS: dict[str, str] = {
         "8736) plus serde-derive line attribution on optional fields, neither "
         "coverable without removing the guard or line-touching filler"
     ),
+    "mpp/client/subscription.rs": (
+        "subscription activation client: the fail-closed validation paths are "
+        "unit-covered (missing/invalid method-detail fields, server-selected "
+        "custom token program, unknown token-2022 without opt-in, invalid or "
+        "absent recent blockhash, init_id byte length, missing plan fields). "
+        "The residual line+region gap is the on-chain SubscriptionAuthority "
+        "init broadcast-success path (initialize_subscription_authority_with_"
+        "state signs and send_and_confirm_transaction when the SA is absent, "
+        "then reads the SA back for its init_id) and the activation-builder "
+        "happy path's RPC account/blockhash reads, none of which a unit run can "
+        "broadcast or fetch. Follow-up: a subscription-client surfpool "
+        "integration test retires this, mirroring charge_integration"
+    ),
+    "mpp/server/session.rs": (
+        "session server: the money-path fail-closed rejects are unit-covered "
+        "via a mock RPC (top-up lower-deposit / over-cap / bad-amount / "
+        "unknown-channel / close-pending / sealed / resulting-deposit-mismatch "
+        "/ grace-period / distribution-hash rejects, no-RPC off-localnet "
+        "fail-closed, and the pure top-up wire verifier). The residual "
+        "line+region gap is the on-chain success paths that use a concrete "
+        "RpcClient (fetch_channel_account + settle_and_seal assembly on a "
+        "confirmed channel, the get_transaction top-up fetch) plus async "
+        "state-machine desugaring regions that stay count-0 under llvm-cov. "
+        "Known reject-coverage gap: the on-chain channel status/mint/payee/"
+        "rent-payer mismatch rejects (process_topup with rpc_url set) are "
+        "reachable via the SessionAccountRpc mock but not yet asserted. "
+        "Follow-up: add those mismatch-reject unit tests plus a SessionServer "
+        "surfpool integration test to retire this exemption"
+    ),
 }
 
 # `cargo llvm-cov` deliberately ignores `src/generated/`; keep every generated
