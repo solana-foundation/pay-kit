@@ -45,6 +45,6 @@ export {
     type VoucherVerifyReplayed,
     type VoucherVerifyResult,
 } from './session/voucher.js';
-export { subscription } from './Subscription.js';
+export { subscription, type SubscriptionReplayStore } from './Subscription.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/server'
 export { Mppx, Expires, Store } from 'mppx/server';

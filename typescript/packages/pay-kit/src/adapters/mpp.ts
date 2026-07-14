@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto';
+
 import { defaultTokenProgramForCurrency, guardChallengeValue, resolveStablecoinMint } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
@@ -10,10 +12,30 @@ import { ConfigurationError, InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2, toSolanaNetwork } from '../protocol.js';
-import { atomicReplayStoreView, isAtomicReplayStore } from '../replay-store.js';
+import {
+    atomicReplayStoreView,
+    isAtomicReplayStore,
+    isProductionReplayStore,
+    type ReplayStore,
+} from '../replay-store.js';
 
 /** Settlement header mirrored by every PayKit SDK. */
 const SETTLEMENT_SIGNATURE_HEADER = 'x-payment-settlement-signature';
+const SUBSCRIPTION_RESOURCE_BINDING_DOMAIN = 'pay-kit:mpp-subscription-resource:v1';
+
+/**
+ * Produces a non-path resource identifier so subscription credentials bind to
+ * the exact current path and raw query without exposing query values on wire.
+ */
+function subscriptionResourceFor(request: Request, challengeBindingSecret: string): string {
+    const url = new URL(request.url);
+    // Keep the URL parser's path semantics, but retain raw search text rather
+    // than normalizing through URLSearchParams: ordering, duplicates, and
+    // percent-encoding are therefore all binding-significant.
+    const canonical = JSON.stringify([SUBSCRIPTION_RESOURCE_BINDING_DOMAIN, url.pathname, url.search]);
+    const digest = createHmac('sha256', challengeBindingSecret).update(canonical).digest('hex');
+    return `${SUBSCRIPTION_RESOURCE_BINDING_DOMAIN}:hmac-sha256:${digest}`;
+}
 
 type ChargeResult =
     | { readonly challenge: Response; readonly status: 402 }
@@ -39,6 +61,12 @@ function totalAmount(gate: Gate): bigint {
     return gate.total().baseUnits();
 }
 
+function handlerCacheKey(parts: readonly unknown[]): string {
+    return JSON.stringify(parts, (_key, value: unknown) =>
+        typeof value === 'bigint' ? `pay-kit:bigint:${value.toString()}` : value,
+    );
+}
+
 /** The MPP scheme a gate settles through: `subscription` for recurring gates, else `charge`. */
 function schemeFor(gate: Gate): 'charge' | 'subscription' {
     return gate.kind === 'subscription' ? 'subscription' : 'charge';
@@ -56,8 +84,17 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     if (!isAtomicReplayStore(config.replayStore)) {
         throw new ConfigurationError('MPP adapter replayStore must implement atomic putIfAbsent(key, value).');
     }
+    // Explicitly typed so the atomic narrowing survives into the nested
+    // handler closures below (control-flow narrowing does not cross them).
+    const injectedStore: ReplayStore = config.replayStore;
     assertReplayStorePolicy(config);
-    const replayStore = atomicReplayStoreView(config.replayStore);
+    // One atomic view feeds both charge and subscription methods. The view
+    // exposes reserve() (aliasing putIfAbsent) so the subscription server's
+    // claimConsumed reservation runs against the same cross-instance atomic
+    // marker as charge replay. Production status is tracked on the injected
+    // store (not the view), so subscription durability is checked on
+    // injectedStore below.
+    const replayStore = atomicReplayStoreView(injectedStore);
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
 
@@ -67,7 +104,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         const splits = splitsFor(gate);
         // Key on every field a built handler captures, so gates differing only
         // in amount, description, or externalId get distinct handlers.
-        const key = JSON.stringify([
+        const key = handlerCacheKey([
             gate.kind,
             gate.payTo,
             mint,
@@ -83,22 +120,47 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
             const realm = guardChallengeValue('realm', config.mpp.realm);
             const description = gate.description ? guardChallengeValue('description', gate.description) : undefined;
             if (gate.subscription) {
-                const { periodCount, periodUnit, planId, puller } = gate.subscription;
+                const { merchant, periodCount, periodUnit, planBump, planCreatedAt, planId, planIdNumeric, puller } =
+                    gate.subscription;
+                if (!config.operator.feePayer) {
+                    throw new ConfigurationError('Subscription gates require an operator fee payer.');
+                }
+                // Subscription activation replay needs a durable, shared store.
+                // The nominal marker is #237's production declaration: outside
+                // localnet the injected store must be declared production via
+                // declareProductionReplayStore(). The unsafe-memory opt-in
+                // (createUnsafeMemoryReplayStore) is authorized-unsafe but never
+                // production, so it is rejected here even under
+                // PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE: the opt-in covers charge
+                // replay, never subscription activation replay.
+                if (config.network !== 'solana_localnet' && !isProductionReplayStore(injectedStore)) {
+                    throw new ConfigurationError(
+                        'Subscription gates outside localnet require a durable shared replay store declared with ' +
+                            'declareProductionReplayStore(); the in-memory opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE) ' +
+                            'does not cover subscription activation replay.',
+                    );
+                }
                 const mppx = Mppx.create({
                     methods: [
                         solana.subscription({
                             decimals: 6,
+                            merchant,
                             mint,
                             network,
                             periodCount,
                             periodUnit,
+                            planBump,
+                            planCreatedAt,
                             planId,
+                            planIdNumeric,
                             puller,
                             recipient: gate.payTo,
                             rpcUrl: config.rpcUrl,
+                            // feePayer is required for subscriptions (asserted above), so
+                            // the operator signer is always threaded through.
+                            signer: config.operator.signer.signer,
                             store: replayStore,
                             tokenProgram: defaultTokenProgramForCurrency(mint, network),
-                            ...signer,
                         }),
                     ],
                     realm,
@@ -106,10 +168,9 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 });
                 handler = request =>
                     mppx.subscription({
-                        amount: totalAmount(gate).toString(),
+                        ...optionsFor(gate, description),
                         currency: mint,
-                        ...(description !== undefined ? { description } : {}),
-                        ...(gate.externalId ? { externalId: gate.externalId } : {}),
+                        resource: subscriptionResourceFor(request, config.mpp.challengeBindingSecret),
                     })(request);
             } else {
                 const mppx = Mppx.create({
@@ -138,13 +199,12 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     }
 
     function optionsFor(gate: Gate, description: string | undefined) {
+        const expires = expirationFor(config.mpp.expiresIn);
         return {
             amount: totalAmount(gate).toString(),
             ...(description !== undefined ? { description } : {}),
             ...(gate.externalId ? { externalId: gate.externalId } : {}),
-            ...(config.mpp.expiresIn > 0
-                ? { expires: new Date(Date.now() + config.mpp.expiresIn * 1000).toISOString() }
-                : {}),
+            ...(expires === undefined ? {} : { expires }),
         };
     }
 
@@ -227,6 +287,16 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
             };
         },
     };
+}
+
+/** Validate the configured TTL at issuance, when the clock actually matters. */
+function expirationFor(expiresIn: number): string | undefined {
+    if (expiresIn === 0) return undefined;
+    const expires = new Date(Date.now() + expiresIn * 1000);
+    if (!Number.isFinite(expires.getTime())) {
+        throw new ConfigurationError('mpp.expiresIn must produce a valid expiration date at challenge issuance.');
+    }
+    return expires.toISOString();
 }
 
 /** Extracts a canonical (code, detail) pair from an mppx problem-details 402. */

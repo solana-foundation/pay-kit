@@ -52,8 +52,23 @@ subscriptions-generate-rs: codegen-install
         -exec perl -i -pe 's/\bcrate::(?!generated::subscriptions::)/crate::generated::subscriptions::/g' {} +
     cd rust && cargo fmt -p solana-pay-kit
 
-# Full refresh: pull IDL + regenerate Rust client.
-subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs
+subscriptions-generate-ts: codegen-install
+    cd {{codegen_dir}} && pnpm run subscriptions:ts
+    cd typescript && pnpm exec prettier --write "packages/mpp/src/generated/subscriptions/**/*.ts"
+
+# Full refresh: pull the pinned IDL and regenerate every checked-in client.
+subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs subscriptions-generate-ts
+
+# Regenerate from the vendored IDL and fail when checked-in clients were stale.
+subscriptions-check:
+    @set -eu; \
+        tmp=$(mktemp -d); \
+        trap 'rm -rf "$tmp"' EXIT; \
+        cp -R rust/crates/kit/src/generated/subscriptions/generated "$tmp/rust"; \
+        cp -R typescript/packages/mpp/src/generated/subscriptions "$tmp/typescript"; \
+        just subscriptions-generate-rs subscriptions-generate-ts; \
+        diff -ru "$tmp/rust" rust/crates/kit/src/generated/subscriptions/generated; \
+        diff -ru "$tmp/typescript" typescript/packages/mpp/src/generated/subscriptions
 
 # Fetch the payment-channels IDL from the pinned upstream commit into
 # `idl/payment-channels.json`.
