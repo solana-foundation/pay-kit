@@ -692,9 +692,9 @@ mod tests {
         assert_eq!(&bytes[42..50], &1234i64.to_le_bytes());
     }
 
-    /// Golden discriminator table for EVERY payment-channels instruction —
+    /// Golden discriminator table for EVERY payment-channels instruction,
     /// including the two the kit has no builder for (withdraw_payer,
-    /// emit_event) — pinned as literals so a codama regeneration that
+    /// emit_event), pinned as literals so a codama regeneration that
     /// renumbers the program's instruction set fails here rather than on
     /// a live cluster.
     #[test]
@@ -715,7 +715,7 @@ mod tests {
     /// Golden account layout + data layout for `open`, completing the
     /// per-instruction coverage the settle-family golden started. The
     /// rentPayer at slot 1 and the channel PDA at slot 5 are the slots the
-    /// cross-SDK open verifiers key on — a reorder here silently defeats
+    /// cross-SDK open verifiers key on, so a reorder here silently defeats
     /// every one of them. Flags: (is_signer, is_writable).
     #[test]
     fn open_account_and_data_layout_golden() {
@@ -776,7 +776,7 @@ mod tests {
 
     /// Golden account + data layout for `top_up`. The channel at slot 1,
     /// mint at slot 4, token program at slot 5, and the amount at data
-    /// bytes 1..9 are exactly what the TS `verifyTopUpTx` binder checks —
+    /// bytes 1..9 are exactly what the TS `verifyTopUpTx` binder checks, so
     /// this pin keeps that verifier and the wire format in lockstep.
     #[test]
     fn top_up_account_and_data_layout_golden() {

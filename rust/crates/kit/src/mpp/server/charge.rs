@@ -871,7 +871,7 @@ impl Mpp {
             &expected_id,
         ) {
             return Err(VerificationError::credential_mismatch(
-                "Challenge ID mismatch — not issued by this server",
+                "Challenge ID mismatch, not issued by this server",
             ));
         }
 

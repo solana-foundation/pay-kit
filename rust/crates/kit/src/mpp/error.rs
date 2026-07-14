@@ -55,7 +55,7 @@ pub enum Error {
     #[error("Challenge expired at {0}")]
     ChallengeExpired(String),
 
-    #[error("Challenge ID mismatch — not issued by this server")]
+    #[error("Challenge ID mismatch, not issued by this server")]
     ChallengeMismatch,
 
     #[error("{0}")]
@@ -179,7 +179,7 @@ mod tests {
         );
         assert_eq!(
             Error::ChallengeMismatch.to_string(),
-            "Challenge ID mismatch — not issued by this server"
+            "Challenge ID mismatch, not issued by this server"
         );
         assert_eq!(Error::Other("plain".into()).to_string(), "plain");
     }
