@@ -146,7 +146,9 @@ class _Rpc:
         self.min_context_slot = min_context_slot
         return self.accounts.get(address)
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[dict | None]:
         return [self.status for _ in signatures]
 
     async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN003, ANN201

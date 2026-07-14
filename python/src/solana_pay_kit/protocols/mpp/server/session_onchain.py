@@ -541,7 +541,7 @@ async def _fetch_and_verify_signature_only_open(
     expected: VerifyOpenTxExpected,
     payload: OpenPayload,
     rpc_client: RpcClient,
-) -> tuple[int, VerifyOpenTxResult]:
+) -> tuple[int | None, VerifyOpenTxResult]:
     """Confirm and bind a signature-only open to its canonical transaction."""
     confirmed_slot = await confirm_transaction_signature(rpc_client, payload.signature, "open")
     get_transaction: Any = getattr(rpc_client, "get_transaction", None)
