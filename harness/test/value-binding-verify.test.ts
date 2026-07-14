@@ -230,6 +230,10 @@ function makeBoundTxRpc(txBySignature: Readonly<Record<string, string>>) {
     return {
         getSignatureStatuses: (sigs: readonly Signature[]) => ({
             send: async () => ({
+                // The confirmation consumer pins its follow-up account reads to
+                // this context slot (min_context_slot), so a valid slot is part
+                // of the response contract.
+                context: { slot: 9042 },
                 value: sigs.map((s): MockStatus | null => (confirmed.has(s as string) ? { confirmationStatus: 'confirmed', err: null } : null)),
             }),
         }),
