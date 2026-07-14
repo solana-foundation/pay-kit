@@ -14,7 +14,7 @@
  * (same as the rest of the surfpool CI; defaults to public mainnet).
  */
 import { generateKeyPairSigner, type KeyPairSigner } from "@solana/kit";
-import { createPayKit, Store, usage, usd } from "@solana/pay-kit";
+import { createPayKit, declareProductionReplayStore, usage, usd } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
 import express, { type Request, type Response } from "express";
 import type { Server } from "node:http";
@@ -53,9 +53,29 @@ describe("on-chain datasource RPC config", () => {
 });
 
 function createHarnessReplayStore() {
-  // The forked on-chain suite owns a single server process; the marker keeps
-  // that deliberate test-only topology explicit to the SDK's replay-store gate.
-  return { ...Store.memory(), isShared: true as const };
+  // The forked on-chain suite owns a single server process, so a process-local
+  // Map IS shared + durable for the run's lifetime. Declare it production so it
+  // satisfies the SDK's MPP replay-store gate (atomic putIfAbsent + isShared +
+  // isDurable); a plain `Store.memory()` spread has no putIfAbsent and fails
+  // closed. declareProductionReplayStore retains trust by object identity, so
+  // the exact returned instance must be the one injected into createPayKit.
+  const entries = new Map<string, unknown>();
+  return declareProductionReplayStore({
+    delete: async (key: string) => {
+      entries.delete(key);
+    },
+    get: async (key: string) => entries.get(key) ?? null,
+    isDurable: true as const,
+    isShared: true as const,
+    put: async (key: string, value: unknown) => {
+      entries.set(key, value);
+    },
+    putIfAbsent: async (key: string, value: unknown) => {
+      if (entries.has(key)) return false;
+      entries.set(key, value);
+      return true;
+    },
+  });
 }
 
 async function startServer(): Promise<void> {
@@ -63,7 +83,6 @@ async function startServer(): Promise<void> {
   const pay = await createPayKit({
     accept: ["x402", "mpp"],
     mpp: {
-      allowUnsafeMemoryStore: true,
       challengeBindingSecret: crypto.randomBytes(32).toString("hex"),
     },
     network: "localnet",
