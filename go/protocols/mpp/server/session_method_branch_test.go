@@ -267,7 +267,7 @@ func TestSessionTopUpMalformedDepositAndStoreFailure(t *testing.T) {
 	}
 }
 
-func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
+func TestSessionCloseUnknownChannelAndPendingSignatureRetry(t *testing.T) {
 	session := newTestSession(t, nil)
 	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{
 		ChannelID: solana.NewWallet().PublicKey().String(),
@@ -275,8 +275,9 @@ func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
 		t.Fatalf("unknown channel error = %v", err)
 	}
 
-	// A close-pending channel that already recorded a settlement signature
-	// (but is not yet marked sealed) is not re-drivable.
+	// A close-pending channel that recorded a broadcast signature but is not
+	// sealed remains re-drivable. Without RPC/signer configuration this call
+	// only preserves the pending state.
 	channelID := solana.NewWallet().PublicKey().String()
 	closeRequestedAt := uint64(1)
 	settled := confirmedSignature(0xAB)
@@ -287,10 +288,15 @@ func TestSessionCloseUnknownChannelAndSettledDoubleClose(t *testing.T) {
 		CloseRequestedAt: &closeRequestedAt,
 		SettledSignature: &settled,
 	})
-	if _, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{
+	receipt, err := verifySessionAction(t, session, intents.NewCloseAction(intents.ClosePayload{
 		ChannelID: channelID,
-	})); err == nil || !strings.Contains(err.Error(), "close already requested") {
-		t.Fatalf("settled double-close error = %v", err)
+	}))
+	if err != nil {
+		t.Fatalf("pending-signature close retry: %v", err)
+	}
+	state := mustGetChannel(t, session, channelID)
+	if receipt.Reference != channelID || state.Sealed || state.SettledSignature == nil || *state.SettledSignature != settled {
+		t.Fatalf("pending-signature retry receipt=%+v state=%+v", receipt, state)
 	}
 }
 
@@ -310,15 +316,17 @@ func TestCloseAndSettleChannelFailureMatrix(t *testing.T) {
 		t.Fatalf("unknown channel settle = %q, %v", signature, err)
 	}
 
-	// Store read failure surfaces.
-	store := &failingGetStore{ChannelStore: NewMemoryChannelStore(), getErr: errors.New("store offline")}
+	// Atomic settle-claim write failure surfaces.
+	store := &failingUpdateStore{ChannelStore: NewMemoryChannelStore()}
 	failingStoreSession := newTestSession(t, func(o *SessionOptions) {
 		o.RPC = fake
 		o.Signer = merchant
 		o.Store = store
 	})
-	if _, err := failingStoreSession.closeAndSettleChannel(ctx, "any"); err == nil ||
-		!strings.Contains(err.Error(), "store offline") {
+	_, failingChannelID := openTrustedChannel(t, failingStoreSession, 1_000)
+	store.fail = true
+	if _, err := failingStoreSession.closeAndSettleChannel(ctx, failingChannelID); err == nil ||
+		!strings.Contains(err.Error(), "store write rejected") {
 		t.Fatalf("store failure = %v", err)
 	}
 
@@ -367,7 +375,7 @@ func TestCloseAndSettleChannelFailureMatrix(t *testing.T) {
 	}
 }
 
-func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
+func TestSessionIdleCloseConfirmsDespiteSendError(t *testing.T) {
 	fake := &countingBlockhashRPC{FakeRPC: testutil.NewFakeRPC()}
 	fake.SendErr = errors.New("blockhash not found")
 	merchant := testutil.NewPrivateKey()
@@ -379,18 +387,22 @@ func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 	_, channelID := openTrustedChannel(t, session, 1_000)
 	baseline := fake.calls()
 
-	// The watchdog fires, the settle fails (the broadcast is blocked), and
-	// the channel stays re-drivable rather than sealed.
+	// The watchdog's submission returns an error, but the persisted signature
+	// is reported confirmed. The send error must not prevent reconciliation.
 	deadline := time.Now().Add(3 * time.Second)
-	for fake.calls() == baseline {
+	var state *ChannelState
+	for {
+		state = mustGetChannel(t, session, channelID)
+		if fake.calls() > baseline && state.Sealed && state.SettledSignature != nil {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("idle-close watchdog never attempted settlement")
+			t.Fatalf("idle-close watchdog never reconciled confirmed signature: %+v", state)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	state := mustGetChannel(t, session, channelID)
-	if state.Sealed || state.SettledSignature != nil {
-		t.Fatalf("failed settle mutated state: %+v", state)
+	if !state.Sealed || state.Settling || state.SettledSignature == nil || state.SettlementWire != "" {
+		t.Fatalf("send-error confirmation state: %+v", state)
 	}
 }
 
