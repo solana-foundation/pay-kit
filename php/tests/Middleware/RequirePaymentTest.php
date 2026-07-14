@@ -33,6 +33,42 @@ final class RequirePaymentTest extends TestCase
     private PayKit $client;
     private Psr17Factory $factory;
 
+    public function testX402OnlyConstructionDoesNotRequireMppReplayStore(): void
+    {
+        $client = new PayKit(new Config(
+            network: Network::SolanaDevnet,
+            accept: [Protocol::X402],
+            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
+            preflight: false,
+        ));
+        $middleware = new RequirePayment($client, new Gate(amount: Price::usd('0.10')));
+        self::assertInstanceOf(RequirePayment::class, $middleware);
+    }
+
+    public function testX402OnlyGateDoesNotConstructMppReplayStore(): void
+    {
+        $client = new PayKit(new Config(
+            network: Network::SolanaDevnet,
+            accept: [Protocol::X402, Protocol::Mpp],
+            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
+            preflight: false,
+            mpp: new MppConfig(
+                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+            ),
+        ));
+        $middleware = new RequirePayment(
+            $client,
+            new Gate(amount: Price::usd('0.10'), accept: [Protocol::X402]),
+        );
+
+        $response = $middleware->process(
+            $this->factory->createServerRequest('GET', '/paid'),
+            $this->nextHandler(),
+        );
+
+        self::assertSame(402, $response->getStatusCode());
+    }
+
     protected function setUp(): void
     {
         $this->client = new PayKit(new Config(

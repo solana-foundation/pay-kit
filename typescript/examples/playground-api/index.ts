@@ -50,7 +50,11 @@ const pay = await createPayKit({
   accept: ['x402', 'mpp'],
   // `html: true` serves the interactive pay.sh payment page (+ service worker)
   // on 402s for browser requests; API clients still get the JSON 402.
-  mpp: { challengeBindingSecret: SECRET_KEY, html: true },
+  mpp: {
+    challengeBindingSecret: SECRET_KEY,
+    html: true,
+    ...(NETWORK === 'localnet' ? { allowUnsafeMemoryStore: true } : {}),
+  },
   network: NETWORK,
   operator: { recipient: RECIPIENT, signer: operator },
   pricing: {

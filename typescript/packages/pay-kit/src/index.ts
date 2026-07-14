@@ -54,6 +54,7 @@ export {
     type ServiceInfo,
 } from './openapi.js';
 export type { Payment } from './payment.js';
+export { declareProductionReplayStore, type ReplayStore } from './replay-store.js';
 export {
     createPayKit,
     type CreatePayKitOptions,

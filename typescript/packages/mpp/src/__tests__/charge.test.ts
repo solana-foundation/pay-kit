@@ -30,7 +30,7 @@ import {
     type Blockhash,
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
-import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
+import { charge as rawCharge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,
@@ -48,6 +48,10 @@ const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 const USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const SIGNATURE = '5UfDuX6nSqMzMR8W7n6K3b1GKLmaqEisBFCcYPRLjNHrCbVQJF3BVjkE7aQJMQ2Kx';
 const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as Blockhash;
+
+function charge(parameters: Parameters<typeof rawCharge>[0]) {
+    return rawCharge({ ...parameters, store: parameters.store ?? createSharedMemoryStore() });
+}
 
 type TestCompiledInstruction = {
     accountIndices?: readonly unknown[];
@@ -443,9 +447,35 @@ function ataCreateIx({
 let originalFetch: typeof globalThis.fetch;
 let store: Store.Store;
 
+function createSharedMemoryStore(): Store.Store {
+    const values = new Map<string, unknown>();
+    return Object.assign(Store.memory(), {
+        isDurable: true,
+        isShared: true,
+        delete(key: string) {
+            values.delete(key);
+            return Promise.resolve();
+        },
+        get(key: string) {
+            return Promise.resolve((values.get(key) ?? null) as never);
+        },
+        put(key: string, value: unknown) {
+            values.set(key, value);
+            return Promise.resolve();
+        },
+        putIfAbsent(key: string, value: unknown) {
+            // No await may separate has() from set(): this models the atomic
+            // cross-replica primitive required from production replay stores.
+            if (values.has(key)) return Promise.resolve(false);
+            values.set(key, value);
+            return Promise.resolve(true);
+        },
+    });
+}
+
 beforeEach(() => {
     originalFetch = globalThis.fetch;
-    store = Store.memory();
+    store = createSharedMemoryStore();
 });
 
 afterEach(() => {
@@ -453,6 +483,43 @@ afterEach(() => {
 });
 
 // ── Parameter validation ──
+
+test('charge() requires explicit replay storage or an explicit unsafe override', () => {
+    expect(() => rawCharge({ recipient: RECIPIENT, network: 'devnet' })).toThrow(/explicit replay store/);
+    expect(() => rawCharge({ allowUnsafeMemoryStore: true, recipient: RECIPIENT, network: 'devnet' })).not.toThrow();
+});
+
+test('charge() rejects the unsafe replay-store override on mainnet', () => {
+    for (const network of ['mainnet', 'mainnet-beta', 'MAINNET', 'MAINNET-BETA']) {
+        expect(() =>
+            rawCharge({ allowUnsafeMemoryStore: true, network: network as 'mainnet', recipient: RECIPIENT }),
+        ).toThrow(/forbidden on mainnet/);
+    }
+});
+
+test('charge() does not let the unsafe override bypass a declared unshared store', () => {
+    const unsharedStore = Object.assign(Store.memory(), { isShared: false });
+
+    expect(() =>
+        rawCharge({
+            allowUnsafeMemoryStore: true,
+            network: 'devnet',
+            recipient: RECIPIENT,
+            store: unsharedStore,
+        }),
+    ).toThrow(/atomic putIfAbsent/);
+});
+
+test('charge() does not let the unsafe override authorize an unknown store', () => {
+    expect(() =>
+        rawCharge({
+            allowUnsafeMemoryStore: true,
+            network: 'devnet',
+            recipient: RECIPIENT,
+            store: Store.memory(),
+        }),
+    ).toThrow(/atomic putIfAbsent/);
+});
 
 test('charge() throws when currency is a mint but decimals is missing', () => {
     expect(() =>
@@ -569,13 +636,16 @@ test('signature: accepts valid native SOL transfer', async () => {
 
     globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
 
+    const credential = signatureCredential(SIGNATURE, { amount: '1000000' });
+    credential.challenge.id = 'charge-challenge';
     const receipt = await method.verify({
-        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
+        credential,
         request: {} as any,
     });
 
     expect(receipt.status).toBe('success');
     expect(receipt.reference).toBe(SIGNATURE);
+    expect(receipt).toMatchObject({ challengeId: 'charge-challenge' });
 });
 
 test('signature: rejects SOL transfer with wrong recipient', async () => {
@@ -1503,7 +1573,8 @@ test('signature: rejects ATA creation for top-level recipient', async () => {
 
 // ── Replay prevention (type="signature") ──
 
-test('signature: rejects already-consumed transaction signature', async () => {
+test('signature: reports a structured verification rejection for a preseeded consumed signature', async () => {
+    await store.put(`solana-charge:consumed:${SIGNATURE}`, true);
     const method = charge({
         recipient: RECIPIENT,
         network: 'devnet',
@@ -1511,21 +1582,17 @@ test('signature: rejects already-consumed transaction signature', async () => {
         store,
     });
 
-    globalThis.fetch = async () => rpcSuccess(solTransferTx(RECIPIENT, 1000000));
-
-    // First call succeeds
-    await method.verify({
-        credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
-        request: {} as any,
-    });
-
-    // Second call with same signature is rejected
     await expect(
         method.verify({
             credential: signatureCredential(SIGNATURE, { amount: '1000000' }),
-            request: {} as any,
+            request: {} as never,
         }),
-    ).rejects.toThrow(/already consumed/);
+    ).rejects.toMatchObject({
+        message: 'Payment verification failed: Transaction signature already consumed.',
+        name: 'VerificationFailedError',
+        status: 402,
+        type: 'https://paymentauth.org/problems/verification-failed',
+    });
 });
 
 test('signature: concurrent requests with the same signature settle at most once', async () => {
@@ -1553,12 +1620,18 @@ test('signature: concurrent requests with the same signature settle at most once
 
     const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
     const settled = results.filter(r => r.status === 'fulfilled');
-    const rejectedConsumed = results.filter(
-        r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
-    );
+    const rejectedConsumed = results.filter(r => r.status === 'rejected');
 
     expect(settled).toHaveLength(1);
     expect(rejectedConsumed).toHaveLength(7);
+    for (const result of rejectedConsumed) {
+        expect(result.reason).toMatchObject({
+            message: 'Payment verification failed: Transaction signature already consumed.',
+            name: 'VerificationFailedError',
+            status: 402,
+            type: 'https://paymentauth.org/problems/verification-failed',
+        });
+    }
 });
 
 // ── RPC error handling (type="signature") ──
@@ -1726,6 +1799,123 @@ test('pull: accepts valid native SOL transfer', async () => {
 
     expect(receipt.status).toBe('success');
     expect(receipt.reference).toBe(SIGNATURE);
+});
+
+test('pull: reports a structured verification rejection for a preseeded consumed signature', async () => {
+    const replayedSignature = 'replayedPullSignature000000000000000000000000000000';
+    const replayStore = createSharedMemoryStore();
+    await replayStore.put(`solana-charge:consumed:${replayedSignature}`, true);
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store: replayStore,
+    });
+
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), replayedSignature);
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), {
+                amount: '1000000',
+            }),
+            request: {} as never,
+        }),
+    ).rejects.toMatchObject({
+        message: 'Payment verification failed: Transaction signature already consumed.',
+        name: 'VerificationFailedError',
+        status: 402,
+        type: 'https://paymentauth.org/problems/verification-failed',
+    });
+});
+
+test('pull: concurrent calls issue one receipt and typed replay rejections', async () => {
+    const concurrentStore = createSharedMemoryStore();
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store: concurrentStore,
+    });
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string) as { method?: string };
+        switch (body.method) {
+            case 'simulateTransaction':
+                return rpcSuccess({ value: { err: null, logs: [] } });
+            case 'sendTransaction':
+                return rpcSuccess(SIGNATURE);
+            case 'getSignatureStatuses':
+                return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+            case 'getTransaction':
+                // Let every caller finish validation before the final atomic commit.
+                await new Promise(resolve => setTimeout(resolve, 20));
+                return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+            default:
+                throw new Error(`Unexpected RPC method: ${body.method}`);
+        }
+    };
+
+    const verifyOnce = () =>
+        method.verify({
+            credential: transactionCredential(transaction, { amount: '1000000' }),
+            request: {} as never,
+        });
+    const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
+    const fulfilled = results.filter(result => result.status === 'fulfilled');
+    const rejected = results.filter(result => result.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(7);
+    for (const result of rejected) {
+        expect(result.reason).toMatchObject({
+            message: 'Payment verification failed: Transaction signature already consumed.',
+            name: 'VerificationFailedError',
+            status: 402,
+            type: 'https://paymentauth.org/problems/verification-failed',
+        });
+    }
+});
+
+test('pull: retries after post-broadcast on-chain verification failure without burning the transaction', async () => {
+    const retryStore = createSharedMemoryStore();
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store: retryStore,
+    });
+    const credential = transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), {
+        amount: '1000000',
+    });
+    let verificationAttempts = 0;
+
+    globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(init?.body as string) as { method?: string };
+        switch (body.method) {
+            case 'simulateTransaction':
+                return rpcSuccess({ value: { err: null, logs: [] } });
+            case 'sendTransaction':
+                return rpcSuccess(SIGNATURE);
+            case 'getSignatureStatuses':
+                return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+            case 'getTransaction':
+                verificationAttempts += 1;
+                return rpcSuccess(solTransferTx(RECIPIENT, verificationAttempts === 1 ? 999999 : 1000000));
+            default:
+                throw new Error(`Unexpected RPC method: ${body.method}`);
+        }
+    };
+
+    await expect(method.verify({ credential, request: {} as never })).rejects.toThrow(
+        /No system transfer instruction found/,
+    );
+    await expect(method.verify({ credential, request: {} as never })).resolves.toMatchObject({
+        reference: SIGNATURE,
+        status: 'success',
+    });
+    expect(await retryStore.get(`solana-charge:consumed:${SIGNATURE}`)).toBe(true);
 });
 
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {

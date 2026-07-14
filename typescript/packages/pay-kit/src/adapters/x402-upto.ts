@@ -16,7 +16,7 @@ import { getStablecoinTokenProgram, resolveStablecoinMint } from '@x402/svm';
 import { UptoSvmScheme as UptoSvmFacilitator } from '@x402/svm/upto/facilitator';
 
 import { requireMint, resolveCoin } from '../coin.js';
-import type { PayKitConfig } from '../config.js';
+import { assertReplayStorePolicy, type PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
@@ -124,6 +124,7 @@ export class X402Upto {
     readonly #blockhashCache = new ChallengeBlockhashCache();
 
     constructor(config: PayKitConfig) {
+        assertReplayStorePolicy(config);
         this.#network = caip2(config.network) as Network;
         this.#feePayer = config.operator.signer.pubkey;
         this.#receiverAuthorizer = config.operator.signer.pubkey;

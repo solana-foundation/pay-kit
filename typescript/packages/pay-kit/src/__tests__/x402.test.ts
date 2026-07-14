@@ -36,7 +36,7 @@ import { createMemoryReplayStore } from '../replay-store.js';
 
 async function testConfig(): Promise<PayKitConfig> {
     return await configure({
-        mpp: { challengeBindingSecret: 'x402-test-secret' },
+        accept: ['x402'],
         network: 'solana_localnet',
         replayStore: createMemoryReplayStore(),
     });
@@ -47,6 +47,16 @@ function gateFor(config: PayKitConfig, amount = usd('0.10')): Gate {
 }
 
 describe('x402 exact adapter', () => {
+    it('rejects a prebuilt config that disables its required fee payer', async () => {
+        const config = await testConfig();
+        expect(() =>
+            createX402ExactAdapter({
+                ...config,
+                operator: { ...config.operator, feePayer: false },
+            }),
+        ).toThrow(/x402 requires an operator fee payer/);
+    });
+
     it('advertises a canonical x402 accepts entry', async () => {
         const config = await testConfig();
         const adapter = createX402ExactAdapter(config);
@@ -96,6 +106,13 @@ describe('x402 exact adapter', () => {
 });
 
 describe('x402 upto engine', () => {
+    it('rejects a prebuilt config that disables its required fee payer', async () => {
+        const config = await testConfig();
+        expect(() => new X402Upto({ ...config, operator: { ...config.operator, feePayer: false } })).toThrow(
+            /x402 requires an operator fee payer/,
+        );
+    });
+
     it('advertises an upto accepts entry with role bindings', async () => {
         const config = await testConfig();
         const upto = new X402Upto(config);

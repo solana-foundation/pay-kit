@@ -39,11 +39,13 @@ use Psr\Http\Server\RequestHandlerInterface;
  */
 final class RequirePayment implements MiddlewareInterface
 {
-    private MppAdapter $mpp;
+    private ?MppAdapter $mpp;
     private ?X402Adapter $x402;
 
     /**
      * @param Gate|string|Closure(ServerRequestInterface):Gate $gateRef
+     * @param ?Closure():MppAdapter $mppFactory Lazy factory for framework-owned
+     *        MPP adapters, invoked only when the resolved gate accepts MPP.
      */
     public function __construct(
         private readonly PayKit $client,
@@ -51,8 +53,9 @@ final class RequirePayment implements MiddlewareInterface
         private readonly ?Pricing $pricing = null,
         ?MppAdapter $mpp = null,
         ?X402Adapter $x402 = null,
+        private readonly ?Closure $mppFactory = null,
     ) {
-        $this->mpp  = $mpp ?? new MppAdapter($client->config);
+        $this->mpp = $mpp;
         // Auto-wire the X402 adapter when the client's accept list
         // includes Protocol::X402. Callers can still pass an explicit
         // adapter to override (e.g. with an offline blockhash provider).
@@ -119,7 +122,10 @@ final class RequirePayment implements MiddlewareInterface
                 return $this->x402;
             }
             if ($protocol === Protocol::Mpp && $auth !== '' && stripos($auth, 'payment ') === 0) {
-                return $this->mpp;
+                $mpp = $this->mppFor($gate);
+                if ($mpp !== null) {
+                    return $mpp;
+                }
             }
         }
         return null;
@@ -135,9 +141,10 @@ final class RequirePayment implements MiddlewareInterface
             $accepts[] = $this->x402->acceptsEntry($gate, $request);
             $headers   = array_merge($headers, $this->x402->challengeHeaders($gate, $request));
         }
-        if (in_array(Protocol::Mpp, $accept, true)) {
-            $accepts[] = $this->mpp->acceptsEntry($gate, $request);
-            $headers   = array_merge($headers, $this->mpp->challengeHeaders($gate, $request));
+        $mpp = $this->mppFor($gate);
+        if ($mpp !== null) {
+            $accepts[] = $mpp->acceptsEntry($gate, $request);
+            $headers   = array_merge($headers, $mpp->challengeHeaders($gate, $request));
         }
 
         $body = [
@@ -160,5 +167,19 @@ final class RequirePayment implements MiddlewareInterface
         }
         $stream = HttpFactory::streamFactory()->createStream(json_encode($body, JSON_THROW_ON_ERROR));
         return $resp->withBody($stream);
+    }
+
+    private function mppFor(Gate $gate): ?MppAdapter
+    {
+        $accept = $gate->accept ?? $this->client->config->accept;
+        if (!in_array(Protocol::Mpp, $accept, true)) {
+            return null;
+        }
+        if ($this->mpp === null) {
+            $this->mpp = $this->mppFactory !== null
+                ? ($this->mppFactory)()
+                : new MppAdapter($this->client->config);
+        }
+        return $this->mpp;
     }
 }

@@ -8,7 +8,12 @@ import {
 } from '@solana/kit';
 import { Method, Receipt } from 'mppx';
 
-import { DEFAULT_RPC_URLS, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
+import {
+    DEFAULT_RPC_URLS,
+    defaultTokenProgramForCurrency,
+    normalizeNetwork,
+    resolveStablecoinMint,
+} from '../constants.js';
 import * as Methods from '../Methods.js';
 import type {
     CommitReceipt,
@@ -53,13 +58,73 @@ const DEFAULT_DIRECTIVE_EXPIRES_AT = 4_102_444_800;
 // opened through the method handler.
 const defaultStores = new WeakMap<session.Parameters, SessionStore>();
 
-function resolveSessionStore(parameters: session.Parameters): SessionStore {
-    if (parameters.store) return parameters.store;
+/** Configuration error thrown when a session is wired with an unsafe store. */
+export class ConfigurationError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'ConfigurationError';
+    }
+}
+
+/** Development escape hatch: the process env twin of `allowUnsafeMemoryStore`. */
+function inMemorySessionStoreOptIn(parameters: session.Parameters): boolean {
+    if (parameters.allowUnsafeMemoryStore === true) return true;
+    const env = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+    return env === '1' || env?.toLowerCase() === 'true';
+}
+
+function defaultMemorySessionStore(parameters: session.Parameters): SessionStore {
     const existing = defaultStores.get(parameters);
     if (existing) return existing;
     const created = createMemorySessionStore();
     defaultStores.set(parameters, created);
     return created;
+}
+
+/**
+ * Resolve the per-channel session store, failing closed on process-local memory.
+ *
+ * A `session()` that silently falls back to an in-memory store loses every open
+ * channel on restart and never shares state across workers, so cumulative
+ * vouchers can double-spend. This mirrors the replay-store policy:
+ *
+ * - a `durable-shared` store is honored on every network;
+ * - localnet may use a process-local store freely (single-process dev);
+ * - devnet may use one only behind the `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE`
+ *   env (or `allowUnsafeMemoryStore`) opt-in, or when the caller injects a
+ *   store explicitly and owns that choice;
+ * - mainnet forbids a process-local store outright; the opt-in cannot relax it.
+ */
+function resolveSessionStore(parameters: session.Parameters): SessionStore {
+    const network = normalizeNetwork(parameters.network ?? 'mainnet');
+    const store = parameters.store;
+
+    // A caller-declared durable shared store is safe on every network.
+    if (store?.sessionStoreDurability === 'durable-shared') return store;
+
+    if (network === 'localnet') {
+        return store ?? defaultMemorySessionStore(parameters);
+    }
+
+    if (network === 'mainnet') {
+        throw new ConfigurationError(
+            'solana.session requires a durable shared session store on mainnet; a process-local ' +
+                'in-memory store is forbidden (allowUnsafeMemoryStore / PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE ' +
+                'cannot relax this on mainnet). Inject a store that declares sessionStoreDurability="durable-shared".',
+        );
+    }
+
+    // devnet (and any other non-mainnet dev network): an explicitly injected
+    // store is the caller's responsibility; an auto-fallback needs the opt-in.
+    if (store) return store;
+    if (inMemorySessionStoreOptIn(parameters)) {
+        return defaultMemorySessionStore(parameters);
+    }
+    throw new ConfigurationError(
+        'solana.session requires a durable shared session store outside localnet; inject one, or set ' +
+            'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 (allowUnsafeMemoryStore=true) for an explicit ' +
+            'development-only in-memory store.',
+    );
 }
 
 /**
@@ -1284,6 +1349,12 @@ export declare namespace session {
     }
 
     interface Parameters {
+        /**
+         * Explicitly allow the SDK's process-local session store for
+         * development/tests. Honored on localnet/devnet only; forbidden on
+         * mainnet. The `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE` env is its twin.
+         */
+        readonly allowUnsafeMemoryStore?: boolean;
         /** Maximum session cap the server will offer (base units). */
         readonly cap: bigint;
         /** Idle-close delay in ms. 0 (default) disables the watchdog. */
@@ -1335,7 +1406,7 @@ export declare namespace session {
         readonly signer?: TransactionPartialSigner;
         /** Optional basis-point splits distributed at close. Max 8. */
         readonly splits?: readonly SessionSplit[];
-        /** Pluggable session store. Defaults to in-memory. */
+        /** Pluggable session store. Production stores must declare durable sharing. */
         readonly store?: SessionStore;
         /** SPL token program (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from currency/network. */
         readonly tokenProgram?: string;
