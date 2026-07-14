@@ -1211,7 +1211,13 @@ func SubmitOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 
 func prepareOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, payerSigner solanatx.Signer) (VerifyOpenTxResult, *solana.Transaction, solana.Signature, error) {
 	// Structural validation only: the transaction may not have been broadcast.
-	verified, err := VerifyOpenTx(ctx, expected, payload, nil)
+	// Permit an unsigned fee-payer slot (allowUnsignedFeePayer=true): this is
+	// the server-submit path, where the client signs only as the channel payer
+	// and leaves the operator/fee-payer slot for the server to complete below.
+	// The payer signature is still verified; the co-sign step and the
+	// post-co-sign zero-signature guard keep this fail-closed. Matches
+	// handleOpen's pre-verification.
+	verified, err := verifyOpenTx(ctx, expected, payload, nil, true)
 	if err != nil {
 		return VerifyOpenTxResult{}, nil, solana.Signature{}, err
 	}
