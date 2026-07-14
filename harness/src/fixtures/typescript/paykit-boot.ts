@@ -1,18 +1,7 @@
 import http from "node:http";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
-import { createPayKit, type NetworkSlug, usd } from "@solana/pay-kit";
+import { createPayKit, type NetworkSlug, toNetwork, usd } from "@solana/pay-kit";
 import { readHarnessEnvironment } from "./shared";
-
-function networkSlug(network: string): NetworkSlug {
-  switch (network) {
-    case "mainnet":
-    case "devnet":
-    case "localnet":
-      return network;
-    default:
-      throw new Error(`Unsupported MPP_HARNESS_NETWORK: ${network}`);
-  }
-}
 
 async function main(): Promise<void> {
   const environment = readHarnessEnvironment();
@@ -26,7 +15,7 @@ async function main(): Promise<void> {
   const paykit = await createPayKit({
     accept: ["mpp"],
     mpp: { challengeBindingSecret: environment.secretKey },
-    network: networkSlug(environment.network),
+    network: toNetwork(environment.network as NetworkSlug),
     operator: { recipient: environment.payTo, signer },
     preflight: false,
     pricing: { boot: usd("0.001") },
