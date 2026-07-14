@@ -155,7 +155,6 @@ pub fn fetch_blockhash_with_slot(
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,8 +216,6 @@ mod tests {
         assert_eq!(cache.get().expect("recovered").blockhash, "after-poison");
     }
 
-    use super::*;
-
     /// A cache hit must be served without ever touching the RPC endpoint — the
     /// dummy client below points at an unroutable port and would error if used.
     #[test]
@@ -250,4 +247,3 @@ mod tests {
             .is_none());
     }
 }
-
