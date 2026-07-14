@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { startServer, runClient } from "../src/process";
+import { startServer, runClient, stopServer } from "../src/process";
 import type { ImplementationDefinition } from "../src/implementations";
 
 // Verify that when an adapter exits before signaling readiness, the harness
@@ -43,5 +43,43 @@ describe("process.startServer error enrichment", () => {
     ).rejects.toThrow(
       /synthetic-fail-client.*exited with code 3.*last stderr:.*client boom: env=http:\/\/127.0.0.1:65535\/missing/s,
     );
+  });
+
+  it("removes an explicitly unset inherited environment variable", async () => {
+    const original = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+    process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = "1";
+
+    const impl: ImplementationDefinition = {
+      id: "synthetic-unset-env-server",
+      label: "synthetic unset environment server",
+      role: "server",
+      command: [
+        process.execPath,
+        "-e",
+        [
+          "if (process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE !== undefined) {",
+          "  process.stderr.write('inherited opt-in was not removed\\n');",
+          "  process.exit(9);",
+          "}",
+          "process.stdout.write(JSON.stringify({ type: 'ready', role: 'server', port: 12345 }) + '\\n');",
+          "setInterval(() => {}, 1_000);",
+        ].join("\n"),
+      ],
+      enabled: true,
+    };
+
+    try {
+      const server = await startServer(impl, {
+        PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE: undefined,
+      });
+      expect(server.ready.port).toBe(12345);
+      await stopServer(server);
+    } finally {
+      if (original === undefined) {
+        delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+      } else {
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = original;
+      }
+    }
   });
 });

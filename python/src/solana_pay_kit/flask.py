@@ -38,6 +38,7 @@ from solana_pay_kit.payment import Payment
 from solana_pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash_and_slot, finalize_usage
 
 if TYPE_CHECKING:
+    from solana_pay_kit._paycore.store import Store
     from solana_pay_kit.config import Config
     from solana_pay_kit.gate import DynamicGate, Gate
     from solana_pay_kit.price import Price
@@ -82,6 +83,7 @@ def require_payment(
     *,
     pricing: Pricing | None = None,
     config: Config | None = None,
+    replay_store: Store | None = None,
 ) -> Callable[[_F], _F]:
     """Decorate a Flask view so it serves only after a verified payment.
 
@@ -89,14 +91,16 @@ def require_payment(
     attached to ``flask.g`` and its settlement headers are merged onto the
     response. A missing/invalid proof aborts with the right HTTP status: 402 with
     the challenge headers + JSON body for :class:`PaymentRequiredError`, otherwise
-    the error's :attr:`~solana_pay_kit.errors.PayKitError.http_status`.
+    the error's :attr:`~solana_pay_kit.errors.PayKitError.http_status`. Pass
+    ``replay_store`` for durable replay state before the first gated request.
+    A Config's first store owns its cached core; a different later store fails closed.
     """
 
     def decorator(view: _F) -> _F:
         @wraps(view)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             request = flask.request
-            core = PayCore.for_config(config if config is not None else _global_config())
+            core = PayCore.for_config(config if config is not None else _global_config(), replay_store=replay_store)
             try:
                 payment_obj = _run(core.process(gate_ref, pricing, request))
             except PaymentRequiredError as exc:

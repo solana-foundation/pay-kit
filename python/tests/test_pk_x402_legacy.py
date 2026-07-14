@@ -266,6 +266,7 @@ def _devnet_adapter(monkeypatch, signature="SIG-legacy"):
         default_pay_to=cfg.effective_recipient(),
         accept=(Protocol.X402,),
     )
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
     adapter = X402Adapter(cfg, replay_store=MemoryStore())
 
     def _factory(*_a, **_k):

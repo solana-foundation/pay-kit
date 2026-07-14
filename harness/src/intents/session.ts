@@ -7,6 +7,7 @@ export const sessionScenarios: readonly HarnessScenario[] = [
     network: "localnet",
     price: "0.0007",
     amount: "700",
+    sessionTopUpAmount: "700",
     asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     resourcePath: "/session",
     settlementHeader: "x-session-settlement-signature",

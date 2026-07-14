@@ -21,11 +21,12 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-from solana_pay_kit import Gate, Price, Protocol, Stablecoin, configure
+from solana_pay_kit import Gate, Operator, Price, Protocol, Signer, Stablecoin, configure
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from solana_pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore
 from solana_pay_kit.config import reset
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.x402 import ExactVerifier, X402Adapter
 from solana_pay_kit.protocols.x402.exact.verify import (
     COMPUTE_BUDGET_PROGRAM,
@@ -74,15 +75,19 @@ def _transfer_checked_ix(
     program: str = TOKEN_PROGRAM,
     disc: int = 12,
     n_accounts: int = 4,
+    authority_is_signer: bool = True,
+    additional_signers: tuple[Pubkey, ...] = (),
 ) -> Instruction:
     data = bytes([disc]) + struct.pack("<Q", amount) + bytes([6])
     metas = [
         AccountMeta(Pubkey.from_string(source), False, True),
         AccountMeta(Pubkey.from_string(mint), False, False),
         AccountMeta(Pubkey.from_string(destination), False, True),
-        AccountMeta(authority, True, False),
+        AccountMeta(authority, authority_is_signer, False),
     ]
-    return Instruction(Pubkey.from_string(program), data, metas[:n_accounts])
+    metas = metas[:n_accounts]
+    metas.extend(AccountMeta(signer, True, False) for signer in additional_signers)
+    return Instruction(Pubkey.from_string(program), data, metas)
 
 
 def _memo_ix(text: str) -> Instruction:
@@ -165,6 +170,16 @@ def test_verify_happy_with_token_2022_program():
     tx, req, managed = _happy(program=TOKEN_2022_PROGRAM)
     out = ExactVerifier.verify(tx, req, managed)
     assert out["program"] == TOKEN_2022_PROGRAM
+
+
+def test_verify_uses_the_actual_transfer_program_instead_of_extra_token_program():
+    tx, req, managed = _happy()
+    del req["extra"]["tokenProgram"]
+    assert ExactVerifier.verify(tx, req, managed)["program"] == TOKEN_PROGRAM
+
+    token_2022_tx, token_2022_req, token_2022_managed = _happy(program=TOKEN_2022_PROGRAM)
+    token_2022_req["extra"]["tokenProgram"] = TOKEN_PROGRAM
+    assert ExactVerifier.verify(token_2022_tx, token_2022_req, token_2022_managed)["program"] == TOKEN_2022_PROGRAM
 
 
 def test_verify_rejects_ata_create_instruction():
@@ -364,14 +379,6 @@ def test_reject_bad_transfer_discriminator():
     assert e.value.code == "invalid_exact_svm_payload_no_transfer_instruction"
 
 
-def test_reject_missing_token_program_extra():
-    tx, req, managed = _happy()
-    del req["extra"]["tokenProgram"]
-    with pytest.raises(InvalidProofError) as e:
-        ExactVerifier.verify(tx, req, managed)
-    assert e.value.code == "invalid_exact_svm_payload_missing_extra_tokenProgram"
-
-
 # -- rule 5: managed-signer guard --------------------------------------------
 
 
@@ -387,6 +394,70 @@ def test_reject_fee_payer_as_authority():
     tx = _tx_b64(fee_payer, ixs, [fee_payer])
     with pytest.raises(InvalidProofError) as e:
         ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+
+def test_reject_managed_signer_named_directly_as_transfer_source():
+    fee_payer, authority, pay_to, _src, dest = _scenario()
+    managed_signer = Keypair()
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(
+            source=str(managed_signer.pubkey()), mint=MINT, destination=dest, authority=authority.pubkey()
+        ),
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(managed_signer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+
+def test_reject_managed_signer_token_2022_ata_as_transfer_source():
+    fee_payer, delegate, pay_to, _src, dest = _scenario(program=TOKEN_2022_PROGRAM)
+    managed_signer = Keypair()
+    source = derive_ata(str(managed_signer.pubkey()), MINT, TOKEN_2022_PROGRAM)
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(
+            source=source,
+            mint=MINT,
+            destination=dest,
+            authority=delegate.pubkey(),
+            program=TOKEN_2022_PROGRAM,
+        ),
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, delegate])
+    req = _requirement(pay_to, program=TOKEN_PROGRAM)
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, req, [str(managed_signer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
+
+
+def test_reject_managed_signer_in_transfer_checked_multisig_tail():
+    fee_payer = Keypair()
+    customer = Keypair()
+    managed_signer = Keypair()
+    multisig_authority = Keypair()
+    pay_to = str(Keypair().pubkey())
+    source = derive_ata(str(customer.pubkey()), MINT, TOKEN_PROGRAM)
+    destination = derive_ata(pay_to, MINT, TOKEN_PROGRAM)
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(
+            source=source,
+            mint=MINT,
+            destination=destination,
+            authority=multisig_authority.pubkey(),
+            authority_is_signer=False,
+            additional_signers=(managed_signer.pubkey(),),
+        ),
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, managed_signer])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(managed_signer.pubkey())])
     assert e.value.code == "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds"
 
 
@@ -522,6 +593,12 @@ def _gate(cfg, *, accept=(Protocol.X402, Protocol.MPP)):
     )
 
 
+def _adapter_config(network: str):
+    if network == "solana_mainnet":
+        return configure(network=network, preflight=False, operator=Operator(signer=Signer.generate()))
+    return configure(network=network, preflight=False)
+
+
 def test_adapter_accepts_entry_shape():
     cfg = configure(network="solana_localnet", preflight=False)
     adapter = X402Adapter(cfg)
@@ -532,6 +609,58 @@ def test_adapter_accepts_entry_shape():
     assert entry["asset"] == MINT  # localnet falls back to mainnet mint (caveat #1)
     assert entry["extra"]["memo"] == "/report"
     assert "recentBlockhash" not in entry["extra"]  # no provider wired
+
+
+@pytest.mark.parametrize("replay_store", [None, MemoryStore()])
+def test_adapter_inmemory_replay_store_fails_closed_outside_localnet(monkeypatch, replay_store):
+    cfg = configure(network="solana_devnet", preflight=False)
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(ConfigurationError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        X402Adapter(cfg, replay_store=replay_store)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
+    with pytest.raises(ConfigurationError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        X402Adapter(cfg, replay_store=replay_store)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    assert isinstance(X402Adapter(cfg, replay_store=replay_store)._store, MemoryStore)
+
+
+def test_adapter_localnet_allows_default_and_explicit_memory_replay_stores():
+    cfg = configure(network="solana_localnet", preflight=False)
+    store = MemoryStore()
+
+    assert isinstance(X402Adapter(cfg)._store, MemoryStore)
+    assert X402Adapter(cfg, replay_store=store)._store is store
+
+
+@pytest.mark.parametrize("network", ["solana_devnet", "solana_mainnet"])
+def test_adapter_rejects_file_replay_store_outside_localnet(monkeypatch, tmp_path, network):
+    if network == "solana_devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    store = FileReplayStore(tmp_path / "replay.json")
+    cfg = _adapter_config(network)
+
+    with pytest.raises(ConfigurationError, match="FileReplayStore.*localnet"):
+        X402Adapter(cfg, replay_store=store)
+
+
+def test_adapter_forbids_inmemory_replay_store_opt_in_on_mainnet(monkeypatch):
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    cfg = _adapter_config("solana_mainnet")
+
+    with pytest.raises(ConfigurationError, match="forbidden on mainnet"):
+        X402Adapter(cfg, replay_store=MemoryStore())
+
+
+def test_adapter_localnet_allows_explicit_file_replay_store(tmp_path):
+    store = FileReplayStore(tmp_path / "replay.json")
+    cfg = configure(network="solana_localnet", preflight=False)
+
+    assert X402Adapter(cfg, replay_store=store)._store is store
 
 
 def test_adapter_embeds_recent_blockhash_when_provider_set():
