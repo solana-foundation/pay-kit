@@ -230,6 +230,9 @@ namespace PayKit\Tests\Frameworks {
                 'accept' => ['mpp'],
                 'preflight' => false,
                 'mpp_challenge_binding_secret' => 'framework-test-secret-0123456789abcdef',
+                // MPP requires an explicit process-local opt-in even on localnet
+                // (no implicit network escape); acknowledge single-process scope.
+                'mpp' => ['allow_unsafe_memory_store' => true],
                 'x402_replay_store' => 'missing.x402.replay_store',
             ]);
             $provider = new PayKitServiceProvider($app);
@@ -273,7 +276,7 @@ namespace PayKit\Tests\Frameworks {
                 $this->pricing(),
                 $this->psrFactory(),
                 new HttpFoundationFactory(),
-                $this->x402Adapter(),
+                x402: $this->x402Adapter(),
             );
             $event = $this->symfonyEvent();
 
@@ -309,6 +312,9 @@ namespace PayKit\Tests\Frameworks {
                 'accept' => ['mpp'],
                 'preflight' => false,
                 'mpp_challenge_binding_secret' => 'framework-test-secret-0123456789abcdef',
+                // MPP requires an explicit process-local opt-in even on localnet
+                // (no implicit network escape); acknowledge single-process scope.
+                'mpp_allow_unsafe_memory_store' => true,
                 'x402_replay_store' => 'missing.x402.replay_store',
             ]], $container);
 

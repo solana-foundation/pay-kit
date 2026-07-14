@@ -35,38 +35,55 @@ final class RequirePaymentTest extends TestCase
 
     public function testX402OnlyConstructionDoesNotRequireMppReplayStore(): void
     {
-        $client = new PayKit(new Config(
-            network: Network::SolanaDevnet,
-            accept: [Protocol::X402],
-            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
-            preflight: false,
-        ));
-        $middleware = new RequirePayment($client, new Gate(amount: Price::usd('0.10')));
-        self::assertInstanceOf(RequirePayment::class, $middleware);
+        // x402 requires a durable shared replay store off-localnet; this
+        // single-process unit test acknowledges that scope via the opt-in so it
+        // can exercise the auto-wiring path. The assertion under test is that an
+        // x402-only client needs NO MPP replay store (the MPP adapter stays lazy).
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $client = new PayKit(new Config(
+                network: Network::SolanaDevnet,
+                accept: [Protocol::X402],
+                operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
+                preflight: false,
+            ));
+            $middleware = new RequirePayment($client, new Gate(amount: Price::usd('0.10')));
+            self::assertInstanceOf(RequirePayment::class, $middleware);
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
     }
 
     public function testX402OnlyGateDoesNotConstructMppReplayStore(): void
     {
-        $client = new PayKit(new Config(
-            network: Network::SolanaDevnet,
-            accept: [Protocol::X402, Protocol::Mpp],
-            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
-            preflight: false,
-            mpp: new MppConfig(
-                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
-            ),
-        ));
-        $middleware = new RequirePayment(
-            $client,
-            new Gate(amount: Price::usd('0.10'), accept: [Protocol::X402]),
-        );
+        // Same single-process x402 opt-in as above; the assertion is that an
+        // x402-only gate never constructs the MPP replay store even when the
+        // client also accepts MPP.
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $client = new PayKit(new Config(
+                network: Network::SolanaDevnet,
+                accept: [Protocol::X402, Protocol::Mpp],
+                operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
+                preflight: false,
+                mpp: new MppConfig(
+                    challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+                ),
+            ));
+            $middleware = new RequirePayment(
+                $client,
+                new Gate(amount: Price::usd('0.10'), accept: [Protocol::X402]),
+            );
 
-        $response = $middleware->process(
-            $this->factory->createServerRequest('GET', '/paid'),
-            $this->nextHandler(),
-        );
+            $response = $middleware->process(
+                $this->factory->createServerRequest('GET', '/paid'),
+                $this->nextHandler(),
+            );
 
-        self::assertSame(402, $response->getStatusCode());
+            self::assertSame(402, $response->getStatusCode());
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
     }
 
     protected function setUp(): void
