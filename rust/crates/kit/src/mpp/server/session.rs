@@ -4114,6 +4114,245 @@ mod tests {
         );
     }
 
+    // On-chain channel-binding rejects: process_topup fetches the real channel
+    // account and rejects when its status/mint/payee/rent_payer/authorized_signer
+    // /payer diverge from the session config or the stored channel. The existing
+    // *_mismatch tests only exercise the PASS side of these checks (they reach the
+    // later grace_period / distribution_hash / resulting-deposit rejects), so the
+    // divergent-binding rejects themselves need explicit coverage. Each seeds the
+    // mock RPC with a channel that matches on every field the checks reach BEFORE
+    // the one under test, so the intended reject fires first, and asserts the
+    // stored deposit is left untouched.
+    #[cfg(feature = "server")]
+    async fn topup_onchain_binding_rejection(
+        onchain_channel: Vec<u8>,
+        stored_payer: Pubkey,
+        stored_signer: Pubkey,
+    ) -> Error {
+        let base = make_server();
+        let channel = Pubkey::new_unique();
+        let channel_id = payment_channels::pubkey_string(&channel);
+        let rpc = SessionAccountRpc::start(onchain_channel, payment_channels::default_program_id());
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some(rpc.url.clone()),
+                ..base.config
+            },
+            MemoryChannelStore::new(),
+        );
+        server
+            .store
+            .put_channel(
+                &channel_id,
+                stored_topup_channel(channel_id.clone(), stored_payer, stored_signer),
+            )
+            .await
+            .unwrap();
+        let error = server
+            .process_topup(&TopUpPayload {
+                channel_id: channel_id.clone(),
+                new_deposit: "2000".to_string(),
+                signature: bs58::encode([10u8; 64]).into_string(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            server
+                .store
+                .get_channel(&channel_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deposit,
+            1_000,
+            "a rejected top-up must not mutate the stored channel",
+        );
+        error
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_non_open_onchain_status() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        // status 1 (ClosePending) is anything != CHANNEL_STATUS_OPEN.
+        let error = topup_onchain_binding_rejection(
+            encoded_channel(1, 2_000, payer, payee, signer, mint),
+            payer,
+            signer,
+        )
+        .await;
+        assert!(
+            error.to_string().contains("is not open on-chain"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_onchain_mint_mismatch() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let error = topup_onchain_binding_rejection(
+            encoded_channel(
+                CHANNEL_STATUS_OPEN,
+                2_000,
+                payer,
+                payee,
+                signer,
+                Pubkey::new_unique(),
+            ),
+            payer,
+            signer,
+        )
+        .await;
+        assert!(
+            error.to_string().contains("on-chain channel mint mismatch"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_onchain_payee_mismatch() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        // A payee that is not the session recipient (rent_payer tracks payee in
+        // encoded_channel, but the payee check runs first).
+        let error = topup_onchain_binding_rejection(
+            encoded_channel(
+                CHANNEL_STATUS_OPEN,
+                2_000,
+                payer,
+                Pubkey::new_unique(),
+                signer,
+                mint,
+            ),
+            payer,
+            signer,
+        )
+        .await;
+        assert!(
+            error
+                .to_string()
+                .contains("on-chain channel payee mismatch"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_onchain_rent_payer_mismatch() {
+        use crate::generated::payment_channels::generated::accounts::Channel;
+        use crate::generated::payment_channels::generated::types::SettlementWatermarks;
+
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        // payee matches the recipient (passes the payee check) but rent_payer is
+        // NOT the operator, so the rent_payer check must reject. encoded_channel
+        // ties rent_payer to payee, so the channel is built explicitly here.
+        let onchain_channel = borsh::to_vec(&Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 255,
+            status: CHANNEL_STATUS_OPEN,
+            salt: 7,
+            deposit: 2_000,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+            distribution_hash: payment_channels::distribution_hash(&[]),
+            payer: payment_channels::to_address(&payer),
+            payee: payment_channels::to_address(&payee),
+            authorized_signer: payment_channels::to_address(&signer),
+            mint: payment_channels::to_address(&mint),
+            rent_payer: payment_channels::to_address(&Pubkey::new_unique()),
+            open_slot: 42,
+        })
+        .unwrap();
+        let error = topup_onchain_binding_rejection(onchain_channel, payer, signer).await;
+        assert!(
+            error
+                .to_string()
+                .contains("on-chain channel rent_payer mismatch"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_onchain_authorized_signer_mismatch() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        // On-chain authorized_signer diverges from the stored channel's signer.
+        let error = topup_onchain_binding_rejection(
+            encoded_channel(
+                CHANNEL_STATUS_OPEN,
+                2_000,
+                payer,
+                payee,
+                Pubkey::new_unique(),
+                mint,
+            ),
+            payer,
+            signer,
+        )
+        .await;
+        assert!(
+            error
+                .to_string()
+                .contains("on-chain channel authorized_signer does not match stored channel"),
+            "unexpected error: {error}",
+        );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_rejects_onchain_payer_mismatch() {
+        let base = make_server();
+        let payer = Pubkey::new_unique();
+        let payee = parse_pubkey(&base.config.recipient).unwrap();
+        let signer = Pubkey::new_unique();
+        let mint = expected_payment_channel_mint(&base.config).unwrap();
+        // On-chain payer diverges from the stored channel's payer (operator).
+        let error = topup_onchain_binding_rejection(
+            encoded_channel(
+                CHANNEL_STATUS_OPEN,
+                2_000,
+                Pubkey::new_unique(),
+                payee,
+                signer,
+                mint,
+            ),
+            payer,
+            signer,
+        )
+        .await;
+        assert!(
+            error
+                .to_string()
+                .contains("on-chain channel payer does not match stored channel"),
+            "unexpected error: {error}",
+        );
+    }
+
     #[cfg(feature = "server")]
     #[test]
     fn channel_account_rejects_invalid_discriminator_version_and_length() {
