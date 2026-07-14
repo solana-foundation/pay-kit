@@ -6,7 +6,10 @@ import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError
 import { createUnsafeMemoryReplayStore, declareProductionReplayStore, type ReplayStore } from '../replay-store.js';
 import { Signer } from '../signer.js';
 
-const SECRET = { mpp: { challengeBindingSecret: 'test-secret', allowUnsafeMemoryStore: true } };
+// Off localnet the challenge secret must be at least 32 UTF-8 bytes, so every
+// non-localnet fixture uses a 32-byte secret.
+const SECRET_32 = 's'.repeat(32);
+const SECRET = { mpp: { challengeBindingSecret: SECRET_32, allowUnsafeMemoryStore: true } };
 const values = new Map<string, unknown>();
 const SHARED_STORE: ReplayStore = declareProductionReplayStore({
     isDurable: true,
@@ -60,7 +63,7 @@ describe('configure', () => {
     });
 
     it('refuses the demo signer on mainnet', async () => {
-        const mainnetMpp = { mpp: { challengeBindingSecret: 'test-secret' }, replayStore: SHARED_STORE };
+        const mainnetMpp = { mpp: { challengeBindingSecret: SECRET_32 }, replayStore: SHARED_STORE };
         await expect(configure({ ...mainnetMpp, network: 'solana_mainnet' })).rejects.toThrow(DemoSignerOnMainnetError);
         const signer = await Signer.generate();
         const config = await configure({
@@ -69,6 +72,20 @@ describe('configure', () => {
             operator: { signer },
         });
         expect(config.operator.recipient).toBe(signer.pubkey);
+    });
+
+    it('refuses a demo key wrapped with a forged isDemo marker on mainnet', async () => {
+        const demo = await Signer.demo();
+        const signer = { ...demo, isDemo: false };
+
+        await expect(
+            configure({
+                mpp: { challengeBindingSecret: SECRET_32 },
+                network: 'solana_mainnet',
+                operator: { signer },
+                replayStore: SHARED_STORE,
+            }),
+        ).rejects.toThrow(DemoSignerOnMainnetError);
     });
 
     it('rejects the unsafe replay-store override on mainnet', async () => {
@@ -117,7 +134,7 @@ describe('configure', () => {
             await expect(
                 configure({
                     ...SECRET,
-                    mpp: { challengeBindingSecret: 'test-secret' },
+                    mpp: { challengeBindingSecret: SECRET_32 },
                     network: 'solana_devnet',
                     operator: { signer },
                     replayStore,
@@ -141,7 +158,7 @@ describe('configure', () => {
         await expect(
             configure({
                 ...SECRET,
-                mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'test-secret' },
+                mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: SECRET_32 },
                 network: 'solana_devnet',
                 operator: { signer: await Signer.generate() },
                 replayStore,
@@ -188,15 +205,65 @@ describe('configure', () => {
         );
     });
 
+    it('rejects expirations that overflow Date while preserving expiresIn=0', async () => {
+        await expect(
+            configure({ ...SECRET, mpp: { ...SECRET.mpp, expiresIn: Number.MAX_SAFE_INTEGER } }),
+        ).rejects.toThrow('mpp.expiresIn must produce a valid expiration date.');
+
+        await expect(configure({ ...SECRET, mpp: { ...SECRET.mpp, expiresIn: 0 } })).resolves.toMatchObject({
+            mpp: { expiresIn: 0 },
+        });
+    });
+
+    it('rejects malformed explicit MPP challenge secrets before expiry validation on localnet', async () => {
+        await expect(configure({ mpp: { challengeBindingSecret: '' } })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+        await expect(configure({ mpp: { challengeBindingSecret: null as never, expiresIn: -1 } })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+        await expect(configure({ mpp: { challengeBindingSecret: 1 as never, expiresIn: -1 } })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+    });
+
     it('requires a challenge secret outside localnet', async () => {
         const signer = await Signer.generate();
         delete process.env.PAY_KIT_MPP_SECRET;
         delete process.env.MPP_SECRET_KEY;
         await expect(configure({ network: 'solana_devnet', operator: { signer } })).rejects.toThrow(ConfigurationError);
-        process.env.MPP_SECRET_KEY = 'env-secret';
+        process.env.MPP_SECRET_KEY = 'e'.repeat(32);
         const config = await configure({ network: 'solana_devnet', operator: { signer }, replayStore: SHARED_STORE });
-        expect(config.mpp.challengeBindingSecret).toBe('env-secret');
+        expect(config.mpp.challengeBindingSecret).toBe('e'.repeat(32));
         delete process.env.MPP_SECRET_KEY;
+    });
+
+    it('requires a 32-byte UTF-8 challenge secret outside localnet', async () => {
+        const signer = await Signer.generate();
+        await expect(
+            configure({
+                mpp: { challengeBindingSecret: 's'.repeat(31) },
+                network: 'solana_devnet',
+                operator: { signer },
+                replayStore: SHARED_STORE,
+            }),
+        ).rejects.toThrow('mpp.challengeBindingSecret must be at least 32 UTF-8 bytes outside localnet.');
+
+        // 8 grinning-face emoji encode to 32 UTF-8 bytes, so the byte count (not
+        // the string length) is what the boundary measures.
+        await expect(
+            configure({
+                mpp: { challengeBindingSecret: '😀'.repeat(8) },
+                network: 'solana_devnet',
+                operator: { signer },
+                replayStore: SHARED_STORE,
+            }),
+        ).resolves.toMatchObject({ network: 'solana_devnet' });
+
+        // A short secret is still accepted on localnet.
+        await expect(
+            configure({ mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'short' } }),
+        ).resolves.toMatchObject({ network: 'solana_localnet' });
     });
 
     it('requires an injected replay store outside localnet and accepts both capabilities', async () => {
@@ -204,7 +271,7 @@ describe('configure', () => {
         await expect(
             configure({
                 ...SECRET,
-                mpp: { challengeBindingSecret: 'test-secret' },
+                mpp: { challengeBindingSecret: SECRET_32 },
                 network: 'solana_devnet',
                 operator: { signer },
             }),
@@ -230,7 +297,7 @@ describe('configure', () => {
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
             const config = await configure({
-                mpp: { challengeBindingSecret: 'test-secret' },
+                mpp: { challengeBindingSecret: SECRET_32 },
                 network: 'solana_devnet',
                 operator: { signer: await Signer.generate() },
             });
@@ -243,7 +310,7 @@ describe('configure', () => {
 
     it('configures from prefixed environment variables', async () => {
         process.env.PAY_KIT_NETWORK = 'solana_devnet';
-        process.env.PAY_KIT_MPP_SECRET = 'env-secret';
+        process.env.PAY_KIT_MPP_SECRET = 'e'.repeat(32);
         process.env.PAY_KIT_MPP_EXPIRES_IN = '60';
         process.env.PAY_KIT_STABLECOINS = '';
         process.env.PAY_KIT_RPC_URL = 'http://rpc.example';
@@ -251,7 +318,7 @@ describe('configure', () => {
         try {
             const config = await configureFromEnv('PAY_KIT_', SHARED_STORE);
             expect(config.network).toBe('solana_devnet');
-            expect(config.mpp.challengeBindingSecret).toBe('env-secret');
+            expect(config.mpp.challengeBindingSecret).toBe('e'.repeat(32));
             expect(config.mpp.expiresIn).toBe(60);
             expect(config.rpcUrl).toBe('http://rpc.example');
             expect(config.x402).toEqual({});
@@ -267,7 +334,7 @@ describe('configure', () => {
 
     it('honors a custom-prefixed unsafe-memory environment opt-in', async () => {
         process.env.APP_NETWORK = 'solana_devnet';
-        process.env.APP_MPP_SECRET = 'app-secret';
+        process.env.APP_MPP_SECRET = 'a'.repeat(32);
         process.env.APP_ALLOW_INMEMORY_REPLAY_STORE = '1';
         try {
             const config = await configureFromEnv('APP_');
@@ -283,7 +350,7 @@ describe('configure', () => {
     it('does not inherit the default prefix unsafe-memory opt-in', async () => {
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
         process.env.APP_NETWORK = 'solana_devnet';
-        process.env.APP_MPP_SECRET = 'app-secret';
+        process.env.APP_MPP_SECRET = 'a'.repeat(32);
         try {
             await expect(configureFromEnv('APP_')).rejects.toThrow(/atomic shared replayStore/);
         } finally {

@@ -7,7 +7,7 @@ import type { Payment } from '../payment.js';
 import { createPayKit } from '../paykit.js';
 import { usd } from '../price.js';
 import { declareProductionReplayStore } from '../replay-store.js';
-import { Signer } from '../signer.js';
+import { Signer, type PayKitSigner } from '../signer.js';
 
 const CREDENTIAL_HEADER = 'x-fake-credential';
 
@@ -29,6 +29,24 @@ function createSharedTestReplayStore() {
             return true;
         },
     });
+}
+
+class ClassBasedSigner implements PayKitSigner {
+    readonly isDemo = false;
+    readonly isFeePayer = true;
+    readonly pubkey: string;
+    readonly signer: PayKitSigner['signer'];
+    calls = 0;
+
+    constructor(private readonly delegate: PayKitSigner) {
+        this.pubkey = delegate.pubkey;
+        this.signer = delegate.signer;
+    }
+
+    async sign(message: Uint8Array): Promise<Uint8Array> {
+        this.calls += 1;
+        return await this.delegate.sign(message);
+    }
 }
 
 function fakeAdapter(config: PayKitConfig): ProtocolAdapter {
@@ -79,6 +97,113 @@ async function setup() {
 }
 
 describe('createPayKit', () => {
+    it('rejects a frozen prebuilt non-local config with a one-byte challenge binding secret', async () => {
+        const base = await configure({ mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 's'.repeat(32) } });
+        const config: PayKitConfig = Object.freeze({
+            ...base,
+            mpp: Object.freeze({ ...base.mpp, challengeBindingSecret: 'x' }),
+            network: 'solana_devnet',
+        });
+
+        await expect(createPayKit({ config })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be at least 32 UTF-8 bytes outside localnet.',
+        );
+    });
+
+    it('revalidates every boot invariant on frozen prebuilt configs', async () => {
+        const base = await configure({ mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 's'.repeat(32) } });
+
+        await expect(createPayKit({ config: Object.freeze({ ...base, accept: Object.freeze([]) }) })).rejects.toThrow(
+            'accept must list at least one protocol.',
+        );
+        await expect(
+            createPayKit({
+                config: Object.freeze({
+                    ...base,
+                    network: 'solana_testnet' as PayKitConfig['network'],
+                }),
+            }),
+        ).rejects.toThrow('Unknown network "solana_testnet".');
+        await expect(
+            createPayKit({ config: Object.freeze({ ...base, stablecoins: Object.freeze([]) }) }),
+        ).rejects.toThrow('stablecoins must list at least one coin.');
+    });
+
+    it('rejects a forged demo wrapper in a prebuilt mainnet config', async () => {
+        const demo = await Signer.demo();
+        const forgedSigner = { ...demo, isDemo: false };
+        const local = await configure({
+            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 's'.repeat(32) },
+            operator: { signer: forgedSigner },
+        });
+
+        await expect(
+            createPayKit({
+                config: Object.freeze({
+                    ...local,
+                    network: 'solana_mainnet',
+                    replayStore: createSharedTestReplayStore(),
+                }),
+            }),
+        ).rejects.toThrow('The demo signer is public and must not be used on mainnet. Provide operator.signer.');
+    });
+
+    it('rejects malformed localnet challenge secrets in prebuilt configs before expiry validation', async () => {
+        const base = await configure({ mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 's'.repeat(32) } });
+        const config = Object.freeze({
+            ...base,
+            mpp: Object.freeze({ ...base.mpp, challengeBindingSecret: undefined as never, expiresIn: -1 }),
+        });
+
+        await expect(createPayKit({ config })).rejects.toThrow(
+            'mpp.challengeBindingSecret must be a non-empty string.',
+        );
+    });
+
+    it('snapshots mutable prebuilt configuration wrappers before adapters observe them', async () => {
+        const base = await configure({ mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 's'.repeat(32) } });
+        const mutableMpp = { ...base.mpp };
+        const mutableSigner = { ...base.operator.signer };
+        const replayStore = createSharedTestReplayStore();
+        const config: PayKitConfig = {
+            ...base,
+            mpp: mutableMpp,
+            operator: { ...base.operator, signer: mutableSigner },
+            replayStore,
+        };
+
+        const paykit = await createPayKit({ config });
+        mutableMpp.realm = 'changed-after-construction';
+        mutableSigner.isDemo = false;
+        mutableSigner.pubkey = 'changed-after-construction';
+
+        expect(paykit.config.mpp.realm).toBe('App');
+        expect(paykit.config.operator.signer.isDemo).toBe(true);
+        expect(paykit.config.operator.signer.pubkey).toBe(base.operator.signer.pubkey);
+        expect(paykit.config.operator.signer.signer).toBe(mutableSigner.signer);
+        expect(paykit.config.replayStore).toBe(replayStore);
+        expect(Object.isFrozen(paykit.config)).toBe(true);
+        expect(Object.isFrozen(paykit.config.mpp)).toBe(true);
+        expect(Object.isFrozen(paykit.config.operator)).toBe(true);
+        expect(Object.isFrozen(paykit.config.operator.signer)).toBe(true);
+    });
+
+    it('retains a class-based signer sign method in an immutable config snapshot', async () => {
+        const classSigner = new ClassBasedSigner(await Signer.generate());
+        const config = await configure({
+            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 's'.repeat(32) },
+            operator: { signer: classSigner },
+        });
+        const paykit = await createPayKit({ config });
+
+        const signature = await paykit.config.operator.signer.sign(new TextEncoder().encode('snapshot compatibility'));
+
+        expect(signature).toHaveLength(64);
+        expect(classSigner.calls).toBe(1);
+        expect(paykit.config.operator.signer.signer).toBe(classSigner.signer);
+        expect(Object.isFrozen(paykit.config.operator.signer)).toBe(true);
+    });
+
     it('rejects a prebuilt mainnet config carrying the unsafe replay-store escape', async () => {
         const local = await configure({
             mpp: { challengeBindingSecret: 's3cret', allowUnsafeMemoryStore: true },

@@ -42,7 +42,7 @@ const codama = createFromJson(JSON.stringify(idl));
 console.log(`[codegen] Rendering Rust client from ${path.relative(repoRoot, idlPath)}`);
 console.log(`[codegen]   → ${path.relative(repoRoot, rustClientDir)}/generated/`);
 
-void codama.accept(
+await codama.accept(
     renderRustVisitor(rustClientDir, {
         // Pay-kit does not depend on Anchor at runtime. Generating bare Borsh
         // structs keeps the client free of `anchor-lang` transitively.
@@ -51,7 +51,9 @@ void codama.accept(
         // means a removed instruction in the upstream IDL also disappears
         // here on regeneration.
         deleteFolderBeforeRendering: true,
-        formatCode: true,
+        // The generated tree is nested below the crate manifest, so the Just
+        // recipe formats it from the Rust workspace after path rewriting.
+        formatCode: false,
         generatedFolder: 'generated',
     }),
 );

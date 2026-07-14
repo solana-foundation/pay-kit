@@ -30,9 +30,13 @@ import { startServer, stopServer } from "../src/process";
 //   1. Constructed off-localnet (network=mainnet) with NO shared store and
 //      WITHOUT PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 => it MUST fail CLOSED
 //      (the process errors/throws before readiness).
-//   2. With the opt-in (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1) it boots to
-//      `ready` — proving the opt-in is honored, not merely that boot is broken.
+//   2. On devnet, with the opt-in
+//      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready`, proving
+//      the development escape is honored without weakening mainnet policy.
 //
+// These are blocking regression probes: Go, TypeScript, and Python must reject
+// unsafe off-localnet construction, while the explicit devnet escape remains
+// usable. Any SDK that silently falls back to process-local state goes RED.
 // PHP, Ruby, and Lua do NOT use PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE, but they
 // DO enforce the same off-localnet fail-closed policy through their native
 // config contract (reject an omitted or non-durable/non-shared replay store off
@@ -82,10 +86,43 @@ const OPT_IN_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE";
 
 // The canonical fail-closed signature shared across SDKs. The opt-in env-var
 // name is the cross-SDK remediation string SECURITY.md guarantees every SDK
-// emits; the "no shared … store configured" wording is the Go/TS phrasing. A
-// toolchain/binary/RPC failure will NOT match either, so it cannot false-green.
+// emits; the "no shared … store configured" wording is the Go/TS phrasing; and
+// "forbidden on mainnet" is the wording emitted when an SDK is handed the
+// unsafe-memory store on mainnet and refuses it (the Go harness fixture always
+// sets that flag, so its mainnet boot fails on this branch). A
+// toolchain/binary/RPC failure will NOT match any of these, so it cannot
+// false-green.
 const FAIL_CLOSED_SIGNATURE =
-  /PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE|no shared[^\n]*store configured/i;
+  /PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE|no shared[^\n]*store configured|forbidden on mainnet/i;
+
+// Repo root: two dirs up from harness/test/. Used to git-grep an SDK's tracked
+// source for the fail-closed guard marker (the opt-in env-var name). A covered
+// probe is only REQUIRED once its SDK actually carries the guard IN THIS TREE:
+// go + typescript ship it here; python's lands via its own PR (#228), so until
+// that source merges the python probe asserts-SKIP instead of red-failing this
+// leaf. When #228 lands, the same grep sees the marker and auto-promotes python
+// to a required probe with no edit here.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function sdkFilesReferencingOptIn(sdkDir: string): string[] {
+  try {
+    const out = execFileSync("git", ["grep", "-l", OPT_IN_ENV, "--", sdkDir], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    return out.split("\n").filter(Boolean);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    const stdout = (error as { stdout?: string }).stdout ?? "";
+    // git grep exits 1 with empty output when there are no matches -> honest skip.
+    if (status === 1 && stdout.trim() === "") return [];
+    throw error;
+  }
+}
+
+function sdkImplementsGuard(sdkDir: string): boolean {
+  return sdkFilesReferencingOptIn(sdkDir).length > 0;
+}
 
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -146,10 +183,7 @@ type CoveredProbe = {
   // Per-SDK env used to reach the MPP charge store-construction gate.
   mppEnv: Record<string, string>;
   // Tracked SDK source dir git-grepped for the fail-closed guard marker. The
-  // probe is REQUIRED only once this dir references OPT_IN_ENV in-tree; until
-  // then it asserts-skip (the SDK's remediation lands in a sibling leaf). This
-  // mirrors #238's sdkImplementsGuard mechanism so both converge at integration
-  // with no divergence.
+  // probe only becomes REQUIRED once this dir references OPT_IN_ENV in-tree.
   guardSourceDir: string;
 };
 
@@ -202,27 +236,26 @@ const coveredProbes: CoveredProbe[] = [
       "go-paykit",
     ),
     mppEnv: mppEnv("USDC"),
+    // Go SDK guard lives in go/protocols/mpp/server/*.go.
     guardSourceDir: "go",
   },
   {
     id: "typescript",
-    label: "TypeScript Pay Kit configure() server",
-    available: commandExists("pnpm"),
-    unavailableReason: commandExists("pnpm") ? undefined : "pnpm missing",
+    label: "TypeScript PayKit high-level MPP adapter (createPayKit)",
+    available: true,
     implementation: serverImpl(
       "typescript",
-      "TypeScript Pay Kit configure() server",
+      "TypeScript PayKit high-level MPP adapter (createPayKit)",
       [
-        "pnpm",
-        "exec",
-        "node",
+        process.execPath,
         "--import",
         "tsx",
-        "src/fixtures/typescript/pay-kit-adapter-boot.ts",
+        "src/fixtures/typescript/paykit-boot.ts",
       ],
       "typescript",
     ),
     mppEnv: mppEnv("USDC"),
+    // TS guard lives in the pay-kit config + mpp adapters.
     guardSourceDir: "typescript/packages/pay-kit/src",
   },
   {
@@ -252,25 +285,17 @@ const coveredProbes: CoveredProbe[] = [
     ),
     // Python MPP runs in pubkey mode: the literal mint pubkey is the currency.
     mppEnv: mppEnv(USDC_MINT),
+    // Python SDK guard lands via its own PR (#228). Until that source merges,
+    // this dir has no OPT_IN_ENV reference, so the probe asserts-SKIP here.
     guardSourceDir: "python",
   },
 ];
 
-// A covered probe is REQUIRED only when its SDK's guard marker is present in
-// THIS tree; otherwise it asserts-skip with a loud PENDING note. The go/ts/
-// python SDK remediations land in sibling leaves (#227/#238/#228), so in this
-// harness leaf they are correctly skipped until integration, where the same
-// git-grep sees the marker and auto-promotes them to required probes with no
-// edit here. Mirrors #238's sdkImplementsGuard/resolvedProbes exactly.
-//
-// Repo root (defined before the probe resolution so the module-eval-time
-// resolvedProbes map can git-grep SDK source without a temporal-dead-zone
-// error). Uses `git grep` so .gitignored build/vendor trees are excluded.
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-function sdkImplementsGuard(sdkDir: string): boolean {
-  return sdkFilesReferencingOptIn(sdkDir).length > 0;
-}
-
+// Resolve each covered probe against THIS tree: a probe is REQUIRED only when
+// its toolchain is available AND its SDK actually implements the fail-closed
+// guard in-tree (grep the SDK source for the opt-in marker). This one runtime
+// signal keeps the leaf green today (python guard not here yet) and stays
+// correct once python's remediation merges (grep then sees it -> required).
 type ResolvedProbe = CoveredProbe & {
   guardImplemented: boolean;
   shouldRun: boolean;
@@ -285,24 +310,30 @@ const resolvedProbes: ResolvedProbe[] = coveredProbes.map((probe) => {
   };
 });
 
+// Loud note: surface each covered probe's status so a skip is never silent.
 for (const probe of resolvedProbes) {
   if (!probe.guardImplemented) {
     // eslint-disable-next-line no-console
     console.warn(
       `[boot-policy] PENDING ${probe.id}: SDK source (${probe.guardSourceDir}) ` +
-        `does not reference ${OPT_IN_ENV} in this tree; the fail-closed probe ` +
-        `asserts-skip until the ${probe.id} remediation lands (auto-promotes at integration).`,
+        `carries no ${OPT_IN_ENV} guard in this tree yet, so its boot probes ` +
+        `ASSERT-SKIP. This is not fixed here; it converges at the ${probe.id} ` +
+        `remediation PR, after which this same grep auto-promotes it to REQUIRED.`,
+    );
+  } else if (!probe.available) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[boot-policy] SKIP ${probe.id} boot probes: ${probe.unavailableReason}`,
     );
   }
 }
 
-// SDKs whose server boot surface implements NO off-localnet fail-closed replay/
-// session-store guard at all in this tree, via either the shared
-// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in or a native config contract
-// (verified below by source scan). There is no fail-closed behavior to conform
-// to yet, so these are asserted-SKIPPED with a loud note. php/ruby/lua are NOT
-// here: they enforce the policy natively and are covered by the source-contract
-// probes near the end of this file.
+// SDKs whose server boot surface does NOT implement the shared
+// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE fail-closed contract at all (verified: no
+// reference to the opt-in var anywhere in the SDK source). There is no
+// fail-closed boot behavior to conform to yet, so these are asserted-SKIPPED
+// with a loud note rather than silently passed. Extending the contract to them
+// is itself an open audit gap.
 const unimplementedProbes: Array<{ id: string; reason: string }> = [
   {
     id: "rust",
@@ -359,12 +390,14 @@ async function assertFailsClosed(probe: CoveredProbe): Promise<void> {
   );
 }
 
-// Boot the SAME SDK/env but WITH the opt-in and assert it reaches `ready` — the
-// only difference from the fail-closed run is the single env var, so a green
-// here proves the opt-in (not a broken boot) is what gates the store.
+// Boot the same SDK on devnet WITH the opt-in and assert it reaches `ready`.
+// Mainnet is intentionally not used for this positive path: SDKs may and should
+// reject process-local replay state there even when the development escape is
+// set.
 async function assertBootsWithOptIn(probe: CoveredProbe): Promise<void> {
   const server = await startServer(probe.implementation, {
     ...probe.mppEnv,
+    MPP_HARNESS_NETWORK: "devnet",
     [OPT_IN_ENV]: "1",
   });
   runningServers.push(server);
@@ -375,12 +408,6 @@ async function assertBootsWithOptIn(probe: CoveredProbe): Promise<void> {
 
 describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () => {
   for (const probe of resolvedProbes) {
-    if (probe.guardImplemented && !probe.available) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[boot-policy] SKIP ${probe.id} fail-closed probe: ${probe.unavailableReason}`,
-      );
-    }
     it.skipIf(!probe.shouldRun)(
       `${probe.id}: fails closed at network=mainnet with no ${OPT_IN_ENV}`,
       async () => {
@@ -393,7 +420,7 @@ describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () 
 describe("boot-policy conformance: boots with the opt-in", () => {
   for (const probe of resolvedProbes) {
     it.skipIf(!probe.shouldRun)(
-      `${probe.id}: boots to ready at network=mainnet with ${OPT_IN_ENV}=1`,
+      `${probe.id}: boots to ready at network=devnet with ${OPT_IN_ENV}=1`,
       async () => {
         await assertBootsWithOptIn(probe);
       },
@@ -418,29 +445,14 @@ describe("boot-policy conformance: SDKs without the store fail-closed contract",
 // (someone starts wiring the fail-closed contract) this REDs, forcing that SDK
 // to be promoted from an asserted-skip to a LIVE boot-policy probe that actually
 // asserts fail-closed / opt-in boot, rather than lingering half-implemented and
-// silently skipped. Uses `git grep` so .gitignored build/vendor trees (target/,
-// vendor/, .build/) are excluded automatically.
+// silently skipped. Uses `git grep` (via sdkFilesReferencingOptIn, defined
+// above) so .gitignored build/vendor trees (target/, vendor/, .build/) are
+// excluded automatically.
 const SDK_SOURCE_DIR: Record<string, string> = {
   rust: "rust",
   kotlin: "kotlin",
   swift: "swift",
 };
-
-function sdkFilesReferencingOptIn(sdkDir: string): string[] {
-  try {
-    const out = execFileSync("git", ["grep", "-l", OPT_IN_ENV, "--", sdkDir], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
-    return out.split("\n").filter(Boolean);
-  } catch (error) {
-    const status = (error as { status?: number }).status;
-    const stdout = (error as { stdout?: string }).stdout ?? "";
-    // git grep exits 1 with empty output when there are no matches -> honest skip.
-    if (status === 1 && stdout.trim() === "") return [];
-    throw error;
-  }
-}
 
 describe("boot-policy: asserted-skip roster stays honest (no half-implemented contract)", () => {
   for (const probe of unimplementedProbes) {
