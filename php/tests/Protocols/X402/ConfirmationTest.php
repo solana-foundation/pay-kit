@@ -43,6 +43,7 @@ final class ConfirmationTest extends TestCase
         );
         return new Adapter(
             $config,
+            replayStore: new ExplicitCapabilityTestReplayStore(),
             recentBlockhashProvider: fn () => null,
             rpc: $rpc,
             confirmationAttempts: $attempts,

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\X402\Exact;
 
+use Brick\Math\BigInteger;
 use PayKit\Exception\InvalidProofException;
 use PayKit\PayCore\Solana\Mints;
 use SolanaPhpSdk\Keypair\PublicKey;
@@ -56,7 +57,7 @@ final class Verifier
      * @param array<string,mixed>  $requirement   The x402 accepts[] entry.
      * @param list<string>         $managedSigners Server-managed pubkeys (typically the facilitator).
      *
-     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:int}
+     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:string}
      */
     public static function verify(
         string $transactionBase64,
@@ -164,7 +165,7 @@ final class Verifier
             );
         }
         $micro = self::readU64Le($data, 1);
-        if ($micro > self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
+        if ($micro->isGreaterThan(self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) {
             throw new InvalidProofException(
                 'invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high',
             );
@@ -176,7 +177,7 @@ final class Verifier
      * @param list<string> $accountKeys
      * @param array<string,mixed> $requirement
      * @param list<string> $managedSigners
-     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:int}
+     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:string}
      */
     private static function verifyTransfer(
         object $ix,
@@ -240,7 +241,7 @@ final class Verifier
         // Rule 8: amount match.
         $amount = self::readU64Le($data, 1);
         $expectedAmount = self::amountField($requirement);
-        if ($amount !== $expectedAmount) {
+        if (!$amount->isEqualTo($expectedAmount)) {
             throw new InvalidProofException('invalid_exact_svm_payload_amount_mismatch');
         }
 
@@ -250,7 +251,7 @@ final class Verifier
             'mint'        => $mint,
             'destination' => $destination,
             'authority'   => $authority,
-            'amount'      => $amount,
+            'amount'      => (string) $amount,
         ];
     }
 
@@ -325,24 +326,56 @@ final class Verifier
         return is_string($v) ? $v : null;
     }
 
-    /**
-     * @param array<string,mixed> $requirement
-     */
-    private static function amountField(array $requirement): int
+    /** Maximum unsigned u64, the wire upper bound for base-unit amounts. */
+    private static function u64Max(): BigInteger
     {
-        $v = $requirement['amount'] ?? $requirement['maxAmountRequired'] ?? null;
-        if (!is_string($v) && !is_int($v)) {
-            throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
-        }
-        return (int) $v;
+        return BigInteger::of('18446744073709551615');
     }
 
-    private static function readU64Le(string $data, int $offset): int
+    /**
+     * Parses the requirement amount into an exact unsigned u64. Wire
+     * amounts are u64, but PHP's native int is signed 64-bit: `(int)` on a
+     * decimal string above PHP_INT_MAX saturates, so a high-bit amount
+     * would never compare equal to (or, worse, could be made to collide
+     * with) the transferred amount. Anything that is not a canonical
+     * non-negative integer within the u64 range fails closed.
+     *
+     * @param array<string,mixed> $requirement
+     */
+    private static function amountField(array $requirement): BigInteger
+    {
+        $v = $requirement['amount'] ?? $requirement['maxAmountRequired'] ?? null;
+        if (is_int($v)) {
+            if ($v < 0) {
+                throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
+            }
+            return BigInteger::of($v);
+        }
+        if (!is_string($v) || preg_match('/^[0-9]+$/', $v) !== 1) {
+            throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
+        }
+        $normalized = ltrim($v, '0');
+        $amount = BigInteger::of($normalized === '' ? '0' : $normalized);
+        if ($amount->isGreaterThan(self::u64Max())) {
+            throw new InvalidProofException('invalid_exact_svm_payload_missing_field_amount');
+        }
+        return $amount;
+    }
+
+    /**
+     * Reads a little-endian u64 as an exact unsigned value. `unpack('P')`
+     * yields a signed PHP int, so values in [2^63, 2^64) come back
+     * negative; rebuild from two unsigned 32-bit halves instead.
+     */
+    private static function readU64Le(string $data, int $offset): BigInteger
     {
         if (strlen($data) < $offset + 8) {
             throw new InvalidProofException('invalid_exact_svm_payload_no_transfer_instruction');
         }
-        $b = unpack('P', substr($data, $offset, 8));
-        return $b === false ? 0 : (int) $b[1];
+        $parts = unpack('Vlo/Vhi', substr($data, $offset, 8));
+        if ($parts === false) {
+            throw new InvalidProofException('invalid_exact_svm_payload_no_transfer_instruction');
+        }
+        return BigInteger::of($parts['hi'])->shiftedLeft(32)->plus($parts['lo']);
     }
 }
