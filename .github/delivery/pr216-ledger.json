@@ -28,7 +28,7 @@
     "harness-ci",
     "cross-sdk"
   ],
-  "deliveryBaseline": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a",
+  "deliveryBaseline": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec",
   "summary": {
     "commits": {
       "open_pr": 22,
@@ -36,8 +36,8 @@
       "obsolete_test_only": 2
     },
     "paths": {
-      "integrated": 29,
-      "open_pr": 109,
+      "integrated": 27,
+      "open_pr": 111,
       "superseded": 99
     }
   },
@@ -64,7 +64,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup; PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #214, #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214 and PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "272190cfc022eb728d74dd6506846cbbf004822d",
@@ -81,7 +81,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "cd9d245302c92672476eae8fde299d4169bc51be",
@@ -149,7 +149,7 @@
         }
       ],
       "owner": "PR #230 / fix/kotlin-canonical-json-hardening",
-      "followUp": "PR #230 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #230, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "a99a571adb19dc913de91b1cc7e0159132fea3d2",
@@ -224,7 +224,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "51d1c4a1bd66be82db2539a7fe959078030f445d",
@@ -241,7 +241,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "8fd892bf66ff827772c709a46905bbd77723b77a",
@@ -343,7 +343,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "ca15d9498b5b5c04251b9b6bc57c648a176e5130",
@@ -360,7 +360,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "4efd4bbb60e64f12e6b453f26826f2e9a69b744e",
@@ -394,7 +394,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "sha": "36d493f05ccb34ced2cbb06008d1d21dfb1d7c4c",
@@ -3034,7 +3034,7 @@
           "sourceBlob": "4d2427fb49389c07d455d5d2ffa87d29deb3ac5c",
           "deliveryBlob": "4d2427fb49389c07d455d5d2ffa87d29deb3ac5c",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:.github/actions/setup-harness-leg/action.yml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:.github/actions/setup-harness-leg/action.yml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:.github/actions/setup-harness-leg/action.yml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3086,7 +3086,7 @@
           "sourceBlob": "3d8068e3ee1acb864ab1220779b57536ddfdd41d",
           "deliveryBlob": "3d8068e3ee1acb864ab1220779b57536ddfdd41d",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:.github/dependabot.yml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:.github/dependabot.yml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:.github/dependabot.yml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3320,7 +3320,7 @@
           "sourceBlob": "0d287637e0915c1fd380c158f286639c3f5b3e9f",
           "deliveryBlob": "0d287637e0915c1fd380c158f286639c3f5b3e9f",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:.github/workflows/npm-publish.yml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:.github/workflows/npm-publish.yml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:.github/workflows/npm-publish.yml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3372,7 +3372,7 @@
           "sourceBlob": "47471237a0a32dbfbbef3956a15899c2c19a2743",
           "deliveryBlob": "47471237a0a32dbfbbef3956a15899c2c19a2743",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:.github/workflows/pypi-publish.yml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:.github/workflows/pypi-publish.yml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:.github/workflows/pypi-publish.yml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3450,7 +3450,7 @@
           "sourceBlob": "9d847c4bc4e12cb345c98997555003bca239b27e",
           "deliveryBlob": "9d847c4bc4e12cb345c98997555003bca239b27e",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:.github/workflows/report.yml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:.github/workflows/report.yml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:.github/workflows/report.yml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3528,7 +3528,7 @@
           "sourceBlob": "dae3eb892e4e58ecc7add70c5a407bdec5d46870",
           "deliveryBlob": "dae3eb892e4e58ecc7add70c5a407bdec5d46870",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:.gitignore",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:.gitignore",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:.gitignore",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3580,7 +3580,7 @@
           "sourceBlob": "cb96142e236fbe9326d829f1e93ef61975264d29",
           "deliveryBlob": "cb96142e236fbe9326d829f1e93ef61975264d29",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:SECURITY.md",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:SECURITY.md",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:SECURITY.md",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -3818,7 +3818,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/paykit/adapters/x402/binding_test.go",
@@ -3834,7 +3834,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/paykit/adapters/x402/exact.go",
@@ -3876,7 +3876,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/paykit/types.go",
@@ -3892,7 +3892,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/protocols/mpp/server/server_replay_durability_test.go",
@@ -4116,7 +4116,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/protocols/mpp/server/session_voucher.go",
@@ -4158,7 +4158,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/protocols/x402/verify.go",
@@ -4200,7 +4200,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "go/protocols/x402/verify_full_coverage_test.go",
@@ -4320,7 +4320,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "harness/go-client/go.sum",
@@ -4336,7 +4336,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "harness/go-server/go.mod",
@@ -4352,7 +4352,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "harness/go-server/go.sum",
@@ -4368,7 +4368,7 @@
         }
       ],
       "owner": "PR #214 / fix/go-idiomatic-cleanup",
-      "followUp": "PR #214 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #214, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "harness/package.json",
@@ -4399,28 +4399,18 @@
     {
       "path": "harness/php-server/server.php",
       "bucket": "php",
-      "status": "integrated",
+      "status": "open_pr",
       "evidence": [
         {
-          "kind": "identical-tree-entry",
-          "sourceBlob": "959c9d54abb8c272d0abfef2da6dfcbe54336661",
-          "deliveryBlob": "959c9d54abb8c272d0abfef2da6dfcbe54336661",
-          "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/php-server/server.php",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/php-server/server.php",
-          "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
-        },
-        {
-          "kind": "merged-stacked-base-tree-entry",
-          "pr": 219,
-          "branch": "split/pr216-ci-harness-mega",
-          "deliveryCommit": "9e38dea31788d5aa52770b7da23fea7e64af122b",
-          "sourceBlob": "959c9d54abb8c272d0abfef2da6dfcbe54336661",
-          "deliveryBlob": "959c9d54abb8c272d0abfef2da6dfcbe54336661",
-          "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/php-server/server.php",
-          "deliveryRef": "9e38dea31788d5aa52770b7da23fea7e64af122b:harness/php-server/server.php",
-          "detail": "Stacked base #219 commit 9e38dea31788d5aa52770b7da23fea7e64af122b is merged into the current #233 delivery history; this evidence records its exact source-tree state at that immutable commit."
+          "kind": "open-delivery-head",
+          "pr": 229,
+          "branch": "fix/php-security-hardening",
+          "deliveryCommit": "0bd30c1",
+          "detail": "Source path harness/php-server/server.php is assigned to PR #229 at or beyond 0bd30c1; merge-time validation must replace this open evidence with exact integrated tree evidence."
         }
-      ]
+      ],
+      "owner": "PR #229 / fix/php-security-hardening",
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "harness/pnpm-lock.yaml",
@@ -4458,7 +4448,7 @@
           "sourceBlob": "edfbb49d4fb7c709c76598dde1be1ab49d4dca46",
           "deliveryBlob": "edfbb49d4fb7c709c76598dde1be1ab49d4dca46",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/pnpm-workspace.yaml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/pnpm-workspace.yaml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/pnpm-workspace.yaml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4567,7 +4557,7 @@
           "sourceBlob": "759c9e15e9862b31d9812e92de4541788dcd3794",
           "deliveryBlob": "759c9e15e9862b31d9812e92de4541788dcd3794",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/ruby-server/test_server_io_caps.rb",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/ruby-server/test_server_io_caps.rb",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/ruby-server/test_server_io_caps.rb",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4801,7 +4791,7 @@
           "sourceBlob": "799c80184dbd41dfe17117de65180ab13598549d",
           "deliveryBlob": "799c80184dbd41dfe17117de65180ab13598549d",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/test/onchain-gate.ts",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/test/onchain-gate.ts",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/test/onchain-gate.ts",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4827,7 +4817,7 @@
           "sourceBlob": "07ae4f40ec5752738e41abee9094a7f9c3df990b",
           "deliveryBlob": "07ae4f40ec5752738e41abee9094a7f9c3df990b",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/test/onchain.setup.ts",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/test/onchain.setup.ts",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/test/onchain.setup.ts",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4905,7 +4895,7 @@
           "sourceBlob": "bcfd9e0fa17a323e5cde46fa766235096b92eacc",
           "deliveryBlob": "bcfd9e0fa17a323e5cde46fa766235096b92eacc",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/vectors/x402-exact-reject.json",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/vectors/x402-exact-reject.json",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/vectors/x402-exact-reject.json",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4931,7 +4921,7 @@
           "sourceBlob": "aea8119e2385ffeb5fd256469fd7e00532e8f83c",
           "deliveryBlob": "aea8119e2385ffeb5fd256469fd7e00532e8f83c",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/vitest.config.ts",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/vitest.config.ts",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/vitest.config.ts",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4957,7 +4947,7 @@
           "sourceBlob": "57483135a54581dadb458fc42cd4f0834b6f3df5",
           "deliveryBlob": "57483135a54581dadb458fc42cd4f0834b6f3df5",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:harness/vitest.onchain.config.ts",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:harness/vitest.onchain.config.ts",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:harness/vitest.onchain.config.ts",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -4987,7 +4977,7 @@
         }
       ],
       "owner": "PR #230 / fix/kotlin-canonical-json-hardening",
-      "followUp": "PR #230 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #230, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "kotlin/src/test/kotlin/com/solana/paykit/protocols/mpp/client/ChargeCredentialTest.kt",
@@ -5003,7 +4993,7 @@
         }
       ],
       "owner": "PR #230 / fix/kotlin-canonical-json-hardening",
-      "followUp": "PR #230 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #230, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "lua/cmd/conformance/main.lua",
@@ -5041,7 +5031,7 @@
           "sourceBlob": "3b4aaa6838a1789ebc2c8c9a59b7ecf7b3a7984d",
           "deliveryBlob": "3b4aaa6838a1789ebc2c8c9a59b7ecf7b3a7984d",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:lua/pay_kit/protocols/mpp/server/solana_verify.lua",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:lua/pay_kit/protocols/mpp/server/solana_verify.lua",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:lua/pay_kit/protocols/mpp/server/solana_verify.lua",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -5093,7 +5083,7 @@
           "sourceBlob": "5c7aeaa5a5da8e22a2406f36b55e9ef55e9aef83",
           "deliveryBlob": "5c7aeaa5a5da8e22a2406f36b55e9ef55e9aef83",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:lua/pay_kit/util/uint.lua",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:lua/pay_kit/util/uint.lua",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:lua/pay_kit/util/uint.lua",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -5145,7 +5135,7 @@
           "sourceBlob": "2b2d19ce3121f2e49e0d5260c526437706ce3a40",
           "deliveryBlob": "2b2d19ce3121f2e49e0d5260c526437706ce3a40",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:lua/tests/solana_verify_spec.lua",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:lua/tests/solana_verify_spec.lua",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:lua/tests/solana_verify_spec.lua",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -5201,7 +5191,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "php/src/Protocols/Mpp/Adapter.php",
@@ -5243,7 +5233,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "php/src/Protocols/X402/Exact/Verifier.php",
@@ -5337,7 +5327,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "php/tests/Protocols/X402/AdapterTest.php",
@@ -5353,7 +5343,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "php/tests/Protocols/X402/ConfirmationTest.php",
@@ -5369,7 +5359,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "php/tests/Protocols/X402/Exact/AtaCreateRejectTest.php",
@@ -5411,7 +5401,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "php/tests/Protocols/X402/LegacyWireTest.php",
@@ -5427,7 +5417,7 @@
         }
       ],
       "owner": "PR #229 / fix/php-security-hardening",
-      "followUp": "PR #229 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #229, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "playground/package.json",
@@ -5439,7 +5429,7 @@
           "sourceBlob": "f5ee2cd6cac9eb578a8ad2981a0e601a607671ab",
           "deliveryBlob": "f5ee2cd6cac9eb578a8ad2981a0e601a607671ab",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:playground/package.json",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:playground/package.json",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:playground/package.json",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -5465,7 +5455,7 @@
           "sourceBlob": "e4fc7d65cc3c7585d2c0fc7ff09b4ada0813812f",
           "deliveryBlob": "e4fc7d65cc3c7585d2c0fc7ff09b4ada0813812f",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:playground/pnpm-lock.yaml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:playground/pnpm-lock.yaml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:playground/pnpm-lock.yaml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -5491,7 +5481,7 @@
           "sourceBlob": "591dc3077f974f9fcf2fe66cf6452f0ad3d76ac4",
           "deliveryBlob": "591dc3077f974f9fcf2fe66cf6452f0ad3d76ac4",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:playground/pnpm-workspace.yaml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:playground/pnpm-workspace.yaml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:playground/pnpm-workspace.yaml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -5915,7 +5905,7 @@
           "sourceBlob": "65e876e0eff00e44f3fc20739fc4a1d0c92862bf",
           "deliveryBlob": "65e876e0eff00e44f3fc20739fc4a1d0c92862bf",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:ruby/lib/pay_kit/protocols/mpp/protocol/core/headers.rb",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:ruby/lib/pay_kit/protocols/mpp/protocol/core/headers.rb",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:ruby/lib/pay_kit/protocols/mpp/protocol/core/headers.rb",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -6019,7 +6009,7 @@
           "sourceBlob": "a328d71b1a941e1666595e79f923a27aecd7c483",
           "deliveryBlob": "a328d71b1a941e1666595e79f923a27aecd7c483",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:ruby/test/pay_kit/protocols/mpp/core_test.rb",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:ruby/test/pay_kit/protocols/mpp/core_test.rb",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:ruby/test/pay_kit/protocols/mpp/core_test.rb",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -6045,7 +6035,7 @@
           "sourceBlob": "6aeddef7a2d4353dd4853c6518ba139adf35ee64",
           "deliveryBlob": "6aeddef7a2d4353dd4853c6518ba139adf35ee64",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:ruby/test/pay_kit/protocols/mpp/pull_mode_replay_test.rb",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:ruby/test/pay_kit/protocols/mpp/pull_mode_replay_test.rb",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:ruby/test/pay_kit/protocols/mpp/pull_mode_replay_test.rb",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -6741,7 +6731,7 @@
           "sourceBlob": "0d19562cb7903763e7aab33064f6282a5da8256a",
           "deliveryBlob": "0d19562cb7903763e7aab33064f6282a5da8256a",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:skills/pay-sdk-implementation/codegen/generate-payment-channels-client-py.ts",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:skills/pay-sdk-implementation/codegen/generate-payment-channels-client-py.ts",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:skills/pay-sdk-implementation/codegen/generate-payment-channels-client-py.ts",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -6760,28 +6750,18 @@
     {
       "path": "skills/pay-sdk-implementation/codegen/package.json",
       "bucket": "cross-sdk",
-      "status": "integrated",
+      "status": "open_pr",
       "evidence": [
         {
-          "kind": "identical-tree-entry",
-          "sourceBlob": "229f317a0a96e257d603c7c0a366dc85ab9891da",
-          "deliveryBlob": "229f317a0a96e257d603c7c0a366dc85ab9891da",
-          "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:skills/pay-sdk-implementation/codegen/package.json",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:skills/pay-sdk-implementation/codegen/package.json",
-          "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
-        },
-        {
-          "kind": "merged-stacked-base-tree-entry",
-          "pr": 219,
-          "branch": "split/pr216-ci-harness-mega",
-          "deliveryCommit": "9e38dea31788d5aa52770b7da23fea7e64af122b",
-          "sourceBlob": "229f317a0a96e257d603c7c0a366dc85ab9891da",
-          "deliveryBlob": "229f317a0a96e257d603c7c0a366dc85ab9891da",
-          "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:skills/pay-sdk-implementation/codegen/package.json",
-          "deliveryRef": "9e38dea31788d5aa52770b7da23fea7e64af122b:skills/pay-sdk-implementation/codegen/package.json",
-          "detail": "Stacked base #219 commit 9e38dea31788d5aa52770b7da23fea7e64af122b is merged into the current #233 delivery history; this evidence records its exact source-tree state at that immutable commit."
+          "kind": "open-delivery-head",
+          "pr": 233,
+          "branch": "fix/harness-adversarial-hardening",
+          "deliveryCommit": "d9815dc",
+          "detail": "Source path skills/pay-sdk-implementation/codegen/package.json is assigned to PR #233 at or beyond d9815dc; merge-time validation must replace this open evidence with exact integrated tree evidence."
         }
-      ]
+      ],
+      "owner": "PR #233 / fix/harness-adversarial-hardening",
+      "followUp": "Land PR #233, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "skills/pay-sdk-implementation/codegen/pnpm-workspace.yaml",
@@ -6793,7 +6773,7 @@
           "sourceBlob": "5ed0b5af0d45919f64c66edfb16a5f4512461fa1",
           "deliveryBlob": "5ed0b5af0d45919f64c66edfb16a5f4512461fa1",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:skills/pay-sdk-implementation/codegen/pnpm-workspace.yaml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:skills/pay-sdk-implementation/codegen/pnpm-workspace.yaml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:skills/pay-sdk-implementation/codegen/pnpm-workspace.yaml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -6849,7 +6829,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/HttpClientPerformTests.swift",
@@ -6865,7 +6845,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/InstructionsTests.swift",
@@ -6881,7 +6861,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/PayCoreEdgeCaseTests.swift",
@@ -6897,7 +6877,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/RpcClientTests.swift",
@@ -6939,7 +6919,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "swift/Tests/SolanaPayKitTests/X402TypesCoverageTests.swift",
@@ -6955,7 +6935,7 @@
         }
       ],
       "owner": "PR #231 / fix/swift-conformance-hardening",
-      "followUp": "PR #231 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #231, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "swift/scripts/check_coverage.sh",
@@ -6993,7 +6973,7 @@
           "sourceBlob": "401b29a025906cb538cd6d54ac169200f91bd440",
           "deliveryBlob": "401b29a025906cb538cd6d54ac169200f91bd440",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:typescript/package.json",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:typescript/package.json",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:typescript/package.json",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -7055,7 +7035,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/challenge-guard-serialize.test.ts",
@@ -7071,7 +7051,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/charge-client-branches.test.ts",
@@ -7087,7 +7067,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/charge.test.ts",
@@ -7103,7 +7083,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/mpp-cosign-verify-guards.test.ts",
@@ -7119,7 +7099,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/multi-delegate-branches.test.ts",
@@ -7135,7 +7115,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/on-chain-branches.test.ts",
@@ -7151,7 +7131,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/payment-channels-branches.test.ts",
@@ -7167,7 +7147,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/__tests__/replay-reserve.test.ts",
@@ -7449,7 +7429,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/client/Subscription.ts",
@@ -7465,7 +7445,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/index.ts",
@@ -7481,7 +7461,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/server/Charge.ts",
@@ -7497,7 +7477,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/server/Session.ts",
@@ -7539,7 +7519,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/server/index.ts",
@@ -7649,7 +7629,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/mpp/src/utils/transactions.ts",
@@ -7665,7 +7645,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/config-replay-x402.test.ts",
@@ -7723,7 +7703,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/express-routes.test.ts",
@@ -7739,7 +7719,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/mpp-adapter-settle.test.ts",
@@ -7755,7 +7735,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/mpp-adapter.test.ts",
@@ -7771,7 +7751,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/mpp-session.test.ts",
@@ -7813,7 +7793,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/paykit-usage-branches.test.ts",
@@ -7829,7 +7809,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/protocol.test.ts",
@@ -7845,7 +7825,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/repo-hygiene.test.ts",
@@ -7893,7 +7873,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-adapter.test.ts",
@@ -7909,7 +7889,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-shared.test.ts",
@@ -7925,7 +7905,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-upto-blockhash-cache.test.ts",
@@ -7941,7 +7921,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/__tests__/x402-upto-engine.test.ts",
@@ -7957,7 +7937,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/adapters/mpp.ts",
@@ -7973,7 +7953,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/adapters/x402-shared.ts",
@@ -7989,7 +7969,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/adapters/x402-upto.ts",
@@ -8031,7 +8011,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     },
     {
       "path": "typescript/packages/pay-kit/src/config.ts",
@@ -8069,7 +8049,7 @@
           "sourceBlob": "7ef901638d1f40c7361aa2b81d0ad25f81ea5d6f",
           "deliveryBlob": "7ef901638d1f40c7361aa2b81d0ad25f81ea5d6f",
           "sourceRef": "45ad8c9acd7a71d4dd12b87321a9902c71fef865:typescript/pnpm-workspace.yaml",
-          "deliveryRef": "436eb49e5139aeecfedb170bb24ff6c54ec6ab6a:typescript/pnpm-workspace.yaml",
+          "deliveryRef": "be4bc4746fa3b2f1242d15da63e6f10ff935a1ec:typescript/pnpm-workspace.yaml",
           "detail": "The authoritative source-tip and current #233 delivery-baseline blobs are identical; integration is established by exact object identity."
         },
         {
@@ -8099,7 +8079,7 @@
         }
       ],
       "owner": "PR #232 / fix/typescript-security-hardening",
-      "followUp": "PR #232 merged to main; its #216 paths reach the #219 line when #219 rebases onto/merges main. Revalidate equivalence then."
+      "followUp": "Land PR #232, then revalidate semantic and exact tree-state delivery on #219."
     }
   ]
 }
