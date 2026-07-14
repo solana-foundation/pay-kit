@@ -1,7 +1,14 @@
 export * from '../constants.js';
 export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge.js';
 export { solana } from './Methods.js';
-export { ConfigurationError, type RpcLike, session, type SettlementRpc, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
+export {
+    ConfigurationError,
+    type RpcLike,
+    session,
+    type SettlementRpc,
+    type SubmitOpenRpc,
+    type VerifyOpenRpc,
+} from './Session.js';
 export {
     type ChannelMutator,
     type ChannelState,

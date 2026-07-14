@@ -233,7 +233,6 @@ export function createMemorySessionStore(): SessionStore {
 
         sessionStoreDurability: 'ephemeral' as const,
 
-
         async updateChannel(channelId, mutator) {
             return await withLock(channelId, async () => {
                 const current = data.get(channelId);

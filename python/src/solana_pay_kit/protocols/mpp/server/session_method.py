@@ -1317,8 +1317,13 @@ def new_session(options: SessionOptions) -> Session:
 
     # Shared with SessionServer's constructor guard so the factory and a
     # direct construction enforce one channel-store deployment policy.
+    # enforce_channel_store_policy has already rejected an absent/in-memory
+    # store off-localnet without the explicit opt-in, so the memory fallback
+    # below is only reachable on localnet or under the acknowledged opt-in.
     enforce_channel_store_policy(options.store, network)
 
+    # nosemgrep: failopen-default-store-python  -- fail-closed via the shared
+    # enforce_channel_store_policy guard above (not the rule's inline if/raise).
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(
