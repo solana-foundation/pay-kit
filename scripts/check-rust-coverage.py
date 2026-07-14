@@ -31,6 +31,23 @@ FILE_EXEMPTIONS: dict[str, str] = {
         "the residual line gap is that on-chain settlement the unit-only run "
         "cannot broadcast"
     ),
+    "mpp/server/subscription.rs": (
+        "activation money paths are behaviorally covered by unit tests "
+        "(divergent on-chain terms fail closed, broadcast failure, idempotent "
+        "already-on-chain recovery, fee-sponsored co-sign, unknown payload "
+        "rejected); the residual line gap is the settle-broadcast success path, "
+        "which needs a SubscriptionServer surfpool integration test (none exists "
+        "yet, unlike charge_integration), plus async state-machine desugaring "
+        "regions that stay count-0 under llvm-cov. Follow-up: add that "
+        "subscription integration test to retire this exemption"
+    ),
+    "mpp/protocol/intents/subscription.rs": (
+        "region coverage clears the floor; the residual line gap is an "
+        "unreachable defensive guard (period_hours() rejects hours > 8760, "
+        "impossible via to_period_hours which caps day at 8760 and week at "
+        "8736) plus serde-derive line attribution on optional fields, neither "
+        "coverable without removing the guard or line-touching filler"
+    ),
 }
 
 # `cargo llvm-cov` deliberately ignores `src/generated/`; keep every generated
