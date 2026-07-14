@@ -40,6 +40,7 @@ struct Account {
 pub(crate) struct TransactionExpectation {
     expected_message: Message,
     account_transitions: Vec<AccountDataTransition>,
+    account_creations: Vec<AccountCreation>,
 }
 
 #[derive(Clone)]
@@ -47,6 +48,17 @@ struct AccountDataTransition {
     address: String,
     expected_data: Vec<u8>,
     updated_data: Vec<u8>,
+}
+
+/// An account the accepted transaction brings into existence (e.g. a PDA the
+/// program initialises on first use). The precondition is that the account is
+/// ABSENT before the send, so a fixture cannot silently overwrite pre-seeded
+/// state.
+#[derive(Clone)]
+struct AccountCreation {
+    address: String,
+    data: Vec<u8>,
+    owner: String,
 }
 
 impl TransactionExpectation {
@@ -58,6 +70,7 @@ impl TransactionExpectation {
                 &Hash::default(),
             ),
             account_transitions: Vec::new(),
+            account_creations: Vec::new(),
         }
     }
 
@@ -71,6 +84,7 @@ impl TransactionExpectation {
         Self {
             expected_message: message,
             account_transitions: Vec::new(),
+            account_creations: Vec::new(),
         }
     }
 
@@ -84,6 +98,22 @@ impl TransactionExpectation {
             address,
             expected_data,
             updated_data,
+        });
+        self
+    }
+
+    /// The accepted transaction creates `address` with `data` owned by
+    /// `owner`. Precondition: the account must be absent before the send.
+    pub(crate) fn with_account_creation(
+        mut self,
+        address: String,
+        data: Vec<u8>,
+        owner: String,
+    ) -> Self {
+        self.account_creations.push(AccountCreation {
+            address,
+            data,
+            owner,
         });
         self
     }
@@ -107,6 +137,12 @@ impl TransactionExpectation {
             }
         }
 
+        for creation in &self.account_creations {
+            if accounts.contains_key(&creation.address) {
+                return Err("transaction creation account already exists");
+            }
+        }
+
         Ok(())
     }
 
@@ -116,6 +152,15 @@ impl TransactionExpectation {
                 .get_mut(&transition.address)
                 .expect("transition account checked above")
                 .data = transition.updated_data;
+        }
+        for creation in self.account_creations {
+            accounts.insert(
+                creation.address,
+                Account {
+                    data: creation.data,
+                    owner: creation.owner,
+                },
+            );
         }
     }
 }
@@ -178,15 +223,15 @@ impl MockRpc {
         );
     }
 
-    /// Seed the `getSignaturesForAddress` response for `address`. The server's
-    /// idempotent-activation lookup treats the *last* entry (oldest, since the
-    /// RPC returns newest-first) as the account's creation signature.
-    pub(crate) fn set_signatures(&self, address: String, signatures: Vec<String>) {
+    /// Mark `signature` as already confirmed on-chain (as if a previous
+    /// broadcast of the same transaction landed), so `getSignatureStatuses`
+    /// reports it without a `sendTransaction` in this fixture's lifetime.
+    pub(crate) fn accept_signature(&self, signature: String) {
         self.state
             .lock()
             .expect("mock rpc state")
-            .signatures_for_address
-            .insert(address, signatures);
+            .accepted_signatures
+            .insert(signature);
     }
 
     pub(crate) fn account_data(&self, pubkey: &str) -> Option<Vec<u8>> {
