@@ -529,7 +529,9 @@ func TestNewSessionRequiresInjectedStoreOffLocalnet(t *testing.T) {
 		Network:   "devnet",
 		SecretKey: sessionMethodSecret,
 	}
-	if _, err := NewSession(options); err == nil || !strings.Contains(err.Error(), "session store is required") {
+	if _, err := NewSession(options); err == nil ||
+		!strings.Contains(err.Error(), "no session store configured for devnet") ||
+		!strings.Contains(err.Error(), "configure a shared session ChannelStore") {
 		t.Fatalf("missing off-localnet store error = %v", err)
 	}
 
@@ -540,8 +542,17 @@ func TestNewSessionRequiresInjectedStoreOffLocalnet(t *testing.T) {
 	}
 	session.Shutdown()
 
+	// An unmarked store (not the built-in memory store, not durability-declared)
+	// passes construction, but the union-base production-safety gate rejects it
+	// at the first guarded operation rather than at construction.
 	options.Store = struct{ ChannelStore }{ChannelStore: NewMemoryChannelStore()}
-	if _, err := NewSession(options); err == nil || !strings.Contains(err.Error(), "explicitly declare durable shared") {
+	unmarkedSession, err := NewSession(options)
+	if err != nil {
+		t.Fatalf("NewSession with unmarked store: %v", err)
+	}
+	defer unmarkedSession.Shutdown()
+	if _, err := unmarkedSession.Core().SettlementInstructions(context.Background(), "channel", solana.PublicKey{}); err == nil ||
+		!strings.Contains(err.Error(), "explicitly declare durable shared") {
 		t.Fatalf("unmarked off-localnet store error = %v", err)
 	}
 }
@@ -1028,9 +1039,18 @@ func TestSessionOpenVerifiesSignatureOnChain(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 
 	channelID := solana.NewWallet().PublicKey().String()
-	receipt, _ := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
-	if receipt.Reference != okSig {
-		t.Fatalf("reference = %q", receipt.Reference)
+	receipt, derivedChannel := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
+	// The hardened open path rebinds to the real confirmed transaction
+	// signature and the PDA derived from the on-chain channel account, not the
+	// dummy inputs the caller supplied.
+	if receipt.Reference == okSig || receipt.Reference == "" {
+		t.Fatalf("reference = %q, want the real confirmed open signature", receipt.Reference)
+	}
+	if _, ok := fake.BySig[receipt.Reference]; !ok {
+		t.Fatalf("reference %q is not a confirmed open transaction", receipt.Reference)
+	}
+	if mustGetChannel(t, session, derivedChannel) == nil {
+		t.Fatal("channel not persisted at the derived PDA")
 	}
 
 	ghostChannel := solana.NewWallet().PublicKey().String()
@@ -1259,8 +1279,22 @@ func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
 	signer := newTestVoucherSigner(t)
 	channelID := solana.NewWallet().PublicKey().String()
-	openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
+	// The hardened open derives the real channel PDA; thread it into the
+	// top-up so both bind the same on-chain account.
+	_, channelID = openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
 	channel := solana.MustPublicKeyFromBase58(channelID)
+	// The state-aware top-up verifier binds the resulting on-chain deposit, so
+	// the authoritative account must reflect the post-top-up balance. Reuse the
+	// payer the open recorded so the payer binding still holds.
+	openedState := mustGetChannel(t, session, channelID)
+	seedSessionChannelAccount(
+		t, fake, channel, 5_000,
+		solana.MustPublicKeyFromBase58(*openedState.Operator),
+		solana.MustPublicKeyFromBase58(sessionTestRecipient),
+		solana.MustPublicKeyFromBase58(signer.Address()),
+		solana.MustPublicKeyFromBase58(paycore.ResolveMint(session.currency, session.network)),
+		pcgen.ChannelStatus_Open,
+	)
 	topupTx, topupPayload := buildTopUpTx(t, channel, 1_000, 4_000)
 	fake.BySig[topupPayload.Signature] = topupTx
 
@@ -2250,7 +2284,7 @@ func TestConfirmedSettlementReconcilesAfterRequestCancellation(t *testing.T) {
 	}
 }
 
-func TestSessionIdleCloseWithoutSignerStillClosesOffChain(t *testing.T) {
+func TestSessionIdleCloseWithoutSignerIsNoOp(t *testing.T) {
 	fake := testutil.NewFakeRPC()
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.RPC = fake
@@ -2259,8 +2293,12 @@ func TestSessionIdleCloseWithoutSignerStillClosesOffChain(t *testing.T) {
 	_, channelID := openTrustedChannel(t, session, 1_000)
 
 	time.Sleep(80 * time.Millisecond)
+	// Without a merchant signer the idle watchdog cannot settle, so closeOnIdle
+	// bails before touching the channel: no off-chain close-pending flip, no
+	// seal, and no broadcast. It must never partially close a channel it cannot
+	// settle.
 	state := mustGetChannel(t, session, channelID)
-	if state.CloseRequestedAt == nil || state.Sealed || len(fake.Sent) != 0 {
+	if state.CloseRequestedAt != nil || state.Sealed || len(fake.Sent) != 0 {
 		t.Fatalf("idle close without signer state=%+v sends=%d", state, len(fake.Sent))
 	}
 }

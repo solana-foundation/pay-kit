@@ -751,18 +751,18 @@ func TestNewOpenTxVerifierWithoutTransactionVerifiesFetchedTransaction(t *testin
 	}
 }
 
-func TestNewOpenTxVerifierKeepsStructuralPlaceholderAcceptance(t *testing.T) {
+func TestNewOpenTxVerifierRejectsPlaceholderSignature(t *testing.T) {
+	// Base #214 removed placeholder acceptance: an attached open transaction
+	// must carry a real, wire-bound fee-payer signature. The structural
+	// verifier now rejects the pending placeholder through the seam.
 	fixture := buildOpenTxFixture(t, false)
 	config := openSessionConfig(fixture)
 	verifier := NewOpenTxVerifier(config, nil)
 	payload := fixture.payload
 	payload.Signature = strings.Repeat("1", 64)
-	payer, err := verifier(context.Background(), &payload)
-	if err != nil {
-		t.Fatalf("structural verifier: %v", err)
-	}
-	if payer != fixture.payer.PublicKey().String() {
-		t.Fatalf("verifier payer = %q, want %q", payer, fixture.payer.PublicKey())
+	if _, err := verifier(context.Background(), &payload); err == nil ||
+		!strings.Contains(err.Error(), "must be a real transaction signature") {
+		t.Fatalf("err = %v, want placeholder-signature rejection", err)
 	}
 }
 
