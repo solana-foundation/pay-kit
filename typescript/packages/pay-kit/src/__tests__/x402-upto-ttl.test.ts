@@ -63,16 +63,22 @@ async function uptoFor(expiresAt: number) {
 describe('x402 upto reservation TTL is bounded by the payer-signed expiresAt', () => {
     it('caps a far-future expiresAt at the hard ceiling (24h)', async () => {
         const tenYears = NOW() + 10 * 365 * 24 * 3600;
-        for (const ttl of await uptoFor(tenYears)) expect(ttl).toBe(24 * 60 * 60);
+        const ttls = await uptoFor(tenYears);
+        expect(ttls.length).toBeGreaterThan(0);
+        for (const ttl of ttls) expect(ttl).toBe(24 * 60 * 60);
     });
 
     it('uses the remaining window when it sits between the floor and the ceiling', async () => {
         const inTenMinutes = NOW() + 600;
-        for (const ttl of await uptoFor(inTenMinutes)) expect(ttl).toBeCloseTo(600, -1);
+        const ttls = await uptoFor(inTenMinutes);
+        expect(ttls.length).toBeGreaterThan(0);
+        for (const ttl of ttls) expect(ttl).toBeCloseTo(600, -1);
     });
 
     it('floors an already-expired channel at the completion window (300s)', async () => {
         const past = NOW() - 10;
-        for (const ttl of await uptoFor(past)) expect(ttl).toBe(300);
+        const ttls = await uptoFor(past);
+        expect(ttls.length).toBeGreaterThan(0);
+        for (const ttl of ttls) expect(ttl).toBe(300);
     });
 });
