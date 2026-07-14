@@ -62,7 +62,10 @@ async function startServer(): Promise<void> {
   const replayStore = createHarnessReplayStore();
   const pay = await createPayKit({
     accept: ["x402", "mpp"],
-    mpp: { challengeBindingSecret: crypto.randomBytes(32).toString("hex") },
+    mpp: {
+      allowUnsafeMemoryStore: true,
+      challengeBindingSecret: crypto.randomBytes(32).toString("hex"),
+    },
     network: "localnet",
     operator: { recipient: operator.address, signer: operator },
     pricing: {

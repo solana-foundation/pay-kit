@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // Protocol enumerates the payment protocols the kit speaks. Order matters in
@@ -220,6 +221,14 @@ type MPPConfig struct {
 	// ExpiresIn is how long an issued challenge stays valid; sent on the
 	// wire in whole seconds. Zero defaults to 2 minutes.
 	ExpiresIn time.Duration
+	// ReplayStore must affirmatively implement core.SharedStore and report
+	// IsShared() == true. Unknown stores fail closed.
+	ReplayStore core.Store
+	// AllowUnsafeMemoryStore explicitly opts into an internally-created
+	// process-local replay store for development/tests when ReplayStore is nil.
+	// It defaults to false; Network alone never opts in and it never authorizes
+	// an injected unshared store.
+	AllowUnsafeMemoryStore bool
 }
 
 // Config is the boot-time configuration passed to [New]. Zero-value

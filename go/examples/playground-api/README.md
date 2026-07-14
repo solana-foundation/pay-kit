@@ -28,14 +28,14 @@ Payment Sandbox (a hosted test validator, no real funds):
 
 ```bash
 cd go
-go run ./examples/playground-api    # listens on :3000
+ALLOW_INMEMORY_REPLAY_STORE=1 go run ./examples/playground-api    # single-process local demo on :3000
 ```
 
 or through the justfile:
 
 ```bash
-just -f go/Justfile serve-playground          # :3000
-just -f go/Justfile serve-playground 3210     # custom port
+ALLOW_INMEMORY_REPLAY_STORE=1 just -f go/Justfile serve-playground          # :3000
+ALLOW_INMEMORY_REPLAY_STORE=1 just -f go/Justfile serve-playground 3210     # custom port
 ```
 
 ## Pointing the playground at this server
@@ -46,7 +46,7 @@ instead:
 
 ```bash
 # terminal 1: the Go API
-cd go && PORT=3210 go run ./examples/playground-api
+cd go && ALLOW_INMEMORY_REPLAY_STORE=1 PORT=3210 go run ./examples/playground-api
 
 # terminal 2: UI only, proxied to the running API
 cd playground
@@ -65,6 +65,7 @@ Same table as the TypeScript example:
 | `RECIPIENT` | (auto-generated) | Solana address that receives payments |
 | `FEE_PAYER_KEY` | (auto-generated) | Base58 fee-payer keypair (server signs as fee payer) |
 | `MPP_SECRET_KEY` | (random per-boot) | MPP secret key for challenge HMAC |
+| `ALLOW_INMEMORY_REPLAY_STORE` | unset | Set to `1` only for explicit single-process development; unset fails closed without a shared replay store |
 
 Additional Go-only knobs: `DOCS_ROOT` overrides the generated-docs directory
 when the binary runs outside the repository checkout, and the standard

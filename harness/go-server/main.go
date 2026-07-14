@@ -246,6 +246,9 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) error {
 		Realm:          "go-paykit",
 		FeePayerSigner: walletSignerFor(feePayer),
 		RPC:            rpcClient,
+		// The cross-SDK harness is a single-process test server. Production
+		// callers must inject a shared replay store instead.
+		AllowUnsafeMemoryStore: true,
 	})
 	if err != nil {
 		return fmt.Errorf("create MPP server: %w", err)

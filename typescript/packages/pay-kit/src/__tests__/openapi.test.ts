@@ -44,7 +44,7 @@ const PLAN = 'PLan11111111111111111111111111111111111111';
 async function paykit() {
     return createPayKit({
         accept: ['x402', 'mpp'],
-        mpp: { challengeBindingSecret: 'openapi-test-secret' },
+        mpp: { challengeBindingSecret: 'openapi-test-secret', allowUnsafeMemoryStore: true },
         network: 'solana_localnet',
         pricing: {
             feed: subscription(usd('0.10'), {

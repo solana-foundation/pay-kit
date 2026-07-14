@@ -1,5 +1,4 @@
 import { createMemorySessionStore } from '@solana/mpp/server';
-import { Store } from 'mppx';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSessionEngine } from '../adapters/mpp-session.js';
@@ -7,7 +6,32 @@ import { configure } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { session } from '../pricing.js';
+import { declareProductionReplayStore, type ReplayStore } from '../replay-store.js';
 import { Signer } from '../signer.js';
+
+// Satisfies the charge-level replay-store policy so configure() succeeds; the
+// session-store assertions below exercise the (base) session engine policy.
+function sharedReplayStore(): ReplayStore {
+    const values = new Map<string, unknown>();
+    return declareProductionReplayStore({
+        isDurable: true,
+        isShared: true,
+        async delete(key) {
+            values.delete(key);
+        },
+        async get(key) {
+            return (values.get(key) ?? null) as never;
+        },
+        async put(key, value) {
+            values.set(key, value);
+        },
+        async putIfAbsent(key, value) {
+            if (values.has(key)) return false;
+            values.set(key, value);
+            return true;
+        },
+    });
+}
 
 async function setup(
     options: {
@@ -23,7 +47,7 @@ async function setup(
         },
         network: options.network ?? 'solana_localnet',
         operator: { signer },
-        replayStore: Store.memory(),
+        replayStore: sharedReplayStore(),
     });
     const gate = Gate.create(
         {

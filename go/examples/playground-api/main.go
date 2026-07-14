@@ -53,6 +53,8 @@ type app struct {
 	// repoRoot is the repository checkout root; "" outside a checkout, which
 	// disables the docs browser default root and the SPA file server.
 	repoRoot string
+	// Explicit development-only opt-in for process-local replay state.
+	allowUnsafeMemoryStore bool
 }
 
 func main() {
@@ -86,13 +88,14 @@ func main() {
 	recipient := envOr("RECIPIENT", feePayer.PublicKey().String())
 
 	a := &app{
-		network:   network,
-		rpcURL:    rpcURL,
-		recipient: recipient,
-		secretKey: secretKey,
-		feePayer:  feePayer,
-		rpcClient: rpc.New(rpcURL),
-		repoRoot:  findRepoRoot(),
+		network:                network,
+		rpcURL:                 rpcURL,
+		recipient:              recipient,
+		secretKey:              secretKey,
+		feePayer:               feePayer,
+		rpcClient:              rpc.New(rpcURL),
+		repoRoot:               findRepoRoot(),
+		allowUnsafeMemoryStore: os.Getenv("ALLOW_INMEMORY_REPLAY_STORE") == "1",
 	}
 
 	bootstrapFunding(a)
@@ -201,6 +204,7 @@ func newPaymentClient(a *app, accept []paykit.Protocol, x402Scheme string) (*pay
 		MPP: paykit.MPPConfig{
 			Realm:                  "PayKit Playground",
 			ChallengeBindingSecret: []byte(a.secretKey),
+			AllowUnsafeMemoryStore: a.allowUnsafeMemoryStore,
 		},
 		X402: paykit.X402Config{
 			Scheme: x402Scheme,

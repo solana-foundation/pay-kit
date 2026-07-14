@@ -80,13 +80,14 @@ func TestPlaygroundSessionE2ESurfpool(t *testing.T) {
 		t.Fatalf("generate fee payer: %v", err)
 	}
 	a := &app{
-		network:   "localnet",
-		rpcURL:    sandboxRPCURL(),
-		recipient: feePayer.PublicKey().String(),
-		secretKey: "playground-e2e-secret-0123456789abc",
-		feePayer:  feePayer,
-		rpcClient: rpcClient,
-		repoRoot:  t.TempDir(),
+		network:                "localnet",
+		rpcURL:                 sandboxRPCURL(),
+		recipient:              feePayer.PublicKey().String(),
+		secretKey:              "playground-e2e-secret-0123456789abc",
+		feePayer:               feePayer,
+		rpcClient:              rpcClient,
+		repoRoot:               t.TempDir(),
+		allowUnsafeMemoryStore: true,
 	}
 	bootstrapFunding(a)
 
