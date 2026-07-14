@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\X402;
 
+use Brick\Math\BigInteger;
+use Brick\Math\Exception\RoundingNecessaryException;
 use PayKit\Config;
+use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
+use PayKit\PayCore\Network;
 use PayKit\Payment;
 use PayKit\Protocol;
 use PayKit\PayCore\Rpc\RpcGateway;
@@ -14,12 +18,14 @@ use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\X402\Exact\PaymentExtensions;
 use PayKit\Protocols\X402\Exact\Verifier;
 use PayKit\Store\MemoryStore;
+use PayKit\Store\ReplayStoreCapability;
 use PayKit\Store\Store;
 use Psr\Http\Message\ServerRequestInterface;
 use RuntimeException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
 use SolanaPhpSdk\Transaction\VersionedTransaction;
+use SolanaPhpSdk\Util\Base58;
 use Throwable;
 
 /**
@@ -69,6 +75,8 @@ final class Adapter
      *        dev-only warning is emitted: a single-process memory store
      *        loses replay protection across workers/restarts, so production
      *        deployments MUST inject a shared atomic store (Redis, Postgres).
+     *        An explicitly injected store on non-localnet must also declare
+     *        the durable, shared, atomic replay capability.
      * @param ?RpcGateway $rpc Confirmation/broadcast gateway. Defaults to a
      *        {@see SolanaRpcGateway} over the configured `rpcUrl`, created
      *        lazily on first settlement. Inject a fake for unit tests.
@@ -91,23 +99,55 @@ final class Adapter
                 . 'leave X402Config::$facilitatorUrl null for self-hosted',
             );
         }
-        if ($replayStore === null) {
-            self::warnDefaultReplayStore();
-            $replayStore = new MemoryStore();
+        if (
+            $replayStore !== null
+            && $config->network !== Network::SolanaLocalnet
+            && (!$replayStore instanceof ReplayStoreCapability
+                || !$replayStore->providesDurableSharedReplayProtection())
+        ) {
+            throw new ConfigurationException(
+                'pay_kit: x402 replayStore must explicitly declare durable shared replay protection outside localnet',
+            );
         }
-        $this->replayStore = $replayStore;
+        $this->replayStore = $replayStore ?? self::defaultReplayStore($config->network);
         $this->recentBlockhashProvider = $recentBlockhashProvider;
         $this->rpc = $rpc;
     }
 
-    private static function warnDefaultReplayStore(): void
+    /**
+     * Resolve the fallback replay store when the caller passed none.
+     *
+     * The in-memory default is only safe on localnet (single-process dev). Off
+     * localnet it is a replay hole: markers are process-local, so a restart or a
+     * second worker/replica would accept a replayed settlement. Fail closed
+     * unless `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1` acknowledges single-process
+     * scope. Mirrors the MPP adapter guard.
+     */
+    private static function defaultReplayStore(Network $network): Store
     {
-        if (function_exists('error_log')) {
-            error_log(
-                'pay_kit: WARN: x402 adapter using in-memory replay store; '
-                . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+        $allowInMemory = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE') === '1';
+        if ($network === Network::SolanaMainnet && $allowInMemory) {
+            throw new ConfigurationException(
+                'pay_kit: PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 is forbidden on mainnet; '
+                . 'inject a durable shared replay store',
             );
         }
+        if ($network !== Network::SolanaLocalnet && !$allowInMemory) {
+            throw new ConfigurationException(
+                'pay_kit: a shared replay store is required outside localnet. The default in-memory '
+                . 'store is process-local, so a second replica or a restart would accept a replayed '
+                . 'settlement. Inject a shared, persistent Store (ideally one with an atomic reserve, '
+                . 'e.g. Redis SET NX) into the x402 adapter, or set '
+                . 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 to acknowledge single-process replay scope.',
+            );
+        }
+        if ($network !== Network::SolanaLocalnet && function_exists('error_log')) {
+            error_log(
+                'pay_kit: WARN: x402 adapter using in-memory replay store off localnet '
+                . '(PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1); replay protection is process-local.',
+            );
+        }
+        return new MemoryStore();
     }
 
     private function rpc(): RpcGateway
@@ -130,7 +170,7 @@ final class Adapter
         $asset = \PayKit\PayCore\Solana\Mints::resolve($coin, $this->config->network->mintsLabel()) ?? $coin;
         $tokenProgram = \PayKit\PayCore\Solana\Mints::tokenProgramFor($coin, $this->config->network->mintsLabel());
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
-        $amount = (string) $gate->total()->amount->multipliedBy(1_000_000)->toInt();
+        $amount = self::exactBaseUnits($gate);
         $signer = $this->config->effectiveX402Signer();
         $extra = [
             'feePayer'     => $signer?->pubkey() ?? '',
@@ -160,6 +200,29 @@ final class Adapter
             'maxTimeoutSeconds' => 60,
             'extra'             => $extra,
         ];
+    }
+
+    /**
+     * Convert the gate total to an exact unsigned u64 wire value.
+     *
+     * JSON can represent native PHP integers exactly through ``PHP_INT_MAX``.
+     * Above that boundary keep the decimal form as a string, which preserves
+     * the full u64 value without asking a JSON consumer to round it.
+     */
+    private static function exactBaseUnits(Gate $gate): string
+    {
+        try {
+            $amount = $gate->total()->amount->multipliedBy(1_000_000)->toBigInteger();
+        } catch (RoundingNecessaryException $e) {
+            throw new ConfigurationException(
+                'pay_kit: x402 amount has more precision than the token supports',
+                previous: $e,
+            );
+        }
+        if ($amount->isNegative() || $amount->isGreaterThan(BigInteger::of('18446744073709551615'))) {
+            throw new ConfigurationException('pay_kit: x402 amount must fit an unsigned u64');
+        }
+        return (string) $amount;
     }
 
     private function fetchRecentBlockhash(): ?string
@@ -304,6 +367,14 @@ final class Adapter
         $kp = Keypair::fromSecretKey($signer->secretKey());
         $tx->partialSign($kp);
         $cosignedWire = $tx->serialize(verifySignatures: false);
+        $expectedSig = Base58::encode($tx->signatures[0]);
+
+        // Claim before the first RPC side effect. A transport error cannot
+        // prove the node did not accept the transaction, so the marker is
+        // deliberately retained on every broadcast/confirmation ambiguity.
+        if (!$this->replayStore->putIfAbsent(self::REPLAY_KEY_PREFIX . $expectedSig, true)) {
+            throw new InvalidProofException('pay_kit: signature_consumed');
+        }
 
         // Broadcast via the raw-wire path so PHP doesn't have to
         // reconstruct a SignedTransaction wrapper just to send.
@@ -322,16 +393,8 @@ final class Adapter
         if (!is_string($sig) || $sig === '') {
             throw new InvalidProofException('pay_kit: empty broadcast result');
         }
-
-        // Reserve in the replay store BETWEEN broadcast and confirmation.
-        // RPC has accepted the transaction, so it may land even if the
-        // await below times out or the process crashes. Reserving first
-        // means a retry of the same credential trips the consumed guard
-        // rather than re-settling. Mirrors the MPP SolanaChargeHandler
-        // (settle() reserves between sendRawTransaction and
-        // awaitConfirmation; PR #85 Greptile P1 / audit gap G05).
-        if (!$this->replayStore->putIfAbsent(self::REPLAY_KEY_PREFIX . $sig, true)) {
-            throw new InvalidProofException('pay_kit: signature_consumed');
+        if ($sig !== $expectedSig) {
+            throw new InvalidProofException('pay_kit: broadcast signature mismatch');
         }
 
         // Confirm BEFORE returning the payment-response success. RPC
@@ -449,7 +512,7 @@ final class Adapter
         if (!is_array($accepted)) {
             throw new InvalidProofException('invalid_exact_svm_payload_envelope');
         }
-        foreach (['scheme', 'network', 'asset', 'payTo'] as $key) {
+        foreach (['scheme', 'network', 'asset', 'payTo', 'amount', 'maxAmountRequired'] as $key) {
             if (($accepted[$key] ?? null) !== ($offer[$key] ?? null)) {
                 throw new InvalidProofException(
                     'pay_kit: charge_request_mismatch: '

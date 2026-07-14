@@ -145,7 +145,9 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 	headers := map[string]string{}
 	var challengeErrors []error
 	if c.x402Adapter != nil && containsProtocol(accept, X402) && !gate.HasFees() {
-		if err := appendChallenge(gate, c.x402Adapter, &accepts, headers); err != nil {
+		x402Gate := *gate
+		x402Gate.Desc = r.URL.Path
+		if err := appendChallenge(&x402Gate, c.x402Adapter, &accepts, headers); err != nil {
 			challengeErrors = append(challengeErrors, err)
 		}
 	}

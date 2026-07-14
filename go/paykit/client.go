@@ -189,6 +189,11 @@ func New(cfg Config) (*Client, error) {
 
 	c := &Client{Config: cfg}
 	for _, s := range cfg.Accept {
+		// The registered x402 adapter implements exact settlement and its
+		// replay-store policy. Upto-only deployments use the usage adapter below.
+		if s == X402 && cfg.X402.Scheme == "upto" {
+			continue
+		}
 		b, ok := registeredBuilders[s]
 		if !ok {
 			continue
