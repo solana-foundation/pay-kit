@@ -147,7 +147,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     // `[owner, token_program, mint]`. Both SPL Token and Token-2022 share
     // the same associated-token-program ID.
     let associated_token_program = parse_pubkey(
-        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        programs::ASSOCIATED_TOKEN_PROGRAM,
         "associated_token_program",
     )?;
 
@@ -241,9 +241,7 @@ pub async fn build_subscription_activation_transaction_with_options(
         Some(init_id) => {
             let blockhash = match provided_blockhash {
                 Some(blockhash) => blockhash,
-                None => rpc
-                    .get_latest_blockhash()
-                    .map_err(|e| Error::Other(format!("Failed to fetch recent blockhash: {e}")))?,
+                None => cached_recent_blockhash(rpc)?,
             };
             (init_id, blockhash)
         }
@@ -256,6 +254,11 @@ pub async fn build_subscription_activation_transaction_with_options(
             )
             .await?;
             let blockhash = if initialized {
+                // Deliberately uncached and direct: the init tx we just
+                // broadcast consumed a blockhash, so activation must fetch a
+                // fresh one (see the note above). A shared-cache hit could hand
+                // back the init tx's own blockhash and leave activation with an
+                // already-stale lifetime.
                 rpc.get_latest_blockhash().map_err(|e| {
                         Error::Other(format!(
                             "Failed to fetch fresh activation blockhash after SubscriptionAuthority init: {e}"
@@ -264,9 +267,7 @@ pub async fn build_subscription_activation_transaction_with_options(
             } else {
                 match provided_blockhash {
                     Some(blockhash) => blockhash,
-                    None => rpc.get_latest_blockhash().map_err(|e| {
-                        Error::Other(format!("Failed to fetch recent blockhash: {e}"))
-                    })?,
+                    None => cached_recent_blockhash(rpc)?,
                 }
             };
             (init_id, blockhash)
@@ -391,7 +392,7 @@ async fn initialize_subscription_authority_with_state(
     let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
     validate_subscription_token_program(&mint, &token_program, allow_unknown_token_2022)?;
     let associated_token_program = parse_pubkey(
-        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        programs::ASSOCIATED_TOKEN_PROGRAM,
         "associated_token_program",
     )?;
     let (subscriber_ata, _) = Pubkey::find_program_address(
@@ -410,9 +411,7 @@ async fn initialize_subscription_authority_with_state(
         return parse_subscription_authority_init_id(&account.data).map(|init_id| (init_id, false));
     }
 
-    let blockhash = rpc
-        .get_latest_blockhash()
-        .map_err(|e| Error::Other(format!("Failed to fetch SA init blockhash: {e}")))?;
+    let blockhash = cached_recent_blockhash(rpc)?;
 
     // SA doesn't exist — broadcast a subscriber-only-signed init tx so the
     // SA lands on-chain (and its `init_id` is recorded) before we sign the
@@ -467,6 +466,21 @@ async fn initialize_subscription_authority_with_state(
             Error::Other("SubscriptionAuthority still missing after init broadcast".into())
         })?;
     parse_subscription_authority_init_id(&account.data).map(|init_id| (init_id, true))
+}
+
+/// A recent blockhash for a client-built transaction, served from the shared
+/// per-endpoint blockhash cache so repeated or concurrent activations don't each
+/// pay a `getLatestBlockhash` round-trip. Fail-closed: a failed fetch propagates
+/// and the cache never returns an entry past its TTL, so the caller always gets
+/// a blockhash within the freshness bound or a hard error.
+fn cached_recent_blockhash(rpc: &RpcClient) -> Result<solana_hash::Hash, Error> {
+    let cached = crate::core::blockhash::shared_blockhash_cache(&rpc.url())
+        .get_or_fetch(rpc, rpc.commitment())
+        .map_err(|e| Error::Other(format!("Failed to fetch recent blockhash: {e}")))?;
+    cached
+        .blockhash
+        .parse()
+        .map_err(|e| Error::Other(format!("Invalid recent blockhash from cache: {e}")))
 }
 
 fn parse_recent_blockhash(
