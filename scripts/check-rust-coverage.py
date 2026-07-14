@@ -23,7 +23,15 @@ KIT_SOURCE_ROOT = ROOT / "rust" / "crates" / "kit" / "src"
 # gated every `/src/` file present in the llvm-cov report at the same floor.
 # The facility is kept (empty) so any future exemption must be added here with
 # an explicit reason and fails closed via the checks below if it is stale.
-FILE_EXEMPTIONS: dict[str, str] = {}
+FILE_EXEMPTIONS: dict[str, str] = {
+    "mpp/server/charge.rs": (
+        "pull-payment settle: broadcast_pull + verify success paths are covered "
+        "only by the surfpool charge_integration suite (unit tests cover the "
+        "fail-closed reject paths); region coverage already clears the floor and "
+        "the residual line gap is that on-chain settlement the unit-only run "
+        "cannot broadcast"
+    ),
+}
 
 # `cargo llvm-cov` deliberately ignores `src/generated/`; keep every generated
 # file named rather than applying a prefix exemption so newly generated source
