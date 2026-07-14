@@ -147,7 +147,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     // `[owner, token_program, mint]`. Both SPL Token and Token-2022 share
     // the same associated-token-program ID.
     let associated_token_program = parse_pubkey(
-        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        programs::ASSOCIATED_TOKEN_PROGRAM,
         "associated_token_program",
     )?;
 
@@ -391,7 +391,7 @@ async fn initialize_subscription_authority_with_state(
     let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
     validate_subscription_token_program(&mint, &token_program, allow_unknown_token_2022)?;
     let associated_token_program = parse_pubkey(
-        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+        programs::ASSOCIATED_TOKEN_PROGRAM,
         "associated_token_program",
     )?;
     let (subscriber_ata, _) = Pubkey::find_program_address(
