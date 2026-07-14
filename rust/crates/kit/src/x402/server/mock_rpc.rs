@@ -21,6 +21,7 @@ struct StateData {
     accounts: HashMap<String, Account>,
     accepted_signatures: HashSet<String>,
     expected_transaction: Option<TransactionExpectation>,
+    signatures_for_address: HashMap<String, Vec<String>>,
     send_error: Option<String>,
     blockhash_error: Option<String>,
 }
@@ -37,8 +38,7 @@ struct Account {
 /// account metas, data, fee payer, and blockhash all have to match.
 #[derive(Clone)]
 pub(crate) struct TransactionExpectation {
-    fee_payer: Pubkey,
-    instructions: Vec<Instruction>,
+    expected_message: Message,
     account_transitions: Vec<AccountDataTransition>,
 }
 
@@ -52,8 +52,24 @@ struct AccountDataTransition {
 impl TransactionExpectation {
     pub(crate) fn new(fee_payer: Pubkey, instructions: Vec<Instruction>) -> Self {
         Self {
-            fee_payer,
-            instructions,
+            expected_message: Message::new_with_blockhash(
+                &instructions,
+                Some(&fee_payer),
+                &Hash::default(),
+            ),
+            account_transitions: Vec::new(),
+        }
+    }
+
+    /// Expect a transaction whose legacy message equals `message` exactly.
+    ///
+    /// Use when the transaction under test is assembled by production code
+    /// (so its `Instruction`s cannot be reconstructed field-by-field) and the
+    /// test can capture the built message directly. Signing the message later
+    /// only fills the signature slots, so the message stays byte-identical.
+    pub(crate) fn matching(message: Message) -> Self {
+        Self {
+            expected_message: message,
             account_transitions: Vec::new(),
         }
     }
@@ -77,13 +93,8 @@ impl TransactionExpectation {
         transaction: &VersionedTransaction,
         accounts: &HashMap<String, Account>,
     ) -> Result<(), &'static str> {
-        let expected_message = Message::new_with_blockhash(
-            &self.instructions,
-            Some(&self.fee_payer),
-            &Hash::default(),
-        );
         match &transaction.message {
-            VersionedMessage::Legacy(message) if message == &expected_message => {}
+            VersionedMessage::Legacy(message) if message == &self.expected_message => {}
             _ => return Err("transaction does not match configured schema"),
         }
 
@@ -167,6 +178,17 @@ impl MockRpc {
         );
     }
 
+    /// Seed the `getSignaturesForAddress` response for `address`. The server's
+    /// idempotent-activation lookup treats the *last* entry (oldest, since the
+    /// RPC returns newest-first) as the account's creation signature.
+    pub(crate) fn set_signatures(&self, address: String, signatures: Vec<String>) {
+        self.state
+            .lock()
+            .expect("mock rpc state")
+            .signatures_for_address
+            .insert(address, signatures);
+    }
+
     pub(crate) fn account_data(&self, pubkey: &str) -> Option<Vec<u8>> {
         self.state
             .lock()
@@ -239,6 +261,32 @@ async fn dispatch(
                 Err(message) => error(id, -32602, message),
             },
         },
+        "getSignaturesForAddress" => {
+            let address = params.get(0).and_then(Value::as_str).unwrap_or_default();
+            let entries = state
+                .signatures_for_address
+                .get(address)
+                .cloned()
+                .unwrap_or_default();
+            result(
+                id,
+                Value::Array(
+                    entries
+                        .into_iter()
+                        .map(|signature| {
+                            json!({
+                                "signature": signature,
+                                "slot": 314,
+                                "err": null,
+                                "memo": null,
+                                "blockTime": null,
+                                "confirmationStatus": "finalized",
+                            })
+                        })
+                        .collect(),
+                ),
+            )
+        }
         "getSignatureStatuses" => match signature_statuses(&params, &state.accepted_signatures) {
             Ok(value) => result(
                 id,

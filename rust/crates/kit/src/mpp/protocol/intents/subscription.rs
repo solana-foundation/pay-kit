@@ -612,4 +612,87 @@ mod tests {
         assert!(json.contains("\"periodEndTs\""));
         assert!(json.contains("\"expiresAt\""));
     }
+
+    #[test]
+    fn method_details_from_json_roundtrips_and_rejects_garbage() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&md).unwrap();
+        let back = SubscriptionMethodDetails::from_json(&value).expect("valid methodDetails");
+        assert_eq!(back.plan_id, "plan");
+        assert_eq!(back.puller, "puller");
+
+        // A non-object JSON value cannot deserialize into the struct.
+        let err = SubscriptionMethodDetails::from_json(&serde_json::json!("not-an-object"))
+            .expect_err("scalar methodDetails must be rejected");
+        assert!(err.to_string().contains("Invalid methodDetails"));
+    }
+
+    #[test]
+    fn method_details_serializes_all_optional_fields() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            decimals: Some(6),
+            puller: "puller".into(),
+            merchant: Some("merchant".into()),
+            recipient: Some("recipient".into()),
+            amount: Some("100".into()),
+            program_id: Some("pid".into()),
+            network: Some("devnet".into()),
+            fee_payer: true,
+            fee_payer_key: Some("fpk".into()),
+            recent_blockhash: Some("bh".into()),
+            plan_id_numeric: Some(7),
+            plan_bump: Some(254),
+            expected_period_hours: Some(720),
+            expected_created_at: Some(1_700_000_000),
+        };
+        let json = serde_json::to_string(&md).unwrap();
+        for key in [
+            "decimals",
+            "merchant",
+            "recipient",
+            "amount",
+            "programId",
+            "network",
+            "feePayer",
+            "feePayerKey",
+            "recentBlockhash",
+            "planIdNumeric",
+            "planBump",
+            "expectedPeriodHours",
+            "expectedCreatedAt",
+        ] {
+            assert!(
+                json.contains(key),
+                "serialized methodDetails is missing {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_serializes_optional_route_bindings() {
+        let req = SubscriptionRequest {
+            amount: "1".into(),
+            currency: "c".into(),
+            period_unit: SubscriptionPeriodUnit::Day,
+            period_count: "30".into(),
+            recipient: "r".into(),
+            description: Some("desc".into()),
+            resource: Some("solana-subscription:/paid".into()),
+            method_details: Some(serde_json::json!({ "planId": "p" })),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"description\":\"desc\""));
+        assert!(json.contains("\"resource\":\"solana-subscription:/paid\""));
+        assert!(json.contains("\"methodDetails\":"));
+    }
 }

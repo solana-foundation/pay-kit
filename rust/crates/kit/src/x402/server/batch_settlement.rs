@@ -1621,4 +1621,244 @@ mod tests {
         assert!(!signature.is_empty());
         rpc.assert_transaction_consumed();
     }
+
+    // The deposit success path: the operator co-signs and broadcasts the
+    // client's open transaction, binds the confirmed on-chain `Channel` to the
+    // advertised terms, persists it, and accepts the first voucher off-chain.
+    // The confirmed channel account is served straight from the fixture, so no
+    // surfpool is needed to exercise the post-broadcast binding checks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deposit_broadcasts_the_open_and_binds_the_confirmed_channel() {
+        let rpc = MockRpc::start().await;
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+
+        let payer = memory_signer(20);
+        let mut requirements = settlement.requirements("0.0001").unwrap();
+        requirements.extra.recent_blockhash = Some(solana_hash::Hash::default().to_string());
+        requirements.extra.recent_slot = Some("314".to_string());
+        let (channel_id, payload) =
+            build_deposit(&payer, &requirements, 1_000_000, 100, FAR_FUTURE)
+                .await
+                .unwrap();
+        let BatchPayload::Deposit {
+            channel_config,
+            transaction,
+            voucher,
+        } = payload
+        else {
+            panic!("expected deposit payload");
+        };
+
+        // The operator only fills its signature slot, so the broadcast message
+        // is byte-identical to the one the client built.
+        let built: Transaction = bincode::deserialize(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &transaction)
+                .unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::matching(built.message.clone()));
+
+        // Post-broadcast the server fetches the channel account; hand it a
+        // `Channel` whose bound terms exactly match what was advertised.
+        let channel_b58 = pc::pubkey_string(&channel_id);
+        let expected_mint = Pubkey::from_str(&requirements.asset).unwrap();
+        let expected_payee = Pubkey::from_str(&requirements.pay_to).unwrap();
+        let channel = Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 255,
+            status: CHANNEL_STATUS_OPEN,
+            salt: channel_config.salt.parse().unwrap(),
+            deposit: 1_000_000,
+            settlement: crate::core::payment_channels::generated::types::SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash: pc::distribution_hash(&[]),
+            payer: pc::to_address(&payer.pubkey()),
+            payee: pc::to_address(&expected_payee),
+            authorized_signer: pc::to_address(&payer.pubkey()),
+            mint: pc::to_address(&expected_mint),
+            rent_payer: pc::to_address(&settlement.operator),
+            open_slot: 314,
+        };
+        rpc.set_account(
+            channel_b58.clone(),
+            borsh::to_vec(&channel).unwrap(),
+            pc::pubkey_string(&pc::default_program_id()),
+        );
+
+        let outcome = settlement
+            .process_deposit(channel_config, transaction, voucher, 100)
+            .await
+            .unwrap();
+        assert!(outcome.serve);
+        assert_eq!(outcome.response.amount, "1000000");
+        assert_eq!(outcome.response.charged_amount.as_deref(), Some("100"));
+        rpc.assert_transaction_consumed();
+
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(state.deposit, 1_000_000);
+        assert_eq!(state.cumulative, 100, "first voucher must be accepted");
+    }
+
+    // A confirmed on-chain channel whose bound terms diverge from the
+    // advertised deposit floor must be rejected after broadcast — the deposit
+    // must cover at least one request's price.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deposit_rejects_a_channel_funded_below_one_request() {
+        let rpc = MockRpc::start().await;
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+
+        let payer = memory_signer(22);
+        let mut requirements = settlement.requirements("0.0001").unwrap();
+        requirements.extra.recent_blockhash = Some(solana_hash::Hash::default().to_string());
+        requirements.extra.recent_slot = Some("314".to_string());
+        let (channel_id, payload) = build_deposit(&payer, &requirements, 1_000_000, 0, FAR_FUTURE)
+            .await
+            .unwrap();
+        let BatchPayload::Deposit {
+            channel_config,
+            transaction,
+            voucher,
+        } = payload
+        else {
+            panic!("expected deposit payload");
+        };
+
+        let built: Transaction = bincode::deserialize(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &transaction)
+                .unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::matching(built.message.clone()));
+
+        let channel_b58 = pc::pubkey_string(&channel_id);
+        let expected_mint = Pubkey::from_str(&requirements.asset).unwrap();
+        let expected_payee = Pubkey::from_str(&requirements.pay_to).unwrap();
+        let underfunded = Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 255,
+            status: CHANNEL_STATUS_OPEN,
+            salt: channel_config.salt.parse().unwrap(),
+            // Below the 100-unit price for one request.
+            deposit: 10,
+            settlement: crate::core::payment_channels::generated::types::SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash: pc::distribution_hash(&[]),
+            payer: pc::to_address(&payer.pubkey()),
+            payee: pc::to_address(&expected_payee),
+            authorized_signer: pc::to_address(&payer.pubkey()),
+            mint: pc::to_address(&expected_mint),
+            rent_payer: pc::to_address(&settlement.operator),
+            open_slot: 314,
+        };
+        rpc.set_account(
+            channel_b58.clone(),
+            borsh::to_vec(&underfunded).unwrap(),
+            pc::pubkey_string(&pc::default_program_id()),
+        );
+
+        let err = settlement
+            .process_deposit(channel_config, transaction, voucher, 100)
+            .await
+            .expect_err("under-funded channel must be rejected after broadcast");
+        assert!(err.to_string().contains("below one request's price"));
+        // The channel was never persisted.
+        assert!(store.get_channel(&channel_b58).await.unwrap().is_none());
+    }
+
+    // The 402 challenge fetches a recent blockhash + slot in one call and
+    // embeds them as the client's `recentBlockhash`/`openSlot` hints.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn challenge_and_header_embed_a_fetched_blockhash_and_slot() {
+        let rpc = MockRpc::start().await;
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut config = BatchConfig::new(
+            "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "devnet",
+            Arc::new(memory_signer(1)),
+        );
+        config.rpc_url = Some(rpc.url());
+        config.resource = "https://merchant.example/usage".to_string();
+        config.description = Some("metered usage".to_string());
+        let settlement = X402BatchSettlement::with_store(config, store).unwrap();
+
+        let envelope = settlement.challenge("0.0001").unwrap();
+        let requirement = &envelope.accepts[0];
+        assert_eq!(
+            requirement.extra.recent_blockhash.as_deref(),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(requirement.extra.recent_slot.as_deref(), Some("314"));
+        assert!(envelope.resource.is_some());
+
+        let (name, value) = settlement.payment_required_header("0.0001").unwrap();
+        assert_eq!(name, PAYMENT_REQUIRED_HEADER);
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value.as_bytes())
+                .unwrap();
+        assert!(!decoded.is_empty());
+    }
+
+    // A cooperative refund on a never-charged channel proves ownership,
+    // broadcasts a voucher-less settle-and-seal, and skips the distribute
+    // sweep (nothing was ever settled).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refund_with_zero_watermark_seals_without_sweeping() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let owner = memory_signer(21);
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+
+        // cumulative 0 → the seal carries no voucher and the sweep is skipped.
+        let seal = pc::build_settle_and_seal_instructions(
+            &settlement.operator,
+            &channel,
+            &owner.pubkey(),
+            None,
+            0,
+            0,
+            &settlement.program_id().unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, seal));
+
+        let voucher = sign_voucher(&owner, &channel, 0, FAR_FUTURE).await.unwrap();
+        let outcome = settlement
+            .process_refund(&channel_b58, Some(voucher))
+            .await
+            .unwrap();
+        assert!(!outcome.serve, "a refund never serves the route");
+        assert_eq!(outcome.response.channel_state.unwrap().paid_out, "0");
+        rpc.assert_transaction_consumed();
+        assert!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .sealed
+        );
+    }
 }
