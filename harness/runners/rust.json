@@ -1,6 +1,6 @@
 {
   "language": "rust",
-  "command": ["cargo", "run", "-q", "-p", "solana-pay-kit", "--example", "conformance_runner", "--features", "x402,client"],
+  "command": ["bash", "-lc", "if [ -x target/debug/examples/conformance_runner ]; then exec target/debug/examples/conformance_runner; fi; exec cargo run -q -p solana-pay-kit --example conformance_runner --features x402,client"],
   "cwd": "rust",
   "intents": ["charge", "x402-exact"],
   "modesByIntent": {

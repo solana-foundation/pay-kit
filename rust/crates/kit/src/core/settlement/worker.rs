@@ -443,7 +443,10 @@ mod tests {
     use solana_instruction::AccountMeta;
     use solana_keychain::{SignTransactionResult, SignerError};
     use solana_signature::Signature;
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
 
     // ── Mock signer: no real keypair; the mock broadcaster doesn't verify. ──
     struct TestSigner(Pubkey);
@@ -495,6 +498,68 @@ mod tests {
         }
     }
 
+    struct OutcomeBroadcaster {
+        latest: Result<Hash, String>,
+        send: Result<String, String>,
+        confirms: Mutex<Vec<Result<ConfirmOutcome, String>>>,
+        confirm_calls: AtomicUsize,
+    }
+
+    impl OutcomeBroadcaster {
+        fn succeeds() -> Self {
+            Self {
+                latest: Ok(Hash::new_from_array([9u8; 32])),
+                send: Ok("sig".to_string()),
+                confirms: Mutex::new(vec![Ok(ConfirmOutcome::Confirmed)]),
+                confirm_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Broadcaster for OutcomeBroadcaster {
+        async fn latest_blockhash(&self) -> Result<Hash, String> {
+            self.latest.clone()
+        }
+
+        async fn send(&self, _tx: &Transaction) -> Result<String, String> {
+            self.send.clone()
+        }
+
+        async fn confirm(&self, _sig: &str) -> Result<ConfirmOutcome, String> {
+            self.confirm_calls.fetch_add(1, Ordering::SeqCst);
+            self.confirms
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or(Ok(ConfirmOutcome::Confirmed))
+        }
+    }
+
+    struct FailingSigner(Pubkey);
+
+    #[async_trait]
+    impl SolanaSigner for FailingSigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            _tx: &mut Transaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            Err(SignerError::SigningFailed("signer offline".to_string()))
+        }
+
+        async fn sign_message(&self, _m: &[u8]) -> Result<Signature, SignerError> {
+            Err(SignerError::SigningFailed("signer offline".to_string()))
+        }
+
+        async fn is_available(&self) -> bool {
+            false
+        }
+    }
+
     fn unit_instructions(i: u64) -> Vec<Instruction> {
         // One small instruction whose accounts are unique per channel.
         let program = Pubkey::new_from_array([1u8; 32]);
@@ -519,6 +584,36 @@ mod tests {
         cfg.max_channels_per_tx = max_per_tx;
         cfg.linger = Duration::from_millis(linger_ms);
         (spawn(cfg, bc.clone()), bc)
+    }
+
+    fn config(operator_signer: Arc<dyn SolanaSigner>) -> SettlementConfig {
+        let operator = Pubkey::new_from_array([0xAA; 32]);
+        let mut cfg = SettlementConfig::new(operator, operator_signer);
+        cfg.confirm_attempts = 1;
+        cfg
+    }
+
+    fn test_unit(i: u64) -> (SettlementUnit, oneshot::Receiver<SettlementResult>) {
+        let (reply, rx) = oneshot::channel();
+        (
+            SettlementUnit {
+                channel_id: format!("c{i}"),
+                instructions: unit_instructions(i),
+                parent: tracing::Span::none(),
+                reply,
+            },
+            rx,
+        )
+    }
+
+    async fn wait_for_confirm_calls(broadcaster: &OutcomeBroadcaster, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while broadcaster.confirm_calls.load(Ordering::SeqCst) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("confirmation task should poll");
     }
 
     #[tokio::test]
@@ -549,6 +644,125 @@ mod tests {
             vec![1],
             "timer should flush the single channel"
         );
+    }
+
+    #[tokio::test]
+    async fn worker_drains_partial_batch_when_all_handles_drop() {
+        let (h, bc) = handle(10, 5_000);
+        let (unit, reply) = test_unit(0);
+        h.tx.send(unit).await.unwrap();
+        drop(h);
+
+        assert_eq!(reply.await.unwrap(), Ok("sig1".to_string()));
+        assert_eq!(bc.sent.lock().unwrap().as_slice(), [1]);
+    }
+
+    #[tokio::test]
+    async fn settle_reports_worker_and_reply_lifecycle_failures() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let stopped = SettlementHandle { tx };
+        assert_eq!(
+            stopped.settle("c0", unit_instructions(0)).await,
+            Err("settlement worker stopped".to_string())
+        );
+
+        let (tx, mut rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            let _ = rx.recv().await;
+        });
+        let dropped_reply = SettlementHandle { tx };
+        assert_eq!(
+            dropped_reply.settle("c1", unit_instructions(1)).await,
+            Err("settlement reply dropped".to_string())
+        );
+    }
+
+    #[test]
+    fn regroup_enforces_count_limit_and_preserves_every_unit() {
+        let operator = Pubkey::new_from_array([0xAA; 32]);
+        let units = (0..3).map(test_unit).map(|(unit, _)| unit).collect();
+
+        let groups = regroup(units, &operator, 1);
+
+        assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(), [1, 1, 1]);
+        assert_eq!(
+            groups
+                .iter()
+                .flat_map(|group| group.iter())
+                .map(|unit| unit.channel_id.as_str())
+                .collect::<Vec<_>>(),
+            ["c0", "c1", "c2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn settlement_errors_are_returned_to_every_submitter() {
+        let operator = Pubkey::new_from_array([0xAA; 32]);
+        let signer: Arc<dyn SolanaSigner> = Arc::new(TestSigner(operator));
+
+        let (unit, reply) = test_unit(0);
+        let bc = Arc::new(OutcomeBroadcaster {
+            latest: Err("blockhash unavailable".to_string()),
+            ..OutcomeBroadcaster::succeeds()
+        });
+        settle_group(vec![unit], &config(signer.clone()), bc, "test").await;
+        assert_eq!(
+            reply.await.unwrap(),
+            Err("blockhash unavailable".to_string())
+        );
+
+        let (unit, reply) = test_unit(1);
+        let failing = Arc::new(FailingSigner(operator));
+        assert_eq!(failing.pubkey(), operator);
+        assert!(failing.sign_message(b"test").await.is_err());
+        assert!(!failing.is_available().await);
+        settle_group(
+            vec![unit],
+            &config(failing),
+            Arc::new(OutcomeBroadcaster::succeeds()),
+            "test",
+        )
+        .await;
+        assert_eq!(
+            reply.await.unwrap(),
+            Err("settle signing failed: Signing failed".to_string())
+        );
+
+        let (unit, reply) = test_unit(2);
+        let bc = Arc::new(OutcomeBroadcaster {
+            send: Err("broadcast rejected".to_string()),
+            ..OutcomeBroadcaster::succeeds()
+        });
+        settle_group(vec![unit], &config(signer), bc, "test").await;
+        assert_eq!(reply.await.unwrap(), Err("broadcast rejected".to_string()));
+    }
+
+    #[tokio::test]
+    async fn confirmation_stops_for_terminal_failures_and_polls_retryable_outcomes() {
+        for outcome in [
+            Ok(ConfirmOutcome::Failed("on-chain failure".to_string())),
+            Ok(ConfirmOutcome::Pending),
+            Err("temporary rpc error".to_string()),
+        ] {
+            let operator = Pubkey::new_from_array([0xAA; 32]);
+            let bc = Arc::new(OutcomeBroadcaster {
+                confirms: Mutex::new(vec![outcome]),
+                ..OutcomeBroadcaster::succeeds()
+            });
+            let (unit, reply) = test_unit(0);
+
+            settle_group(
+                vec![unit],
+                &config(Arc::new(TestSigner(operator))),
+                bc.clone(),
+                "test",
+            )
+            .await;
+
+            assert_eq!(reply.await.unwrap(), Ok("sig".to_string()));
+            wait_for_confirm_calls(&bc, 1).await;
+        }
     }
 
     /// End-to-end (minus the program executing): drive the worker over K

@@ -202,11 +202,13 @@ impl BatchChannel {
         signer: &dyn SolanaSigner,
         charge: u64,
     ) -> Result<BatchVoucher, Error> {
-        self.cumulative = self
+        let cumulative = self
             .cumulative
             .checked_add(charge)
             .ok_or_else(|| Error::Other("cumulative overflow".to_string()))?;
-        sign_voucher(signer, &self.channel_id, self.cumulative, self.expires_at).await
+        let voucher = sign_voucher(signer, &self.channel_id, cumulative, self.expires_at).await?;
+        self.cumulative = cumulative;
+        Ok(voucher)
     }
 
     /// Wrap a voucher in a steady-state `voucher` payload.
@@ -274,6 +276,46 @@ pub fn parse_batch_challenge(
 mod tests {
     use super::*;
     use crate::x402::protocol::schemes::batch_settlement::BatchExtra;
+    use ed25519_dalek::SigningKey;
+    use solana_keychain::memory::MemorySigner;
+    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_signature::Signature;
+    use solana_transaction::Transaction;
+
+    const FAR_FUTURE: i64 = 4_102_444_800;
+
+    fn memory_signer(seed: u8) -> MemorySigner {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        MemorySigner::from_bytes(&key.to_keypair_bytes()).unwrap()
+    }
+
+    struct RejectingSigner(Pubkey);
+
+    #[async_trait::async_trait]
+    impl SolanaSigner for RejectingSigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            _transaction: &mut Transaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            Err(SignerError::Other(
+                "test signer rejects transactions".to_string(),
+            ))
+        }
+
+        async fn sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
+            Err(SignerError::SigningFailed(
+                "test signer rejects messages".to_string(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
 
     fn requirements() -> BatchRequirements {
         BatchRequirements {
@@ -329,5 +371,104 @@ mod tests {
         let parsed = parse_batch_challenge(&headers, None).unwrap();
         assert_eq!(parsed.amount, "10000");
         assert!(parse_batch_challenge(&[], None).is_none());
+    }
+
+    #[test]
+    fn parse_challenge_falls_back_to_body_and_filters_other_schemes() {
+        let mut other = requirements();
+        other.scheme = "exact".to_string();
+        let envelope = BatchRequiredEnvelope {
+            x402_version: X402_VERSION_V2,
+            resource: None,
+            accepts: vec![other, requirements()],
+            error: None,
+        };
+        let body = serde_json::to_string(&envelope).unwrap();
+        let headers = vec![(
+            PAYMENT_REQUIRED_HEADER.to_string(),
+            "not-base64".to_string(),
+        )];
+
+        let parsed = parse_batch_challenge(&headers, Some(&body)).unwrap();
+        assert_eq!(parsed.scheme, BATCH_SETTLEMENT_SCHEME);
+        assert_eq!(parsed.amount, "10000");
+    }
+
+    #[tokio::test]
+    async fn build_deposit_creates_first_voucher_without_rpc() {
+        let signer = memory_signer(7);
+        let (channel_id, payload) = build_deposit(&signer, &requirements(), 500, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+
+        let BatchPayload::Deposit {
+            channel_config,
+            transaction,
+            voucher,
+        } = payload
+        else {
+            panic!("expected deposit payload");
+        };
+        assert_eq!(channel_config.payer, pc::pubkey_string(&signer.pubkey()));
+        assert_eq!(channel_config.authorized_signer, channel_config.payer);
+        assert_eq!(channel_config.deposit_amount, "500");
+        assert_eq!(channel_config.recent_slot, "314");
+        assert!(!transaction.is_empty());
+        let voucher = voucher.expect("first charge must create a voucher");
+        assert_eq!(voucher.channel_id, pc::pubkey_string(&channel_id));
+        assert_eq!(voucher.cumulative_amount, "100");
+        assert_eq!(voucher.signer, pc::pubkey_string(&signer.pubkey()));
+    }
+
+    #[tokio::test]
+    async fn build_deposit_rejects_unusable_challenges_before_signing() {
+        let signer = memory_signer(8);
+
+        let mut no_profile = requirements();
+        no_profile.extra.profiles.clear();
+        assert!(build_deposit(&signer, &no_profile, 100, 0, FAR_FUTURE)
+            .await
+            .is_err());
+
+        let mut no_blockhash = requirements();
+        no_blockhash.extra.recent_blockhash = None;
+        assert!(build_deposit(&signer, &no_blockhash, 100, 0, FAR_FUTURE)
+            .await
+            .is_err());
+
+        let mut invalid_slot = requirements();
+        invalid_slot.extra.recent_slot = Some("not-a-slot".to_string());
+        assert!(build_deposit(&signer, &invalid_slot, 100, 0, FAR_FUTURE)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn channel_does_not_advance_when_voucher_signing_fails() {
+        let channel_id = Pubkey::new_unique();
+        let mut channel = BatchChannel::new(channel_id, 50, FAR_FUTURE);
+        let rejecting = RejectingSigner(Pubkey::new_unique());
+
+        assert!(channel.voucher(&rejecting, 25).await.is_err());
+        assert_eq!(channel.cumulative(), 50);
+
+        let signer = memory_signer(9);
+        let voucher = channel.voucher(&signer, 25).await.unwrap();
+        assert_eq!(voucher.cumulative_amount, "75");
+        assert_eq!(channel.cumulative(), 75);
+
+        let payload = channel.voucher_payload(voucher);
+        assert_eq!(
+            payload.channel_id(),
+            Some(pc::pubkey_string(&channel_id).as_str())
+        );
+        let refund = channel.refund_payload(&signer).await.unwrap();
+        assert!(matches!(
+            refund,
+            BatchPayload::Refund {
+                voucher: Some(_),
+                ..
+            }
+        ));
     }
 }

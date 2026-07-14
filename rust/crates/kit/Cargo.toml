@@ -201,6 +201,10 @@ name = "golden_tx"
 required-features = ["mpp", "client"]
 
 [[example]]
+name = "conformance_runner"
+required-features = ["x402", "client"]
+
+[[example]]
 name = "payment_link_server"
 required-features = ["mpp", "axum"]
 

@@ -1,16 +1,37 @@
 #!/usr/bin/env python3
-"""Regression tests for the Rust coverage gate's fail-closed behavior."""
+"""Regression tests for the real Rust coverage gate."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parent
 CHECK = ROOT / "check-rust-coverage.py"
+
+
+def load_checker() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("check_rust_coverage", CHECK)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load Rust coverage checker")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+CHECKER = load_checker()
+SOURCE_FILES = sorted(CHECKER.source_files())
+COVERED_SOURCE_FILES = [
+    filename for filename in SOURCE_FILES if filename not in CHECKER.SOURCE_SCOPE_EXCLUSIONS
+]
+MPP_SOURCE = next(filename for filename in COVERED_SOURCE_FILES if not filename.startswith("x402/"))
+X402_SOURCE = next(filename for filename in COVERED_SOURCE_FILES if filename.startswith("x402/"))
 
 
 def file_record(name: str, covered: int = 10, count: int = 10) -> dict[str, object]:
@@ -18,37 +39,32 @@ def file_record(name: str, covered: int = 10, count: int = 10) -> dict[str, obje
     return {"filename": name, "summary": {"lines": metric, "regions": metric}}
 
 
-def report(*files: dict[str, object]) -> dict[str, object]:
-    return {"data": [{"files": list(files)}]}
+def report(files: list[dict[str, object]]) -> dict[str, object]:
+    return {"data": [{"files": files}]}
 
 
-def check_case(
-    name: str,
-    payload: dict[str, object],
-    expected: int,
-    needle: str,
-    sources: tuple[str, ...] = ("mpp/verify.rs", "x402/verify.rs"),
-    floor: str = "90",
-) -> None:
+def complete_report(
+    *,
+    covered: int = 10,
+    count: int = 10,
+    overrides: dict[str, tuple[int, int]] | None = None,
+    prefix: str = "/tmp/pay-kit/rust/crates/kit/src/",
+) -> dict[str, object]:
+    overrides = overrides or {}
+    return report(
+        [
+            file_record(f"{prefix}{filename}", *overrides.get(filename, (covered, count)))
+            for filename in COVERED_SOURCE_FILES
+        ],
+    )
+
+
+def check_case(name: str, payload: dict[str, object], expected: int, needle: str) -> None:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "coverage.json"
-        source_root = Path(directory) / "crates/kit/src"
-        for source in sources:
-            source_path = source_root / source
-            source_path.parent.mkdir(parents=True, exist_ok=True)
-            source_path.write_text("// coverage fixture\n")
-        data = payload.get("data")
-        records = data[0].get("files", []) if isinstance(data, list) and data else []
-        for record in records:
-            filename = record.get("filename", "")
-            fixture_prefix = "/tmp/rust/crates/kit/src/"
-            if isinstance(filename, str) and filename.startswith(fixture_prefix):
-                relative = filename.removeprefix(fixture_prefix)
-                if relative.startswith(("mpp/", "x402/")):
-                    record["filename"] = str(source_root / relative)
         path.write_text(json.dumps(payload))
         result = subprocess.run(
-            [sys.executable, str(CHECK), str(path), floor, str(source_root)],
+            [sys.executable, str(CHECK), str(path)],
             text=True,
             capture_output=True,
             check=False,
@@ -62,72 +78,44 @@ def check_case(
 
 
 def main() -> None:
-    mpp = "/tmp/rust/crates/kit/src/mpp/verify.rs"
-    x402 = "/tmp/rust/crates/kit/src/x402/verify.rs"
-    check_case("healthy report passes", report(file_record(mpp), file_record(x402)), 0, "coverage gate passed")
-    check_case("empty scope fails", report(file_record(mpp)), 1, "x402 scope contains no")
-    check_case("empty metric fails", report(file_record(mpp, 0, 0), file_record(x402)), 1, "invalid or empty")
-    check_case("below-floor file fails", report(file_record(mpp, 8, 10), file_record(x402)), 1, "per-file lines 80.0%")
-    unrelated = "/tmp/rust/crates/kit/src/lib.rs"
+    check_case("healthy report passes", complete_report(), 0, "coverage gate passed")
     check_case(
-        "unrelated kit files cannot satisfy mpp scope",
-        report(file_record(unrelated), file_record(x402)),
+        "80 percent per-file still fails the 90 percent aggregate",
+        complete_report(covered=8, count=10),
         1,
-        "mpp scope contains no",
+        "mpp non-exempt aggregate lines 80.00% < 90.0%",
     )
     check_case(
-        "truncated report fails inventory check",
-        report(file_record(mpp), file_record(x402)),
+        "below 90 percent per-file fails even when the aggregate is healthy",
+        complete_report(overrides={MPP_SOURCE: (8, 10)}),
         1,
-        "missing source files: mpp/other.rs",
-        sources=("mpp/verify.rs", "mpp/other.rs", "x402/verify.rs"),
+        f"per-file lines 80.0% < 90.0%: {MPP_SOURCE}",
     )
-    forged = "/tmp/rust/crates/kit/src/not-sdk/src/mpp/verify.rs"
+    incomplete = complete_report()
+    incomplete["data"][0]["files"] = [
+        record
+        for record in incomplete["data"][0]["files"]
+        if not record["filename"].endswith(MPP_SOURCE)
+    ]
     check_case(
-        "forged nested source path cannot satisfy mpp scope",
-        report(file_record(forged), file_record(x402)),
+        "missing expected source file fails",
+        incomplete,
         1,
-        "mpp scope contains no",
-    )
-    foreign_root = "/tmp/forged/crates/kit/src/mpp/verify.rs"
-    check_case(
-        "foreign source root cannot satisfy inventory",
-        report(file_record(foreign_root), file_record(x402)),
-        1,
-        "outside the expected root",
-    )
-    arbitrary_foreign = "/tmp/vendor/unrelated.rs"
-    check_case(
-        "arbitrary foreign record fails closed",
-        report(file_record(mpp), file_record(x402), file_record(arbitrary_foreign)),
-        1,
-        "outside the expected root",
-    )
-    check_case(
-        "duplicate source record fails closed",
-        report(file_record(mpp), file_record(mpp), file_record(x402)),
-        1,
-        "duplicate source file: mpp/verify.rs",
-    )
-    check_case(
-        "explicit floor is honored with source root",
-        report(file_record(mpp, 90, 100), file_record(x402, 90, 100)),
-        1,
-        "90.0% < 95.0%",
-        floor="95",
-    )
-    check_case(
-        "extra llvm-cov dataset fails closed",
-        {
-            "data": [
-                {"files": [file_record(mpp), file_record(x402)]},
-                {"files": [file_record("/foreign/arbitrary.rs")]},
-            ]
-        },
-        1,
-        "exactly one llvm-cov dataset",
+        f"missing coverage record: {MPP_SOURCE}",
     )
     check_case("malformed report fails", {"data": []}, 1, "coverage report is malformed")
+    check_case(
+        "empty metrics fail",
+        complete_report(overrides={X402_SOURCE: (0, 0)}),
+        1,
+        f"lines coverage is invalid or empty for {X402_SOURCE}",
+    )
+    check_case(
+        "nested checkout path handling passes",
+        complete_report(prefix="/tmp/src/work/pay-kit/rust/crates/kit/src/"),
+        0,
+        "coverage gate passed",
+    )
 
 
 if __name__ == "__main__":

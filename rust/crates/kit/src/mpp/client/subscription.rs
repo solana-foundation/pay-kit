@@ -1061,4 +1061,176 @@ mod tests {
         assert_eq!(limit_ix.data[0], 2);
         assert_eq!(limit_ix.data.len(), 5);
     }
+
+    #[test]
+    fn parse_subscription_authority_init_id_reads_le_i64() {
+        // discriminator(1)+user(32)+mint(32)+payer(32)+bump(1) = 98, then i64.
+        let mut bytes = vec![0u8; SUBSCRIPTION_AUTHORITY_ACCOUNT_LEN];
+        let init_id: i64 = 1_234_567;
+        bytes[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET + 8]
+            .copy_from_slice(&init_id.to_le_bytes());
+        assert_eq!(
+            parse_subscription_authority_init_id(&bytes).unwrap(),
+            init_id
+        );
+    }
+
+    #[test]
+    fn parse_subscription_authority_init_id_rejects_wrong_length() {
+        let err = parse_subscription_authority_init_id(&[0u8; 10]).unwrap_err();
+        assert!(format!("{err}").contains("Unexpected SubscriptionAuthority length"));
+    }
+
+    #[test]
+    fn create_idempotent_ata_ix_layout() {
+        let funder = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let wallet = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let token_program = Pubkey::new_unique();
+        let atp = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap();
+        let ix = build_create_idempotent_ata_ix(funder, ata, wallet, mint, token_program, atp);
+        assert_eq!(ix.program_id, atp);
+        assert_eq!(ix.data, vec![1u8]); // CreateIdempotent discriminator.
+        assert_eq!(ix.accounts.len(), 6);
+        assert!(ix.accounts[0].is_signer); // funder signs.
+        assert_eq!(ix.accounts[0].pubkey, funder);
+        assert_eq!(ix.accounts[1].pubkey, ata);
+        assert_eq!(ix.accounts[5].pubkey, token_program);
+    }
+
+    // ── Missing-required-field error branches (no RPC needed) ──
+
+    async fn build_with(md: &SubscriptionMethodDetails) -> Result<CredentialPayload, Error> {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        build_subscription_activation_transaction_with_options(&*signer, &rpc, md, test_options())
+            .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_plan_id_numeric_errors() {
+        let mut md = make_method_details(false, None);
+        md.plan_id_numeric = None;
+        let err = build_with(&md).await.expect_err("missing planIdNumeric");
+        assert!(format!("{err}").contains("planIdNumeric"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_plan_bump_errors() {
+        let mut md = make_method_details(false, None);
+        md.plan_bump = None;
+        let err = build_with(&md).await.expect_err("missing planBump");
+        assert!(format!("{err}").contains("planBump"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_expected_period_hours_errors() {
+        let mut md = make_method_details(false, None);
+        md.expected_period_hours = None;
+        let err = build_with(&md)
+            .await
+            .expect_err("missing expectedPeriodHours");
+        assert!(format!("{err}").contains("expectedPeriodHours"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_expected_created_at_errors() {
+        let mut md = make_method_details(false, None);
+        md.expected_created_at = None;
+        let err = build_with(&md)
+            .await
+            .expect_err("missing expectedCreatedAt");
+        assert!(format!("{err}").contains("expectedCreatedAt"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_amount_errors() {
+        let mut md = make_method_details(false, None);
+        md.amount = None;
+        let err = build_with(&md).await.expect_err("missing amount");
+        assert!(format!("{err}").contains("amount"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_amount_errors() {
+        let mut md = make_method_details(false, None);
+        md.amount = Some("not-a-number".into());
+        let err = build_with(&md).await.expect_err("bad amount");
+        assert!(format!("{err}").contains("amount"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_recent_blockhash_fetches_a_fresh_one() {
+        // Contract change (2bcee2d8, subscription activation hardening): a
+        // challenge that omits recentBlockhash no longer fails the build; the
+        // client fetches a fresh blockhash from the RPC instead. The fetch is
+        // the ONLY blockhash source here, so a successful build proves the
+        // fallback ran; a failed fetch still propagates (fail closed).
+        let mut md = make_method_details(false, None);
+        md.recent_blockhash = None;
+        let payload = build_with(&md)
+            .await
+            .expect("activation tx with a freshly fetched blockhash");
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn merchant_and_recipient_default_to_puller_when_absent() {
+        let mut md = make_method_details(false, None);
+        // Absent merchant/recipient must fall back to the puller (line coverage
+        // for the `None => puller` arms) and still build a valid tx.
+        md.merchant = None;
+        md.recipient = None;
+        let payload = build_with(&md).await.expect("activation tx");
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn default_builder_preserves_required_field_error() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut md = make_method_details(false, None);
+        md.amount = None;
+
+        let err = build_subscription_activation_transaction(&*signer, &rpc, &md)
+            .await
+            .expect_err("missing amount must not reach RPC initialization");
+
+        assert!(format!("{err}").contains("methodDetails.amount"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_optional_account_keys_name_the_rejected_field() {
+        let cases = [
+            ("merchant", "merchant"),
+            ("recipient", "recipient"),
+            ("program_id", "programId"),
+        ];
+
+        for (field, expected_error) in cases {
+            let mut md = make_method_details(false, None);
+            match field {
+                "merchant" => md.merchant = Some("not-a-pubkey".into()),
+                "recipient" => md.recipient = Some("not-a-pubkey".into()),
+                "program_id" => md.program_id = Some("not-a-pubkey".into()),
+                _ => unreachable!("test cases are exhaustive"),
+            }
+
+            let err = build_with(&md)
+                .await
+                .expect_err("invalid account key must be rejected");
+            assert!(format!("{err}").contains(expected_error));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_fee_payer_key_is_rejected_before_transaction_building() {
+        let md = make_method_details(true, Some("not-a-pubkey"));
+        let err = build_with(&md)
+            .await
+            .expect_err("invalid fee payer key must fail closed");
+
+        assert!(format!("{err}").contains("feePayerKey"));
+    }
 }
