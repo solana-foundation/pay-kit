@@ -12,6 +12,13 @@ module PayKit::Protocols::Mpp
       false
     end
 
+    # Whether put_if_absent is atomic across every process that can serve this
+    # application. Non-localnet replay protection requires this capability in
+    # addition to restart durability.
+    def shared?
+      false
+    end
+
     # Insert `value` only if `key` does not exist.
     def put_if_absent(_key, _value)
       raise NotImplementedError
@@ -50,6 +57,10 @@ module PayKit::Protocols::Mpp
     # still suitable only for a single-process deployment.
     def durable?
       true
+    end
+
+    def shared?
+      false
     end
 
     def initialize(path)

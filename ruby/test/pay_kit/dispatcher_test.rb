@@ -145,15 +145,16 @@ class PayKitDispatcherTest < Minitest::Test
     end
   end
 
-  def test_mpp_dispatcher_uses_a_configured_durable_replay_store
-    Dir.mktmpdir do |dir|
-      store = PayKit::Protocols::Mpp::FileStore.new(File.join(dir, "replay.json"))
-      PayKitTestHelpers.with_config(mpp_replay_store: store) do
-        with_dispatcher do |_middleware, dispatcher|
-          gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
-          server = dispatcher.send(:mpp_server_for, gate)
-          assert_same store, server.instance_variable_get(:@handler).instance_variable_get(:@replay_store)
-        end
+  def test_mpp_dispatcher_uses_a_configured_durable_shared_replay_store
+    store = PayKit::Protocols::Mpp::MemoryStore.new
+    store.define_singleton_method(:durable?) { true }
+    store.define_singleton_method(:shared?) { true }
+
+    PayKitTestHelpers.with_config(mpp_replay_store: store) do
+      with_dispatcher do |_middleware, dispatcher|
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        server = dispatcher.send(:mpp_server_for, gate)
+        assert_same store, server.instance_variable_get(:@handler).instance_variable_get(:@replay_store)
       end
     end
   end

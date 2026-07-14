@@ -56,7 +56,7 @@ module PayKit::Protocols::Mpp
     if replay_store == DEV_ONLY_MEMORY_STORE
       unless localnet?(method)
         raise ::PayKit::ConfigurationError,
-          "PayKit::Protocols::Mpp.create requires a durable replay_store for #{network_name(method)}"
+          "PayKit::Protocols::Mpp.create requires a durable replay_store shared across workers for #{network_name(method)}"
       end
 
       warn "[Mpp] WARNING: no replay_store supplied to PayKit::Protocols::Mpp.create — " \
@@ -71,9 +71,9 @@ module PayKit::Protocols::Mpp
         "PayKit::Protocols::Mpp.create requires a replay_store; nil is not a valid store"
     end
 
-    unless localnet?(method) || durable_replay_store?(replay_store)
+    unless localnet?(method) || durable_shared_replay_store?(replay_store)
       raise ::PayKit::ConfigurationError,
-        "PayKit::Protocols::Mpp.create requires a durable replay_store for #{network_name(method)}"
+        "PayKit::Protocols::Mpp.create requires a durable replay_store shared across workers for #{network_name(method)}"
     end
     Server::Charge.new(
       method: method,
@@ -95,8 +95,19 @@ module PayKit::Protocols::Mpp
   end
   private_class_method :network_name
 
-  def self.durable_replay_store?(store)
-    store.respond_to?(:durable?) && store.durable?
+  def self.durable_shared_replay_store?(store)
+    atomic_insert = store.method(:put_if_absent) if store.respond_to?(:put_if_absent)
+
+    store.respond_to?(:durable?) && store.durable? == true &&
+      store.respond_to?(:shared?) && store.shared? == true &&
+      atomic_insert && atomic_insert.owner != Store &&
+      accepts_two_positional_arguments?(atomic_insert)
   end
-  private_class_method :durable_replay_store?
+  private_class_method :durable_shared_replay_store?
+
+  def self.accepts_two_positional_arguments?(method)
+    arity = method.arity
+    arity == 2 || (arity.negative? && (-arity - 1) <= 2)
+  end
+  private_class_method :accepts_two_positional_arguments?
 end
