@@ -30,6 +30,7 @@ pub use session::{
 pub use session_consumer::*;
 pub use subscription::{
     build_subscription_activation_transaction,
-    build_subscription_activation_transaction_with_options, BuildSubscriptionActivationOptions,
-    SubscriptionMethodDetails,
+    build_subscription_activation_transaction_with_init_id,
+    build_subscription_activation_transaction_with_options, initialize_subscription_authority,
+    BuildSubscriptionActivationOptions, SubscriptionMethodDetails,
 };

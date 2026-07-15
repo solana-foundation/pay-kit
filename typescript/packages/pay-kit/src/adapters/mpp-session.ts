@@ -12,13 +12,15 @@
  */
 import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
-import { createMemorySessionStore, Mppx, session, type SessionStore } from '@solana/mpp/server';
+import { createMemorySessionStore, isMemorySessionStore, Mppx, session, type SessionStore } from '@solana/mpp/server';
 
 import { requireMint, resolveCoin } from '../coin.js';
-import type { PayKitConfig } from '../config.js';
+import { inMemoryStoresAllowed, type PayKitConfig } from '../config.js';
 import { ConfigurationError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import { toSolanaNetwork } from '../protocol.js';
+
+const ALLOW_INMEMORY_REPLAY_STORE_ENV = 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE';
 
 /** Outcome of running the session method on the gated route. */
 export type SessionResult =
@@ -116,12 +118,15 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
 }
 
 function resolveSessionStore(config: PayKitConfig): SessionStore {
-    if (config.mpp.sessionStore) return config.mpp.sessionStore;
-    if (config.network === 'solana_localnet' || process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE === '1') {
-        return createMemorySessionStore();
-    }
+    const provided = config.mpp.sessionStore;
+    // A durable, caller-supplied store is honored everywhere. A process-local
+    // in-memory store, whether defaulted here or passed explicitly, is subject
+    // to the same cluster policy, so an explicit createMemorySessionStore() can
+    // never smuggle process-local session state onto mainnet.
+    if (provided && !isMemorySessionStore(provided)) return provided;
+    if (inMemoryStoresAllowed(config.network)) return provided ?? createMemorySessionStore();
     throw new ConfigurationError(
-        'mpp.sessionStore is required outside localnet; provide a durable shared store or set ' +
-            'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 for an explicit in-memory override.',
+        'mpp.sessionStore is required outside localnet; provide a durable shared store or, on devnet only, set ' +
+            `${ALLOW_INMEMORY_REPLAY_STORE_ENV}=1 for an explicit in-memory override.`,
     );
 }

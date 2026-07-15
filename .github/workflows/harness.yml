@@ -13,7 +13,7 @@ name: Harness
 #          └─ …               ← legs reuse the build's mpp dist + cargo cache
 #
 # Each leg adds only its own toolchain + adapter build + smoke run; the
-# duplicated pnpm/node + build-mpp + build-rust + install + typecheck lives once
+# duplicated pnpm/node + @solana/mpp + Rust build/install/typecheck lives once
 # in the build job (see .github/actions/setup-harness and setup-harness-leg).
 
 permissions:

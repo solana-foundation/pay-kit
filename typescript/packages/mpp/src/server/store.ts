@@ -55,11 +55,25 @@ export function createUnsafeMemoryReplayStore(): ReplayStore {
 }
 
 /**
- * Adapt an atomic replay store to mppx's Store surface while preserving the
- * module-local unsafe-memory brand for pay-kit's low-level handlers.
+ * Atomic replay-store view: the charge/session `putIfAbsent` contract plus the
+ * `reserve` alias the subscription server calls. Both name the same
+ * cross-instance atomic claim, so one injected store (which need only implement
+ * `putIfAbsent`) serves every MPP settlement method through this view.
  */
-export function createAtomicReplayStoreView(store: ReplayStore): ReplayStore {
-    const view: ReplayStore = {
+export type AtomicReplayStoreView = ReplayStore & {
+    readonly reserve: (key: string, value?: unknown, ttlSeconds?: number) => Promise<boolean>;
+};
+
+/**
+ * Adapt an atomic replay store to mppx's Store surface while preserving the
+ * module-local unsafe-memory brand for pay-kit's low-level handlers. Exposes
+ * `reserve` (aliasing `putIfAbsent`) so the subscription server's
+ * `claimConsumed` reservation runs against the same atomic marker as charge
+ * replay; the `ttlSeconds` hint is ignored, which fails closed (the replay
+ * marker never expires early).
+ */
+export function createAtomicReplayStoreView(store: ReplayStore): AtomicReplayStoreView {
+    const view: AtomicReplayStoreView = {
         delete: key => store.delete(key),
         get: key => store.get(key),
         ...(store.isDurable === undefined ? {} : { isDurable: store.isDurable }),
@@ -74,6 +88,7 @@ export function createAtomicReplayStoreView(store: ReplayStore): ReplayStore {
             await store.put(key, value);
         },
         putIfAbsent: (key, value) => store.putIfAbsent(key, value),
+        reserve: (key, value = true) => store.putIfAbsent(key, value),
     };
     if (isUnsafeMemoryReplayStore(store)) unsafeMemoryReplayStores.add(view);
     return view;
