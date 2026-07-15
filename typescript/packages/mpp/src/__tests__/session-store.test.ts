@@ -80,6 +80,62 @@ describe('createMemorySessionStore', () => {
         expect((await store.getChannel('c1'))?.cumulative).toBe(50n);
     });
 
+    test('updateChannel grants one concurrent settlement claim and preserves its pending signature', async () => {
+        const store = createMemorySessionStore();
+        await store.updateChannel('c1', () => makeState({ channelId: 'c1' }));
+        const now = BigInt(Date.now());
+        let claims = 0;
+
+        await Promise.all(
+            Array.from({ length: 20 }, (_, index) =>
+                store.updateChannel('c1', current => {
+                    if (
+                        current?.settling &&
+                        current.settlementClaimExpiresAt !== undefined &&
+                        current.settlementClaimExpiresAt > now
+                    ) {
+                        return current;
+                    }
+                    claims += 1;
+                    return {
+                        ...current!,
+                        settlementClaimExpiresAt: now + 30_000n,
+                        settlementClaimOwner: `owner-${index}`,
+                        settling: true,
+                    };
+                }),
+            ),
+        );
+        expect(claims).toBe(1);
+
+        const pending = await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementPendingLastValidBlockHeight: 123n,
+            settlementPendingSignature: 'settle-signature',
+            settlementPendingWire: 'signed-wire',
+            settling: false,
+        }));
+        expect(pending.settlementPendingSignature).toBe('settle-signature');
+        expect(pending.settlementPendingLastValidBlockHeight).toBe(123n);
+        expect(pending.settlementPendingWire).toBe('signed-wire');
+        expect(pending.settling).toBe(false);
+
+        await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementClaimExpiresAt: 0n,
+            settlementPendingLastValidBlockHeight: undefined,
+            settlementPendingSignature: undefined,
+            settlementPendingWire: undefined,
+            settling: true,
+        }));
+        const recovered = await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementClaimExpiresAt: now + 30_000n,
+            settlementClaimOwner: 'recovery-owner',
+        }));
+        expect(recovered.settlementClaimOwner).toBe('recovery-owner');
+    });
+
     test('updateChannel error does not poison subsequent updates', async () => {
         const store = createMemorySessionStore();
         await store.updateChannel('c1', () => makeState({ channelId: 'c1', cumulative: 7n }));

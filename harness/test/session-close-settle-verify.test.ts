@@ -38,14 +38,24 @@
 import { findAssociatedTokenPda } from "@solana-program/token";
 import {
   AccountRole,
+  appendTransactionMessageInstructions,
+  createTransactionMessage,
   generateKeyPairSigner,
   getAddressDecoder,
   getArrayDecoder,
   getBase58Decoder,
+  getBase64EncodedWireTransaction,
+  getSignatureFromTransaction,
   getStructDecoder,
   getU16Decoder,
   getU8Decoder,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+  signTransactionMessageWithSigners,
   type Address,
+  type Blockhash,
+  type Instruction,
   type KeyPairSigner,
   type Signature,
 } from "@solana/kit";
@@ -149,6 +159,8 @@ describe("session close settle+distribute composer — accept", () => {
 
   let sendCount = 0;
   let broadcastWire: string | undefined;
+  let builtWire: string | undefined;
+  let builtSignature: Signature | undefined;
   let result: Awaited<ReturnType<typeof submitSettleAndDistribute>>;
 
   beforeAll(async () => {
@@ -172,10 +184,27 @@ describe("session close settle+distribute composer — accept", () => {
     const signed = await signHighestVoucher(voucherSigner, channel.address, CUMULATIVE, EXPIRES_AT);
 
     result = await submitSettleAndDistribute({
-      buildAndSignWireTransaction: async () => {
-        // The composer hands us the composed instruction list; we don't need a
-        // real compiled tx — assertions run against result.instructions.
-        return "BASE64_WIRE_TX";
+      buildAndSignWireTransaction: async (composed) => {
+        // Compile the composed instruction list into a REAL signed wire tx:
+        // the settle path decodes it to bind the broadcast signature before
+        // submitting, so a placeholder string no longer satisfies the contract.
+        const message = pipe(
+          createTransactionMessage({ version: 0 }),
+          (m) => setTransactionMessageFeePayerSigner(merchant, m),
+          (m) =>
+            setTransactionMessageLifetimeUsingBlockhash(
+              {
+                blockhash: "11111111111111111111111111111111" as Blockhash,
+                lastValidBlockHeight: 0n,
+              },
+              m,
+            ),
+          (m) => appendTransactionMessageInstructions(composed as unknown as Instruction[], m),
+        );
+        const signedTx = await signTransactionMessageWithSigners(message);
+        builtWire = getBase64EncodedWireTransaction(signedTx);
+        builtSignature = getSignatureFromTransaction(signedTx);
+        return builtWire;
       },
       channelId: channel.address,
       mint: mint.address,
@@ -199,8 +228,11 @@ describe("session close settle+distribute composer — accept", () => {
 
   it("BROADCASTS the settlement (not a fake receipt ref that never submits)", () => {
     expect(sendCount, "settle+distribute must be submitted exactly once").toBe(1);
-    expect(broadcastWire).toBe("BASE64_WIRE_TX");
-    expect(result.signature).toBe(BROADCAST_SIGNATURE);
+    expect(broadcastWire).toBe(builtWire);
+    // The reported signature is DERIVED from the signed wire (bound before
+    // broadcast), never trusted from the RPC's response value.
+    expect(result.signature).toBe(builtSignature);
+    expect(result.signature).not.toBe(BROADCAST_SIGNATURE);
   });
 
   it("composes ed25519-precompile + settle_and_finalize + distribute", () => {
