@@ -44,7 +44,15 @@ jobs:
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --production
+      # npm retired the classic audit endpoints on 2026-07-15 (HTTP 410); only
+      # pnpm >= 11 queries the replacement bulk advisory endpoint. The repo pins
+      # pnpm 10 via packageManager and pnpm self-switches to that pin, so strip
+      # the pin for this read-only query and restore it right after.
+      - name: Audit production dependencies (bulk advisory endpoint)
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));delete p.packageManager;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          npx -y pnpm@11.9.0 audit --production
+          git checkout -- package.json
 
   lint:
     name: Lint & Format
