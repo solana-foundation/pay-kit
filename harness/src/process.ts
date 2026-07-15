@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -26,6 +29,31 @@ type AdapterEnvironment = Record<string, string | undefined>;
 
 const ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
 const STDERR_RING_BUFFER_BYTES = 1024;
+const REPLAY_STORE_DIRECTORY = mkdtempSync(
+  join(tmpdir(), "pay-kit-harness-replay-"),
+);
+
+let replayStoreDirectoryRemoved = false;
+
+function removeReplayStoreDirectory(): void {
+  if (replayStoreDirectoryRemoved) return;
+  replayStoreDirectoryRemoved = true;
+  rmSync(REPLAY_STORE_DIRECTORY, { force: true, recursive: true });
+}
+
+process.once("exit", removeReplayStoreDirectory);
+process.once("SIGINT", () => {
+  removeReplayStoreDirectory();
+  process.exit(130);
+});
+process.once("SIGHUP", () => {
+  removeReplayStoreDirectory();
+  process.exit(129);
+});
+process.once("SIGTERM", () => {
+  removeReplayStoreDirectory();
+  process.exit(143);
+});
 
 const stderrCaptures = new WeakMap<ChildProcess, StderrCapture>();
 
@@ -160,6 +188,9 @@ function spawnAdapter(
       delete env[name];
     }
   }
+  // Reserved harness capability: callers cannot split workers onto
+  // process-local replay roots by overriding this value per child.
+  env.PAY_KIT_HARNESS_REPLAY_STORE_DIR = REPLAY_STORE_DIRECTORY;
   const child = spawn(command, args, {
     cwd: process.cwd(),
     env,

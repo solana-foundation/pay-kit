@@ -45,7 +45,10 @@ func TestVerifyAcceptedBindingDirect(t *testing.T) {
 	}
 	adapter := a.(*Adapter)
 	g := &paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
-	route := adapter.routeAccepts(g)
+	route, err := adapter.routeAccepts(g)
+	if err != nil {
+		t.Fatalf("routeAccepts: %v", err)
+	}
 
 	if err := adapter.verifyAcceptedBinding(g, &route); err != nil {
 		t.Errorf("matching route should bind: %v", err)

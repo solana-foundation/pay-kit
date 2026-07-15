@@ -16,10 +16,13 @@ use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\Mpp\Adapter as MppAdapter;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Store\Store;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
+use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
+use Symfony\Bridge\PsrHttpMessage\Factory\PsrHttpFactory;
 
 /**
  * Laravel service provider. Registers:
@@ -52,6 +55,40 @@ final class PayKitServiceProvider extends ServiceProvider
                 throw new \LogicException(self::MPP_REPLAY_STORE . ' must implement ' . Store::class);
             }
             return new MppAdapter($client->config, $store);
+        });
+
+        /** @var array<string,mixed> $cfg */
+        $cfg = $this->app['config']->get('paykit', []);
+        $configuredAccept = $cfg['accept'] ?? ['x402', 'mpp'];
+        $acceptsX402 = is_array($configuredAccept)
+            && in_array(Protocol::X402->value, $configuredAccept, true);
+
+        if ($acceptsX402) {
+            $this->app->singleton(X402Adapter::class, function (Application $app): X402Adapter {
+                /** @var mixed $replayStoreId */
+                $replayStoreId = $app['config']->get('paykit.x402_replay_store');
+                $replayStore = self::resolveReplayStore($app, $replayStoreId);
+
+                return new X402Adapter(
+                    $app->make(PayKit::class)->config,
+                    replayStore: $replayStore,
+                );
+            });
+        }
+
+        $this->app->bind(RequirePaymentMiddleware::class, function (Application $app): RequirePaymentMiddleware {
+            $client = $app->make(PayKit::class);
+            $x402 = in_array(Protocol::X402, $client->config->accept, true)
+                ? $app->make(X402Adapter::class)
+                : null;
+
+            return new RequirePaymentMiddleware(
+                $client,
+                $app,
+                $app->make(PsrHttpFactory::class),
+                $app->make(HttpFoundationFactory::class),
+                $x402,
+            );
         });
     }
 
@@ -172,5 +209,21 @@ final class PayKitServiceProvider extends ServiceProvider
             return Signer::hex($trimmed);
         }
         return Signer::base58($trimmed);
+    }
+
+    private static function resolveReplayStore(Application $app, mixed $configured): ?Store
+    {
+        if ($configured === null || $configured === '') {
+            return null;
+        }
+
+        $store = is_string($configured) ? $app->make($configured) : $configured;
+        if (!$store instanceof Store) {
+            throw new \LogicException(
+                'pay_kit: paykit.x402_replay_store must resolve to a PayKit\\Store\\Store service',
+            );
+        }
+
+        return $store;
     }
 }

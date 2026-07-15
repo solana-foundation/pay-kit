@@ -32,9 +32,14 @@ import { configure, type PayKitConfig } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
 import { gateDefaults } from '../pricing.js';
+import { createMemoryReplayStore } from '../replay-store.js';
 
 async function testConfig(): Promise<PayKitConfig> {
-    return await configure({ accept: ['x402'], network: 'solana_localnet' });
+    return await configure({
+        accept: ['x402'],
+        network: 'solana_localnet',
+        replayStore: createMemoryReplayStore(),
+    });
 }
 
 function gateFor(config: PayKitConfig, amount = usd('0.10')): Gate {
@@ -64,6 +69,21 @@ describe('x402 exact adapter', () => {
         expect(typeof entry.network).toBe('string');
         expect(typeof entry.asset).toBe('string');
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
+    });
+
+    it('binds exact requirements to the request pathname', async () => {
+        const config = await testConfig();
+        const adapter = createX402ExactAdapter(config);
+        const gate = gateFor(config);
+
+        const first = await adapter.acceptsEntry(gate, new Request('http://localhost/reports/a'));
+        const second = await adapter.acceptsEntry(gate, new Request('http://localhost/reports/b'));
+        const firstMemo = (first.extra as { memo?: unknown } | undefined)?.memo;
+        const secondMemo = (second.extra as { memo?: unknown } | undefined)?.memo;
+
+        expect(firstMemo).toBe('/reports/a');
+        expect(secondMemo).toBe('/reports/b');
+        expect(firstMemo).not.toBe(secondMemo);
     });
 
     it('detects the x402 payment header', async () => {
@@ -169,5 +189,33 @@ describe('Charge meter', () => {
         const charge = new Charge(1_000_000n);
         charge.charge(250_000);
         expect(charge.settledBaseUnits()).toBe(250_000n);
+    });
+});
+
+describe('x402 replay-store provisioning', () => {
+    it('boots on localnet with no explicit replayStore (exact + upto)', async () => {
+        const config = await configure({ accept: ['x402'], network: 'solana_localnet' });
+        expect(config.replayStore).toBeUndefined();
+        expect(() => createX402ExactAdapter(config)).not.toThrow();
+        expect(() => new X402Upto(config)).not.toThrow();
+    });
+
+    it('fails closed off localnet without a store or the opt-in (exact + upto)', async () => {
+        delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        const config = await configure({ accept: ['x402'], network: 'solana_devnet' });
+        expect(config.replayStore).toBeUndefined();
+        expect(() => createX402ExactAdapter(config)).toThrow(/atomic reserve capability/);
+        expect(() => new X402Upto(config)).toThrow(/atomic reserve capability/);
+    });
+
+    it('permits an in-memory store off localnet under the explicit opt-in', async () => {
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const config = await configure({ accept: ['x402'], network: 'solana_devnet' });
+            expect(() => createX402ExactAdapter(config)).not.toThrow();
+            expect(() => new X402Upto(config)).not.toThrow();
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
     });
 });

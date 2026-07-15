@@ -9,6 +9,7 @@ use PayKit\PayKit;
 use PayKit\Middleware\RequirePayment as PsrRequirePayment;
 use PayKit\Pricing;
 use PayKit\Protocols\Mpp\Adapter as MppAdapter;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Frameworks\Symfony\Attribute\RequirePayment;
 use ReflectionMethod;
 use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
@@ -30,6 +31,7 @@ final class RequirePaymentListener
         private readonly HttpFoundationFactory $httpFactory,
         private readonly ?MppAdapter $mpp = null,
         private readonly ?Closure $mppFactory = null,
+        private readonly ?X402Adapter $x402 = null,
     ) {
     }
 
@@ -47,6 +49,7 @@ final class RequirePaymentListener
             pricing: $this->pricing,
             mpp: $this->mpp,
             mppFactory: $this->mppFactory,
+            x402: $this->x402,
         );
         $psrResponse = $middleware->process(
             $psrRequest,

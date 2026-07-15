@@ -7,6 +7,7 @@ namespace PayKit\Tests\Middleware;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\PayKit;
 use PayKit\Config;
+use PayKit\Exception\ConfigurationException;
 use PayKit\PayCore\Currency;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
@@ -17,6 +18,7 @@ use PayKit\Price;
 use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Signer;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\ReplayStoreCapability;
@@ -33,38 +35,55 @@ final class RequirePaymentTest extends TestCase
 
     public function testX402OnlyConstructionDoesNotRequireMppReplayStore(): void
     {
-        $client = new PayKit(new Config(
-            network: Network::SolanaDevnet,
-            accept: [Protocol::X402],
-            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
-            preflight: false,
-        ));
-        $middleware = new RequirePayment($client, new Gate(amount: Price::usd('0.10')));
-        self::assertInstanceOf(RequirePayment::class, $middleware);
+        // x402 requires a durable shared replay store off-localnet; this
+        // single-process unit test acknowledges that scope via the opt-in so it
+        // can exercise the auto-wiring path. The assertion under test is that an
+        // x402-only client needs NO MPP replay store (the MPP adapter stays lazy).
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $client = new PayKit(new Config(
+                network: Network::SolanaDevnet,
+                accept: [Protocol::X402],
+                operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
+                preflight: false,
+            ));
+            $middleware = new RequirePayment($client, new Gate(amount: Price::usd('0.10')));
+            self::assertInstanceOf(RequirePayment::class, $middleware);
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
     }
 
     public function testX402OnlyGateDoesNotConstructMppReplayStore(): void
     {
-        $client = new PayKit(new Config(
-            network: Network::SolanaDevnet,
-            accept: [Protocol::X402, Protocol::Mpp],
-            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
-            preflight: false,
-            mpp: new MppConfig(
-                challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
-            ),
-        ));
-        $middleware = new RequirePayment(
-            $client,
-            new Gate(amount: Price::usd('0.10'), accept: [Protocol::X402]),
-        );
+        // Same single-process x402 opt-in as above; the assertion is that an
+        // x402-only gate never constructs the MPP replay store even when the
+        // client also accepts MPP.
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $client = new PayKit(new Config(
+                network: Network::SolanaDevnet,
+                accept: [Protocol::X402, Protocol::Mpp],
+                operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate()),
+                preflight: false,
+                mpp: new MppConfig(
+                    challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01',
+                ),
+            ));
+            $middleware = new RequirePayment(
+                $client,
+                new Gate(amount: Price::usd('0.10'), accept: [Protocol::X402]),
+            );
 
-        $response = $middleware->process(
-            $this->factory->createServerRequest('GET', '/paid'),
-            $this->nextHandler(),
-        );
+            $response = $middleware->process(
+                $this->factory->createServerRequest('GET', '/paid'),
+                $this->nextHandler(),
+            );
 
-        self::assertSame(402, $response->getStatusCode());
+            self::assertSame(402, $response->getStatusCode());
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
     }
 
     protected function setUp(): void
@@ -79,6 +98,23 @@ final class RequirePaymentTest extends TestCase
             ),
         ));
         $this->factory = new Psr17Factory();
+    }
+
+    /**
+     * @param Gate|string|\Closure(ServerRequestInterface):Gate $gateRef
+     */
+    private function middleware(Gate|string|\Closure $gateRef, ?Pricing $pricing = null): RequirePayment
+    {
+        return new RequirePayment(
+            $this->client,
+            $gateRef,
+            $pricing,
+            x402: new X402Adapter(
+                $this->client->config,
+                replayStore: new MiddlewareDurableSharedReplayStore(),
+                recentBlockhashProvider: fn () => null,
+            ),
+        );
     }
 
     private function nextHandler(): RequestHandlerInterface
@@ -100,7 +136,7 @@ final class RequirePaymentTest extends TestCase
     public function testEmits402WhenNoCredentialPresent(): void
     {
         $gate = new Gate(amount: Price::usd('0.10'));
-        $mw = new RequirePayment($this->client, $gate);
+        $mw = $this->middleware($gate);
         $request = $this->factory->createServerRequest('GET', '/paid');
         $response = $mw->process($request, $this->nextHandler());
         $this->assertSame(402, $response->getStatusCode());
@@ -112,7 +148,7 @@ final class RequirePaymentTest extends TestCase
     public function test402BodyCarriesAcceptsEntries(): void
     {
         $gate = new Gate(amount: Price::usd('0.10'));
-        $mw = new RequirePayment($this->client, $gate);
+        $mw = $this->middleware($gate);
         $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
         $body = json_decode((string) $response->getBody(), true);
         $this->assertGreaterThanOrEqual(1, count($body['accepts']));
@@ -124,7 +160,7 @@ final class RequirePaymentTest extends TestCase
         // cached. Without no-store a CDN could replay a stale challenge
         // (different blockhash / expiry / amount) to a later client.
         $gate = new Gate(amount: Price::usd('0.10'));
-        $mw = new RequirePayment($this->client, $gate);
+        $mw = $this->middleware($gate);
         $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
         $this->assertSame(402, $response->getStatusCode());
         $this->assertSame('no-store', $response->getHeaderLine('cache-control'));
@@ -133,7 +169,7 @@ final class RequirePaymentTest extends TestCase
     public function testWwwAuthenticateHeaderStampedFromMpp(): void
     {
         $gate = new Gate(amount: Price::usd('0.10'));
-        $mw = new RequirePayment($this->client, $gate);
+        $mw = $this->middleware($gate);
         $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
         $this->assertNotEmpty($response->getHeaderLine('www-authenticate'));
     }
@@ -147,7 +183,7 @@ final class RequirePaymentTest extends TestCase
                 $this->reportGate = new Gate(amount: Price::usd('0.10'));
             }
         };
-        $mw = new RequirePayment($this->client, 'reportGate', $pricing);
+        $mw = $this->middleware('reportGate', $pricing);
         $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
         $this->assertSame(402, $response->getStatusCode());
     }
@@ -155,14 +191,14 @@ final class RequirePaymentTest extends TestCase
     public function testClosureGateInvoked(): void
     {
         $closure = fn (ServerRequestInterface $req): Gate => new Gate(amount: Price::usd('0.25'));
-        $mw = new RequirePayment($this->client, $closure);
+        $mw = $this->middleware($closure);
         $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
         $this->assertSame(402, $response->getStatusCode());
     }
 
     public function testStringHandleWithoutPricingRaises(): void
     {
-        $mw = new RequirePayment($this->client, 'reportGate');
+        $mw = $this->middleware('reportGate');
         $this->expectException(\LogicException::class);
         $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
     }
@@ -170,7 +206,7 @@ final class RequirePaymentTest extends TestCase
     public function testMalformedAuthorizationFallsThroughTo402(): void
     {
         $gate = new Gate(amount: Price::usd('0.10'));
-        $mw = new RequirePayment($this->client, $gate);
+        $mw = $this->middleware($gate);
         $request = $this->factory->createServerRequest('GET', '/paid')
             ->withHeader('Authorization', 'Payment garbage-not-valid');
         $response = $mw->process($request, $this->nextHandler());
@@ -205,6 +241,14 @@ final class RequirePaymentTest extends TestCase
         $request = $this->factory->createServerRequest('GET', '/');
         $this->expectException(\PayKit\Exception\PaymentRequiredException::class);
         \PayKit\Middleware\requirePayment($request);
+    }
+
+    public function testMissingX402ReplayAdapterFailsClosedOnDevnet(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('shared replay store is required outside localnet');
+
+        new RequirePayment($this->client, new Gate(amount: Price::usd('0.10')));
     }
 }
 

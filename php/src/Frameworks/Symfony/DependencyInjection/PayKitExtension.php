@@ -11,6 +11,7 @@ use PayKit\Operator;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\Mpp\Adapter as MppAdapter;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
@@ -41,7 +42,7 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
         $mppFactory = null;
         if (in_array(Protocol::Mpp, $payKitConfig->accept, true)) {
             $storeService = $config['mpp_replay_store_service'] ?? null;
-            $definition = $container->register(MppAdapter::class)
+            $definition = $container->register(MppAdapter::class, MppAdapter::class)
                 ->setArgument('$config', $payKitConfig)
                 ->setPublic(true);
             if (is_string($storeService) && $storeService !== '') {
@@ -50,13 +51,24 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
             $mppFactory = new ServiceClosureArgument(new Reference(MppAdapter::class));
         }
 
-        $listener = $container->register(RequirePaymentListener::class)
+        $x402 = null;
+        if (in_array(Protocol::X402, $payKitConfig->accept, true)) {
+            $adapter = $container->register(X402Adapter::class, X402Adapter::class)
+                ->setArgument('$config', $payKitConfig);
+            if ($config['x402_replay_store'] !== null) {
+                $adapter->setArgument('$replayStore', new Reference($config['x402_replay_store']));
+            }
+            $x402 = new Reference(X402Adapter::class);
+        }
+
+        $listener = $container->register(RequirePaymentListener::class, RequirePaymentListener::class)
             ->setArgument('$client', new Reference(PayKit::class))
             ->setArgument('$pricing', null)
             ->setArgument('$psrFactory', new Reference('paykit.psr_http_factory'))
             ->setArgument('$httpFactory', new Reference('paykit.http_foundation_factory'))
             ->setArgument('$mpp', null)
             ->setArgument('$mppFactory', $mppFactory)
+            ->setArgument('$x402', $x402)
             ->setAutowired(true)
             ->setPublic(true);
         $listener->addTag('kernel.event_listener', [
@@ -93,6 +105,7 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
                 ->end()
             ->end()
             ->scalarNode('x402_facilitator_url')->defaultNull()->end()
+            ->scalarNode('x402_replay_store')->defaultNull()->end()
             ->scalarNode('mpp_challenge_binding_secret')->defaultNull()->end()
             ->scalarNode('mpp_replay_store_service')->defaultNull()->end()
             ->booleanNode('mpp_allow_unsafe_memory_store')->defaultFalse()->end()
