@@ -4,7 +4,6 @@ use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
 use solana_transaction::Transaction;
 use std::str::FromStr;
@@ -288,18 +287,10 @@ pub async fn build_charge_transaction_with_options(
     let message = Message::new_with_blockhash(&instructions, Some(&actual_fee_payer), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
 
-    let sig_bytes = signer
-        .sign_message(&tx.message_data())
+    signer
+        .sign_transaction(&mut tx)
         .await
         .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    let signer_index = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| k == &signer_pubkey)
-        .ok_or_else(|| Error::Other("Signer not found in transaction accounts".to_string()))?;
-    tx.signatures[signer_index] = sig;
 
     let serialized =
         bincode::serialize(&tx).map_err(|e| Error::Other(format!("Serialization failed: {e}")))?;
@@ -1476,6 +1467,48 @@ mod tests {
         Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
     }
 
+    struct TransactionOnlySigner(Pubkey);
+
+    #[async_trait::async_trait]
+    impl SolanaSigner for TransactionOnlySigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            tx: &mut Transaction,
+        ) -> std::result::Result<solana_keychain::SignTransactionResult, solana_keychain::SignerError>
+        {
+            let index = tx
+                .message
+                .account_keys
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| solana_keychain::SignerError::Other("missing signer".into()))?;
+            let signature = solana_signature::Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(solana_keychain::SignTransactionResult::Partial((
+                String::new(),
+                signature,
+            )))
+        }
+
+        async fn sign_message(
+            &self,
+            _message: &[u8],
+        ) -> std::result::Result<solana_signature::Signature, solana_keychain::SignerError>
+        {
+            Err(solana_keychain::SignerError::Other(
+                "transaction bytes used the off-chain signing path".into(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
+
     fn dummy_rpc() -> RpcClient {
         // Never actually contacted — tests bypass RPC via method_details overrides.
         RpcClient::new("http://localhost:1".to_string())
@@ -1573,8 +1606,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_charge_sol_with_fee_payer() {
-        let signer = make_signer();
+    async fn build_charge_sol_with_fee_payer_uses_transaction_signing() {
+        let signer = TransactionOnlySigner(Pubkey::new_unique());
         let rpc = dummy_rpc();
         let fee_payer = Pubkey::new_unique();
         let md = MethodDetails {
@@ -1583,11 +1616,28 @@ mod tests {
             fee_payer_key: Some(fee_payer.to_string()),
             ..Default::default()
         };
-        let payload =
-            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
-                .await
-                .unwrap();
-        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+        let payload = build_charge_transaction(&signer, &rpc, "1000000", "SOL", RECIPIENT, &md)
+            .await
+            .unwrap();
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected transaction payload");
+        };
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
+            .unwrap();
+        let tx: Transaction = bincode::deserialize(&bytes).unwrap();
+        let signer_index = tx
+            .message
+            .account_keys
+            .iter()
+            .position(|key| key == &signer.pubkey())
+            .unwrap();
+
+        assert_ne!(signer_index, 0);
+        assert_eq!(tx.signatures[0], solana_signature::Signature::default());
+        assert_eq!(
+            tx.signatures[signer_index],
+            solana_signature::Signature::from([7u8; 64])
+        );
     }
 
     // ── build_charge_transaction: error cases ──

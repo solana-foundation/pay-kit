@@ -24,6 +24,8 @@ client = ["dep:reqwest"]
 # plus the server side.
 axum = ["mpp", "x402", "server", "dep:axum"]
 gcp_kms = ["solana-keychain/gcp_kms"]
+# Ledger hardware-wallet signer (SDK v3 only in the current keychain backend).
+ledger = ["solana-keychain/ledger"]
 # Token-2022 confidential transfers: ZK proof generation + the Token-2022
 # confidential-transfer instruction builders. Opt-in so non-confidential
 # consumers (mobile/wasm/FFI) stay lean.
@@ -67,9 +69,9 @@ otel = [
 ]
 
 [dependencies]
-# Signing — solana-keychain with sdk-v3. Rev d788028 widens the solana-signature
-# bound to <3.5, letting signature resolve to 3.3.x.
-solana-keychain = { version = "1.4", default-features = false, features = ["memory", "sdk-v3"] }
+# Local combined branch: latest Ledger backend + transaction-message signing.
+# Replace with the published solana-keychain revision before releasing pay-kit.
+solana-keychain = { version = "1.4", path = "../../../../solana-keychain/rust", default-features = false, features = ["memory", "sdk-v3"] }
 
 # Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
 # which solana-keypair/solana-signature rely on.

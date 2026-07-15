@@ -4,7 +4,7 @@
 //! `../../../docs/snippets-convention.md` for the snippet:start/end convention.
 
 use solana_pay_kit::mpp::client::{build_credential_header, parse_challenge};
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::mpp::solana_rpc_client::rpc_client::RpcClient;
 
 async fn pay(

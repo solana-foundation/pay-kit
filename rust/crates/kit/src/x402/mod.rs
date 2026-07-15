@@ -30,5 +30,5 @@ pub use protocol::schemes::upto;
 pub use siwx::*;
 
 // Re-export crates callers need to use with the payment builder.
-pub use solana_keychain;
+pub use crate::solana_keychain;
 pub use solana_rpc_client;

@@ -96,7 +96,7 @@ unchanged; only `PayKitConfig` grows.
 
 ```rust
 use solana_pay_kit::{PayKit, PayKitConfig};
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use std::sync::Arc;
 
 let pay = PayKit::new(PayKitConfig {
@@ -205,7 +205,7 @@ paying side, via the protocol-layer crate re-exported at `solana_pay_kit::mpp`:
 
 ```rust
 use solana_pay_kit::mpp::client::{build_credential_header, parse_challenge};
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::mpp::solana_rpc_client::rpc_client::RpcClient;
 
 // 1. Read the 402 challenge from the WWW-Authenticate header.
@@ -274,19 +274,24 @@ is replay-safe too.
 
 Key handling is built on
 [Solana Keychain](https://github.com/solana-foundation/solana-keychain),
-re-exported as `solana_pay_kit::mpp::solana_keychain`. Local key material rides
-on `MemorySigner`; remote backends (AWS KMS, GCP KMS, Vault, …) implement
-`SolanaSigner`:
+re-exported as `solana_pay_kit::solana_keychain` (the older protocol-scoped
+paths remain compatibility aliases). Local key material rides on `MemorySigner`;
+remote backends (AWS KMS, GCP KMS, Vault, …) implement `SolanaSigner`:
 
 ```rust
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 
 let signer = MemorySigner::from_bytes(&secret_key_bytes)?; // 64-byte keypair
 ```
 
 Set `fee_payer_signer` on `PayKitConfig` to sponsor the network fee — one key
 drives MPP fee-sponsored mode and supplies x402's fee-payer address. The
-`gcp_kms` feature wires the GCP KMS backend.
+`gcp_kms` feature wires the GCP KMS backend; `ledger` enables the SDK-v3
+Ledger hardware-wallet backend. It covers transaction-backed MPP and x402
+payer flows; raw-signature credentials, vouchers, and server-side sponsored
+settlement still need dedicated signing-path hardening. The backend supports
+Nano Gen5 and requires the platform's native HID prerequisites (for example
+`libudev-dev` and `pkg-config` on Linux).
 
 ---
 
@@ -310,6 +315,7 @@ Feature flags:
 | `client` | — | client-side payment building for the enabled protocols |
 | `axum` | — | the `paid_get` / `paid_post` gate (implies `server` + both protocols) |
 | `gcp_kms` | — | GCP KMS signing backend |
+| `ledger` | — | Ledger hardware-wallet signing backend (Solana SDK v3) |
 
 ## Test
 

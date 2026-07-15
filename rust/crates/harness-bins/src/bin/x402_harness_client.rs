@@ -1,7 +1,7 @@
 use std::{collections::HashMap, env};
 
 use serde_json::json;
-use solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::x402::{
     client::exact::{
         build_payment_header, parse_x402_challenge_with_selection, ChallengeSelection,

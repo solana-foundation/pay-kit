@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde_json::json;
-use solana_keychain::{memory::MemorySigner, SolanaSigner};
+use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::upto::UptoSettlementResponse,
     server::{

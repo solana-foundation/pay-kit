@@ -11,6 +11,7 @@
 //!   `solana-x402` uses it for the `upto` and `batch-settlement` schemes).
 //! - [`store`]: replay-protection + payment-channel session state stores
 //!   (`solana-mpp` re-exports at `mpp::store`).
+//! - [`signing`]: transaction-intent signing for legacy and v0 wire formats.
 //! - [`voucher`] / [`session`]: wire-agnostic cumulative-voucher verification and
 //!   acceptance, shared by the MPP `session` intent and the x402
 //!   `batch-settlement` scheme.
@@ -23,6 +24,7 @@ pub mod payment_channels;
 pub(crate) mod rpc;
 pub mod session;
 pub mod settlement;
+pub mod signing;
 pub mod store;
 pub mod units;
 pub mod voucher;

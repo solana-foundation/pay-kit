@@ -4,7 +4,6 @@ use solana_commitment_config::CommitmentConfig;
 use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
@@ -645,28 +644,9 @@ impl X402 {
             VerifiedExactPayment::Transaction(tx) => tx,
         };
 
-        // Co-sign the fee-payer slot (the client left it empty for the sponsor).
-        // Solana's fee payer is always account index 0, so require the sponsor
-        // to occupy that slot — finding the key anywhere in the account list
-        // would let a crafted tx put another signer at index 0 and the sponsor
-        // later, signing the wrong slot and leaving the real fee payer unsigned.
         let fee_payer_key = fee_payer.pubkey();
-        if tx.message.static_account_keys().first() != Some(&fee_payer_key) {
-            return Err(Error::Other(
-                "transaction fee payer must match the provided fee payer signer".into(),
-            ));
-        }
-        if tx.signatures.is_empty() {
-            return Err(Error::Other(
-                "fee payer is not a required transaction signer".into(),
-            ));
-        }
-        let signer_index = 0;
-        let signature = fee_payer
-            .sign_message(&tx.message.serialize())
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-        tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
+        crate::core::signing::cosign_versioned_fee_payer(fee_payer, &fee_payer_key, &mut tx)
+            .await?;
 
         // Broadcast + confirm, relying on the node's preflight simulation
         // (skip_preflight stays off) instead of a separate simulate round-trip.

@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use solana_pay_kit::mpp::client::{build_credential_header, parse_challenge};
-use solana_pay_kit::mpp::solana_keychain::SolanaSigner;
+use solana_pay_kit::solana_keychain::SolanaSigner;
 
 #[tokio::main]
 async fn main() {
@@ -70,7 +70,7 @@ async fn main() {
     let mut keypair_bytes = [0u8; 64];
     keypair_bytes[..32].copy_from_slice(signing_key.as_bytes());
     keypair_bytes[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
-    let signer = solana_pay_kit::mpp::solana_keychain::memory::MemorySigner::from_bytes(&keypair_bytes)
+    let signer = solana_pay_kit::solana_keychain::memory::MemorySigner::from_bytes(&keypair_bytes)
         .expect("create signer");
     let pubkey = signer.pubkey();
     let pubkey_str = pubkey.to_string();

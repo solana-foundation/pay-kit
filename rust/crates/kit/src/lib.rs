@@ -10,6 +10,7 @@
 //! - `axum` — unified dual-protocol payment gate (needs both protocols).
 //! - `confidential` — Token-2022 confidential transfers (mpp).
 //! - `gcp_kms` — GCP KMS signer support.
+//! - `ledger` — Ledger hardware-wallet signer support (Solana SDK v3).
 //! - `otel` — OpenTelemetry init.
 //! - `testkit` — settlement test/demo harness.
 //!
@@ -20,6 +21,9 @@
 //! - [`x402`]: the x402 / HTTP 402 implementation (`x402` feature).
 //! - [`generated`]: Codama-generated program clients (payment-channels +
 //!   subscriptions), consumed by `core`/`mpp`.
+
+/// Protocol-neutral access to the signer traits and backends used by pay-kit.
+pub use solana_keychain;
 
 /// Codama-generated program clients (payment-channels + subscriptions).
 #[cfg(any(feature = "mpp", feature = "x402"))]
