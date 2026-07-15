@@ -28,7 +28,6 @@ from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.solana import resolve_mint, stablecoin_decimals
 from solana_pay_kit.fastapi import RequireSession
 from solana_pay_kit.protocols.mpp.server import (
-    MemoryChannelStore,
     SessionChallengeOptions,
     SessionOptions,
     new_session,
@@ -59,9 +58,6 @@ session = new_session(
         rpc=SolanaRpc(_cfg.effective_rpc_url()),
         open_tx_submitter="server",
         close_delay=2.0,
-        store=MemoryChannelStore(),
-        # Playground-only process state; production must inject a durable store.
-        allow_unsafe_ephemeral_store_off_localnet=True,
     )
 )
 
