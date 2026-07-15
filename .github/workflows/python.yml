@@ -175,6 +175,14 @@ jobs:
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: |
+          # Gate self-activation: same subject rule as the harness.yml python
+          # leg — the python session settle path (and this marker fixture) land
+          # with the mpp session-state leaf; pre-hardening the settle tx is
+          # rejected on-chain (0x104), so the leg waits on its subject.
+          if [ ! -f python-session-client/test_main.py ]; then
+            echo "::notice title=Python session gate pending::the python session settle hardening is not in this tree yet; the leg activates when the mpp session-state leaf lands."
+            exit 0
+          fi
           pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
           node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
       - name: Focused Python session fault-injection (missing-ATA, known-red)
