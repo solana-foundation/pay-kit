@@ -1924,8 +1924,7 @@ mod tests {
             None,
             false,
         )
-        .err()
-        .expect("missing decimals should be rejected");
+        .expect_err("missing decimals should be rejected");
         assert!(
             format!("{err}").contains("decimals is required"),
             "got: {err}"
@@ -2494,8 +2493,7 @@ mod tests {
             },
         )
         .await
-        .err()
-        .expect("amount above cap should be rejected");
+        .expect_err("amount above cap should be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("exceeds client max_amount_base_units"),
@@ -2549,8 +2547,7 @@ mod tests {
             },
         )
         .await
-        .err()
-        .expect("network mismatch should be rejected");
+        .expect_err("network mismatch should be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("does not match client expected_network"),
@@ -2585,8 +2582,7 @@ mod tests {
             BuildChargeTransactionOptions::default(),
         )
         .await
-        .err()
-        .expect("confidential charge should fail closed");
+        .expect_err("confidential charge should fail closed");
         assert!(
             format!("{err}").contains("feature"),
             "unexpected error: {err}"
@@ -2646,8 +2642,7 @@ mod tests {
 
         let err = build_credential_header(signer.as_ref(), &rpc, &challenge)
             .await
-            .err()
-            .expect("expired challenge should be rejected");
+            .expect_err("expired challenge should be rejected");
         assert!(
             format!("{err}").contains("expired"),
             "unexpected error: {err}"
@@ -2713,8 +2708,7 @@ mod tests {
 
         let err = build_credential_header(signer.as_ref(), &rpc, &challenge)
             .await
-            .err()
-            .expect("non-solana method should be rejected");
+            .expect_err("non-solana method should be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("not a solana/charge challenge") && msg.contains("method=`stripe`"),
@@ -2749,8 +2743,7 @@ mod tests {
 
         let err = build_credential_header(signer.as_ref(), &rpc, &challenge)
             .await
-            .err()
-            .expect("non-charge intent should be rejected");
+            .expect_err("non-charge intent should be rejected");
         let msg = format!("{err}");
         assert!(
             msg.contains("not a solana/charge challenge") && msg.contains("intent=`session`"),

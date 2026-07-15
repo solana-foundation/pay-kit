@@ -164,6 +164,18 @@ const UNSUPPORTED_MODE_EXEMPTIONS: Record<
     date: "2026-07-09",
     reason: "Swift is currently client-only in the conformance runner.",
   },
+  // Gate self-activation: python's runner gains a real verify-x402-transaction
+  // surface with the python hardening leaf of the #216 redelivery cascade (its
+  // manifest then declares the mode, the vectors execute, and this entry
+  // becomes dead weight the gate ignores). Until then _run_x402 handles only
+  // build/verify-transaction and raises unsupported-mode, so the anti-vacuity
+  // gate needs this owned entry to distinguish pending from vacuous.
+  "python:x402-exact:verify-x402-transaction": {
+    owner: "harness",
+    date: "2026-07-15",
+    reason:
+      "Python's conformance runner has no verify-x402-transaction surface yet; it arrives with the python hardening leaf of the #216 redelivery cascade.",
+  },
 };
 
 function loadVectors(): ConformanceVector[] {

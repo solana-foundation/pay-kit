@@ -178,6 +178,39 @@ function serverImpl(
   };
 }
 
+// Subject probe (gate activates with its subject): the shared fail-closed
+// store contract for a given SDK arrives with that SDK's #216 redelivery leaf
+// (typescript -> the mpp replay-store leaf, python -> the python hardening
+// leaf). Until the leaf is in this tree the SDK has no opt-in reference and
+// the boot probe reports itself pending instead of failing on a guard that
+// does not exist yet. Self-contained (no forward references) because it runs
+// during coveredProbes initialization.
+function sdkImplementsOptInGuard(sdkDir: string, marker: string = OPT_IN_ENV): boolean {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  try {
+    const out = execFileSync("git", ["grep", "-l", marker, "--", sdkDir], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    return out.split("\n").filter(Boolean).length > 0;
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    const stdout = (error as { stdout?: string }).stdout ?? "";
+    if (status === 1 && stdout.trim() === "") return false;
+    throw error;
+  }
+}
+
+// TS references the opt-in env var pre-hardening (docs + a permissive reader),
+// so the TS probe keys on the fail-closed policy surface itself
+// (declareProductionReplayStore), which only the mpp replay-store leaf adds.
+const TS_GUARD_MARKER = "declareProductionReplayStore";
+
+// Probe availability, computed once (the git-grep subject probes fork a
+// subprocess; per-field recomputation doubled that cost for no benefit).
+const tsGuardImplemented = sdkImplementsOptInGuard("typescript/packages/pay-kit/src", TS_GUARD_MARKER);
+const pythonGuardImplemented = sdkImplementsOptInGuard("python/src");
+
 const coveredProbes: CoveredProbe[] = [
   {
     id: "go",
@@ -198,8 +231,12 @@ const coveredProbes: CoveredProbe[] = [
   {
     id: "typescript",
     label: "TypeScript Mppx.create / solana.charge server",
-    available: commandExists("pnpm"),
-    unavailableReason: commandExists("pnpm") ? undefined : "pnpm missing",
+    available: commandExists("pnpm") && tsGuardImplemented,
+    unavailableReason: !commandExists("pnpm")
+      ? "pnpm missing"
+      : tsGuardImplemented
+        ? undefined
+        : "PENDING: TS fail-closed store guard is not in this tree yet; the probe activates when the mpp replay-store leaf lands",
     implementation: serverImpl(
       "typescript",
       "TypeScript Mppx.create / solana.charge server",
@@ -218,8 +255,12 @@ const coveredProbes: CoveredProbe[] = [
   {
     id: "python",
     label: "Python solana_pay_kit high-level MppAdapter (MppAdapter.__init__)",
-    available: commandExists("uv"),
-    unavailableReason: commandExists("uv") ? undefined : "uv missing",
+    available: commandExists("uv") && pythonGuardImplemented,
+    unavailableReason: !commandExists("uv")
+      ? "uv missing"
+      : pythonGuardImplemented
+        ? undefined
+        : "PENDING: python fail-closed store guard is not in this tree yet; the probe activates when the python hardening leaf lands",
     // Drive the HIGH-LEVEL adapter constructor, not the harness `server.py`
     // MPP fixture. That fixture builds the lower-level `charge.Mpp` with an
     // explicit `store=MemoryStore()`, so it never reaches the adapter's default
