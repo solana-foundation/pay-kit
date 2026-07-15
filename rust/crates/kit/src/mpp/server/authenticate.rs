@@ -554,7 +554,11 @@ mod tests {
     const TEST_NETWORK: &str = "mainnet";
 
     fn make_server() -> AuthenticateServer {
-        AuthenticateServer::new(AuthenticateConfig {
+        AuthenticateServer::new(valid_config()).expect("valid config")
+    }
+
+    fn valid_config() -> AuthenticateConfig {
+        AuthenticateConfig {
             domain: "api.example.com".into(),
             uri: "https://api.example.com/v1".into(),
             plan_id: PLAN_ID.into(),
@@ -566,8 +570,7 @@ mod tests {
             realm: "api.example.com".into(),
             statement: Some("Sign in to use your active subscription.".into()),
             store: None,
-        })
-        .expect("valid config")
+        }
     }
 
     fn make_signer() -> SigningKey {
@@ -614,6 +617,29 @@ mod tests {
             challenge.to_echo(),
             serde_json::to_value(&payload).expect("payload serializable"),
         )
+    }
+
+    fn resign_payload(payload: &mut AuthenticatePayload, key: &SigningKey) {
+        payload.signature.clear();
+        let message = crate::mpp::protocol::intents::format_canonical_message(payload);
+        payload.signature = bs58::encode(key.sign(message.as_bytes()).to_bytes()).into_string();
+    }
+
+    fn credential_with_payload(
+        challenge: &PaymentChallenge,
+        payload: &AuthenticatePayload,
+    ) -> PaymentCredential {
+        PaymentCredential::new(
+            challenge.to_echo(),
+            serde_json::to_value(payload).expect("payload serializable"),
+        )
+    }
+
+    fn config_error(config: AuthenticateConfig) -> String {
+        AuthenticateServer::new(config)
+            .err()
+            .expect("invalid config must be rejected")
+            .to_string()
     }
 
     #[test]
@@ -759,5 +785,101 @@ mod tests {
         assert!(parse_rfc3339_seconds("not a date").is_err());
         assert!(parse_rfc3339_seconds("2026-05-29 22:25:22Z").is_err()); // space instead of T
         assert!(parse_rfc3339_seconds("2026-05-29T22:25:22").is_err()); // missing Z
+        assert!(parse_rfc3339_seconds("2026-05-29Taa:25:22Z").is_err());
+    }
+
+    #[test]
+    fn new_rejects_missing_and_invalid_security_config() {
+        let mut config = valid_config();
+        config.domain.clear();
+        assert!(config_error(config).contains("domain"));
+
+        let mut config = valid_config();
+        config.uri.clear();
+        assert!(config_error(config).contains("uri"));
+
+        let mut config = valid_config();
+        config.plan_id.clear();
+        assert!(config_error(config).contains("plan_id"));
+
+        let mut config = valid_config();
+        config.challenge_binding_secret.clear();
+        assert!(config_error(config).contains("challenge_binding_secret"));
+
+        let mut config = valid_config();
+        config.realm.clear();
+        assert!(config_error(config).contains("realm"));
+
+        let mut config = valid_config();
+        config.network.clear();
+        assert!(config_error(config).contains("network"));
+
+        let mut config = valid_config();
+        config.period_hours = 0;
+        assert!(config_error(config).contains("period_hours"));
+
+        let mut config = valid_config();
+        config.period_hours = 8761;
+        assert!(config_error(config).contains("period_hours"));
+
+        let mut config = valid_config();
+        config.plan_id = "not-a-pubkey".into();
+        assert!(config_error(config).contains("plan_id"));
+
+        let mut config = valid_config();
+        config.program_id = Some("not-a-pubkey".into());
+        assert!(config_error(config).contains("program_id"));
+    }
+
+    #[test]
+    fn verify_rejects_not_before_after_clock_skew_window() {
+        let server = make_server();
+        let key = make_signer();
+        let now = PLAN_CREATED_AT + 60;
+        let challenge = server.challenge_at(now).expect("challenge");
+        let mut payload: AuthenticatePayload =
+            serde_json::from_value(sign_payload_for_challenge(&challenge, &key, now).payload)
+                .expect("decode payload");
+        payload.not_before = Some(format_rfc3339_seconds(now + CLOCK_SKEW_TOLERANCE_SECS + 1));
+        resign_payload(&mut payload, &key);
+
+        assert_eq!(
+            server.verify_at(&credential_with_payload(&challenge, &payload), now),
+            Err(VerifyError::OutsideValidityWindow)
+        );
+    }
+
+    #[test]
+    fn verify_rejects_signature_metadata_and_encoding_errors() {
+        let server = make_server();
+        let key = make_signer();
+        let now = PLAN_CREATED_AT + 60;
+        let challenge = server.challenge_at(now).expect("challenge");
+        let credential = sign_payload_for_challenge(&challenge, &key, now);
+        let payload: AuthenticatePayload =
+            serde_json::from_value(credential.payload).expect("decode");
+
+        let mut unsupported_type = payload.clone();
+        unsupported_type.signature_type = "secp256k1".into();
+        resign_payload(&mut unsupported_type, &key);
+        assert!(matches!(
+            server.verify_at(&credential_with_payload(&challenge, &unsupported_type), now),
+            Err(VerifyError::MalformedPayload(reason)) if reason.contains("signature type")
+        ));
+
+        let mut unsupported_scheme = payload.clone();
+        unsupported_scheme.signature_scheme = Some("eip191".into());
+        resign_payload(&mut unsupported_scheme, &key);
+        assert!(matches!(
+            server.verify_at(&credential_with_payload(&challenge, &unsupported_scheme), now),
+            Err(VerifyError::MalformedPayload(reason)) if reason.contains("signature scheme")
+        ));
+
+        let mut malformed_signature = payload;
+        malformed_signature.signature = "not-base58!".into();
+        assert!(matches!(
+            server.verify_at(&credential_with_payload(&challenge, &malformed_signature), now),
+            Err(VerifyError::MalformedPayload(reason)) if reason.contains("signature base58")
+        ));
     }
 }

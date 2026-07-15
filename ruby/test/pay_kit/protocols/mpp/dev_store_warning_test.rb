@@ -45,6 +45,7 @@ class DevStoreWarningTest < Minitest::Test
       end
 
       assert_match(/requires a durable replay_store/i, error.message)
+      assert_match(/shared across workers/i, error.message)
       assert_match(/#{network}/, error.message)
     end
   end
@@ -84,20 +85,99 @@ class DevStoreWarningTest < Minitest::Test
     assert_empty warned, "expected no warning when an explicit store is provided"
   end
 
-  def test_durable_file_store_is_accepted_off_localnet
+  def test_non_localnet_rejects_durable_but_process_local_file_store
     Dir.mktmpdir do |dir|
       file_store = PayKit::Protocols::Mpp::FileStore.new(File.join(dir, "replay.json"))
       refute PayKit::Protocols::Mpp::MemoryStore.new.durable?
       assert file_store.durable?
+      refute file_store.shared?
 
       %w[devnet mainnet].each do |network|
-        server = PayKit::Protocols::Mpp.create(
-          method: method_fixture(network: network),
-          secret_key: ("test-secret-" + ("0" * 32)),
-          replay_store: file_store
-        )
-        assert_kind_of PayKit::Protocols::Mpp::Server::Charge, server
+        error = assert_raises(PayKit::ConfigurationError) do
+          PayKit::Protocols::Mpp.create(
+            method: method_fixture(network: network),
+            secret_key: ("test-secret-" + ("0" * 32)),
+            replay_store: file_store
+          )
+        end
+        assert_match(/shared across workers/i, error.message)
       end
+    end
+  end
+
+  def test_non_localnet_accepts_an_explicit_durable_shared_store
+    store = DurableSharedStore.new
+
+    %w[devnet mainnet].each do |network|
+      server = PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: network),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: store
+      )
+      assert_kind_of PayKit::Protocols::Mpp::Server::Charge, server
+    end
+  end
+
+  def test_non_localnet_rejects_truthy_capability_markers
+    store = DurableSharedStore.new
+    store.define_singleton_method(:shared?) { "false" }
+
+    assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "mainnet"),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: store
+      )
+    end
+  end
+
+  def test_non_localnet_rejects_store_without_atomic_insert
+    assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "mainnet"),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: CapabilityOnlyStore.new
+      )
+    end
+  end
+
+  def test_non_localnet_rejects_atomic_insert_with_incompatible_arity
+    assert_raises(PayKit::ConfigurationError) do
+      PayKit::Protocols::Mpp.create(
+        method: method_fixture(network: "mainnet"),
+        secret_key: ("test-secret-" + ("0" * 32)),
+        replay_store: WrongArityStore.new
+      )
+    end
+  end
+
+  class DurableSharedStore < PayKit::Protocols::Mpp::Store
+    def durable?
+      true
+    end
+
+    def shared?
+      true
+    end
+
+    def put_if_absent(_key, _value)
+      true
+    end
+  end
+
+  class CapabilityOnlyStore < PayKit::Protocols::Mpp::Store
+    def durable?
+      true
+    end
+
+    def shared?
+      true
+    end
+  end
+
+  class WrongArityStore < DurableSharedStore
+    def put_if_absent(_key)
+      true
     end
   end
 end

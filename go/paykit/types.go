@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // Protocol enumerates the payment protocols the kit speaks. Order matters in
@@ -205,6 +206,28 @@ type X402Config struct {
 	// ChannelProgram overrides the payment-channels program id advertised
 	// by x402 upto. Leave empty for the canonical mainnet deployment.
 	ChannelProgram string
+	// ReplayStore backs the x402 exact adapter's consumed-signature guard,
+	// which rejects a second submission of an already-settled (or in-flight)
+	// credential. Non-localnet exact settlement requires an injected store that
+	// implements [ReplayStoreCapability] and reports durable, shared replay
+	// protection. Localnet may use the process-local memory default; devnet can
+	// explicitly acknowledge that insecure scope with
+	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1. Multi-replica deployments MUST
+	// inject a shared store so a signature consumed on one replica is rejected
+	// on every other.
+	ReplayStore core.Store
+}
+
+// ReplayStoreCapability is the durability declaration required of an x402
+// replay store outside localnet. The store must already implement
+// [core.Store], including atomic PutIfAbsent; this capability separately
+// declares that its reservations are durable and visible to every serving
+// replica. A process-local store must not implement this as true.
+//
+// The interface is intentionally opt-in: an arbitrary Store cannot be
+// assumed to survive process restarts or coordinate across replicas.
+type ReplayStoreCapability interface {
+	ProvidesDurableSharedReplayProtection() bool
 }
 
 // MPPConfig groups the MPP-charge-specific knobs.
@@ -220,6 +243,14 @@ type MPPConfig struct {
 	// ExpiresIn is how long an issued challenge stays valid; sent on the
 	// wire in whole seconds. Zero defaults to 2 minutes.
 	ExpiresIn time.Duration
+	// ReplayStore must affirmatively implement core.SharedStore and report
+	// IsShared() == true. Unknown stores fail closed.
+	ReplayStore core.Store
+	// AllowUnsafeMemoryStore explicitly opts into an internally-created
+	// process-local replay store for development/tests when ReplayStore is nil.
+	// It defaults to false; Network alone never opts in and it never authorizes
+	// an injected unshared store.
+	AllowUnsafeMemoryStore bool
 }
 
 // Config is the boot-time configuration passed to [New]. Zero-value

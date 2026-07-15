@@ -1,5 +1,8 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import net from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createSolanaRpc,
@@ -40,6 +43,9 @@ const DEFAULT_SPL_DECIMALS = 6;
 const CLIENT_SOL_FUND_LAMPORTS = 5_000_000_000;
 const DEFAULT_SURFPOOL_DATASOURCE_RPC_URL =
   "https://api.mainnet-beta.solana.com";
+const REPLAY_STORE_RUN_ID = `${process.pid}-${Date.now()}-${Math.random()
+  .toString(16)
+  .slice(2)}`;
 
 function tokenProgramAddress(
   variant: "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM" | undefined,
@@ -525,8 +531,9 @@ beforeAll(async () => {
       needsSolFunding = true;
     }
     // x402-upto opens a payment-channel account. The fee payer sponsors the
-    // transaction fee and channel rent.
-    if (scenario.intent === "x402-upto") {
+    // transaction fee and channel rent. Session top-ups are client-broadcast,
+    // so the funded client needs SOL for that transaction's fee as well.
+    if (scenario.intent === "x402-upto" || scenario.sessionTopUpAmount) {
       needsSolFunding = true;
     }
     if (isSolNative(scenario)) {
@@ -898,6 +905,13 @@ describe("mpp harness", () => {
               });
               expect(typeof result.settlement).toBe("string");
               expect(result.settlement).not.toHaveLength(0);
+              if (scenario.sessionTopUpAmount !== undefined) {
+                await expectSessionTopUp(
+                  scenario,
+                  scenarioEnv,
+                  result.topUp,
+                );
+              }
               if (assertsOnChainSettlement) {
                 await expectSettledTransactionShape(
                   surfnet,
@@ -1262,15 +1276,15 @@ describe("mpp harness", () => {
     // The x402-upto settle path prepends idempotent createPayee + createTreasury
     // ATA instructions (see expectPaymentChannelSettlement); the SDK session
     // close path builds exactly [ed25519, settle, distribute] with NO create-ATA
-    // (see expectSessionChannelSettlement). Against the pinned d1dee6b program a
+    // (see expectSessionChannelSettlement). Against the pinned 0c07d575 program a
     // session close to a payee with no ATA does not revert — it returns 200 with
     // a settledSignature — but the on-chain distribute neither creates the payee
     // ATA nor delivers the payout: the recipient receives 0 and no ATA is
     // created, a silent success-with-no-delivery. The safety invariant asserted
     // here — a settle reported successful (200 + settledSignature) MUST deliver
-    // the +N payout — is therefore violated and this is RED until the session
-    // close path grows the idempotent payee-ATA creation the upto path already
-    // has (or otherwise rejects clearly instead of reporting a phantom success).
+    // the +N payout — is therefore violated until the on-chain settlement path
+    // either delivers or rejects clearly. Session clients must not payer-fund
+    // recipient ATA creation.
     if (process.env.MPP_HARNESS_SESSION_RED_FAULTS === "1")
     socketAwareIt(
       `${sessionFaultScenario.id} fault: settle to a recipient with no ATA must deliver the payout (missing-ATA-creation)`,
@@ -1325,13 +1339,28 @@ describe("mpp harness", () => {
         );
         const detail = JSON.stringify(result, null, 2);
 
-        // Settlement must land: the on-chain distribute creates the payee ATA
-        // and pays out even though it did not exist before the close.
-        expect(result.status, detail).toBe(200);
         const body = result.responseBody as
           | { settledSignature?: unknown; reference?: unknown }
           | undefined;
         const settledSignature = body?.settledSignature;
+        if (result.status !== 200) {
+          expect(result.status, detail).toBeGreaterThanOrEqual(400);
+          for (const receipt of [
+            settledSignature,
+            body?.reference,
+            result.settlement,
+          ]) {
+            expect(
+              receipt ?? "",
+              `missing-ATA-creation: a rejected settle must not surface a receipt. ${detail}`,
+            ).toBe("");
+          }
+          expect(after - before, detail).toBe(0n);
+          return;
+        }
+
+        // A successful settlement must deliver the payout; a confirmed receipt
+        // without delivery is the false-paid condition this fault pins.
         expect(
           typeof settledSignature === "string" && settledSignature.length > 0,
           `missing-ATA-creation: a landed settle must surface a settledSignature. ${detail}`,
@@ -1368,11 +1397,21 @@ function environmentForScenario(
   const env: Record<string, string> = {
     ...baseEnv,
     MPP_HARNESS_AMOUNT: scenario.amount,
+    ...(scenario.sessionTopUpAmount !== undefined
+      ? { MPP_HARNESS_SESSION_TOP_UP_AMOUNT: scenario.sessionTopUpAmount }
+      : {}),
     MPP_HARNESS_MINT: scenario.asset,
     MPP_HARNESS_NETWORK: scenario.network,
     MPP_HARNESS_PAYMENT_MODE: scenario.paymentMode ?? "pull",
     MPP_HARNESS_PRICE: scenario.price,
     MPP_HARNESS_RESOURCE_PATH: scenario.resourcePath,
+    // Non-localnet Ruby harness workers must share one atomically locked replay
+    // file. The run id prevents stale markers from another Vitest invocation;
+    // the scenario id keeps unrelated matrix rows isolated.
+    MPP_HARNESS_REPLAY_STORE_PATH: join(
+      tmpdir(),
+      `pay-kit-harness-mpp-replay-${REPLAY_STORE_RUN_ID}-${scenario.id}.json`,
+    ),
     MPP_HARNESS_DECIMALS: String(scenarioDecimals(scenario)),
     MPP_HARNESS_ASSET_KIND: isSolNative(scenario) ? "sol" : "spl",
     ...(scenario.replaySource
@@ -1383,6 +1422,20 @@ function environmentForScenario(
         }
       : {}),
     MPP_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
+    // Negative network vectors advertise devnet while using Surfnet to build
+    // their transaction. Rust correctly refuses an implicit in-memory store
+    // for that non-localnet configuration, so give the harness an explicit,
+    // per-run file-backed replay-store root. The Rust fixture persists atomic
+    // reservations there and can share it with another process when needed.
+    ...(scenario.network !== "localnet"
+      ? {
+          MPP_HARNESS_REPLAY_STORE_DIR: join(
+            tmpdir(),
+            "pay-kit-harness-replay",
+            randomUUID(),
+          ),
+        }
+      : {}),
     // Python's x402 fixture exercises a single local development process for
     // non-localnet negative vectors. Make that exceptional process-local replay
     // store explicit; production construction still requires a durable store.
@@ -1715,10 +1768,9 @@ function expectPaymentChannelSettlement(
   ).toBe(PAYMENT_CHANNEL_PROGRAM);
 }
 
-// Session settle-at-close includes idempotent ATA creation for the payee and
-// treasury. Otherwise a missing destination ATA can leave a confirmed close
-// with a receipt but no delivered payout. A session always settles a recorded
-// voucher, so the Ed25519 precompile is present and hasVoucher is always 1.
+// Session clients do not payer-fund recipient ATA creation; that option belongs
+// to mpp/charge. A session always settles a recorded voucher, so the Ed25519
+// precompile is present and hasVoucher is always 1.
 function expectSessionChannelSettlement(
   surfnet: Surfnet,
   message: CompiledMessage,
@@ -1728,10 +1780,9 @@ function expectSessionChannelSettlement(
   expect(
     message.instructions,
     "session settle instruction count",
-  ).toHaveLength(5);
+  ).toHaveLength(3);
 
-  const [verify, settle, createPayee, createTreasury, distribute] =
-    message.instructions;
+  const [verify, settle, distribute] = message.instructions;
 
   // Ed25519 precompile verifying the final voucher.
   expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
@@ -1768,19 +1819,6 @@ function expectSessionChannelSettlement(
     tokenProgram,
   );
 
-  expectIdempotentAtaCreationInstruction(message, createPayee, {
-    ata: payeeAta,
-    owner: primaryRecipientForScenario(scenario, scenarioEnv),
-    mint,
-    tokenProgram,
-  });
-  expectIdempotentAtaCreationInstruction(message, createTreasury, {
-    ata: treasuryAta,
-    owner: PAYMENT_CHANNEL_TREASURY_OWNER,
-    mint,
-    tokenProgram,
-  });
-
   // distribute (discriminator 7): 11-account header, channel matches the
   // settled channel, payee/treasury ATAs + mint + token program + self program
   // in their fixed slots.
@@ -1809,6 +1847,42 @@ function expectSessionChannelSettlement(
     accountAt(message, distribute.accountIndices[10]),
     "self program",
   ).toBe(PAYMENT_CHANNEL_PROGRAM);
+}
+
+async function expectSessionTopUp(
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+  topUp: import("../src/contracts").ClientRunResult["topUp"],
+): Promise<void> {
+  const amount = BigInt(scenario.sessionTopUpAmount ?? "0");
+  const newDeposit = BigInt(scenario.amount) + amount;
+  expect(amount, "session top-up amount").toBeGreaterThan(0n);
+  expect(topUp, "session client did not report a top-up").toBeDefined();
+  if (!topUp) return;
+
+  expect(topUp.amount).toBe(amount.toString());
+  expect(topUp.newDeposit).toBe(newDeposit.toString());
+  expect(topUp.server).toEqual({
+    channelId: topUp.channelId,
+    deposit: newDeposit.toString(),
+  });
+
+  const transaction = await fetchTransactionBase64(
+    scenarioEnv.MPP_HARNESS_RPC_URL,
+    topUp.signature,
+  );
+  const message = decodeTransactionMessage(transaction);
+  const instruction = message.instructions.find(
+    (candidate) =>
+      accountAt(message, candidate.programAddressIndex) === PAYMENT_CHANNEL_PROGRAM &&
+      candidate.data[0] === 3 &&
+      candidate.accountIndices.length === 6 &&
+      accountAt(message, candidate.accountIndices[1]) === topUp.channelId,
+  );
+  expect(instruction, "missing payment-channels topUp instruction").toBeDefined();
+  if (instruction) {
+    expect(readU64Le(instruction.data, 1), "topUp instruction amount").toBe(amount);
+  }
 }
 
 async function fetchTransactionBase64(

@@ -1,8 +1,8 @@
 import pytest
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+from tests.replay_store_test_support import NominalProductionReplayStore
 
 
 class _LegacyClientLackingAwaitConfirmation:
@@ -20,7 +20,7 @@ def test_config_rpc_missing_method_rejected_at_init():
         # contract check is what fires, not the secret-length gate.
         secret_key="test-secret-key-that-is-long-enough-for-hmac-sha256",
         rpc=_LegacyClientLackingAwaitConfirmation(),
-        store=MemoryStore(),
+        store=NominalProductionReplayStore(),
     )
     with pytest.raises(PaymentError) as exc:
         Mpp(cfg)

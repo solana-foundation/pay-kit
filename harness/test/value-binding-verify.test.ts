@@ -72,12 +72,7 @@ import {
     setTransactionMessageLifetimeUsingBlockhash,
     type Signature,
 } from '@solana/kit';
-import {
-    buildOpenPaymentChannelTransaction,
-    type SessionRequest,
-    type SessionSplit,
-    USDC,
-} from '@solana/mpp/client';
+import { buildOpenPaymentChannelTransaction, type SessionRequest, type SessionSplit, USDC } from '@solana/mpp/client';
 import { createMemorySessionStore, session, type SessionStore } from '@solana/mpp/server';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -131,6 +126,7 @@ function openRequest(recipient?: string): SessionRequest {
         network: 'localnet',
         operator: payer.address,
         recentBlockhash: RECENT_BLOCKHASH as never,
+        recentSlot: '9042',
         recipient: recipient ?? payee.address,
     };
 }
@@ -138,7 +134,10 @@ function openRequest(recipient?: string): SessionRequest {
 async function buildOpen(opts: {
     readonly deposit?: bigint;
     readonly salt?: bigint;
-    readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[];
+    readonly recipients?: readonly {
+        readonly bps: number;
+        readonly recipient: string;
+    }[];
     /** Override the on-chain payee (account slot 2). Defaults to the merchant
      *  recipient; set to an attacker address to build a divergent-payee open. */
     readonly recipient?: string;
@@ -171,9 +170,7 @@ function makeUnrelatedConfirmRpc(confirmed: readonly string[]) {
     return {
         getSignatureStatuses: (sigs: readonly Signature[]) => ({
             send: async () => ({
-                value: sigs.map((s): MockStatus | null =>
-                    set.has(s as string) ? { confirmationStatus: 'confirmed', err: null } : null,
-                ),
+                value: sigs.map((s): MockStatus | null => (set.has(s as string) ? { confirmationStatus: 'confirmed', err: null } : null)),
             }),
         }),
         sendTransaction: (_wire: string) => ({
@@ -207,13 +204,9 @@ async function buildTopUpTx(channelId: string, amount: bigint): Promise<string> 
     };
     const txMessage = pipe(
         createTransactionMessage({ version: 0 }),
-        msg => setTransactionMessageFeePayerSigner(payer, msg),
-        msg =>
-            setTransactionMessageLifetimeUsingBlockhash(
-                { blockhash: RECENT_BLOCKHASH as Blockhash, lastValidBlockHeight: 0n },
-                msg,
-            ),
-        msg => appendTransactionMessageInstruction(instruction, msg),
+        (msg) => setTransactionMessageFeePayerSigner(payer, msg),
+        (msg) => setTransactionMessageLifetimeUsingBlockhash({ blockhash: RECENT_BLOCKHASH as Blockhash, lastValidBlockHeight: 0n }, msg),
+        (msg) => appendTransactionMessageInstruction(instruction, msg),
     );
     const signed = await partiallySignTransactionMessageWithSigners(txMessage);
     return getBase64EncodedWireTransaction(signed);
@@ -237,9 +230,11 @@ function makeBoundTxRpc(txBySignature: Readonly<Record<string, string>>) {
     return {
         getSignatureStatuses: (sigs: readonly Signature[]) => ({
             send: async () => ({
-                value: sigs.map((s): MockStatus | null =>
-                    confirmed.has(s as string) ? { confirmationStatus: 'confirmed', err: null } : null,
-                ),
+                // The confirmation consumer pins its follow-up account reads to
+                // this context slot (min_context_slot), so a valid slot is part
+                // of the response contract.
+                context: { slot: 9042 },
+                value: sigs.map((s): MockStatus | null => (confirmed.has(s as string) ? { confirmationStatus: 'confirmed', err: null } : null)),
             }),
         }),
         getTransaction: (signature: Signature) => ({
@@ -295,22 +290,29 @@ function openCredential(transaction: string, signature: string) {
                 cap: '5000000',
                 currency: USDC_MAINNET,
                 operator: payer.address,
+                recentSlot: '9042',
                 recipient: payee.address,
             },
         },
-        payload: { action: 'open', authorizedSigner: authorizedSigner.address, mode: 'push', signature, transaction },
+        payload: {
+            action: 'open',
+            authorizedSigner: authorizedSigner.address,
+            mode: 'push',
+            signature,
+            transaction,
+        },
     } as unknown as Parameters<NonNullable<ReturnType<typeof session>['verify']>>[0]['credential'];
 }
 
-async function runOpen(
-    rpc: unknown,
-    transaction: string,
-    signature: string,
-    splits?: readonly SessionSplit[],
-): Promise<'accepted' | 'rejected'> {
+async function runOpen(rpc: unknown, transaction: string, signature: string, splits?: readonly SessionSplit[]): Promise<'accepted' | 'rejected'> {
     const store = createMemorySessionStore();
     const method = openSession(store, rpc, splits);
-    return await outcome(() => method.verify({ credential: openCredential(transaction, signature), request: {} as never }));
+    return await outcome(() =>
+        method.verify({
+            credential: openCredential(transaction, signature),
+            request: {} as never,
+        }),
+    );
 }
 
 describe('value-binding: session OPEN verifier (verifyOpenTx via session)', () => {
@@ -362,7 +364,10 @@ describe('value-binding: session OPEN verifier (verifyOpenTx via session)', () =
     // channel must never open with settlement routed to the attacker payee.
     // Pins the primary value-binding check every SDK's open verifier enforces.
     it('(e) rejects an open whose payee diverges from the configured recipient [expect GREEN]', async () => {
-        const open = await buildOpen({ deposit: 1_000_000n, recipient: attacker.address });
+        const open = await buildOpen({
+            deposit: 1_000_000n,
+            recipient: attacker.address,
+        });
         const sig = txSignature(open.transaction);
         const rpc = makeUnrelatedConfirmRpc([sig]);
         // Session expects payee.address; the open's payee is the attacker.
@@ -417,20 +422,27 @@ function topUpCredential(channelId: string, newDeposit: string, signature: strin
     } as unknown as Parameters<NonNullable<ReturnType<typeof session>['verify']>>[0]['credential'];
 }
 
-async function runTopUp(
-    store: SessionStore,
-    rpc: unknown,
-    channelId: string,
-    newDeposit: string,
-    signature: string,
-): Promise<'accepted' | 'rejected'> {
+async function runTopUp(store: SessionStore, rpc: unknown, channelId: string, newDeposit: string, signature: string): Promise<'accepted' | 'rejected'> {
     const method = topUpSession(store, rpc);
     return await outcome(() =>
-        method.verify({ credential: topUpCredential(channelId, newDeposit, signature), request: {} as never }),
+        method.verify({
+            credential: topUpCredential(channelId, newDeposit, signature),
+            request: {} as never,
+        }),
     );
 }
 
 describe('value-binding: session TOP-UP verifier (handleTopUp)', () => {
+    it('(control) accepts a confirmed top-up whose on-chain delta exactly matches the claim', async () => {
+        const store = createMemorySessionStore();
+        await seedChannel(store, SEED_CHANNEL, 1_000_000n);
+        const exactTopUp = await buildTopUpTx(SEED_CHANNEL, 500_000n);
+        const rpc = makeBoundTxRpc({ EXACT_TOPUP_DELTA: exactTopUp });
+
+        expect(await runTopUp(store, rpc, SEED_CHANNEL, '1500000', 'EXACT_TOPUP_DELTA')).toBe('accepted');
+        expect((await store.getChannel(SEED_CHANNEL))?.deposit).toBe(1_500_000n);
+    });
+
     // (a) a confirmed but UNRELATED signature paired with an inflated newDeposit
     // (<= cap). The signature confirms AND fetches back to a real transaction —
     // but that transaction carries NO payment-channels top_up instruction (here,
@@ -442,7 +454,9 @@ describe('value-binding: session TOP-UP verifier (handleTopUp)', () => {
         await seedChannel(store, SEED_CHANNEL, 1_000_000n);
         // A genuine, landed transaction that is not a top_up of this channel.
         const unrelated = await buildOpen({ deposit: 500_000n, salt: 9n });
-        const rpc = makeBoundTxRpc({ UNRELATED_CONFIRMED_SIG: unrelated.transaction });
+        const rpc = makeBoundTxRpc({
+            UNRELATED_CONFIRMED_SIG: unrelated.transaction,
+        });
 
         expect(await runTopUp(store, rpc, SEED_CHANNEL, '5000000', 'UNRELATED_CONFIRMED_SIG')).toBe('rejected');
         // Effect assertion: the deposit must NOT have been raised.
@@ -496,20 +510,11 @@ const vbDir = join(vbHere, '..', 'vectors', 'value-binding');
 const VALUE_BINDING_ROSTER: Record<string, { verifier: string; ids: string[] }> = {
     'open.json': {
         verifier: 'session-open',
-        ids: [
-            'open-a-unrelated-confirmed-signature-binding-control',
-            'open-b-placeholder-signature-with-rpc-c1',
-            'open-d-distribution-diverges-from-splits',
-            'open-e-payee-diverges-from-recipient',
-        ],
+        ids: ['open-a-unrelated-confirmed-signature-binding-control', 'open-b-placeholder-signature-with-rpc-c1', 'open-d-distribution-diverges-from-splits', 'open-e-payee-diverges-from-recipient'],
     },
     'topup.json': {
         verifier: 'session-topup',
-        ids: [
-            'topup-a-unrelated-confirmed-inflated-deposit',
-            'topup-b-placeholder-signature-with-rpc',
-            'topup-c-onchain-delta-mismatch',
-        ],
+        ids: ['topup-a-unrelated-confirmed-inflated-deposit', 'topup-b-placeholder-signature-with-rpc', 'topup-c-onchain-delta-mismatch'],
     },
 };
 

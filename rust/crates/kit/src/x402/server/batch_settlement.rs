@@ -486,6 +486,8 @@ impl X402BatchSettlement {
                     close_requested_at: None,
                     // Persisted for PDA re-derivation and the reclaim gate.
                     open_slot: Some(open_slot),
+                    salt: Some(channel.salt),
+                    open_signature: None,
                     // Stash the payer here so settlement/distribute can refund it
                     // without an extra account fetch.
                     operator: Some(pc::pubkey_string(&payer)),
@@ -928,7 +930,8 @@ impl X402BatchSettlement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::x402::client::batch_settlement::sign_voucher;
+    use crate::x402::client::batch_settlement::{build_deposit, sign_voucher};
+    use crate::x402::server::mock_rpc::{MockRpc, TransactionExpectation};
     use ed25519_dalek::SigningKey;
     use solana_keychain::memory::MemorySigner;
 
@@ -948,6 +951,16 @@ mod tests {
         X402BatchSettlement::with_store(config, store).unwrap()
     }
 
+    fn handler_with_rpc(store: Arc<MemoryChannelStore>, rpc_url: String) -> X402BatchSettlement {
+        let mut config = BatchConfig::new(
+            "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "devnet",
+            Arc::new(memory_signer(1)),
+        );
+        config.rpc_url = Some(rpc_url);
+        X402BatchSettlement::with_store(config, store).unwrap()
+    }
+
     fn seeded_state(channel_id: &str, authorized_signer: &str, cumulative: u64) -> ChannelState {
         ChannelState {
             channel_id: channel_id.to_string(),
@@ -959,10 +972,31 @@ mod tests {
             highest_voucher_expires_at: None,
             close_requested_at: None,
             open_slot: None,
+            salt: None,
+            open_signature: None,
             operator: None,
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+        }
+    }
+
+    fn deposit_config(
+        settlement: &X402BatchSettlement,
+        payer: &Pubkey,
+        authorized_signer: &Pubkey,
+    ) -> crate::x402::protocol::schemes::batch_settlement::BatchChannelConfig {
+        let requirements = settlement.requirements("0.0001").unwrap();
+        crate::x402::protocol::schemes::batch_settlement::BatchChannelConfig {
+            payer: pc::pubkey_string(payer),
+            payee: requirements.pay_to,
+            mint: requirements.asset,
+            authorized_signer: pc::pubkey_string(authorized_signer),
+            salt: "1".to_string(),
+            recent_slot: "314".to_string(),
+            deposit_amount: "100".to_string(),
+            grace_period_seconds: 900,
+            distribution_splits: vec![],
         }
     }
 
@@ -1113,5 +1147,722 @@ mod tests {
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
         assert!(state.close_requested_at.is_none());
         assert!(!state.sealed);
+    }
+
+    #[test]
+    fn configuration_and_requirements_fail_closed_before_rpc() {
+        let signer = Arc::new(memory_signer(13));
+        assert!(X402BatchSettlement::new(BatchConfig::new("", "devnet", signer.clone())).is_err());
+
+        let mut config = BatchConfig::new(
+            "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "devnet",
+            signer,
+        );
+        config.resource = "https://merchant.example/usage".to_string();
+        config.description = Some("metered usage".to_string());
+        config.min_voucher_delta = 25;
+        config.splits = vec![(
+            "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+            1_000,
+        )];
+        let settlement = X402BatchSettlement::new(config).unwrap();
+
+        let requirements = settlement.requirements("1.25").unwrap();
+        assert_eq!(requirements.amount, "1250000");
+        assert_eq!(requirements.extra.min_voucher_delta.as_deref(), Some("25"));
+        assert_eq!(requirements.extra.distribution_splits.len(), 1);
+        assert!(settlement.requirements("not-a-price").is_err());
+    }
+
+    #[test]
+    fn parse_payment_and_settlement_header_round_trip_without_rpc() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler(store);
+        let payload = BatchPayload::Refund {
+            channel_id: "channel".to_string(),
+            voucher: None,
+        };
+        let envelope = crate::x402::protocol::schemes::batch_settlement::BatchSignatureEnvelope {
+            x402_version: X402_VERSION_V2,
+            scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
+            network: Some("solana:devnet".to_string()),
+            accepted: None,
+            payload: payload.clone(),
+        };
+        let header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        );
+        assert!(matches!(
+            settlement.parse_payment(&header).unwrap(),
+            BatchPayload::Refund { .. }
+        ));
+        assert!(settlement.parse_payment("not-base64").is_err());
+
+        let mut wrong_scheme = envelope;
+        wrong_scheme.scheme = "exact".to_string();
+        let wrong_header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&wrong_scheme).unwrap(),
+        );
+        assert!(matches!(
+            settlement.parse_payment(&wrong_header),
+            Err(Error::InvalidPayloadType(scheme)) if scheme == "exact"
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_payment_public_path_accepts_a_fresh_voucher() {
+        let owner = memory_signer(14);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let store = Arc::new(MemoryChannelStore::new());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+        let settlement = handler(store.clone());
+        let requirements = settlement.requirements("0.0001").unwrap();
+        let voucher = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+        let header = crate::x402::client::batch_settlement::encode_batch_header(
+            &requirements,
+            BatchPayload::Voucher {
+                channel_id: channel_b58.clone(),
+                voucher,
+            },
+        )
+        .unwrap();
+
+        let outcome = settlement.verify_payment(&header, "0.0001").await.unwrap();
+        assert!(outcome.serve);
+        assert_eq!(outcome.response.charged_amount.as_deref(), Some("100"));
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            100
+        );
+
+        let (name, response_header) = settlement.settlement_header(&outcome.response).unwrap();
+        assert_eq!(name, PAYMENT_RESPONSE_HEADER);
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, response_header)
+                .unwrap();
+        let response: BatchSettlementResponse = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(response.charged_amount.as_deref(), Some("100"));
+    }
+
+    #[tokio::test]
+    async fn settlement_paths_skip_unsettleable_state_without_rpc() {
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut expired =
+            seeded_state(&channel_b58, &pc::pubkey_string(&Pubkey::new_unique()), 100);
+        expired.highest_voucher_signature = Some(bs58::encode([4u8; 64]).into_string());
+        expired.highest_voucher_expires_at = Some(1);
+        store.put_channel(&channel_b58, expired).await.unwrap();
+        let settlement = handler(store);
+
+        assert!(settlement
+            .settle_batch(&["missing".to_string(), channel_b58.clone()])
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(settlement.distribute("missing").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deposit_preflight_rejects_invalid_input_before_broadcast() {
+        let payer = memory_signer(15);
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler(store);
+        let config = deposit_config(&settlement, &payer.pubkey(), &payer.pubkey());
+
+        let malformed_voucher = BatchVoucher {
+            channel_id: Pubkey::new_unique().to_string(),
+            cumulative_amount: "not-a-number".to_string(),
+            expires_at: FAR_FUTURE,
+            signer: payer.pubkey().to_string(),
+            signature: "not-a-signature".to_string(),
+        };
+        assert!(settlement
+            .process_deposit(
+                config.clone(),
+                "not-a-transaction".to_string(),
+                Some(malformed_voucher),
+                100
+            )
+            .await
+            .is_err());
+
+        let underpriced = BatchVoucher {
+            channel_id: Pubkey::new_unique().to_string(),
+            cumulative_amount: "99".to_string(),
+            expires_at: FAR_FUTURE,
+            signer: payer.pubkey().to_string(),
+            signature: "not-a-signature".to_string(),
+        };
+        assert!(settlement
+            .process_deposit(
+                config.clone(),
+                "not-a-transaction".to_string(),
+                Some(underpriced),
+                100
+            )
+            .await
+            .is_err());
+
+        let mut invalid_payer = config.clone();
+        invalid_payer.payer = "not-a-pubkey".to_string();
+        assert!(settlement
+            .process_deposit(invalid_payer, "not-a-transaction".to_string(), None, 100)
+            .await
+            .is_err());
+
+        let mut invalid_signer = config.clone();
+        invalid_signer.authorized_signer = "not-a-pubkey".to_string();
+        assert!(settlement
+            .process_deposit(invalid_signer, "not-a-transaction".to_string(), None, 100)
+            .await
+            .is_err());
+
+        let mut invalid_salt = config.clone();
+        invalid_salt.salt = "not-a-salt".to_string();
+        assert!(settlement
+            .process_deposit(invalid_salt, "not-a-transaction".to_string(), None, 100)
+            .await
+            .is_err());
+
+        let mut invalid_slot = config.clone();
+        invalid_slot.recent_slot = "not-a-slot".to_string();
+        assert!(settlement
+            .process_deposit(invalid_slot, "not-a-transaction".to_string(), None, 100)
+            .await
+            .is_err());
+
+        assert!(settlement
+            .process_deposit(config, "not-a-transaction".to_string(), None, 100)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn authorized_refund_freezes_before_invalid_onchain_state_is_used() {
+        let owner = memory_signer(16);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0);
+        state.channel_id = "not-a-pubkey".to_string();
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let settlement = handler(store.clone());
+        let voucher = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+
+        assert!(settlement
+            .process_refund(&channel_b58, Some(voucher))
+            .await
+            .is_err());
+        let frozen = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(frozen.cumulative, 100);
+        assert!(frozen.close_requested_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn settlement_preflight_rejects_bad_persisted_values_before_rpc() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler(store.clone());
+        let authorized_signer = pc::pubkey_string(&Pubkey::new_unique());
+
+        let mut invalid_channel = seeded_state("not-a-pubkey", &authorized_signer, 100);
+        invalid_channel.highest_voucher_signature = Some(bs58::encode([4u8; 64]).into_string());
+        invalid_channel.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store
+            .put_channel("invalid-channel", invalid_channel)
+            .await
+            .unwrap();
+        assert!(settlement
+            .settle_batch(&["invalid-channel".to_string()])
+            .await
+            .is_err());
+
+        let valid_channel = pc::pubkey_string(&Pubkey::new_unique());
+        let mut invalid_signer = seeded_state(&valid_channel, "not-a-pubkey", 100);
+        invalid_signer.highest_voucher_signature = Some(bs58::encode([4u8; 64]).into_string());
+        invalid_signer.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store
+            .put_channel("invalid-signer", invalid_signer)
+            .await
+            .unwrap();
+        assert!(settlement
+            .settle_batch(&["invalid-signer".to_string()])
+            .await
+            .is_err());
+
+        let mut invalid_signature = seeded_state(&valid_channel, &authorized_signer, 100);
+        invalid_signature.highest_voucher_signature = Some("not-base58".to_string());
+        invalid_signature.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store
+            .put_channel("invalid-signature", invalid_signature)
+            .await
+            .unwrap();
+        assert!(settlement
+            .settle_batch(&["invalid-signature".to_string()])
+            .await
+            .is_err());
+
+        let mut short_signature = seeded_state(&valid_channel, &authorized_signer, 100);
+        short_signature.highest_voucher_signature = Some(bs58::encode([4u8; 63]).into_string());
+        short_signature.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store
+            .put_channel("short-signature", short_signature)
+            .await
+            .unwrap();
+        assert!(settlement
+            .settle_batch(&["short-signature".to_string()])
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn close_and_distribution_preflight_reject_invalid_store_state() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler(store.clone());
+        let channel = pc::pubkey_string(&Pubkey::new_unique());
+        let authorized_signer = pc::pubkey_string(&Pubkey::new_unique());
+
+        let no_payer = seeded_state(&channel, &authorized_signer, 0);
+        store.put_channel("no-payer", no_payer).await.unwrap();
+        assert!(settlement.distribute("no-payer").await.is_err());
+
+        let mut invalid_payer = seeded_state(&channel, &authorized_signer, 0);
+        invalid_payer.operator = Some("not-a-pubkey".to_string());
+        store
+            .put_channel("invalid-payer", invalid_payer)
+            .await
+            .unwrap();
+        assert!(settlement.distribute("invalid-payer").await.is_err());
+
+        let mut invalid_channel = seeded_state("not-a-pubkey", &authorized_signer, 0);
+        invalid_channel.operator = Some(pc::pubkey_string(&Pubkey::new_unique()));
+        store
+            .put_channel("invalid-channel", invalid_channel)
+            .await
+            .unwrap();
+        assert!(settlement.distribute("invalid-channel").await.is_err());
+
+        let invalid_close = seeded_state("not-a-pubkey", &authorized_signer, 0);
+        store
+            .put_channel("invalid-close", invalid_close)
+            .await
+            .unwrap();
+        assert!(settlement.settle_and_seal("invalid-close").await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deposit_validates_the_open_before_a_fixture_rpc_failure() {
+        let mock = MockRpc::start().await;
+        mock.fail_send("fixture rejects broadcast");
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store, mock.url());
+        let payer = memory_signer(17);
+        let mut requirements = settlement.requirements("0.0001").unwrap();
+        requirements.extra.recent_blockhash = Some(solana_hash::Hash::default().to_string());
+        requirements.extra.recent_slot = Some("314".to_string());
+        let (_, payload) = build_deposit(&payer, &requirements, 100, 0, FAR_FUTURE)
+            .await
+            .unwrap();
+        let BatchPayload::Deposit {
+            channel_config,
+            transaction,
+            voucher,
+        } = payload
+        else {
+            panic!("expected deposit payload");
+        };
+
+        assert!(settlement
+            .process_deposit(channel_config, transaction, voucher, 100)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_rpc_failures_cover_settlement_instruction_construction() {
+        let mock = MockRpc::start().await;
+        mock.fail_blockhash("fixture blockhash failure");
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let authorized_signer = pc::pubkey_string(&Pubkey::new_unique());
+        let payer = pc::pubkey_string(&Pubkey::new_unique());
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut state = seeded_state(&channel_b58, &authorized_signer, 100);
+        state.highest_voucher_signature = Some(bs58::encode([4u8; 64]).into_string());
+        state.highest_voucher_expires_at = Some(FAR_FUTURE);
+        state.operator = Some(payer);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let settlement = handler_with_rpc(store, mock.url());
+
+        assert!(settlement
+            .settle_batch(std::slice::from_ref(&channel_b58))
+            .await
+            .is_err());
+        assert!(settlement.distribute(&channel_b58).await.is_err());
+        assert!(settlement.settle_and_seal(&channel_b58).await.is_err());
+        assert!(settlement.fetch_channel(&Pubkey::new_unique()).is_err());
+    }
+
+    // The settle broadcast path: a valid, unexpired voucher is redeemed
+    // on-chain and the reconstructed settle transaction is accepted by the
+    // fixture RPC. The expectation is rebuilt from the same instruction
+    // builder the server uses, so any drift in the settle schema fails here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settle_batch_broadcasts_the_reconstructed_settle_transaction() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let signer = Pubkey::new_unique();
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&signer), 100);
+        let sig_bytes = [4u8; 64];
+        state.highest_voucher_signature = Some(bs58::encode(sig_bytes).into_string());
+        state.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let settlement = handler_with_rpc(store, rpc.url());
+
+        let expected = pc::build_settle_instructions(
+            &channel,
+            &signer,
+            &sig_bytes,
+            100,
+            FAR_FUTURE,
+            &settlement.program_id().unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, expected));
+
+        let signatures = settlement
+            .settle_batch(std::slice::from_ref(&channel_b58))
+            .await
+            .unwrap();
+        assert_eq!(signatures.len(), 1);
+        rpc.assert_transaction_consumed();
+    }
+
+    // The distribute sweep path: the pool is swept via the program's
+    // `distribute` instruction. Pinning the channel operator to the fee payer
+    // keeps the transaction single-signer so the fixture can verify it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn distribute_broadcasts_the_reconstructed_distribute_transaction() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&Pubkey::new_unique()), 0);
+        state.operator = Some(settlement.operator());
+        store.put_channel(&channel_b58, state).await.unwrap();
+
+        let ix = pc::build_distribute_instruction(
+            &channel,
+            &settlement.operator,
+            &settlement.operator,
+            &Pubkey::from_str(&settlement.config.recipient).unwrap(),
+            &pc::treasury_owner(),
+            &settlement.mint().unwrap(),
+            &settlement.distributions().unwrap(),
+            &settlement.token_program().unwrap(),
+            &settlement.program_id().unwrap(),
+        );
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, vec![ix]));
+
+        let signature = settlement.distribute(&channel_b58).await.unwrap();
+        assert!(signature.is_some());
+        rpc.assert_transaction_consumed();
+    }
+
+    // The seal path: settle the latest voucher and close the channel in one
+    // transaction. The payee is the operator, so the reconstructed
+    // settle-and-seal transaction stays single-signer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn settle_and_seal_broadcasts_the_reconstructed_seal_transaction() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let signer = Pubkey::new_unique();
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut state = seeded_state(&channel_b58, &pc::pubkey_string(&signer), 100);
+        let sig_bytes = [4u8; 64];
+        state.highest_voucher_signature = Some(bs58::encode(sig_bytes).into_string());
+        state.highest_voucher_expires_at = Some(FAR_FUTURE);
+        store.put_channel(&channel_b58, state).await.unwrap();
+        let settlement = handler_with_rpc(store, rpc.url());
+
+        let expected = pc::build_settle_and_seal_instructions(
+            &settlement.operator,
+            &channel,
+            &signer,
+            Some(&sig_bytes),
+            100,
+            FAR_FUTURE,
+            &settlement.program_id().unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, expected));
+
+        let signature = settlement.settle_and_seal(&channel_b58).await.unwrap();
+        assert!(!signature.is_empty());
+        rpc.assert_transaction_consumed();
+    }
+
+    // The deposit success path: the operator co-signs and broadcasts the
+    // client's open transaction, binds the confirmed on-chain `Channel` to the
+    // advertised terms, persists it, and accepts the first voucher off-chain.
+    // The confirmed channel account is served straight from the fixture, so no
+    // surfpool is needed to exercise the post-broadcast binding checks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deposit_broadcasts_the_open_and_binds_the_confirmed_channel() {
+        let rpc = MockRpc::start().await;
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+
+        let payer = memory_signer(20);
+        let mut requirements = settlement.requirements("0.0001").unwrap();
+        requirements.extra.recent_blockhash = Some(solana_hash::Hash::default().to_string());
+        requirements.extra.recent_slot = Some("314".to_string());
+        let (channel_id, payload) =
+            build_deposit(&payer, &requirements, 1_000_000, 100, FAR_FUTURE)
+                .await
+                .unwrap();
+        let BatchPayload::Deposit {
+            channel_config,
+            transaction,
+            voucher,
+        } = payload
+        else {
+            panic!("expected deposit payload");
+        };
+
+        // The operator only fills its signature slot, so the broadcast message
+        // is byte-identical to the one the client built.
+        let built: Transaction = bincode::deserialize(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &transaction)
+                .unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::matching(built.message.clone()));
+
+        // Post-broadcast the server fetches the channel account; hand it a
+        // `Channel` whose bound terms exactly match what was advertised.
+        let channel_b58 = pc::pubkey_string(&channel_id);
+        let expected_mint = Pubkey::from_str(&requirements.asset).unwrap();
+        let expected_payee = Pubkey::from_str(&requirements.pay_to).unwrap();
+        let channel = Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 255,
+            status: CHANNEL_STATUS_OPEN,
+            salt: channel_config.salt.parse().unwrap(),
+            deposit: 1_000_000,
+            settlement: crate::core::payment_channels::generated::types::SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash: pc::distribution_hash(&[]),
+            payer: pc::to_address(&payer.pubkey()),
+            payee: pc::to_address(&expected_payee),
+            authorized_signer: pc::to_address(&payer.pubkey()),
+            mint: pc::to_address(&expected_mint),
+            rent_payer: pc::to_address(&settlement.operator),
+            open_slot: 314,
+        };
+        rpc.set_account(
+            channel_b58.clone(),
+            borsh::to_vec(&channel).unwrap(),
+            pc::pubkey_string(&pc::default_program_id()),
+        );
+
+        let outcome = settlement
+            .process_deposit(channel_config, transaction, voucher, 100)
+            .await
+            .unwrap();
+        assert!(outcome.serve);
+        assert_eq!(outcome.response.amount, "1000000");
+        assert_eq!(outcome.response.charged_amount.as_deref(), Some("100"));
+        rpc.assert_transaction_consumed();
+
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(state.deposit, 1_000_000);
+        assert_eq!(state.cumulative, 100, "first voucher must be accepted");
+    }
+
+    // A confirmed on-chain channel whose bound terms diverge from the
+    // advertised deposit floor must be rejected after broadcast — the deposit
+    // must cover at least one request's price.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deposit_rejects_a_channel_funded_below_one_request() {
+        let rpc = MockRpc::start().await;
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+
+        let payer = memory_signer(22);
+        let mut requirements = settlement.requirements("0.0001").unwrap();
+        requirements.extra.recent_blockhash = Some(solana_hash::Hash::default().to_string());
+        requirements.extra.recent_slot = Some("314".to_string());
+        let (channel_id, payload) = build_deposit(&payer, &requirements, 1_000_000, 0, FAR_FUTURE)
+            .await
+            .unwrap();
+        let BatchPayload::Deposit {
+            channel_config,
+            transaction,
+            voucher,
+        } = payload
+        else {
+            panic!("expected deposit payload");
+        };
+
+        let built: Transaction = bincode::deserialize(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &transaction)
+                .unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::matching(built.message.clone()));
+
+        let channel_b58 = pc::pubkey_string(&channel_id);
+        let expected_mint = Pubkey::from_str(&requirements.asset).unwrap();
+        let expected_payee = Pubkey::from_str(&requirements.pay_to).unwrap();
+        let underfunded = Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 255,
+            status: CHANNEL_STATUS_OPEN,
+            salt: channel_config.salt.parse().unwrap(),
+            // Below the 100-unit price for one request.
+            deposit: 10,
+            settlement: crate::core::payment_channels::generated::types::SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: 900,
+            distribution_hash: pc::distribution_hash(&[]),
+            payer: pc::to_address(&payer.pubkey()),
+            payee: pc::to_address(&expected_payee),
+            authorized_signer: pc::to_address(&payer.pubkey()),
+            mint: pc::to_address(&expected_mint),
+            rent_payer: pc::to_address(&settlement.operator),
+            open_slot: 314,
+        };
+        rpc.set_account(
+            channel_b58.clone(),
+            borsh::to_vec(&underfunded).unwrap(),
+            pc::pubkey_string(&pc::default_program_id()),
+        );
+
+        let err = settlement
+            .process_deposit(channel_config, transaction, voucher, 100)
+            .await
+            .expect_err("under-funded channel must be rejected after broadcast");
+        assert!(err.to_string().contains("below one request's price"));
+        // The channel was never persisted.
+        assert!(store.get_channel(&channel_b58).await.unwrap().is_none());
+    }
+
+    // The 402 challenge fetches a recent blockhash + slot in one call and
+    // embeds them as the client's `recentBlockhash`/`openSlot` hints.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn challenge_and_header_embed_a_fetched_blockhash_and_slot() {
+        let rpc = MockRpc::start().await;
+        let store = Arc::new(MemoryChannelStore::new());
+        let mut config = BatchConfig::new(
+            "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "devnet",
+            Arc::new(memory_signer(1)),
+        );
+        config.rpc_url = Some(rpc.url());
+        config.resource = "https://merchant.example/usage".to_string();
+        config.description = Some("metered usage".to_string());
+        let settlement = X402BatchSettlement::with_store(config, store).unwrap();
+
+        let envelope = settlement.challenge("0.0001").unwrap();
+        let requirement = &envelope.accepts[0];
+        assert_eq!(
+            requirement.extra.recent_blockhash.as_deref(),
+            Some("11111111111111111111111111111111")
+        );
+        assert_eq!(requirement.extra.recent_slot.as_deref(), Some("314"));
+        assert!(envelope.resource.is_some());
+
+        let (name, value) = settlement.payment_required_header("0.0001").unwrap();
+        assert_eq!(name, PAYMENT_REQUIRED_HEADER);
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value.as_bytes())
+                .unwrap();
+        assert!(!decoded.is_empty());
+    }
+
+    // A cooperative refund on a never-charged channel proves ownership,
+    // broadcasts a voucher-less settle-and-seal, and skips the distribute
+    // sweep (nothing was ever settled).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refund_with_zero_watermark_seals_without_sweeping() {
+        let rpc = MockRpc::start().await;
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        let owner = memory_signer(21);
+        let store = Arc::new(MemoryChannelStore::new());
+        let settlement = handler_with_rpc(store.clone(), rpc.url());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+
+        // cumulative 0 → the seal carries no voucher and the sweep is skipped.
+        let seal = pc::build_settle_and_seal_instructions(
+            &settlement.operator,
+            &channel,
+            &owner.pubkey(),
+            None,
+            0,
+            0,
+            &settlement.program_id().unwrap(),
+        )
+        .unwrap();
+        rpc.expect_transaction(TransactionExpectation::new(settlement.operator, seal));
+
+        let voucher = sign_voucher(&owner, &channel, 0, FAR_FUTURE).await.unwrap();
+        let outcome = settlement
+            .process_refund(&channel_b58, Some(voucher))
+            .await
+            .unwrap();
+        assert!(!outcome.serve, "a refund never serves the route");
+        assert_eq!(outcome.response.channel_state.unwrap().paid_out, "0");
+        rpc.assert_transaction_consumed();
+        assert!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .sealed
+        );
     }
 }

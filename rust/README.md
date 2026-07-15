@@ -96,8 +96,13 @@ unchanged; only `PayKitConfig` grows.
 
 ```rust
 use solana_pay_kit::{PayKit, PayKitConfig};
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::mpp::{solana_keychain::memory::MemorySigner, Store};
 use std::sync::Arc;
+
+// Supply your database-backed Store implementation. It must report the
+// DurableShared replay capability so reservations coordinate across instances
+// and survive restarts.
+let replay_store: Arc<dyn Store> = durable_shared_replay_store;
 
 let pay = PayKit::new(PayKitConfig {
     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
@@ -107,6 +112,7 @@ let pay = PayKit::new(PayKitConfig {
     // Sponsor the customer's network fee: drives MPP fee-sponsored mode and
     // supplies x402's fee-payer address from the same key.
     fee_payer_signer: Some(Arc::new(MemorySigner::from_bytes(&operator_key)?)),
+    replay_store: Some(replay_store),
     ..Default::default()
 })?;
 ```
@@ -118,6 +124,8 @@ Safety rails fire at boot:
   reads `MPP_SECRET_KEY`.
 - An unknown `network` slug is rejected; the canonical slugs are `mainnet`,
   `devnet`, and `localnet`.
+- Mainnet and devnet require a replay store that explicitly reports the
+  durable, shared capability; the process-local memory store is localnet-only.
 
 ---
 

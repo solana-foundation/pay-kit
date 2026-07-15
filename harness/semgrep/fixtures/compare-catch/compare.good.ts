@@ -16,3 +16,11 @@ function checkMac(payload: string, secretKey: string, providedMac: string): bool
 function isReplayOfVoucher(highestVoucherSignature: string, incoming: string): boolean {
     return highestVoucherSignature === incoming;
 }
+
+// A typeof guard on secret config material is a type check, not a byte
+// comparison — it must never be flagged as a non-constant-time compare.
+function validateChallengeBindingSecret(secret: unknown): asserts secret is string {
+    if (typeof secret !== 'string' || secret.length === 0) {
+        throw new Error('challengeBindingSecret must be a non-empty string.');
+    }
+}

@@ -13,6 +13,8 @@ use PayKit\Middleware\RequirePayment;
 use PayKit\PayCore\HttpFactory;
 use PayKit\Payment;
 use PayKit\Pricing;
+use PayKit\Protocols\Mpp\Adapter as MppAdapter;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
 use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
@@ -41,6 +43,7 @@ final class RequirePaymentMiddleware
         private readonly Container $container,
         private readonly PsrHttpFactory $psrFactory,
         private readonly HttpFoundationFactory $httpFactory,
+        private readonly ?X402Adapter $x402 = null,
     ) {
     }
 
@@ -81,7 +84,13 @@ final class RequirePaymentMiddleware
             }
         };
 
-        $mw = new RequirePayment($this->client, $gateRef, $pricing);
+        $mw = new RequirePayment(
+            client: $this->client,
+            gateRef: $gateRef,
+            pricing: $pricing,
+            mppFactory: fn (): MppAdapter => $this->container->make(MppAdapter::class),
+            x402: $this->x402,
+        );
         $psrResponse = $mw->process($psrRequest, $handler);
 
         if ($psrResponse->getStatusCode() === 402) {

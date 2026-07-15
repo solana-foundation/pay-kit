@@ -15,7 +15,7 @@ from solders.transaction import Transaction
 
 from solana_pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
-from solana_pay_kit._paycore.store import MemoryStore
+from solana_pay_kit._paycore.store import ProductionReplayStore
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server.charge import (
@@ -26,6 +26,7 @@ from solana_pay_kit.protocols.mpp.server.charge import (
     _verify_parsed_sol_transfers,
     _verify_parsed_spl_transfers,
 )
+from tests.replay_store_test_support import NominalProductionReplayStore
 
 TEST_SECRET = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 TEST_RECIPIENT = "11111111111111111111111111111112"
@@ -195,7 +196,7 @@ def mpp() -> Mpp:
         network="devnet",
         secret_key=TEST_SECRET,
         rpc=rpc,
-        store=MemoryStore(),
+        store=NominalProductionReplayStore(),
         # Audit #5: this shared fixture exercises push-mode (signature) paths,
         # which are opt-in. Enable it here so those tests reach the settlement
         # logic; the default-off behavior is covered by dedicated tests.
@@ -207,12 +208,12 @@ def mpp() -> Mpp:
 class TestConfig:
     def test_missing_recipient_raises(self):
         with pytest.raises(PaymentError, match="recipient"):
-            Mpp(Config(recipient="", secret_key=TEST_SECRET, store=MemoryStore()))
+            Mpp(Config(recipient="", secret_key=TEST_SECRET, store=NominalProductionReplayStore()))
 
     def test_missing_secret_key_raises(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("MPP_SECRET_KEY", raising=False)
         with pytest.raises(PaymentError, match="secret key"):
-            Mpp(Config(recipient=TEST_RECIPIENT, secret_key="", store=MemoryStore()))
+            Mpp(Config(recipient=TEST_RECIPIENT, secret_key="", store=NominalProductionReplayStore()))
 
     def test_defaults(self, mpp: Mpp):
         # Audit #15: default realm is derived per-recipient, not the shared
@@ -298,7 +299,7 @@ class TestCharge:
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
                 rpc=FakeRPC(),
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = handler.charge("1.00")
@@ -415,7 +416,7 @@ class TestVerifyCredential:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
                 accept_push_mode=True,  # Audit #5: push-mode is opt-in
             )
         )
@@ -453,7 +454,7 @@ class TestVerifyCredential:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
                 accept_push_mode=True,  # Audit #5: push-mode is opt-in
             )
         )
@@ -490,7 +491,7 @@ class TestVerifyCredential:
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
@@ -518,7 +519,7 @@ class TestVerifyCredential:
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
@@ -545,7 +546,7 @@ class TestVerifyCredential:
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
@@ -572,7 +573,7 @@ class TestVerifyCredential:
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions(external_id="order-123"))
@@ -619,7 +620,7 @@ class TestVerifyCredential:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
@@ -646,7 +647,7 @@ class TestVerifyCredential:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
@@ -673,7 +674,7 @@ class TestVerifyCredential:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
@@ -700,7 +701,7 @@ class TestVerifyCredential:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
             )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions(external_id="order-123"))
@@ -982,7 +983,7 @@ class TestL8SettlementOrdering:
             self._ordering.append("get_transaction")
             return FakeResponse(self.tx)
 
-    class _RecordingStore:
+    class _RecordingStore(ProductionReplayStore):
         def __init__(self, ordering: list[str]):
             self._ordering = ordering
             self._data: dict = {}
@@ -1111,8 +1112,6 @@ class TestL8SettlementOrdering:
                 ordering.append("await_confirmation")
 
         rpc = _NoRPC()
-        from solana_pay_kit._paycore.store import MemoryStore
-
         handler = Mpp(
             Config(
                 recipient=TEST_RECIPIENT,
@@ -1121,7 +1120,7 @@ class TestL8SettlementOrdering:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=rpc,
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
                 accept_push_mode=True,  # Audit #5: reach the fee-sponsorship check
             )
         )
@@ -2294,7 +2293,7 @@ class TestAuditServerConfigGuards:
             decimals=6,
             network="devnet",
             secret_key=TEST_SECRET,
-            store=MemoryStore(),
+            store=NominalProductionReplayStore(),
         )
         kwargs.update(overrides)
         return Config(**kwargs)
@@ -2348,7 +2347,7 @@ class TestAuditPushModeOptIn:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=FakeRPC(tx={"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}),
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
                 accept_push_mode=accept_push,
             )
         )
@@ -2376,7 +2375,7 @@ class TestAuditSplitIssuanceGuards:
                 network="devnet",
                 secret_key=TEST_SECRET,
                 rpc=FakeRPC(),
-                store=MemoryStore(),
+                store=NominalProductionReplayStore(),
                 fee_payer_signer=fee_payer_signer,
             )
         )

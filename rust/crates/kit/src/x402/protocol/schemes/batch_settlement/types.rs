@@ -325,6 +325,40 @@ mod tests {
     }
 
     #[test]
+    fn requirements_default_scheme_and_accepted_value_preserve_wire_contract() {
+        let mut json = serde_json::to_value(requirements()).unwrap();
+        json.as_object_mut().unwrap().remove("scheme");
+
+        let parsed: BatchRequirements = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.scheme, BATCH_SETTLEMENT_SCHEME);
+
+        let accepted = parsed.to_accepted_value().unwrap();
+        assert_eq!(accepted["scheme"], BATCH_SETTLEMENT_SCHEME);
+        assert!(accepted["extra"].get("tokenProgram").is_none());
+        assert!(accepted["extra"].get("distributionSplits").is_none());
+    }
+
+    #[test]
+    fn amount_and_voucher_cumulative_reject_non_numeric_values() {
+        let mut invalid_amount = requirements();
+        invalid_amount.amount = "10_000".to_string();
+        assert!(
+            matches!(invalid_amount.amount(), Err(Error::Other(reason)) if reason == "invalid batch amount: 10_000")
+        );
+
+        let voucher = BatchVoucher {
+            channel_id: "Chan11111111111111111111111111111111111111".to_string(),
+            cumulative_amount: "not-a-number".to_string(),
+            expires_at: 4_102_444_800,
+            signer: "Signer1111111111111111111111111111111111111".to_string(),
+            signature: "sig".to_string(),
+        };
+        assert!(
+            matches!(voucher.cumulative(), Err(Error::Other(reason)) if reason == "invalid cumulativeAmount: not-a-number")
+        );
+    }
+
+    #[test]
     fn payload_union_tags_round_trip() {
         let voucher = BatchVoucher {
             channel_id: "Chan11111111111111111111111111111111111111".to_string(),
@@ -341,7 +375,7 @@ mod tests {
         assert!(json.contains("\"type\":\"voucher\""));
         assert!(json.contains("\"cumulativeAmount\":\"20000\""));
         let back: BatchPayload = serde_json::from_str(&json).unwrap();
-        matches!(back, BatchPayload::Voucher { .. });
+        assert!(matches!(back, BatchPayload::Voucher { .. }));
 
         let r = BatchPayload::Refund {
             channel_id: "Chan11111111111111111111111111111111111111".to_string(),
@@ -351,5 +385,43 @@ mod tests {
             .unwrap()
             .contains("\"type\":\"refund\""));
         assert_eq!(voucher.cumulative().unwrap(), 20000);
+    }
+
+    #[test]
+    fn payload_channel_id_is_only_exposed_for_existing_channels() {
+        let voucher = BatchVoucher {
+            channel_id: "Chan11111111111111111111111111111111111111".to_string(),
+            cumulative_amount: "20000".to_string(),
+            expires_at: 4_102_444_800,
+            signer: "Signer1111111111111111111111111111111111111".to_string(),
+            signature: "sig".to_string(),
+        };
+        let deposit = BatchPayload::Deposit {
+            channel_config: BatchChannelConfig {
+                payer: "payer".to_string(),
+                payee: "payee".to_string(),
+                mint: "mint".to_string(),
+                authorized_signer: "signer".to_string(),
+                salt: "salt".to_string(),
+                recent_slot: "1".to_string(),
+                deposit_amount: "1000".to_string(),
+                grace_period_seconds: 60,
+                distribution_splits: vec![],
+            },
+            transaction: "transaction".to_string(),
+            voucher: Some(voucher.clone()),
+        };
+        let paid = BatchPayload::Voucher {
+            channel_id: "voucher-channel".to_string(),
+            voucher: voucher.clone(),
+        };
+        let refund = BatchPayload::Refund {
+            channel_id: "refund-channel".to_string(),
+            voucher: Some(voucher),
+        };
+
+        assert_eq!(deposit.channel_id(), None);
+        assert_eq!(paid.channel_id(), Some("voucher-channel"));
+        assert_eq!(refund.channel_id(), Some("refund-channel"));
     }
 }

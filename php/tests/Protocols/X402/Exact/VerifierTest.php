@@ -64,4 +64,37 @@ final class VerifierTest extends TestCase
             'ASSOCIATED_TOKEN_PROGRAM must be removed: ATA-create is not an allowed optional slot',
         );
     }
+
+    public function testUnsignedU64DecodingStaysExactAbovePhpIntMax(): void
+    {
+        $readU64 = new \ReflectionMethod(Verifier::class, 'readU64Le');
+
+        $this->assertSame(
+            '9223372036854775808',
+            (string) $readU64->invoke(null, "\x00\x00\x00\x00\x00\x00\x00\x80", 0),
+        );
+        $this->assertSame(
+            '18446744073709551615',
+            (string) $readU64->invoke(null, str_repeat("\xff", 8), 0),
+        );
+    }
+
+    public function testRequirementAmountParsesTheFullU64Range(): void
+    {
+        $amountField = new \ReflectionMethod(Verifier::class, 'amountField');
+
+        $this->assertSame(
+            '18446744073709551615',
+            (string) $amountField->invoke(null, ['amount' => '18446744073709551615']),
+        );
+    }
+
+    public function testRequirementAmountAboveU64FailsClosed(): void
+    {
+        $amountField = new \ReflectionMethod(Verifier::class, 'amountField');
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessage('invalid_exact_svm_payload_missing_field_amount');
+
+        $amountField->invoke(null, ['amount' => '18446744073709551616']);
+    }
 }

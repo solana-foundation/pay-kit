@@ -77,3 +77,23 @@ export function parseLanguageAllowlist(
     .filter(Boolean);
   return langs.length > 0 ? new Set(langs) : undefined;
 }
+
+export function assertRequestedLanguagesResolved(
+  requested: ReadonlySet<string> | undefined,
+  resolvedLanguages: Iterable<string>,
+  availableLanguages: Iterable<string>,
+  context: string,
+): void {
+  if (!requested) return;
+  const resolved = new Set(resolvedLanguages);
+  const missing = [...requested]
+    .filter((language) => !resolved.has(language))
+    .sort();
+  if (missing.length === 0) return;
+
+  throw new Error(
+    `${context} did not resolve requested language(s): ${missing.join(", ")} ` +
+      `(requested: ${[...requested].sort().join(", ")}; ` +
+      `available: ${[...availableLanguages].sort().join(", ") || "none"})`,
+  );
+}

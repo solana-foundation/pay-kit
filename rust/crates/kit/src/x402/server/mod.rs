@@ -2,6 +2,9 @@ pub mod batch_settlement;
 pub mod exact;
 pub mod upto;
 
+#[cfg(test)]
+pub(crate) mod mock_rpc;
+
 /// A single currency the `exact` / `upto` server backends are willing to accept.
 ///
 /// Replaces the awkward singular `currency` + `decimals` + `token_program` plus

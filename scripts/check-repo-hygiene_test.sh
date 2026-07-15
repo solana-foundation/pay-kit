@@ -42,6 +42,7 @@ make_fixture() { # <dir>
     > "$root/typescript/packages/mpp/src/errors.ts"
   printf '%s\n' '{"name":"root","private":true}' > "$root/package.json"
   printf '%s\n' '{"name":"mpp"}' > "$root/typescript/packages/mpp/package.json"
+  printf '%s\n' 'typescript/packages/**/*.tgz' > "$root/.gitignore"
   git -C "$root" init -q
   git -C "$root" add -A
   git -C "$root" -c user.email=t@t -c user.name=t commit -qm init
@@ -87,6 +88,15 @@ if printf '%s' "$out" | grep -q 'bundle.gen.js'; then
   echo "FAIL - excluded *.gen.* bundle tripped the finding-id guard"; fails=1
 else echo "ok   - excluded *.gen.* bundle does not trip the finding-id guard"; fi
 
+# A force-added tarball is tracked even though the fixture ignores local pack
+# output, and therefore must be rejected by the real guard.
+printf '%s\n' 'package bytes' > "$dirtyA/typescript/packages/mpp/committed.tgz"
+git -C "$dirtyA" add -f typescript/packages/mpp/committed.tgz
+git -C "$dirtyA" -c user.email=t@t -c user.name=t commit -qm tarball
+out="$(ROOT="$dirtyA" bash "$GUARD" 2>&1)"; rc=$?
+assert_rc "real guard rejects a tracked package tarball" 1 $rc
+assert_contains "reports the tracked package tarball" "typescript/packages/mpp/committed.tgz" "$out"
+
 # --- Case B: clean fixture must PASS (exit 0) --------------------------------
 cleanB="$tmp/clean"
 make_fixture "$cleanB"
@@ -104,7 +114,28 @@ git -C "$cleanB" -c user.email=t@t -c user.name=t commit -qm clean
 out="$(ROOT="$cleanB" bash "$GUARD" 2>&1)"; rc=$?
 assert_rc "real guard exits zero on a clean fixture" 0 $rc
 
-# --- Case C: pattern unit checks, deriving ID_RE from the real script --------
+# --- Case C: ignored local tarballs must PASS --------------------------------
+ignoredC="$tmp/ignored"
+make_fixture "$ignoredC"
+printf '%s\n' 'local package bytes' > "$ignoredC/typescript/packages/mpp/local-only.tgz"
+out="$(ROOT="$ignoredC" bash "$GUARD" 2>&1)"; rc=$?
+assert_rc "ignored local package tarballs do not trip the tracked-file guard" 0 $rc
+if git -C "$ignoredC" ls-files --error-unmatch typescript/packages/mpp/local-only.tgz >/dev/null 2>&1; then
+  echo "FAIL - ignored tarball fixture unexpectedly became tracked"; fails=1
+else echo "ok   - local package tarball remains untracked and ignored"; fi
+
+# --- Case D: source archives without .git must PASS ---------------------------
+archiveD="$tmp/source-archive"
+mkdir -p "$archiveD/typescript/packages/mpp/src"
+printf '%s\n' '{"name":"root","private":true}' > "$archiveD/package.json"
+printf '%s\n' '{"name":"mpp"}' > "$archiveD/typescript/packages/mpp/package.json"
+printf '%s\n' '// clean source archive' > "$archiveD/typescript/packages/mpp/src/index.ts"
+printf '%s\n' 'archive-local package bytes' > "$archiveD/typescript/packages/mpp/archive.tgz"
+out="$(ROOT="$archiveD" bash "$GUARD" 2>&1)"; rc=$?
+assert_rc "source archive without Git metadata remains supported" 0 $rc
+assert_contains "source archive reports the tracked-file check skip" "skipped tracked-file check outside a Git worktree" "$out"
+
+# --- Case E: pattern unit checks, deriving ID_RE from the real script --------
 # Grep the finding-id regex out of the guard rather than duplicating it, so a
 # drift in the guard's pattern is reflected here automatically.
 ID_RE="$(grep -E "^ID_RE=" "$GUARD" | sed -E "s/^ID_RE='(.*)'\$/\1/")"

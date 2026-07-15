@@ -14,7 +14,16 @@ type Store interface {
 	PutIfAbsent(ctx context.Context, key string, value any) (bool, error)
 }
 
-// MemoryStore is an in-memory Store implementation for tests and small deployments.
+// SharedStore is the production replay-store contract. Implementations must
+// make PutIfAbsent atomic across every process/host that can accept the same
+// credential. A plain Store is deliberately not assumed to be shared.
+type SharedStore interface {
+	Store
+	IsShared() bool
+}
+
+// MemoryStore is an in-memory Store implementation for tests and explicitly
+// opted-in single-process development.
 type MemoryStore struct {
 	mu   sync.RWMutex
 	data map[string]json.RawMessage
@@ -24,6 +33,9 @@ type MemoryStore struct {
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{data: map[string]json.RawMessage{}}
 }
+
+// IsShared reports false because MemoryStore is confined to one process.
+func (s *MemoryStore) IsShared() bool { return false }
 
 // Get returns a copy of the raw JSON value previously stored under key.
 // The second return value reports whether the key was found.

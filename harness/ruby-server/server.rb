@@ -16,12 +16,14 @@
 # harness builds the method + server with explicit knobs from env.
 
 require "json"
+require "fileutils"
 require "rack"
 require "socket"
 require "stringio"
 require "tmpdir"
 
 require_relative "../../ruby/lib/solana_pay_kit"
+require_relative "harness_replay_store"
 
 # --- env helpers -------------------------------------------------------
 
@@ -144,14 +146,20 @@ else
     decimals: Integer(decimals_raw, 10)
   )
 
-  # Devnet/mainnet MPP creation intentionally fails closed without durable
-  # replay storage. The harness is single-process, so a per-process FileStore
-  # provides restart-persistent replay markers without weakening that policy.
-  replay_store_path = optional_env(
-    "MPP_HARNESS_REPLAY_STORE_PATH",
-    File.join(Dir.tmpdir, "pay-kit-harness-mpp-replay-#{Process.pid}.json")
-  )
-  replay_store = ::PayKit::Protocols::Mpp::FileStore.new(replay_store_path)
+  # Devnet/mainnet MPP creation intentionally fails closed without durable,
+  # cross-worker replay storage. The harness runner supplies one explicit path
+  # per scenario so every worker that serves it shares the same reservation
+  # state; a process-specific default would make `shared?` untrue.
+  replay_store = if network_label == "localnet"
+    ::PayKit::Protocols::Mpp::MemoryStore.new
+  else
+    replay_store_path = ENV.fetch("MPP_HARNESS_REPLAY_STORE_PATH", "").strip
+    if replay_store_path.empty?
+      warn "ruby-server: MPP_HARNESS_REPLAY_STORE_PATH is required for non-localnet MPP harness runs"
+      exit 2
+    end
+    HarnessReplayStore.new(replay_store_path)
+  end
 
   mpp_server = ::PayKit::Protocols::Mpp.create(
     method: method,

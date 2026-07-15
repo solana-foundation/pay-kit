@@ -1,0 +1,168 @@
+{
+  "cases": [
+    {
+      "name": "Go source directory",
+      "files": ["go/protocols/x402/verify.go"],
+      "enabled": ["go"]
+    },
+    {
+      "name": "Go workflow exact file",
+      "files": [".github/workflows/go.yml"],
+      "enabled": ["go"]
+    },
+    {
+      "name": "TypeScript source directory",
+      "files": ["typescript/packages/mpp/src/index.ts"],
+      "enabled": ["typescript"]
+    },
+    {
+      "name": "HTML package belongs to TypeScript",
+      "files": ["html/src/index.ts"],
+      "enabled": ["typescript"]
+    },
+    {
+      "name": "Rust source directory",
+      "files": ["rust/crates/kit/src/mpp/lib.rs"],
+      "enabled": ["rust"]
+    },
+    {
+      "name": "Go-owned harness directory",
+      "files": ["harness/go-server/main.go"],
+      "enabled": ["go"]
+    },
+    {
+      "name": "Python source directory",
+      "files": ["python/src/solana_pay_kit/protocols/mpp/server/session.py"],
+      "enabled": ["python"]
+    },
+    {
+      "name": "Python server harness directory",
+      "files": ["harness/python-server/server.py"],
+      "enabled": ["python"]
+    },
+    {
+      "name": "Python session client harness directory",
+      "files": ["harness/python-session-client/main.py"],
+      "enabled": ["python"]
+    },
+    {
+      "name": "Python x402 exact client harness directory",
+      "files": ["harness/python-x402-client/main.py"],
+      "enabled": ["python"]
+    },
+    {
+      "name": "Python x402 upto client harness directory",
+      "files": ["harness/python-x402-upto-client/main.py"],
+      "enabled": ["python"]
+    },
+    {
+      "name": "Ruby-owned harness directory",
+      "files": ["harness/ruby-server/server.rb"],
+      "enabled": ["ruby"]
+    },
+    {
+      "name": "Lua protocol runner harness directory",
+      "files": ["harness/lua-protocol-runner/runner.lua"],
+      "enabled": ["lua"]
+    },
+    {
+      "name": "PHP-owned harness directory",
+      "files": ["harness/php-server/server.php"],
+      "enabled": ["php"]
+    },
+    {
+      "name": "Swift package manifest exact file",
+      "files": ["Package.swift"],
+      "enabled": ["swift"]
+    },
+    {
+      "name": "Kotlin-owned harness directory",
+      "files": ["harness/kotlin-conformance/settings.gradle.kts"],
+      "enabled": ["kotlin"]
+    },
+    {
+      "name": "Multiple owned SDK paths combine",
+      "files": [
+        "go/paykit/types.go",
+        "python/pyproject.toml",
+        "docs/routing.md"
+      ],
+      "enabled": ["go", "python"]
+    },
+    {
+      "name": "Shared harness source runs everything",
+      "files": ["harness/src/implementations.ts"],
+      "enabled": "all"
+    },
+    {
+      "name": "Shared harness vector runs everything",
+      "files": ["harness/vectors/canonical-bytes.json"],
+      "enabled": "all"
+    },
+    {
+      "name": "Shared harness workflow runs everything",
+      "files": [".github/workflows/harness.yml"],
+      "enabled": "all"
+    },
+    {
+      "name": "Shared harness action runs everything",
+      "files": [".github/actions/setup-harness/action.yml"],
+      "enabled": "all"
+    },
+    {
+      "name": "Package manifest lookalike is not Swift",
+      "files": ["Package.swift.backup"],
+      "enabled": "all"
+    },
+    {
+      "name": "Workflow lookalike is not Go",
+      "files": [".github/workflows/go.yml.disabled"],
+      "enabled": "all"
+    },
+    {
+      "name": "Directory lookalike is not Go",
+      "files": ["governance/policy.yml"],
+      "enabled": "all"
+    },
+    {
+      "name": "Directory name used as a file is not Go",
+      "files": ["go"],
+      "enabled": "all"
+    },
+    {
+      "name": "Documentation directory name used as a file is unknown",
+      "files": ["docs"],
+      "enabled": "all"
+    },
+    {
+      "name": "Owned harness directory lookalike is shared",
+      "files": ["harness/python-server-old/server.py"],
+      "enabled": "all"
+    },
+    {
+      "name": "Unknown path runs everything",
+      "files": ["scripts/unclassified-security-check.sh"],
+      "enabled": "all"
+    },
+    {
+      "name": "Empty input runs everything",
+      "files": [],
+      "enabled": "all"
+    },
+    {
+      "name": "Documentation directory only runs nothing",
+      "files": ["docs/security.md", "docs/routing.txt"],
+      "enabled": []
+    },
+    {
+      "name": "Markdown only runs nothing",
+      "files": ["SECURITY.md", "ruby/README.md"],
+      "enabled": []
+    },
+    {
+      "name": "Issue template only runs nothing",
+      "files": [".github/ISSUE_TEMPLATE/bug.yml"],
+      "enabled": []
+    }
+  ]
+}

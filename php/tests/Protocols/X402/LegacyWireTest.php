@@ -45,7 +45,7 @@ final class LegacyWireTest extends TestCase
             ),
             preflight: false,
         );
-        return new Adapter($config, recentBlockhashProvider: fn () => null);
+        return new Adapter($config, replayStore: new ExplicitCapabilityTestReplayStore(), recentBlockhashProvider: fn () => null);
     }
 
     private function makeGate(): Gate
@@ -74,6 +74,42 @@ final class LegacyWireTest extends TestCase
         $ref = new ReflectionMethod(Adapter::class, $method);
         $ref->setAccessible(true);
         return $ref->invoke($adapter, ...$args);
+    }
+
+    /** @return array<string, mixed> */
+    private function canonicalOffer(): array
+    {
+        return [
+            'scheme' => 'exact',
+            'network' => 'solana:devnet',
+            'asset' => 'USDC',
+            'payTo' => 'recipient',
+            'amount' => '100000',
+            'maxAmountRequired' => '100000',
+            'extra' => ['feePayer' => 'payer', 'tokenProgram' => 'token', 'memo' => '/paid'],
+        ];
+    }
+
+    public function testCanonicalCredentialRejectsTamperedAmount(): void
+    {
+        $offer = $this->canonicalOffer();
+        $accepted = $offer;
+        $accepted['amount'] = '999999';
+
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessage('charge_request_mismatch');
+        $this->invoke($this->makeAdapter(), 'matchCanonicalCredential', ['accepted' => $accepted], $offer);
+    }
+
+    public function testCanonicalCredentialRejectsTamperedMaximumAmount(): void
+    {
+        $offer = $this->canonicalOffer();
+        $accepted = $offer;
+        $accepted['maxAmountRequired'] = '999999';
+
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessage('charge_request_mismatch');
+        $this->invoke($this->makeAdapter(), 'matchCanonicalCredential', ['accepted' => $accepted], $offer);
     }
 
     // ── caip2ForCluster: legacy plain-slug -> CAIP-2 normalization ──────────

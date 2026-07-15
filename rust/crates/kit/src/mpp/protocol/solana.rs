@@ -145,6 +145,7 @@ pub fn default_token_program_for_currency(currency: &str, network: Option<&str>)
 }
 
 #[cfg(test)]
+#[allow(clippy::err_expect)]
 mod tests {
     use super::*;
 
@@ -523,14 +524,14 @@ mod tests {
         let splits: Vec<Split> = (0..(MAX_SPLITS + 1))
             .map(|_| split(&unique_pubkey(), "1"))
             .collect();
-        let err = validate_splits(&splits).err().expect("too many splits");
+        let err = validate_splits(&splits).expect_err("too many splits");
         assert!(matches!(err, crate::mpp::error::Error::TooManySplits));
     }
 
     #[test]
     fn validate_splits_rejects_invalid_recipient() {
         let splits = vec![split("not-a-pubkey!!", "100")];
-        let err = validate_splits(&splits).err().expect("bad recipient");
+        let err = validate_splits(&splits).expect_err("bad recipient");
         assert!(
             format!("{err}").contains("splits[0]: invalid recipient pubkey"),
             "got: {err}"
@@ -540,7 +541,7 @@ mod tests {
     #[test]
     fn validate_splits_rejects_unparseable_amount() {
         let splits = vec![split(&unique_pubkey(), "not-a-number")];
-        let err = validate_splits(&splits).err().expect("bad amount");
+        let err = validate_splits(&splits).expect_err("bad amount");
         assert!(
             format!("{err}").contains("is not a valid u64"),
             "got: {err}"
@@ -550,7 +551,7 @@ mod tests {
     #[test]
     fn validate_splits_rejects_zero_amount() {
         let splits = vec![split(&unique_pubkey(), "0")];
-        let err = validate_splits(&splits).err().expect("zero amount");
+        let err = validate_splits(&splits).expect_err("zero amount");
         assert!(
             format!("{err}").contains("amount must be greater than zero"),
             "got: {err}"
@@ -564,7 +565,7 @@ mod tests {
             split(&unique_pubkey(), &near_max.to_string()),
             split(&unique_pubkey(), &near_max.to_string()),
         ];
-        let err = validate_splits(&splits).err().expect("aggregate overflow");
+        let err = validate_splits(&splits).expect_err("aggregate overflow");
         assert!(format!("{err}").contains("overflows u64"), "got: {err}");
     }
 
@@ -572,7 +573,7 @@ mod tests {
     fn validate_splits_rejects_duplicate_recipient() {
         let dup = unique_pubkey();
         let splits = vec![split(&dup, "100"), split(&dup, "200")];
-        let err = validate_splits(&splits).err().expect("duplicate recipient");
+        let err = validate_splits(&splits).expect_err("duplicate recipient");
         assert!(
             format!("{err}").contains("duplicate recipient"),
             "got: {err}"
@@ -693,9 +694,8 @@ mod tests {
 
     #[test]
     fn validate_confidential_rejects_native_sol() {
-        let err = validate_confidential_charge("sol", &confidential_md())
-            .err()
-            .expect("sol rejected");
+        let err =
+            validate_confidential_charge("sol", &confidential_md()).expect_err("sol rejected");
         assert!(format!("{err}").contains("not native SOL"), "got: {err}");
     }
 
@@ -704,8 +704,7 @@ mod tests {
         let mut md = confidential_md();
         md.token_program = Some(programs::TOKEN_PROGRAM.to_string());
         let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
-            .err()
-            .expect("legacy token program rejected");
+            .expect_err("legacy token program rejected");
         assert!(format!("{err}").contains("Token-2022"), "got: {err}");
     }
 
@@ -721,8 +720,7 @@ mod tests {
         // A present-but-empty auditor pubkey is malformed and rejected.
         md.auditor_elgamal_pubkey = Some(String::new());
         let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
-            .err()
-            .expect("empty auditor rejected");
+            .expect_err("empty auditor rejected");
         assert!(
             format!("{err}").contains("auditorElgamalPubkey"),
             "got: {err}"
@@ -739,9 +737,8 @@ mod tests {
             label: None,
             memo: None,
         }]);
-        let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
-            .err()
-            .expect("splits rejected");
+        let err =
+            validate_confidential_charge(mints::USDPT_MAINNET, &md).expect_err("splits rejected");
         assert!(format!("{err}").contains("splits"), "got: {err}");
     }
 }

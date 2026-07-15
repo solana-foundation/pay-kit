@@ -127,10 +127,9 @@ if "$guard" "$writeall_perms" > "$work/writeall-perms.log" 2>&1; then
 fi
 echo "check-publish-workflow-guards_test: writeall-permissions (scalar) fixture rejected (non-zero exit)"
 
-# ---- Case 3: scalar read-all top-level permissions must pass ----
-# The scalar shorthand can also grant read-only (`permissions: read-all`), which
-# is least-privilege and must be accepted. This pins the guard so it rejects the
-# scalar form only when it grants write, not on the mere presence of the scalar.
+# ---- Case 3: scalar read-all top-level permissions must fail ----
+# `read-all` exposes every readable token scope and is broader than the release
+# workflows need. The guard requires the explicit `contents: read` block.
 readall_perms="$work/readall-permissions.yml"
 awk '
   /^permissions:[[:space:]]*$/ { print "permissions: read-all"; in_perms = 1; next }
@@ -144,11 +143,25 @@ awk '
 if ! grep -Eq '^permissions:[[:space:]]*read-all[[:space:]]*$' "$readall_perms"; then
   fail "test setup error: readall-permissions fixture did not produce a scalar read-all top-level grant"
 fi
-if ! "$guard" "$readall_perms" > "$work/readall-perms.log" 2>&1; then
+if "$guard" "$readall_perms" > "$work/readall-perms.log" 2>&1; then
   echo "---- guard output (readall-permissions) ----" >&2
   cat "$work/readall-perms.log" >&2
-  fail "guard rejected a workflow whose top-level permissions is the scalar read-all (read-only scalar must pass the least-privilege guard)"
+  fail "guard accepted scalar read-all even though only contents: read is required"
 fi
-echo "check-publish-workflow-guards_test: readall-permissions (scalar) fixture accepted (exit 0)"
+echo "check-publish-workflow-guards_test: readall-permissions (scalar) fixture rejected (non-zero exit)"
+
+# ---- Case 4: an extra read scope in block form must fail ----
+extra_read="$work/extra-read-permissions.yml"
+awk '
+  { print }
+  /^  contents:[[:space:]]*read[[:space:]]*$/ { print "  actions: read" }
+' "$npm_workflow" > "$extra_read"
+
+if "$guard" "$extra_read" > "$work/extra-read-perms.log" 2>&1; then
+  echo "---- guard output (extra-read-permissions) ----" >&2
+  cat "$work/extra-read-perms.log" >&2
+  fail "guard accepted an unnecessary top-level actions: read scope"
+fi
+echo "check-publish-workflow-guards_test: extra read scope fixture rejected (non-zero exit)"
 
 echo "check-publish-workflow-guards_test: PASS - least-privilege and publish-success gating are enforced"

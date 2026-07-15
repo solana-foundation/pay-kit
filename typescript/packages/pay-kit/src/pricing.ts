@@ -84,8 +84,14 @@ export function subscription(
     amount: Price,
     config: Omit<SubscriptionGateParams, 'amount' | 'kind' | 'subscription'> & SubscriptionConfig,
 ): SubscriptionGateParams {
-    const { periodCount, periodUnit, planId, puller, ...rest } = config;
-    return { ...rest, amount, kind: 'subscription', subscription: { periodCount, periodUnit, planId, puller } };
+    const { merchant, periodCount, periodUnit, planBump, planCreatedAt, planId, planIdNumeric, puller, ...rest } =
+        config;
+    return {
+        ...rest,
+        amount,
+        kind: 'subscription',
+        subscription: { merchant, periodCount, periodUnit, planBump, planCreatedAt, planId, planIdNumeric, puller },
+    };
 }
 
 /**

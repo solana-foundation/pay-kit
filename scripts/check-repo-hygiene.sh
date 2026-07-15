@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Repo-hygiene guards for two regressions that no other CI gate catches and
+# Repo-hygiene guards for regressions that no other CI gate catches and
 # that a prior audit had to clean up by hand:
 #
 #   1. Audit finding IDs (e.g. "H-1", "M-3", "C-1", "L-4", "I-2", and the
@@ -12,6 +12,10 @@
 #      `pnpm` field. pnpm v10 no longer reads that field, so security version
 #      pins parked there are silently NOT enforced. They must live in the
 #      project's pnpm-workspace.yaml.
+#
+#   3. npm package tarballs committed below typescript/packages/. Release jobs
+#      build tarballs in ignored staging directories; package archives do not
+#      belong in the source tree or review diff.
 #
 # Exit non-zero if either guard trips. Safe to run from anywhere.
 #
@@ -88,6 +92,27 @@ else
   echo "                   Move overrides / onlyBuiltDependencies to the project's pnpm-workspace.yaml:"
   for pkg in "${pnpm_offenders[@]}"; do echo "                   - $pkg"; done
   fail=1
+fi
+
+# --- Guard 3: no committed npm package tarballs -------------------------------
+# Inspect the Git index rather than the filesystem. This catches accidentally
+# force-added package artifacts without rejecting ignored local `pnpm pack`
+# output or the release workflow's `.npm-pack/` staging directory. Source
+# archives may not include `.git`; in that environment there is no tracked-file
+# state to validate, so report the skip explicitly.
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  tgz_offenders="$(git ls-files -- ':(glob)typescript/packages/**/*.tgz' 2>/dev/null || true)"
+  if [ -z "$tgz_offenders" ]; then
+    echo "PASS [package-tarballs]: no npm package tarballs are tracked under typescript/packages"
+  else
+    echo "FAIL [package-tarballs]: npm package tarballs must not be committed under typescript/packages:"
+    while IFS= read -r artifact; do
+      [ -n "$artifact" ] && echo "                          - $artifact"
+    done <<< "$tgz_offenders"
+    fail=1
+  fi
+else
+  echo "PASS [package-tarballs]: skipped tracked-file check outside a Git worktree"
 fi
 
 if [ "$fail" -ne 0 ]; then

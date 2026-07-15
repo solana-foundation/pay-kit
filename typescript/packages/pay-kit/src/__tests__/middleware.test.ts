@@ -47,7 +47,7 @@ const fakeAdapter: ProtocolAdapter = {
 };
 
 async function setup(): Promise<PayKit> {
-    const config = await configure({ mpp: { challengeBindingSecret: 's3cret' } });
+    const config = await configure({ mpp: { challengeBindingSecret: 's3cret', allowUnsafeMemoryStore: true } });
     return createPayKit({ adapters: [fakeAdapter], config, pricing: { report: { amount: usd('0.10') } } });
 }
 

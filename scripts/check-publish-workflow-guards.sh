@@ -77,40 +77,37 @@ check_one() {
     # but keep them flowing through the step-block boundary logic below.
   }
 
-  # ---- Guard (a): top-level permissions must be read-only ----
+  # ---- Guard (a): top-level permissions must be exactly contents: read ----
   # The top-level block is the only `permissions:` at column 0.
   /^permissions:[[:space:]]*$/ {
     in_top_perms = 1
+    saw_contents_read = 0
     next
   }
   /^permissions:[[:space:]]*\{/ {
-    # Flow-mapping form on one line, e.g. permissions: { contents: write }.
-    if (index(lower($0), "write") > 0) {
-      printf("FAIL[%s]: top-level permissions grants write (must be read-only): %s\n", file, trim($0)) > "/dev/stderr"
-      fail = 1
-    }
+    # Require the reviewable block form. Accepting an arbitrary flow mapping
+    # makes it too easy to hide extra read scopes next to contents: read.
+    printf("FAIL[%s]: top-level permissions must use an explicit block containing only contents: read: %s\n", file, trim($0)) > "/dev/stderr"
+    fail = 1
     next
   }
   /^permissions:[[:space:]]*[^[:space:]{]/ {
     # Scalar shorthand on one line, e.g. permissions: write-all / read-all.
     # (The block form and flow-mapping form above already consumed their lines,
     # so this only fires on a scalar value.) Least privilege at the workflow
-    # level means the sole acceptable scalar is read-all; write-all — or any
-    # other non-read scalar — grants blanket write to the whole release-gate
-    # fan-out and must fail.
-    scalar = $0
-    sub(/^permissions:[[:space:]]*/, "", scalar)
-    sub(/[[:space:]]*#.*$/, "", scalar)   # drop any trailing inline comment
-    scalar = trim(scalar)
-    if (lower(scalar) != "read-all") {
-      printf("FAIL[%s]: top-level permissions grants write (must be read-only): %s\n", file, trim($0)) > "/dev/stderr"
-      fail = 1
-    }
+    # `read-all` is still broader than least privilege: it exposes every
+    # readable token scope, not only repository contents.
+    printf("FAIL[%s]: scalar top-level permissions are forbidden; use only contents: read: %s\n", file, trim($0)) > "/dev/stderr"
+    fail = 1
     next
   }
   in_top_perms == 1 {
     # A new column-0 key (non-space at position 1) ends the block.
     if ($0 ~ /^[^[:space:]]/) {
+      if (!saw_contents_read) {
+        printf("FAIL[%s]: top-level permissions must contain contents: read\n", file) > "/dev/stderr"
+        fail = 1
+      }
       in_top_perms = 0
       # fall through so this same line is still processed by later rules
     } else if ($0 ~ /^[[:space:]]*$/) {
@@ -118,8 +115,12 @@ check_one() {
       next
     } else {
       # A grant line inside the top-level permissions mapping.
-      if (index(lower($0), "write") > 0) {
-        printf("FAIL[%s]: top-level permissions grants write (must be read-only): %s\n", file, trim($0)) > "/dev/stderr"
+      grant = trim($0)
+      sub(/[[:space:]]*#.*$/, "", grant)
+      if (grant == "contents: read") {
+        saw_contents_read = 1
+      } else if (grant != "") {
+        printf("FAIL[%s]: unexpected top-level permission; only contents: read is allowed: %s\n", file, grant) > "/dev/stderr"
         fail = 1
       }
       next
@@ -183,6 +184,10 @@ check_one() {
   }
 
   END {
+    if (in_top_perms && !saw_contents_read) {
+      printf("FAIL[%s]: top-level permissions must contain contents: read\n", file) > "/dev/stderr"
+      fail = 1
+    }
     if (in_step) flush_step()
     if (fail) exit 1
   }
