@@ -610,9 +610,8 @@ mod tests {
         let header = format!(
             r#"Payment id="x", realm="api", method="solana", intent="charge", request="{oversized}""#
         );
-        let err = parse_www_authenticate(&header)
-            .err()
-            .expect("oversized request should be rejected");
+        let err =
+            parse_www_authenticate(&header).expect_err("oversized request should be rejected");
         assert!(
             format!("{err}").contains("exceeds maximum length"),
             "got: {err}"
@@ -628,9 +627,7 @@ mod tests {
         let header = format!(
             r#"Payment id="x", realm="api", method="solana", intent="charge", request="{at_max}""#
         );
-        let err = parse_www_authenticate(&header)
-            .err()
-            .expect("invalid payload still errors");
+        let err = parse_www_authenticate(&header).expect_err("invalid payload still errors");
         let msg = format!("{err}");
         assert!(
             !msg.contains("exceeds maximum length"),

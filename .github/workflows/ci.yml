@@ -195,17 +195,36 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - uses: ./.github/actions/setup-harness
+      # Gate self-activation: this leg drives the REAL Rust verifier through the
+      # conformance_runner / protocol_runner cargo examples, which land with the
+      # rust hardening leaf of the #216 redelivery cascade. Until that leaf is in
+      # this tree the subjects do not exist, so the gate reports itself pending
+      # (loudly) instead of failing on a subject it cannot exercise. The harness
+      # leaf seals the end state: it asserts these example files exist, so the
+      # gate cannot silently stay off once the cascade lands.
+      - name: Detect Rust conformance runner (gate activates with its subject)
+        id: rust_runner
+        run: |
+          if [ -f rust/crates/kit/examples/conformance_runner.rs ] && [ -f rust/crates/kit/examples/protocol_runner.rs ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Rust conformance gate pending::conformance_runner/protocol_runner examples are not in this tree yet; the gate activates when the rust hardening leaf lands."
+          fi
       - name: Build Rust conformance runner once
+        if: steps.rust_runner.outputs.present == 'true'
         working-directory: rust
         run: |
           cargo build --locked -p solana-pay-kit --example conformance_runner --features x402,client
           cargo build --locked -p solana-pay-kit --example protocol_runner --features mpp
       - name: Run Rust cross-SDK conformance vectors
+        if: steps.rust_runner.outputs.present == 'true'
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: rust
         run: pnpm exec vitest run test/conformance.test.ts
       - name: Run Rust protocol conformance vectors
+        if: steps.rust_runner.outputs.present == 'true'
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: rust
@@ -343,6 +362,16 @@ jobs:
         working-directory: rust
         run: cargo test --locked -p solana-pay-kit --lib x402 --features server,client
 
+      # The session implementation is gated behind the server feature. Keep a
+      # real execution gate here: compiling the feature does not run the
+      # on-chain binding and transaction-shape regressions in its test module.
+      - name: Run solana-pay-kit Rust session server tests
+        working-directory: rust
+        run: cargo test --locked -p solana-pay-kit --lib mpp::server::session --features mpp,server,client -- --test-threads=1
+
+      # Gate activation: this leaf carries scripts/check-rust-coverage.py, so the
+      # coverage floor runs the mature gate directly (self-test first) instead of
+      # the pending notice earlier legs of the cascade report.
       - name: Test Rust coverage policy
         working-directory: rust
         run: python3 ../scripts/check-rust-coverage_test.py
@@ -589,7 +618,21 @@ jobs:
           # boot-policy executes the real createPayKit + requirePayment fixture,
           # so it needs the ordered @solana/mpp -> @solana/pay-kit build.
           build-pay-kit: "true"
+      # Gate self-activation: same subject rule as the rust-conformance job —
+      # the runner examples arrive with the rust hardening leaf; until then the
+      # Rust vector steps below report pending instead of failing on a missing
+      # subject. The harness leaf asserts the examples exist in the end state.
+      - name: Detect Rust conformance runner (gate activates with its subject)
+        id: rust_runner
+        run: |
+          if [ -f rust/crates/kit/examples/conformance_runner.rs ] && [ -f rust/crates/kit/examples/protocol_runner.rs ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Rust conformance gate pending::conformance_runner/protocol_runner examples are not in this tree yet; the gate activates when the rust hardening leaf lands."
+          fi
       - name: Build Rust conformance runner once
+        if: steps.rust_runner.outputs.present == 'true'
         working-directory: rust
         run: |
           cargo build --locked -p solana-pay-kit --example conformance_runner --features x402,client
@@ -620,6 +663,7 @@ jobs:
       # and deterministic. A RED here is a real Rust verifier divergence -- fix it
       # in the x402 spine, do not skip.
       - name: Run Rust cross-SDK conformance vectors
+        if: steps.rust_runner.outputs.present == 'true'
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: rust
@@ -628,6 +672,7 @@ jobs:
       # Known Rust divergences (empty-realm / empty-intent not rejected) are
       # tracked in KNOWN_RUNNER_DIVERGENCES[rust]; a RED is a NEW divergence.
       - name: Run Rust protocol conformance (canonical challenge/receipt vectors)
+        if: steps.rust_runner.outputs.present == 'true'
         working-directory: harness
         env:
           MPP_CONFORMANCE_LANGUAGES: rust
