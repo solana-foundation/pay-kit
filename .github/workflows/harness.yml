@@ -142,8 +142,8 @@ jobs:
       - name: Checkout payment channels program
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          repository: Moonsong-Labs/solana-payment-channels
-          ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
+          repository: solana-foundation/payment-channels
+          ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
           path: _payment-channels
           fetch-depth: 1
       # Pinned Agave release, fetched as a tarball and checksum-verified.
@@ -235,10 +235,14 @@ jobs:
           fi
           pnpm exec vitest run test/e2e.test.ts --testTimeout 180000 --reporter=default --reporter=json --outputFile=vitest-report.json
           node scripts/assert-run-count.mjs --report vitest-report.json --exact 1
-      - name: Focused Python session missing-ATA rejection
+      - name: Focused Python session missing-ATA settlement invariant (deliver-or-reject)
         working-directory: harness
-        # This regression is blocking: a successful response must never hide a
-        # settlement that delivered no funds because the recipient ATA was absent.
+        # Blocking (no continue-on-error): a settle reported successful
+        # (200 + settledSignature) MUST deliver the payout to the recipient ATA,
+        # creating it idempotently when absent. A clean rejection (>= 400, no
+        # receipt surfaced, no delivery) is equally acceptable. The only failure
+        # is the false-paid condition — a confirmed receipt with no on-chain
+        # delivery — which #216 fixed and this leg keeps release-blocking.
         env:
           MPP_HARNESS_INTENTS: session
           MPP_HARNESS_SCENARIOS: session-basic

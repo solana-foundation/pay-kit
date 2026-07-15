@@ -12,7 +12,7 @@
 // actually EXECUTED does not match the leg's pinned expectation.
 //
 // Usage:
-//   node scripts/assert-run-count.mjs --report <path> --min <n> [--exact <n>]
+//   node scripts/assert-run-count.mjs --report <path> --min <n> [--exact <n>] [--all]
 //
 // `--min` is the floor (must be >= 1). `--exact`, when given, pins the count to
 // an exact value so a leg's selected pair count cannot silently drift. A
@@ -23,7 +23,7 @@
 import { readFileSync } from "node:fs";
 
 function parseArgs(argv) {
-  const args = { report: undefined, min: undefined, exact: undefined };
+  const args = { report: undefined, min: undefined, exact: undefined, all: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--report") {
@@ -38,6 +38,8 @@ function parseArgs(argv) {
       args.min = Number(arg.slice("--min=".length));
     } else if (arg.startsWith("--exact=")) {
       args.exact = Number(arg.slice("--exact=".length));
+    } else if (arg === "--all") {
+      args.all = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -90,47 +92,48 @@ function main() {
     );
   }
 
-  let executedPairs = 0;
-  let skippedPairs = 0;
+  let executed = 0;
+  let skipped = 0;
   for (const file of report.testResults ?? []) {
     for (const assertion of file.assertionResults ?? []) {
-      if (!isPairTitle(assertion.title)) {
+      if (!args.all && !isPairTitle(assertion.title)) {
         continue;
       }
       if (assertion.status === "passed") {
-        executedPairs += 1;
+        executed += 1;
       } else if (assertion.status === "skipped" || assertion.status === "pending") {
-        skippedPairs += 1;
+        skipped += 1;
       }
     }
   }
 
-  if (executedPairs === 0) {
+  const subject = args.all ? "test assertion(s)" : "settlement pair-tests";
+  if (executed === 0) {
     throw new Error(
-      `Zero settlement pair-tests EXECUTED in this leg (report ${args.report}; ` +
-        `${skippedPairs} pair-test(s) were skipped/filtered). A leg that asserts no ` +
+      `Zero ${subject} EXECUTED in this leg (report ${args.report}; ` +
+        `${skipped} ${subject} were skipped/filtered). A leg that asserts no ` +
         "settlement is a false green: check the MPP_HARNESS_*/X402_HARNESS_* selectors.",
     );
   }
 
-  if (args.exact !== undefined && executedPairs !== args.exact) {
+  if (args.exact !== undefined && executed !== args.exact) {
     throw new Error(
-      `Expected exactly ${args.exact} settlement pair-test(s) to execute in this ` +
-        `leg but ${executedPairs} did (report ${args.report}). The leg's pinned pair ` +
+      `Expected exactly ${args.exact} ${subject} to execute in this ` +
+        `leg but ${executed} did (report ${args.report}). The leg's pinned count ` +
         "count drifted: update the workflow's --exact value or fix the selectors.",
     );
   }
 
-  if (args.exact === undefined && executedPairs < min) {
+  if (args.exact === undefined && executed < min) {
     throw new Error(
-      `Expected at least ${min} settlement pair-test(s) to execute in this leg but ` +
-        `only ${executedPairs} did (report ${args.report}).`,
+      `Expected at least ${min} ${subject} to execute in this leg but ` +
+        `only ${executed} did (report ${args.report}).`,
     );
   }
 
   const bound = args.exact !== undefined ? `exactly ${args.exact}` : `>= ${min}`;
   console.log(
-    `[assert-run-count] ${executedPairs} settlement pair-test(s) executed (${bound}). OK.`,
+    `[assert-run-count] ${executed} ${subject} executed (${bound}). OK.`,
   );
 }
 

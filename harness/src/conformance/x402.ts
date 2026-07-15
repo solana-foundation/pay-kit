@@ -637,6 +637,50 @@ async function deriveAta(
   return String(ata);
 }
 
+const MANAGED_SIGNER_FUNDING_ERROR =
+  "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds";
+
+// A transferChecked multisig puts every required signer after the authority.
+// Any server-managed signer in that tail could authorize the transfer. Its
+// destination at position 2 is deliberately excluded: receiving funds does not
+// authorize or source a transfer. The source itself must also not be a managed
+// key or a managed key's ATA, derived with the transfer's real Token or
+// Token-2022 program.
+export async function assertNoManagedTransferFunding(
+  accountIndices: readonly number[],
+  staticAccounts: readonly string[],
+  mint: string,
+  transferProgram: string,
+  managedSigners: readonly string[],
+): Promise<void> {
+  const keyAt = (index: number): string => staticAccounts[index] ?? "";
+  const source = keyAt(accountIndices[0]);
+  const managed = new Set(managedSigners);
+
+  for (const accountIndex of accountIndices.slice(3)) {
+    if (managed.has(keyAt(accountIndex))) {
+      throw new Error(MANAGED_SIGNER_FUNDING_ERROR);
+    }
+  }
+
+  for (const signer of managed) {
+    if (source === signer) {
+      throw new Error(MANAGED_SIGNER_FUNDING_ERROR);
+    }
+    try {
+      if (source === (await deriveAta(signer, mint, transferProgram))) {
+        throw new Error(MANAGED_SIGNER_FUNDING_ERROR);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === MANAGED_SIGNER_FUNDING_ERROR) {
+        throw error;
+      }
+      // Invalid configured signer keys cannot derive an ATA and therefore
+      // cannot match the transaction's decoded source key.
+    }
+  }
+}
+
 // Run the 11-rule exact structural pass over a base64 versioned transaction.
 // Resolves on accept; rejects with a canonical `invalid_exact_svm_payload_*`
 // Error on the first rule failure.
@@ -710,29 +754,16 @@ export async function verifyExactTransaction(
   const source = keyAt(transfer.accountIndices[0]);
   const mint = keyAt(transfer.accountIndices[1]);
   const destination = keyAt(transfer.accountIndices[2]);
-  const authority = keyAt(transfer.accountIndices[3]);
 
-  // Rule 5: fee-payer/managed-signer fund-mover guard (authority + source,
-  // and the managed signer's own source ATA for the mint). An appended
-  // instruction that merely references the fee-payer is NOT a fund move.
-  for (const managed of managedSigners) {
-    if (managed === authority || managed === source) {
-      throw new Error(
-        "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
-      );
-    }
-    let managedAta: string | undefined;
-    try {
-      managedAta = await deriveAta(managed, mint, transferProgram);
-    } catch {
-      managedAta = undefined; // an unparseable managed key can't be the source ATA
-    }
-    if (managedAta !== undefined && source === managedAta) {
-      throw new Error(
-        "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
-      );
-    }
-  }
+  // Rule 5: reject managed authorities, multisig signer tails, direct sources,
+  // and managed ATAs. Mirrors Go/Rust's exact transfer verifier.
+  await assertNoManagedTransferFunding(
+    transfer.accountIndices,
+    keys,
+    mint,
+    transferProgram,
+    managedSigners,
+  );
 
   // Rule 6: mint match.
   if (mint !== requirement.asset) {

@@ -81,8 +81,8 @@ runs:
           args=()
           IFS=',' read -ra parts <<< "$bins"
           for b in "${parts[@]}"; do args+=(--bin "$b"); done
-          echo "cargo build -p $pkg ${args[*]}"
-          cargo build -p "$pkg" "${args[@]}"
+          echo "cargo build --locked -p $pkg ${args[*]}"
+          cargo build --locked -p "$pkg" "${args[@]}"
         done
 
     - name: Install harness

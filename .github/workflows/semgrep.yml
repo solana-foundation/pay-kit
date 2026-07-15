@@ -8,10 +8,8 @@ name: Semgrep (radar L7)
 #   - self-test: every *.bad.* fixture MUST fire, every *.good.* MUST stay clean
 #   - scan:      run the ruleset over the real source tree (typescript/, go/, python/)
 #
-# The scan step is advisory (does not fail the build) so a newly surfaced,
-# to-be-triaged finding doesn't block unrelated PRs. The self-test step IS
-# blocking: it guarantees the rules keep catching their known-bad and stay quiet
-# on their known-good. Flip `continue-on-error` off once the tree is clean.
+# Every source scan is blocking. A security-rule finding is either a real
+# regression or a rule-quality defect that must be resolved before merge.
 
 on:
   push:
@@ -29,16 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install semgrep
-        run: pip install semgrep==1.168.0
-
       - name: Self-test rules against fixtures (blocking)
-        run: bash harness/semgrep/run.sh --test
+        run: docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e bash harness/semgrep/run.sh --test
 
-      - name: Scan real source (advisory)
-        continue-on-error: true
-        run: bash harness/semgrep/run.sh typescript go python
+      - name: Scan real source (blocking)
+        run: docker run --rm -e SEMGREP_ERROR_ON_FINDINGS=1 -v "$PWD:/src" -w /src semgrep/semgrep@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e bash harness/semgrep/run.sh typescript go python

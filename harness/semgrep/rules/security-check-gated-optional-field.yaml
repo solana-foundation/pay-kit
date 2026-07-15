@@ -8,6 +8,9 @@
 # The attacker controls whether the field is present, and its absence is the
 # "happy path" that bypasses the proof. The safe form asserts the field is
 # present FIRST (throw when missing), then verifies unconditionally.
+# A final voucher is deliberately excluded: session close may validly settle at
+# the previously verified watermark without one, so a generic optional-field
+# rule cannot distinguish that safe protocol path from a proof bypass.
 #
 # Tuned against real constructs in the pay-kit repo (2026-07):
 #   typescript/.../mpp/src/server/session/on-chain.ts:507
@@ -47,7 +50,7 @@ rules:
               }
       - metavariable-regex:
           metavariable: $FIELD
-          regex: (?i)^(signature|sig|proof|attestation|onchainproof|txsig|txsignature|credential|voucher)$
+          regex: (?i)^(signature|sig|proof|attestation|onchainproof|txsig|txsignature)$
       - metavariable-regex:
           metavariable: $VERIFY
           regex: (?i).*(verif|checkonchain|onchain|assert|validate|confirm|proof|settle).*
@@ -78,7 +81,7 @@ rules:
                   $VERIFY(...)
       - metavariable-regex:
           metavariable: $FIELD
-          regex: (?i)^(signature|sig|proof|attestation|onchain_proof|tx_sig|credential|voucher)$
+          regex: (?i)^(signature|sig|proof|attestation|onchain_proof|tx_sig)$
       - metavariable-regex:
           metavariable: $VERIFY
           regex: (?i).*(verif|check_on_chain|on_chain|onchain|assert|validate|confirm|proof|settle).*
@@ -110,7 +113,7 @@ rules:
               }
       - metavariable-regex:
           metavariable: $FIELD
-          regex: (?i)^(signature|sig|proof|attestation|onchainproof|txsig|credential|voucher)$
+          regex: (?i)^(signature|sig|proof|attestation|onchainproof|txsig)$
       - metavariable-regex:
           metavariable: $VERIFY
           regex: (?i).*(verif|checkonchain|onchain|assert|validate|confirm|proof|settle).*

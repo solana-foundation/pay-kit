@@ -10,9 +10,9 @@
     "description": "A cooperative close was already requested; no further vouchers are accepted."
   },
   {
-    "tag": "channel-finalized",
-    "reason": "channel-finalized",
-    "description": "The channel is already finalized on-chain."
+    "tag": "channel-sealed",
+    "reason": "channel-sealed",
+    "description": "The channel is already sealed and cannot accept a voucher."
   },
   {
     "tag": "cumulative-not-monotonic",

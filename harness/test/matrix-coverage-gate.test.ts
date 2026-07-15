@@ -156,7 +156,7 @@ const OUTCOMES: string[] = [
   // mpp-session voucher reject codes
   "below-min-delta",
   "channel-close-pending",
-  "channel-finalized",
+  "channel-sealed",
   "cumulative-not-monotonic",
   "exceeds-deposit",
   "expired",
@@ -292,11 +292,10 @@ const COVERED: Record<string, { test: string; tier: Tier }> = {
     test: "vector x402-exact-fee-payer-as-source-ata (x402-exact-reject.json), run cross-SDK against the REAL Go + Rust verifiers via conformance.test.ts (MPP_CONFORMANCE_LANGUAGES=go|rust legs)",
     tier: "T0",
   },
-  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high":
-    {
-      test: "vector x402-exact-compute-price-too-high (x402-exact-reject.json)",
-      tier: "T0",
-    },
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high": {
+    test: "vector x402-exact-compute-price-too-high (x402-exact-reject.json)",
+    tier: "T0",
+  },
   "x402-exact-verify-server::invalid_exact_svm_payload_memo_count": {
     test: "vector x402-exact-memo-count (x402-exact-reject.json)",
     tier: "T0",
@@ -498,17 +497,50 @@ const COVERED: Record<string, { test: string; tier: Tier }> = {
     tier: "T0",
   },
   // ---- mpp-session voucher (all direct-verified) ----
-  "mpp-session-voucher::accepted": { test: "session-voucher-verify.test.ts (valid in-window)", tier: "T0" },
-  "mpp-session-voucher::replayed": { test: "session-voucher-verify.test.ts (exact resubmission)", tier: "T0" },
-  "mpp-session-voucher::below-min-delta": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::channel-close-pending": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::channel-finalized": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::cumulative-not-monotonic": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::exceeds-deposit": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::expired": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::expiry-too-soon": { test: "session-voucher-verify.test.ts (expires-within-settlement-window)", tier: "T0" },
-  "mpp-session-voucher::invalid-cumulative": { test: "session-voucher-verify.test.ts", tier: "T0" },
-  "mpp-session-voucher::invalid-signature": { test: "session-voucher-verify.test.ts", tier: "T0" },
+  "mpp-session-voucher::accepted": {
+    test: "session-voucher-verify.test.ts (valid in-window)",
+    tier: "T0",
+  },
+  "mpp-session-voucher::replayed": {
+    test: "session-voucher-verify.test.ts (exact resubmission)",
+    tier: "T0",
+  },
+  "mpp-session-voucher::below-min-delta": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::channel-close-pending": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::channel-sealed": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::cumulative-not-monotonic": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::exceeds-deposit": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::expired": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::expiry-too-soon": {
+    test: "session-voucher-verify.test.ts (expires-within-settlement-window)",
+    tier: "T0",
+  },
+  "mpp-session-voucher::invalid-cumulative": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
+  "mpp-session-voucher::invalid-signature": {
+    test: "session-voucher-verify.test.ts",
+    tier: "T0",
+  },
   "mpp-session-voucher-canonical-bytes::accept": {
     test: "session-voucher-verify.test.ts byte-layout + vector session-voucher-preimage-frozen (session-voucher.json)",
     tier: "T0",
@@ -557,10 +589,7 @@ const COVERED: Record<string, { test: string; tier: Tier }> = {
 // a covering test should use and how to cover it (which vector/test to add).
 // severity x likelihood drives the ranked top-gap report.
 // ---------------------------------------------------------------------------
-const KNOWN_GAP: Record<
-  string,
-  { tier: Tier; severity: Sev; likelihood: Sev; reason: string; how: string }
-> = {
+const KNOWN_GAP: Record<string, { tier: Tier; severity: Sev; likelihood: Sev; reason: string; how: string }> = {
   // ---- x402-exact structural verifier: the untested slots of a fund-safety verifier ----
   "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_length": {
     tier: "T0",
@@ -569,22 +598,20 @@ const KNOWN_GAP: Record<
     reason: "No vector exercises the [3,6] instruction-count bound (verify.go:75).",
     how: "Add x402-exact-ix-count-out-of-range vectors (2-ix and 7-ix txs) to x402-exact-reject.json.",
   },
-  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction":
-    {
-      tier: "T0",
-      severity: "high",
-      likelihood: "medium",
-      reason: "ix[0]-not-SetComputeUnitLimit path (verify.go:147) is unvectored; a payer could omit/spoof the CU-limit guard.",
-      how: "Add x402-exact-compute-limit-wrong-program vector (ix[0] = non-ComputeBudget) to x402-exact-reject.json.",
-    },
-  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_price_instruction":
-    {
-      tier: "T0",
-      severity: "medium",
-      likelihood: "medium",
-      reason: "ix[1]-not-SetComputeUnitPrice path (verify.go:159) is unvectored (only the too-high price is tested).",
-      how: "Add x402-exact-compute-price-wrong-program vector to x402-exact-reject.json.",
-    },
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction": {
+    tier: "T0",
+    severity: "high",
+    likelihood: "medium",
+    reason: "ix[0]-not-SetComputeUnitLimit path (verify.go:147) is unvectored; a payer could omit/spoof the CU-limit guard.",
+    how: "Add x402-exact-compute-limit-wrong-program vector (ix[0] = non-ComputeBudget) to x402-exact-reject.json.",
+  },
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction_instructions_compute_price_instruction": {
+    tier: "T0",
+    severity: "medium",
+    likelihood: "medium",
+    reason: "ix[1]-not-SetComputeUnitPrice path (verify.go:159) is unvectored (only the too-high price is tested).",
+    how: "Add x402-exact-compute-price-wrong-program vector to x402-exact-reject.json.",
+  },
   "x402-exact-verify-server::invalid_exact_svm_payload_unknown_fifth_instruction": {
     tier: "T0",
     severity: "low",
@@ -906,12 +933,9 @@ const KNOWN_GAP: Record<
 // cannot arise on this path, each with a reason.
 // ---------------------------------------------------------------------------
 const NOT_APPLICABLE: Record<string, string> = {
-  "x402-exact-verify-server::invalid_exact_svm_payload_transaction":
-    "Reference-only (@x402/svm) generic transaction failure; Go verify.go never emits it (documented divergence).",
-  "x402-exact-verify-server::invalid_exact_svm_payload_missing_fee_payer":
-    "Reference-only (@x402/svm); the Go structural verifier does not emit a missing-fee-payer code (divergence).",
-  "x402-exact-verify-server::invalid_exact_svm_payload_unknown_seventh_instruction":
-    "Unreachable in Go: the instruction count is capped at 6 (verify.go:74) before any 7th-slot check.",
+  "x402-exact-verify-server::invalid_exact_svm_payload_transaction": "Reference-only (@x402/svm) generic transaction failure; Go verify.go never emits it (documented divergence).",
+  "x402-exact-verify-server::invalid_exact_svm_payload_missing_fee_payer": "Reference-only (@x402/svm); the Go structural verifier does not emit a missing-fee-payer code (divergence).",
+  "x402-exact-verify-server::invalid_exact_svm_payload_unknown_seventh_instruction": "Unreachable in Go: the instruction count is capped at 6 (verify.go:74) before any 7th-slot check.",
 };
 
 // ---------------------------------------------------------------------------
@@ -935,7 +959,7 @@ const DEAD_OR_ALIAS: Record<string, string> = {
   "challenge-route-mismatch": "legacy alias -> canonical challenge_route_mismatch (tracked as a KNOWN_GAP cell).",
   "invalid-method": "legacy alias -> challenge_route_mismatch.",
   "rpc-error": "legacy alias -> payment_invalid.",
-  "other": "legacy catch-all -> payment_invalid.",
+  other: "legacy catch-all -> payment_invalid.",
   "amount-mismatch": "normalized/legacy alias; x402 amount enforced via invalid_exact_svm_payload_amount_mismatch (covered), charge via charge_request_mismatch.",
   "decimals-mismatch": "normalized code that surfaces as no-matching-transfer in the reference (reject.ts note); covered via charge-transferchecked-decimals-mismatch.",
   "invalid-payload": "normalized generic fallback; exercised via x402-exact-defect-verify (undecodable) + flows invalid_payload.",
@@ -1020,7 +1044,7 @@ const APPLICABLE_CELLS: string[] = [
   "mpp-session-voucher::accepted",
   "mpp-session-voucher::below-min-delta",
   "mpp-session-voucher::channel-close-pending",
-  "mpp-session-voucher::channel-finalized",
+  "mpp-session-voucher::channel-sealed",
   "mpp-session-voucher::cumulative-not-monotonic",
   "mpp-session-voucher::exceeds-deposit",
   "mpp-session-voucher::expired",
@@ -1140,11 +1164,7 @@ function vectorRejectStrings(): Set<string> {
   return codes;
 }
 
-const accountedOutcomes = new Set<string>([
-  ...cellKeys.map(outcomeOf),
-  ...Object.keys(NOT_APPLICABLE).map(outcomeOf),
-  ...Object.keys(DEAD_OR_ALIAS),
-]);
+const accountedOutcomes = new Set<string>([...cellKeys.map(outcomeOf), ...Object.keys(NOT_APPLICABLE).map(outcomeOf), ...Object.keys(DEAD_OR_ALIAS)]);
 
 describe("matrix coverage gate: every applicable (path,outcome) is covered or a declared gap", () => {
   it("has a non-trivial matrix (paths, outcomes, cells)", () => {
@@ -1159,16 +1179,11 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
   });
 
   it("enumerates each applicable cell exactly once", () => {
-    const duplicates = APPLICABLE_CELLS.filter(
-      (key, index) => APPLICABLE_CELLS.indexOf(key) !== index,
-    );
+    const duplicates = APPLICABLE_CELLS.filter((key, index) => APPLICABLE_CELLS.indexOf(key) !== index);
     expect(duplicates, `duplicate APPLICABLE_CELLS entries: ${duplicates.join(", ")}`).toEqual([]);
     const applicable = new Set(APPLICABLE_CELLS);
     const unlisted = cellKeys.filter((key) => !applicable.has(key));
-    expect(
-      unlisted,
-      `classified cell(s) missing from APPLICABLE_CELLS: ${unlisted.join(", ")}`,
-    ).toEqual([]);
+    expect(unlisted, `classified cell(s) missing from APPLICABLE_CELLS: ${unlisted.join(", ")}`).toEqual([]);
   });
 
   it("references only enumerated paths and outcomes (no typo'd axis)", () => {
@@ -1178,9 +1193,7 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
     const badOutcome = cellKeys.filter((k) => !outcomes.has(outcomeOf(k)));
     expect(badPath, `cells on unknown path: ${badPath.join(", ")}`).toEqual([]);
     expect(badOutcome, `cells with unknown outcome: ${badOutcome.join(", ")}`).toEqual([]);
-    const naBad = Object.keys(NOT_APPLICABLE).filter(
-      (k) => !paths.has(pathOf(k)) || !outcomes.has(outcomeOf(k)),
-    );
+    const naBad = Object.keys(NOT_APPLICABLE).filter((k) => !paths.has(pathOf(k)) || !outcomes.has(outcomeOf(k)));
     expect(naBad, `NOT_APPLICABLE on unknown path/outcome: ${naBad.join(", ")}`).toEqual([]);
   });
 
@@ -1190,19 +1203,14 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
     const orphanPaths = PATHS.filter((p) => !withCells.has(p));
     expect(
       orphanPaths,
-      `protocol path(s) with no COVERED/KNOWN_GAP cell: ${orphanPaths.join(", ")}. ` +
-        "Classify at least one (path,outcome) cell (accept or a reject) or the path is untested-in-the-dark.",
+      `protocol path(s) with no COVERED/KNOWN_GAP cell: ${orphanPaths.join(", ")}. ` + "Classify at least one (path,outcome) cell (accept or a reject) or the path is untested-in-the-dark.",
     ).toEqual([]);
   });
 
   // TRIPWIRE 2: a new reject code nobody mapped turns this red.
   it("accounts for every enumerated OUTCOME id", () => {
     const unaccounted = OUTCOMES.filter((o) => !accountedOutcomes.has(o));
-    expect(
-      unaccounted,
-      `outcome id(s) not accounted: ${unaccounted.join(", ")}. ` +
-        "Bind to a matrix cell (COVERED/KNOWN_GAP), or add to NOT_APPLICABLE / DEAD_OR_ALIAS with a reason.",
-    ).toEqual([]);
+    expect(unaccounted, `outcome id(s) not accounted: ${unaccounted.join(", ")}. ` + "Bind to a matrix cell (COVERED/KNOWN_GAP), or add to NOT_APPLICABLE / DEAD_OR_ALIAS with a reason.").toEqual([]);
   });
 
   // TRIPWIRE 3: a new normalized RejectCode in schema.ts turns this red.
@@ -1210,22 +1218,16 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
     const live = schemaRejectCodes();
     expect(live.length).toBeGreaterThan(10);
     const missing = live.filter((c) => !accountedOutcomes.has(c) && !OUTCOMES.includes(c));
-    expect(
-      missing,
-      `schema.ts RejectCode(s) missing from the matrix taxonomy: ${missing.join(", ")}. ` +
-        "Add to OUTCOMES and classify.",
-    ).toEqual([]);
+    expect(missing, `schema.ts RejectCode(s) missing from the matrix taxonomy: ${missing.join(", ")}. ` + "Add to OUTCOMES and classify.").toEqual([]);
   });
 
   // TRIPWIRE 4: a vector inventing an unmapped reject string turns this red.
   it("accounts for every reject string actually emitted by a vector on disk (live)", () => {
     const emitted = [...vectorRejectStrings()];
     const unmapped = emitted.filter((c) => !accountedOutcomes.has(c) && !OUTCOMES.includes(c));
-    expect(
-      unmapped,
-      `vector reject code(s) with no matrix classification: ${unmapped.join(", ")}. ` +
-        "Add to OUTCOMES and classify (a vector cannot emit a code the matrix does not know).",
-    ).toEqual([]);
+    expect(unmapped, `vector reject code(s) with no matrix classification: ${unmapped.join(", ")}. ` + "Add to OUTCOMES and classify (a vector cannot emit a code the matrix does not know).").toEqual(
+      [],
+    );
   });
 
   // Per-cell: every enumerated applicable cell must be COVERED, KNOWN_GAP, or
@@ -1247,10 +1249,7 @@ describe("matrix coverage gate: every applicable (path,outcome) is covered or a 
       } else if (notApplicable) {
         expect(notApplicable.length, `${key}: NOT_APPLICABLE must give a reason`).toBeGreaterThan(0);
       } else {
-        throw new Error(
-          `${key} is neither COVERED, KNOWN_GAP, nor NOT_APPLICABLE. An applicable cell ` +
-            "must be classified — cover it, declare the gap, or document why it cannot apply.",
-        );
+        throw new Error(`${key} is neither COVERED, KNOWN_GAP, nor NOT_APPLICABLE. An applicable cell ` + "must be classified — cover it, declare the gap, or document why it cannot apply.");
       }
     });
   }

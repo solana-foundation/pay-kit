@@ -125,6 +125,32 @@ describe("M-8: assert-run-count run-count guard", () => {
     const { code, stderr } = runAssertRunCount(["--report", report, "--exact", "2"]);
     expect(code, stderr).toBe(0);
   });
+
+  it("fails all-assertion mode when every selected test was skipped", () => {
+    const report = writeReport({
+      success: true,
+      testResults: [{ assertionResults: [{ title: "security suite", status: "skipped" }] }],
+    });
+    const { code, stderr } = runAssertRunCount(["--report", report, "--all", "--min", "1"]);
+    expect(code, stderr).not.toBe(0);
+    expect(stderr).toContain("Zero test assertion(s) EXECUTED");
+  });
+
+  it("counts every passed assertion in all-assertion mode", () => {
+    const report = writeReport({
+      success: true,
+      testResults: [
+        {
+          assertionResults: [
+            { title: "security suite one", status: "passed" },
+            { title: "security suite two", status: "passed" },
+          ],
+        },
+      ],
+    });
+    const { code, stderr } = runAssertRunCount(["--report", report, "--all", "--exact", "2"]);
+    expect(code, stderr).toBe(0);
+  });
 });
 
 describe("M-9: on-chain settlement gate", () => {

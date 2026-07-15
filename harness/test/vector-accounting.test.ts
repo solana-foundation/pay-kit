@@ -15,19 +15,18 @@ import { describe, expect, it } from "vitest";
 // nothing, which is exactly the false-green class this PR exists to kill.
 //
 // This test makes the vector tree self-accounting: every *.json under
-// harness/vectors/ must map to a declared consumer below. Adding a new vector
-// directory now fails here until its consuming driver is declared, so a future
-// vector file cannot silently sit unexecuted.
+// harness/vectors/ must map to a declared consumer below. The mapping is
+// deliberately per FILE, not per directory: a new ignored-security-case.json
+// beside a consumed protocol vector must fail closed instead of inheriting a
+// directory's coverage claim.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vectorsDir = join(here, "..", "vectors");
 
-// Each vector file's consumer, keyed by its immediate location under
-// harness/vectors/. "conformance-driver" and the protocol/flow drivers EXECUTE
-// their vectors; the *-catalog entries are non-executable reason banks that a
-// dedicated schema test validates (regression-bank.test.ts for the known-bad
-// bank; this file for the voucher reject catalog). Keep this map in sync with
-// the drivers when a vector directory is added.
+// "conformance-driver" and the protocol/flow drivers EXECUTE their vectors;
+// the *-catalog entries are non-executable reason banks that a dedicated schema
+// test validates. Every entry is explicit so a new file cannot silently inherit
+// its sibling's consumer.
 type Consumer =
   | "conformance-driver" // test/conformance.test.ts (top-level *.json, executed)
   | "protocol-layer" // src/protocol/* (mpp-protocol/*, executed)
@@ -36,13 +35,31 @@ type Consumer =
   | "voucher-reject-catalog" // this file (schema-validated)
   | "value-binding-catalog"; // spec mirror; cases executed inline by test/value-binding-verify.test.ts, shape-validated here
 
-const DIRECTORY_CONSUMERS: Record<string, Consumer> = {
-  "": "conformance-driver",
-  "mpp-protocol": "protocol-layer",
-  "mpp-protocol-flows": "flow-driver",
-  "known-bad": "regression-bank-catalog",
-  "session-voucher": "voucher-reject-catalog",
-  "value-binding": "value-binding-catalog",
+const FILE_CONSUMERS: Record<string, Consumer> = {
+  "canonical-bytes.json": "conformance-driver",
+  "charge-defaults.json": "conformance-driver",
+  "charge-envelope.json": "conformance-driver",
+  "charge-precedence.json": "conformance-driver",
+  "charge-rejects.json": "conformance-driver",
+  "session-voucher.json": "conformance-driver",
+  "wire-bytes.json": "conformance-driver",
+  "x402-build.json": "conformance-driver",
+  "x402-exact-reject.json": "conformance-driver",
+  "x402-extensions.json": "conformance-driver",
+  "x402-v1-build.json": "conformance-driver",
+  "x402-v1-verify.json": "conformance-driver",
+  "x402-verify.json": "conformance-driver",
+  "known-bad/regression-bank.json": "regression-bank-catalog",
+  "mpp-protocol-flows/flows.json": "flow-driver",
+  "mpp-protocol-flows/golden-results.json": "flow-driver",
+  "mpp-protocol/authorization.json": "protocol-layer",
+  "mpp-protocol/base64url.json": "protocol-layer",
+  "mpp-protocol/challenge-id.json": "protocol-layer",
+  "mpp-protocol/receipt.json": "protocol-layer",
+  "mpp-protocol/www-authenticate.json": "protocol-layer",
+  "session-voucher/session-voucher-reject.json": "voucher-reject-catalog",
+  "value-binding/open.json": "value-binding-catalog",
+  "value-binding/topup.json": "value-binding-catalog",
 };
 
 function listJsonFiles(root: string): string[] {
@@ -61,10 +78,16 @@ function listJsonFiles(root: string): string[] {
   return out;
 }
 
-function immediateDir(fileFromVectors: string): string {
-  const rel = relative(vectorsDir, fileFromVectors);
-  const dir = dirname(rel);
-  return dir === "." ? "" : dir;
+function relativeVectorPath(fileFromVectors: string): string {
+  return relative(vectorsDir, fileFromVectors).replaceAll("\\", "/");
+}
+
+function corpusGaps(files: readonly string[]): { unaccounted: string[]; stale: string[] } {
+  const actual = new Set(files.map(relativeVectorPath));
+  return {
+    unaccounted: [...actual].filter((file) => !(file in FILE_CONSUMERS)).sort(),
+    stale: Object.keys(FILE_CONSUMERS).filter((file) => !actual.has(file)).sort(),
+  };
 }
 
 describe("vector corpus accounting", () => {
@@ -76,22 +99,27 @@ describe("vector corpus accounting", () => {
     expect(files.length).toBeGreaterThanOrEqual(10);
   });
 
-  it("accounts for every *.json under vectors/ (no orphaned corpus)", () => {
-    const orphans: string[] = [];
-    for (const file of files) {
-      const dir = immediateDir(file);
-      if (!(dir in DIRECTORY_CONSUMERS)) {
-        orphans.push(relative(vectorsDir, file));
-      }
-    }
+  it("accounts for every *.json under vectors/ by exact file path", () => {
+    const { unaccounted, stale } = corpusGaps(files);
     expect(
-      orphans,
-      `Unaccounted vector file(s): ${orphans.join(", ")}. ` +
+      unaccounted,
+      `Unaccounted vector file(s): ${unaccounted.join(", ")}. ` +
         "Every *.json under harness/vectors/ must be executed by a driver or " +
-        "validated as a catalog. Declare its directory in DIRECTORY_CONSUMERS " +
+        "validated as a catalog. Declare its exact path in FILE_CONSUMERS " +
         "(vector-accounting.test.ts) and wire the consuming driver, or the file " +
         "is a false green: it looks like coverage but guards nothing.",
     ).toEqual([]);
+    expect(
+      stale,
+      `Stale vector consumer entries: ${stale.join(", ")}. Remove the entry or restore the vector.`,
+    ).toEqual([]);
+  });
+
+  it("rejects an unconsumed file even when it sits beside consumed protocol vectors", () => {
+    const ignored = join(vectorsDir, "mpp-protocol", "ignored-security-case.json");
+    expect(corpusGaps([...files, ignored]).unaccounted).toContain(
+      "mpp-protocol/ignored-security-case.json",
+    );
   });
 
   it("validates the session-voucher reject catalog shape", () => {
@@ -99,11 +127,7 @@ describe("vector corpus accounting", () => {
     // so validate it as one and pin the security-critical voucher reject reasons
     // so the bank cannot silently drop them. Executing these against the runners
     // (as x402-exact-reject.json is executed) is the tracked follow-up.
-    const catalogPath = join(
-      vectorsDir,
-      "session-voucher",
-      "session-voucher-reject.json",
-    );
+    const catalogPath = join(vectorsDir, "session-voucher", "session-voucher-reject.json");
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as Array<{
       tag: string;
       reason: string;
@@ -121,9 +145,7 @@ describe("vector corpus accounting", () => {
       tags.add(entry.tag);
       expect(entry.reason, `${entry.tag}.reason`).toBe(entry.tag);
       expect(typeof entry.description, `${entry.tag}.description`).toBe("string");
-      expect(entry.description.trim(), `${entry.tag}.description non-empty`).not.toBe(
-        "",
-      );
+      expect(entry.description.trim(), `${entry.tag}.description non-empty`).not.toBe("");
     }
 
     // The voucher trust model turns on these classes; a reject bank that drops
@@ -135,7 +157,7 @@ describe("vector corpus accounting", () => {
       "expired",
       "expires-within-settlement-window",
       "invalid-signature",
-      "channel-finalized",
+      "channel-sealed",
       "channel-close-pending",
     ];
     for (const reason of REQUIRED_REJECT_REASONS) {

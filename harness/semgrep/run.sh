@@ -57,4 +57,8 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
 fi
 
 echo "== radar L7 scan: ${TARGETS[*]} =="
-semgrep --config "$RULES" "${EXCLUDES[@]}" "${TARGETS[@]}"
+ERROR_ON_FINDINGS=()
+if [[ "${SEMGREP_ERROR_ON_FINDINGS:-0}" == "1" ]]; then
+  ERROR_ON_FINDINGS+=(--error)
+fi
+semgrep --config "$RULES" "${ERROR_ON_FINDINGS[@]}" "${EXCLUDES[@]}" "${TARGETS[@]}"
