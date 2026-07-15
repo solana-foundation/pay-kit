@@ -8,7 +8,7 @@
 // workflow, or (b) listed in CI_EXEMPT with a concrete reason. A new test that
 // is neither wired nor exempted turns this RED — you cannot add a radar test and
 // forget to run it.
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -254,4 +254,33 @@ describe("workflow hygiene gate: direct non-publish workflows are read-only by d
       expect(step).toMatch(/MPP_HARNESS_SESSION_RED_FAULTS:\s*"1"/);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Gate self-activation SEAL. The cascade root (ci: gates self-activate with
+// their subjects) lets the Rust conformance/coverage steps and the python
+// session leg report themselves pending while their subjects are absent, so
+// earlier legs of the #216 redelivery chain stay green. This tree is the END
+// STATE of that chain: every subject MUST exist here, because a missing one
+// means a pending gate silently outlived its purpose and is still off.
+// ---------------------------------------------------------------------------
+describe("gate self-activation seal: every pending gate's subject exists in the end state", () => {
+  const repoRoot = join(here, "..", "..");
+  const SUBJECTS = [
+    // ci.yml: rust-conformance job + the TS-harness job's Rust vector steps
+    "rust/crates/kit/examples/conformance_runner.rs",
+    "rust/crates/kit/examples/protocol_runner.rs",
+    // ci.yml: the Rust coverage floor step
+    "scripts/check-rust-coverage.py",
+    // harness.yml: the focused python session leg
+    "harness/python-session-client/test_main.py",
+  ];
+  for (const subject of SUBJECTS) {
+    it(`subject exists: ${subject}`, () => {
+      expect(
+        existsSync(join(repoRoot, subject)),
+        `${subject} must exist in the integrated tree; a pending gate is still off without it`,
+      ).toBe(true);
+    });
+  }
 });

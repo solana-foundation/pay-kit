@@ -23,18 +23,18 @@ REHEARSAL=rehearsal/pr216-integration
 # (.github/workflows/*, harness/test/boot-policy.test.ts, ci-coverage-gate.test.ts,
 # the pr216 ledger) and is merged LAST, so its blobs win for those paths and it
 # is the single authoritative reconciler of the shared surface. #238, #228 and
-# #239 all also touch ci.yml + boot-policy.test.ts; among them, the mpp-session
-# leaf (#239) precedes the python leaf (#228) purely so those intermediate
-# textual hunks interleave conflict-free (the collision in the reverse order is
-# a phantom on paths #233 overwrites anyway). Every leaf's blob for its OWN
+# #239 all also touch ci.yml + boot-policy.test.ts; among them, the python leaf (#228)
+# now precedes the mpp-session leaf (#239) — the telescoped branches carry the
+# reconciliation merges in that order, so the cascade mirrors the PR chain. Every leaf's blob for its OWN
 # files still lands verbatim; verified by a post-rebuild `git diff <leaf-head>`
 # per owned path (all identical). x402 (#236) and rust (#227) carry the mpp/
 # subscription reconciliations; ruby (#235) then the harness leaf close it out.
 LEAVES=(
+  "244:ci/pr216-gate-activation"
   "237:fix/mpp-replay-store-hardening"
   "238:fix/mpp-subscription-hardening"
-  "239:fix/mpp-session-state-hardening"
   "228:fix/python-security-hardening"
+  "239:fix/mpp-session-state-hardening"
   "236:fix/x402-replay-hardening"
   "227:fix/rust-security-hardening"
   "235:fix/ruby-replay-store-capability"
