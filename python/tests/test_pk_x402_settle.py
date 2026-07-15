@@ -183,16 +183,46 @@ async def test_verify_and_settle_happy_path(monkeypatch):
     assert "payment-response" in payment.settlement_headers
 
 
+def _settlement_keys(signature: str) -> list[str]:
+    """Canonical network-qualified key plus the rolling-upgrade legacy keys
+    the adapter must claim (and roll back) as one unit."""
+    from solana_pay_kit._paycore.network import Network
+
+    return [
+        f"solana-settlement:consumed:{Network.SOLANA_LOCALNET.caip2()}:{signature}",
+        f"solana-charge:consumed:{signature}",
+        f"x402-svm-exact:consumed:{signature}",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_replay_same_signature_rejected(monkeypatch):
     store = MemoryStore()
     adapter, gate, op_kp = _adapter(store=store, signature="SIG-dupe", monkeypatch=monkeypatch)
     header = _build_envelope(adapter, gate, op_kp)
     await adapter.verify_and_settle(gate, _Req(header))
+    # A successful settlement claims the canonical key and both legacy
+    # markers so not-yet-upgraded workers stay fenced too.
+    for key in _settlement_keys("SIG-dupe"):
+        assert await store.get(key) is True
     # Second submit of a credential that broadcasts the same signature: consumed.
     header2 = _build_envelope(adapter, gate, op_kp)
     with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header2))
+    assert exc.value.code == "signature_consumed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_prefix", ["solana-charge:consumed:", "x402-svm-exact:consumed:"])
+async def test_legacy_marker_from_old_worker_rejects_settlement(monkeypatch, legacy_prefix):
+    """Rolling upgrade: a marker written by a not-yet-upgraded worker under a
+    legacy un-qualified key must block the upgraded adapter."""
+    store = MemoryStore()
+    await store.put(f"{legacy_prefix}SIG-legacy", True)
+    adapter, gate, op_kp = _adapter(store=store, signature="SIG-legacy", monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
     assert exc.value.code == "signature_consumed"
 
 
@@ -235,8 +265,10 @@ async def test_confirmation_timeout_raises_and_does_not_return_success(monkeypat
         await adapter.verify_and_settle(gate, _Req(header))
     assert exc.value.code == "payment_invalid"
     assert "confirmation failed" in str(exc.value)
-    # Reservation must be rolled back so an honest retry can replay.
-    assert await store.get("x402-svm-exact:consumed:SIG-timeout") is None
+    # The whole reservation (canonical network-qualified key plus legacy
+    # markers) must be rolled back so an honest retry can replay.
+    for key in _settlement_keys("SIG-timeout"):
+        assert await store.get(key) is None
 
 
 @pytest.mark.asyncio
@@ -253,7 +285,8 @@ async def test_confirmation_onchain_failure_rolls_back_reservation(monkeypatch):
     header = _build_envelope(adapter, gate, op_kp)
     with pytest.raises(InvalidProofError):
         await adapter.verify_and_settle(gate, _Req(header))
-    assert await store.get("x402-svm-exact:consumed:SIG-revert") is None
+    for key in _settlement_keys("SIG-revert"):
+        assert await store.get(key) is None
 
 
 # -- sub-microunit price truncation (149-2) ----------------------------------

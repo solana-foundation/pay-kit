@@ -25,7 +25,13 @@ from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.network_check import check_network_blockhash
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.store import MemoryStore, Store
+from solana_pay_kit._paycore.store import (
+    ReplayStoreConfigurationError,
+    Store,
+    claim_settlement_signature,
+    release_settlement_signature,
+    resolve_replay_store,
+)
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.x402.exact.legacy import (
@@ -60,7 +66,17 @@ _RESPONSE_HEADER = "payment-response"
 # server must echo it there when it accepted a v1 credential (rust
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
-_REPLAY_PREFIX = "x402-svm-exact:consumed:"
+# The settlement fence key scheme lives in _paycore.store and must match the
+# MPP charge fence: a settlement signature is an on-chain Solana artifact,
+# not a protocol-local credential identity.
+
+
+def _resolve_replay_store(config: Config, replay_store: Store | None) -> Store:
+    """Resolve x402 replay storage through the shared non-localnet policy."""
+    try:
+        return resolve_replay_store(config.network.mints_label(), replay_store, protocol="x402")
+    except ReplayStoreConfigurationError as exc:
+        raise ConfigurationError(f"solana_pay_kit: {exc}") from exc
 
 
 class X402Adapter:
@@ -79,7 +95,8 @@ class X402Adapter:
                 "leave X402Config.facilitator_url None for self-hosted"
             )
         self._config = config
-        self._store: Store = replay_store if replay_store is not None else MemoryStore()
+        self._store = _resolve_replay_store(config, replay_store)
+        self._settlement_replay_network = config.network.caip2()
         self._recent_blockhash_provider = recent_blockhash_provider
 
     def accepts_entry(self, gate: Gate, request: Any) -> X402AcceptsEntry:
@@ -230,12 +247,12 @@ class X402Adapter:
             if not signature:
                 raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
 
-            # Replay reservation. Namespace is distinct from the MPP charge key
-            # so an x402 signature can never satisfy an MPP route and vice
-            # versa. Reserve BEFORE confirmation so a concurrent resubmit of the
-            # same signature loses the race and is rejected as consumed.
-            replay_key = _REPLAY_PREFIX + signature
-            if not await self._store.put_if_absent(replay_key, True):
+            # Reserve a protocol-independent, network-qualified settlement key
+            # BEFORE confirmation. MPP uses the same identity, so a transaction
+            # accepted by either real verifier can authorize only one protocol.
+            # The claim also covers the rolling-upgrade legacy markers, so a
+            # worker on the previous key scheme cannot settle it again.
+            if not await claim_settlement_signature(self._store, self._settlement_replay_network, signature):
                 raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
             # Await on-chain confirmation BEFORE returning success. Without this
@@ -252,7 +269,7 @@ class X402Adapter:
             try:
                 await rpc.await_confirmation(signature)
             except Exception as exc:  # noqa: BLE001
-                await self._store.delete(replay_key)
+                await release_settlement_signature(self._store, self._settlement_replay_network, signature)
                 raise InvalidProofError(
                     f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
                 ) from exc

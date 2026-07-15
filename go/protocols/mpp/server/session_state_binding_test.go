@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
@@ -262,7 +262,7 @@ func TestSessionCoreRejectsDirectNonlocalnetBypasses(t *testing.T) {
 	durable := durableTestChannelStore{ChannelStore: NewMemoryChannelStore()}
 	config := sessionTestConfig()
 	config.Network = "mainnet"
-	config.VerifyTopUpTx = func(context.Context, *intents.TopUpPayload) (string, error) { return "", nil }
+	config.VerifyTopUpTx = func(context.Context, *intents.TopUpPayload, uint64) error { return nil }
 	server := NewSessionServer(config, durable)
 	payload := intents.OpenPayloadPush(solana.NewWallet().PublicKey().String(), "1000", solana.NewWallet().PublicKey().String(), confirmedSignature(0x44))
 	if _, err := server.ProcessOpen(context.Background(), &payload); err == nil || !strings.Contains(err.Error(), "requires an on-chain verifier") {

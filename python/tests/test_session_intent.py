@@ -6,7 +6,7 @@ port. Asserts mode/strategy serde, ``SessionRequest`` omit-empty parity,
 ``SessionAction`` round-trips for all five actions (including the ``"topUp"``
 camelCase tag), salt decimal-string out / string-or-number in, the
 ``cumulative`` decode alias, push/pull discrimination, the missing-mode error,
-and the 48-byte voucher message layout.
+and the 50-byte voucher message layout.
 """
 
 from __future__ import annotations

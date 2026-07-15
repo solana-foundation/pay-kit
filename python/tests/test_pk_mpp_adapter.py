@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from solana_pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
+from solana_pay_kit import Gate, MppConfig, Operator, Price, Protocol, Signer, Stablecoin, configure
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, ProductionReplayStore
 from solana_pay_kit.config import reset
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.mpp import MppAdapter, SecretResolver
 from solana_pay_kit.protocols.mpp.core.headers import format_authorization
 from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
+from solana_pay_kit.protocols.x402 import X402Adapter
 
 SECRET = "challenge-binding-secret-long-enough-for-hmac"
 FEE_A = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ"
@@ -31,6 +34,8 @@ def _clean(monkeypatch):
 
 def _cfg(**kw):
     kw.setdefault("network", "solana_localnet")
+    if kw["network"] == "solana_mainnet":
+        kw.setdefault("operator", Operator(signer=Signer.generate()))
     kw.setdefault("preflight", False)
     kw.setdefault("accept", (Protocol.MPP,))
     kw.setdefault("mpp", MppConfig(challenge_binding_secret=SECRET))
@@ -81,6 +86,93 @@ def test_accepts_entry_shape():
     assert entry["currency"] == "USDC"
     assert entry["payTo"] == cfg.effective_recipient()
     assert entry["realm"] == cfg.mpp.realm
+
+
+@pytest.mark.parametrize("replay_store", [None, MemoryStore()])
+def test_inmemory_replay_store_fails_closed_outside_localnet(monkeypatch, replay_store):
+    cfg = _cfg(network="solana_devnet")
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(ConfigurationError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        MppAdapter(cfg, replay_store=replay_store)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
+    with pytest.raises(ConfigurationError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        MppAdapter(cfg, replay_store=replay_store)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    adapter = MppAdapter(cfg, replay_store=replay_store)
+    assert isinstance(adapter._replay_store, MemoryStore)
+
+
+def test_localnet_allows_default_and_explicit_memory_replay_stores():
+    cfg = _cfg()
+    explicit_store = MemoryStore()
+
+    assert isinstance(MppAdapter(cfg)._replay_store, MemoryStore)
+    assert MppAdapter(cfg, replay_store=explicit_store)._replay_store is explicit_store
+
+
+@pytest.mark.parametrize("network", ["solana_devnet", "solana_mainnet"])
+def test_file_replay_store_is_rejected_outside_localnet(monkeypatch, tmp_path, network):
+    if network == "solana_devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    replay_store = FileReplayStore(tmp_path / "replay.json")
+
+    with pytest.raises(ConfigurationError, match="FileReplayStore.*localnet"):
+        MppAdapter(_cfg(network=network), replay_store=replay_store)
+
+
+def test_mainnet_forbids_inmemory_replay_store_opt_in(monkeypatch):
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(ConfigurationError, match="forbidden on mainnet") as caught:
+        MppAdapter(_cfg(network="solana_mainnet"), replay_store=MemoryStore())
+
+    assert isinstance(caught.value.__cause__, PaymentError)
+    assert caught.value.__cause__.code == "invalid-config"
+
+
+class _ProductionMemoryStore(MemoryStore, ProductionReplayStore):
+    """Attempts to make MemoryStore pass the nominal production assertion."""
+
+
+@pytest.mark.parametrize(
+    ("network", "allow_inmemory"),
+    [
+        ("solana_devnet", False),
+        ("solana_devnet", True),
+        ("solana_mainnet", False),
+        ("solana_mainnet", True),
+    ],
+)
+def test_mpp_and_x402_replay_store_policy_parity_for_memory_spoofs(monkeypatch, network, allow_inmemory):
+    if allow_inmemory:
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    cfg = _cfg(network=network)
+    mpp_store = _ProductionMemoryStore()
+    x402_store = _ProductionMemoryStore()
+
+    if network == "solana_devnet" and allow_inmemory:
+        assert MppAdapter(cfg, replay_store=mpp_store)._replay_store is mpp_store
+        assert X402Adapter(cfg, replay_store=x402_store)._store is x402_store
+        return
+
+    with pytest.raises(ConfigurationError):
+        MppAdapter(cfg, replay_store=mpp_store)
+    with pytest.raises(ConfigurationError):
+        X402Adapter(cfg, replay_store=x402_store)
+
+
+def test_localnet_allows_explicit_file_replay_store(tmp_path):
+    replay_store = FileReplayStore(tmp_path / "replay.json")
+
+    assert MppAdapter(_cfg(), replay_store=replay_store)._replay_store is replay_store
 
 
 def test_accepts_entry_includes_splits_when_fees():

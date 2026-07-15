@@ -14,11 +14,17 @@ import (
 
 	solana "github.com/solana-foundation/solana-go/v2"
 
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-const sessionTestRecipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+// sessionTestOperatorKey backs sessionTestRecipient with a real signing key so
+// signature-only open fixtures can co-sign the operator (rentPayer) slot that
+// the hardened open verifier cryptographically checks.
+var sessionTestOperatorKey = testutil.NewPrivateKey()
+
+var sessionTestRecipient = sessionTestOperatorKey.PublicKey().String()
 
 func sessionTestConfig() SessionConfig {
 	return SessionConfig{

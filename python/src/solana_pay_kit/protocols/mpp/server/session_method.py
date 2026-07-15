@@ -12,8 +12,9 @@ the idle-close watchdog.
 Trust model / on-chain seam: the RPC client is optional. With no RPC client the
 transaction signature and deposit amount are trusted as provided (offline
 core); with an RPC client an open's confirmation signature is checked on-chain
-before the channel is persisted, and a top-up signature is confirmed before the
-deposit is raised. The on-chain check is wired through the
+before the channel is persisted, and a top-up's confirmed instruction is bound
+to its exact channel and deposit delta before the deposit is raised. The
+on-chain check is wired through the
 :class:`SessionServer` config seams
 (:func:`~solana_pay_kit.protocols.mpp.server.session_onchain.new_open_tx_verifier` /
 :func:`~solana_pay_kit.protocols.mpp.server.session_onchain.new_top_up_tx_verifier`).
@@ -32,9 +33,15 @@ dispatch.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import logging
+import os
+import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
@@ -45,7 +52,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
-from solana_pay_kit._paycore.solana import MAX_SPLITS
+from solana_pay_kit._paycore.solana import MAX_SPLITS, _canonical_network, validate_network
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
     PAYMENT_RECEIPT_HEADER,
@@ -68,19 +75,24 @@ from solana_pay_kit.protocols.mpp.server.defaults import detect_realm
 from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer, Split
 from solana_pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecycle
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
+    PreparedTransaction,
     RpcClient,
     VerifyOpenTxExpected,
-    cosign_and_broadcast_open,
+    VerifyOpenTxResult,
+    _require_account_info_rpc,
+    broadcast_prepared_transaction,
+    complete_open_transaction,
+    confirm_transaction_signature,
+    new_open_state_tx_verifier,
+    new_top_up_state_tx_verifier,
     settle_and_seal_channel,
     verify_open_tx,
 )
 from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelState,
     ChannelStore,
     MemoryChannelStore,
-    SessionStoreDurability,
-)
-from solana_pay_kit.protocols.mpp.server.session_store import (
-    session_store_safety_message as _session_store_safety_message,
+    enforce_channel_store_policy,
 )
 from solana_pay_kit.signer import LocalSigner
 
@@ -88,6 +100,9 @@ logger = logging.getLogger(__name__)
 
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _U64_MAX = (1 << 64) - 1
+_OPEN_OUTBOX_PREFIX = "__pay_kit_session_open_outbox__:"
+_OPEN_OUTBOX_LEASE_SECONDS = 60
+_OPEN_OUTBOX_RECORD_VERSION = 1
 
 
 class _AlreadySealed(Exception):
@@ -102,6 +117,118 @@ class _AlreadySealed(Exception):
 
 class _AlreadySettling(Exception):
     """Raised by the settle-claim mutator when another caller is mid-settle."""
+
+
+class _SettlementPhase(Enum):
+    """Persisted settlement states derived from the channel record."""
+
+    READY = "ready"
+    IN_PROGRESS = "in_progress"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    SEALED = "sealed"
+
+
+@dataclass(frozen=True)
+class _SettlementStatus:
+    """Typed view of the settlement fields persisted on a channel."""
+
+    phase: _SettlementPhase
+    signature: str | None = None
+
+
+@dataclass(frozen=True)
+class _ServerOpenOutbox:
+    """The immutable signed open transaction and facts it was verified against."""
+
+    prepared: PreparedTransaction
+    authorized_signer: str
+    deposit: int
+    payer: str
+    open_slot: int
+
+
+def _settlement_status(state: ChannelState) -> _SettlementStatus:
+    """Classify settlement without conflating a broadcast with a receipt."""
+    if state.sealed:
+        return _SettlementStatus(_SettlementPhase.SEALED, state.settled_signature)
+    if state.settled_signature is not None:
+        # ``settling`` is transient and may reset after process restart. The
+        # durable broadcast signature is sufficient to reconcile safely.
+        return _SettlementStatus(_SettlementPhase.AWAITING_CONFIRMATION, state.settled_signature)
+    if state.settling:
+        return _SettlementStatus(_SettlementPhase.IN_PROGRESS)
+    return _SettlementStatus(_SettlementPhase.READY)
+
+
+def _open_outbox_key(channel_id: str) -> str:
+    """Return the private store key for a server-broadcast open outbox."""
+    return f"{_OPEN_OUTBOX_PREFIX}{channel_id}"
+
+
+def _open_outbox_from_state(state: ChannelState, channel_id: str) -> _ServerOpenOutbox:
+    """Decode a private server-open outbox record stored through ChannelStore.
+
+    The public channel-state schema intentionally has no open outbox fields.
+    A private record under an opaque store key keeps the exact signed wire and
+    its verified facts durable without changing the shared state schema. Its
+    otherwise-unused fields are a private format: ``cumulative`` is the format
+    version and ``next_delivery_sequence`` is the current lease owner token.
+    """
+    if state.channel_id != _open_outbox_key(channel_id):
+        raise ValueError(f"invalid server-open outbox key for channel {channel_id}")
+    if state.cumulative != _OPEN_OUTBOX_RECORD_VERSION:
+        raise ValueError(f"legacy or invalid server-open outbox for channel {channel_id}; refusing recovery")
+    if not state.authorized_signer or state.deposit <= 0 or not state.operator:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing verified open facts")
+    if state.next_delivery_sequence <= 0:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing its lease owner")
+    if state.settled_signature is None:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing its signature")
+    if state.highest_voucher_signature is None:
+        raise ValueError(f"server-open outbox for channel {channel_id} is missing signed wire")
+    try:
+        wire = base64.b64decode(state.highest_voucher_signature, validate=True)
+    except Exception as exc:
+        raise ValueError(f"invalid server-open outbox wire for channel {channel_id}: {exc}") from exc
+    if not wire:
+        raise ValueError(f"server-open outbox for channel {channel_id} has empty signed wire")
+    return _ServerOpenOutbox(
+        prepared=PreparedTransaction(wire=wire, signature=state.settled_signature),
+        authorized_signer=state.authorized_signer,
+        deposit=state.deposit,
+        payer=state.operator,
+        open_slot=state.open_slot,
+    )
+
+
+def _server_open_outbox_matches_verified(
+    outbox: _ServerOpenOutbox, payload: OpenPayload, verified: VerifyOpenTxResult
+) -> bool:
+    """Report whether a recovery request has the outbox transaction's facts."""
+    return (
+        outbox.authorized_signer == payload.authorized_signer
+        and outbox.deposit == verified.deposit
+        and outbox.payer == verified.payer
+        and outbox.open_slot == verified.open_slot
+    )
+
+
+async def _finish_store_update(awaitable):
+    """Finish a store write even if the caller is cancelled mid-write.
+
+    Returns whether cancellation was observed. The caller records its durable
+    state transition before re-raising cancellation, so an accepted broadcast
+    is never followed by a rollback of the only recovery marker.
+    """
+    task = asyncio.create_task(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    return cancelled
 
 
 __all__ = [
@@ -166,13 +293,13 @@ class SessionOptions:
     # OpenTxSubmitter selects who broadcasts push-mode open transactions.
     # Default "client".
     open_tx_submitter: OpenTxSubmitter = ""
-    # Store is required off localnet so production session state cannot become
-    # silently process-local. Localnet defaults to in-memory for development.
+    # Store is the pluggable channel store. Localnet defaults to in-memory;
+    # off-localnet requires an explicit ProductionChannelStore, except for the
+    # development-only PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 devnet escape.
     store: ChannelStore | None = None
-    # Unsafe explicit development escape hatch for stores not marked durable/shared.
-    allow_unsafe_ephemeral_store_off_localnet: bool = False
     # RPC is the optional RPC client used for on-chain checks. None skips every
-    # on-chain check and trusts payload claims as provided.
+    # on-chain check and trusts payload claims as provided. When signer is also
+    # configured, settlement requires get_account_info in addition to RpcClient.
     rpc: RpcClient | None = None
     # RecentStateProvider pre-fetches ``(recentBlockhash, recentSlot)`` for
     # challenge issuance from a single ``getLatestBlockhash`` call (the
@@ -568,10 +695,95 @@ class Session:
             max_cap=self._core.config.max_cap,
             operator=self._core.config.operator,
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
-            splits=self._core.config.splits,
-            grace_period=self._core.config.settlement_window or 900,
             recent_slot=challenge_recent_slot,
+            recipients=[(split.recipient, split.bps) for split in self._core.config.splits],
         )
+
+    @staticmethod
+    def _validate_server_open_replay(state: ChannelState, payload: OpenPayload, verified: VerifyOpenTxResult) -> None:
+        """Check that an already-recorded server open matches this replay."""
+        channel_id = verified.channel_id
+        if state.sealed:
+            raise PaymentError(f"channel {channel_id} is already sealed", code="invalid-payload")
+        if state.authorized_signer != payload.authorized_signer:
+            raise PaymentError(
+                f"channel {channel_id} already exists with a different authorized signer",
+                code="invalid-payload",
+            )
+        if (
+            state.deposit != verified.deposit
+            or state.operator != verified.payer
+            or state.open_slot != verified.open_slot
+        ):
+            raise PaymentError(
+                f"channel {channel_id} already exists with different verified open facts",
+                code="invalid-payload",
+            )
+
+    async def _claim_server_open_outbox(
+        self, channel_id: str, prepared: PreparedTransaction, payload: OpenPayload, verified: VerifyOpenTxResult
+    ) -> tuple[_ServerOpenOutbox, int | None]:
+        """Atomically claim or recover a server-open signed transaction.
+
+        The main channel record is created only after confirmation, so it cannot
+        protect the check-then-broadcast gap across workers. This private
+        outbox record does: it persists the exact signed wire before send and
+        grants one short lease to broadcast it. A crashed owner can be taken
+        over later, but only to submit the same transaction/signature.
+        """
+        outbox_key = _open_outbox_key(channel_id)
+        owner = secrets.randbits(63) + 1
+        now = int(time.time())
+        owns_claim = False
+
+        def claim(current: ChannelState | None) -> ChannelState:
+            nonlocal owns_claim
+            if current is None:
+                owns_claim = True
+                return ChannelState(
+                    channel_id=outbox_key,
+                    authorized_signer=payload.authorized_signer,
+                    deposit=verified.deposit,
+                    cumulative=_OPEN_OUTBOX_RECORD_VERSION,
+                    open_slot=verified.open_slot,
+                    settled_signature=prepared.signature,
+                    highest_voucher_signature=base64.b64encode(prepared.wire).decode("ascii"),
+                    operator=verified.payer,
+                    close_requested_at=now + _OPEN_OUTBOX_LEASE_SECONDS,
+                    next_delivery_sequence=owner,
+                )
+
+            persisted = _open_outbox_from_state(current, channel_id)
+            if not _server_open_outbox_matches_verified(persisted, payload, verified):
+                raise ValueError(f"server-open outbox for channel {channel_id} has different verified open facts")
+            lease_expires_at = current.close_requested_at
+            if lease_expires_at is None:
+                raise ValueError(f"server-open outbox for channel {channel_id} is missing its lease")
+            if lease_expires_at > now:
+                return current.clone()
+
+            # The previous owner may have crashed before or during send. A
+            # takeover submits only the exact persisted transaction and its
+            # verified facts, never values derived from a racing request.
+            nxt = current.clone()
+            nxt.next_delivery_sequence = owner
+            nxt.close_requested_at = now + _OPEN_OUTBOX_LEASE_SECONDS
+            owns_claim = True
+            return nxt
+
+        state = await self._core.store().update_channel(outbox_key, claim)
+        return _open_outbox_from_state(state, channel_id), (owner if owns_claim else None)
+
+    async def _discard_server_open_outbox(self, channel_id: str, signature: str, owner: int) -> None:
+        """Best-effort cleanup after the active channel record is persisted."""
+        outbox_key = _open_outbox_key(channel_id)
+        try:
+            state = await self._core.store().get_channel(outbox_key)
+            if state is None or state.next_delivery_sequence != owner or state.settled_signature != signature:
+                return
+            await self._core.store().delete_channel(outbox_key)
+        except Exception:
+            logger.warning("failed to remove completed server-open outbox", extra={"channel_id": channel_id})
 
     async def _handle_open(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
@@ -622,61 +834,71 @@ class Session:
         if mode == "push" and not has_transaction and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
 
+        server_open_outbox_owner: tuple[str, str, int] | None = None
         if has_transaction and self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
             if self._signer is None or self._rpc is None:
                 raise PaymentError(
                     "openTxSubmitter=server requires a signer and an RPC client",
                     code="invalid-config",
                 )
-            # Idempotent replay guard: the store check-and-insert is the final
-            # source of truth (process_open below), but a replayed open must
-            # NOT re-broadcast the (already-landed) open transaction. TS
-            # checks the store before submitOpenTx; we mirror that here so a
-            # replay short-circuits the broadcast instead of sending it
-            # again and then no-opping in process_open.
-            session_id = payload.session_id()
-            existing = await self._core.store().get_channel(session_id)
+            # Decode before claiming so the durable key is the authoritative
+            # PDA, not an attacker-controlled payload field. The server is the
+            # sole path allowed to receive a placeholder fee-payer signature.
+            expected = self._open_tx_expected(payload, challenge_recent_slot)
+            try:
+                verified = await verify_open_tx(expected, payload, None, allow_fee_payer_placeholder=True)
+                prepared = complete_open_transaction(payload, self._signer.keypair)
+            except PaymentError:
+                raise
+            except Exception as exc:
+                raise PaymentError(f"server-broadcast open preparation failed: {exc}", code="invalid-payload") from exc
+
+            payload.payer = verified.payer
+            payload.deposit = str(verified.deposit)
+            payload.recent_slot = verified.open_slot
+            channel_id = verified.channel_id
+            payload.channel_id = channel_id
+
+            existing = await self._core.store().get_channel(channel_id)
             if existing is not None:
-                if existing.sealed:
-                    raise PaymentError(f"channel {session_id} is already sealed", code="invalid-payload")
-                if existing.authorized_signer != payload.authorized_signer:
-                    raise PaymentError(
-                        f"channel {session_id} already exists with a different authorized signer",
-                        code="invalid-payload",
-                    )
-                if existing.open_signature is None:
-                    raise PaymentError(
-                        f"server-submitted open {session_id} is missing its persisted broadcast signature",
-                        code="invalid-payload",
-                    )
-                # The retry may carry a fresh copy of the original partial
-                # transaction. Returning the persisted signature directly
-                # avoids re-validating that partial wire against the completed
-                # signature and, crucially, avoids rebroadcasting it.
-                self._touch(existing.channel_id)
-                return existing.open_signature
-            else:
-                # Built lazily: only the transaction-carrying paths verify
-                # the open on-chain, so the on-chain expected facts (and the
-                # program_id pubkey parse) stay off the trust-the-channel-id
-                # paths.
-                expected = self._open_tx_expected(payload, challenge_recent_slot)
-                try:
-                    verified = await verify_open_tx(expected, payload, None)
-                    if not payload.payer:
-                        payload.payer = verified.payer
-                    payload.deposit = str(verified.deposit)
-                    # openSlot from the verified transaction is authoritative;
-                    # persist it so the channel PDA stays re-derivable.
-                    payload.recent_slot = verified.open_slot
-                    payload.salt = verified.salt
-                    payload.signature = await cosign_and_broadcast_open(
-                        payload, fee_payer=self._signer.keypair, rpc=self._rpc
-                    )
-                except PaymentError:
-                    raise
-                except Exception as exc:
-                    raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
+                self._validate_server_open_replay(existing, payload, verified)
+                self._touch(channel_id)
+                return prepared.signature
+
+            try:
+                outbox, owner = await self._claim_server_open_outbox(channel_id, prepared, payload, verified)
+            except ValueError as exc:
+                raise PaymentError(str(exc), code="invalid-payload") from exc
+
+            existing = await self._core.store().get_channel(channel_id)
+            if existing is not None:
+                self._validate_server_open_replay(existing, payload, verified)
+                self._touch(channel_id)
+                return outbox.prepared.signature
+            if owner is None:
+                raise PaymentError(
+                    f"server-broadcast open for channel {channel_id} is already in progress",
+                    code="invalid-payload",
+                    retryable=True,
+                )
+
+            try:
+                await broadcast_prepared_transaction(outbox.prepared, rpc=self._rpc, label="open")
+            except BaseException:
+                # The signed wire is already durable. Retain it on every
+                # ambiguous failure or cancellation so a later lease owner can
+                # retry this exact transaction rather than make a new one.
+                raise
+
+            # Process exactly the transaction and verified facts that the
+            # outbox has durably bound together, including after lease takeover.
+            payload.authorized_signer = outbox.authorized_signer
+            payload.payer = outbox.payer
+            payload.deposit = str(outbox.deposit)
+            payload.recent_slot = outbox.open_slot
+            payload.transaction = base64.b64encode(outbox.prepared.wire).decode("ascii")
+            payload.signature = outbox.prepared.signature
+            server_open_outbox_owner = (channel_id, outbox.prepared.signature, owner)
         elif has_transaction:
             expected = self._open_tx_expected(payload, challenge_recent_slot)
             try:
@@ -694,23 +916,21 @@ class Session:
                 payload.payer = verified.payer
             payload.deposit = str(verified.deposit)
             payload.recent_slot = verified.open_slot
-            payload.salt = verified.salt
         elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
             raise PaymentError(
                 "push open requires payer or transaction when settle-at-close is configured",
                 code="invalid-payload",
             )
         elif mode == "push" and self._rpc is not None:
-            # The state-aware verifier performs the confirmed account bind. Keep
-            # the challenge incarnation on the payload so it can reject a stale
-            # channel before state is persisted.
+            # Off localnet the authoritative state verifier (process_open) binds
+            # the confirmed on-chain Channel account, so propagate the challenge
+            # incarnation onto the payload first: the verifier rejects a channel
+            # opened against a different recentSlot before state is persisted.
             if payload.recent_slot in (None, 0):
                 payload.recent_slot = challenge_recent_slot
-        elif mode == "push" and self._network != "localnet":
-            raise PaymentError(
-                "payment-channel push open requires an rpc client to bind the on-chain channel off localnet",
-                code="invalid-config",
-            )
+            # Confirm liveness inline as well so a localnet signature-only push
+            # (where no state verifier is installed) still verifies on-chain.
+            await confirm_transaction_signature(self._rpc, payload.signature, "open")
         # else: no transaction is attached. Reachable by a pull open (the channel
         # id / token account and deposit are trusted as provided, mirroring the TS
         # `else` branch) or by a push open with a channel id and no RPC (trusted
@@ -722,6 +942,8 @@ class Session:
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         self._touch(state.channel_id)
+        if server_open_outbox_owner is not None:
+            await self._discard_server_open_outbox(*server_open_outbox_owner)
         if payload.signature != "":
             return payload.signature
         return state.channel_id
@@ -748,9 +970,8 @@ class Session:
         return f"{receipt.session_id}:{receipt.delivery_id}:{receipt.cumulative}"
 
     async def _handle_top_up(self, payload: TopUpPayload) -> str:
-        """Raise a channel's deposit after optional on-chain confirmation of the
-        top-up signature. The receipt reference is the top-up transaction
-        signature."""
+        """Raise a channel's deposit after optional confirmed-transaction
+        value binding. The receipt reference is the top-up transaction signature."""
         try:
             new_deposit = _parse_session_u64(payload.new_deposit, "newDeposit")
         except ValueError as exc:
@@ -771,8 +992,6 @@ class Session:
             )
         try:
             await self._core.process_top_up(payload)
-        except PaymentError:
-            raise
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         self._touch(payload.channel_id)
@@ -783,19 +1002,15 @@ class Session:
         The receipt reference is the channel id (the on-chain settlement path is
         not implemented here).
 
-        Unlike :meth:`SessionServer.process_close`, where a second close is
-        always rejected, the close here is re-drivable: when a prior close
-        flipped the close-pending flag but settlement never recorded a signature
-        (``settled_signature is None``), the retry proceeds so a transient
-        settlement failure cannot strand the channel. A close-pending channel
-        that already recorded a settled signature is not re-drivable and
-        hard-rejects with "close already requested". The fund-safety final
+        Unlike :meth:`SessionServer.process_close`, the close here is
+        re-drivable. A prior pre-broadcast failure may be retried, while a
+        prior broadcast is reconciled using its persisted signature before any
+        caller can build another settlement transaction. The fund-safety final
         voucher validation is unchanged from the core path.
         """
         import time
 
         from solana_pay_kit.protocols.mpp.server.session import _parse_u64
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
         from solana_pay_kit.protocols.mpp.server.session_voucher import verify_session_voucher
 
         channel_id = payload.channel_id
@@ -808,11 +1023,16 @@ class Session:
             if current.sealed:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
-                if current.settled_signature is None:
-                    # Re-drivable close: leave state untouched and let the
-                    # settlement retry proceed.
-                    return current.clone()
-                raise ValueError("close already requested")
+                if current.settled_signature is not None and (self._signer is None or self._rpc is None):
+                    # A persisted broadcast can only be retried through the
+                    # reconciliation path. Never acknowledge it as closed when
+                    # this instance cannot confirm the recorded signature.
+                    raise ValueError("close already requested")
+                # Re-drive failed pre-broadcast closes and reconcile an
+                # already-broadcast signature. A sealed channel was rejected
+                # above; the settlement state machine decides whether this
+                # caller can proceed or must receive a retryable failure.
+                return current.clone()
 
             nxt = current.clone()
             if voucher is not None:
@@ -869,89 +1089,151 @@ class Session:
         return settled or payload.channel_id
 
     async def _settle_channel(self, channel_id: str) -> str | None:
-        """Settle and seal the channel on-chain, returning the settlement
-        signature. A no-op (returns ``None``) when no signer or RPC is configured;
-        returns the recorded signature when the channel is already sealed.
-        Mirrors the gated settle in the Go/TS servers.
-        """
+        """Settle once, persist intent before send, and reconcile ambiguity."""
         if self._signer is None or self._rpc is None:
             return None
 
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
-
-        # Atomic settle-in-progress guard: claim the channel under the
-        # per-channel store lock so a concurrent close retry or idle-watchdog
-        # fire cannot both pass the seal check and broadcast duplicate
-        # settle transactions. The winning caller flips ``settling`` to True
-        # and continues to the broadcast; losing callers see ``settling`` is
-        # already True and bail out (the winner will seal, a loser may
-        # retry if the winner's broadcast fails).
         claimed = False
+        reconcile_signature: str | None = None
 
         def claim(current: ChannelState | None) -> ChannelState:
-            nonlocal claimed
+            nonlocal claimed, reconcile_signature
             if current is None:
                 raise ValueError(f"channel {channel_id} disappeared during settle-claim")
-            if current.sealed:
-                raise _AlreadySealed(current.settled_signature)
-            if current.settling:
+            status = _settlement_status(current)
+            if status.phase is _SettlementPhase.SEALED:
+                raise _AlreadySealed(status.signature)
+            if status.phase is _SettlementPhase.AWAITING_CONFIRMATION:
+                # A durable signature is an immutable settlement intent. It
+                # may be reconciled by multiple callers, but never replaced.
+                reconcile_signature = status.signature
+                claimed = True
+                return current.clone()
+            if status.phase is _SettlementPhase.IN_PROGRESS:
                 raise _AlreadySettling()
             nxt = current.clone()
             nxt.settling = True
             claimed = True
             return nxt
 
-        settled_signature: str | None = None
         try:
-            await self._core.store().update_channel(channel_id, claim)
+            state = await self._core.store().update_channel(channel_id, claim)
         except _AlreadySealed as exc:
             return exc.signature
         except _AlreadySettling:
-            return None
+            raise PaymentError(
+                f"channel {channel_id} settlement is already in progress",
+                code="invalid-payload",
+                retryable=True,
+            ) from None
 
         if not claimed:
             return None
 
-        state = await self._core.store().get_channel(channel_id)
-        if state is None:
-            return None
+        async def release_prebroadcast_claim() -> None:
+            def release(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared while releasing settle-claim")
+                if current.sealed or current.settled_signature is not None:
+                    return current
+                nxt = current.clone()
+                nxt.settling = False
+                return nxt
+
+            await _finish_store_update(self._core.store().update_channel(channel_id, release))
+
+        async def retire_failed_intent(signature: str) -> None:
+            def release(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared while retiring settlement intent")
+                if current.sealed or current.settled_signature != signature:
+                    return current
+                nxt = current.clone()
+                nxt.settling = False
+                nxt.settled_signature = None
+                return nxt
+
+            await self._core.store().update_channel(channel_id, release)
+
+        async def seal(signature: str) -> str:
+            def mark_sealed(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared during settle")
+                if current.sealed:
+                    return current
+                if current.settled_signature != signature:
+                    raise ValueError(f"channel {channel_id} settlement signature changed during confirmation")
+                nxt = current.clone()
+                nxt.sealed = True
+                nxt.settled_signature = signature
+                nxt.settling = False
+                return nxt
+
+            await self._core.store().update_channel(channel_id, mark_sealed)
+            return signature
+
+        if reconcile_signature is not None:
+            try:
+                await confirm_transaction_signature(
+                    self._rpc,
+                    reconcile_signature,
+                    "settle",
+                    search_transaction_history=True,
+                )
+            except PaymentError as exc:
+                # Only a confirmed execution failure proves that a fresh
+                # settlement is safe. Timeouts and transport failures keep the
+                # claim and deterministic signature for later reconciliation.
+                if exc.code == "transaction-failed":
+                    await retire_failed_intent(reconcile_signature)
+                raise
+            return await seal(reconcile_signature)
+
+        intent_signature: str | None = None
+        intent_persisted = False
+
+        async def persist_intent(prepared: PreparedTransaction) -> None:
+            nonlocal intent_persisted, intent_signature
+            intent_signature = prepared.signature
+
+            def persist(current: ChannelState | None) -> ChannelState:
+                if current is None:
+                    raise ValueError(f"channel {channel_id} disappeared before settlement broadcast")
+                if current.sealed:
+                    return current
+                if not current.settling:
+                    raise ValueError(f"channel {channel_id} settle claim was released before intent persistence")
+                if current.settled_signature not in (None, prepared.signature):
+                    raise ValueError(f"channel {channel_id} settlement signature changed before broadcast")
+                nxt = current.clone()
+                nxt.settled_signature = prepared.signature
+                return nxt
+
+            # Finish persistence despite cancellation before propagating it.
+            # From this point a send may have happened, so the claim must stay.
+            cancelled = await _finish_store_update(self._core.store().update_channel(channel_id, persist))
+            intent_persisted = True
+            if cancelled:
+                raise asyncio.CancelledError
 
         try:
             signature = await settle_and_seal_channel(
-                state, merchant=self._signer.keypair, rpc=self._rpc, config=self._core.config
+                state,
+                merchant=self._signer.keypair,
+                rpc=self._rpc,
+                config=self._core.config,
+                on_prepared=persist_intent,
             )
-        except Exception:
-            # Broadcast/confirm failed: release the settle-in-progress guard
-            # so a retry can claim again, re-raise for the caller.
-            def release(current: ChannelState | None) -> ChannelState:
-                if current is not None and current.settling and not current.sealed:
-                    nxt = current.clone()
-                    nxt.settling = False
-                    return nxt
-                return current  # type: ignore[return-value]
-
-            await self._core.store().update_channel(channel_id, release)
+        except BaseException as exc:
+            if not intent_persisted:
+                await release_prebroadcast_claim()
+            elif isinstance(exc, PaymentError) and exc.code == "transaction-failed" and intent_signature is not None:
+                await retire_failed_intent(intent_signature)
+            # All other post-intent failures are ambiguous. Keep the claim and
+            # signature so a retry can query transaction history instead of
+            # issuing a second settlement.
             raise
-
-        def seal(current: ChannelState | None) -> ChannelState:
-            if current is None:
-                raise ValueError(f"channel {channel_id} disappeared during settle")
-            # Idempotent against a concurrent re-drive (e.g. a client close
-            # racing the idle-close watchdog): if another caller already
-            # sealed under the per-channel lock, keep its signature rather
-            # than overwriting with this call's, which may be a rejected second
-            # on-chain seal.
-            if current.sealed:
-                return current
-            nxt = current.clone()
-            nxt.sealed = True
-            nxt.settled_signature = signature
-            nxt.settling = False
-            return nxt
-
-        await self._core.store().update_channel(channel_id, seal)
-        settled_signature = signature
-        return settled_signature
+        return await seal(signature)
 
     async def _close_on_idle(self, channel_id: str) -> None:
         """Idle-close watchdog handler: close the channel and settle on-chain.
@@ -981,18 +1263,39 @@ def new_session(options: SessionOptions) -> Session:
         raise PaymentError(f"invalid recipient pubkey: {exc}", code="invalid-config") from exc
     if len(options.splits) > MAX_SPLITS:
         raise PaymentError(f"splits cannot exceed {MAX_SPLITS} entries", code="invalid-config")
+    split_recipients: set[str] = set()
+    total_split_bps = 0
+    for index, split in enumerate(options.splits):
+        try:
+            canonical_recipient = str(Pubkey.from_string(split.recipient))
+        except (ValueError, TypeError) as exc:
+            raise PaymentError(f"splits[{index}] has invalid recipient pubkey: {exc}", code="invalid-config") from exc
+        if split.bps <= 0:
+            raise PaymentError(f"splits[{index}] bps must be positive", code="invalid-config")
+        total_split_bps += split.bps
+        if total_split_bps > 10_000:
+            raise PaymentError("split bps total cannot exceed 10000", code="invalid-config")
+        if canonical_recipient in split_recipients:
+            raise PaymentError(f"splits[{index}] duplicates recipient {canonical_recipient}", code="invalid-config")
+        split_recipients.add(canonical_recipient)
+
+    if options.signer is not None and options.rpc is not None:
+        _require_account_info_rpc(options.rpc)
 
     secret_key = options.secret_key
     if secret_key == "":
-        import os
-
         secret_key = os.environ.get(_SECRET_KEY_ENV_VAR, "")
     if secret_key == "":
         raise PaymentError("missing secret key", code="invalid-config")
 
+    raw_network = options.network or "mainnet"
+    try:
+        validate_network(raw_network)
+    except ValueError as exc:
+        raise PaymentError(str(exc), code="invalid-config") from exc
+    network = _canonical_network(raw_network)
     currency = options.currency or "USDC"
     decimals = options.decimals or 6
-    network = options.network or "mainnet"
     realm = options.realm or detect_realm()
 
     open_tx_submitter = options.open_tx_submitter
@@ -1012,21 +1315,17 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
-    if options.store is None and network != "localnet":
-        raise PaymentError(
-            "session store is required off localnet; inject a durable shared ChannelStore",
-            code="invalid-config",
-        )
+    # Shared with SessionServer's constructor guard so the factory and a
+    # direct construction enforce one channel-store deployment policy.
+    # enforce_channel_store_policy has already rejected an absent/in-memory
+    # store off-localnet without the explicit opt-in, so the memory fallback
+    # below is only reachable on localnet or under the acknowledged opt-in.
+    enforce_channel_store_policy(options.store, network)
+
+    # Fail-closed via the shared enforce_channel_store_policy guard above
+    # (a form the radar rule's inline if/raise pattern cannot see).
+    # nosemgrep: failopen-default-store-python
     store = options.store if options.store is not None else MemoryChannelStore()
-    if (
-        network != "localnet"
-        and not options.allow_unsafe_ephemeral_store_off_localnet
-        and store.session_store_durability != SessionStoreDurability.DURABLE_SHARED
-    ):
-        raise PaymentError(
-            _session_store_safety_message(store),
-            code="invalid-config",
-        )
 
     config = SessionConfig(
         operator=options.operator,
@@ -1040,23 +1339,19 @@ def new_session(options: SessionOptions) -> Session:
         min_voucher_delta=options.min_voucher_delta,
         modes=options.modes,
         pull_voucher_strategy=options.pull_voucher_strategy,
-        open_tx_submitter=open_tx_submitter,
     )
-    from solana_pay_kit.protocols.mpp.server.session_onchain import (
-        new_open_state_tx_verifier,
-        new_open_tx_verifier,
-        new_top_up_state_tx_verifier,
-    )
-
-    config.allow_unsafe_ephemeral_store_off_localnet = options.allow_unsafe_ephemeral_store_off_localnet
-    if options.rpc is not None:
-        legacy_open_verifier = new_open_tx_verifier(config, options.rpc)
-
-        async def verify_open_tx_compat(payload: OpenPayload) -> None:
-            await legacy_open_verifier(payload)
-
-        config.verify_open_tx = verify_open_tx_compat
+    config.open_tx_submitter = open_tx_submitter
+    # Off localnet the authoritative open verifier binds the confirmed on-chain
+    # Channel account so payload economics are never persisted as facts. It
+    # needs an RPC client; when absent the core fail-closes for non-localnet
+    # payment-channel opens instead of trusting the payload. On localnet the
+    # method layer keeps its existing structural/liveness checks, so the state
+    # seam is left unset to preserve the in-memory development flow.
+    if options.rpc is not None and network != "localnet":
         config.verify_open_state_tx = new_open_state_tx_verifier(config, options.rpc)
+    # Top-ups use the state-aware core seam so it can bind the confirmed
+    # transaction's delta to the exact channel snapshot and recheck that
+    # snapshot atomically after the RPC await.
     config.verify_top_up_state_tx = new_top_up_state_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(

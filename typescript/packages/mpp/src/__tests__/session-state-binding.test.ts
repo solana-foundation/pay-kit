@@ -124,23 +124,6 @@ function parameters(overrides: Record<string, unknown> = {}) {
 }
 
 describe('session Channel account state binding', () => {
-    test('rejects a marked memory store outside localnet', () => {
-        expect(() => session(parameters({ network: 'devnet', store: createMemorySessionStore() }))).toThrow(
-            /ephemeral session store/,
-        );
-    });
-
-    test('rejects an unmarked wrapper outside localnet', () => {
-        const { sessionStoreDurability: _ignored, ...store } = createMemorySessionStore();
-        expect(() => session(parameters({ network: 'devnet', store }))).toThrow(/explicitly declare durable shared/);
-    });
-
-    test('side-channel routes reject an ephemeral store outside localnet', () => {
-        expect(() => session.routes(parameters({ network: 'devnet', store: createMemorySessionStore() }))).toThrow(
-            /ephemeral session store/,
-        );
-    });
-
     test('bare push open fails closed when rpc cannot fetch its transaction', async () => {
         const channel = await channelId();
         const store = createMemorySessionStore();

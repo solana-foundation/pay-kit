@@ -1630,7 +1630,7 @@ fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) ->
         .flatten()
         .ok_or_else(|| {
             Error::Other(format!(
-                "{tx} tx '{sig_str}' not found — not yet confirmed or does not exist"
+                "{tx} tx '{sig_str}' not found; not yet confirmed or does not exist"
             ))
         })?;
     if let Some(error) = response.err {

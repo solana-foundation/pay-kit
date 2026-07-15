@@ -13,10 +13,11 @@ so the adapter never reaches its default-store guard. This script drives the
 guard directly — it constructs `solana_pay_kit.protocols.mpp.MppAdapter` with
 NO `replay_store`, so its `_default_replay_store()` fail-closed check runs:
 
-  * no opt-in (fail-closed run): `MppAdapter(...)` raises `PaymentError`
-    ("no shared replay Store configured …"). We print that message to stderr and
-    exit non-zero; `startServer` surfaces it as the boot failure the harness
-    matches against the canonical fail-closed signature.
+  * no opt-in (fail-closed run): `MppAdapter(...)` raises the public
+    `ConfigurationError` ("MPP requires an injected ProductionReplayStore
+    outside localnet …"). We print that message to stderr and exit non-zero;
+    `startServer` surfaces it as the boot failure the harness matches against
+    the canonical fail-closed signature.
   * with the opt-in (`PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1`): the guard permits
     the default in-memory store, construction succeeds, and we print the `ready`
     JSON line + idle so the harness observes a `ready` boot — proving the opt-in
@@ -49,17 +50,20 @@ if _python_src.is_dir():
     sys.path.insert(0, str(_python_src))
 
 from solana_pay_kit import Config, Network, Operator, Signer, Stablecoin  # noqa: E402
-from solana_pay_kit._paycore.errors import PaymentError  # noqa: E402
+from solana_pay_kit.errors import ConfigurationError  # noqa: E402
+from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2  # noqa: E402
+from solana_pay_kit._paycore.solana import _canonical_network, validate_network  # noqa: E402
 from solana_pay_kit.protocols.mpp import MppAdapter  # noqa: E402
 
 
 def _resolve_network(raw: str) -> Network:
-    """Map the harness network slug to a Network enum (off-localnet => mainnet)."""
-    return {
-        "mainnet": Network.SOLANA_MAINNET,
-        "devnet": Network.SOLANA_DEVNET,
-        "localnet": Network.SOLANA_LOCALNET,
-    }.get(raw, Network.SOLANA_LOCALNET)
+    """Map a supported harness slug or CAIP-2 id to a Network enum."""
+    if raw == SOLANA_MAINNET_CAIP2:
+        raw = "mainnet"
+    elif raw == SOLANA_DEVNET_CAIP2:
+        raw = "devnet"
+    validate_network(raw)
+    return Network(f"solana_{_canonical_network(raw)}")
 
 
 def _free_port() -> int:
@@ -70,6 +74,11 @@ def _free_port() -> int:
 
 def main() -> None:
     network_raw = os.environ.get("MPP_HARNESS_NETWORK", "mainnet")
+    try:
+        network = _resolve_network(network_raw)
+    except ValueError as exc:
+        print(f"mpp-adapter-boot: unsupported MPP_HARNESS_NETWORK: {exc}", file=sys.stderr)
+        sys.exit(2)
     pay_to = os.environ.get("MPP_HARNESS_PAY_TO")
     rpc_url = os.environ.get("MPP_HARNESS_RPC_URL", "http://127.0.0.1:1")
     signer_json = os.environ.get("MPP_HARNESS_FEE_PAYER_SECRET_KEY") or os.environ.get(
@@ -88,7 +97,7 @@ def main() -> None:
     # gate (pubkey-mode currency lives on the wire request), so USDC is a fine
     # placeholder here.
     config = Config(
-        network=_resolve_network(network_raw),
+        network=network,
         stablecoins=(Stablecoin.USDC,),
         rpc_url=rpc_url,
         operator=Operator(recipient=pay_to, signer=Signer.json(signer_json), fee_payer=True),
@@ -99,9 +108,12 @@ def main() -> None:
     # `_default_replay_store()` gate is exactly what we are probing.
     try:
         MppAdapter(config)
-    except PaymentError as err:
+    except ConfigurationError as err:
         # Fail-closed: surface the canonical rejection on stderr and exit
         # non-zero so the harness records a boot failure carrying the signature.
+        # MppAdapter re-raises the store policy violation as the public
+        # ConfigurationError (a PayKitError, not a PaymentError), so catch that
+        # exact type rather than letting a bare traceback carry the message.
         print(f"mpp-adapter-boot: fail-closed: {err}", file=sys.stderr)
         sys.exit(1)
 

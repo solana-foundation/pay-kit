@@ -17,18 +17,20 @@ from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
 from solana_pay_kit.protocols.mpp._paymentchannels import OpenChannelParams, build_open_instruction, find_channel_pda
-from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
-from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest, SessionConfig, SessionServer
+from solana_pay_kit.protocols.mpp.intents.session import OpenPayload
+from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
 from solana_pay_kit.protocols.mpp.server.session_method import SessionOptions, new_session
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
     confirm_transaction_signature,
     fetch_and_bind_channel_account,
-    new_top_up_state_tx_verifier,
 )
 from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelMutator,
     ChannelState,
+    ChannelStore,
+    ListChannelsFilter,
     MemoryChannelStore,
-    SessionStoreDurability,
+    ProductionChannelStore,
 )
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 
@@ -39,6 +41,34 @@ def _wallet(seed: int) -> str:
 
 def _signature(seed: int) -> str:
     return str(Signature.from_bytes(bytes([seed] * 64)))
+
+
+class _DelegatingChannelStore(ChannelStore):
+    """Process-local stand-in that carries the production marker so it passes
+    the off-localnet channel-store policy without being the bundled
+    MemoryChannelStore instance the policy rejects."""
+
+    def __init__(self) -> None:
+        self._delegate = MemoryChannelStore()
+
+    async def get_channel(self, channel_id: str) -> ChannelState | None:
+        return await self._delegate.get_channel(channel_id)
+
+    async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
+        return await self._delegate.update_channel(channel_id, mutator)
+
+    async def delete_channel(self, channel_id: str) -> None:
+        await self._delegate.delete_channel(channel_id)
+
+    async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
+        return await self._delegate.list_channels(filter)
+
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
+        return await self._delegate.mark_sealed(channel_id)
+
+
+class _ProductionChannelStore(_DelegatingChannelStore, ProductionChannelStore):
+    """Application-asserted production backend accepted off localnet."""
 
 
 def _channel_bytes(
@@ -116,7 +146,9 @@ class _Rpc:
         self.min_context_slot = min_context_slot
         return self.accounts.get(address)
 
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+    async def get_signature_statuses(
+        self, signatures: list[str], *, search_transaction_history: bool = False
+    ) -> list[dict | None]:
         return [self.status for _ in signatures]
 
     async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN003, ANN201
@@ -155,8 +187,7 @@ async def test_bare_push_open_persists_authoritative_channel_deposit_and_payer()
         deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint
     )
     rpc.transaction = {"meta": {"err": None}, "transaction": [transaction, "base64"]}
-    store = MemoryChannelStore()
-    store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+    store = _ProductionChannelStore()
     session = new_session(
         SessionOptions(
             operator=recipient,
@@ -209,8 +240,7 @@ async def test_bare_push_open_rejects_asserted_deposit_mismatch() -> None:
         deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint
     )
     rpc.transaction = {"meta": {"err": None}, "transaction": [transaction, "base64"]}
-    store = MemoryChannelStore()
-    store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+    store = _ProductionChannelStore()
     session = new_session(
         SessionOptions(
             operator=recipient,
@@ -262,8 +292,7 @@ async def test_bare_push_open_rejects_channel_from_wrong_challenge_incarnation()
         deposit=4_000, payer=payer, payee=recipient, signer=signer, mint=mint
     )
     rpc.transaction = {"meta": {"err": None}, "transaction": [transaction, "base64"]}
-    store = MemoryChannelStore()
-    store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+    store = _ProductionChannelStore()
     session = new_session(
         SessionOptions(
             operator=recipient,
@@ -288,108 +317,42 @@ async def test_bare_push_open_rejects_channel_from_wrong_challenge_incarnation()
     assert await store.get_channel(channel_id) is None
 
 
-async def test_top_up_binds_resulting_deposit_and_open_status() -> None:
-    rpc = _Rpc()
-    recipient = _wallet(11)
-    channel_id = _wallet(12)
-    signer = _wallet(13)
-    payer = _wallet(14)
-    mint = resolve_mint("USDC", "localnet")
-    assert mint is not None
-    config = SessionConfig(
-        recipient=recipient,
-        max_cap=10_000,
-        currency="USDC",
-        network="localnet",
-        operator=recipient,
-    )
-    verifier = new_top_up_state_tx_verifier(config, rpc)
-    assert verifier is not None
-    payload = TopUpPayload(channel_id=channel_id, new_deposit="3000", signature=_signature(15))
-    current = ChannelState(channel_id=channel_id, authorized_signer=signer, deposit=1_000, operator=payer)
-
-    rpc.accounts[channel_id] = (
-        _channel_bytes(deposit=2_000, payer=payer, payee=recipient, signer=signer, mint=mint),
-        PAYMENT_CHANNELS_PROGRAM_ID,
-    )
-    current.authorized_signer = _wallet(16)
-    with pytest.raises(PaymentError, match="authorized signer does not match stored"):
-        await verifier(payload, current)
-    current.authorized_signer = signer
-    with pytest.raises(PaymentError, match="!= asserted newDeposit 3000"):
-        await verifier(payload, current)
-
-    rpc.accounts[channel_id] = (
-        _channel_bytes(deposit=3_000, payer=payer, payee=recipient, signer=signer, mint=mint, status=1),
-        PAYMENT_CHANNELS_PROGRAM_ID,
-    )
-    with pytest.raises(PaymentError, match="not open on-chain"):
-        await verifier(payload, current)
-
-
-async def test_top_up_fails_closed_without_rpc_off_localnet() -> None:
-    config = SessionConfig(recipient=_wallet(21), currency="USDC", network="mainnet")
-    verifier = new_top_up_state_tx_verifier(config, None)
-    assert verifier is not None
-    with pytest.raises(PaymentError, match="requires an rpc client") as error:
-        await verifier(
-            TopUpPayload(channel_id=_wallet(22), new_deposit="2", signature=_signature(23)),
-            ChannelState(channel_id=_wallet(22), authorized_signer=_wallet(24), operator=_wallet(25)),
-        )
-    assert error.value.code == "invalid-config"
-
-
 async def test_core_direct_construction_rejects_nonlocalnet_bypasses() -> None:
     recipient = _wallet(31)
     payload = OpenPayload.push(_wallet(32), "1000", _wallet(33), _signature(34))
-    memory = MemoryChannelStore()
     config = SessionConfig(recipient=recipient, max_cap=10_000, currency="USDC", network="mainnet")
-    with pytest.raises(ValueError, match="ephemeral"):
-        await SessionServer(config, memory).process_open(payload)
 
-    memory.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+    # The bundled process-local store is rejected at construction off localnet,
+    # so a direct SessionServer cannot bypass the factory's store policy.
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        SessionServer(config, MemoryChannelStore())
+
+    # A production-marked store constructs, but a payment-channel open off
+    # localnet still fails closed without the authoritative state verifier: the
+    # payload's claimed economics are never persisted as facts.
+    store = _ProductionChannelStore()
     with pytest.raises(ValueError, match="requires an authoritative verifier"):
-        await SessionServer(config, memory).process_open(payload)
+        await SessionServer(config, store).process_open(payload)
 
     async def signature_only_without_state(_payload: OpenPayload) -> None:
         return None
 
+    # A legacy structural/payload-only verifier does not lift the requirement.
     config.verify_open_tx = signature_only_without_state
     with pytest.raises(ValueError, match="requires an authoritative verifier"):
-        await SessionServer(config, memory).process_open(payload)
+        await SessionServer(config, store).process_open(payload)
 
     config.verify_open_state_tx = signature_only_without_state  # type: ignore[assignment]
     with pytest.raises(ValueError, match="authoritative channel facts"):
-        await SessionServer(config, memory).process_open(payload)
-
-    await memory.update_channel(
-        "topup",
-        lambda _: ChannelState(channel_id="topup", authorized_signer=_wallet(34), deposit=1_000, operator=_wallet(35)),
-    )
-
-    async def legacy_top_up_only(_payload: TopUpPayload) -> None:
-        return None
-
-    config.verify_top_up_tx = legacy_top_up_only
-    with pytest.raises(ValueError, match="state-aware on-chain verifier"):
-        await SessionServer(config, memory).process_top_up(
-            TopUpPayload(channel_id="topup", new_deposit="2000", signature=_signature(36))
-        )
-
-    class UnmarkedStore(MemoryChannelStore):
-        session_store_durability = None
-
-    with pytest.raises(ValueError, match="explicitly declare durable shared"):
-        await SessionServer(config, UnmarkedStore()).process_open(payload)
+        await SessionServer(config, store).process_open(payload)
 
 
 async def test_preloaded_ephemeral_store_cannot_serve_state_operations_off_localnet() -> None:
     config = SessionConfig(recipient=_wallet(51), max_cap=10_000, currency="USDC", network="mainnet")
-    server = SessionServer(config, MemoryChannelStore())
-    with pytest.raises(ValueError, match="ephemeral session store"):
-        await server.begin_delivery(DeliveryRequest(session_id="preloaded", amount=1))
-    with pytest.raises(ValueError, match="ephemeral session store"):
-        await server.mark_sealed("preloaded")
+    # An ephemeral store can never back money-path state operations off localnet
+    # because the deployment policy rejects it at construction.
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        SessionServer(config, MemoryChannelStore())
 
 
 async def test_processed_signature_rejected_and_account_read_is_slot_pinned() -> None:

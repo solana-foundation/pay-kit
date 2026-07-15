@@ -19,22 +19,14 @@ test it mirrors in the docstring.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import struct
+from typing import Any, cast
 
 import pytest
-from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
-from solders.message import Message  # type: ignore[import-untyped]
-from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
-from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
-from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
-from solana_pay_kit.protocols.mpp._paymentchannels import OpenChannelParams, build_open_instruction, find_channel_pda
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
@@ -53,15 +45,52 @@ from solana_pay_kit.protocols.mpp.server.session_method import (
     SessionOptions,
     new_session,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore, SessionStoreDurability
+from solana_pay_kit.protocols.mpp.server.session_store import (
+    ChannelMutator,
+    ChannelState,
+    ChannelStore,
+    ListChannelsFilter,
+    MemoryChannelStore,
+    ProductionChannelStore,
+)
 from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
 
 
+class _DelegatingChannelStore(ChannelStore):
+    """Process-local stand-in used to exercise the nominal production marker."""
+
+    def __init__(self) -> None:
+        self._delegate = MemoryChannelStore()
+
+    async def get_channel(self, channel_id: str) -> ChannelState | None:
+        return await self._delegate.get_channel(channel_id)
+
+    async def update_channel(self, channel_id: str, mutator: ChannelMutator) -> ChannelState:
+        return await self._delegate.update_channel(channel_id, mutator)
+
+    async def delete_channel(self, channel_id: str) -> None:
+        await self._delegate.delete_channel(channel_id)
+
+    async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
+        return await self._delegate.list_channels(filter)
+
+    async def mark_sealed(self, channel_id: str) -> ChannelState:
+        return await self._delegate.mark_sealed(channel_id)
+
+
+class _ProductionChannelStore(_DelegatingChannelStore, ProductionChannelStore):
+    """Application-asserted production backend for construction tests."""
+
+
+class _ProductionMemoryChannelStore(MemoryChannelStore, ProductionChannelStore):
+    """Attempts to label the bundled process-local store as production-safe."""
+
+
 class _TestVoucherSigner:
-    """An Ed25519 keypair signing canonical 48-byte vouchers. Mirrors
+    """An Ed25519 keypair signing canonical 50-byte vouchers. Mirrors
     ``testVoucherSigner`` in the Go suite."""
 
     def __init__(self, seed: int) -> None:
@@ -90,96 +119,14 @@ def _confirmed_signature(fill: int) -> str:
     return str(Signature.from_bytes(bytes([fill] * 64)))
 
 
-def _channel_account(
-    deposit: int,
-    payer: str,
-    payee: str,
-    signer: str,
-    mint: str,
-    rent_payer: str | None = None,
-    salt: int = 0,
-    open_slot: int = 0,
-) -> tuple[bytes, str]:
-    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
-
-    body = Channel.layout.build(
-        {
-            "version": 1,
-            "bump": 255,
-            "status": 0,
-            "salt": salt,
-            "deposit": deposit,
-            "settlement": {"settled": 0, "payoutWatermark": 0},
-            "closureStartedAt": 0,
-            "payerWithdrawnAt": 0,
-            "gracePeriod": 900,
-            "distributionHash": list(hashlib.sha256(struct.pack("<I", 0)).digest()),
-            "payer": Pubkey.from_string(payer),
-            "payee": Pubkey.from_string(payee),
-            "authorizedSigner": Pubkey.from_string(signer),
-            "mint": Pubkey.from_string(mint),
-            "rentPayer": Pubkey.from_string(rent_payer or payee),
-            "openSlot": open_slot,
-        }
-    )
-    return bytes([1]) + bytes(body), PAYMENT_CHANNELS_PROGRAM_ID
-
-
 class _FakeRpc:
     """Minimal RPC double: ``get_signature_statuses`` (any signature not seeded
     is confirmed) and ``get_latest_blockhash``. Mirrors ``testutil.FakeRPC``."""
 
     def __init__(self, blockhash: str = "FakeBlockhash1111111111111111111111111111111") -> None:
         self.statuses: dict[str, dict | None] = {}
+        self.transactions: dict[str, dict] = {}
         self.blockhash = blockhash
-        self.accounts: dict[str, tuple[bytes, str] | None] = {}
-        self.transaction: dict | None = None
-        self.transaction_signature: str | None = None
-
-    def seed_channel(
-        self,
-        channel_id: str,
-        deposit: int,
-        payer: str,
-        payee: str,
-        signer: str,
-        mint: str,
-        rent_payer: str | None = None,
-        salt: int = 0,
-        open_slot: int = 0,
-    ) -> None:
-        self.accounts[channel_id] = _channel_account(deposit, payer, payee, signer, mint, rent_payer, salt, open_slot)
-        instruction = build_open_instruction(
-            OpenChannelParams(
-                payer=Pubkey.from_string(payer),
-                rent_payer=Pubkey.from_string(rent_payer or payee),
-                payee=Pubkey.from_string(payee),
-                mint=Pubkey.from_string(mint),
-                authorized_signer=Pubkey.from_string(signer),
-                salt=salt,
-                deposit=deposit,
-                grace_period=900,
-                open_slot=open_slot,
-                token_program=Pubkey.from_string(TOKEN_PROGRAM),
-            )
-        )
-        fee_payer = Pubkey.from_string(rent_payer or payee)
-        blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-        message = Message.new_with_blockhash([instruction], fee_payer, blockhash)
-        signatures = [Signature.default()] * message.header.num_required_signatures
-        if self.transaction_signature is not None:
-            signatures[0] = Signature.from_string(self.transaction_signature)
-        transaction = Transaction.populate(message, signatures)
-        encoded = base64.b64encode(bytes(transaction)).decode("ascii")
-        self.transaction = {"meta": {"err": None}, "transaction": [encoded, "base64"]}
-
-    async def get_transaction(self, signature: str, **kwargs):  # noqa: ANN003, ANN201
-        return self.transaction
-
-    async def get_account_info(
-        self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
-    ) -> tuple[bytes, str] | None:
-        return self.accounts.get(address)
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         out: list[dict | None] = []
@@ -187,7 +134,7 @@ class _FakeRpc:
             if signature in self.statuses:
                 out.append(self.statuses[signature])
             else:
-                out.append({"err": None, "confirmationStatus": "confirmed", "slot": 42})
+                out.append({"err": None, "confirmationStatus": "confirmed"})
         return out
 
     async def get_latest_blockhash(self, commitment: str = "confirmed"):
@@ -201,19 +148,40 @@ class _FakeRpc:
 
         return _Resp(self.blockhash)
 
+    async def get_transaction(self, signature: str, **_kwargs):
+        return self.transactions.get(str(signature))
 
-def _derived_channel_id(payer: str, payee: str, signer: str, mint: str, salt: int = 0, open_slot: int = 0) -> str:
-    return str(
-        find_channel_pda(
-            Pubkey.from_string(payer),
-            Pubkey.from_string(payee),
-            Pubkey.from_string(mint),
-            Pubkey.from_string(signer),
-            salt,
-            open_slot,
-            Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID),
-        )[0]
-    )
+    async def get_account_info(
+        self, address: str, commitment: str = "confirmed", min_context_slot: int | None = None
+    ) -> tuple[bytes, str] | None:
+        return None
+
+
+def _base58_encode(data: bytes) -> str:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    number = int.from_bytes(data, "big")
+    encoded = ""
+    while number:
+        number, remainder = divmod(number, 58)
+        encoded = alphabet[remainder] + encoded
+    return encoded or "1"
+
+
+def _confirmed_top_up_transaction(channel_id: str, delta: int) -> dict:
+    return {
+        "meta": {"err": None},
+        "transaction": {
+            "message": {
+                "instructions": [
+                    {
+                        "programId": str(PROGRAM_ID),
+                        "accounts": [_new_wallet(), channel_id],
+                        "data": _base58_encode(b"\x03" + delta.to_bytes(8, "little")),
+                    }
+                ]
+            }
+        },
+    }
 
 
 def _new_test_session(**overrides) -> Session:
@@ -247,11 +215,6 @@ async def _open_session_channel(
     session: Session, channel_id: str, deposit: int, authorized_signer: str, signature: str
 ):
     payload = OpenPayload.push(channel_id, str(deposit), authorized_signer, signature)
-    if isinstance(session._rpc, _FakeRpc):
-        mint = resolve_mint(session._currency, session._network)
-        assert mint is not None
-        session._rpc.transaction_signature = signature
-        session._rpc.seed_channel(channel_id, deposit, _new_wallet(), session._recipient, authorized_signer, mint)
     return await _verify_session_action(session, SessionAction.open_action(payload))
 
 
@@ -297,6 +260,71 @@ def test_new_session_validation_too_many_splits() -> None:
         )
 
 
+def test_new_session_validation_rejects_duplicate_split_recipient() -> None:
+    duplicate_recipient = _new_wallet()
+    with pytest.raises(PaymentError, match="splits\\[1\\] duplicates recipient"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                splits=[
+                    Split(recipient=duplicate_recipient, bps=1_000),
+                    Split(recipient=duplicate_recipient, bps=2_000),
+                ],
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("splits", "message"),
+    [
+        ([Split(recipient="not-base58!", bps=1)], "invalid recipient pubkey"),
+        ([Split(recipient=SESSION_TEST_RECIPIENT, bps=0)], "bps must be positive"),
+        (
+            [
+                Split(recipient=SESSION_TEST_RECIPIENT, bps=6_000),
+                Split(recipient=_new_wallet(), bps=4_001),
+            ],
+            "split bps total cannot exceed 10000",
+        ),
+    ],
+)
+def test_new_session_validation_rejects_invalid_split_config(splits: list[Split], message: str) -> None:
+    with pytest.raises(PaymentError, match=message):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                splits=splits,
+            )
+        )
+
+
+def test_new_session_validation_requires_account_info_for_settlement_rpc() -> None:
+    signer = LocalSigner.from_keypair(Keypair.from_seed(bytes([55] * 32)))
+    with pytest.raises(PaymentError, match="settlement requires an RPC client with get_account_info"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                secret_key=SESSION_METHOD_SECRET,
+                signer=signer,
+                rpc=cast(Any, object()),
+            )
+        )
+
+
+def test_open_tx_expected_binds_configured_splits() -> None:
+    split = Split(recipient=_new_wallet(), bps=3_333)
+    session = _new_test_session(splits=[split])
+    expected = session._open_tx_expected(
+        OpenPayload.push(_new_wallet(), "1000", _new_wallet(), _confirmed_signature(0x24))
+    )
+    assert expected.recipients == [(split.recipient, split.bps)]
+
+
 def test_new_session_validation_pull_requires_strategy() -> None:
     with pytest.raises(PaymentError, match="pullVoucherStrategy is required"):
         new_session(
@@ -327,40 +355,182 @@ def test_new_session_validation_missing_secret(monkeypatch: pytest.MonkeyPatch) 
         new_session(SessionOptions(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=""))
 
 
+@pytest.mark.parametrize("store", [None, MemoryChannelStore()])
+def test_new_session_inmemory_store_fails_closed_outside_localnet(monkeypatch: pytest.MonkeyPatch, store) -> None:
+    options = SessionOptions(
+        recipient=SESSION_TEST_RECIPIENT,
+        cap=1_000,
+        network="devnet",
+        secret_key=SESSION_METHOD_SECRET,
+        store=store,
+    )
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        new_session(options)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "true")
+    with pytest.raises(PaymentError, match="PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE"):
+        new_session(options)
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    assert isinstance(new_session(options).core().store(), MemoryChannelStore)
+
+
+@pytest.mark.parametrize("network", ["mainnet", "mainnet-beta"])
+@pytest.mark.parametrize("store", [None, MemoryChannelStore()])
+def test_new_session_mainnet_aliases_reject_inmemory_store_opt_in(
+    monkeypatch: pytest.MonkeyPatch, network: str, store: MemoryChannelStore | None
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="forbidden on mainnet"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network=network,
+                secret_key=SESSION_METHOD_SECRET,
+                store=store,
+            )
+        )
+
+
+def test_new_session_mainnet_rejects_opt_in_even_with_production_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The devnet opt-in on mainnet is a misconfiguration signal and fails
+    closed even when the injected store itself is production-attested,
+    mirroring ``resolve_replay_store``."""
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="forbidden on mainnet") as exc_info:
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="mainnet",
+                secret_key=SESSION_METHOD_SECRET,
+                store=_ProductionChannelStore(),
+            )
+        )
+    assert exc_info.value.code == "invalid-config"
+
+
+@pytest.mark.parametrize("network", ["devnet", "mainnet"])
+@pytest.mark.parametrize("store", [ChannelStore(), _DelegatingChannelStore()])
+def test_new_session_rejects_unmarked_channel_stores_outside_localnet(
+    monkeypatch: pytest.MonkeyPatch, network: str, store: ChannelStore
+) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network=network,
+                secret_key=SESSION_METHOD_SECRET,
+                store=store,
+            )
+        )
+
+
+def test_new_session_rejects_memory_store_production_marker_on_mainnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="ProductionChannelStore"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="mainnet",
+                secret_key=SESSION_METHOD_SECRET,
+                store=_ProductionMemoryChannelStore(),
+            )
+        )
+
+
+@pytest.mark.parametrize("network", ["devnet", "mainnet"])
+def test_new_session_accepts_nominal_production_channel_store_outside_localnet(network: str) -> None:
+    store = _ProductionChannelStore()
+
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            network=network,
+            secret_key=SESSION_METHOD_SECRET,
+            store=store,
+        )
+    )
+
+    assert session.core().store() is store
+
+
+def test_new_session_rejects_unknown_network_before_store_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+
+    with pytest.raises(PaymentError, match="unknown network"):
+        new_session(
+            SessionOptions(
+                recipient=SESSION_TEST_RECIPIENT,
+                cap=1_000,
+                network="solana:unknown-network",
+                secret_key=SESSION_METHOD_SECRET,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("network", "canonical"),
+    [
+        ("solana_mainnet", "mainnet"),
+        ("solana_devnet", "devnet"),
+        ("solana_localnet", "localnet"),
+    ],
+)
+def test_new_session_accepts_public_network_enum_values(
+    monkeypatch: pytest.MonkeyPatch, network: str, canonical: str
+) -> None:
+    # The devnet memory-store escape needs the opt-in; mainnet must not see
+    # it (the opt-in is forbidden there even alongside a production store).
+    if canonical == "devnet":
+        monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    else:
+        monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    store = None if canonical != "mainnet" else _ProductionChannelStore()
+
+    session = new_session(
+        SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            network=network,
+            secret_key=SESSION_METHOD_SECRET,
+            store=store,
+        )
+    )
+
+    assert session._network == canonical
+
+
+def test_new_session_localnet_allows_default_and_explicit_memory_store() -> None:
+    assert isinstance(_new_test_session().core().store(), MemoryChannelStore)
+
+    store = MemoryChannelStore()
+    assert _new_test_session(store=store).core().store() is store
+
+
 # ── new_session defaults (TestNewSessionDefaults) ──
 
 
-def test_new_session_defaults() -> None:
-    store = MemoryChannelStore()
-    store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
+def test_new_session_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    store = _ProductionChannelStore()
     session = _new_test_session(currency="", decimals=0, network="", open_tx_submitter="", store=store)
     assert session._currency == "USDC"
     assert session._network == "mainnet"
     assert session._open_tx_submitter == "client"
     assert session.core().config.decimals == 6
-
-
-def test_new_session_requires_injected_store_off_localnet() -> None:
-    options = SessionOptions(
-        operator=SESSION_TEST_RECIPIENT,
-        recipient=SESSION_TEST_RECIPIENT,
-        cap=1_000,
-        network="devnet",
-        secret_key=SESSION_METHOD_SECRET,
-    )
-    with pytest.raises(PaymentError, match="session store is required"):
-        new_session(options)
-
-    options.store = MemoryChannelStore()
-    options.store.session_store_durability = SessionStoreDurability.DURABLE_SHARED
-    session = new_session(options)
-    assert session.core().store() is options.store
-
-    unmarked = MemoryChannelStore()
-    unmarked.session_store_durability = None
-    options.store = unmarked
-    with pytest.raises(PaymentError, match="explicitly declare durable shared"):
-        new_session(options)
+    assert session.core().store() is store
 
 
 # ── challenge ──
@@ -623,28 +793,17 @@ async def test_session_open_verifies_signature_on_chain() -> None:
     session = _new_test_session(rpc=fake)
     signer = _TestVoucherSigner(1)
 
-    mint = resolve_mint("USDC", "localnet")
-    assert mint is not None
-    payer = _new_wallet()
-    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
-    fake.transaction_signature = ok_sig
-    fake.seed_channel(channel_id, 1_000, payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
-    open_payload = OpenPayload.push(channel_id, "1000", signer.address(), ok_sig)
-    open_payload.recent_slot = 42
-    receipt = await _verify_session_action(
-        session, SessionAction.open_action(open_payload)
-    )
+    channel_id = _new_wallet()
+    receipt = await _open_session_channel(session, channel_id, 1_000, signer.address(), ok_sig)
     assert receipt.reference == ok_sig
 
     ghost_channel = _new_wallet()
     ghost = OpenPayload.push(ghost_channel, "1000", signer.address(), ghost_sig)
-    ghost.recent_slot = 42
     with pytest.raises(PaymentError, match="not found"):
         await _verify_session_action(session, SessionAction.open_action(ghost))
     assert await _get_channel(session, ghost_channel) is None
 
     failed = OpenPayload.push(_new_wallet(), "1000", signer.address(), failed_sig)
-    failed.recent_slot = 42
     with pytest.raises(PaymentError, match="failed on-chain"):
         await _verify_session_action(session, SessionAction.open_action(failed))
 
@@ -810,20 +969,9 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
 
     session = _new_test_session(rpc=fake)
     signer = _TestVoucherSigner(1)
-    mint = resolve_mint("USDC", "localnet")
-    assert mint is not None
-    payer = _new_wallet()
-    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
-    fake.transaction_signature = open_sig
-    fake.seed_channel(channel_id, 1_000, payer, SESSION_TEST_RECIPIENT, signer.address(), mint, open_slot=42)
-    open_payload = OpenPayload.push(channel_id, "1000", signer.address(), open_sig)
-    open_payload.recent_slot = 42
-    await _verify_session_action(
-        session, SessionAction.open_action(open_payload)
-    )
-    opened = await _get_channel(session, channel_id)
-    assert opened is not None and opened.operator is not None
-    fake.seed_channel(channel_id, 5_000, opened.operator, SESSION_TEST_RECIPIENT, signer.address(), mint)
+    channel_id = _new_wallet()
+    await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
+    fake.transactions[topup_sig] = _confirmed_top_up_transaction(channel_id, 4_000)
 
     receipt = await _verify_session_action(
         session,
@@ -983,8 +1131,8 @@ async def test_session_push_open_requires_payer_or_transaction_for_settlement() 
         signer=LocalSigner.from_keypair(operator),
         rpc=_FakeRpc(),
     )
-    signer = _TestVoucherSigner(0x30)
     channel_id = _new_wallet()
+    signer = _TestVoucherSigner(0x30)
 
     with pytest.raises(PaymentError, match="requires payer or transaction"):
         await _verify_session_action(
@@ -995,22 +1143,6 @@ async def test_session_push_open_requires_payer_or_transaction_for_settlement() 
         )
 
     payer = _new_wallet()
-    mint = resolve_mint("USDC", "localnet")
-    assert mint is not None
-    channel_id = _derived_channel_id(payer, SESSION_TEST_RECIPIENT, signer.address(), mint, 1, 777)
-    assert isinstance(session._rpc, _FakeRpc)
-    session._rpc.transaction_signature = _confirmed_signature(0x32)
-    session._rpc.seed_channel(
-        channel_id,
-        1_000,
-        payer,
-        SESSION_TEST_RECIPIENT,
-        signer.address(),
-        mint,
-        str(operator.pubkey()),
-        1,
-        777,
-    )
     await _verify_session_action(
         session,
         SessionAction.open_action(
