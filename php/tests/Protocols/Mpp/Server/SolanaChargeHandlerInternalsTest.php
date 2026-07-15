@@ -33,6 +33,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
             verifier: new SolanaChargeTransactionVerifier(),
             confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: $confirmationDelayMicros,
+            allowUnsafeMemoryStore: true,
         );
     }
 

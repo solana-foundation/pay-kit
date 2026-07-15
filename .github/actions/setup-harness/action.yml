@@ -1,9 +1,10 @@
 name: Setup PayKit harness
 description: >-
   Shared setup for the cross-language PayKit harness jobs: pnpm + Node, build
-  @solana/mpp, (optionally) build the Rust harness adapter binaries, install the
-  harness, and typecheck it. Each language workflow adds only its own toolchain,
-  adapter build, and smoke run on top of this.
+  @solana/mpp (and opt into @solana/pay-kit only for its high-level fixture),
+  optionally build the Rust harness adapter binaries, install the harness, and
+  typecheck it. Each language workflow adds only its own toolchain, adapter
+  build, and smoke run.
 
 inputs:
   cargo-bins:
@@ -19,6 +20,13 @@ inputs:
     description: Language id used to namespace the cargo cache key.
     required: false
     default: harness
+  build-pay-kit:
+    description: >-
+      Build @solana/pay-kit after @solana/mpp for a job that executes the
+      high-level PayKit harness fixture. The default keeps cross-language
+      harness setup on its @solana/mpp-only baseline.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -40,6 +48,11 @@ runs:
       working-directory: typescript
       shell: bash
       run: pnpm --filter @solana/mpp build
+    - name: Build @solana/pay-kit for the high-level boot fixture
+      if: inputs.build-pay-kit == 'true'
+      working-directory: typescript
+      shell: bash
+      run: pnpm --filter @solana/pay-kit build
 
     - name: Set up Rust toolchain
       if: inputs.cargo-bins != ''
@@ -80,3 +93,12 @@ runs:
       working-directory: harness
       shell: bash
       run: pnpm typecheck
+    - name: Typecheck high-level PayKit boot fixture
+      if: inputs.build-pay-kit == 'true'
+      working-directory: harness
+      shell: bash
+      run: >-
+        pnpm exec tsc --noEmit --target ES2022 --module ESNext
+        --moduleResolution Bundler --strict --esModuleInterop --skipLibCheck
+        --resolveJsonModule --isolatedModules --types node
+        src/fixtures/typescript/paykit-boot.ts

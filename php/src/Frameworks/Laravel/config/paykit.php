@@ -19,6 +19,9 @@ return [
         // PAY_KIT_MPP_REALM only when you want an explicit, app-specific realm.
         'realm'      => env('PAY_KIT_MPP_REALM'),
         'expires_in' => 120,
+        // Development-only. Production must bind paykit.mpp_replay_store to
+        // an atomic DurableStore shared by every application worker.
+        'allow_unsafe_memory_store' => env('PAY_KIT_MPP_ALLOW_UNSAFE_MEMORY_STORE', false),
     ],
     'preflight' => env('PAY_KIT_PREFLIGHT', true),
 ];

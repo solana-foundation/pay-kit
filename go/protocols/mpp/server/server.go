@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/bits"
 	"os"
 	"strings"
@@ -71,12 +72,15 @@ type Config struct {
 	Realm          string
 	HTML           bool
 	FeePayerSigner solanatx.Signer
-	// Store holds replay markers. Outside localnet it must be shared and
-	// durable: an absent store or *core.MemoryStore is rejected unless
-	// PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 explicitly permits a
-	// process-local development store.
+	// Store persists consumed charge credentials. Construction requires an
+	// implementation that affirmatively implements SharedStore on every network.
 	Store core.Store
 	RPC   solanatx.RPCClient
+	// AllowUnsafeMemoryStore is an explicit development/test escape hatch.
+	// When Store is nil, it permits New to create a process-local MemoryStore
+	// on any network and defaults to false. It never authorizes an injected
+	// unshared Store. Never enable it in a multi-instance deployment.
+	AllowUnsafeMemoryStore bool
 
 	// AcceptPushMode opts in to accepting type="signature" (push mode)
 	// credentials, where the client broadcasts the transaction itself and
@@ -160,21 +164,35 @@ func New(config Config) (*Mpp, error) {
 		return nil, core.WrapError(core.ErrCodeInvalidConfig, "invalid network", err)
 	}
 	config.Network = string(canonicalNetwork)
-	usesMemoryReplayStore := false
-	if config.Store != nil {
-		_, usesMemoryReplayStore = config.Store.(*core.MemoryStore)
-	}
-	if canonicalNetwork != paycore.NetworkLocalnet && (config.Store == nil || usesMemoryReplayStore) && os.Getenv(allowInMemoryReplayStoreEnvVar) != "1" {
-		storeDescription := "no replay store"
-		if usesMemoryReplayStore {
-			storeDescription = "process-local *core.MemoryStore"
-		}
+	if config.AllowUnsafeMemoryStore && canonicalNetwork == paycore.NetworkMainnet {
 		return nil, core.NewError(core.ErrCodeInvalidConfig,
-			fmt.Sprintf("%s configured for %s; configure a shared replay Store or set %s=1 to allow a process-local development store",
-				storeDescription, config.Network, allowInMemoryReplayStoreEnvVar))
+			"AllowUnsafeMemoryStore is forbidden on mainnet; inject an atomic shared replay store")
 	}
+	// Localnet is single-process development: a process-local MemoryStore is
+	// the permissive default (matching the TypeScript and Python SDKs), so no
+	// opt-in is required and an injected store need not report IsShared. Off
+	// localnet the store must be a shared replay backend, or the caller must
+	// explicitly opt in to a process-local store via AllowUnsafeMemoryStore.
+	isLocalnet := canonicalNetwork == paycore.NetworkLocalnet
+	createdMemoryStore := false
 	if config.Store == nil {
-		config.Store = core.NewMemoryStore()
+		if isLocalnet || config.AllowUnsafeMemoryStore {
+			if !isLocalnet {
+				log.Printf("pay-kit: WARNING: MPP server on %s explicitly enabled process-local MemoryStore; replay markers are lost on restart and are not shared across workers", config.Network)
+			}
+			config.Store = core.NewMemoryStore()
+			createdMemoryStore = true
+		} else {
+			return nil, core.NewError(core.ErrCodeInvalidConfig,
+				fmt.Sprintf("an atomic shared replay store is required on %s; inject Config.Store implementing SharedStore with IsShared() == true, or explicitly enable AllowUnsafeMemoryStore for a process-local development/test store", config.Network))
+		}
+	}
+	if !createdMemoryStore && !isLocalnet {
+		shared, sharedOK := config.Store.(core.SharedStore)
+		if !sharedOK || !shared.IsShared() {
+			return nil, core.NewError(core.ErrCodeInvalidConfig,
+				fmt.Sprintf("injected Config.Store must implement SharedStore and report IsShared() == true on %s; AllowUnsafeMemoryStore only authorizes the internally-created MemoryStore when Config.Store is nil", config.Network))
+		}
 	}
 	// Derive a per-recipient default realm when none is configured (and reject
 	// an explicitly-empty realm). A shared literal default would let two

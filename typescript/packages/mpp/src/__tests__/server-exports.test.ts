@@ -3,8 +3,6 @@
  *
  * Validates that the server barrel modules expose the expected public API.
  */
-import { Store } from 'mppx/server';
-
 import { solana } from '../server/Methods.js';
 import { charge, solana as solanaFromIndex } from '../server/index.js';
 
@@ -23,7 +21,7 @@ describe('server/Methods.ts', () => {
         const method = solana({
             recipient: RECIPIENT,
             network: 'devnet',
-            store: Store.memory(),
+            allowUnsafeMemoryStore: true,
         });
 
         expect(method).toBeDefined();
@@ -34,7 +32,7 @@ describe('server/Methods.ts', () => {
         const method = solana.charge({
             recipient: RECIPIENT,
             network: 'devnet',
-            store: Store.memory(),
+            allowUnsafeMemoryStore: true,
         });
 
         expect(method).toBeDefined();

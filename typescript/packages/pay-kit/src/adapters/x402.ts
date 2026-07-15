@@ -12,7 +12,7 @@ import { ExactSvmScheme as ExactSvmFacilitator } from '@x402/svm/exact/facilitat
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
 import { requireMint, resolveCoin } from '../coin.js';
-import type { PayKitConfig } from '../config.js';
+import { assertReplayStorePolicy, type PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
@@ -37,6 +37,7 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
  * `X-PAYMENT` (or `PAYMENT-SIGNATURE`), matching the x402 HTTP convention.
  */
 export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
+    assertReplayStorePolicy(config);
     const network = caip2(config.network) as Network;
     const operator = config.operator.signer.pubkey;
 

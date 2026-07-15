@@ -1,15 +1,16 @@
-import { guardChallengeValue, resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
+import { defaultTokenProgramForCurrency, guardChallengeValue, resolveStablecoinMint } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
 import { requireMint, resolveCoin } from '../coin.js';
-import type { PayKitConfig } from '../config.js';
-import { InvalidProofError } from '../errors.js';
+import { assertReplayStorePolicy, type PayKitConfig } from '../config.js';
+import { ConfigurationError, InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2, toSolanaNetwork } from '../protocol.js';
+import { atomicReplayStoreView, isAtomicReplayStore } from '../replay-store.js';
 
 /** Settlement header mirrored by every PayKit SDK. */
 const SETTLEMENT_SIGNATURE_HEADER = 'x-payment-settlement-signature';
@@ -49,6 +50,14 @@ function schemeFor(gate: Gate): 'charge' | 'subscription' {
  * distinct (recipient, splits) shape and cached.
  */
 export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
+    if (config.replayStore === undefined) {
+        throw new ConfigurationError('MPP adapter requires the replayStore resolved by configure().');
+    }
+    if (!isAtomicReplayStore(config.replayStore)) {
+        throw new ConfigurationError('MPP adapter replayStore must implement atomic putIfAbsent(key, value).');
+    }
+    assertReplayStorePolicy(config);
+    const replayStore = atomicReplayStoreView(config.replayStore);
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
 
@@ -87,7 +96,8 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             puller,
                             recipient: gate.payTo,
                             rpcUrl: config.rpcUrl,
-                            tokenProgram: TOKEN_PROGRAM,
+                            store: replayStore,
+                            tokenProgram: defaultTokenProgramForCurrency(mint, network),
                             ...signer,
                         }),
                     ],
@@ -105,6 +115,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 const mppx = Mppx.create({
                     methods: [
                         solana.charge({
+                            allowUnsafeMemoryStore: config.mpp.allowUnsafeMemoryStore === true,
                             currency: mint,
                             decimals: 6,
                             ...(config.mpp.html ? { html: true } : {}),
@@ -113,7 +124,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             rpcUrl: config.rpcUrl,
                             ...signer,
                             ...(splits.length > 0 ? { splits: [...splits] } : {}),
-                            ...(config.replayStore ? { store: config.replayStore } : {}),
+                            store: replayStore,
                         }),
                     ],
                     realm,
