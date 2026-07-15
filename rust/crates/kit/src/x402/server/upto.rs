@@ -831,6 +831,9 @@ impl X402Upto {
     /// operator would blindly sign it. We require a single instruction, on the
     /// payment-channels program, with the `open` discriminator, whose accounts
     /// bind the expected payer / payee / mint / fee payer / channel.
+    // Mirrors the free-function `validate_open_instruction` signature below;
+    // every argument is an independently-bound account or payload field.
+    #[allow(clippy::too_many_arguments)]
     fn validate_open_transaction(
         &self,
         tx: &VersionedTransaction,

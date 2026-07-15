@@ -8,7 +8,8 @@
  *
  * pay-kit does NOT auto-mount the side-channel routes (mppx-consistent): the
  * instance exposes `handler` / `deliveries` / `commit` / `receipt` and the app
- * mounts them. All four share the configured session store per gate.
+ * mounts them. All four share the injected session store (or an explicitly
+ * localnet-only in-memory store) per gate.
  */
 import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
@@ -68,6 +69,8 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
 
     const signer = config.operator.signer.signer;
     const store = resolveSessionStore(config);
+    const allowUnsafeEphemeralStoreOffLocalnet =
+        config.network !== 'solana_localnet' && process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE === '1';
     const params = {
         cap: gate.amount.baseUnits(),
         ...(gate.session.closeDelayMs !== undefined ? { closeDelayMs: gate.session.closeDelayMs } : {}),
@@ -85,6 +88,7 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
         rpcUrl: config.rpcUrl,
         signer,
         store,
+        ...(allowUnsafeEphemeralStoreOffLocalnet ? { allowUnsafeEphemeralStoreOffLocalnet: true } : {}),
     };
 
     const mppx = Mppx.create({
