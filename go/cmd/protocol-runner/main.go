@@ -51,14 +51,14 @@ type request struct {
 
 // response is the canonical adapter-ABI output envelope.
 type response struct {
-	Language  string      `json:"language"`
-	Success   bool        `json:"success"`
-	Result    interface{} `json:"result,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	ErrorType string      `json:"error_type,omitempty"`
+	Language  string `json:"language"`
+	Success   bool   `json:"success"`
+	Result    any    `json:"result,omitempty"`
+	Error     string `json:"error,omitempty"`
+	ErrorType string `json:"error_type,omitempty"`
 }
 
-func ok(result interface{}) response {
+func ok(result any) response {
 	return response{Success: true, Result: result}
 }
 
@@ -95,27 +95,27 @@ type challengeIDInput struct {
 // the method/intent are plain strings. Optional fields are omitted when empty
 // to match the vendored golden objects byte-for-byte under deep-equal.
 type challengeObject struct {
-	ID          string      `json:"id"`
-	Realm       string      `json:"realm"`
-	Method      string      `json:"method"`
-	Intent      string      `json:"intent"`
-	Request     interface{} `json:"request"`
-	Expires     string      `json:"expires,omitempty"`
-	Description string      `json:"description,omitempty"`
-	Digest      string      `json:"digest,omitempty"`
-	Opaque      interface{} `json:"opaque,omitempty"`
+	ID          string `json:"id"`
+	Realm       string `json:"realm"`
+	Method      string `json:"method"`
+	Intent      string `json:"intent"`
+	Request     any    `json:"request"`
+	Expires     string `json:"expires,omitempty"`
+	Description string `json:"description,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	Opaque      any    `json:"opaque,omitempty"`
 }
 
 // decodeJSONValue decodes a base64url-encoded JSON blob into a generic value,
 // preserving integers via json.Number so re-serialization is byte-stable.
-func decodeJSONValue(b wire.Base64URLJSON) (interface{}, error) {
+func decodeJSONValue(b wire.Base64URLJSON) (any, error) {
 	payload, err := wire.Base64URLDecode(b.Raw())
 	if err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.UseNumber()
-	var value interface{}
+	var value any
 	if err := dec.Decode(&value); err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func challengeToObject(c wire.PaymentChallenge) (challengeObject, error) {
 }
 
 // unmarshalNumber decodes raw JSON into a generic value preserving integers.
-func unmarshalNumber(raw json.RawMessage, out *interface{}) error {
+func unmarshalNumber(raw json.RawMessage, out *any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	return dec.Decode(out)
@@ -355,9 +355,9 @@ func credentialFromInput(input json.RawMessage) (wire.PaymentCredential, error) 
 // base64url-JSON encoder (RFC 8785-style key sorting + base64url).
 func base64JSONFromRaw(raw json.RawMessage) (wire.Base64URLJSON, error) {
 	if len(raw) == 0 {
-		return wire.NewBase64URLJSONValue(map[string]interface{}{})
+		return wire.NewBase64URLJSONValue(map[string]any{})
 	}
-	var value interface{}
+	var value any
 	if err := unmarshalNumber(raw, &value); err != nil {
 		return wire.Base64URLJSON{}, err
 	}

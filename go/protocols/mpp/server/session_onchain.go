@@ -19,18 +19,19 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
-	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	ag_binary "github.com/gagliardetto/binary"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
-	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
+	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
 type boundChannel struct {
@@ -56,7 +57,7 @@ func fetchAndValidateChannel(
 	requireFresh bool,
 	programID *solana.PublicKey,
 	minContextSlot uint64,
-) (*pcgen.Channel, error) {
+) (*generated.Channel, error) {
 	program := paymentchannels.ProgramPubkey()
 	if programID != nil {
 		program = *programID
@@ -80,8 +81,8 @@ func fetchAndValidateChannel(
 	if len(data) != 256 {
 		return nil, fmt.Errorf("channel %s account data has invalid length %d", channelID, len(data))
 	}
-	channel := new(pcgen.Channel)
-	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
+	channel := new(generated.Channel)
+	if err := channel.UnmarshalWithDecoder(ag_binary.NewBorshDecoder(data)); err != nil {
 		return nil, fmt.Errorf("channel %s decode failed: %w", channelID, err)
 	}
 	if channel.Discriminator != 1 {
@@ -90,7 +91,7 @@ func fetchAndValidateChannel(
 	if channel.Version != 1 {
 		return nil, fmt.Errorf("channel %s has unsupported version %d", channelID, channel.Version)
 	}
-	if channel.Status != uint8(pcgen.ChannelStatus_Open) {
+	if channel.Status != uint8(generated.ChannelStatus_Open) {
 		return nil, fmt.Errorf("channel %s is not open on-chain (status %d)", channelID, channel.Status)
 	}
 	if channel.Mint.String() != expectedMint {
@@ -208,6 +209,11 @@ type VerifyOpenTxExpected struct {
 	// Currency is the challenge currency (symbol or mint address).
 	Currency string
 
+	// TokenProgram is the authoritative token program committed for the
+	// session. Empty resolves the known currency default; arbitrary mint
+	// addresses must provide the resolved mint owner.
+	TokenProgram string
+
 	// MaxCap is the maximum deposit the server accepts (base units).
 	MaxCap uint64
 
@@ -291,6 +297,13 @@ type VerifyOpenTxResult struct {
 // If rpcClient is non-nil, that bound signature is additionally confirmed
 // on-chain; nil skips the liveness check (structural validation only).
 func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, rpcClient solanatx.RPCClient) (VerifyOpenTxResult, error) {
+	return verifyOpenTx(ctx, expected, payload, rpcClient, false)
+}
+
+// verifyOpenTx permits an unsigned fee-payer slot only for the private
+// server-submit pre-broadcast path. Every public verification path requires
+// a fully signed transaction bound to payload.Signature.
+func verifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, rpcClient solanatx.RPCClient, allowUnsignedFeePayer bool) (VerifyOpenTxResult, error) {
 	if expected.Operator == "" {
 		return VerifyOpenTxResult{}, fmt.Errorf("verify open: expected operator (rentPayer) is required")
 	}
@@ -317,11 +330,32 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		return VerifyOpenTxResult{}, fmt.Errorf("open transaction must contain exactly one instruction, found %d", len(tx.Message.Instructions))
 	}
 
-	// Bind the claimed signature to this transaction before trusting it.
+	// Bind every required signature to the exact message before trusting the
+	// transaction. Server-submit may leave only the fee-payer slot empty; the
+	// payer's client signature must still be valid.
 	boundSignature := payload.Signature != "" && !isPlaceholderSignature(payload.Signature)
-	if boundSignature {
-		if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
-			return VerifyOpenTxResult{}, fmt.Errorf("openPayload.signature is set but the transaction carries no fee-payer signature")
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		return VerifyOpenTxResult{}, fmt.Errorf("encode open transaction message: %w", err)
+	}
+	signers := tx.Message.Signers()
+	if len(signers) == 0 || len(tx.Signatures) < len(signers) {
+		return VerifyOpenTxResult{}, fmt.Errorf("open transaction is missing required signatures")
+	}
+	for i, signer := range signers {
+		if tx.Signatures[i].IsZero() {
+			if allowUnsignedFeePayer && i == 0 {
+				continue
+			}
+			return VerifyOpenTxResult{}, fmt.Errorf("open transaction has no signature for required signer %s", signer)
+		}
+		if !tx.Signatures[i].Verify(signer, message) {
+			return VerifyOpenTxResult{}, fmt.Errorf("open transaction has an invalid signature for required signer %s", signer)
+		}
+	}
+	if !allowUnsignedFeePayer {
+		if !boundSignature {
+			return VerifyOpenTxResult{}, fmt.Errorf("openPayload.signature must be a real transaction signature")
 		}
 		if txSignature := tx.Signatures[0].String(); txSignature != payload.Signature {
 			return VerifyOpenTxResult{}, fmt.Errorf("openPayload.signature %s != transaction signature %s", payload.Signature, txSignature)
@@ -339,6 +373,10 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	if expectedMint == "" {
 		return VerifyOpenTxResult{}, fmt.Errorf("could not resolve mint from currency %q", expected.Currency)
 	}
+	expectedTokenProgram, err := resolveSessionTokenProgram(expected.TokenProgram, expected.Currency, expected.Network)
+	if err != nil {
+		return VerifyOpenTxResult{}, err
+	}
 
 	accountKeys := tx.Message.AccountKeys
 	accountAt := func(indices []uint16, slot int, label string) (solana.PublicKey, error) {
@@ -355,12 +393,23 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	if len(openIx.Data) < 1 || openIx.Data[0] != openInstructionDiscriminator {
 		return VerifyOpenTxResult{}, fmt.Errorf("no payment-channels open instruction found")
 	}
+	if len(tx.Message.Instructions) != 1 {
+		return VerifyOpenTxResult{}, fmt.Errorf("open transaction must contain exactly one instruction")
+	}
 
 	// Open instruction account layout (matches the generated client):
 	// 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,
 	// 6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, ...
 	// rentPayer (slot 1) is pinned to the operator / fee payer.
 	if len(openIx.Accounts) < 8 {
+		return VerifyOpenTxResult{}, fmt.Errorf("open instruction has too few accounts (%d)", len(openIx.Accounts))
+	}
+	// Instruction data:
+	// [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
+	if len(openIx.Data) < 1+8+8+4+8+4 {
+		return VerifyOpenTxResult{}, fmt.Errorf("open instruction data too short (%d bytes)", len(openIx.Data))
+	}
+	if len(openIx.Accounts) < 9 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open instruction has too few accounts (%d)", len(openIx.Accounts))
 	}
 	payer, err := accountAt(openIx.Accounts, 0, "payer")
@@ -387,12 +436,19 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
+	tokenProgram, err := accountAt(openIx.Accounts, 8, "tokenProgram")
+	if err != nil {
+		return VerifyOpenTxResult{}, err
+	}
 
 	if payee.String() != expected.Recipient {
 		return VerifyOpenTxResult{}, fmt.Errorf("open payee %s != expected recipient %s", payee, expected.Recipient)
 	}
 	if mint.String() != expectedMint {
 		return VerifyOpenTxResult{}, fmt.Errorf("open mint %s != expected mint %s", mint, expectedMint)
+	}
+	if !tokenProgram.Equals(expectedTokenProgram) {
+		return VerifyOpenTxResult{}, fmt.Errorf("open token program %s != expected token program %s", tokenProgram, expectedTokenProgram)
 	}
 	if authorizedSigner.String() != expected.AuthorizedSigner {
 		return VerifyOpenTxResult{}, fmt.Errorf("open authorizedSigner %s != expected %s", authorizedSigner, expected.AuthorizedSigner)
@@ -404,22 +460,14 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		return VerifyOpenTxResult{}, fmt.Errorf("open rentPayer %s != expected operator %s", rentPayer, expected.Operator)
 	}
 
-	// Instruction data:
-	// [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients].
-	if len(openIx.Data) < 1+8+8+4+8 {
-		return VerifyOpenTxResult{}, fmt.Errorf("open instruction data too short (%d bytes)", len(openIx.Data))
-	}
-	salt := binary.LittleEndian.Uint64(openIx.Data[1:9])
-	deposit := binary.LittleEndian.Uint64(openIx.Data[9:17])
-	gracePeriod := binary.LittleEndian.Uint32(openIx.Data[17:21])
-	openSlot := binary.LittleEndian.Uint64(openIx.Data[21:29])
-	var openArgs pcgen.OpenArgs
-	if err := bin.NewBorshDecoder(openIx.Data[1:]).Decode(&openArgs); err != nil {
+	var openArgs generated.OpenArgs
+	if err := ag_binary.NewBorshDecoder(openIx.Data[1:]).Decode(&openArgs); err != nil {
 		return VerifyOpenTxResult{}, fmt.Errorf("decode open instruction args: %w", err)
 	}
-	if expected.GracePeriod != 0 && openArgs.GracePeriod != expected.GracePeriod {
-		return VerifyOpenTxResult{}, fmt.Errorf("open gracePeriod %d != expected %d", openArgs.GracePeriod, expected.GracePeriod)
-	}
+	salt := openArgs.Salt
+	deposit := openArgs.Deposit
+	gracePeriod := openArgs.GracePeriod
+	openSlot := openArgs.OpenSlot
 	if len(openArgs.Recipients) != len(expected.Splits) {
 		return VerifyOpenTxResult{}, fmt.Errorf("open recipients length %d != expected splits length %d", len(openArgs.Recipients), len(expected.Splits))
 	}
@@ -428,6 +476,9 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		if !recipient.Recipient.Equals(expectedSplit.Recipient) || recipient.Bps != expectedSplit.BPS {
 			return VerifyOpenTxResult{}, fmt.Errorf("open recipient[%d] does not match expected split", i)
 		}
+	}
+	if expected.GracePeriod != 0 && openArgs.GracePeriod != expected.GracePeriod {
+		return VerifyOpenTxResult{}, fmt.Errorf("open gracePeriod %d != expected %d", openArgs.GracePeriod, expected.GracePeriod)
 	}
 
 	if deposit == 0 {
@@ -458,10 +509,9 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	// Rebuild the canonical instruction from the verified values. This rejects
 	// trailing/malformed Borsh data and pins every account in the fixed layout,
 	// including both token accounts, sysvars, event authority, and self-program.
-	tokenProgram, err := solana.PublicKeyFromBase58(paycore.DefaultTokenProgramForCurrency(expected.Currency, expected.Network))
-	if err != nil {
-		return VerifyOpenTxResult{}, fmt.Errorf("resolve open token program: %w", err)
-	}
+	// Use the token program already read from account 8 and verified against the
+	// expected program above, so Token-2022 mints rebuild against their real
+	// program rather than the currency default.
 	canonical, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            payer,
 		RentPayer:        rentPayer,
@@ -526,6 +576,7 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 			expected := VerifyOpenTxExpected{
 				AuthorizedSigner: payload.AuthorizedSigner,
 				Currency:         config.Currency,
+				TokenProgram:     config.TokenProgram,
 				MaxCap:           config.MaxCap,
 				Network:          config.Network,
 				Operator:         config.Operator,
@@ -540,10 +591,20 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 		if rpcClient == nil {
 			return "", fmt.Errorf("open verification requires a transaction or an RPC client")
 		}
-		if payload.RecentSlot == nil {
-			return "", fmt.Errorf("signature-only push open requires recentSlot")
+		expected := VerifyOpenTxExpected{
+			AuthorizedSigner: payload.AuthorizedSigner,
+			Currency:         config.Currency,
+			TokenProgram:     config.TokenProgram,
+			MaxCap:           config.MaxCap,
+			Network:          config.Network,
+			Operator:         config.Operator,
+			ProgramID:        config.ProgramID,
+			Recipient:        config.Recipient,
+			Splits:           config.Splits,
+			GracePeriod:      expectedSessionGracePeriod(config),
 		}
-		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "open")
+		result, _, err := verifySignatureOnlyOpen(ctx, expected, payload, rpcClient)
+		return result.Payer, err
 	}
 }
 
@@ -772,7 +833,7 @@ func validateAssertedOpenDeposit(payload *intents.OpenPayload, authoritativeDepo
 	return nil
 }
 
-func openSplits(entries []pcgen.DistributionEntry) []paymentchannels.Distribution {
+func openSplits(entries []generated.DistributionEntry) []paymentchannels.Distribution {
 	result := make([]paymentchannels.Distribution, 0, len(entries))
 	for _, entry := range entries {
 		result = append(result, paymentchannels.Distribution{Recipient: entry.Recipient, Bps: entry.Bps})
@@ -781,18 +842,92 @@ func openSplits(entries []pcgen.DistributionEntry) []paymentchannels.Distributio
 }
 
 // NewTopUpTxVerifier returns the on-chain top-up verifier to install on
-// SessionConfig.VerifyTopUpTx: it confirms the top-up transaction signature
-// on-chain via getSignatureStatuses.
-// NewTopUpTxVerifier is the legacy payload-only callback factory. Keep this
-// public shape for host integrations that install VerifyTopUpTx directly.
-// Session construction uses NewTopUpStateTxVerifier below for account binding.
-func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.TopUpPayload] {
+// SessionConfig.VerifyTopUpTx. It fetches the confirmed transaction and
+// requires a payment-channels top_up instruction for the payload channel with
+// an amount exactly equal to the claimed deposit delta.
+// A nil rpcClient returns nil so the seam stays unset, and the new deposit is
+// trusted as provided; suitable only for unit tests or deployments that
+// verify transactions out of band.
+func NewTopUpTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) TopUpTxVerifier {
 	if rpcClient == nil {
 		return nil
 	}
-	return func(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
-		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
+	programID := paymentchannels.ProgramPubkey()
+	if config.ProgramID != nil {
+		programID = *config.ProgramID
 	}
+	return func(ctx context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error {
+		return verifyTopUpTx(ctx, rpcClient, programID, payload, currentDeposit)
+	}
+}
+
+func verifyTopUpTx(ctx context.Context, rpcClient solanatx.RPCClient, programID solana.PublicKey, payload *intents.TopUpPayload, currentDeposit uint64) error {
+	if payload == nil {
+		return fmt.Errorf("top-up payload is required")
+	}
+	newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid newDeposit: %s", payload.NewDeposit)
+	}
+	if newDeposit <= currentDeposit {
+		return fmt.Errorf("new deposit %d must exceed current deposit %d", newDeposit, currentDeposit)
+	}
+	channel, err := solana.PublicKeyFromBase58(payload.ChannelID)
+	if err != nil {
+		return fmt.Errorf("invalid top-up channel id %q: %w", payload.ChannelID, err)
+	}
+	signature, err := solana.SignatureFromBase58(payload.Signature)
+	if err != nil {
+		return fmt.Errorf("invalid top-up tx signature %q: %w", payload.Signature, err)
+	}
+	if err := confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up"); err != nil {
+		return err
+	}
+	tx, _, err := solanatx.FetchTransaction(ctx, rpcClient, signature)
+	if err != nil {
+		return fmt.Errorf("fetch top-up transaction: %w", err)
+	}
+	if len(tx.Message.AddressTableLookups) > 0 {
+		return fmt.Errorf("top-up transaction uses address lookup tables, which are not supported")
+	}
+	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() || tx.Signatures[0] != signature {
+		return fmt.Errorf("top-up transaction signature does not match payload signature")
+	}
+
+	var funded uint64
+	var topUpCount int
+	for i := range tx.Message.Instructions {
+		ix := &tx.Message.Instructions[i]
+		if int(ix.ProgramIDIndex) >= len(tx.Message.AccountKeys) || !tx.Message.AccountKeys[ix.ProgramIDIndex].Equals(programID) {
+			continue
+		}
+		if len(ix.Data) == 0 || ix.Data[0] != topUpInstructionDiscriminator {
+			continue
+		}
+		if len(ix.Data) != 1+8 {
+			return fmt.Errorf("top-up instruction data has invalid length %d", len(ix.Data))
+		}
+		if len(ix.Accounts) < 2 || int(ix.Accounts[1]) >= len(tx.Message.AccountKeys) {
+			return fmt.Errorf("top-up instruction is missing the channel account")
+		}
+		if !tx.Message.AccountKeys[ix.Accounts[1]].Equals(channel) {
+			continue
+		}
+		amount := binary.LittleEndian.Uint64(ix.Data[1:])
+		if amount > math.MaxUint64-funded {
+			return fmt.Errorf("top-up instruction amount overflows total")
+		}
+		funded += amount
+		topUpCount++
+	}
+	if topUpCount == 0 {
+		return fmt.Errorf("no payment-channels top_up instruction found for channel %s", channel)
+	}
+	wantDelta := newDeposit - currentDeposit
+	if funded != wantDelta {
+		return fmt.Errorf("top-up amount %d != claimed deposit delta %d", funded, wantDelta)
+	}
+	return nil
 }
 
 // NewTopUpStateTxVerifier confirms the transaction and binds a top-up to the
@@ -890,8 +1025,9 @@ func NewTopUpStateTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient)
 // transaction. Hosts drive this after ProcessClose records the close-pending
 // state, then call MarkSealed once the transaction confirms.
 //
-// The mint and token program are resolved from the configured currency and
-// network (Token-2022 for PYUSD/USDG/CASH).
+// The mint is resolved from the configured currency and network. The token
+// program comes from the authoritative session configuration (Token-2022
+// for known PYUSD/USDG/CASH, or the resolved owner for an arbitrary mint).
 func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID string, merchant solana.PublicKey) ([]solana.Instruction, error) {
 	if err := s.requireProductionSessionSafety(); err != nil {
 		return nil, err
@@ -962,9 +1098,9 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid mint %q: %w", mintAddress, err)
 	}
-	tokenProgram, err := solana.PublicKeyFromBase58(paycore.DefaultTokenProgramForCurrency(s.config.Currency, s.config.Network))
+	tokenProgram, err := resolveSessionTokenProgram(s.config.TokenProgram, s.config.Currency, s.config.Network)
 	if err != nil {
-		return nil, fmt.Errorf("invalid token program: %w", err)
+		return nil, err
 	}
 	payerAddress := ""
 	if state.Operator != nil {
@@ -1013,6 +1149,28 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	return append(instructions, distribute), nil
 }
 
+// resolveSessionTokenProgram returns the configured token program, falling
+// back to the static known-currency mapping for backwards-compatible session
+// configs. Arbitrary mint sessions must provide the owner resolved from RPC;
+// otherwise they would silently default to the legacy Token program.
+func resolveSessionTokenProgram(configured, currency, network string) (solana.PublicKey, error) {
+	program := configured
+	if program == "" {
+		if paycore.StablecoinSymbol(currency) == "" {
+			return solana.PublicKey{}, fmt.Errorf("token program is required for arbitrary mint %q", currency)
+		}
+		program = paycore.DefaultTokenProgramForCurrency(currency, network)
+	}
+	parsed, err := solana.PublicKeyFromBase58(program)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("invalid session token program %q: %w", program, err)
+	}
+	if !parsed.Equals(solana.TokenProgramID) && parsed.String() != paycore.Token2022Program {
+		return solana.PublicKey{}, fmt.Errorf("unsupported session token program %s", parsed)
+	}
+	return parsed, nil
+}
+
 // SubmitOpenTxResult carries the verified channel facts plus the broadcast
 // signature of a server-submitted open.
 type SubmitOpenTxResult struct {
@@ -1053,7 +1211,13 @@ func SubmitOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 
 func prepareOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, payerSigner solanatx.Signer) (VerifyOpenTxResult, *solana.Transaction, solana.Signature, error) {
 	// Structural validation only: the transaction may not have been broadcast.
-	verified, err := VerifyOpenTx(ctx, expected, payload, nil)
+	// Permit an unsigned fee-payer slot (allowUnsignedFeePayer=true): this is
+	// the server-submit path, where the client signs only as the channel payer
+	// and leaves the operator/fee-payer slot for the server to complete below.
+	// The payer signature is still verified; the co-sign step and the
+	// post-co-sign zero-signature guard keep this fail-closed. Matches
+	// handleOpen's pre-verification.
+	verified, err := verifyOpenTx(ctx, expected, payload, nil, true)
 	if err != nil {
 		return VerifyOpenTxResult{}, nil, solana.Signature{}, err
 	}

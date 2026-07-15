@@ -151,16 +151,26 @@ export const subscription = Method.from({
             methodDetails: z.object({
                 /** Token decimals. */
                 decimals: z.number(),
+                /** Plan creation timestamp snapshot, encoded as an i64 decimal string. */
+                expectedCreatedAt: z.string(),
+                /** Plan billing cadence snapshot in hours, encoded as a u64 decimal string. */
+                expectedPeriodHours: z.string(),
                 /** If true, server pays activation transaction fees. */
                 feePayer: z.optional(z.boolean()),
                 /** Server's base58 fee-payer pubkey. Required when feePayer is true. */
                 feePayerKey: z.optional(z.string()),
+                /** Merchant/plan-owner account required by the canonical subscribe instruction. */
+                merchant: z.string(),
                 /** Base58 of the SPL token mint. Must equal the on-chain plan.mint. */
                 mint: z.string(),
                 /** Solana network: mainnet, devnet, or localnet. */
                 network: z.optional(z.string()),
+                /** Plan PDA bump snapshot. */
+                planBump: z.number(),
                 /** Base58 of the on-chain Plan PDA. */
                 planId: z.string(),
+                /** Numeric u64 plan id used by the canonical SubscribeData layout. */
+                planIdNumeric: z.string(),
                 /** Base58 of the subscriptions program ID. */
                 programId: z.optional(z.string()),
                 /** Base58 of the server's puller pubkey (must be in plan.pullers or plan.owner). */
@@ -187,6 +197,8 @@ export const subscription = Method.from({
             periodUnit: subscriptionPeriodUnit,
             /** Primary recipient's wallet pubkey (base58). */
             recipient: z.string(),
+            /** Canonical resource path this subscription authorizes. */
+            resource: z.optional(z.string()),
             /** RFC3339 expiry of the recurring authorization. */
             subscriptionExpires: z.optional(z.string()),
         }),

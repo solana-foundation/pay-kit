@@ -122,6 +122,16 @@ export interface ListChannelsFilter {
  */
 export type ChannelMutator = (current: ChannelState | undefined) => ChannelState | Promise<ChannelState>;
 
+/** Explicit storage safety declaration for session channel state. */
+export type SessionStoreDurability = 'durable-shared' | 'ephemeral';
+
+/**
+ * Brand marking a store as the process-local, non-durable in-memory
+ * `SessionStore`. Uses the global symbol registry so the mark survives the
+ * `@solana/mpp` / consumer package boundary without an `instanceof` check.
+ */
+const MEMORY_SESSION_STORE = Symbol.for('@solana/mpp/server:memory-session-store');
+
 /**
  * Async store for per-channel state.
  *
@@ -130,6 +140,7 @@ export type ChannelMutator = (current: ChannelState | undefined) => ChannelState
  * read-modify-write to avoid double-spend under concurrent vouchers.
  */
 export interface SessionStore {
+    readonly [MEMORY_SESSION_STORE]?: true;
     /** Remove a channel from the store. */
     deleteChannel(channelId: string): Promise<void>;
     /** Read a channel. Returns `undefined` if it doesn't exist. */
@@ -141,13 +152,20 @@ export interface SessionStore {
      * not found, matching the Rust behavior.
      */
     markSealed(channelId: string): Promise<ChannelState>;
-    /**
-     * Explicit safety capability. Off localnet, only `durable-shared` is
-     * accepted; an omitted marker is unsafe by default.
-     */
-    readonly sessionStoreDurability?: 'durable-shared' | 'ephemeral' | undefined;
+    /** Off localnet, production stores must explicitly declare durable sharing. */
+    readonly sessionStoreDurability?: SessionStoreDurability | undefined;
     /** Atomically read-modify-write a channel's state. */
     updateChannel(channelId: string, mutator: ChannelMutator): Promise<ChannelState>;
+}
+
+/**
+ * True when `store` was produced by {@link createMemorySessionStore}. Higher
+ * level adapters use this to keep process-local session state out of
+ * production clusters (mirrors the replay store's `isDurable`/`isShared`
+ * self-report), instead of `instanceof`, which breaks across package copies.
+ */
+export function isMemorySessionStore(store: SessionStore): boolean {
+    return (store as unknown as Record<symbol, unknown>)[MEMORY_SESSION_STORE] === true;
 }
 
 /**
@@ -175,7 +193,7 @@ export function createMemorySessionStore(): SessionStore {
         return next;
     }
 
-    return {
+    const store: SessionStore = {
         deleteChannel(channelId) {
             data.delete(channelId);
             return Promise.resolve();
@@ -213,7 +231,7 @@ export function createMemorySessionStore(): SessionStore {
             });
         },
 
-        sessionStoreDurability: 'ephemeral',
+        sessionStoreDurability: 'ephemeral' as const,
 
         async updateChannel(channelId, mutator) {
             return await withLock(channelId, async () => {
@@ -224,4 +242,14 @@ export function createMemorySessionStore(): SessionStore {
             });
         },
     };
+    // Enumerable so an object spread (`{ ...store }`) copies the brand too: a
+    // shallow copy of a process-local store is still process-local, so it must
+    // stay detectable and be rejected off-localnet (fail CLOSED). A symbol key
+    // is invisible to JSON.stringify and Object.keys regardless of the
+    // enumerable flag, so nothing leaks into serialized output.
+    Object.defineProperty(store, MEMORY_SESSION_STORE, {
+        enumerable: true,
+        value: true,
+    });
+    return store;
 }

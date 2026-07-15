@@ -2,7 +2,7 @@ import { generateKeyPairSigner, getBase58Decoder, type KeyPairSigner } from '@so
 
 import type { SignedVoucher, VoucherData } from '../shared/session-types.js';
 import { encodeVoucherMessage } from '../shared/voucher.js';
-import { type ChannelState, createMemorySessionStore } from '../server/session/store.js';
+import { type ChannelState, createMemorySessionStore, isMemorySessionStore } from '../server/session/store.js';
 import { verifyVoucherForChannel } from '../server/session/voucher.js';
 
 // Helpers ───────────────────────────────────────────────────────────────────
@@ -562,5 +562,42 @@ describe('verifyVoucherForChannel', () => {
             expect(result.newCumulative).toBe(600n);
             expect(result.newSignature).toBe(next.signature);
         }
+    });
+});
+
+describe('isMemorySessionStore brand detection', () => {
+    test('detects a store from the factory', () => {
+        expect(isMemorySessionStore(createMemorySessionStore())).toBe(true);
+    });
+
+    test('is invisible to JSON / Object.keys (symbol brand)', () => {
+        const store = createMemorySessionStore();
+        expect(Object.keys(store)).not.toContain('memory-session-store');
+        // The symbol brand never serializes; only the explicit durability
+        // declaration (a plain string field) is visible.
+        expect(JSON.stringify(store)).toBe('{"sessionStoreDurability":"ephemeral"}');
+    });
+
+    test('a shallow spread copy stays detected (fail CLOSED)', () => {
+        // A `{ ...store }` copy of a process-local store is still process-local.
+        // The brand is enumerable so the spread carries it and mainnet policy
+        // still rejects the copy instead of trusting it as durable.
+        const copy = { ...createMemorySessionStore() };
+        expect(isMemorySessionStore(copy)).toBe(true);
+    });
+
+    test('an unrelated object is not mistaken for a memory store', () => {
+        const durable = {
+            deleteChannel: async () => {},
+            getChannel: async () => undefined,
+            listChannels: async () => [],
+            markSealed: async () => {
+                throw new Error('unused');
+            },
+            updateChannel: async () => {
+                throw new Error('unused');
+            },
+        };
+        expect(isMemorySessionStore(durable)).toBe(false);
     });
 });

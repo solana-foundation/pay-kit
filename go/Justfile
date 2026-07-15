@@ -21,7 +21,7 @@ fmt:
 
 # Lint pipeline: gofmt-check + go vet + staticcheck.
 # Codama-generated program clients under protocols/programs/<name>/ carry a
-# "DO NOT EDIT" header and follow gagliardetto/solana-go's generated-client
+# "DO NOT EDIT" header and follow solana-foundation/solana-go's generated-client
 # idioms (unkeyed VariantType literals, embedded-field selectors), which trip
 # `go vet -composites` and staticcheck QF1008. They are byte-for-byte
 # reproducible from idl/<name>.json, so we exclude the generated dirs from the

@@ -19,8 +19,8 @@ import (
 	"time"
 
 	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
@@ -77,6 +77,81 @@ func newTestSession(t *testing.T, mutate func(*SessionOptions)) *Session {
 	}
 	t.Cleanup(session.Shutdown)
 	return session
+}
+
+func TestNewSessionResolvesArbitraryMintTokenProgram(t *testing.T) {
+	mint := testutil.NewPrivateKey().PublicKey()
+	fake := testutil.NewFakeRPC()
+	fake.MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+
+	session := newTestSession(t, func(options *SessionOptions) {
+		options.Currency = mint.String()
+		options.RPC = fake
+	})
+	if got := session.core.config.TokenProgram; got != paycore.Token2022Program {
+		t.Fatalf("resolved token program = %s, want %s", got, paycore.Token2022Program)
+	}
+}
+
+func TestNewSessionRejectsUnresolvedArbitraryMint(t *testing.T) {
+	mint := testutil.NewPrivateKey().PublicKey()
+	options := SessionOptions{
+		Operator:  sessionTestRecipient,
+		Recipient: sessionTestRecipient,
+		Cap:       1,
+		Currency:  mint.String(),
+		Network:   "localnet",
+		SecretKey: sessionMethodSecret,
+	}
+	if _, err := NewSession(options); err == nil || !strings.Contains(err.Error(), "RPC client is required") {
+		t.Fatalf("unresolved arbitrary mint error = %v", err)
+	}
+}
+
+func TestNewSessionMemoryChannelStorePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		network string
+		store   ChannelStore
+		optIn   string
+		wantErr bool
+	}{
+		{name: "default mainnet rejects absent store", wantErr: true},
+		{name: "mainnet rejects memory store", network: "mainnet", store: NewMemoryChannelStore(), wantErr: true},
+		{name: "devnet rejects memory store", network: "devnet", store: NewMemoryChannelStore(), wantErr: true},
+		{name: "invalid opt-in remains rejected", network: "mainnet", optIn: "true", wantErr: true},
+		{name: "localnet defaults to memory store", network: "localnet"},
+		{name: "localnet permits supplied memory store", network: "localnet", store: NewMemoryChannelStore()},
+		{name: "mainnet opt-in permits absent store", network: "mainnet", optIn: "1"},
+		{name: "mainnet opt-in permits memory store", network: "mainnet", store: NewMemoryChannelStore(), optIn: "1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(allowInMemoryReplayStoreEnvVar, tt.optIn)
+			session, err := NewSession(SessionOptions{
+				Recipient: testutil.NewPrivateKey().PublicKey().String(),
+				Cap:       1_000_000,
+				Currency:  "USDC",
+				Network:   tt.network,
+				SecretKey: sessionMethodSecret,
+				Store:     tt.store,
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected session-store policy error")
+				}
+				if !strings.Contains(err.Error(), allowInMemoryReplayStoreEnvVar) {
+					t.Fatalf("error = %v, want %s policy error", err, allowInMemoryReplayStoreEnvVar)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			if _, ok := session.Core().Store().(*MemoryChannelStore); !ok {
+				t.Fatalf("store = %T, want *MemoryChannelStore", session.Core().Store())
+			}
+		})
+	}
 }
 
 // sessionActionCredential issues a fresh challenge and wraps action into the
@@ -253,12 +328,24 @@ func registerSignatureOnlyOpenTransaction(
 	if err != nil {
 		t.Fatalf("build fetched signature-only transaction: %v", err)
 	}
-	tx.Signatures = make([]solana.Signature, len(tx.Message.Signers()))
-	signature, err := solana.SignatureFromBase58(payload.Signature)
-	if err != nil {
-		return
+	// Sign the fetched transaction for real so the hardened open verifier can
+	// cryptographically bind every required signer. The fee payer is the funder
+	// (payer) and the rentPayer (operator) co-signs; both keys are supplied so a
+	// confirmed on-chain open reproduces a fully signed transaction. The payload
+	// signature is then the confirmed transaction's real fee-payer signature.
+	if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
+		switch key {
+		case payer.PublicKey():
+			return &payer
+		case sessionTestOperatorKey.PublicKey():
+			return &sessionTestOperatorKey
+		default:
+			return nil
+		}
+	}); err != nil {
+		t.Fatalf("sign fetched signature-only transaction: %v", err)
 	}
-	tx.Signatures[0] = signature
+	payload.Signature = tx.Signatures[0].String()
 	fake.BySig[payload.Signature] = tx
 }
 
@@ -336,7 +423,7 @@ func TestNewSessionValidation(t *testing.T) {
 	}
 
 	manySplits := base()
-	for i := 0; i < 9; i++ {
+	for range 9 {
 		manySplits.Splits = append(manySplits.Splits, Split{Recipient: solana.NewWallet().PublicKey(), BPS: 1})
 	}
 	if _, err := NewSession(manySplits); err == nil || !strings.Contains(err.Error(), "splits cannot exceed") {
@@ -415,6 +502,7 @@ func TestNewSessionValidation(t *testing.T) {
 }
 
 func TestNewSessionDefaults(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Currency = ""
 		o.Decimals = 0
@@ -441,7 +529,9 @@ func TestNewSessionRequiresInjectedStoreOffLocalnet(t *testing.T) {
 		Network:   "devnet",
 		SecretKey: sessionMethodSecret,
 	}
-	if _, err := NewSession(options); err == nil || !strings.Contains(err.Error(), "session store is required") {
+	if _, err := NewSession(options); err == nil ||
+		!strings.Contains(err.Error(), "no session store configured for devnet") ||
+		!strings.Contains(err.Error(), "configure a shared session ChannelStore") {
 		t.Fatalf("missing off-localnet store error = %v", err)
 	}
 
@@ -452,8 +542,17 @@ func TestNewSessionRequiresInjectedStoreOffLocalnet(t *testing.T) {
 	}
 	session.Shutdown()
 
+	// An unmarked store (not the built-in memory store, not durability-declared)
+	// passes construction, but the union-base production-safety gate rejects it
+	// at the first guarded operation rather than at construction.
 	options.Store = struct{ ChannelStore }{ChannelStore: NewMemoryChannelStore()}
-	if _, err := NewSession(options); err == nil || !strings.Contains(err.Error(), "explicitly declare durable shared") {
+	unmarkedSession, err := NewSession(options)
+	if err != nil {
+		t.Fatalf("NewSession with unmarked store: %v", err)
+	}
+	defer unmarkedSession.Shutdown()
+	if _, err := unmarkedSession.Core().SettlementInstructions(context.Background(), "channel", solana.PublicKey{}); err == nil ||
+		!strings.Contains(err.Error(), "explicitly declare durable shared") {
 		t.Fatalf("unmarked off-localnet store error = %v", err)
 	}
 }
@@ -665,6 +764,49 @@ func TestSessionOpenTrustsChannelIDAndDeposit(t *testing.T) {
 	state := mustGetChannel(t, session, channelID)
 	if state == nil || state.Deposit != 1_000_000 || state.Cumulative != 0 || state.AuthorizedSigner != signer.Address() {
 		t.Fatalf("stored state = %+v", state)
+	}
+}
+
+func TestSessionOpenRejectsDepositAboveAuthenticatedChallengeCap(t *testing.T) {
+	session := newTestSession(t, func(o *SessionOptions) { o.Cap = 5_000 })
+	challenge, err := session.Challenge(context.Background(), SessionChallengeOptions{Cap: "1000"})
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
+		intents.OpenPayloadPush(channelID, "1001", signer.Address(), "sig")))
+	if err != nil {
+		t.Fatalf("NewPaymentCredential: %v", err)
+	}
+
+	if _, err := session.VerifyCredential(context.Background(), credential); err == nil ||
+		!strings.Contains(err.Error(), "deposit 1001 exceeds cap 1000") {
+		t.Fatalf("over-challenge-cap error = %v", err)
+	}
+	if state := mustGetChannel(t, session, channelID); state != nil {
+		t.Fatalf("channel persisted after rejected open: %+v", state)
+	}
+}
+
+func TestSessionOpenUsesReducedCurrentCapForOldChallenge(t *testing.T) {
+	session := newTestSession(t, func(o *SessionOptions) { o.Cap = 5_000 })
+	challenge, err := session.Challenge(context.Background(), SessionChallengeOptions{})
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	session.cap = 1_000
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
+		intents.OpenPayloadPush(channelID, "1001", signer.Address(), "sig")))
+	if err != nil {
+		t.Fatalf("NewPaymentCredential: %v", err)
+	}
+	if _, err := session.VerifyCredential(context.Background(), credential); err == nil ||
+		!strings.Contains(err.Error(), "deposit 1001 exceeds cap 1000") {
+		t.Fatalf("reduced-cap error = %v", err)
 	}
 }
 
@@ -897,9 +1039,18 @@ func TestSessionOpenVerifiesSignatureOnChain(t *testing.T) {
 	signer := newTestVoucherSigner(t)
 
 	channelID := solana.NewWallet().PublicKey().String()
-	receipt, _ := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
-	if receipt.Reference != okSig {
-		t.Fatalf("reference = %q", receipt.Reference)
+	receipt, derivedChannel := openSessionChannel(t, session, channelID, 1_000, signer.Address(), okSig)
+	// The hardened open path rebinds to the real confirmed transaction
+	// signature and the PDA derived from the on-chain channel account, not the
+	// dummy inputs the caller supplied.
+	if receipt.Reference == okSig || receipt.Reference == "" {
+		t.Fatalf("reference = %q, want the real confirmed open signature", receipt.Reference)
+	}
+	if _, ok := fake.BySig[receipt.Reference]; !ok {
+		t.Fatalf("reference %q is not a confirmed open transaction", receipt.Reference)
+	}
+	if mustGetChannel(t, session, derivedChannel) == nil {
+		t.Fatal("channel not persisted at the derived PDA")
 	}
 
 	ghostChannel := solana.NewWallet().PublicKey().String()
@@ -1053,6 +1204,28 @@ func TestSessionTopUpUpdatesDeposit(t *testing.T) {
 	}
 }
 
+func TestSessionTopUpRejectsDepositAboveAuthenticatedChallengeCap(t *testing.T) {
+	session := newTestSession(t, func(o *SessionOptions) { o.Cap = 5_000 })
+	_, channelID := openTrustedChannel(t, session, 500)
+	challenge, err := session.Challenge(context.Background(), SessionChallengeOptions{Cap: "1000"})
+	if err != nil {
+		t.Fatalf("Challenge: %v", err)
+	}
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewTopUpAction(intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "1001", Signature: "topup-sig",
+	}))
+	if err != nil {
+		t.Fatalf("NewPaymentCredential: %v", err)
+	}
+	if _, err := session.VerifyCredential(context.Background(), credential); err == nil ||
+		!strings.Contains(err.Error(), "newDeposit 1001 exceeds cap 1000") {
+		t.Fatalf("over-challenge-cap error = %v", err)
+	}
+	if got := mustGetChannel(t, session, channelID).Deposit; got != 500 {
+		t.Fatalf("deposit = %d after rejected top-up, want 500", got)
+	}
+}
+
 func TestSessionTopUpHardening(t *testing.T) {
 	session := newTestSession(t, nil)
 	_, channelID := openTrustedChannel(t, session, 5_000)
@@ -1100,26 +1273,36 @@ func TestSessionTopUpHardening(t *testing.T) {
 func TestSessionTopUpVerifiesSignatureOnChain(t *testing.T) {
 	fake := testutil.NewFakeRPC()
 	openSig := confirmedSignature(0x44)
-	topupSig := confirmedSignature(0x55)
 	ghostSig := confirmedSignature(0x66)
 	fake.Statuses[ghostSig] = nil
 
 	session := newTestSession(t, func(o *SessionOptions) { o.RPC = fake })
 	signer := newTestVoucherSigner(t)
 	channelID := solana.NewWallet().PublicKey().String()
+	// The hardened open derives the real channel PDA; thread it into the
+	// top-up so both bind the same on-chain account.
 	_, channelID = openSessionChannel(t, session, channelID, 1_000, signer.Address(), openSig)
-	state := mustGetChannel(t, session, channelID)
-	seedSessionAccountThroughSetter(
-		t, fake, session, channelID, 5_000, *state.Operator, signer.Address(),
+	channel := solana.MustPublicKeyFromBase58(channelID)
+	// The state-aware top-up verifier binds the resulting on-chain deposit, so
+	// the authoritative account must reflect the post-top-up balance. Reuse the
+	// payer the open recorded so the payer binding still holds.
+	openedState := mustGetChannel(t, session, channelID)
+	seedSessionChannelAccount(
+		t, fake, channel, 5_000,
+		solana.MustPublicKeyFromBase58(*openedState.Operator),
+		solana.MustPublicKeyFromBase58(sessionTestRecipient),
+		solana.MustPublicKeyFromBase58(signer.Address()),
+		solana.MustPublicKeyFromBase58(paycore.ResolveMint(session.currency, session.network)),
+		pcgen.ChannelStatus_Open,
 	)
+	topupTx, topupPayload := buildTopUpTx(t, channel, 1_000, 4_000)
+	fake.BySig[topupPayload.Signature] = topupTx
 
-	receipt, err := verifySessionAction(t, session, intents.NewTopUpAction(intents.TopUpPayload{
-		ChannelID: channelID, NewDeposit: "5000", Signature: topupSig,
-	}))
+	receipt, err := verifySessionAction(t, session, intents.NewTopUpAction(*topupPayload))
 	if err != nil {
 		t.Fatalf("topUp: %v", err)
 	}
-	if receipt.Reference != topupSig {
+	if receipt.Reference != topupPayload.Signature {
 		t.Fatalf("reference = %q", receipt.Reference)
 	}
 	if mustGetChannel(t, session, channelID).Deposit != 5_000 {
@@ -2101,7 +2284,7 @@ func TestConfirmedSettlementReconcilesAfterRequestCancellation(t *testing.T) {
 	}
 }
 
-func TestSessionIdleCloseWithoutSignerStillClosesOffChain(t *testing.T) {
+func TestSessionIdleCloseWithoutSignerIsNoOp(t *testing.T) {
 	fake := testutil.NewFakeRPC()
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.RPC = fake
@@ -2110,8 +2293,12 @@ func TestSessionIdleCloseWithoutSignerStillClosesOffChain(t *testing.T) {
 	_, channelID := openTrustedChannel(t, session, 1_000)
 
 	time.Sleep(80 * time.Millisecond)
+	// Without a merchant signer the idle watchdog cannot settle, so closeOnIdle
+	// bails before touching the channel: no off-chain close-pending flip, no
+	// seal, and no broadcast. It must never partially close a channel it cannot
+	// settle.
 	state := mustGetChannel(t, session, channelID)
-	if state.CloseRequestedAt == nil || state.Sealed || len(fake.Sent) != 0 {
+	if state.CloseRequestedAt != nil || state.Sealed || len(fake.Sent) != 0 {
 		t.Fatalf("idle close without signer state=%+v sends=%d", state, len(fake.Sent))
 	}
 }

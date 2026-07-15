@@ -1,8 +1,8 @@
 package server
 
 import (
-	"github.com/gagliardetto/solana-go/programs/system"
-	"github.com/gagliardetto/solana-go/programs/token"
+	"github.com/solana-foundation/solana-go/v2/programs/system"
+	"github.com/solana-foundation/solana-go/v2/programs/token"
 )
 
 // Side-effect imports from solana-go register instruction decoders used by verification.

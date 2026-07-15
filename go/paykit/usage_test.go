@@ -78,6 +78,8 @@ type stubUsageAdapter struct {
 	settledActual    uint64
 	settleCalls      int
 	onSettle         func(ctx context.Context, actual uint64)
+	acceptsErr       error
+	headersErr       error
 }
 
 type releaseTrackingOpen struct {
@@ -92,9 +94,13 @@ type stubAcceptsEntry struct{}
 
 func (stubAcceptsEntry) AcceptsProtocol() Protocol { return X402 }
 
-func (s *stubUsageAdapter) UsageChallengeHeaders(*Gate) map[string]string { return s.challengeHeaders }
-func (s *stubUsageAdapter) UsageAcceptsEntry(*Gate) AcceptsEntry          { return s.acceptsEntry }
-func (s *stubUsageAdapter) DetectUsage(*AdapterRequest) bool              { return s.detect }
+func (s *stubUsageAdapter) UsageChallengeHeaders(*Gate) (map[string]string, error) {
+	return s.challengeHeaders, s.headersErr
+}
+func (s *stubUsageAdapter) UsageAcceptsEntry(*Gate) (AcceptsEntry, error) {
+	return s.acceptsEntry, s.acceptsErr
+}
+func (s *stubUsageAdapter) DetectUsage(*AdapterRequest) bool { return s.detect }
 func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (VerifiedUsageOpen, *Payment, error) {
 	if s.verifyOpenErr != nil {
 		return nil, nil, s.verifyOpenErr
@@ -132,6 +138,51 @@ func TestRequireUsageReturns402WhenNoPayment(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusPaymentRequired {
 		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+}
+
+// TestRequireUsage402DropsFailedPieces exercises the writeUsage402 error
+// branches: if EITHER the accepts entry or the challenge header fails to build,
+// BOTH are dropped (atomic assembly), and the server surfaces a 500 rather
+// than returning an unpayable 402 with no accepts entries.
+func TestRequireUsage402DropsFailedPieces(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter *stubUsageAdapter
+	}{
+		{"accepts entry error", &stubUsageAdapter{detect: false, acceptsErr: errors.New("boom"), challengeHeaders: map[string]string{"payment-required": "abc"}}},
+		{"challenge header error", &stubUsageAdapter{detect: false, headersErr: errors.New("boom"), acceptsEntry: stubAcceptsEntry{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured *PaymentError
+			client := &Client{
+				Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+				usageAdapter: tc.adapter,
+				errorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+					_ = errors.As(err, &captured)
+					w.WriteHeader(captured.status)
+				},
+			}
+			gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+			h := client.RequireUsage(gate)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/usage", nil))
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500", rr.Code)
+			}
+			if captured == nil {
+				t.Fatal("error handler was not invoked with a *PaymentError")
+			}
+			if len(captured.accepts) != 0 {
+				t.Fatalf("accepts = %v, want empty: a partial challenge must drop the accepts entry too (unpayable-402 guard)", captured.accepts)
+			}
+			if len(captured.headers) != 0 {
+				t.Fatalf("headers = %v, want empty: a partial challenge must drop the headers too", captured.headers)
+			}
+		})
 	}
 }
 

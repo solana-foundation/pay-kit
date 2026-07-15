@@ -13,7 +13,7 @@ import {
     getTransactionDecoder,
     type KeyPairSigner,
 } from '@solana/kit';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import * as Methods from '../Methods.js';
 import { session } from '../server/Session.js';
@@ -25,6 +25,18 @@ import { encodeVoucherMessage } from '../shared/voucher.js';
 
 const OPERATOR = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 const RECIPIENT = '5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h';
+
+// These unit tests build devnet sessions that intentionally rely on the SDK's
+// process-local store. Opt in to it explicitly; the durability guard is
+// exercised on its own in session-store-durability.test.ts.
+const priorInMemoryOptIn = process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+beforeAll(() => {
+    process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+});
+afterAll(() => {
+    if (priorInMemoryOptIn === undefined) delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+    else process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = priorInMemoryOptIn;
+});
 
 function signedWireSignature(wire: string): string {
     return getSignatureFromTransaction(getTransactionDecoder().decode(getBase64Codec().encode(wire)));
@@ -126,7 +138,6 @@ describe('session() request()', () => {
 
     test('builds a SessionRequest that satisfies the canonical schema', async () => {
         const method = session({
-            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 10_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -155,7 +166,6 @@ describe('session() request()', () => {
 
     test('clamps requested cap to the server max', async () => {
         const method = session({
-            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -173,7 +183,6 @@ describe('session() request()', () => {
 
     test('includes modes + pullVoucherStrategy when pull is advertised', async () => {
         const method = session({
-            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -195,7 +204,6 @@ describe('session() request()', () => {
 
     test('skips blockhash/slot prefetch when a credential is present', async () => {
         const method = session({
-            allowUnsafeEphemeralStoreOffLocalnet: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -648,7 +656,7 @@ describe('session() verify() commit', () => {
         const routes = session.routes({
             cap: 1_000_000n,
             currency: 'USDC',
-            network: 'localnet',
+            network: 'devnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -684,7 +692,7 @@ describe('session.routes()', () => {
         const routes = session.routes({
             cap: 1_000n,
             currency: 'USDC',
-            network: 'localnet',
+            network: 'devnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
@@ -728,7 +736,7 @@ describe('session.routes()', () => {
         const routes = session.routes({
             cap: 1_000_000n,
             currency: 'USDC',
-            network: 'localnet',
+            network: 'devnet',
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,

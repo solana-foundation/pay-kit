@@ -57,7 +57,7 @@ const { usd } = await import('../price.js');
 async function startServer(): Promise<{ base: string; server: Server }> {
     const pay = await createPayKit({
         accept: ['x402'],
-        mpp: { challengeBindingSecret: 's' },
+        mpp: { challengeBindingSecret: 's', allowUnsafeMemoryStore: true },
         network: 'solana_localnet',
         pricing: { summarize: usage(usd('1.00')) },
     });

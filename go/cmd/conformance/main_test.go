@@ -105,3 +105,12 @@ func TestSeededVectorsConform(t *testing.T) {
 		t.Fatalf("expected at least 13 seeded vectors, ran %d", total)
 	}
 }
+
+func TestRunCanonicalBytesRejectsUnpairedSurrogateEscape(t *testing.T) {
+	_, err := runCanonicalBytes(Vector{Input: VectorInput{
+		Value: json.RawMessage(`{"value":"\uD800"}`),
+	}})
+	if err == nil {
+		t.Fatal("expected unpaired surrogate escape to reject")
+	}
+}

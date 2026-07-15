@@ -6,6 +6,7 @@
   "description": "Codama codegen tooling for pay-kit. Pulls IDL files from upstream Solana programs and generates per-language clients into the appropriate SDK trees.",
   "scripts": {
     "subscriptions:rust": "tsx ./generate-subscriptions-client.ts",
+    "subscriptions:ts": "tsx ./generate-subscriptions-client-ts.ts",
     "payment-channels:rust": "tsx ./generate-payment-channels-client-rs.ts",
     "payment-channels:go": "tsx ./generate-payment-channels-client-go.ts",
     "payment-channels:ts": "tsx ./generate-payment-channels-client-ts.ts",

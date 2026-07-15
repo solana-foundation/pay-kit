@@ -18,7 +18,7 @@ func markAuthorizationBoundResponse(header http.Header) {
 	header.Set("Cache-Control", "no-store")
 
 	for _, value := range header.Values("Vary") {
-		for _, field := range strings.Split(value, ",") {
+		for field := range strings.SplitSeq(value, ",") {
 			if strings.EqualFold(strings.TrimSpace(field), "Authorization") || strings.TrimSpace(field) == "*" {
 				return
 			}
