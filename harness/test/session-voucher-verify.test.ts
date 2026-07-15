@@ -5,10 +5,10 @@ import { getBase58Decoder } from "@solana/kit";
 import {
   type ChannelState,
   type VoucherRejectReason,
+  encodeVoucherMessageBytes,
   verifyVoucherForChannel,
 } from "@solana/mpp/server";
 import { beforeAll, describe, expect, it } from "vitest";
-import { encodeVoucherMessage } from "../../typescript/packages/mpp/src/shared/voucher.js";
 
 // Executed adversarial coverage for the session-voucher trust logic.
 //
@@ -37,14 +37,13 @@ function encodeVoucherPreimage(
   cumulative: bigint,
   expiresAt: bigint,
 ): Uint8Array<ArrayBuffer> {
-  const encoded = encodeVoucherMessage({
+  // Public server export; takes bigints natively, so a > 2^53 expiry cannot
+  // silently lose precision the way a Number() round-trip would.
+  return encodeVoucherMessageBytes({
     channelId,
-    cumulativeAmount: cumulative.toString(),
-    expiresAt: Number(expiresAt),
+    cumulativeAmount: cumulative,
+    expiresAt,
   });
-  const out = new Uint8Array(new ArrayBuffer(encoded.byteLength));
-  out.set(encoded);
-  return out;
 }
 
 type Signer = { pubkeyBase58: string; keyPair: CryptoKeyPair };
