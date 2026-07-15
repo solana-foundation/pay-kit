@@ -606,6 +606,9 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server"
           cargo-cache-key: ts
+          # boot-policy executes the real createPayKit + requirePayment fixture,
+          # so it needs the ordered @solana/mpp -> @solana/pay-kit build.
+          build-pay-kit: "true"
       # Gate self-activation: same subject rule as the rust-conformance job —
       # the runner examples arrive with the rust hardening leaf; until then the
       # Rust vector steps below report pending instead of failing on a missing
