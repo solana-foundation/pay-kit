@@ -38,12 +38,16 @@ function encodeVoucherPreimage(
   expiresAt: bigint,
 ): Uint8Array<ArrayBuffer> {
   // Public server export; takes bigints natively, so a > 2^53 expiry cannot
-  // silently lose precision the way a Number() round-trip would.
-  return encodeVoucherMessageBytes({
+  // silently lose precision the way a Number() round-trip would. Copy into a
+  // fresh ArrayBuffer so WebCrypto's BufferSource sees a non-shared backing.
+  const encoded = encodeVoucherMessageBytes({
     channelId,
     cumulativeAmount: cumulative,
     expiresAt,
   });
+  const out = new Uint8Array(new ArrayBuffer(encoded.byteLength));
+  out.set(encoded);
+  return out;
 }
 
 type Signer = { pubkeyBase58: string; keyPair: CryptoKeyPair };
