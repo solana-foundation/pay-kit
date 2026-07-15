@@ -62,12 +62,16 @@ type Adapter interface {
 	// AcceptsEntry returns the protocol-specific entry the middleware
 	// embeds in the 402 body's `accepts[]` array. Each protocol
 	// package defines its own typed struct that satisfies the
-	// [AcceptsEntry] marker.
-	AcceptsEntry(gate *Gate) AcceptsEntry
+	// [AcceptsEntry] marker. The error return lets an adapter surface a
+	// challenge-build failure instead of swallowing it into a silently
+	// empty offer.
+	AcceptsEntry(gate *Gate) (AcceptsEntry, error)
 	// ChallengeHeaders returns the per-protocol headers the middleware
 	// stamps on the 402 response (e.g. WWW-Authenticate for MPP,
-	// payment-required for x402).
-	ChallengeHeaders(gate *Gate) map[string]string
+	// payment-required for x402). The error return lets an adapter
+	// surface a challenge-build failure (bad recipient, signing error,
+	// marshal failure) instead of dropping it and emitting no header.
+	ChallengeHeaders(gate *Gate) (map[string]string, error)
 	// VerifyAndSettle inspects the incoming request, validates the
 	// credential, performs settlement (chain broadcast or
 	// facilitator POST), and returns the verified [Payment].
@@ -185,6 +189,11 @@ func New(cfg Config) (*Client, error) {
 
 	c := &Client{Config: cfg}
 	for _, s := range cfg.Accept {
+		// The registered x402 adapter implements exact settlement and its
+		// replay-store policy. Upto-only deployments use the usage adapter below.
+		if s == X402 && cfg.X402.Scheme == "upto" {
+			continue
+		}
 		b, ok := registeredBuilders[s]
 		if !ok {
 			continue

@@ -10,10 +10,10 @@ import (
 	"os"
 	"strings"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // secretEnvVar is the orchestrator-supplied env var the MPP HMAC
@@ -264,15 +264,15 @@ func readDotenv(path, key string) (string, bool) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		eq := strings.IndexByte(line, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		name := strings.TrimSpace(line[:eq])
+		name := strings.TrimSpace(before)
 		if name != key {
 			continue
 		}
-		val := strings.TrimSpace(line[eq+1:])
+		val := strings.TrimSpace(after)
 		if len(val) >= 2 {
 			first, last := val[0], val[len(val)-1]
 			if (first == '"' && last == '"') || (first == '\'' && last == '\'') {

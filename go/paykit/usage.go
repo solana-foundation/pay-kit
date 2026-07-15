@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -53,10 +54,7 @@ func (c *Charge) MaxBaseUnits() uint64 { return c.maxBaseUnits }
 func (c *Charge) Charge(baseUnits uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.amount = baseUnits
-	if c.amount > c.maxBaseUnits {
-		c.amount = c.maxBaseUnits
-	}
+	c.amount = min(baseUnits, c.maxBaseUnits)
 	c.set = true
 }
 
@@ -90,9 +88,12 @@ func ChargeFrom(ctx context.Context) (*Charge, bool) {
 // RegisterUsageAdapter in its init().
 type UsageAdapter interface {
 	// UsageChallengeHeaders returns the 402 challenge headers for a usage gate.
-	UsageChallengeHeaders(gate *Gate) map[string]string
-	// UsageAcceptsEntry returns the accepts[] entry for a usage gate.
-	UsageAcceptsEntry(gate *Gate) AcceptsEntry
+	// The error return surfaces a challenge-build failure instead of
+	// swallowing it into a nil header map.
+	UsageChallengeHeaders(gate *Gate) (map[string]string, error)
+	// UsageAcceptsEntry returns the accepts[] entry for a usage gate. The
+	// error return surfaces a build failure instead of a nil entry.
+	UsageAcceptsEntry(gate *Gate) (AcceptsEntry, error)
 	// DetectUsage reports whether the request carries a usage credential.
 	DetectUsage(req *AdapterRequest) bool
 	// VerifyOpen validates the credential and opens the payment channel.
@@ -199,10 +200,19 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 					perr.Protocols = []Protocol{X402}
 					perr.status = http.StatusPaymentRequired
 					perr.resource = r.URL.Path
-					if entry := adapter.UsageAcceptsEntry(&gate); entry != nil {
+					// Both-or-neither: a 402 that carries an accepts entry without
+					// its challenge header is unpayable. Same atomic assembly as
+					// appendChallenge in middleware.go.
+					entry, headers, challengeErr := usageChallenge(&gate, adapter)
+					if entry != nil {
 						perr.accepts = []AcceptsEntry{entry}
+						perr.headers = headers
 					}
-					perr.headers = adapter.UsageChallengeHeaders(&gate)
+					if challengeErr != nil {
+						perr.Code = "challenge_generation_failed"
+						perr.Err = challengeErr
+						perr.status = http.StatusInternalServerError
+					}
 					handler(w, r, perr)
 				},
 			}
@@ -258,17 +268,43 @@ func DefaultUsageErrorHandler(w http.ResponseWriter, r *http.Request, err error)
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// usageChallenge builds a usage gate's accepts entry and challenge headers
+// atomically: it returns a non-nil entry only when BOTH succeed, so a 402
+// response can never carry an accepts entry without its matching challenge
+// header (which the client cannot bind a credential to -- an unpayable 402).
+// A build failure on either half is logged and yields (nil, nil). Mirrors
+// appendChallenge in middleware.go.
+func usageChallenge(gate *Gate, adapter UsageAdapter) (AcceptsEntry, map[string]string, error) {
+	entry, err := adapter.UsageAcceptsEntry(gate)
+	if err != nil {
+		slog.Error("paykit: building usage 402 accepts entry failed",
+			"gate", gate.Name, "err", err)
+		return nil, nil, fmt.Errorf("usage accepts entry: %w", err)
+	}
+	if entry == nil {
+		return nil, nil, nil
+	}
+	headers, err := adapter.UsageChallengeHeaders(gate)
+	if err != nil {
+		slog.Error("paykit: building usage 402 challenge headers failed",
+			"gate", gate.Name, "err", err)
+		return nil, nil, fmt.Errorf("usage challenge headers: %w", err)
+	}
+	return entry, headers, nil
+}
+
 // writeUsage402 assembles the usage-gate 402 challenge and dispatches to
 // the configured error handler. The challenge carries the upto accepts
 // entry and challenge headers from the usage adapter.
 func (c *Client) writeUsage402(w http.ResponseWriter, r *http.Request, gate *Gate, adapter UsageAdapter, perrOpt ...*PaymentError) {
 	accepts := []AcceptsEntry{}
 	headers := map[string]string{}
-	if entry := adapter.UsageAcceptsEntry(gate); entry != nil {
+	// Both-or-neither: never emit an accepts entry without its challenge header
+	// (an unpayable 402). Same atomic pattern as appendChallenge in middleware.go.
+	entry, ch, challengeErr := usageChallenge(gate, adapter)
+	if entry != nil {
 		accepts = append(accepts, entry)
-	}
-	for k, v := range adapter.UsageChallengeHeaders(gate) {
-		headers[k] = v
+		maps.Copy(headers, ch)
 	}
 	var perr *PaymentError
 	if len(perrOpt) > 0 && perrOpt[0] != nil {
@@ -279,6 +315,11 @@ func (c *Client) writeUsage402(w http.ResponseWriter, r *http.Request, gate *Gat
 	perr.Gate = gate
 	perr.Protocols = []Protocol{X402}
 	perr.status = http.StatusPaymentRequired
+	if challengeErr != nil {
+		perr.Code = "challenge_generation_failed"
+		perr.Err = challengeErr
+		perr.status = http.StatusInternalServerError
+	}
 	perr.resource = r.URL.Path
 	perr.accepts = accepts
 	perr.headers = headers
@@ -345,9 +386,7 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 		if w.payment.SettlementHeaders == nil {
 			w.payment.SettlementHeaders = map[string]string{}
 		}
-		for k, v := range result.Headers {
-			w.payment.SettlementHeaders[k] = v
-		}
+		maps.Copy(w.payment.SettlementHeaders, result.Headers)
 	}
 }
 
@@ -436,12 +475,6 @@ func (w *usageSettlementWriter) flush() {
 	if w.body.Len() > 0 {
 		_, _ = w.ResponseWriter.Write(w.body.Bytes())
 	}
-}
-
-// ContextWithChargeForTests attaches a *Charge to ctx through the
-// package's private context key. Exported only for tests.
-func ContextWithChargeForTests(ctx context.Context, c *Charge) context.Context {
-	return context.WithValue(ctx, chargeKey{}, c)
 }
 
 // MarshalJSON renders the Charge for debug/logging. Not serialized on the wire.

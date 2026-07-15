@@ -70,11 +70,22 @@ type ChannelState struct {
 	// (base units).
 	Deposit uint64 `json:"deposit"`
 
+	// ConsumedTopUpSignatures prevents a confirmed top-up transaction from
+	// being credited again under a later absolute newDeposit claim.
+	ConsumedTopUpSignatures []string `json:"consumed_top_up_signatures,omitempty"`
+
 	// OpenSlot is the slot recorded in the channel open args (push sessions).
 	// It is a channel PDA seed, so it is persisted to re-derive the address
 	// and to drive the post-distribute reclaim. Zero for pull sessions and
 	// for opens that never carried it.
 	OpenSlot uint64 `json:"open_slot"`
+
+	// Salt is the authoritative channel PDA salt read from on-chain state.
+	Salt uint64 `json:"salt"`
+
+	// OpenSignature is the confirmed signature of a server-broadcast open.
+	// Retries reuse it instead of confirming a newly signed, unbroadcast tx.
+	OpenSignature string `json:"open_signature,omitempty"`
 
 	// Cumulative is the highest cumulative amount accepted by the server (the
 	// settled watermark).
@@ -97,15 +108,42 @@ type ChannelState struct {
 	// was requested. Once set, no further vouchers are accepted.
 	CloseRequestedAt *uint64 `json:"close_requested_at"`
 
-	// SettledSignature is the signature (base58) of the broadcast
-	// settle-and-distribute transaction. A close-pending channel with no
-	// settled signature is re-drivable: a close retry may attempt settlement
-	// again.
+	// SettledSignature is the signature (base58) of the signed
+	// settle-and-distribute transaction. It is persisted under the settlement
+	// claim before broadcast. When Sealed is false, retries rebroadcast the
+	// exact stored wire and confirm this same transaction.
 	//
 	// An extension beyond the core channel-state shape, recorded only when
 	// this server drives on-chain settlement. Serialized with omitempty so a
 	// channel state without a settlement round-trips cleanly.
 	SettledSignature *string `json:"settled_signature,omitempty"`
+
+	// SettlementWire is the exact signed transaction encoded as base64. New
+	// settlement attempts persist it atomically with SettledSignature before
+	// broadcast, forming a transactional outbox. Retries decode and rebroadcast
+	// these exact bytes, preserving the transaction signature.
+	SettlementWire string `json:"settlement_wire,omitempty"`
+
+	// SettlementLastValidBlockHeight is the block-height validity ceiling from
+	// the blockhash used by SettlementWire. A not-found signature is retired
+	// only after the current block height is proven greater than this value.
+	SettlementLastValidBlockHeight uint64 `json:"settlement_last_valid_block_height,omitempty"`
+
+	// Settling is the durable in-flight claim acquired atomically before this
+	// server builds a settlement transaction. A fresh signature-less claim
+	// blocks competing builds; once the exact wire is persisted, other servers
+	// may safely take over and idempotently submit that same transaction.
+	Settling bool `json:"settling,omitempty"`
+
+	// SettlementClaimOwner identifies the settlement attempt that currently
+	// owns the claim. Release operations compare this token so an older attempt
+	// cannot clear a claim taken over by another server.
+	SettlementClaimOwner string `json:"settlement_claim_owner,omitempty"`
+
+	// SettlementClaimedAt is the Unix timestamp when the current claim was
+	// acquired. A signature-less claim may be taken over after the bounded
+	// lease expires, recovering from a crash before signature persistence.
+	SettlementClaimedAt int64 `json:"settlement_claimed_at,omitempty"`
 
 	// Operator is the client wallet pubkey (base58) for pull-mode sessions;
 	// nil for push sessions.
@@ -156,6 +194,9 @@ func (s *ChannelState) UnmarshalJSON(data []byte) error {
 // clone returns a deep copy so callers can never alias store-internal state.
 func (s ChannelState) clone() ChannelState {
 	out := s
+	if s.ConsumedTopUpSignatures != nil {
+		out.ConsumedTopUpSignatures = append([]string(nil), s.ConsumedTopUpSignatures...)
+	}
 	if s.HighestVoucherSignature != nil {
 		v := *s.HighestVoucherSignature
 		out.HighestVoucherSignature = &v
@@ -230,6 +271,28 @@ type ChannelStore interface {
 	MarkSealed(ctx context.Context, channelID string) (ChannelState, error)
 }
 
+// SessionStoreDurability is a store's explicitly declared session-state
+// capability. Unknown stores are not safe for production session handling.
+type SessionStoreDurability uint8
+
+const (
+	// SessionStoreDurabilityUnknown is the safe default for custom stores that
+	// have not explicitly declared whether their state is durable and shared.
+	SessionStoreDurabilityUnknown SessionStoreDurability = iota
+	// SessionStoreDurabilityEphemeral identifies process-local state.
+	SessionStoreDurabilityEphemeral
+	// SessionStoreDurabilityDurableShared identifies state that survives restarts
+	// and is shared by every serving process.
+	SessionStoreDurabilityDurableShared
+)
+
+// SessionStoreCapabilities lets stores affirmatively declare their
+// session-state durability. Production session construction accepts only
+// SessionStoreDurabilityDurableShared.
+type SessionStoreCapabilities interface {
+	SessionStoreDurability() SessionStoreDurability
+}
+
 // MemoryChannelStore is an in-memory ChannelStore with per-channel locking:
 // UpdateChannel calls for the same channel id run strictly sequentially while
 // calls for different ids run concurrently.
@@ -252,6 +315,24 @@ func NewMemoryChannelStore() *MemoryChannelStore {
 		data:  map[string]ChannelState{},
 		locks: map[string]*sync.Mutex{},
 	}
+}
+
+// SessionStoreDurability marks the built-in memory store as process-local.
+func (*MemoryChannelStore) SessionStoreDurability() SessionStoreDurability {
+	return SessionStoreDurabilityEphemeral
+}
+
+func sessionStoreSafetyMessage(store ChannelStore) string {
+	if capabilities, ok := store.(SessionStoreCapabilities); ok &&
+		capabilities.SessionStoreDurability() == SessionStoreDurabilityEphemeral {
+		return "ephemeral session store is unsafe off localnet; inject a durable shared ChannelStore"
+	}
+	return "session store must explicitly declare durable shared capability off localnet; inject a durable shared ChannelStore"
+}
+
+func isDurableSharedSessionStore(store ChannelStore) bool {
+	capabilities, ok := store.(SessionStoreCapabilities)
+	return ok && capabilities.SessionStoreDurability() == SessionStoreDurabilityDurableShared
 }
 
 // channelLock returns the mutex serializing updates for channelID.
@@ -310,6 +391,13 @@ func (s *MemoryChannelStore) DeleteChannel(_ context.Context, channelID string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, channelID)
+	// Intentionally keep s.locks[channelID]. A concurrent UpdateChannel may
+	// already hold (or be about to acquire) this channel's mutex; deleting it
+	// here lets the next channelLock(channelID) mint a *second* mutex for the
+	// same id, so two updaters would serialize on different locks and lose
+	// updates. The lock map is bounded by the number of distinct channel ids
+	// ever seen (one small mutex each), an acceptable cost for keeping
+	// read-modify-write atomic.
 	return nil
 }
 
@@ -344,6 +432,11 @@ func (s *MemoryChannelStore) MarkSealed(ctx context.Context, channelID string) (
 		}
 		next := *current
 		next.Sealed = true
+		next.SettlementWire = ""
+		next.SettlementLastValidBlockHeight = 0
+		next.Settling = false
+		next.SettlementClaimOwner = ""
+		next.SettlementClaimedAt = 0
 		return next, nil
 	})
 }

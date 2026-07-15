@@ -184,8 +184,15 @@ pub fn parse_upto_accepts(
 mod tests {
     use super::*;
     use crate::x402::protocol::schemes::upto::UptoExtra;
+    use ed25519_dalek::SigningKey;
+    use solana_keychain::memory::MemorySigner;
 
     const RECEIVER_AUTHORIZER: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+
+    fn memory_signer(seed: u8) -> MemorySigner {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        MemorySigner::from_bytes(&key.to_keypair_bytes()).unwrap()
+    }
 
     fn requirements() -> UptoRequirements {
         UptoRequirements {
@@ -261,5 +268,84 @@ mod tests {
     #[test]
     fn parse_challenge_returns_none_without_upto_offer() {
         assert!(parse_upto_challenge(&[], None).is_none());
+    }
+
+    #[test]
+    fn parse_accepts_falls_back_to_body_and_keeps_all_upto_offers() {
+        let mut second = requirements();
+        second.amount = "2000000".to_string();
+        let mut other = requirements();
+        other.scheme = "exact".to_string();
+        let envelope = UptoRequiredEnvelope {
+            x402_version: X402_VERSION_V2,
+            resource: None,
+            accepts: vec![other, requirements(), second],
+            error: None,
+        };
+        let body = serde_json::to_string(&envelope).unwrap();
+        let headers = vec![(
+            PAYMENT_REQUIRED_HEADER.to_ascii_lowercase(),
+            "not-base64".to_string(),
+        )];
+
+        let accepts = parse_upto_accepts(&headers, Some(&body));
+        assert_eq!(accepts.len(), 2);
+        assert_eq!(accepts[0].amount, "1000000");
+        assert_eq!(accepts[1].amount, "2000000");
+        assert_eq!(
+            parse_upto_challenge(&headers, Some(&body)).unwrap().amount,
+            "1000000"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_payload_uses_challenge_hints_without_rpc() {
+        let signer = memory_signer(11);
+        let mut req = requirements();
+        req.extra.valid_after = Some(123);
+
+        let payload = build_upto_payload(&signer, &req, 4_102_444_800, "caller-nonce")
+            .await
+            .unwrap();
+
+        assert_eq!(payload.from, pc::pubkey_string(&signer.pubkey()));
+        assert_eq!(payload.max_amount, "1000000");
+        assert_eq!(payload.deposit, payload.max_amount);
+        assert_eq!(payload.authorized_signer, RECEIVER_AUTHORIZER);
+        assert_eq!(payload.open_slot, "314");
+        assert_eq!(payload.valid_after, 123);
+        assert!(payload.open_transaction.is_some());
+
+        let header = encode_upto_header(&req, payload).unwrap();
+        assert!(!header.is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_payload_rejects_invalid_or_incomplete_challenges() {
+        let signer = memory_signer(12);
+
+        let mut zero_delay = requirements();
+        zero_delay.extra.withdraw_delay = 0;
+        assert!(build_upto_payload(&signer, &zero_delay, 1, "n")
+            .await
+            .is_err());
+
+        let mut missing_blockhash = requirements();
+        missing_blockhash.extra.recent_blockhash = None;
+        assert!(build_upto_payload(&signer, &missing_blockhash, 1, "n")
+            .await
+            .is_err());
+
+        let mut invalid_slot = requirements();
+        invalid_slot.extra.recent_slot = Some("not-a-slot".to_string());
+        assert!(build_upto_payload(&signer, &invalid_slot, 1, "n")
+            .await
+            .is_err());
+
+        let mut invalid_amount = requirements();
+        invalid_amount.amount = "not-an-amount".to_string();
+        assert!(build_upto_payload(&signer, &invalid_amount, 1, "n")
+            .await
+            .is_err());
     }
 }

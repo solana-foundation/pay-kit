@@ -73,6 +73,36 @@ func TestMemoryChannelStoreUpdateChannelSeesPriorWrites(t *testing.T) {
 	}
 }
 
+func TestMemoryChannelStoreClonesConsumedTopUpSignatures(t *testing.T) {
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+	result, err := store.UpdateChannel(ctx, "c1", func(*ChannelState) (ChannelState, error) {
+		state := testChannelState("c1", 1)
+		state.ConsumedTopUpSignatures = []string{"topup-a"}
+		return state, nil
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	result.ConsumedTopUpSignatures[0] = "mutated-result"
+
+	first, err := store.GetChannel(ctx, "c1")
+	if err != nil || first == nil {
+		t.Fatalf("GetChannel: state=%v err=%v", first, err)
+	}
+	if got := first.ConsumedTopUpSignatures[0]; got != "topup-a" {
+		t.Fatalf("stored signature = %q after result mutation", got)
+	}
+	first.ConsumedTopUpSignatures[0] = "mutated-read"
+	second, err := store.GetChannel(ctx, "c1")
+	if err != nil || second == nil {
+		t.Fatalf("second GetChannel: state=%v err=%v", second, err)
+	}
+	if got := second.ConsumedTopUpSignatures[0]; got != "topup-a" {
+		t.Fatalf("stored signature = %q after read mutation", got)
+	}
+}
+
 func TestMemoryChannelStoreSerializesConcurrentUpdates(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()
@@ -237,6 +267,30 @@ func TestMemoryChannelStoreDeleteAndMarkSealed(t *testing.T) {
 	}
 }
 
+func TestMemoryChannelStoreDeleteChannelKeepsStablePerChannelLock(t *testing.T) {
+	// Regression: DeleteChannel must NOT drop the per-channel lock. If it did,
+	// a concurrent UpdateChannel already holding the old mutex would no longer
+	// serialize against a fresh mutex minted by the next channelLock call for
+	// the same id, silently losing an update. Assert the mutex identity is
+	// stable across a delete + re-observe.
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+	const id = "chan-stable-lock"
+
+	before := store.channelLock(id)
+	if _, err := store.UpdateChannel(ctx, id, func(*ChannelState) (ChannelState, error) {
+		return testChannelState(id, 100), nil
+	}); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
+	}
+	if err := store.DeleteChannel(ctx, id); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	if after := store.channelLock(id); before != after {
+		t.Fatal("DeleteChannel replaced the per-channel lock; a concurrent updater on the old lock would race a new one and lose updates")
+	}
+}
+
 func TestMemoryChannelStoreReturnsClones(t *testing.T) {
 	store := NewMemoryChannelStore()
 	ctx := context.Background()
@@ -298,5 +352,39 @@ func TestChannelStateRejectsLegacyFinalizedRecord(t *testing.T) {
 	}
 	if !state.Sealed || state.OpenSlot != 777 {
 		t.Fatalf("current record decoded incorrectly: %+v", state)
+	}
+}
+
+func TestChannelStatePersistsSettlementClaimAndPendingSignature(t *testing.T) {
+	signature := "pending-settlement-signature"
+	state := testChannelState("c1", 1_000)
+	state.Settling = true
+	state.SettledSignature = &signature
+	state.SettlementWire = "c2lnbmVkLXdpcmU="
+	state.SettlementLastValidBlockHeight = 456
+	state.SettlementClaimOwner = "worker-1"
+	state.SettlementClaimedAt = 123
+
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal channel state: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"settling":true`) ||
+		!strings.Contains(string(encoded), `"settled_signature":"pending-settlement-signature"`) ||
+		!strings.Contains(string(encoded), `"settlement_wire":"c2lnbmVkLXdpcmU="`) ||
+		!strings.Contains(string(encoded), `"settlement_last_valid_block_height":456`) ||
+		!strings.Contains(string(encoded), `"settlement_claim_owner":"worker-1"`) ||
+		!strings.Contains(string(encoded), `"settlement_claimed_at":123`) {
+		t.Fatalf("serialized settlement state = %s", encoded)
+	}
+
+	var decoded ChannelState
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal channel state: %v", err)
+	}
+	if !decoded.Settling || decoded.SettledSignature == nil || *decoded.SettledSignature != signature ||
+		decoded.SettlementWire != "c2lnbmVkLXdpcmU=" || decoded.SettlementLastValidBlockHeight != 456 ||
+		decoded.SettlementClaimOwner != "worker-1" || decoded.SettlementClaimedAt != 123 {
+		t.Fatalf("decoded settlement state = %+v", decoded)
 	}
 }

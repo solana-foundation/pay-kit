@@ -45,7 +45,10 @@ func main() {
         Accept:  []paykit.Protocol{paykit.X402, paykit.MPP},
         MPP: paykit.MPPConfig{
             Realm:                  "MyApp",
-            ChallengeBindingSecret: []byte("local-dev-secret"),
+            ChallengeBindingSecret: []byte("local-dev-secret-0123456789abcdef"),
+            // This quick start is a single-process local demo. Production
+            // deployments must inject MPP.ReplayStore with IsShared() == true.
+            AllowUnsafeMemoryStore: true,
         },
     })
     if err != nil {
@@ -66,6 +69,11 @@ func main() {
 `client.Require(gate)` is plain `func(http.Handler) http.Handler`
 middleware, so it composes with chi, gorilla, or the stdlib mux. Inside
 the handler, `paykit.PaymentFrom(ctx)` returns the verified payment.
+
+MPP replay protection is secure by default: without a shared
+`MPP.ReplayStore`, MPP construction fails closed. This quick start explicitly
+opts into a process-local `MemoryStore` because it is a single-process local
+demo; never carry `AllowUnsafeMemoryStore` into a multi-instance deployment.
 
 Zero-config boots on the in-memory demo signer (it logs a warning and
 defaults to the Surfpool sandbox). For production set
@@ -236,11 +244,11 @@ for the full walkthrough.
 
 | Dependency | Why | Version |
 |---|---|---|
-| `github.com/gagliardetto/solana-go` | transaction message encoding, ATA derivation, base58 keys | pinned in `go.mod` |
-| `github.com/gagliardetto/solana-go/programs/token` | SPL Token transfer instruction layout | bundled with `solana-go` |
-| `github.com/gagliardetto/solana-go/programs/token-2022` | Token-2022 transfer instruction layout | bundled with `solana-go` |
-| `github.com/gagliardetto/solana-go/programs/compute-budget` | compute unit limit / price instructions | bundled with `solana-go` |
-| `github.com/gagliardetto/solana-go/programs/system` | native SOL transfer instructions | bundled with `solana-go` |
+| `github.com/solana-foundation/solana-go/v2` | transaction message encoding, ATA derivation, base58 keys | pinned in `go.mod` |
+| `github.com/solana-foundation/solana-go/v2/programs/token` | SPL Token transfer instruction layout | bundled with `solana-go` |
+| `github.com/solana-foundation/solana-go/v2/programs/token-2022` | Token-2022 transfer instruction layout | bundled with `solana-go` |
+| `github.com/solana-foundation/solana-go/v2/programs/compute-budget` | compute unit limit / price instructions | bundled with `solana-go` |
+| `github.com/solana-foundation/solana-go/v2/programs/system` | native SOL transfer instructions | bundled with `solana-go` |
 | internal canonical JSON | base64url-encoded canonical JSON with `json.Number` preservation | in package |
 
 The Go SDK keeps the transitive dependency tree to the `solana-go`

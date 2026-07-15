@@ -11,7 +11,8 @@
 //! to a direct RPC fetch only when the cache is empty or stale, so correctness
 //! never depends on the refresher having run.
 
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use solana_commitment_config::CommitmentConfig;
@@ -83,6 +84,48 @@ impl BlockhashCache {
         let (entry, stamped_at) = guard.as_ref()?;
         (stamped_at.elapsed() < MAX_AGE).then(|| entry.clone())
     }
+
+    /// Return a cached blockhash if one is present and younger than [`MAX_AGE`],
+    /// otherwise fetch a fresh one over `rpc`, cache it, and return it.
+    ///
+    /// Fail-closed: a failed RPC fetch propagates the error rather than serving
+    /// stale data, and [`Self::get`] never yields an entry past the TTL — so a
+    /// caller building a transaction always gets a blockhash within the cache's
+    /// freshness bound or a hard error.
+    pub fn get_or_fetch(
+        &self,
+        rpc: &RpcClient,
+        commitment: CommitmentConfig,
+    ) -> Result<CachedBlockhash, String> {
+        if let Some(cached) = self.get() {
+            return Ok(cached);
+        }
+        let fetched = fetch_blockhash_with_slot(rpc, commitment)?;
+        self.set(
+            fetched.blockhash.clone(),
+            fetched.last_valid_block_height,
+            fetched.slot,
+        );
+        Ok(fetched)
+    }
+}
+
+/// Return the process-wide blockhash cache for `rpc_url`, creating it on first
+/// use. Client-side builders that hold no injected cache (the subscription
+/// activation path) share one memo per endpoint so repeated and concurrent
+/// activation bursts collapse into one `getLatestBlockhash` within the TTL
+/// window. Keyed by URL so a process talking to two networks never serves one
+/// network's blockhash to the other.
+///
+/// ponytail: global per-URL memo; two simultaneous misses can still each fetch
+/// (no single-flight), matching the existing cache's semantics. Inject a
+/// [`BlockhashCache`] directly (as the server builders do) if a caller needs
+/// isolation or strict coalescing.
+pub fn shared_blockhash_cache(rpc_url: &str) -> BlockhashCache {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, BlockhashCache>>> = OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    guard.entry(rpc_url.to_owned()).or_default().clone()
 }
 
 /// Fetch the latest blockhash **and the slot it was observed at** in one RPC
@@ -110,4 +153,97 @@ pub fn fetch_blockhash_with_slot(
         last_valid_block_height: response.value.last_valid_block_height,
         slot: response.context.slot,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn get_is_none_when_empty() {
+        assert!(BlockhashCache::new().get().is_none());
+        assert!(BlockhashCache::default().get().is_none());
+    }
+
+    #[test]
+    fn set_then_get_returns_the_fresh_entry() {
+        let cache = BlockhashCache::new();
+        cache.set("hash-1".to_string(), 42, 7);
+        let got = cache.get().expect("a fresh entry is present");
+        assert_eq!(got.blockhash, "hash-1");
+        assert_eq!(got.last_valid_block_height, 42);
+        assert_eq!(got.slot, 7);
+
+        // A later set replaces the entry.
+        cache.set("hash-2".to_string(), 99, 8);
+        assert_eq!(cache.get().unwrap().blockhash, "hash-2");
+    }
+
+    #[test]
+    fn stale_entry_is_ignored() {
+        // Directly seed an entry stamped older than MAX_AGE so the age check's
+        // false arm is exercised without a real 45s wait.
+        let cache = BlockhashCache::new();
+        {
+            let mut guard = cache.inner.write().unwrap();
+            *guard = Some((
+                CachedBlockhash {
+                    blockhash: "old".to_string(),
+                    last_valid_block_height: 1,
+                    slot: 1,
+                },
+                Instant::now() - (MAX_AGE + Duration::from_secs(1)),
+            ));
+        }
+        assert!(
+            cache.get().is_none(),
+            "an entry older than MAX_AGE is not served"
+        );
+    }
+
+    #[test]
+    fn recovers_from_a_poisoned_lock() {
+        let cache = BlockhashCache::new();
+        // Poison the inner lock by panicking while holding the write guard.
+        let poisoner = cache.clone();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = poisoner.inner.write().unwrap();
+            panic!("poison the lock");
+        }));
+        // Both set() and get() must recover the poisoned guard rather than panic.
+        cache.set("after-poison".to_string(), 7, 11);
+        assert_eq!(cache.get().expect("recovered").blockhash, "after-poison");
+    }
+
+    /// A cache hit must be served without ever touching the RPC endpoint — the
+    /// dummy client below points at an unroutable port and would error if used.
+    #[test]
+    fn get_or_fetch_serves_cache_hit_without_rpc() {
+        let cache = BlockhashCache::new();
+        cache.set("HashOnCacheHit".to_owned(), 123, 456);
+        let rpc = RpcClient::new("http://127.0.0.1:1".to_owned());
+        let got = cache
+            .get_or_fetch(&rpc, CommitmentConfig::confirmed())
+            .expect("cache hit must not fetch");
+        assert_eq!(got.blockhash, "HashOnCacheHit");
+        assert_eq!(got.last_valid_block_height, 123);
+        assert_eq!(got.slot, 456);
+    }
+
+    /// The shared registry returns handles onto one inner cell per URL, so a
+    /// value stored through one handle is visible through another for the same
+    /// URL and invisible across URLs.
+    #[test]
+    fn shared_cache_is_per_url() {
+        let url = "http://shared-cache-test.invalid/rpc";
+        shared_blockhash_cache(url).set("SharedHash".to_owned(), 1, 2);
+        assert_eq!(
+            shared_blockhash_cache(url).get().map(|c| c.blockhash),
+            Some("SharedHash".to_owned()),
+        );
+        assert!(shared_blockhash_cache("http://other.invalid/rpc")
+            .get()
+            .is_none());
+    }
 }

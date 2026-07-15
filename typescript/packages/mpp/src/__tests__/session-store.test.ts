@@ -2,7 +2,7 @@ import { generateKeyPairSigner, getBase58Decoder, type KeyPairSigner } from '@so
 
 import type { SignedVoucher, VoucherData } from '../shared/session-types.js';
 import { encodeVoucherMessage } from '../shared/voucher.js';
-import { type ChannelState, createMemorySessionStore } from '../server/session/store.js';
+import { type ChannelState, createMemorySessionStore, isMemorySessionStore } from '../server/session/store.js';
 import { verifyVoucherForChannel } from '../server/session/voucher.js';
 
 // Helpers ───────────────────────────────────────────────────────────────────
@@ -78,6 +78,62 @@ describe('createMemorySessionStore', () => {
         await Promise.all(tasks);
 
         expect((await store.getChannel('c1'))?.cumulative).toBe(50n);
+    });
+
+    test('updateChannel grants one concurrent settlement claim and preserves its pending signature', async () => {
+        const store = createMemorySessionStore();
+        await store.updateChannel('c1', () => makeState({ channelId: 'c1' }));
+        const now = BigInt(Date.now());
+        let claims = 0;
+
+        await Promise.all(
+            Array.from({ length: 20 }, (_, index) =>
+                store.updateChannel('c1', current => {
+                    if (
+                        current?.settling &&
+                        current.settlementClaimExpiresAt !== undefined &&
+                        current.settlementClaimExpiresAt > now
+                    ) {
+                        return current;
+                    }
+                    claims += 1;
+                    return {
+                        ...current!,
+                        settlementClaimExpiresAt: now + 30_000n,
+                        settlementClaimOwner: `owner-${index}`,
+                        settling: true,
+                    };
+                }),
+            ),
+        );
+        expect(claims).toBe(1);
+
+        const pending = await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementPendingLastValidBlockHeight: 123n,
+            settlementPendingSignature: 'settle-signature',
+            settlementPendingWire: 'signed-wire',
+            settling: false,
+        }));
+        expect(pending.settlementPendingSignature).toBe('settle-signature');
+        expect(pending.settlementPendingLastValidBlockHeight).toBe(123n);
+        expect(pending.settlementPendingWire).toBe('signed-wire');
+        expect(pending.settling).toBe(false);
+
+        await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementClaimExpiresAt: 0n,
+            settlementPendingLastValidBlockHeight: undefined,
+            settlementPendingSignature: undefined,
+            settlementPendingWire: undefined,
+            settling: true,
+        }));
+        const recovered = await store.updateChannel('c1', current => ({
+            ...current!,
+            settlementClaimExpiresAt: now + 30_000n,
+            settlementClaimOwner: 'recovery-owner',
+        }));
+        expect(recovered.settlementClaimOwner).toBe('recovery-owner');
     });
 
     test('updateChannel error does not poison subsequent updates', async () => {
@@ -506,5 +562,42 @@ describe('verifyVoucherForChannel', () => {
             expect(result.newCumulative).toBe(600n);
             expect(result.newSignature).toBe(next.signature);
         }
+    });
+});
+
+describe('isMemorySessionStore brand detection', () => {
+    test('detects a store from the factory', () => {
+        expect(isMemorySessionStore(createMemorySessionStore())).toBe(true);
+    });
+
+    test('is invisible to JSON / Object.keys (symbol brand)', () => {
+        const store = createMemorySessionStore();
+        expect(Object.keys(store)).not.toContain('memory-session-store');
+        // The symbol brand never serializes; only the explicit durability
+        // declaration (a plain string field) is visible.
+        expect(JSON.stringify(store)).toBe('{"sessionStoreDurability":"ephemeral"}');
+    });
+
+    test('a shallow spread copy stays detected (fail CLOSED)', () => {
+        // A `{ ...store }` copy of a process-local store is still process-local.
+        // The brand is enumerable so the spread carries it and mainnet policy
+        // still rejects the copy instead of trusting it as durable.
+        const copy = { ...createMemorySessionStore() };
+        expect(isMemorySessionStore(copy)).toBe(true);
+    });
+
+    test('an unrelated object is not mistaken for a memory store', () => {
+        const durable = {
+            deleteChannel: async () => {},
+            getChannel: async () => undefined,
+            listChannels: async () => [],
+            markSealed: async () => {
+                throw new Error('unused');
+            },
+            updateChannel: async () => {
+                throw new Error('unused');
+            },
+        };
+        expect(isMemorySessionStore(durable)).toBe(false);
     });
 });

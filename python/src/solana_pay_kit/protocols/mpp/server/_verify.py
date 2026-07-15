@@ -62,10 +62,7 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = fee_payer.pubkey()
 
-    # Try legacy transaction first (the common path); fall back to versioned.
-    try:
-        tx = Transaction.from_bytes(raw)
-    except Exception:
+    if is_v0_wire_bytes(raw):
         try:
             vtx = VersionedTransaction.from_bytes(raw)
         except Exception as exc:
@@ -94,6 +91,14 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
         sig_start = 1 + idx * 64
         serialized[sig_start : sig_start + 64] = sig_bytes
         return base64.b64encode(bytes(serialized)).decode("ascii")
+
+    try:
+        tx = Transaction.from_bytes(raw)
+    except Exception as exc:
+        raise PaymentError(
+            f"could not decode transaction for fee payer co-sign: {exc}",
+            code="invalid-payload-type",
+        ) from exc
 
     account_keys = list(tx.message.account_keys)
     try:

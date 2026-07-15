@@ -17,6 +17,7 @@
 //!
 //! let pay = PayKit::new(PayKitConfig {
 //!     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+//!     network: "localnet".to_string(),
 //!     ..Default::default()
 //! })
 //! .unwrap();
@@ -37,7 +38,7 @@ use axum::routing::{get, post, MethodRouter};
 
 use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::SolanaSigner;
-use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
+use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind, Store};
 use crate::x402::server::{
     BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig, UptoPayout,
     VerifiedExactPayment, X402BatchSettlement, X402Upto, X402,
@@ -91,6 +92,9 @@ pub struct PayKitConfig {
     pub fee_payer_signer: Option<Arc<dyn SolanaSigner>>,
     /// Accept push-mode MPP credentials (off by default; see audit §13.5).
     pub accept_push_mode: bool,
+    /// MPP replay-protection store. Required outside localnet; its capability
+    /// must explicitly declare durable, shared replay protection.
+    pub replay_store: Option<Arc<dyn Store>>,
     /// Currencies the server is willing to accept (x402 multi-currency).
     pub accepted_currencies: Option<Vec<String>>,
 }
@@ -106,6 +110,7 @@ impl Default for PayKitConfig {
             challenge_binding_secret: None,
             fee_payer_signer: None,
             accept_push_mode: false,
+            replay_store: None,
             accepted_currencies: None,
         }
     }
@@ -173,6 +178,7 @@ impl PayKit {
             fee_payer: config.fee_payer_signer.is_some(),
             fee_payer_signer: config.fee_payer_signer.clone(),
             accept_push_mode: config.accept_push_mode,
+            store: config.replay_store.clone(),
             ..Default::default()
         })
         .map_err(|e| PayKitError::Mpp(e.to_string()))?;
@@ -995,7 +1001,7 @@ mod tests {
         PayKit::new(PayKitConfig {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
-            network: "devnet".to_string(),
+            network: "localnet".to_string(),
             ..Default::default()
         })
         .expect("valid paykit config")
@@ -1020,7 +1026,7 @@ mod tests {
         PayKit::new(PayKitConfig {
             recipient: TEST_RECIPIENT.to_string(),
             challenge_binding_secret: Some(TEST_SECRET.to_string()),
-            network: "devnet".to_string(),
+            network: "localnet".to_string(),
             rpc_url: Some("http://127.0.0.1:1".to_string()),
             fee_payer_signer: Some(test_signer()),
             ..Default::default()

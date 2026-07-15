@@ -236,7 +236,7 @@ mod tests {
             Mpp::new(Config {
                 recipient: TEST_RECIPIENT.to_string(),
                 challenge_binding_secret: Some(TEST_SECRET.to_string()),
-                network: "devnet".to_string(),
+                network: "localnet".to_string(),
                 ..Default::default()
             })
             .unwrap(),

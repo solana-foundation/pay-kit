@@ -14,13 +14,13 @@ import (
 	"time"
 
 	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/shopspring/decimal"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 type uptoNetwork interface {
@@ -229,6 +229,9 @@ type UptoConfig struct {
 	ReceiverAuthorizerSigner uptoSigner
 	WithdrawDelay            uint32
 	RecentBlockhashProvider  func() (string, error)
+	// RPCClient, when non-nil, is used instead of dialing RPCURL. It lets
+	// callers supply a custom transport or a deterministic client in tests.
+	RPCClient solanatx.RPCClient
 	// RecentSlotProvider overrides the current-slot fetch for the challenge's
 	// extra.recentSlot (deterministic tests). Nil fetches via the RPC client's
 	// getSlot.
@@ -294,13 +297,17 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if _, err := solana.PublicKeyFromBase58(cfg.Recipient); err != nil {
 		return nil, fmt.Errorf("invalid recipient pubkey: %w", err)
 	}
-	rpcURL := cfg.RPCURL
-	if rpcURL == "" {
-		rpcURL = cfg.Network.DefaultRPCURL()
+	rpcClient := cfg.RPCClient
+	if rpcClient == nil {
+		rpcURL := cfg.RPCURL
+		if rpcURL == "" {
+			rpcURL = cfg.Network.DefaultRPCURL()
+		}
+		rpcClient = rpc.New(rpcURL)
 	}
 	return &X402Upto{
 		cfg:                cfg,
-		rpc:                rpc.New(rpcURL),
+		rpc:                rpcClient,
 		feePayer:           feePayer,
 		receiverAuthorizer: receiverAuthorizer,
 		inFlight:           map[string]struct{}{},

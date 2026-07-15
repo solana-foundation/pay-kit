@@ -1,5 +1,5 @@
 {
   "language": "rust",
-  "command": ["cargo", "run", "-q", "-p", "solana-pay-kit", "--example", "protocol_runner"],
+  "command": ["bash", "-lc", "if [ -x target/debug/examples/protocol_runner ]; then exec target/debug/examples/protocol_runner; fi; exec cargo run -q -p solana-pay-kit --example protocol_runner"],
   "cwd": "rust"
 }

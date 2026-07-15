@@ -6,11 +6,15 @@ namespace PayKit\Tests\Protocols\X402;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\Config;
+use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
 use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Price;
+use PayKit\Store\FileStore;
+use PayKit\Store\MemoryStore;
+use PayKit\Store\Store;
 use PayKit\Protocols\X402\Adapter;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
@@ -18,10 +22,12 @@ use PHPUnit\Framework\TestCase;
 
 final class AdapterTest extends TestCase
 {
-    private function makeConfig(?X402Config $x402 = null): Config
-    {
+    private function makeConfig(
+        ?X402Config $x402 = null,
+        Network $network = Network::SolanaDevnet,
+    ): Config {
         return new Config(
-            network: Network::SolanaDevnet,
+            network: $network,
             operator: new Operator(
                 recipient: Signer::generate()->pubkey(),
                 signer:    Signer::generate(),
@@ -32,10 +38,15 @@ final class AdapterTest extends TestCase
         );
     }
 
+    private function replayStore(): Store
+    {
+        return new ExplicitCapabilityTestReplayStore();
+    }
+
     public function testAcceptsEntryHasCanonicalX402Shape(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => 'BLOCKHASH-STUB');
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => 'BLOCKHASH-STUB');
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $entry = $adapter->acceptsEntry($gate, $req);
@@ -49,11 +60,57 @@ final class AdapterTest extends TestCase
         $this->assertNotEmpty($entry['extra']['feePayer']);
     }
 
+    public function testAcceptsEntrySupportsExactMaximumU64Amount(): void
+    {
+        $adapter = new Adapter(
+            $this->makeConfig(),
+            replayStore: $this->replayStore(),
+            recentBlockhashProvider: fn () => null,
+        );
+        $gate = new Gate(amount: Price::usd('18446744073709.551615'));
+        $request = (new Psr17Factory())->createServerRequest('GET', '/paid');
+
+        $entry = $adapter->acceptsEntry($gate, $request);
+
+        $this->assertSame('18446744073709551615', $entry['amount']);
+        $this->assertSame('18446744073709551615', $entry['maxAmountRequired']);
+    }
+
+    public function testAcceptsEntryRejectsAmountAboveU64(): void
+    {
+        $adapter = new Adapter(
+            $this->makeConfig(),
+            replayStore: $this->replayStore(),
+            recentBlockhashProvider: fn () => null,
+        );
+        $gate = new Gate(amount: Price::usd('18446744073709.551616'));
+        $request = (new Psr17Factory())->createServerRequest('GET', '/paid');
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('unsigned u64');
+        $adapter->acceptsEntry($gate, $request);
+    }
+
+    public function testAcceptsEntryRejectsFractionalBaseUnit(): void
+    {
+        $adapter = new Adapter(
+            $this->makeConfig(),
+            replayStore: $this->replayStore(),
+            recentBlockhashProvider: fn () => null,
+        );
+        $gate = new Gate(amount: Price::usd('0.0000001'));
+        $request = (new Psr17Factory())->createServerRequest('GET', '/paid');
+
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('more precision');
+        $adapter->acceptsEntry($gate, $request);
+    }
+
     public function testAcceptsEntryEmbedsRecentBlockhash(): void
     {
         // Ruby PR #142 caveat #5.
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => 'ABC123BLOCKHASH');
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => 'ABC123BLOCKHASH');
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $entry = $adapter->acceptsEntry($gate, $req);
@@ -63,7 +120,7 @@ final class AdapterTest extends TestCase
     public function testAcceptsEntryOmitsBlockhashWhenProviderReturnsNull(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => null);
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => null);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $entry = $adapter->acceptsEntry($gate, $req);
@@ -73,7 +130,7 @@ final class AdapterTest extends TestCase
     public function testChallengeHeadersAreBase64JsonEnvelope(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => null);
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => null);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $headers = $adapter->challengeHeaders($gate, $req);
@@ -93,10 +150,102 @@ final class AdapterTest extends TestCase
         new Adapter($cfg);
     }
 
+    public function testRequiresSharedStoreOffLocalnet(): void
+    {
+        // H3: off localnet, constructing without a store must fail closed rather
+        // than silently use the process-local in-memory store.
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        $cfg = $this->makeConfig(); // SolanaDevnet
+        $this->expectException(ConfigurationException::class);
+        new Adapter($cfg, recentBlockhashProvider: fn () => null);
+    }
+
+    public function testInMemoryOptOutAllowedOffLocalnet(): void
+    {
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $adapter = new Adapter($this->makeConfig(), recentBlockhashProvider: fn () => null);
+            $this->assertInstanceOf(Adapter::class, $adapter);
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
+    }
+
+    public function testInMemoryOptOutRejectedOnMainnet(): void
+    {
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $this->expectException(ConfigurationException::class);
+            $this->expectExceptionMessage('forbidden on mainnet');
+            new Adapter(
+                $this->makeConfig(network: Network::SolanaMainnet),
+                recentBlockhashProvider: fn () => null,
+            );
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
+    }
+
+    public function testRejectsMemoryStoreInjectionOffLocalnet(): void
+    {
+        putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1');
+        try {
+            $this->expectException(ConfigurationException::class);
+            $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+            new Adapter(
+                $this->makeConfig(),
+                replayStore: new MemoryStore(),
+                recentBlockhashProvider: fn () => null,
+            );
+        } finally {
+            putenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE');
+        }
+    }
+
+    public function testRejectsFileStoreInjectionOffLocalnet(): void
+    {
+        $directory = sys_get_temp_dir() . '/pay-kit-x402-' . bin2hex(random_bytes(8));
+        try {
+            $this->expectException(ConfigurationException::class);
+            $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+            new Adapter(
+                $this->makeConfig(),
+                replayStore: new FileStore($directory),
+                recentBlockhashProvider: fn () => null,
+            );
+        } finally {
+            if (is_dir($directory)) {
+                rmdir($directory);
+            }
+        }
+    }
+
+    public function testAcceptsDurableSharedReplayStoreOffLocalnet(): void
+    {
+        $adapter = new Adapter(
+            $this->makeConfig(),
+            replayStore: $this->replayStore(),
+            recentBlockhashProvider: fn () => null,
+        );
+
+        $this->assertInstanceOf(Adapter::class, $adapter);
+    }
+
+    public function testAllowsMemoryStoreInjectionOnLocalnet(): void
+    {
+        $adapter = new Adapter(
+            $this->makeConfig(network: Network::SolanaLocalnet),
+            replayStore: new MemoryStore(),
+            recentBlockhashProvider: fn () => null,
+        );
+
+        $this->assertInstanceOf(Adapter::class, $adapter);
+    }
+
     public function testVerifyAndSettleRaisesWithoutPaymentSignature(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => null);
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => null);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid');
         $this->expectException(InvalidProofException::class);
@@ -106,7 +255,7 @@ final class AdapterTest extends TestCase
     public function testVerifyAndSettleRaisesOnMalformedBase64(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => null);
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => null);
         $gate = new Gate(amount: Price::usd('0.10'));
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid')
             ->withHeader('Payment-Signature', '@@@-not-base64-@@@');
@@ -117,7 +266,7 @@ final class AdapterTest extends TestCase
     public function testVerifyAndSettleRaisesOnInvalidVersion(): void
     {
         $cfg = $this->makeConfig();
-        $adapter = new Adapter($cfg, recentBlockhashProvider: fn () => null);
+        $adapter = new Adapter($cfg, replayStore: $this->replayStore(), recentBlockhashProvider: fn () => null);
         $gate = new Gate(amount: Price::usd('0.10'));
         $envelope = base64_encode(json_encode(['x402Version' => 99]) ?: '{}');
         $req = (new Psr17Factory())->createServerRequest('GET', '/paid')

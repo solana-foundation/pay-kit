@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from solana_pay_kit._paycore.errors import PaymentError, canonical_code
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.rpc import SolanaRpc
-from solana_pay_kit._paycore.store import MemoryStore, Store
-from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit._paycore.store import ReplayStoreConfigurationError, Store, resolve_replay_store
+from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.payment import Payment
 from solana_pay_kit.protocols.mpp.core.headers import format_receipt, format_www_authenticate, parse_authorization
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
@@ -86,6 +86,14 @@ logger = logging.getLogger(__name__)
 _BASE_UNIT_SCALE = 1_000_000
 
 _DEFAULT_MPP_SECRET_ENV = "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET"
+
+
+def _resolve_replay_store(config: Config, replay_store: Store | None) -> Store:
+    """Resolve MPP replay storage through the shared non-localnet policy."""
+    try:
+        return resolve_replay_store(config.network.mints_label(), replay_store, protocol="MPP")
+    except ReplayStoreConfigurationError as exc:
+        raise PaymentError(str(exc), code="invalid-config") from exc
 
 
 class SecretResolver:
@@ -183,7 +191,10 @@ class MppAdapter:
         recent_blockhash_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._config = config
-        self._replay_store: Store = replay_store if replay_store is not None else MemoryStore()
+        try:
+            self._replay_store = _resolve_replay_store(config, replay_store)
+        except PaymentError as exc:
+            raise ConfigurationError(str(exc)) from exc
         self._recent_blockhash_provider = recent_blockhash_provider
         # Cache one solana_pay_kit.protocols.mpp.Mpp per (payTo|coin) key, like the PHP
         # handlerCache, so the HMAC secret and RPC client are reused.

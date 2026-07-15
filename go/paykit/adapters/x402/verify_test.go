@@ -7,16 +7,17 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
@@ -48,11 +49,11 @@ func newFixture(t *testing.T) fixture {
 	}
 
 	keys := solana.PublicKeySlice{
-		feePayer,      // 0
-		source,        // 1
-		mint,          // 2
-		dest,          // 3
-		authority,     // 4
+		feePayer,      // 0: fee payer signer
+		authority,     // 1: transfer authority signer
+		source,        // 2
+		mint,          // 3
+		dest,          // 4
 		computeBudget, // 5
 		tokenProgram,  // 6
 	}
@@ -73,7 +74,7 @@ func newFixture(t *testing.T) fixture {
 		computePrice: solana.CompiledInstruction{ProgramIDIndex: 5, Data: priceData},
 		transfer: solana.CompiledInstruction{
 			ProgramIDIndex: 6,
-			Accounts:       []uint16{1, 2, 3, 4},
+			Accounts:       []uint16{2, 3, 4, 1},
 			Data:           transferData,
 		},
 		req: proto.TransferRequirements{
@@ -81,7 +82,9 @@ func newFixture(t *testing.T) fixture {
 			Mint:         mint,
 			TokenProgram: tokenProgram,
 			Amount:       amount,
-			FeePayer:     feePayer,
+			ManagedSigners: []solana.PublicKey{
+				feePayer,
+			},
 		},
 	}
 }
@@ -89,8 +92,12 @@ func newFixture(t *testing.T) fixture {
 func (f fixture) tx(extra ...solana.CompiledInstruction) *solana.Transaction {
 	ixs := append([]solana.CompiledInstruction{f.computeLimit, f.computePrice, f.transfer}, extra...)
 	return &solana.Transaction{
-		Message:    solana.Message{AccountKeys: f.keys, Instructions: ixs},
-		Signatures: []solana.Signature{{}},
+		Message: solana.Message{
+			AccountKeys:  f.keys,
+			Header:       solana.MessageHeader{NumRequiredSignatures: 2},
+			Instructions: ixs,
+		},
+		Signatures: []solana.Signature{{}, {}},
 	}
 }
 
@@ -177,8 +184,12 @@ func TestVerifyEnforcesExpectedMemoMatch(t *testing.T) {
 func TestVerifyRejectsTooFewInstructions(t *testing.T) {
 	f := newFixture(t)
 	tx := &solana.Transaction{
-		Message:    solana.Message{AccountKeys: f.keys, Instructions: []solana.CompiledInstruction{f.computeLimit, f.computePrice}},
-		Signatures: []solana.Signature{{}},
+		Message: solana.Message{
+			AccountKeys:  f.keys,
+			Header:       solana.MessageHeader{NumRequiredSignatures: 2},
+			Instructions: []solana.CompiledInstruction{f.computeLimit, f.computePrice},
+		},
+		Signatures: []solana.Signature{{}, {}},
 	}
 	if err := proto.VerifyExactTransaction(tx, f.req); err == nil {
 		t.Error("expected rejection for <3 instructions")
@@ -222,7 +233,7 @@ func TestVerifyRejectsWrongAmount(t *testing.T) {
 
 func TestVerifyRejectsWrongMint(t *testing.T) {
 	f := newFixture(t)
-	f.keys[2] = solana.MustPublicKeyFromBase58(paycore.USDTMainnetMint)
+	f.keys[3] = solana.MustPublicKeyFromBase58(paycore.USDTMainnetMint)
 	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for mint mismatch")
 	}
@@ -230,7 +241,7 @@ func TestVerifyRejectsWrongMint(t *testing.T) {
 
 func TestVerifyRejectsWrongDestination(t *testing.T) {
 	f := newFixture(t)
-	f.keys[3] = solana.NewWallet().PublicKey() // not the payTo ATA
+	f.keys[4] = solana.NewWallet().PublicKey() // not the payTo ATA
 	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for recipient ATA mismatch")
 	}
@@ -238,7 +249,7 @@ func TestVerifyRejectsWrongDestination(t *testing.T) {
 
 func TestVerifyRejectsFeePayerAsAuthority(t *testing.T) {
 	f := newFixture(t)
-	f.keys[4] = f.req.FeePayer // fee-payer moving the funds
+	f.keys[1] = f.req.ManagedSigners[0] // fee-payer moving the funds
 	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when fee-payer is the transfer authority")
 	}
@@ -276,11 +287,29 @@ func TestVerifyRejectsAccountIndexOutOfRange(t *testing.T) {
 // fakeRPC is the rpcClient test double for the broadcast + confirmation
 // path. send/confirm behaviour is scripted per field.
 type fakeRPC struct {
-	sig        solana.Signature
-	sendErr    error
-	confirm    rpc.ConfirmationStatusType
-	confirmErr *struct{ msg string } // non-nil => on-chain tx error
-	sends      int
+	sig         solana.Signature
+	sendErr     error
+	confirm     rpc.ConfirmationStatusType
+	confirmErr  *struct{ msg string } // non-nil => on-chain tx error
+	sends       int
+	sourceOwner solana.PublicKey
+	sourceErr   error
+}
+
+func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	if f.sourceErr != nil {
+		return nil, f.sourceErr
+	}
+	data := make([]byte, 165)
+	owner := f.sourceOwner
+	if owner.IsZero() {
+		owner = solana.NewWallet().PublicKey()
+	}
+	copy(data[32:64], owner.Bytes())
+	return &rpc.GetAccountInfoResult{Value: &rpc.Account{
+		Owner: solana.MustPublicKeyFromBase58(paycore.TokenProgram),
+		Data:  rpc.DataBytesOrJSONFromBytes(data),
+	}}, nil
 }
 
 func (f *fakeRPC) SendEncodedTransactionWithOpts(_ context.Context, _ string, _ rpc.TransactionOpts) (solana.Signature, error) {
@@ -321,7 +350,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	}
 	computeBudget := solana.MustPublicKeyFromBase58(proto.ComputeBudgetProgram)
 
-	keys := solana.PublicKeySlice{opPub, source, mint, dest, authority, computeBudget, tokenProgram}
+	keys := solana.PublicKeySlice{opPub, authority, source, mint, dest, computeBudget, tokenProgram}
 	const amount = uint64(1000)
 	priceData := make([]byte, 9)
 	priceData[0] = 3
@@ -333,10 +362,11 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	tx := &solana.Transaction{
 		Message: solana.Message{
 			AccountKeys: keys,
+			Header:      solana.MessageHeader{NumRequiredSignatures: 2},
 			Instructions: []solana.CompiledInstruction{
 				{ProgramIDIndex: 5, Data: []byte{2, 0, 0, 0, 0}},
 				{ProgramIDIndex: 5, Data: priceData},
-				{ProgramIDIndex: 6, Accounts: []uint16{1, 2, 3, 4}, Data: transferData},
+				{ProgramIDIndex: 6, Accounts: []uint16{2, 3, 4, 1}, Data: transferData},
 			},
 		},
 		Signatures: []solana.Signature{{}, solana.MustSignatureFromBase58(sampleClientSig)},
@@ -381,6 +411,38 @@ func TestVerifyAndSettleHappyPath(t *testing.T) {
 	}
 }
 
+func TestVerifyAndSettleRejectsManagedOwnerBehindDelegate(t *testing.T) {
+	fake := &fakeRPC{confirm: rpc.ConfirmationStatusConfirmed}
+	a, gate, sig := settleFixture(t, fake)
+	fake.sourceOwner = solana.MustPublicKeyFromBase58(string(a.signer.Pubkey()))
+
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	if err == nil || !strings.Contains(err.Error(), "owned by managed signer") {
+		t.Fatalf("managed source owner error = %v", err)
+	}
+	var paymentErr *paykit.PaymentError
+	if !errors.As(err, &paymentErr) || paymentErr.Code != "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds" {
+		t.Fatalf("managed source owner code = %v", err)
+	}
+	if fake.sends != 0 {
+		t.Fatalf("managed source owner transaction was broadcast %d times", fake.sends)
+	}
+}
+
+func TestVerifyAndSettleReportsSourceInspectionFailureSeparately(t *testing.T) {
+	fake := &fakeRPC{sourceErr: errors.New("RPC unavailable")}
+	a, gate, sig := settleFixture(t, fake)
+
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	var paymentErr *paykit.PaymentError
+	if !errors.As(err, &paymentErr) || paymentErr.Code != "source_owner_check_failed" {
+		t.Fatalf("source inspection code = %v", err)
+	}
+	if fake.sends != 0 {
+		t.Fatalf("transaction was broadcast after source inspection failed %d times", fake.sends)
+	}
+}
+
 func TestVerifyAndSettleConfirmationError(t *testing.T) {
 	fake := &fakeRPC{
 		sig:        solana.MustSignatureFromBase58(sampleSig),
@@ -398,19 +460,21 @@ func TestVerifyAndSettleConfirmationError(t *testing.T) {
 	}
 }
 
-func TestVerifyAndSettleSendFailureRollsBackReplay(t *testing.T) {
+func TestVerifyAndSettleAmbiguousSendFailureKeepsReplay(t *testing.T) {
 	fake := &fakeRPC{sendErr: context.DeadlineExceeded}
 	a, gate, sig := settleFixture(t, fake)
 	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err == nil {
 		t.Fatal("expected send_failed")
 	}
-	// Replay reservation must have been rolled back: a retry with a
-	// working RPC then succeeds rather than tripping signature_consumed.
+	// The node may have accepted the transaction before the timeout, so the
+	// reservation stays pinned and a retry cannot broadcast it again.
 	fake.sendErr = nil
 	fake.sig = solana.MustSignatureFromBase58(sampleSig)
 	fake.confirm = rpc.ConfirmationStatusConfirmed
-	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig}); err != nil {
-		t.Fatalf("retry after rollback should succeed, got %v", err)
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, PaymentSig: sig})
+	var perr *paykit.PaymentError
+	if !errorsAs(err, &perr) || perr.Code != "signature_consumed" {
+		t.Fatalf("retry after ambiguous send must be rejected, got %v", err)
 	}
 }
 
@@ -514,7 +578,11 @@ func TestAcceptsEntryAndCoinFallbacks(t *testing.T) {
 		rpc:    &fakeRPC{},
 	}
 	// No blockhash provider -> AcceptsEntry pulls it from the RPC.
-	entry := a.AcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")}).(AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")})
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry := rawEntry.(AcceptsEntry)
 	if entry.Extra.RecentBlockhash == "" {
 		t.Error("expected recentBlockhash populated from rpc")
 	}
@@ -614,6 +682,7 @@ func TestCosignPassthroughWhenOperatorAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tx.Signatures = make([]solana.Signature, len(tx.Message.Signers()))
 	raw, err := tx.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -624,6 +693,37 @@ func TestCosignPassthroughWhenOperatorAbsent(t *testing.T) {
 	}
 	if !bytes.Equal(out, raw) {
 		t.Error("cosign should pass the wire through untouched when the operator is not a missing signer")
+	}
+}
+
+func TestCosignDoesNotSignOperatorInLaterSignerSlot(t *testing.T) {
+	a, _, _ := settleFixture(t, &fakeRPC{})
+	operator := solana.MustPublicKeyFromBase58(string(a.signer.Pubkey()))
+	payer := testutil.NewPrivateKey().PublicKey()
+	memo := solana.NewInstruction(
+		solana.MemoProgramID,
+		solana.AccountMetaSlice{solana.Meta(operator).SIGNER()},
+		[]byte("hi"),
+	)
+	bh := solana.MustHashFromBase58(testutil.NewPrivateKey().PublicKey().String())
+	tx, err := solana.NewTransaction([]solana.Instruction{memo}, bh, solana.TransactionPayer(payer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.Message.AccountKeys) < 2 || !tx.Message.AccountKeys[1].Equals(operator) {
+		t.Fatalf("expected operator in later signer slot, got %v", tx.Message.AccountKeys)
+	}
+	tx.Signatures = make([]solana.Signature, len(tx.Message.Signers()))
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := a.cosign(context.Background(), tx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out, raw) {
+		t.Error("cosign must not sign an operator key outside fee-payer slot 0")
 	}
 }
 

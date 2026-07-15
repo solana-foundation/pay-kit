@@ -3,8 +3,8 @@ module github.com/solana-foundation/pay-kit/harness/go-client
 go 1.26.1
 
 require (
-	github.com/gagliardetto/solana-go v1.22.0
 	github.com/solana-foundation/pay-kit/go v0.0.0
+	github.com/solana-foundation/solana-go/v2 v2.0.0-rc
 )
 
 require (

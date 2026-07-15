@@ -48,6 +48,8 @@ final class AtaCreateRejectTest extends TestCase
         ?string $authority = null,
         array $signerTail = [],
         string $tokenProgram = self::TOKEN_PROGRAM,
+        string $amount = '100000',
+        ?string $amountWire = null,
     ): array {
         $payer     = Keypair::generate()->getPublicKey()->toBase58();
         $authority ??= Keypair::generate()->getPublicKey()->toBase58();
@@ -55,12 +57,12 @@ final class AtaCreateRejectTest extends TestCase
         $payTo     = Keypair::generate()->getPublicKey()->toBase58();
         $mint      = self::USDC_MINT;
         $destination  = Mints::deriveAta($payTo, $mint, $tokenProgram);
-        $amount = 100000;
+        $amountWire ??= pack('P', (int) $amount);
 
         // Instruction data blobs.
         $computeLimitData = chr(2) . pack('V', 200000);            // tag 2 + u32
         $computePriceData = chr(3) . pack('P', 1);                 // tag 3 + u64
-        $transferData     = chr(12) . pack('P', $amount) . chr(6); // tag 12 + u64 + u8 decimals
+        $transferData     = chr(12) . $amountWire . chr(6);        // tag 12 + u64 + u8 decimals
 
         // Build the ordered account-key table and an index resolver.
         $keys = [];
@@ -143,8 +145,18 @@ final class AtaCreateRejectTest extends TestCase
         [$tx, $req] = $this->buildTransaction([]);
         $result = Verifier::verify($tx, $req, [$this->unrelatedManagedSigner()]);
         $this->assertSame(self::TOKEN_PROGRAM, $result['program']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
         $this->assertArrayNotHasKey('destinationCreateAta', $result);
+    }
+
+    public function testUnsignedU64MaxAmountVerifiesThroughFullWirePath(): void
+    {
+        $max = '18446744073709551615';
+        [$tx, $req] = $this->buildTransaction([], amount: $max, amountWire: str_repeat("\xff", 8));
+
+        $result = Verifier::verify($tx, $req, [$this->unrelatedManagedSigner()]);
+
+        $this->assertSame($max, $result['amount']);
     }
 
     public function testLighthouseOptionalInstructionAccepted(): void
@@ -156,7 +168,7 @@ final class AtaCreateRejectTest extends TestCase
             ['program' => self::LIGHTHOUSE, 'data' => chr(0), 'accounts' => []],
         ]);
         $result = Verifier::verify($tx, $req, [$this->unrelatedManagedSigner()]);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testMemoOptionalInstructionAccepted(): void
@@ -165,7 +177,7 @@ final class AtaCreateRejectTest extends TestCase
             ['program' => self::MEMO_PROGRAM, 'data' => 'abc123nonce', 'accounts' => []],
         ]);
         $result = Verifier::verify($tx, $req, [$this->unrelatedManagedSigner()]);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testOfferWithoutExtraTokenProgramStillVerifies(): void
@@ -182,7 +194,7 @@ final class AtaCreateRejectTest extends TestCase
         $result = Verifier::verify($tx, $req, [$this->unrelatedManagedSigner()]);
 
         $this->assertSame(self::TOKEN_PROGRAM, $result['program']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testManagedSignerAsDirectSourceRejected(): void

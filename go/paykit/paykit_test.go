@@ -103,8 +103,8 @@ func TestMiddlewareInvalidGateValidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusPaymentRequired {
-		t.Fatalf("status: got %d want 402", resp.StatusCode)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500", resp.StatusCode)
 	}
 }
 
@@ -274,6 +274,7 @@ func mustClient(t *testing.T) *paykit.Client {
 		Preflight: disabled(),
 		MPP: paykit.MPPConfig{
 			ChallengeBindingSecret: []byte("test-secret-key-0123456789abcdef"),
+			AllowUnsafeMemoryStore: true,
 		},
 	})
 	if err != nil {

@@ -29,6 +29,8 @@ const nativeFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 export type PayKitClientOptions = {
     /** Protocols the client will pay with. Defaults to `['x402', 'mpp']`. */
     readonly accept?: readonly Protocol[];
+    /** Initialize a missing MPP subscription authority. Defaults to true. */
+    readonly initializeSubscriptionAuthority?: boolean;
     /** Progress callback, forwarded to the MPP charge/subscription methods. */
     readonly onProgress?: (event: unknown) => void;
     /** RPC endpoint used to build payments (sign transfers, open channels). */
@@ -99,7 +101,14 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         }));
     const subscriptionClient = (): ReturnType<typeof Mppx.create> =>
         (subscriptionMppx ??= Mppx.create({
-            methods: [solana.subscription({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })],
+            methods: [
+                solana.subscription({
+                    initializeSubscriptionAuthority: options.initializeSubscriptionAuthority ?? true,
+                    onProgress: forward,
+                    rpcUrl: options.rpcUrl,
+                    signer: options.signer,
+                }),
+            ],
         }));
 
     async function payFetch(input: RequestInfo | URL, init?: RequestInit, protocol?: Protocol): Promise<Response> {

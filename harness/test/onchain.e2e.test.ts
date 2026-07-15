@@ -14,7 +14,7 @@
  * (same as the rest of the surfpool CI; defaults to public mainnet).
  */
 import { generateKeyPairSigner, type KeyPairSigner } from "@solana/kit";
-import { createPayKit, usage, usd } from "@solana/pay-kit";
+import { createPayKit, declareProductionReplayStore, usage, usd } from "@solana/pay-kit";
 import { createPayKitClient } from "@solana/pay-kit/client";
 import express, { type Request, type Response } from "express";
 import type { Server } from "node:http";
@@ -43,12 +43,48 @@ describe("on-chain datasource RPC config", () => {
     expect(resolveDatasourceRpc("   ")).toBe("https://api.mainnet-beta.solana.com");
     expect(resolveDatasourceRpc(" https://rpc.example.test ")).toBe("https://rpc.example.test");
   });
+
+  it("uses the supported replay-store API for the single-process harness", async () => {
+    const replayStore = createHarnessReplayStore();
+    await replayStore.put("onchain-harness", { ready: true });
+    await expect(replayStore.get("onchain-harness")).resolves.toEqual({ ready: true });
+    expect(replayStore.isShared).toBe(true);
+  });
 });
 
+function createHarnessReplayStore() {
+  // The forked on-chain suite owns a single server process, so a process-local
+  // Map IS shared + durable for the run's lifetime. Declare it production so it
+  // satisfies the SDK's MPP replay-store gate (atomic putIfAbsent + isShared +
+  // isDurable); a plain `Store.memory()` spread has no putIfAbsent and fails
+  // closed. declareProductionReplayStore retains trust by object identity, so
+  // the exact returned instance must be the one injected into createPayKit.
+  const entries = new Map<string, unknown>();
+  return declareProductionReplayStore({
+    delete: async (key: string) => {
+      entries.delete(key);
+    },
+    get: async (key: string) => entries.get(key) ?? null,
+    isDurable: true as const,
+    isShared: true as const,
+    put: async (key: string, value: unknown) => {
+      entries.set(key, value);
+    },
+    putIfAbsent: async (key: string, value: unknown) => {
+      if (entries.has(key)) return false;
+      entries.set(key, value);
+      return true;
+    },
+  });
+}
+
 async function startServer(): Promise<void> {
+  const replayStore = createHarnessReplayStore();
   const pay = await createPayKit({
     accept: ["x402", "mpp"],
-    mpp: { challengeBindingSecret: crypto.randomBytes(32).toString("hex") },
+    mpp: {
+      challengeBindingSecret: crypto.randomBytes(32).toString("hex"),
+    },
     network: "localnet",
     operator: { recipient: operator.address, signer: operator },
     pricing: {
@@ -58,6 +94,7 @@ async function startServer(): Promise<void> {
       // Fixed charge baseline (MPP / x402 exact — SPL transfer).
       fortune: { amount: usd("0.01"), description: "A fortune cookie" },
     },
+    replayStore,
     rpcUrl: net.rpcUrl,
   });
 

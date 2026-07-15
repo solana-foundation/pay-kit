@@ -28,7 +28,10 @@ func main() {
 		Preflight: &preflight,
 		MPP: paykit.MPPConfig{
 			Realm:                  "Go example",
-			ChallengeBindingSecret: []byte("local-dev-secret"),
+			ChallengeBindingSecret: []byte("local-dev-secret-0123456789abcdef"),
+			// This example is a single-process local demo. Production must
+			// inject a shared replay store and leave this false.
+			AllowUnsafeMemoryStore: true,
 		},
 	})
 	if err != nil {

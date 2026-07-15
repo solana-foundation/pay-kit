@@ -99,6 +99,7 @@ beforeAll(async () => {
         secretKey,
         methods: [
             serverSolana.charge({
+                allowUnsafeMemoryStore: true,
                 recipient: recipientSigner.address,
                 network: 'localnet',
                 rpcUrl: RPC_URL,
@@ -267,6 +268,7 @@ test('e2e: fee payer mode — server co-signs and pays fees', async () => {
         secretKey,
         methods: [
             serverSolana.charge({
+                allowUnsafeMemoryStore: true,
                 recipient: recipientSigner.address,
                 network: 'localnet',
                 rpcUrl: RPC_URL,
@@ -364,6 +366,7 @@ test('e2e: USDC charge via pull mode with fee payer', async () => {
         secretKey,
         methods: [
             serverSolana.charge({
+                allowUnsafeMemoryStore: true,
                 recipient: recipientSigner.address,
                 network: 'localnet',
                 rpcUrl: RPC_URL,
@@ -435,6 +438,7 @@ test('e2e: USDC charge with splits (platform fee)', async () => {
         secretKey,
         methods: [
             serverSolana.charge({
+                allowUnsafeMemoryStore: true,
                 recipient: recipientSigner.address,
                 network: 'localnet',
                 rpcUrl: RPC_URL,
@@ -507,6 +511,7 @@ test('e2e: native SOL charge with splits', async () => {
         secretKey,
         methods: [
             serverSolana.charge({
+                allowUnsafeMemoryStore: true,
                 recipient: recipientSigner.address,
                 network: 'localnet',
                 rpcUrl: RPC_URL,

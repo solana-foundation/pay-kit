@@ -16,6 +16,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,11 +26,10 @@ import (
 	"strconv"
 	"strings"
 
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
-	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
@@ -77,11 +77,17 @@ func main() {
 
 	switch protocolMode {
 	case "x402-upto":
-		mountX402Upto(mux, resourcePath)
+		if err := mountX402Upto(mux, resourcePath); err != nil {
+			log.Fatalf("configuration: %v", err)
+		}
 	case "x402":
-		mountX402(mux, resourcePath, settlementHeader)
+		if err := mountX402(mux, resourcePath, settlementHeader); err != nil {
+			log.Fatalf("configuration: %v", err)
+		}
 	case "mpp":
-		mountMPP(mux, resourcePath, settlementHeader)
+		if err := mountMPP(mux, resourcePath, settlementHeader); err != nil {
+			log.Fatalf("configuration: %v", err)
+		}
 	default:
 		log.Fatalf("unknown protocol %q", protocolMode)
 	}
@@ -95,12 +101,18 @@ func main() {
 	log.Fatal(http.Serve(ln, mux))
 }
 
-func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
+func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) error {
 	rpcURL := requireEnv("X402_HARNESS_RPC_URL")
 	payTo := requireEnv("X402_HARNESS_PAY_TO")
+	feePayerEnv := "X402_HARNESS_FEE_PAYER_SECRET_KEY"
 	feePayer := optionalEnv("X402_HARNESS_FEE_PAYER_SECRET_KEY", "")
 	if feePayer == "" {
+		feePayerEnv = "X402_HARNESS_FACILITATOR_SECRET_KEY"
 		feePayer = requireEnv("X402_HARNESS_FACILITATOR_SECRET_KEY")
+	}
+	feePayerKey, err := privateKeyFromKeygenJSON(feePayerEnv, feePayer)
+	if err != nil {
+		return err
 	}
 	amount := optionalEnv("X402_HARNESS_AMOUNT", "1000")
 	// The harness funds the scenario's mint (X402_HARNESS_MINT) and the
@@ -117,14 +129,14 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		Accept:    []paykit.Protocol{paykit.X402},
 		Operator: paykit.Operator{
 			Recipient: paykit.Address(payTo),
-			Signer:    signer.MustFromJSON(feePayer),
+			Signer:    paykitSignerFor(feePayerKey),
 			FeePayer:  true,
 		},
 		MPP: paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402")},
 	}
 	client, err := paykit.New(cfg)
 	if err != nil {
-		log.Fatalf("paykit.New: %v", err)
+		return fmt.Errorf("create x402 server: %w", err)
 	}
 
 	amountUSD := convertUnitsToUSD(amount, 6)
@@ -141,12 +153,17 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "x402"})
 	})))
+	return nil
 }
 
-func mountX402Upto(mux *http.ServeMux, resourcePath string) {
+func mountX402Upto(mux *http.ServeMux, resourcePath string) error {
 	rpcURL := requireEnv("X402_HARNESS_RPC_URL")
 	payTo := requireEnv("X402_HARNESS_PAY_TO")
 	facilitator := requireEnv("X402_HARNESS_FACILITATOR_SECRET_KEY")
+	facilitatorKey, err := privateKeyFromKeygenJSON("X402_HARNESS_FACILITATOR_SECRET_KEY", facilitator)
+	if err != nil {
+		return err
+	}
 	price := optionalEnv("X402_HARNESS_PRICE", "0.10")
 	mint := requireEnv("X402_HARNESS_MINT")
 
@@ -159,7 +176,7 @@ func mountX402Upto(mux *http.ServeMux, resourcePath string) {
 		Stablecoins: []paykit.Stablecoin{paykit.Stablecoin(mint)},
 		Operator: paykit.Operator{
 			Recipient: paykit.Address(payTo),
-			Signer:    signer.MustFromJSON(facilitator),
+			Signer:    paykitSignerFor(facilitatorKey),
 			FeePayer:  true,
 		},
 		X402: paykit.X402Config{
@@ -170,7 +187,7 @@ func mountX402Upto(mux *http.ServeMux, resourcePath string) {
 	}
 	client, err := paykit.New(cfg)
 	if err != nil {
-		log.Fatalf("paykit.New: %v", err)
+		return fmt.Errorf("create x402 upto server: %w", err)
 	}
 	gate := paykit.Gate{
 		Amount: paykit.MustParseUSD(price, paykit.Stablecoin(mint)),
@@ -197,9 +214,10 @@ func mountX402Upto(mux *http.ServeMux, resourcePath string) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "x402-upto"})
 	})))
+	return nil
 }
 
-func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
+func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) error {
 	rpcURL := requireEnv("MPP_HARNESS_RPC_URL")
 	payTo := requireEnv("MPP_HARNESS_PAY_TO")
 	mint := requireEnv("MPP_HARNESS_MINT")
@@ -212,7 +230,10 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	feePayerJSON := requireEnv("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
 	splitsJSON := optionalEnv("MPP_HARNESS_SPLITS", "[]")
 
-	feePayer := privateKeyFromJSON(feePayerJSON)
+	feePayer, err := privateKeyFromJSON(feePayerJSON)
+	if err != nil {
+		return err
+	}
 	rpcClient := rpc.New(rpcURL)
 
 	srv, err := server.New(server.Config{
@@ -225,9 +246,12 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		Realm:          "go-paykit",
 		FeePayerSigner: walletSignerFor(feePayer),
 		RPC:            rpcClient,
+		// The cross-SDK harness is a single-process test server. Production
+		// callers must inject a shared replay store instead.
+		AllowUnsafeMemoryStore: true,
 	})
 	if err != nil {
-		log.Fatalf("server.New: %v", err)
+		return fmt.Errorf("create MPP server: %w", err)
 	}
 
 	splits := []paycore.Split{}
@@ -305,20 +329,43 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	if replayPath != "" && replayPath != resourcePath {
 		mux.HandleFunc(replayPath, handle)
 	}
+	return nil
 }
 
-func privateKeyFromJSON(raw string) solana.PrivateKey {
-	var ints []int
-	if err := json.Unmarshal([]byte(raw), &ints); err != nil {
-		log.Fatalf("MPP_HARNESS_FEE_PAYER_SECRET_KEY decode: %v", err)
-	}
-	b := make([]byte, len(ints))
-	for i, v := range ints {
-		b[i] = byte(v)
-	}
-	pk := solana.PrivateKey(b)
-	return pk
+func privateKeyFromJSON(raw string) (solana.PrivateKey, error) {
+	return privateKeyFromKeygenJSON("MPP_HARNESS_FEE_PAYER_SECRET_KEY", raw)
 }
+
+func privateKeyFromKeygenJSON(name, raw string) (solana.PrivateKey, error) {
+	pk, err := solana.PrivateKeyFromSolanaKeygenFileBytes([]byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s configuration: %w", name, err)
+	}
+	return pk, nil
+}
+
+// paykitSignerFor adapts a validated Solana keygen key to paykit.Signer.
+func paykitSignerFor(pk solana.PrivateKey) paykit.Signer {
+	return paykitSignerImpl{pk: pk}
+}
+
+type paykitSignerImpl struct {
+	pk solana.PrivateKey
+}
+
+func (w paykitSignerImpl) Pubkey() paykit.Address {
+	return paykit.Address(w.pk.PublicKey().String())
+}
+
+func (w paykitSignerImpl) Sign(_ context.Context, payload []byte) ([]byte, error) {
+	signature, err := w.pk.Sign(payload)
+	if err != nil {
+		return nil, err
+	}
+	return signature[:], nil
+}
+
+func (paykitSignerImpl) IsDemo() bool { return false }
 
 // walletSignerFor adapts a solana.PrivateKey into the utils.Signer
 // interface server.Config expects.
@@ -365,7 +412,7 @@ func convertUnitsToUSD(amount string, decimals int) string {
 
 func pow10(n int) int {
 	out := 1
-	for i := 0; i < n; i++ {
+	for range n {
 		out *= 10
 	}
 	return out

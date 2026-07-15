@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests;
 
 use PHPUnit\Framework\TestCase;
+use PayKit\Exception\ConfigurationException;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
@@ -16,6 +17,7 @@ use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Protocols\Mpp\Server\TransactionPayloadVerifier;
 use PayKit\Protocols\Mpp\Server\VerificationResult;
 use PayKit\Store\FileStore;
+use PayKit\Store\DurableStore;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\ReplayStoreCapability;
 use PayKit\Store\Store;
@@ -29,6 +31,109 @@ use SolanaPhpSdk\Transaction\Transaction;
 
 final class SolanaChargeHandlerTest extends TestCase
 {
+    public function testNonLocalnetRequiresInjectedReplayStore(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('atomic durable/shared replay store');
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'mainnet',
+        );
+    }
+
+    public function testNonLocalnetRejectsMemoryStore(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('does not affirm durable/shared capability');
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'mainnet',
+            replayStore: new MemoryStore(),
+        );
+    }
+
+    public function testLocalnetStillRequiresExplicitUnsafeOptIn(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'localnet',
+        );
+    }
+
+    public function testExplicitUnsafeDevelopmentMemoryStoreIsAllowed(): void
+    {
+        $handler = new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'localnet',
+            allowUnsafeMemoryStore: true,
+        );
+        self::assertInstanceOf(SolanaChargeHandler::class, $handler);
+    }
+
+    public function testMainnetRejectsUnsafeMemoryStoreOverride(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('forbidden on mainnet');
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'mainnet',
+            allowUnsafeMemoryStore: true,
+        );
+    }
+
+    public function testMainnetBetaAliasRejectsUnsafeMemoryStoreOverride(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('forbidden on mainnet');
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'mainnet-beta',
+            allowUnsafeMemoryStore: true,
+        );
+    }
+
+    public function testUnsafeOptInDoesNotAuthorizeArbitraryCustomStore(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('does not affirm durable/shared capability');
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'localnet',
+            replayStore: new HandlerUnspecifiedReplayStore(),
+            allowUnsafeMemoryStore: true,
+        );
+    }
+
+    public function testNonLocalnetAllowsInjectedStore(): void
+    {
+        $handler = new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'mainnet',
+            replayStore: new SharedHandlerReplayStore(),
+        );
+        self::assertInstanceOf(SolanaChargeHandler::class, $handler);
+    }
+
+    public function testNonLocalnetAcceptsDurableStoreContract(): void
+    {
+        $handler = new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'mainnet',
+            replayStore: new HandlerDurableStore(),
+        );
+        self::assertInstanceOf(SolanaChargeHandler::class, $handler);
+    }
+
     public function testReturns402WhenAuthorizationMissing(): void
     {
         $handler = $this->handler();
@@ -189,24 +294,28 @@ final class SolanaChargeHandlerTest extends TestCase
 
     public function testNonLocalnetRejectsMissingReplayStore(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('replayStore is required outside localnet');
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('atomic durable/shared replay store');
 
-        $this->handler(network: 'devnet');
+        new SolanaChargeHandler(
+            challenges: new ChargeServer(secretKey: 'test-secret-0123456789abcdef-0123456789', realm: 'api'),
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            network: 'devnet',
+        );
     }
 
     public function testNonLocalnetRejectsMemoryReplayStore(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('does not affirm durable/shared capability');
 
         $this->handler(network: 'devnet', replayStore: new MemoryStore());
     }
 
     public function testNonLocalnetRejectsStoreWithoutReplayCapability(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('must explicitly declare durable shared replay protection');
+        $this->expectException(ConfigurationException::class);
+        $this->expectExceptionMessage('does not affirm durable/shared capability');
 
         $this->handler(network: 'devnet', replayStore: new HandlerUnspecifiedReplayStore());
     }
@@ -632,7 +741,7 @@ final class SolanaChargeHandlerTest extends TestCase
             transactionVerifier: $transactionVerifier,
             confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: 0,
-            replayStore: $replayStore,
+            replayStore: $replayStore ?? new SharedHandlerReplayStore(),
             acceptPushMode: $acceptPushMode,
         );
     }
@@ -692,6 +801,26 @@ final class SolanaChargeHandlerTest extends TestCase
     }
 }
 
+final class SharedHandlerReplayStore implements Store, ReplayStoreCapability
+{
+    /** @var array<string, mixed> */
+    private array $values = [];
+
+    public function putIfAbsent(string $key, mixed $value): bool
+    {
+        if (array_key_exists($key, $this->values)) {
+            return false;
+        }
+        $this->values[$key] = $value;
+        return true;
+    }
+
+    public function providesDurableSharedReplayProtection(): bool
+    {
+        return true;
+    }
+}
+
 final class HandlerUnspecifiedReplayStore implements Store
 {
     private MemoryStore $store;
@@ -722,6 +851,26 @@ final class HandlerDurableSharedReplayStore implements Store, ReplayStoreCapabil
     }
 
     public function providesDurableSharedReplayProtection(): bool
+    {
+        return true;
+    }
+}
+
+final class HandlerDurableStore implements DurableStore
+{
+    private MemoryStore $store;
+
+    public function __construct()
+    {
+        $this->store = new MemoryStore();
+    }
+
+    public function putIfAbsent(string $key, mixed $value): bool
+    {
+        return $this->store->putIfAbsent($key, $value);
+    }
+
+    public function isDurable(): bool
     {
         return true;
     }

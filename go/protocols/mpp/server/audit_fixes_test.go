@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
@@ -41,13 +41,13 @@ func decodeChallengeDetails(t *testing.T, challenge core.PaymentChallenge, out *
 func validConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		Recipient: testutil.NewPrivateKey().PublicKey().String(),
-		Currency:  "USDC",
-		Decimals:  6,
-		Network:   "localnet",
-		SecretKey: "test-secret-key-0123456789abcdef",
-		RPC:       testutil.NewFakeRPC(),
-		Store:     core.NewMemoryStore(),
+		Recipient:              testutil.NewPrivateKey().PublicKey().String(),
+		Currency:               "USDC",
+		Decimals:               6,
+		Network:                "localnet",
+		SecretKey:              "test-secret-key-0123456789abcdef",
+		RPC:                    testutil.NewFakeRPC(),
+		AllowUnsafeMemoryStore: true,
 	}
 }
 
@@ -72,13 +72,26 @@ func TestNewAcceptsSecretKeyAtMinimumLength(t *testing.T) {
 // --- #37 network allowlist ---
 
 func TestNewAcceptsCanonicalNetworks(t *testing.T) {
+	t.Setenv(allowInMemoryReplayStoreEnvVar, "1")
 	for _, network := range []string{"mainnet", "devnet", "localnet"} {
 		cfg := validConfig(t)
 		cfg.Network = network
+		if network != "localnet" {
+			cfg.Store = &sharedTestStore{MemoryStore: core.NewMemoryStore()}
+			cfg.AllowUnsafeMemoryStore = false
+		}
 		// USDC resolves from the static table, no RPC fetch needed at boot.
 		if _, err := New(cfg); err != nil {
 			t.Fatalf("expected network %q to be accepted: %v", network, err)
 		}
+	}
+}
+
+func TestNewRejectsUnsafeMemoryStoreOnMainnet(t *testing.T) {
+	cfg := validConfig(t)
+	cfg.Network = "mainnet"
+	if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), "forbidden on mainnet") {
+		t.Fatalf("expected mainnet unsafe-store rejection, got %v", err)
 	}
 }
 
@@ -148,7 +161,7 @@ func TestChargeRejectsPrimaryRecipientSplitWithATACreation(t *testing.T) {
 	}
 	_, err = m.ChargeWithOptions(context.Background(), "1.00", ChargeOptions{
 		Splits: []paycore.Split{
-			{Recipient: cfg.Recipient, Amount: "1", AtaCreationRequired: boolp(true)},
+			{Recipient: cfg.Recipient, Amount: "1", AtaCreationRequired: new(true)},
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "primary recipient") {

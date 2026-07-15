@@ -178,6 +178,47 @@ async def test_delete_and_mark_sealed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_lock_waiter_does_not_pin_entry() -> None:
+    store = MemoryChannelStore()
+    holder = await store._acquire_channel_lock("c1")
+
+    waiter = asyncio.create_task(store._acquire_channel_lock("c1"))
+    while store._locks["c1"].refs != 2:
+        await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    await store._release_channel_lock("c1", holder)
+    assert "c1" not in store._locks
+
+
+@pytest.mark.asyncio
+async def test_cancelled_release_still_evicts_entry() -> None:
+    store = MemoryChannelStore()
+    entry = await store._acquire_channel_lock("c1")
+    mu_acquired = asyncio.Event()
+    release_mu = asyncio.Event()
+
+    async def hold_mu() -> None:
+        async with store._mu:
+            mu_acquired.set()
+            await release_mu.wait()
+
+    blocker = asyncio.create_task(hold_mu())
+    await mu_acquired.wait()
+    release = asyncio.create_task(store._release_channel_lock("c1", entry))
+    await asyncio.sleep(0)
+    release.cancel()
+    release_mu.set()
+    await blocker
+    with pytest.raises(asyncio.CancelledError):
+        await release
+    await asyncio.sleep(0)
+    assert "c1" not in store._locks
+
+
+@pytest.mark.asyncio
 async def test_returns_clones() -> None:
     """Mirrors TestMemoryChannelStoreReturnsClones.
 
@@ -273,6 +314,21 @@ def test_to_dict_emits_null_for_empty_delivery_lists() -> None:
     assert d["committed_deliveries"] is None
 
 
+def test_round_trips_authoritative_open_identity() -> None:
+    state = ChannelState(
+        channel_id="c1",
+        authorized_signer="signer1",
+        open_signature="broadcast-signature",
+        open_slot=42,
+        salt=7,
+    )
+
+    restored = ChannelState.from_dict(state.to_dict())
+    assert restored.open_signature == "broadcast-signature"
+    assert restored.open_slot == 42
+    assert restored.salt == 7
+
+
 def test_to_dict_emits_lists_when_deliveries_present() -> None:
     """Non-empty delivery lists still serialize as JSON arrays."""
     state = ChannelState(
@@ -316,3 +372,35 @@ def test_round_trips_go_style_null_record() -> None:
     re_encoded = ChannelState.from_dict(go_record).to_dict()
     assert re_encoded["pending_deliveries"] is None
     assert re_encoded["committed_deliveries"] is None
+
+
+# ── consumed top-up signature serialization ──
+
+
+def test_consumed_top_up_signatures_round_trip_and_omit_empty() -> None:
+    """The top-up signature fence rides the shared wire shape additively: a
+    record without consumed signatures stays byte-identical to records
+    written by SDKs that predate the field."""
+    state = ChannelState(channel_id="c1", authorized_signer="signer1", deposit=1_000)
+    assert "consumed_top_up_signatures" not in state.to_dict()
+
+    state.consumed_top_up_signatures.append("topup_sig")
+    wire = state.to_dict()
+    assert wire["consumed_top_up_signatures"] == ["topup_sig"]
+
+    decoded = ChannelState.from_dict(wire)
+    assert decoded.consumed_top_up_signatures == ["topup_sig"]
+
+    absent = ChannelState.from_dict({"channel_id": "c1", "authorized_signer": "signer1"})
+    assert absent.consumed_top_up_signatures == []
+    null_field = ChannelState.from_dict(
+        {"channel_id": "c1", "authorized_signer": "signer1", "consumed_top_up_signatures": None}
+    )
+    assert null_field.consumed_top_up_signatures == []
+
+
+def test_clone_does_not_alias_consumed_top_up_signatures() -> None:
+    state = ChannelState(channel_id="c1", authorized_signer="signer1", consumed_top_up_signatures=["sig1"])
+    cloned = state.clone()
+    cloned.consumed_top_up_signatures.append("sig2")
+    assert state.consumed_top_up_signatures == ["sig1"]

@@ -16,11 +16,17 @@ import { getStablecoinTokenProgram, resolveStablecoinMint } from '@x402/svm';
 import { UptoSvmScheme as UptoSvmFacilitator } from '@x402/svm/upto/facilitator';
 
 import { requireMint, resolveCoin } from '../coin.js';
-import type { PayKitConfig } from '../config.js';
+import { assertReplayStorePolicy, type PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
-import { errorMessage, x402PaymentHeader } from './x402-shared.js';
+import {
+    assertPaymentHeaderWithinCap,
+    ChallengeBlockhashCache,
+    errorMessage,
+    resolveX402ReplayStore,
+    x402PaymentHeader,
+} from './x402-shared.js';
 
 /** Settlement-response header mirrored by the x402 SDK family. */
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
@@ -29,7 +35,16 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
 const DEFAULT_WITHDRAW_DELAY_SECONDS = 900;
+/**
+ * Hard ceiling on a replay reservation's TTL. `expiresAt` is payer-signed and
+ * unbounded above; without a cap a far-future value would mint effectively
+ * permanent route/consumed keys. 24h comfortably covers any real open-to-settle
+ * window while keeping stale keys self-expiring.
+ */
+const MAX_RESERVATION_TTL_SECONDS = 24 * 60 * 60;
 const BASIS_POINTS_DENOMINATOR = 10_000;
+const CONSUMED_PREFIX = 'x402-svm-upto:consumed:';
+const ROUTE_PREFIX = 'x402-svm-upto:route:';
 
 /**
  * Usage meter handed to a usage-gated handler. The handler reports the actual
@@ -104,15 +119,19 @@ export class X402Upto {
     readonly #signer: PayKitConfig['operator']['signer'];
     readonly #recipient: string;
     readonly #rpcUrl: string;
+    readonly #replayStore: import('../replay-store.js').ReservingReplayStore;
     readonly #stablecoins: readonly string[];
+    readonly #blockhashCache = new ChallengeBlockhashCache();
 
     constructor(config: PayKitConfig) {
+        assertReplayStorePolicy(config);
         this.#network = caip2(config.network) as Network;
         this.#feePayer = config.operator.signer.pubkey;
         this.#receiverAuthorizer = config.operator.signer.pubkey;
         this.#signer = config.operator.signer;
         this.#recipient = config.operator.recipient;
         this.#rpcUrl = config.rpcUrl;
+        this.#replayStore = resolveX402ReplayStore(config, 'upto');
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
             this.#network,
@@ -150,7 +169,8 @@ export class X402Upto {
      * requirement (`extra.recentBlockhash` + `extra.recentSlot`) the header
      * carries, so body-based `upto` clients can build the channel open too.
      */
-    async accepts(maxPrice: Price): Promise<readonly PaymentRequirements[]> {
+    async accepts(maxPrice: Price, request?: Request): Promise<readonly PaymentRequirements[]> {
+        void request;
         return [await this.#challengeRequirements(maxPrice)];
     }
 
@@ -163,6 +183,7 @@ export class X402Upto {
     async verifyOpen(request: Request, maxPrice: Price): Promise<UptoVerified> {
         const header = x402PaymentHeader(request);
         if (!header) throw new InvalidProofError('missing_x402_payment_header');
+        assertPaymentHeaderWithinCap(header);
 
         let payload: PaymentPayload;
         try {
@@ -176,7 +197,21 @@ export class X402Upto {
         if (!verification.isValid) {
             throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
         }
-        return { maxBaseUnits: BigInt(requirements.amount), payer: verification.payer ?? '', payload, requirements };
+        const channel = parseUptoPayload(payload);
+        const remaining = channel.expiresAt - Math.floor(Date.now() / 1000);
+        const ttlSeconds = Math.min(Math.max(MAX_TIMEOUT_SECONDS, remaining), MAX_RESERVATION_TTL_SECONDS);
+        await this.#bindChannelRoute(channel.channelId, request, ttlSeconds);
+        const channelId = channel.channelId;
+        const replayKey = `${CONSUMED_PREFIX}${channelId}`;
+        if (!(await this.#replayStore.reserve(replayKey, true, ttlSeconds))) {
+            throw new InvalidProofError('upto_channel_replayed', 'channel already used or in flight');
+        }
+        return {
+            maxBaseUnits: BigInt(requirements.amount),
+            payer: verification.payer ?? '',
+            payload,
+            requirements,
+        };
     }
 
     /**
@@ -261,6 +296,35 @@ export class X402Upto {
         return getBase58Decoder().decode(signature);
     }
 
+    /**
+     * Bind a verified channel's replay scope to the first route that accepts it.
+     *
+     * The x402 `upto` wire commits the channel ID in the payer-signed open
+     * transaction, so this reservation is channel-specific and does not block
+     * unrelated routes. It does not prove which HTTP route issued the
+     * challenge: the upstream `upto` transaction has no resource-path field.
+     * A route-specific cryptographic guarantee therefore requires a protocol
+     * extension; this is only a fail-closed same-channel replay binding.
+     *
+     * `reserve` and the fallback `get` are separate store operations because
+     * the public replay-store contract has no compare-and-swap. At the TTL
+     * boundary another caller may replace the value between them; that can
+     * only produce a mismatch rejection here, never acceptance for a different
+     * route. A future store contract can collapse this to atomic bind-or-verify.
+     */
+    async #bindChannelRoute(channelId: string, request: Request, ttlSeconds: number): Promise<void> {
+        const route = new URL(request.url).pathname;
+        const key = `${ROUTE_PREFIX}${this.#network}:${this.#recipient}:${channelId}`;
+        if (await this.#replayStore.reserve(key, route, ttlSeconds)) return;
+        const existing = await this.#replayStore.get(key);
+        if (existing !== route) {
+            throw new InvalidProofError(
+                'upto_route_mismatch',
+                `x402 upto is already bound to route ${String(existing)}`,
+            );
+        }
+    }
+
     #requirements(maxPrice: Price): PaymentRequirements {
         const coin = resolveCoin(maxPrice, this.#stablecoins);
         const mint = requireMint(coin, resolveStablecoinMint(coin, this.#network), this.#network);
@@ -296,21 +360,17 @@ export class X402Upto {
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
         const base = this.#requirements(maxPrice);
-        let context, value;
-        try {
-            ({ context, value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send());
-        } catch (error) {
-            throw new Error(
-                `x402 upto challenge requires extra.recentBlockhash/recentSlot; getLatestBlockhash failed: ${errorMessage(error)}`,
-            );
+        const cached = await this.#blockhashCache.recentBlockhash(this.#rpcUrl);
+        if (cached === undefined) {
+            throw new Error('x402 upto challenge requires extra.recentBlockhash/recentSlot; getLatestBlockhash failed');
         }
         return {
             ...base,
             extra: {
                 ...base.extra,
-                lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                recentBlockhash: value.blockhash,
-                recentSlot: context.slot.toString(),
+                lastValidBlockHeight: cached.lastValidBlockHeight,
+                recentBlockhash: cached.blockhash,
+                recentSlot: cached.recentSlot,
             },
         };
     }
@@ -328,7 +388,9 @@ function parseUptoPayload(payload: PaymentPayload): UptoPaymentChannelPayload {
         !raw ||
         typeof raw.channelId !== 'string' ||
         typeof raw.from !== 'string' ||
-        typeof raw.expiresAt !== 'number'
+        typeof raw.expiresAt !== 'number' ||
+        !Number.isSafeInteger(raw.expiresAt) ||
+        raw.expiresAt <= 0
     ) {
         throw new InvalidProofError('invalid_upto_payload');
     }

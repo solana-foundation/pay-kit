@@ -12,12 +12,19 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-const sessionTestRecipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+// sessionTestOperatorKey backs sessionTestRecipient with a real signing key so
+// signature-only open fixtures can co-sign the operator (rentPayer) slot that
+// the hardened open verifier cryptographically checks.
+var sessionTestOperatorKey = testutil.NewPrivateKey()
+
+var sessionTestRecipient = sessionTestOperatorKey.PublicKey().String()
 
 func sessionTestConfig() SessionConfig {
 	return SessionConfig{
@@ -144,6 +151,35 @@ func TestProcessOpenStoresState(t *testing.T) {
 	}
 	if state.AuthorizedSigner != "signer1" {
 		t.Fatalf("authorizedSigner = %q, want signer1", state.AuthorizedSigner)
+	}
+}
+
+func TestProcessOpenPersistsAuthoritativeVerifiedFacts(t *testing.T) {
+	config := sessionTestConfig()
+	config.VerifyOpenStateTx = func(context.Context, *intents.OpenPayload) (VerifyOpenTxResult, error) {
+		return VerifyOpenTxResult{
+			ChannelID: "chan1",
+			Deposit:   4_000,
+			Payer:     "verified-payer",
+			Salt:      7,
+			OpenSlot:  42,
+		}, nil
+	}
+	server := newSessionTestServer(config)
+	payload := intents.OpenPayloadPaymentChannel(
+		"chan1", "4000", "claimed-payer", sessionTestRecipient, paycore.USDCMainnetMint,
+		999, 900, 999, "signer1", "confirmed-open",
+	)
+
+	state, err := server.ProcessOpen(context.Background(), &payload)
+	if err != nil {
+		t.Fatalf("ProcessOpen: %v", err)
+	}
+	if state.Deposit != 4_000 || state.Salt != 7 || state.OpenSlot != 42 {
+		t.Fatalf("state = %+v, want verified deposit/salt/openSlot", state)
+	}
+	if state.Operator == nil || *state.Operator != "verified-payer" {
+		t.Fatalf("operator = %v, want verified payer", state.Operator)
 	}
 }
 
@@ -526,6 +562,25 @@ func TestProcessTopUpRaisesDeposit(t *testing.T) {
 	}
 }
 
+func TestProcessTopUpRejectsReplayedOlderSignature(t *testing.T) {
+	server := newSessionTestServer(sessionTestConfig())
+	_, channelID := openTestChannel(t, server, 1_000_000)
+	for _, topUp := range []intents.TopUpPayload{
+		{ChannelID: channelID, NewDeposit: "2000000", Signature: "topup-a"},
+		{ChannelID: channelID, NewDeposit: "3000000", Signature: "topup-b"},
+	} {
+		if _, err := server.ProcessTopUp(context.Background(), &topUp); err != nil {
+			t.Fatalf("ProcessTopUp(%s): %v", topUp.Signature, err)
+		}
+	}
+	_, err := server.ProcessTopUp(context.Background(), &intents.TopUpPayload{
+		ChannelID: channelID, NewDeposit: "4000000", Signature: "topup-a",
+	})
+	if err == nil || !strings.Contains(err.Error(), "already consumed") {
+		t.Fatalf("replayed top-up error = %v", err)
+	}
+}
+
 func TestProcessTopUpRejectsNonIncreasingDeposit(t *testing.T) {
 	server := newSessionTestServer(sessionTestConfig())
 	_, channelID := openTestChannel(t, server, 1_000_000)
@@ -579,11 +634,14 @@ func TestProcessTopUpRejectsWhenSealedOrClosePending(t *testing.T) {
 func TestProcessTopUpInvokesVerifyTopUpTxSeam(t *testing.T) {
 	wantErr := errors.New("topup tx unknown")
 	config := sessionTestConfig()
-	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload) (string, error) {
+	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload, currentDeposit uint64) error {
 		if payload.Signature != "topup_sig" {
 			t.Fatalf("verifier got signature %q", payload.Signature)
 		}
-		return "", wantErr
+		if currentDeposit != 1_000_000 {
+			t.Fatalf("verifier got deposit %d, want 1000000", currentDeposit)
+		}
+		return wantErr
 	}
 	server := newSessionTestServer(config)
 	_, channelID := openTestChannel(t, server, 1_000_000)

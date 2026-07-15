@@ -49,6 +49,9 @@ const DEMO_SECRET_BYTES = new Uint8Array([
     102, 250, 198, 30, 191, 232, 236, 147, 167, 41, 178, 151, 26,
 ]);
 
+/** Public address of the package-shipped demo keypair. */
+export const DEMO_SIGNER_PUBLIC_KEY = 'ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq';
+
 const HEX_PATTERN = /^[0-9a-fA-F]{128}$/;
 
 function wrap(signer: KeychainSigner, options: { isDemo?: boolean; isFeePayer?: boolean } = {}): PayKitSigner {

@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	bin "github.com/gagliardetto/binary"
-	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
+	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // NewPrivateKey returns a fresh test signer. Panics on key-generation
@@ -32,10 +32,14 @@ func NewPrivateKey() solana.PrivateKey {
 type FakeRPC struct {
 	mu sync.Mutex
 
-	Blockhash  solana.Hash
-	MintOwners map[string]solana.PublicKey
-	Statuses   map[string]*rpc.SignatureStatusesResult
-	BySig      map[string]*solana.Transaction
+	Blockhash           solana.Hash
+	BlockHeight         uint64
+	BlockHeightErr      error
+	MintOwners          map[string]solana.PublicKey
+	Accounts            map[string]*rpc.Account
+	Statuses            map[string]*rpc.SignatureStatusesResult
+	BySig               map[string]*solana.Transaction
+	LastAccountInfoOpts *rpc.GetAccountInfoOpts
 
 	SimulateErr error
 	SendErr     error
@@ -51,17 +55,31 @@ func NewFakeRPC() *FakeRPC {
 	return &FakeRPC{
 		Blockhash:  blockhash,
 		MintOwners: map[string]solana.PublicKey{},
+		Accounts:   map[string]*rpc.Account{},
 		Statuses:   map[string]*rpc.SignatureStatusesResult{},
 		BySig:      map[string]*solana.Transaction{},
 	}
 }
 
-// GetAccountInfoWithOpts looks up the canned mint owner registered for
-// account; returns rpc.ErrNotFound when the account is unknown so the
-// SDK exercises the same not-found branch as a live RPC.
-func (f *FakeRPC) GetAccountInfoWithOpts(_ context.Context, account solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+// SetAccount registers a complete account for state-binding tests.
+func (f *FakeRPC) SetAccount(account solana.PublicKey, owner solana.PublicKey, data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.Accounts[account.String()] = &rpc.Account{
+		Owner: owner,
+		Data:  rpc.DataBytesOrJSONFromBytes(data),
+	}
+}
+
+// GetAccountInfoWithOpts serves complete accounts first, then owner-only mint
+// fixtures. Unknown accounts follow the live RPC not-found path.
+func (f *FakeRPC) GetAccountInfoWithOpts(_ context.Context, account solana.PublicKey, opts *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.LastAccountInfoOpts = opts
+	if acct, ok := f.Accounts[account.String()]; ok {
+		return &rpc.GetAccountInfoResult{Value: acct}, nil
+	}
 	owner, ok := f.MintOwners[account.String()]
 	if !ok {
 		return nil, rpc.ErrNotFound
@@ -80,6 +98,14 @@ func (f *FakeRPC) GetLatestBlockhash(_ context.Context, _ rpc.CommitmentType) (*
 	}, nil
 }
 
+// GetBlockHeight returns the canned block height or configured error.
+func (f *FakeRPC) GetBlockHeight(_ context.Context, _ rpc.CommitmentType) (uint64, error) {
+	if f.BlockHeightErr != nil {
+		return 0, f.BlockHeightErr
+	}
+	return f.BlockHeight, nil
+}
+
 // GetSignatureStatuses returns the canned per-signature status, falling
 // back to a confirmed status so the WaitForConfirmation poll completes
 // in a single round when no override is registered.
@@ -94,6 +120,7 @@ func (f *FakeRPC) GetSignatureStatuses(_ context.Context, _ bool, signatures ...
 		}
 		values = append(values, &rpc.SignatureStatusesResult{
 			ConfirmationStatus: rpc.ConfirmationStatusConfirmed,
+			Slot:               1,
 		})
 	}
 	return &rpc.GetSignatureStatusesResult{Value: values}, nil

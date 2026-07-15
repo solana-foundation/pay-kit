@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use solana_commitment_config::CommitmentConfig;
 use solana_keychain::SolanaSigner;
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
@@ -661,6 +662,8 @@ impl X402 {
                 "fee payer is not a required transaction signer".into(),
             ));
         }
+        reject_managed_transfer_source_owner(&self.rpc, &tx, &[fee_payer_key])?;
+
         let signer_index = 0;
         let signature = fee_payer
             .sign_message(&tx.message.serialize())
@@ -930,6 +933,107 @@ fn managed_signers_for_requirements(
         .unwrap_or_else(|| Ok(Vec::new()))
 }
 
+const MANAGED_FUNDS_ERROR: &str =
+    "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds";
+const TOKEN_ACCOUNT_BASE_LEN: usize = 165;
+const TOKEN_ACCOUNT_OWNER_START: usize = 32;
+const TOKEN_ACCOUNT_OWNER_END: usize = 64;
+const TOKEN_ACCOUNT_DELEGATE_OPTION_START: usize = 72;
+const TOKEN_ACCOUNT_STATE_OFFSET: usize = 108;
+const TOKEN_ACCOUNT_NATIVE_OPTION_START: usize = 109;
+const TOKEN_ACCOUNT_CLOSE_AUTHORITY_OPTION_START: usize = 129;
+
+/// Reject an exact pull before the managed fee payer signs when its transfer
+/// source is a token account stored for that fee payer. Structural verification
+/// cannot see the stored token-account owner of a non-ATA delegated source.
+fn reject_managed_transfer_source_owner(
+    rpc: &RpcClient,
+    tx: &VersionedTransaction,
+    managed_signers: &[Pubkey],
+) -> Result<(), Error> {
+    let account_keys = tx.message.static_account_keys();
+    let transfer = tx
+        .message
+        .instructions()
+        .get(2)
+        .ok_or_else(managed_funds_error)?;
+    let (source, token_program) = transfer_source_and_token_program(transfer, account_keys)?;
+
+    let account = rpc
+        .get_account_with_commitment(&source, CommitmentConfig::confirmed())
+        .map_err(|e| Error::Rpc(format!("fetch transfer source account: {e}")))?
+        .value
+        .ok_or_else(managed_funds_error)?;
+    if account.owner != token_program {
+        return Err(managed_funds_error());
+    }
+
+    let stored_owner = token_account_owner(&account.data).ok_or_else(managed_funds_error)?;
+    if managed_signers.contains(&stored_owner) {
+        return Err(managed_funds_error());
+    }
+
+    Ok(())
+}
+
+fn transfer_source_and_token_program(
+    instruction: &CompiledInstruction,
+    account_keys: &[Pubkey],
+) -> Result<(Pubkey, Pubkey), Error> {
+    let token_program = *account_keys
+        .get(instruction.program_id_index as usize)
+        .ok_or_else(managed_funds_error)?;
+    let token_program_string = token_program.to_string();
+    let is_token_program = token_program_string
+        == crate::x402::protocol::schemes::exact::programs::TOKEN_PROGRAM
+        || token_program_string
+            == crate::x402::protocol::schemes::exact::programs::TOKEN_2022_PROGRAM;
+    if !is_token_program || instruction.data.len() != 10 || instruction.data.first() != Some(&12) {
+        return Err(managed_funds_error());
+    }
+
+    let source_index = *instruction
+        .accounts
+        .first()
+        .ok_or_else(managed_funds_error)?;
+    let source = *account_keys
+        .get(source_index as usize)
+        .ok_or_else(managed_funds_error)?;
+    Ok((source, token_program))
+}
+
+fn token_account_owner(data: &[u8]) -> Option<Pubkey> {
+    if data.len() < TOKEN_ACCOUNT_BASE_LEN {
+        return None;
+    }
+    // Both token programs keep the base Account owner at bytes 32..64; Token-2022
+    // extensions are appended after this base layout. Mirror the base Account
+    // decoder's validity checks before trusting its owner field.
+    if !matches!(data.get(TOKEN_ACCOUNT_STATE_OFFSET).copied(), Some(1 | 2))
+        || !coption_tag_is_valid(data, TOKEN_ACCOUNT_DELEGATE_OPTION_START)
+        || !coption_tag_is_valid(data, TOKEN_ACCOUNT_NATIVE_OPTION_START)
+        || !coption_tag_is_valid(data, TOKEN_ACCOUNT_CLOSE_AUTHORITY_OPTION_START)
+    {
+        return None;
+    }
+    let owner = data
+        .get(TOKEN_ACCOUNT_OWNER_START..TOKEN_ACCOUNT_OWNER_END)?
+        .try_into()
+        .ok()?;
+    Some(Pubkey::new_from_array(owner))
+}
+
+fn coption_tag_is_valid(data: &[u8], offset: usize) -> bool {
+    matches!(
+        data.get(offset..offset + 4),
+        Some([0, 0, 0, 0] | [1, 0, 0, 0])
+    )
+}
+
+fn managed_funds_error() -> Error {
+    Error::Other(MANAGED_FUNDS_ERROR.to_string())
+}
+
 /// Convert a human-readable amount to base units.
 ///
 /// Delegates to [`crate::core::parse_units`] — the audited shared
@@ -946,14 +1050,62 @@ mod tests {
         protocol::schemes::exact::{
             PaymentProof, PaymentSignatureEnvelope, EXACT_SCHEME, SOLANA_DEVNET,
         },
+        server::mock_rpc::MockRpc,
         X402_VERSION_V1, X402_VERSION_V2,
     };
     use solana_hash::Hash;
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_keychain::{SignTransactionResult, SignerError};
     use solana_message::Message;
     use solana_pubkey::Pubkey;
+    use solana_signature::Signature;
     use solana_system_interface::instruction as system_instruction;
     use solana_transaction::versioned::VersionedTransaction;
     use solana_transaction::Transaction;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingSigner {
+        pubkey: Pubkey,
+        sign_calls: AtomicUsize,
+    }
+
+    impl CountingSigner {
+        fn new(pubkey: Pubkey) -> Self {
+            Self {
+                pubkey,
+                sign_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn sign_calls(&self) -> usize {
+            self.sign_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SolanaSigner for CountingSigner {
+        fn pubkey(&self) -> Pubkey {
+            self.pubkey
+        }
+
+        async fn sign_transaction(
+            &self,
+            _tx: &mut Transaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            Err(SignerError::Other("unused".to_string()))
+        }
+
+        async fn sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
+            self.sign_calls.fetch_add(1, Ordering::SeqCst);
+            Err(SignerError::SigningFailed(
+                "test signer invoked".to_string(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
 
     fn config() -> Config {
         Config {
@@ -986,6 +1138,245 @@ mod tests {
                 .collect(),
             ..config()
         }
+    }
+
+    fn token_account_data(mint: Pubkey, owner: Pubkey) -> Vec<u8> {
+        let mut data = vec![0u8; TOKEN_ACCOUNT_BASE_LEN];
+        data[..32].copy_from_slice(mint.as_ref());
+        data[TOKEN_ACCOUNT_OWNER_START..TOKEN_ACCOUNT_OWNER_END].copy_from_slice(owner.as_ref());
+        data[TOKEN_ACCOUNT_STATE_OFFSET] = 1;
+        data
+    }
+
+    fn associated_token_address(owner: Pubkey, mint: Pubkey, token_program: Pubkey) -> Pubkey {
+        let ata_program = Pubkey::from_str(
+            crate::x402::protocol::schemes::exact::programs::ASSOCIATED_TOKEN_PROGRAM,
+        )
+        .unwrap();
+        Pubkey::find_program_address(
+            &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+            &ata_program,
+        )
+        .0
+    }
+
+    fn exact_pull_transaction(
+        fee_payer: Pubkey,
+        source: Pubkey,
+        mint: Pubkey,
+        recipient: Pubkey,
+        delegate: Pubkey,
+        token_program: Pubkey,
+    ) -> VersionedTransaction {
+        let compute_program = Pubkey::from_str(
+            crate::x402::protocol::schemes::exact::programs::COMPUTE_BUDGET_PROGRAM,
+        )
+        .unwrap();
+        let transfer = Instruction {
+            program_id: token_program,
+            accounts: vec![
+                AccountMeta::new(source, false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new(
+                    associated_token_address(recipient, mint, token_program),
+                    false,
+                ),
+                AccountMeta::new_readonly(delegate, true),
+            ],
+            data: [vec![12], 1_000_000u64.to_le_bytes().to_vec(), vec![6]].concat(),
+        };
+        let instructions = vec![
+            Instruction {
+                program_id: compute_program,
+                accounts: vec![],
+                data: [vec![2], 200_000u32.to_le_bytes().to_vec()].concat(),
+            },
+            Instruction {
+                program_id: compute_program,
+                accounts: vec![],
+                data: [vec![3], 1u64.to_le_bytes().to_vec()].concat(),
+            },
+            transfer,
+        ];
+        VersionedTransaction::from(Transaction::new_unsigned(Message::new_with_blockhash(
+            &instructions,
+            Some(&fee_payer),
+            &Hash::default(),
+        )))
+    }
+
+    fn fee_sponsored_x402(
+        rpc_url: String,
+        recipient: Pubkey,
+        mint: Pubkey,
+        token_program: Pubkey,
+        fee_payer: Pubkey,
+    ) -> (X402, PaymentRequirements) {
+        let x402 = X402::new(Config {
+            recipient: recipient.to_string(),
+            currencies: vec![CurrencyConfig {
+                currency: mint.to_string(),
+                decimals: 6,
+                token_program: Some(token_program.to_string()),
+            }],
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            resource: "/guard".to_string(),
+            description: None,
+            max_age: None,
+            fee_payer_key: Some(fee_payer.to_string()),
+        })
+        .unwrap();
+        let requirements = x402
+            .exact_requirements("1", ExactOptions::default())
+            .unwrap();
+        (x402, requirements)
+    }
+
+    fn token_program_cases() -> [(Pubkey, Pubkey); 2] {
+        [
+            (
+                Pubkey::new_unique(),
+                Pubkey::from_str(crate::x402::protocol::schemes::exact::programs::TOKEN_PROGRAM)
+                    .unwrap(),
+            ),
+            (
+                Pubkey::new_unique(),
+                Pubkey::from_str(
+                    crate::x402::protocol::schemes::exact::programs::TOKEN_2022_PROGRAM,
+                )
+                .unwrap(),
+            ),
+        ]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_rejects_managed_non_ata_sources_before_signing_for_both_token_programs() {
+        for (mint, token_program) in token_program_cases() {
+            let mock = MockRpc::start().await;
+            let fee_payer = Pubkey::new_unique();
+            let recipient = Pubkey::new_unique();
+            let customer = Pubkey::new_unique();
+            let delegate = Pubkey::new_unique();
+            let source = Pubkey::new_unique();
+            let (x402, requirements) =
+                fee_sponsored_x402(mock.url(), recipient, mint, token_program, fee_payer);
+            let transaction =
+                exact_pull_transaction(fee_payer, source, mint, recipient, delegate, token_program);
+
+            // The offline verifier deliberately accepts this delegated custom
+            // source. Its stored owner is only available from account state.
+            verify_exact_versioned_transaction(&transaction, &requirements, &[fee_payer])
+                .expect("offline verifier accepts delegated customer authority");
+
+            mock.set_account(
+                source.to_string(),
+                token_account_data(mint, fee_payer),
+                token_program.to_string(),
+            );
+            let signer = CountingSigner::new(fee_payer);
+            let err = x402
+                .settle_exact(
+                    VerifiedExactPayment::Transaction(transaction.clone()),
+                    &signer,
+                )
+                .await
+                .expect_err("managed token-account owner must be rejected");
+            assert!(
+                matches!(err, Error::Other(ref reason) if reason == MANAGED_FUNDS_ERROR),
+                "unexpected error: {err:?}"
+            );
+            assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
+
+            // A non-ATA source owned by the customer remains legitimate: the
+            // guard lets execution reach the signer, which then fails only
+            // because this test double intentionally refuses to sign.
+            mock.set_account(
+                source.to_string(),
+                token_account_data(mint, customer),
+                token_program.to_string(),
+            );
+            let signer = CountingSigner::new(fee_payer);
+            let err = x402
+                .settle_exact(VerifiedExactPayment::Transaction(transaction), &signer)
+                .await
+                .expect_err("counting signer intentionally fails");
+            assert!(err.to_string().contains("fee payer signing failed"));
+            assert_eq!(
+                signer.sign_calls(),
+                1,
+                "customer source must remain signable"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_source_owner_check_fails_closed_before_signing() {
+        let mint = Pubkey::new_unique();
+        let token_program =
+            Pubkey::from_str(crate::x402::protocol::schemes::exact::programs::TOKEN_PROGRAM)
+                .unwrap();
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let source = Pubkey::new_unique();
+        let transaction = exact_pull_transaction(
+            fee_payer,
+            source,
+            mint,
+            recipient,
+            Pubkey::new_unique(),
+            token_program,
+        );
+
+        let mut invalid_state = token_account_data(mint, Pubkey::new_unique());
+        invalid_state[TOKEN_ACCOUNT_STATE_OFFSET] = 3;
+        for (data, owner) in [
+            (None, None),
+            (
+                Some(vec![0u8; TOKEN_ACCOUNT_BASE_LEN - 1]),
+                Some(token_program),
+            ),
+            (Some(invalid_state), Some(token_program)),
+            (
+                Some(token_account_data(mint, Pubkey::new_unique())),
+                Some(Pubkey::new_unique()),
+            ),
+        ] {
+            let mock = MockRpc::start().await;
+            if let (Some(data), Some(owner)) = (data, owner) {
+                mock.set_account(source.to_string(), data, owner.to_string());
+            }
+            let (x402, _) =
+                fee_sponsored_x402(mock.url(), recipient, mint, token_program, fee_payer);
+            let signer = CountingSigner::new(fee_payer);
+            let err = x402
+                .settle_exact(
+                    VerifiedExactPayment::Transaction(transaction.clone()),
+                    &signer,
+                )
+                .await
+                .expect_err("uninspectable source must be rejected");
+            assert!(
+                matches!(err, Error::Other(ref reason) if reason == MANAGED_FUNDS_ERROR),
+                "unexpected error: {err:?}"
+            );
+            assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
+        }
+
+        let (x402, _) = fee_sponsored_x402(
+            "http://127.0.0.1:1".to_string(),
+            recipient,
+            mint,
+            token_program,
+            fee_payer,
+        );
+        let signer = CountingSigner::new(fee_payer);
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Transaction(transaction), &signer)
+            .await
+            .expect_err("source-account RPC failures must fail closed");
+        assert!(matches!(err, Error::Rpc(_)), "unexpected error: {err:?}");
+        assert_eq!(signer.sign_calls(), 0, "guard must run before signing");
     }
 
     #[test]
