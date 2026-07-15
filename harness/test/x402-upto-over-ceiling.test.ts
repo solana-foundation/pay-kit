@@ -38,8 +38,11 @@ const CEILING = 1_000_000n;
 
 async function makeUpto(): Promise<X402Upto> {
   // A minimal, offline config (no live RPC needed: the ceiling guard precedes
-  // all network work). Mirrors the SDK unit test's testConfig().
+  // all network work). Mirrors the SDK unit test's testConfig(). accept pins
+  // x402 so the MPP replay-store policy (which requires a declared atomic
+  // store) does not apply to this pure-upto fixture.
   const config = await configure({
+    accept: ["x402"],
     mpp: { challengeBindingSecret: "x402-upto-ceiling-secret" },
     network: "solana_localnet",
   });
