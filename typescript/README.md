@@ -93,9 +93,18 @@ challenge secret, and a persistent replay store. The route handlers
 are unchanged — only the config grows.
 
 ```ts
-import { createPayKit, Signer, Store, usd } from '@solana/pay-kit'
+import { createPayKit, declareProductionReplayStore, type ReplayStore, Signer, Store, usd } from '@solana/pay-kit'
 
 const PLATFORM = 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY'
+
+const replayStore: ReplayStore = declareProductionReplayStore({
+  ...Store.redis(redisClient),
+  isDurable: true,
+  isShared: true,
+  async putIfAbsent(key, value) {
+    return (await redisClient.set(key, JSON.stringify(value), { NX: true })) === 'OK'
+  },
+})
 
 const pay = await createPayKit({
   network: 'solana_mainnet',
@@ -103,7 +112,7 @@ const pay = await createPayKit({
   operator: { signer: await Signer.file('config/operator.json') },
   rpcUrl: 'https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_KEY',
   mpp: { challengeBindingSecret: process.env.PAY_KIT_MPP_SECRET! },
-  replayStore: Store.redis(redisClient), // any ioredis / node-redis / Valkey client
+  replayStore,
   pricing: {
     report: { amount: usd('0.10'), description: 'Premium report' },
 
@@ -114,6 +123,15 @@ const pay = await createPayKit({
   },
 })
 ```
+
+`Store.redis()` supplies the serialized `get`/`put`/`delete` surface only.
+The explicit `putIfAbsent` must be one Redis `SET key value NX` command, as in
+the node-redis example above; never compose it from `get` then `put`. Use the
+equivalent atomic command shape for ioredis or Valkey clients.
+`declareProductionReplayStore()` records this application's explicit assertion
+that the store is atomic, shared by every worker, and durable across restarts.
+It is not a capability probe, and process-local memory stores cannot be
+declared production-safe.
 
 Two safety rails fire at boot:
 

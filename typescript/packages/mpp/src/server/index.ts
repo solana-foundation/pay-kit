@@ -1,16 +1,26 @@
 export * from '../constants.js';
 export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge.js';
 export { solana } from './Methods.js';
-export { type RpcLike, session, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
+export { ConfigurationError, type RpcLike, session, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
 export {
     type ChannelMutator,
     type ChannelState,
     type CommittedDelivery,
     createMemorySessionStore,
+    isMemorySessionStore,
     type ListChannelsFilter,
     type PendingDelivery,
     type SessionStore,
+    type SessionStoreDurability,
 } from './session/store.js';
+export {
+    createAtomicReplayStoreView,
+    createUnsafeMemoryReplayStore,
+    isUnsafeMemoryReplayStore,
+    resolveReplayStore,
+    type ReplayStore,
+    type ReplayStoreCapability,
+} from './store.js';
 export {
     buildReclaimInstruction,
     encodeVoucherMessageBytes,
@@ -35,6 +45,6 @@ export {
     type VoucherVerifyReplayed,
     type VoucherVerifyResult,
 } from './session/voucher.js';
-export { subscription } from './Subscription.js';
+export { subscription, type SubscriptionReplayStore } from './Subscription.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/server'
 export { Mppx, Expires, Store } from 'mppx/server';

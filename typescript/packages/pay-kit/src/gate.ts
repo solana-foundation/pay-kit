@@ -39,12 +39,20 @@ export type SessionConfig = {
 
 /** On-chain plan binding for a {@link GateKind} `subscription` gate (MPP `subscription`). */
 export type SubscriptionConfig = {
+    /** Base58 of the on-chain plan owner used as the canonical subscribe merchant. */
+    readonly merchant: string;
     /** Number of `periodUnit`s per billing period (e.g. 30 days). */
     readonly periodCount: number;
     /** Billing period unit. The Solana profile supports `day` and `week`. */
     readonly periodUnit: 'day' | 'week';
+    /** Plan PDA bump snapshot. */
+    readonly planBump: number;
+    /** Unix timestamp recorded when the plan was created. */
+    readonly planCreatedAt: bigint;
     /** Base58 of the on-chain Plan PDA the subscription binds to. */
     readonly planId: string;
+    /** Numeric plan identifier embedded in SubscribeData. */
+    readonly planIdNumeric: bigint;
     /** Base58 of the puller pubkey that debits renewals (typically the operator). */
     readonly puller: string;
 };
@@ -202,7 +210,7 @@ export class Gate {
             }
             if (kind === 'subscription' && !params.subscription) {
                 throw new ConfigurationError(
-                    `Gate "${params.name}": subscription gates require a "subscription" plan binding (planId, periodUnit, periodCount, puller).`,
+                    `Gate "${params.name}": subscription gates require a complete on-chain plan binding.`,
                 );
             }
             if (kind === 'session' && !params.session) {

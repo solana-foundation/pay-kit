@@ -163,7 +163,7 @@ if ($x402Active) {
         feePayer:   $feePayer,
         network:    $networkRaw,
         settlementHeader: $settlementHeader,
-        replayStore: new FileStore(sys_get_temp_dir() . '/mpp-php-harness-replay-' . getmypid()),
+        allowUnsafeMemoryStore: true,
         // Audit #5 made push-mode credentials opt-in (default off). The
         // charge-push conformance scenario drives this server in push mode,
         // so enable acceptance only when the harness asks for it.

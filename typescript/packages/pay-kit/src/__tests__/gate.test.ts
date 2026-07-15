@@ -10,7 +10,16 @@ const PLATFORM = 'PLatform111111111111111111111111111111111111';
 const PLAN = 'PLan11111111111111111111111111111111111111';
 const DEFAULTS = { accept: ['mpp'] as const, payTo: SELLER };
 const X402_MPP = { accept: ['x402', 'mpp'] as const, payTo: SELLER };
-const SUB = { periodCount: 1, periodUnit: 'day' as const, planId: PLAN, puller: SELLER };
+const SUB = {
+    merchant: SELLER,
+    periodCount: 1,
+    periodUnit: 'day' as const,
+    planBump: 255,
+    planCreatedAt: 1_700_000_000n,
+    planId: PLAN,
+    planIdNumeric: 1n,
+    puller: SELLER,
+};
 
 describe('Gate', () => {
     it('inherits payTo and accept from defaults', () => {

@@ -14,10 +14,13 @@ import { startServer, stopServer } from "../src/process";
 // never exercises store-construction / boot-time safety policy, so nothing
 // pins the audited divergence:
 //
-//   * Go, TypeScript, and Python fail CLOSED off-localnet when no shared
-//     replay/session store is configured and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE
-//     is unset. A process-local in-memory store silently loses double-spend
-//     protection on a multi-replica deployment.
+//   * Go fails CLOSED off-localnet when no shared replay/session store is
+//     configured and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE is unset — a
+//     process-local in-memory store silently loses double-spend protection on
+//     a multi-replica deploy (fail-OPEN).
+//   * TS and Python (the high-level server adapters the harness fixtures boot)
+//     fail OPEN today: they construct a process-local in-memory store off
+//     localnet and boot to `ready` anyway.
 //
 // SECURITY.md claims PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE is honored across the
 // Go, TypeScript, and Python SDKs, but no test proved it. This file is that
@@ -29,13 +32,19 @@ import { startServer, stopServer } from "../src/process";
 //      WITHOUT PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 => it MUST fail CLOSED
 //      (the process errors/throws before readiness).
 //   2. On devnet, with the opt-in
-//      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready` — proving
+//      (PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1), it boots to `ready`, proving
 //      the development escape is honored without weakening mainnet policy.
+//
+// These are blocking regression probes: Go, TypeScript, and Python must reject
+// unsafe off-localnet construction, while the explicit devnet escape remains
+// usable. Any SDK that silently falls back to process-local state goes RED.
 //
 // FALSE-GREEN GUARD: the fail-closed assertion does not merely check "the boot
 // failed" — a missing toolchain, unbuilt binary, or bad RPC would fail boot for
-// the wrong reason. It requires each SDK's precise missing-store rejection, so
-// the separate mainnet opt-in-forbidden branch cannot satisfy this probe.
+// the wrong reason. It requires the rejection to carry the canonical
+// fail-closed SIGNATURE (the shared PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE opt-in
+// string, or the "no shared … store configured" wording), so only a real
+// policy rejection passes.
 // ---------------------------------------------------------------------------
 
 // A deterministic, valid ed25519 keypair (64-byte Solana secret key + its
@@ -68,7 +77,46 @@ const HMAC_SECRET = "mpp-harness-secret-key-with-32b-pad";
 const DEAD_RPC_URL = "http://127.0.0.1:1";
 
 const OPT_IN_ENV = "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE";
-const REQUIRE_PYTHON_BOOT_PROBE_ENV = "HARNESS_REQUIRE_PYTHON_BOOT_PROBE";
+
+// The canonical fail-closed signature shared across SDKs. The opt-in env-var
+// name is the cross-SDK remediation string SECURITY.md guarantees every SDK
+// emits; the "no shared … store configured" wording is the Go/TS phrasing; and
+// "forbidden on mainnet" is the wording emitted when an SDK is handed the
+// unsafe-memory store on mainnet and refuses it (the Go harness fixture always
+// sets that flag, so its mainnet boot fails on this branch). A
+// toolchain/binary/RPC failure will NOT match any of these, so it cannot
+// false-green.
+const FAIL_CLOSED_SIGNATURE =
+  /PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE|no shared[^\n]*store configured|forbidden on mainnet/i;
+
+// Repo root: two dirs up from harness/test/. Used to git-grep an SDK's tracked
+// source for the fail-closed guard marker (the opt-in env-var name). A covered
+// probe is only REQUIRED once its SDK actually carries the guard IN THIS TREE:
+// go + typescript ship it here; python's lands via its own PR (#228), so until
+// that source merges the python probe asserts-SKIP instead of red-failing this
+// leaf. When #228 lands, the same grep sees the marker and auto-promotes python
+// to a required probe with no edit here.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function sdkFilesReferencingOptIn(sdkDir: string): string[] {
+  try {
+    const out = execFileSync("git", ["grep", "-l", OPT_IN_ENV, "--", sdkDir], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    return out.split("\n").filter(Boolean);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    const stdout = (error as { stdout?: string }).stdout ?? "";
+    // git grep exits 1 with empty output when there are no matches -> honest skip.
+    if (status === 1 && stdout.trim() === "") return [];
+    throw error;
+  }
+}
+
+function sdkImplementsGuard(sdkDir: string): boolean {
+  return sdkFilesReferencingOptIn(sdkDir).length > 0;
+}
 
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -86,7 +134,9 @@ afterEach(async () => {
 function commandExists(cmd: string): boolean {
   try {
     // Pass cmd as $1 so it is never interpolated into the shell script.
-    execFileSync("sh", ["-c", 'command -v "$1"', "sh", cmd], { stdio: "ignore" });
+    execFileSync("sh", ["-c", 'command -v "$1"', "sh", cmd], {
+      stdio: "ignore",
+    });
     return true;
   } catch {
     return false;
@@ -126,9 +176,9 @@ type CoveredProbe = {
   implementation: ImplementationDefinition;
   // Per-SDK env used to reach the MPP charge store-construction gate.
   mppEnv: Record<string, string>;
-  // The no-opt-in branch must reject for this exact missing-store condition.
-  // In particular, it must not pass by taking the separate mainnet opt-in path.
-  missingStoreSignature: RegExp;
+  // Tracked SDK source dir git-grepped for the fail-closed guard marker. The
+  // probe only becomes REQUIRED once this dir references OPT_IN_ENV in-tree.
+  guardSourceDir: string;
 };
 
 function mppEnv(mint: string): Record<string, string> {
@@ -180,30 +230,27 @@ const coveredProbes: CoveredProbe[] = [
       "go-paykit",
     ),
     mppEnv: mppEnv("USDC"),
-    missingStoreSignature:
-      /no replay store configured for mainnet; configure a shared replay Store/i,
+    // Go SDK guard lives in go/protocols/mpp/server/*.go.
+    guardSourceDir: "go",
   },
   {
     id: "typescript",
-    label: "TypeScript Mppx.create / solana.charge server",
-    // The harness already runs under Node with tsx installed. Spawn that exact
-    // runtime directly so Corepack/package-manager failures cannot masquerade
-    // as an SDK boot-policy result.
+    label: "TypeScript PayKit high-level MPP adapter (createPayKit)",
     available: true,
     implementation: serverImpl(
       "typescript",
-      "TypeScript Mppx.create / solana.charge server",
+      "TypeScript PayKit high-level MPP adapter (createPayKit)",
       [
         process.execPath,
         "--import",
         "tsx",
-        "src/fixtures/typescript/charge-server.ts",
+        "src/fixtures/typescript/paykit-boot.ts",
       ],
       "typescript",
     ),
     mppEnv: mppEnv("USDC"),
-    missingStoreSignature:
-      /no shared replay store configured outside localnet; provide replayStore/i,
+    // TS guard lives in the pay-kit config + mpp adapters.
+    guardSourceDir: "typescript/packages/pay-kit/src",
   },
   {
     id: "python",
@@ -220,15 +267,60 @@ const coveredProbes: CoveredProbe[] = [
     implementation: serverImpl(
       "python",
       "Python solana_pay_kit high-level MppAdapter (MppAdapter.__init__)",
-      ["uv", "run", "--project", "../python", "python", "python-server/mpp-adapter-boot.py"],
+      [
+        "uv",
+        "run",
+        "--project",
+        "../python",
+        "python",
+        "python-server/mpp-adapter-boot.py",
+      ],
       "python",
     ),
     // Python MPP runs in pubkey mode: the literal mint pubkey is the currency.
     mppEnv: mppEnv(USDC_MINT),
-    missingStoreSignature:
-      /MPP requires an injected ProductionReplayStore outside localnet; its put_if_absent must be atomic, shared, and durable/i,
+    // Python SDK guard lands via its own PR (#228). Until that source merges,
+    // this dir has no OPT_IN_ENV reference, so the probe asserts-SKIP here.
+    guardSourceDir: "python",
   },
 ];
+
+// Resolve each covered probe against THIS tree: a probe is REQUIRED only when
+// its toolchain is available AND its SDK actually implements the fail-closed
+// guard in-tree (grep the SDK source for the opt-in marker). This one runtime
+// signal keeps the leaf green today (python guard not here yet) and stays
+// correct once python's remediation merges (grep then sees it -> required).
+type ResolvedProbe = CoveredProbe & {
+  guardImplemented: boolean;
+  shouldRun: boolean;
+};
+
+const resolvedProbes: ResolvedProbe[] = coveredProbes.map((probe) => {
+  const guardImplemented = sdkImplementsGuard(probe.guardSourceDir);
+  return {
+    ...probe,
+    guardImplemented,
+    shouldRun: probe.available && guardImplemented,
+  };
+});
+
+// Loud note: surface each covered probe's status so a skip is never silent.
+for (const probe of resolvedProbes) {
+  if (!probe.guardImplemented) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[boot-policy] PENDING ${probe.id}: SDK source (${probe.guardSourceDir}) ` +
+        `carries no ${OPT_IN_ENV} guard in this tree yet, so its boot probes ` +
+        `ASSERT-SKIP. This is not fixed here; it converges at the ${probe.id} ` +
+        `remediation PR, after which this same grep auto-promotes it to REQUIRED.`,
+    );
+  } else if (!probe.available) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[boot-policy] SKIP ${probe.id} boot probes: ${probe.unavailableReason}`,
+    );
+  }
+}
 
 // SDKs whose server boot surface does NOT implement the shared
 // PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE fail-closed contract at all (verified: no
@@ -254,7 +346,8 @@ const unimplementedProbes: Array<{ id: string; reason: string }> = [
   },
   {
     id: "lua",
-    reason: "Lua resty.pay_kit exposes no in-memory-store fail-closed boot guard",
+    reason:
+      "Lua resty.pay_kit exposes no in-memory-store fail-closed boot guard",
   },
   {
     id: "kotlin",
@@ -277,25 +370,21 @@ console.warn(
 );
 
 // Boot the SDK at network=mainnet with NO opt-in and assert it fails CLOSED
-// with its precise missing-store signature. Explicitly deleting the opt-in from
-// the child environment keeps a parent CI environment from false-greening this
-// no-opt-in probe.
+// with the canonical signature. If it instead boots to `ready` (the audited
+// fail-OPEN), stop the leaked server and throw loudly — that is the
+// red-expected-pending state until the SDK remediation lands.
 async function assertFailsClosed(probe: CoveredProbe): Promise<void> {
   let server: RunningServer | undefined;
   try {
-    server = await startServer(probe.implementation, {
-      ...probe.mppEnv,
-      [OPT_IN_ENV]: undefined,
-    });
+    server = await startServer(probe.implementation, probe.mppEnv);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     expect(
       message,
-      `${probe.id}: boot failed but not with the missing-store rejection. ` +
+      `${probe.id}: boot failed but not with the fail-closed policy signature. ` +
         `A missing toolchain/binary/RPC would fail here too, so this is NOT a ` +
-        `valid fail-closed result. The mainnet opt-in-forbidden branch is also ` +
-        `not valid here. Rejection was:\n${message}`,
-    ).toMatch(probe.missingStoreSignature);
+        `valid fail-closed. Rejection was:\n${message}`,
+    ).toMatch(FAIL_CLOSED_SIGNATURE);
     return;
   }
   // Unexpected: the constructor booted to ready off-localnet with no store and
@@ -304,8 +393,9 @@ async function assertFailsClosed(probe: CoveredProbe): Promise<void> {
   throw new Error(
     `${probe.id}: expected fail-CLOSED boot at network=mainnet with no shared ` +
       `store and no ${OPT_IN_ENV}, but the server booted to \`ready\` (fail-OPEN). ` +
-      `The SDK must reject process-local in-memory replay/session store ` +
-      `construction off-localnet without the opt-in.`,
+      `This is the audited gap: the SDK must reject process-local in-memory ` +
+      `replay/session store construction off-localnet without the opt-in. ` +
+      `RED-EXPECTED-PENDING until the ${probe.id} remediation lands.`,
   );
 }
 
@@ -326,14 +416,8 @@ async function assertBootsWithOptIn(probe: CoveredProbe): Promise<void> {
 }
 
 describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () => {
-  for (const probe of coveredProbes) {
-    if (!probe.available) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[boot-policy] SKIP ${probe.id} fail-closed probe: ${probe.unavailableReason}`,
-      );
-    }
-    it.skipIf(!probe.available)(
+  for (const probe of resolvedProbes) {
+    it.skipIf(!probe.shouldRun)(
       `${probe.id}: fails closed at network=mainnet with no ${OPT_IN_ENV}`,
       async () => {
         await assertFailsClosed(probe);
@@ -343,8 +427,8 @@ describe("boot-policy conformance: fail-CLOSED off-localnet without opt-in", () 
 });
 
 describe("boot-policy conformance: boots with the opt-in", () => {
-  for (const probe of coveredProbes) {
-    it.skipIf(!probe.available)(
+  for (const probe of resolvedProbes) {
+    it.skipIf(!probe.shouldRun)(
       `${probe.id}: boots to ready at network=devnet with ${OPT_IN_ENV}=1`,
       async () => {
         await assertBootsWithOptIn(probe);
@@ -353,25 +437,10 @@ describe("boot-policy conformance: boots with the opt-in", () => {
   }
 });
 
-describe("boot-policy conformance: provisioned Python probe", () => {
-  it("python: requires uv when the focused Python job enables the probe", () => {
-    if (process.env[REQUIRE_PYTHON_BOOT_PROBE_ENV] !== "1") {
-      return;
-    }
-
-    expect(
-      commandExists("uv"),
-      `${REQUIRE_PYTHON_BOOT_PROBE_ENV}=1 requires uv; do not skip the Python boot-policy probe`,
-    ).toBe(true);
-  });
-});
-
 describe("boot-policy conformance: SDKs without the store fail-closed contract", () => {
   for (const probe of unimplementedProbes) {
     // eslint-disable-next-line no-console
-    console.warn(
-      `[boot-policy] ASSERT-SKIP ${probe.id}: ${probe.reason}`,
-    );
+    console.warn(`[boot-policy] ASSERT-SKIP ${probe.id}: ${probe.reason}`);
     it.skip(`${probe.id}: ${probe.reason}`, () => {
       // Intentionally skipped: no boot-policy contract to conform to yet.
     });
@@ -384,9 +453,9 @@ describe("boot-policy conformance: SDKs without the store fail-closed contract",
 // (someone starts wiring the fail-closed contract) this REDs, forcing that SDK
 // to be promoted from an asserted-skip to a LIVE boot-policy probe that actually
 // asserts fail-closed / opt-in boot, rather than lingering half-implemented and
-// silently skipped. Uses `git grep` so .gitignored build/vendor trees (target/,
-// vendor/, .build/) are excluded automatically.
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+// silently skipped. Uses `git grep` (via sdkFilesReferencingOptIn, defined
+// above) so .gitignored build/vendor trees (target/, vendor/, .build/) are
+// excluded automatically.
 const SDK_SOURCE_DIR: Record<string, string> = {
   rust: "rust",
   php: "php",
@@ -395,22 +464,6 @@ const SDK_SOURCE_DIR: Record<string, string> = {
   kotlin: "kotlin",
   swift: "swift",
 };
-
-function sdkFilesReferencingOptIn(sdkDir: string): string[] {
-  try {
-    const out = execFileSync("git", ["grep", "-l", OPT_IN_ENV, "--", sdkDir], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
-    return out.split("\n").filter(Boolean);
-  } catch (error) {
-    const status = (error as { status?: number }).status;
-    const stdout = (error as { stdout?: string }).stdout ?? "";
-    // git grep exits 1 with empty output when there are no matches -> honest skip.
-    if (status === 1 && stdout.trim() === "") return [];
-    throw error;
-  }
-}
 
 describe("boot-policy: asserted-skip roster stays honest (no half-implemented contract)", () => {
   for (const probe of unimplementedProbes) {

@@ -86,13 +86,13 @@ func TestMiddlewareAmountMismatchEmitsChargeRequestMismatchCode(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()
 	m, err := New(Config{
-		Recipient: testutil.NewPrivateKey().PublicKey().String(),
-		Currency:  "sol",
-		Decimals:  9,
-		Network:   "localnet",
-		SecretKey: "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
-		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
+		Recipient:              testutil.NewPrivateKey().PublicKey().String(),
+		Currency:               "sol",
+		Decimals:               9,
+		Network:                "localnet",
+		SecretKey:              "test-secret-key-that-is-long-enough-for-hmac-sha256-operations",
+		RPC:                    rpcClient,
+		AllowUnsafeMemoryStore: true,
 	})
 	if err != nil {
 		t.Fatalf("new mpp: %v", err)

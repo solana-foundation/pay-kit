@@ -1,32 +1,43 @@
 import { Challenge } from '@solana/mpp/client';
-import { describe, expect, it } from 'vitest';
+import { Credential } from 'mppx';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMppAdapter } from '../adapters/mpp.js';
 import { configure } from '../config.js';
 import { Gate } from '../gate.js';
 import { usd } from '../price.js';
+import { subscription } from '../pricing.js';
 import { Signer } from '../signer.js';
+import { createUnsafeMemoryReplayStore, declareProductionReplayStore } from '../replay-store.js';
 
 const SELLER = 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj';
 const PLATFORM = 'CXG3Pq3DwZb1HVckhPQbVxiwoNGM3jNGYvC2BSdkj1pK';
+const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N';
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+});
 
 async function setup() {
     const config = await configure({
-        mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test' },
+        mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test', allowUnsafeMemoryStore: true },
         operator: { recipient: SELLER, signer: await Signer.generate() },
+        replayStore: createUnsafeMemoryReplayStore(),
     });
     return { adapter: createMppAdapter(config), config };
 }
 
-function createSharedTestReplayStore() {
+function createTestReplayStore({ isDurable = true, isShared = true } = {}) {
     const entries = new Map<string, unknown>();
-    return {
+    return declareProductionReplayStore({
         delete: async (key: string) => {
             entries.delete(key);
         },
         get: async (key: string) => entries.get(key) ?? null,
-        isDurable: true as const,
-        isShared: true as const,
+        isDurable,
+        isShared,
         put: async (key: string, value: unknown) => {
             entries.set(key, value);
         },
@@ -35,7 +46,27 @@ function createSharedTestReplayStore() {
             entries.set(key, value);
             return true;
         },
-    };
+    });
+}
+
+function createSubscriptionGate(puller: string) {
+    return Gate.create(
+        {
+            ...subscription(usd('0.10'), {
+                merchant: SELLER,
+                periodCount: 1,
+                periodUnit: 'day',
+                planBump: 255,
+                planCreatedAt: 1_700_000_000n,
+                planId: PLATFORM,
+                planIdNumeric: 1n,
+                puller,
+            }),
+            name: 'feed',
+            payTo: SELLER,
+        },
+        { accept: ['mpp'], payTo: SELLER },
+    );
 }
 
 function gate(params: Parameters<typeof Gate.create>[0]['feeWithin'] = undefined) {
@@ -46,6 +77,241 @@ function gate(params: Parameters<typeof Gate.create>[0]['feeWithin'] = undefined
 }
 
 describe('createMppAdapter', () => {
+    it('binds subscription credentials to the exact request without serializing query values', async () => {
+        const signer = await Signer.generate();
+        const config = await configure({
+            accept: ['mpp'],
+            mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test' },
+            operator: { feePayer: true, recipient: SELLER, signer },
+            replayStore: createTestReplayStore(),
+        });
+        globalThis.fetch = async () =>
+            new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+        const subscriptionGate = createSubscriptionGate(signer.pubkey);
+        const adapter = createMppAdapter(config);
+        const requested = 'http://t/feed?api_key=secret&tier=basic&tier=preview';
+        const gateA = await adapter.challengeHeaders(subscriptionGate, new Request(requested));
+        const challenge = Challenge.deserialize(gateA['www-authenticate']);
+        const resource = challenge.request.resource;
+
+        expect(resource).toMatch(/^pay-kit:mpp-subscription-resource:v1:hmac-sha256:[a-f0-9]{64}$/);
+        expect(resource).not.toContain('api_key=secret');
+        expect(resource).not.toContain('secret');
+
+        const sameResource = Challenge.deserialize(
+            (await adapter.challengeHeaders(subscriptionGate, new Request(requested)))['www-authenticate'],
+        ).request.resource;
+        expect(sameResource).toBe(resource);
+
+        const mismatchedRequests = [
+            'http://t/feed?api_key=other&tier=basic&tier=preview',
+            'http://t/feed?tier=basic&tier=preview&api_key=secret',
+            'http://t/feed?api_key=secret&tier=basic',
+            'http://t/feed?api_key=sec%72et&tier=basic&tier=preview',
+        ];
+        for (const currentRequest of mismatchedRequests) {
+            const currentResource = Challenge.deserialize(
+                (await adapter.challengeHeaders(subscriptionGate, new Request(currentRequest)))['www-authenticate'],
+            ).request.resource;
+            expect(currentResource).not.toBe(resource);
+        }
+
+        const adapterWithDifferentSecret = createMppAdapter(
+            await configure({
+                accept: ['mpp'],
+                mpp: { challengeBindingSecret: 'different-adapter-test-secret', realm: 'Adapter test' },
+                operator: { feePayer: true, recipient: SELLER, signer },
+                replayStore: createTestReplayStore(),
+            }),
+        );
+        const resourceWithDifferentSecret = Challenge.deserialize(
+            (await adapterWithDifferentSecret.challengeHeaders(subscriptionGate, new Request(requested)))[
+                'www-authenticate'
+            ],
+        ).request.resource;
+        expect(resourceWithDifferentSecret).not.toBe(resource);
+
+        const credential = Credential.serialize({
+            challenge,
+            payload: { transaction: '', type: 'transaction' },
+        });
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        // The malformed transaction fails later, proving the exact query has
+        // passed resource binding without requiring an on-chain fixture.
+        await expect(
+            adapter.verifyAndSettle(
+                subscriptionGate,
+                new Request(requested, { headers: { authorization: credential } }),
+            ),
+        ).rejects.toThrow('Payment verification failed.');
+        expect(consoleError).not.toHaveBeenCalledWith(
+            'mppx: internal verification error',
+            expect.objectContaining({ message: 'Subscription credential resource does not match the current route' }),
+        );
+
+        for (const currentRequest of mismatchedRequests) {
+            consoleError.mockClear();
+            await expect(
+                adapter.verifyAndSettle(
+                    subscriptionGate,
+                    new Request(currentRequest, { headers: { authorization: credential } }),
+                ),
+            ).rejects.toThrow('Payment verification failed.');
+            expect(consoleError).toHaveBeenCalledWith(
+                'mppx: internal verification error',
+                expect.objectContaining({
+                    message: 'Subscription credential resource does not match the current route',
+                }),
+            );
+        }
+    });
+
+    it.each([
+        ['a configured TTL', 45, 45],
+        ['the Mppx default TTL for expiresIn=0', 0, 300],
+    ])('uses %s for subscription challenges', async (_label, expiresIn, expectedExpiresIn) => {
+        const issuedAt = Date.parse('2030-01-01T00:00:00.000Z');
+        vi.spyOn(Date, 'now').mockReturnValue(issuedAt);
+
+        const signer = await Signer.generate();
+        const config = await configure({
+            accept: ['mpp'],
+            mpp: { challengeBindingSecret: 'adapter-test-secret', expiresIn, realm: 'Adapter test' },
+            operator: { feePayer: true, recipient: SELLER, signer },
+            replayStore: createTestReplayStore(),
+        });
+        globalThis.fetch = async () =>
+            new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+        const headers = await createMppAdapter(config).challengeHeaders(
+            createSubscriptionGate(signer.pubkey),
+            new Request('http://t/feed'),
+        );
+        const challenge = Challenge.deserialize(headers['www-authenticate']);
+
+        expect(challenge.expires).toBe(new Date(issuedAt + expectedExpiresIn * 1000).toISOString());
+    });
+
+    it('threads a durable replay store into the subscription adapter outside localnet', async () => {
+        const signer = await Signer.generate();
+        const config = await configure({
+            accept: ['mpp'],
+            mpp: { challengeBindingSecret: 's'.repeat(32), realm: 'Adapter test' },
+            network: 'solana_devnet',
+            operator: { feePayer: true, recipient: SELLER, signer },
+            replayStore: createTestReplayStore(),
+        });
+        globalThis.fetch = async () =>
+            new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                headers: { 'Content-Type': 'application/json' },
+            });
+
+        const headers = await createMppAdapter(config).challengeHeaders(
+            createSubscriptionGate(signer.pubkey),
+            new Request('http://t/feed'),
+        );
+
+        expect(headers['www-authenticate']).toMatch(/^Payment /);
+        // Deserializes to the exact subscription plan, proving the durable store
+        // reached the adapter and challenge issuance succeeded.
+        expect(Challenge.deserialize(headers['www-authenticate']).request.resource).toMatch(
+            /^pay-kit:mpp-subscription-resource:v1:hmac-sha256:[a-f0-9]{64}$/,
+        );
+    });
+
+    it('fails closed with a clear error for subscription gates on devnet under the in-memory opt-in', async () => {
+        process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
+        try {
+            const signer = await Signer.generate();
+            const config = await configure({
+                accept: ['mpp'],
+                mpp: { challengeBindingSecret: 's'.repeat(32), realm: 'Adapter test' },
+                network: 'solana_devnet',
+                operator: { feePayer: true, recipient: SELLER, signer },
+            });
+            // The opt-in materializes a shared in-memory replay store: it boots the
+            // charge path AND reaches the subscription adapter, which rejects it as
+            // non-durable. The error is the durable-store one (not the generic
+            // no-store one), proving the materialized store was threaded through.
+            globalThis.fetch = async () =>
+                new Response(JSON.stringify({ result: { value: { blockhash: BLOCKHASH } } }), {
+                    headers: { 'Content-Type': 'application/json' },
+                });
+
+            await expect(
+                createMppAdapter(config).challengeHeaders(
+                    createSubscriptionGate(signer.pubkey),
+                    new Request('http://t/feed'),
+                ),
+            ).rejects.toThrow(/declareProductionReplayStore[\s\S]*does not[\s\S]*cover subscription activation replay/);
+        } finally {
+            delete process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE;
+        }
+    });
+
+    it('revalidates expiry at challenge issuance instead of leaking a RangeError', async () => {
+        const config = await configure({
+            mpp: {
+                allowUnsafeMemoryStore: true,
+                challengeBindingSecret: 'adapter-test-secret',
+                expiresIn: 2,
+                realm: 'Adapter test',
+            },
+            operator: { recipient: SELLER, signer: await Signer.generate() },
+        });
+        vi.spyOn(Date, 'now').mockReturnValue(8_640_000_000_000_000 - 1_000);
+
+        await expect(
+            createMppAdapter(config).challengeHeaders(gate(), new Request('http://t/marketplace')),
+        ).rejects.toThrow('mpp.expiresIn must produce a valid expiration date at challenge issuance.');
+    });
+
+    it('does not advertise fee sponsorship for a non-fee-payer signer', async () => {
+        const config = await configure({
+            mpp: { allowUnsafeMemoryStore: true, challengeBindingSecret: 'adapter-test-secret' },
+            operator: { recipient: SELLER, signer: Signer.from((await Signer.generate()).signer, { feePayer: false }) },
+        });
+        const adapter = createMppAdapter(config);
+        const headers = await adapter.challengeHeaders(gate(), new Request('http://t/marketplace'));
+        const challenge = Challenge.deserialize(headers['www-authenticate'] as string);
+        const methodDetails = challenge.request.methodDetails as { feePayer?: boolean };
+        expect(methodDetails.feePayer).toBeUndefined();
+        expect(config.operator.feePayer).toBe(false);
+    });
+
+    it('rejects a prebuilt mainnet config carrying the demo signer', async () => {
+        const local = await configure({
+            mpp: { challengeBindingSecret: 'adapter-test-secret' },
+            replayStore: createTestReplayStore(),
+        });
+        expect(() => createMppAdapter({ ...local, network: 'solana_mainnet' })).toThrow(/demo signer is public/);
+    });
+
+    it('rejects a hand-built non-local config without a replay store', async () => {
+        const { config } = await setup();
+        expect(() => createMppAdapter({ ...config, network: 'solana_devnet', replayStore: undefined })).toThrow(
+            /replayStore resolved by configure/,
+        );
+    });
+
+    it('requires an explicit unsafe flag before allocating a process-local store', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+            await configure({
+                mpp: { challengeBindingSecret: 'adapter-test-secret', allowUnsafeMemoryStore: true },
+                operator: { recipient: SELLER, signer: await Signer.generate() },
+            });
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining('process-local replay store'));
+        } finally {
+            warn.mockRestore();
+        }
+    });
+
     it('detects MPP payment credentials', async () => {
         const { adapter } = await setup();
         expect(adapter.detect(new Request('http://t/', { headers: { authorization: 'Payment abc' } }))).toBe(true);
@@ -115,7 +381,7 @@ describe('createMppAdapter', () => {
         const config = await configure({
             mpp: { challengeBindingSecret: 'adapter-test-secret', realm },
             operator: { recipient: SELLER, signer: await Signer.generate() },
-            replayStore: createSharedTestReplayStore(),
+            replayStore: createTestReplayStore(),
         });
         const adapter = createMppAdapter(config);
         const headers = await adapter.challengeHeaders(gate(), new Request('http://t/marketplace'));
@@ -143,7 +409,7 @@ describe('createMppAdapter', () => {
                 realm: 'api.example.com\r\nInjected: evil',
             },
             operator: { recipient: SELLER, signer: await Signer.generate() },
-            replayStore: createSharedTestReplayStore(),
+            replayStore: createTestReplayStore(),
         });
         const adapter = createMppAdapter(config);
         await expect(adapter.challengeHeaders(gate(), new Request('http://t/marketplace'))).rejects.toThrow(
