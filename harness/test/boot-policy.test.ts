@@ -555,7 +555,11 @@ const nativeGuardProbes: NativeGuardProbe[] = [
     id: "ruby",
     label: "Ruby MPP runtime off-localnet replay-store guard",
     sdkDir: "ruby",
-    guardMarker: "requires a durable replay_store",
+    // Keyed on the SHARED-store predicate the ruby capability leaf introduces
+    // (the pre-leaf runtime only pins durability, and this probe's non-durable/
+    // non-shared assertion needs both sides): the probe stays honestly skipped
+    // until that leaf is in the tree, then activates with its full subject.
+    guardMarker: "durable_shared_replay_store?",
     assertions: [
       {
         file: "ruby/lib/pay_kit/protocols/mpp/runtime.rb",
@@ -567,7 +571,7 @@ const nativeGuardProbes: NativeGuardProbe[] = [
         file: "ruby/lib/pay_kit/protocols/mpp/runtime.rb",
         mechanism: "rejects a supplied non-durable replay store outside localnet",
         pattern:
-          /unless localnet\?\(method\) \|\| durable_replay_store\?\(replay_store\)[\s\S]*?requires a durable replay_store/,
+          /unless localnet\?\(method\) \|\| durable_shared_replay_store\?\(replay_store\)[\s\S]*?requires a durable replay_store/,
       },
     ],
   },
