@@ -195,13 +195,6 @@ const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
   python: new Set([
     "challenge.parse :: error_empty_realm",
     "challenge.parse :: error_empty_intent",
-    // Pre-hardening python accepts calendar-impossible receipt timestamps
-    // (2026-02-30, month/day overflow) instead of a parse_error. The python
-    // hardening leaf of the #216 redelivery cascade fixes the parser and MUST
-    // remove these two entries (this ledger goes red when a listed case starts
-    // conforming, so the removal cannot be forgotten).
-    "receipt.parse :: error_out_of_range_timestamp_month_day",
-    "receipt.parse :: error_out_of_range_timestamp_feb30",
   ]),
   // ruby: intentionally NOT listed and NOT CI-gated (see the note in ruby.yml).
   // The observed ruby divergences were environment-contaminated: the local probe

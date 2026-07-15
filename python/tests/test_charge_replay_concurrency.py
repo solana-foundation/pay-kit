@@ -26,10 +26,10 @@ import asyncio
 import pytest
 
 from solana_pay_kit._paycore.errors import ReplayError
-from solana_pay_kit._paycore.store import MemoryStore
 from solana_pay_kit.protocols.mpp.core.types import PaymentCredential
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+from tests.replay_store_test_support import NominalProductionReplayStore
 
 TEST_SECRET = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 TEST_RECIPIENT = "11111111111111111111111111111112"
@@ -96,7 +96,7 @@ def _build_mpp(rpc) -> Mpp:
             network="devnet",
             secret_key=TEST_SECRET,
             rpc=rpc,
-            store=MemoryStore(),
+            store=NominalProductionReplayStore(),
             # Push-mode (signature) credentials are opt-in (spec §13.5).
             accept_push_mode=True,
         )

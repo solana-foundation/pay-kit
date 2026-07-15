@@ -27,7 +27,7 @@ from solana_pay_kit._paycore.currency import Currency
 from solana_pay_kit._paycore.network import Network
 from solana_pay_kit._paycore.protocol import Protocol
 from solana_pay_kit._paycore.stablecoin import Stablecoin
-from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, Store
+from solana_pay_kit._paycore.store import FileReplayStore, MemoryStore, ProductionReplayStore, Store
 from solana_pay_kit.config import (
     Config,
     MppConfig,
@@ -93,6 +93,7 @@ __all__ = [
     # payment + store
     "Payment",
     "Store",
+    "ProductionReplayStore",
     "MemoryStore",
     "FileReplayStore",
     # middleware trio (framework-agnostic)
