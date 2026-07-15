@@ -206,6 +206,11 @@ function sdkImplementsOptInGuard(sdkDir: string, marker: string = OPT_IN_ENV): b
 // (declareProductionReplayStore), which only the mpp replay-store leaf adds.
 const TS_GUARD_MARKER = "declareProductionReplayStore";
 
+// Probe availability, computed once (the git-grep subject probes fork a
+// subprocess; per-field recomputation doubled that cost for no benefit).
+const tsGuardImplemented = sdkImplementsOptInGuard("typescript/packages/pay-kit/src", TS_GUARD_MARKER);
+const pythonGuardImplemented = sdkImplementsOptInGuard("python/src");
+
 const coveredProbes: CoveredProbe[] = [
   {
     id: "go",
@@ -226,10 +231,10 @@ const coveredProbes: CoveredProbe[] = [
   {
     id: "typescript",
     label: "TypeScript Mppx.create / solana.charge server",
-    available: commandExists("pnpm") && sdkImplementsOptInGuard("typescript/packages/pay-kit/src", TS_GUARD_MARKER),
+    available: commandExists("pnpm") && tsGuardImplemented,
     unavailableReason: !commandExists("pnpm")
       ? "pnpm missing"
-      : sdkImplementsOptInGuard("typescript/packages/pay-kit/src", TS_GUARD_MARKER)
+      : tsGuardImplemented
         ? undefined
         : "PENDING: TS fail-closed store guard is not in this tree yet; the probe activates when the mpp replay-store leaf lands",
     implementation: serverImpl(
@@ -250,10 +255,10 @@ const coveredProbes: CoveredProbe[] = [
   {
     id: "python",
     label: "Python solana_pay_kit high-level MppAdapter (MppAdapter.__init__)",
-    available: commandExists("uv") && sdkImplementsOptInGuard("python/src"),
+    available: commandExists("uv") && pythonGuardImplemented,
     unavailableReason: !commandExists("uv")
       ? "uv missing"
-      : sdkImplementsOptInGuard("python/src")
+      : pythonGuardImplemented
         ? undefined
         : "PENDING: python fail-closed store guard is not in this tree yet; the probe activates when the python hardening leaf lands",
     // Drive the HIGH-LEVEL adapter constructor, not the harness `server.py`
