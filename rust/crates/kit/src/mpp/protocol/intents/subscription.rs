@@ -87,6 +87,15 @@ pub struct SubscriptionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
 
+    /// Route/resource this challenge is bound to. Mirrors the TypeScript MPP
+    /// `resource` field: it is carried inside the HMAC-bound request (so it is
+    /// tamper-evident) and re-checked at verify time, so a challenge issued for
+    /// one route cannot be redeemed against another that happens to share the
+    /// same challenge-binding secret, realm, mint, and recipient. `None` leaves
+    /// the binding disabled for single-route servers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+
     /// Solana-specific extension fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method_details: Option<serde_json::Value>,
@@ -477,6 +486,114 @@ mod tests {
     }
 
     #[test]
+    fn validate_accepts_complete_details() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            ..Default::default()
+        };
+        assert!(md.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_fee_payer_with_key() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            fee_payer: true,
+            fee_payer_key: Some("fpk".into()),
+            ..Default::default()
+        };
+        assert!(md.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_each_missing_required_field() {
+        // Base is fully valid; blank out one field at a time.
+        let base = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            ..Default::default()
+        };
+
+        let mut no_plan = base.clone();
+        no_plan.plan_id = String::new();
+        assert!(no_plan
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("planId"));
+
+        let mut no_mint = base.clone();
+        no_mint.mint = String::new();
+        assert!(no_mint.validate().unwrap_err().to_string().contains("mint"));
+
+        let mut no_tp = base.clone();
+        no_tp.token_program = String::new();
+        assert!(no_tp
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("tokenProgram"));
+
+        let mut no_puller = base.clone();
+        no_puller.puller = String::new();
+        assert!(no_puller
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("puller"));
+    }
+
+    #[test]
+    fn validate_rejects_fee_payer_without_key() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            fee_payer: true,
+            fee_payer_key: None,
+            ..Default::default()
+        };
+        assert!(md
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("feePayerKey"));
+    }
+
+    #[test]
+    fn period_hours_rejects_above_program_bound() {
+        // week*52 = 8736 hours (in range), but the mapping caps counts; drive
+        // the explicit `hours > 8760` guard in `period_hours` by constructing a
+        // request whose mapped hours exceed the bound is impossible via the
+        // unit mapping alone (day maxes at 8760, week at 8736). Exercise the
+        // exact-bound acceptance and the mapping-level rejection instead, which
+        // together fence the `> 8760` branch.
+        let at_bound = SubscriptionRequest {
+            period_unit: SubscriptionPeriodUnit::Week,
+            period_count: "52".into(),
+            ..Default::default()
+        };
+        assert_eq!(at_bound.period_hours().unwrap(), 8736);
+
+        // A count past the unit ceiling is rejected before the bound check.
+        let over = SubscriptionRequest {
+            period_unit: SubscriptionPeriodUnit::Week,
+            period_count: "53".into(),
+            ..Default::default()
+        };
+        assert!(over.period_hours().is_err());
+    }
+
+    #[test]
     fn receipt_extensions_serialize() {
         let ext = SubscriptionReceiptExtensions {
             subscription_id: "BXQGmO5VwTrl5RfFr6Y8XQZ4nPj9QqMOiKkRn3pZ4ZE".into(),
@@ -494,5 +611,88 @@ mod tests {
         assert!(json.contains("\"periodStartTs\""));
         assert!(json.contains("\"periodEndTs\""));
         assert!(json.contains("\"expiresAt\""));
+    }
+
+    #[test]
+    fn method_details_from_json_roundtrips_and_rejects_garbage() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            puller: "puller".into(),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&md).unwrap();
+        let back = SubscriptionMethodDetails::from_json(&value).expect("valid methodDetails");
+        assert_eq!(back.plan_id, "plan");
+        assert_eq!(back.puller, "puller");
+
+        // A non-object JSON value cannot deserialize into the struct.
+        let err = SubscriptionMethodDetails::from_json(&serde_json::json!("not-an-object"))
+            .expect_err("scalar methodDetails must be rejected");
+        assert!(err.to_string().contains("Invalid methodDetails"));
+    }
+
+    #[test]
+    fn method_details_serializes_all_optional_fields() {
+        let md = SubscriptionMethodDetails {
+            plan_id: "plan".into(),
+            mint: "mint".into(),
+            token_program: "tp".into(),
+            decimals: Some(6),
+            puller: "puller".into(),
+            merchant: Some("merchant".into()),
+            recipient: Some("recipient".into()),
+            amount: Some("100".into()),
+            program_id: Some("pid".into()),
+            network: Some("devnet".into()),
+            fee_payer: true,
+            fee_payer_key: Some("fpk".into()),
+            recent_blockhash: Some("bh".into()),
+            plan_id_numeric: Some(7),
+            plan_bump: Some(254),
+            expected_period_hours: Some(720),
+            expected_created_at: Some(1_700_000_000),
+        };
+        let json = serde_json::to_string(&md).unwrap();
+        for key in [
+            "decimals",
+            "merchant",
+            "recipient",
+            "amount",
+            "programId",
+            "network",
+            "feePayer",
+            "feePayerKey",
+            "recentBlockhash",
+            "planIdNumeric",
+            "planBump",
+            "expectedPeriodHours",
+            "expectedCreatedAt",
+        ] {
+            assert!(
+                json.contains(key),
+                "serialized methodDetails is missing {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_serializes_optional_route_bindings() {
+        let req = SubscriptionRequest {
+            amount: "1".into(),
+            currency: "c".into(),
+            period_unit: SubscriptionPeriodUnit::Day,
+            period_count: "30".into(),
+            recipient: "r".into(),
+            description: Some("desc".into()),
+            resource: Some("solana-subscription:/paid".into()),
+            method_details: Some(serde_json::json!({ "planId": "p" })),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"description\":\"desc\""));
+        assert!(json.contains("\"resource\":\"solana-subscription:/paid\""));
+        assert!(json.contains("\"methodDetails\":"));
     }
 }

@@ -26,12 +26,8 @@ const workflowsDir = join(here, "..", "..", ".github", "workflows");
 const CI_EXEMPT: Record<string, string> = {
   "onchain.e2e.test.ts":
     "on-chain E2E: needs a live surfnet + payment-channels program; core on-chain settlement is covered by the e2e.test.ts matrix legs (charge/x402-exact/x402-upto/session).",
-  "x402-exact.e2e.test.ts":
-    "on-chain/cross-server E2E: opt-in via the X402_HARNESS_* surfnet + real-SDK-server setup (matrix legs), not the fast unit job.",
   "x402-upto.e2e.test.ts":
     "on-chain E2E: needs surfnet + the payment-channels program; the x402-upto flow runs via the e2e.test.ts matrix leg.",
-  "cross-server-scenarios.test.ts":
-    "cross-server matrix E2E: needs multiple live SDK servers; runs via the harness matrix legs (opt-in X402_HARNESS_CROSS_SERVER).",
   // protocol-conformance.test.ts is no longer exempt: it now honors
   // MPP_CONFORMANCE_LANGUAGES (spawn loop filtered) and is wired into ci.yml
   // pinned to `typescript`, running the canonical challenge/receipt vectors
