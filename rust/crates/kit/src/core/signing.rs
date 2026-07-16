@@ -44,7 +44,12 @@ pub async fn sign_versioned_transaction_slot(
     Ok(())
 }
 
-/// Co-sign slot zero after pinning both the signer and transaction fee payer.
+/// Co-sign the transaction's fee-payer slot after pinning the expected sponsor.
+///
+/// `expected_fee_payer` must be the pre-configured sponsor key, not a value
+/// derived from `signer`. The sponsor must be both the supplied signer and
+/// account key zero: accepting it at a later index would let a crafted
+/// transaction leave its actual fee payer unsigned.
 pub async fn cosign_versioned_fee_payer(
     signer: &dyn SolanaSigner,
     expected_fee_payer: &Pubkey,
