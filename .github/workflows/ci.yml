@@ -25,7 +25,24 @@ jobs:
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --production
+      # npm retired the quick-audit endpoint pnpm still targets (HTTP 410,
+      # "use the bulk advisory endpoint"); no pnpm release supports the bulk
+      # endpoint yet. Treat only that specific failure as a warning so real
+      # vulnerability findings keep failing the job. Drop this shim once
+      # pnpm audit works against the bulk advisory endpoint.
+      - name: Audit production dependencies
+        run: |
+          set -o pipefail
+          if output=$(pnpm audit --production 2>&1); then
+            echo "$output"
+          else
+            echo "$output"
+            if echo "$output" | grep -q "This endpoint is being retired"; then
+              echo "::warning::npm quick-audit endpoint retired (410); pnpm audit unavailable until pnpm supports the bulk advisory endpoint"
+              exit 0
+            fi
+            exit 1
+          fi
 
   lint:
     name: Lint & Format
