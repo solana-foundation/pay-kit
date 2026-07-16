@@ -644,8 +644,13 @@ impl X402 {
             VerifiedExactPayment::Transaction(tx) => tx,
         };
 
-        let fee_payer_key = fee_payer.pubkey();
-        crate::core::signing::cosign_versioned_fee_payer(fee_payer, &fee_payer_key, &mut tx)
+        let configured_fee_payer = self.config.fee_payer_key.as_deref().ok_or_else(|| {
+            Error::Other("fee_payer_key must be configured before exact settlement".into())
+        })?;
+        let expected_fee_payer = Pubkey::from_str(configured_fee_payer).map_err(|error| {
+            Error::Other(format!("invalid configured fee payer pubkey: {error}"))
+        })?;
+        crate::core::signing::cosign_versioned_fee_payer(fee_payer, &expected_fee_payer, &mut tx)
             .await?;
 
         // Broadcast + confirm, relying on the node's preflight simulation
@@ -966,6 +971,43 @@ mod tests {
                 .collect(),
             ..config()
         }
+    }
+
+    fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        Box::new(solana_keychain::MemorySigner::from_bytes(&keypair).expect("valid keypair"))
+    }
+
+    #[tokio::test]
+    async fn settle_exact_rejects_a_signer_that_differs_from_the_configured_sponsor() {
+        let fee_payer = memory_signer(7);
+        let mut server_config = config();
+        server_config.fee_payer_key = Some(Pubkey::new_unique().to_string());
+        let x402 = X402::new(server_config).unwrap();
+
+        let recipient = Pubkey::new_unique();
+        let message = Message::new_with_blockhash(
+            &[system_instruction::transfer(
+                &fee_payer.pubkey(),
+                &recipient,
+                1,
+            )],
+            Some(&fee_payer.pubkey()),
+            &Hash::new_unique(),
+        );
+        let tx = VersionedTransaction::from(Transaction::new_unsigned(message));
+
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx), fee_payer.as_ref())
+            .await
+            .expect_err("a signer other than the configured sponsor must be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("fee payer signer does not match the expected fee payer"));
     }
 
     #[test]

@@ -2,7 +2,7 @@
   "private": true,
   "packageManager": "pnpm@11.13.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "build": "pnpm -r build",

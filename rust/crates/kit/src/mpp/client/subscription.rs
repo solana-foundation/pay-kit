@@ -478,6 +478,8 @@ fn compute_unit_limit_ix(units: u32) -> Instruction {
 mod tests {
     use super::*;
     use crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID;
+    use async_trait::async_trait;
+    use solana_keychain::{SignTransactionResult, SignerError};
     use solana_signature::Signature;
 
     #[test]
@@ -513,6 +515,43 @@ mod tests {
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
         Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    struct TransactionOnlySigner(Pubkey);
+
+    #[async_trait]
+    impl SolanaSigner for TransactionOnlySigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            tx: &mut Transaction,
+        ) -> std::result::Result<SignTransactionResult, SignerError> {
+            let index = tx
+                .message
+                .account_keys
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
+            let signature = Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(SignTransactionResult::Partial((String::new(), signature)))
+        }
+
+        async fn sign_message(
+            &self,
+            _message: &[u8],
+        ) -> std::result::Result<Signature, SignerError> {
+            Err(SignerError::Other(
+                "transaction bytes used the off-chain signing path".into(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
     }
 
     fn make_method_details(
@@ -634,12 +673,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn fee_payer_true_with_fee_payer_key_sets_fee_payer_account() {
-        let signer = make_signer();
+        let signer = TransactionOnlySigner(Pubkey::new_unique());
         let rpc = RpcClient::new_mock("succeeds".to_string());
         let fee_payer_key = "FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
         let md = make_method_details(true, Some(fee_payer_key));
         let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
+            &signer,
             &rpc,
             &md,
             pinned_options(BuildSubscriptionActivationOptions::default()),
@@ -666,49 +705,10 @@ mod tests {
                     .expect("subscriber signer account");
                 assert_ne!(subscriber_index, 0);
                 assert_eq!(tx.signatures[0], Signature::default());
-                assert_ne!(tx.signatures[subscriber_index], Signature::default());
+                assert_eq!(tx.signatures[subscriber_index], Signature::from([7u8; 64]));
             }
             _ => panic!("expected Transaction payload"),
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn transaction_signing_matches_manual_message_signature() {
-        let signer = make_signer();
-        let rpc = RpcClient::new_mock("succeeds".to_string());
-        let fee_payer_key = "FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
-        let md = make_method_details(true, Some(fee_payer_key));
-        let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
-            &rpc,
-            &md,
-            pinned_options(BuildSubscriptionActivationOptions::default()),
-        )
-        .await
-        .expect("activation tx");
-
-        let CredentialPayload::Transaction { transaction } = payload else {
-            panic!("expected Transaction payload");
-        };
-        let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &transaction)
-            .expect("base64 decode");
-        let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
-        let subscriber_index = tx
-            .message
-            .account_keys
-            .iter()
-            .position(|key| key == &signer.pubkey())
-            .expect("subscriber signer account");
-
-        let mut manual_tx = tx.clone();
-        manual_tx.signatures.fill(Signature::default());
-        let signature = signer
-            .sign_message(&manual_tx.message_data())
-            .await
-            .expect("manual message signature");
-        manual_tx.signatures[subscriber_index] = Signature::from(<[u8; 64]>::from(signature));
-
-        assert_eq!(manual_tx.signatures, tx.signatures);
     }
 
     #[tokio::test(flavor = "multi_thread")]
