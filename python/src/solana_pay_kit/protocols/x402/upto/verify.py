@@ -136,8 +136,10 @@ def validate_upto_open_instruction(
     The open transaction must contain exactly one instruction targeting the
     payment-channels program with the channel-open discriminator and the 14
     accounts in the fixed order the program expects. ``fee_payer`` is the
-    ``rentPayer`` (slot 1) and ``receiver_authorizer`` is the
-    ``authorizedSigner`` (slot 4). Mirrors Go's ``validateUptoOpenInstruction``.
+    ``rentPayer`` (slot 1), ``payee`` is the zero-share channel payee seat
+    (slot 2, the fee payer for ``upto``), and ``receiver_authorizer`` is the
+    ``authorizedSigner`` (slot 4, the voucher signer only). Mirrors Go's
+    ``validateUptoOpenInstruction``.
 
     The instruction's own ``openArgs`` are decoded and bound too: the channel
     account must equal the PDA re-derived from the args' ``salt``/``openSlot``

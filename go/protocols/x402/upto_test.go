@@ -690,9 +690,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 
 	// Build the fake RPC with the channel account.
 	fakeRPC := newUptoTestRPC()
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	channelAccount := &pcgen.Channel{
 		Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
 		Version:          0,
@@ -779,8 +777,8 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 		t.Fatalf("sent transactions = %d, want 2 (open + settlement)", len(fakeRPC.Sent))
 	}
 	settlementTx := fakeRPC.Sent[1]
-	if len(settlementTx.Message.Instructions) != 5 {
-		t.Fatalf("settlement instructions = %d, want 5", len(settlementTx.Message.Instructions))
+	if len(settlementTx.Message.Instructions) != 6 {
+		t.Fatalf("settlement instructions = %d, want 6", len(settlementTx.Message.Instructions))
 	}
 	if got := settlementTx.Message.Instructions[1].Data[0]; got != 4 {
 		t.Fatalf("settlement instruction discriminator = %d, want settle_and_seal(4)", got)
@@ -788,7 +786,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 	if got := settlementTx.Message.Instructions[1].Data[1]; got != 1 {
 		t.Fatalf("settle_and_seal hasVoucher = %d, want 1", got)
 	}
-	for _, idx := range []int{2, 3} {
+	for _, idx := range []int{2, 3, 4} {
 		if program := settlementTx.Message.AccountKeys[settlementTx.Message.Instructions[idx].ProgramIDIndex]; !program.Equals(solana.SPLAssociatedTokenAccountProgramID) {
 			t.Fatalf("instruction %d program = %s, want ATA program", idx, program)
 		}
@@ -796,7 +794,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 			t.Fatalf("instruction %d discriminator = %d, want create idempotent ATA(1)", idx, got)
 		}
 	}
-	if got := settlementTx.Message.Instructions[4].Data[0]; got != 7 {
+	if got := settlementTx.Message.Instructions[5].Data[0]; got != 7 {
 		t.Fatalf("distribute instruction discriminator = %d, want distribute(7)", got)
 	}
 }
@@ -876,9 +874,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 
 	fakeRPC := newUptoTestRPC()
-	distHash := emptyDistributionHash()
-	var distHashArr2 [32]byte
-	copy(distHashArr2[:], distHash)
+	distHashArr2 := distributionHash(singleSplitTo(payee))
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900, DistributionHash: distHashArr2,
@@ -1217,9 +1213,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	fakeRPC := newUptoTestRPC()
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Sealed),
@@ -1263,9 +1257,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	fakeRPC := newUptoTestRPC()
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
@@ -1308,9 +1300,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	fakeRPC := newUptoTestRPC()
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
@@ -1353,9 +1343,7 @@ func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	fakeRPC := newUptoTestRPC()
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
@@ -1398,9 +1386,7 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	fakeRPC := newUptoTestRPC()
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
@@ -1479,9 +1465,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
+	distHashArr := distributionHash(singleSplitTo(payee))
 	fakeRPC := newUptoTestRPC()
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
@@ -1519,8 +1503,8 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 		t.Fatalf("sent transactions = %d, want 2 (open + settlement)", len(fakeRPC.Sent))
 	}
 	settlementTx := fakeRPC.Sent[1]
-	if len(settlementTx.Message.Instructions) != 4 {
-		t.Fatalf("zero settlement instructions = %d, want 4", len(settlementTx.Message.Instructions))
+	if len(settlementTx.Message.Instructions) != 5 {
+		t.Fatalf("zero settlement instructions = %d, want 5", len(settlementTx.Message.Instructions))
 	}
 	if got := settlementTx.Message.Instructions[0].Data[0]; got != 4 {
 		t.Fatalf("zero settlement discriminator = %d, want settle_and_seal(4)", got)
@@ -1528,7 +1512,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 	if got := settlementTx.Message.Instructions[0].Data[1]; got != 0 {
 		t.Fatalf("zero settlement hasVoucher = %d, want 0", got)
 	}
-	for _, idx := range []int{1, 2} {
+	for _, idx := range []int{1, 2, 3} {
 		if program := settlementTx.Message.AccountKeys[settlementTx.Message.Instructions[idx].ProgramIDIndex]; !program.Equals(solana.SPLAssociatedTokenAccountProgramID) {
 			t.Fatalf("instruction %d program = %s, want ATA program", idx, program)
 		}
@@ -1536,9 +1520,15 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 			t.Fatalf("instruction %d discriminator = %d, want create idempotent ATA(1)", idx, got)
 		}
 	}
-	if got := settlementTx.Message.Instructions[3].Data[0]; got != 7 {
+	if got := settlementTx.Message.Instructions[4].Data[0]; got != 7 {
 		t.Fatalf("zero settlement distribute discriminator = %d, want distribute(7)", got)
 	}
+}
+
+// singleSplitTo is the always-explicit 100% recipient split sealed at open:
+// the fee payer holds the payee seat with a zero implicit remainder.
+func singleSplitTo(recipient solana.PublicKey) []paymentchannels.Distribution {
+	return []paymentchannels.Distribution{{Recipient: recipient, Bps: 10_000}}
 }
 
 type payerSigner struct{ priv solana.PrivateKey }

@@ -3,8 +3,8 @@
 //! `upto` authorizes a **maximum** amount; the server settles for the **actual**
 //! usage (`actual <= max`) determined after the resource is consumed. On Solana
 //! the client opens a payment channel whose `deposit` is the ceiling, and the
-//! receiver authorizer settles the metered amount with a single voucher,
-//! refunding the remainder. See
+//! fee payer (the channel's zero-share payee) settles the metered amount with
+//! a single receiver-authorizer voucher, refunding the remainder. See
 //! `specs/schemes/upto/scheme_upto_svm.md`.
 
 use serde::{Deserialize, Serialize};
@@ -27,10 +27,13 @@ pub struct UptoExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_program: Option<String>,
 
-    /// Base58 key that sponsors the transaction fee and channel rent.
+    /// Base58 key that sponsors the transaction fee and channel rent and holds
+    /// the zero-share channel payee seat (lifecycle authority: it signs
+    /// `settle_and_seal` and can seal with `has_voucher = 0` to recover rent,
+    /// but cannot settle a nonzero amount or redirect funds).
     pub fee_payer: String,
 
-    /// Base58 channel payee and voucher signer.
+    /// Base58 voucher signer (the channel's `authorized_signer`).
     pub receiver_authorizer: String,
 
     /// Channel forced-close delay, in seconds.
@@ -121,8 +124,8 @@ pub struct UptoRequiredEnvelope {
 /// The client authorization carried in `PAYMENT-SIGNATURE.payload`.
 ///
 /// The channel `open` is the authorization: the client's signature commits the
-/// deposit ceiling, payee, and mint. The receiver authorizer settles the actual
-/// amount with a voucher it signs.
+/// deposit ceiling, payee, and mint. The fee payer settles the actual amount
+/// carrying a voucher the receiver authorizer signs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UptoPayload {

@@ -21,10 +21,11 @@ import kotlinx.serialization.json.JsonPrimitive
  * x402 ``upto`` wire shapes.
  *
  * ``upto`` authorizes a maximum amount: the client opens an on-chain payment
- * channel whose deposit is the ceiling, with the advertised fee payer funding
- * the transaction/rent and the receiver authorizer acting as payee and voucher
- * signer. The server later settles the metered amount and refunds the
- * remainder. The client signs only its payer slot of the ``open`` transaction.
+ * channel whose deposit is the ceiling, with the advertised fee payer as
+ * transaction/rent payer and zero-share channel payee, and the receiver
+ * authorizer as voucher signer. The server later settles the metered amount
+ * and refunds the remainder. The client signs only its payer slot of the
+ * ``open`` transaction.
  */
 
 /** ``upto`` scheme identifier. */
@@ -62,9 +63,9 @@ object SlotStringSerializer : KSerializer<ULong?> {
 data class UptoExtra(
     /** Token program address; defaults to the legacy SPL Token program when absent. */
     val tokenProgram: String? = null,
-    /** Base58 fee payer key: transaction fee payer and channel rent payer. */
+    /** Base58 fee payer key: transaction fee payer, channel rent payer, and zero-share channel payee. */
     val feePayer: String? = null,
-    /** Base58 receiver authorizer key: channel payee and voucher signer. */
+    /** Base58 receiver authorizer key: authorized voucher signer (server hot key). */
     val receiverAuthorizer: String? = null,
     /** Forced-close/withdraw delay advertised by the server. */
     val withdrawDelay: Int = 0,

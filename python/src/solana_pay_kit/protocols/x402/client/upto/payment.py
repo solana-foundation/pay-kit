@@ -110,9 +110,10 @@ def build_upto_payload(
     """Build the ``upto`` payload: a partially-signed channel ``open`` + metadata.
 
     The client (``signer``) is the channel payer. ``extra.feePayer`` is the
-    transaction fee payer and rent payer; ``extra.receiverAuthorizer`` is the
-    channel payee and voucher signer. The open transaction is signed only in the
-    client's payer slot (pull-style); the fee-payer slot is completed server-side.
+    transaction fee payer, rent payer, and zero-share channel payee (lifecycle
+    authority); ``extra.receiverAuthorizer`` is the authorized voucher signer
+    only. The open transaction is signed only in the client's payer slot
+    (pull-style); the fee-payer slot is completed server-side.
     """
     extra = requirements["extra"]
     max_amount = int(requirements["amount"], 10)
@@ -129,9 +130,10 @@ def build_upto_payload(
     withdraw_delay = int(extra.get("withdrawDelay", 0))
     if withdraw_delay <= 0:
         raise ValueError("x402 client: requirement missing extra.withdrawDelay")
-    recipients: list[Distribution] = []
-    if beneficiary != receiver_authorizer:
-        recipients.append(Distribution(recipient=beneficiary, bps=10_000))
+    # Always explicit: the payee seat is held by the facilitator (feePayer)
+    # with a zero implicit remainder, so 100% of settled funds must be
+    # assigned to payTo through the recipients list.
+    recipients: list[Distribution] = [Distribution(recipient=beneficiary, bps=10_000)]
     program_id = Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID)
     token_program = Pubkey.from_string(extra.get("tokenProgram") or TOKEN_PROGRAM)
 
@@ -146,12 +148,12 @@ def build_upto_payload(
 
     payer = Pubkey.from_string(signer.pubkey())
     salt = secrets.randbits(64)
-    channel, _ = find_channel_pda(payer, receiver_authorizer, mint, receiver_authorizer, salt, open_slot, program_id)
+    channel, _ = find_channel_pda(payer, fee_payer, mint, receiver_authorizer, salt, open_slot, program_id)
     open_ix = build_open_instruction(
         OpenChannelParams(
             payer=payer,
             rent_payer=fee_payer,
-            payee=receiver_authorizer,
+            payee=fee_payer,
             mint=mint,
             authorized_signer=receiver_authorizer,
             salt=salt,

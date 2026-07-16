@@ -34,7 +34,6 @@ from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
-from solana_pay_kit.protocols.x402.upto import _EMPTY_DISTRIBUTION_HASH as EMPTY_HASH
 from solana_pay_kit.protocols.x402.upto import VerifiedUptoOpen, X402Upto
 from solana_pay_kit.protocols.x402.upto.types import UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT, UptoRequirements
 
@@ -115,8 +114,8 @@ def _op_pubkey(cfg: Config) -> str:
 
 
 def _expected_distribution_hash(pay_to: str, operator: str) -> list[int]:
-    if pay_to == operator:
-        return EMPTY_HASH
+    # Always the explicit single-entry 100% payTo split: the payee seat is the
+    # fee payer with a zero implicit remainder, even when payTo == operator.
     return list(
         upto_mod._distribution_hash(  # noqa: SLF001
             [Distribution(recipient=Pubkey.from_string(pay_to), bps=10_000)]
@@ -152,7 +151,7 @@ def _fake_channel(
             "closureStartedAt": 0,
             "payerWithdrawnAt": 0,
             "gracePeriod": 900,
-            "distributionHash": distribution_hash if distribution_hash is not None else EMPTY_HASH,
+            "distributionHash": distribution_hash if distribution_hash is not None else [0] * 32,
             "payer": Pubkey.from_string(payer),
             "payee": Pubkey.from_string(payee),
             "authorizedSigner": Pubkey.from_string(operator),
@@ -260,6 +259,21 @@ async def test_verify_open_binds_custom_gate_payee(monkeypatch) -> None:
     verified.release()
 
 
+def test_distribution_always_explicit_single_split(monkeypatch) -> None:
+    """Even when payTo is the operator (receiver authorizer) itself, the
+    distribution is the explicit single-entry 100% split — the fee payer holds
+    the payee seat with a zero implicit remainder."""
+    eng, cfg, _ = _engine(monkeypatch)
+    operator = _op_pubkey(cfg)
+    gate = Gate.build(
+        name="usage", amount=Price.usd("0.10", Stablecoin.USDC), pay_to=operator, accept=(Protocol.X402,)
+    )
+    req = eng.accepts_entry(gate, {"path": "/usage"})
+    assert req["payTo"] == operator == req["extra"]["receiverAuthorizer"]
+    distribution = eng._distribution(req)  # noqa: SLF001
+    assert [(str(entry.recipient), entry.bps) for entry in distribution] == [(operator, 10_000)]
+
+
 @pytest.mark.asyncio
 async def test_verify_open_rejects_deposit_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
@@ -309,9 +323,8 @@ def _verified(cfg, *, max_amount: int = 100000) -> VerifiedUptoOpen:
     label = cfg.network.mints_label()
     mint = resolve("USDC", label)
     assert mint is not None
-    distribution = []
-    if cfg.effective_recipient() != operator:
-        distribution = [Distribution(recipient=Pubkey.from_string(cfg.effective_recipient()), bps=10_000)]
+    # Always the explicit single-entry 100% payTo split (zero-share payee seat).
+    distribution = [Distribution(recipient=Pubkey.from_string(cfg.effective_recipient()), bps=10_000)]
     return VerifiedUptoOpen(
         channel_id=Pubkey.from_string("11111111111111111111111111111112"),
         payer=Pubkey.from_string(str(Keypair().pubkey())),

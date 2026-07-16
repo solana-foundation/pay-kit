@@ -9,8 +9,15 @@
 //!    channel state back to bind deposit/payee/mint/signer on-chain.
 //! 3. The route handler runs and determines the actual metered amount.
 //! 4. [`X402Upto::settle_actual`] signs a single receiver-authorizer voucher for
-//!    the actual amount and submits `settle_and_seal` + ATA setup + `distribute`,
-//!    refunding `deposit - actual` to the payer.
+//!    the actual amount and submits fee-payer-signed `settle_and_seal` + ATA
+//!    setup + `distribute`, refunding `deposit - actual` to the payer.
+//!
+//! Roles: the fee payer is transaction fee payer, channel rent payer, and
+//! zero-share channel payee (lifecycle authority — it signs `settle_and_seal`
+//! and can always seal with `has_voucher = 0` to recover rent, but cannot
+//! settle a nonzero amount or redirect funds). The receiver authorizer is the
+//! channel's `authorized_signer` and signs only the Ed25519 voucher (payment
+//! authority).
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -50,9 +57,9 @@ const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 /// Server configuration for the Solana x402 `upto` scheme.
 #[derive(Clone)]
 pub struct UptoConfig {
-    /// Where settled funds go. The channel payee is always the receiver
-    /// authorizer; this only decides whether that key keeps everything or routes
-    /// the settled amount to a beneficiary via a bound distribution split.
+    /// Where settled funds go. The channel payee is always the fee payer
+    /// (zero-share seat); this only decides which beneficiary the bound 100%
+    /// distribution split pays.
     pub payout: UptoPayout,
     /// Non-empty universe of currencies this server offers and accepts. `[0]`
     /// is the primary/default currency. The `upto` challenge advertises one
@@ -76,20 +83,23 @@ pub struct UptoConfig {
     /// program default when set to `0`.
     pub withdraw_delay: u32,
     /// Signer that co-signs the open as transaction fee payer and channel rent
-    /// payer.
+    /// payer, holds the zero-share channel payee seat, and signs
+    /// `settle_and_seal` (lifecycle authority: it can always seal with
+    /// `has_voucher = 0` to recover rent, but cannot settle a nonzero amount
+    /// or redirect funds).
     pub fee_payer_signer: Arc<dyn SolanaSigner>,
-    /// Signer that is channel payee, voucher signer, and `settle_and_seal`
-    /// payee signer. Defaults to `fee_payer_signer` when absent.
+    /// Signer for the Ed25519 settlement voucher (the channel's
+    /// `authorized_signer`). Defaults to `fee_payer_signer` when absent.
     pub receiver_authorizer_signer: Option<Arc<dyn SolanaSigner>>,
 }
 
 /// Where an `upto` channel's settled funds go. The channel payee is always the
-/// receiver authorizer; this decides whether it keeps everything or routes the
-/// full settled amount to a beneficiary via a bound distribution split.
+/// fee payer with a zero implicit remainder; this decides which beneficiary
+/// receives the full settled amount via the bound 100% distribution split.
 #[derive(Clone, Debug)]
 pub enum UptoPayout {
-    /// No separate beneficiary — the receiver authorizer keeps the full
-    /// settled amount.
+    /// No separate beneficiary — the receiver authorizer receives the full
+    /// settled amount (as the 100% distribution recipient).
     ReceiverKeepsAll,
     /// Pay `address` via a 100% distribution split.
     Beneficiary {
@@ -115,11 +125,12 @@ pub struct VerifiedUptoOpen {
     pub max_amount: u64,
     pub expires_at: i64,
     pub network: String,
-    /// The channel's payee — the receiver authorizer. The beneficiary is paid via
-    /// `distribution`, not by being the payee. See `verify_open`.
+    /// The channel's payee — the fee payer (zero-share seat). The beneficiary
+    /// is paid via `distribution`, not by being the payee. See `verify_open`.
     pub payee: Pubkey,
     /// The bound distribution split validated at open (beneficiary at 100%).
-    /// Settlement must distribute to exactly this set.
+    /// Settlement must distribute to exactly this set; the payee's implicit
+    /// remainder is always zero.
     pub distribution: Vec<pc::Distribution>,
     /// Releases this channel from the in-flight set on drop.
     _in_flight: InFlightGuard,
@@ -221,12 +232,13 @@ impl X402Upto {
         self
     }
 
-    /// The transaction fee payer / rent payer public key (base58).
+    /// The transaction fee payer / rent payer / zero-share channel payee
+    /// public key (base58).
     pub fn fee_payer(&self) -> String {
         pc::pubkey_string(&self.fee_payer)
     }
 
-    /// The channel payee / voucher signer public key (base58).
+    /// The voucher signer public key (base58).
     pub fn receiver_authorizer(&self) -> String {
         pc::pubkey_string(&self.receiver_authorizer)
     }
@@ -286,11 +298,10 @@ impl X402Upto {
     }
 
     fn distribution(&self) -> Result<Vec<pc::Distribution>, Error> {
-        let pay_to = self.pay_to();
-        if pay_to == self.receiver_authorizer() {
-            return Ok(Vec::new());
-        }
-        let recipient = Pubkey::from_str(&pay_to)
+        // Always explicit: the payee seat is held by the fee payer with a
+        // zero implicit remainder, so 100% of settled funds must be assigned
+        // to `payTo` through the recipients list.
+        let recipient = Pubkey::from_str(&self.pay_to())
             .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
         Ok(vec![pc::Distribution {
             recipient,
@@ -499,7 +510,11 @@ impl X402Upto {
                 Pubkey::from_str(tp)
                     .map_err(|e| Error::Other(format!("invalid matched token program: {e}")))
             })?;
-        let expected_payee = self.receiver_authorizer;
+        // The channel payee is the fee payer: the zero-share lifecycle seat
+        // that signs `settle_and_seal` and can recover rent from an abandoned
+        // channel. Payment authority stays with the receiver authorizer via
+        // `authorized_signer` (checked below).
+        let expected_payee = self.fee_payer;
         let expected_distribution = self.distribution()?;
         let channel_id = Pubkey::from_str(&payload.channel_id)
             .map_err(|e| Error::Other(format!("invalid channelId: {e}")))?;
@@ -571,7 +586,7 @@ impl X402Upto {
             });
         }
         // The channel must commit to exactly the distribution we expect (100%
-        // to the beneficiary, or empty when the receiver authorizer keeps it),
+        // to the beneficiary — the zero-share payee never keeps a remainder),
         // so a client cannot redirect funds.
         validate_distribution_hash(&channel.distribution_hash, &expected_distribution)?;
         if pc::from_address(&channel.authorized_signer) != self.receiver_authorizer {
@@ -667,11 +682,11 @@ impl X402Upto {
     ///
     /// Shared by [`settle_actual`](Self::settle_actual) (which wraps them in a
     /// tx it signs + confirms) and the batched-settlement worker (which packs
-    /// instructions from several channels into one operator-signed tx). The
-    /// settle transaction is operator-signed only — the client's voucher
-    /// authorization rides inside the `settle_and_seal` instruction data,
-    /// not as a transaction signature — so the worker can sign the envelope on
-    /// the caller's behalf.
+    /// instructions from several channels into one fee-payer-signed tx). The
+    /// settle transaction is fee-payer-signed only — the receiver authorizer's
+    /// voucher authorization rides inside the `settle_and_seal` instruction
+    /// data, not as a transaction signature — so the worker can sign the
+    /// envelope on the caller's behalf.
     pub async fn settlement_instructions(
         &self,
         open: &VerifiedUptoOpen,
@@ -679,9 +694,12 @@ impl X402Upto {
     ) -> Result<Vec<Instruction>, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
 
+        // `settle_and_seal`'s payee signer is the channel payee — the fee
+        // payer. The receiver authorizer signs only the Ed25519 voucher
+        // (carried in instruction data as the channel's authorized signer).
         let mut instructions = if actual == 0 {
             pc::build_settle_and_seal_instructions(
-                &self.receiver_authorizer,
+                &self.fee_payer,
                 &open.channel_id,
                 &self.receiver_authorizer,
                 None,
@@ -693,16 +711,13 @@ impl X402Upto {
             let voucher_bytes =
                 pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
             let sig_bytes: [u8; 64] = self
-                .config
-                .receiver_authorizer_signer
-                .as_ref()
-                .expect("receiver authorizer signer initialized")
+                .receiver_authorizer_signer()
                 .sign_message(&voucher_bytes)
                 .await
                 .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
                 .into();
             pc::build_settle_and_seal_instructions(
-                &self.receiver_authorizer,
+                &self.fee_payer,
                 &open.channel_id,
                 &self.receiver_authorizer,
                 Some(&sig_bytes),
@@ -789,14 +804,10 @@ impl X402Upto {
     ) -> Result<UptoSettlementResponse, Error> {
         use crate::core::settlement::worker::{spawn, RpcBroadcaster, SettlementConfig};
 
+        // The receiver authorizer's voucher is signed into the instruction
+        // data here; the settle transaction itself only needs the fee payer's
+        // signature (payee + envelope), which the worker holds.
         let instructions = self.settlement_instructions(open, actual).await?;
-
-        if self.fee_payer != self.receiver_authorizer {
-            return Err(Error::Other(
-                "deferred upto settlement requires feePayer and receiverAuthorizer to be the same key"
-                    .to_string(),
-            ));
-        }
 
         let fee_payer = self.fee_payer;
         let signer = self.config.fee_payer_signer.clone();
@@ -884,18 +895,16 @@ impl X402Upto {
         cosign_operator_fee_payer(self.config.fee_payer_signer.as_ref(), &self.fee_payer, tx).await
     }
 
+    /// Sign the settlement transaction. The fee payer is its only required
+    /// signer: it is both the transaction fee payer and the `settle_and_seal`
+    /// payee signer, while the receiver authorizer's voucher rides inside the
+    /// instruction data rather than as a transaction signature.
     async fn sign_settlement_transaction(&self, tx: &mut Transaction) -> Result<(), Error> {
-        self.receiver_authorizer_signer()
+        self.config
+            .fee_payer_signer
             .sign_transaction(tx)
             .await
-            .map_err(|e| Error::Other(format!("receiver authorizer signing failed: {e}")))?;
-        if self.fee_payer != self.receiver_authorizer {
-            self.config
-                .fee_payer_signer
-                .sign_transaction(tx)
-                .await
-                .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-        }
+            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         Ok(())
     }
 
@@ -986,7 +995,9 @@ fn match_offered_requirement<'r>(
 /// Assert the channel committed (at open) to exactly the distribution the
 /// server expects. The on-chain `distribution_hash` binds the recipient split,
 /// so this guards that settlement pays the configured beneficiary and a client
-/// cannot redirect funds. An empty `expected` means the operator keeps 100%.
+/// cannot redirect funds. An empty `expected` would leave the payee the
+/// implicit 100% remainder — `upto` never expects that: its fee-payer payee
+/// seat is zero-share, so the split always names the beneficiary explicitly.
 fn validate_distribution_hash(
     distribution_hash: &[u8; 32],
     expected: &[pc::Distribution],
@@ -1846,21 +1857,24 @@ mod tests {
         );
     }
 
-    // ── Bug 1 (settle `InvalidChannelPayee`, 0x6) — receiver payee model ──
+    // ── Facilitator-as-zero-share-payee model (settle `InvalidChannelPayee`,
+    // 0x6) ──
     //
     // `settle_and_seal` requires its `payee [signer]` account to equal
-    // `channel.payee`. The only account the server can sign with is the
-    // receiver authorizer, so the channel MUST be opened with
-    // `payee = receiverAuthorizer`. When the payout recipient differs from it,
-    // the recipient is paid via a *bound distribution split*, NOT by being the
-    // channel payee. Opening with `payee = recipient` is what reverts settle
-    // with 0x6.
+    // `channel.payee`. Settlement transactions are signed by the fee payer,
+    // so the channel MUST be opened with `payee = feePayer` (the zero-share
+    // lifecycle seat). The payout recipient is paid via a *bound 100%
+    // distribution split*, NOT by being the channel payee, and the receiver
+    // authorizer holds only `authorized_signer` (Ed25519 voucher authority).
+    // Opening with `payee = recipient` (or `payee = receiverAuthorizer`) is
+    // what reverts settle with 0x6.
 
-    /// Regression guard for the correct receiver open: `payee = receiverAuthorizer`
-    /// with the real recipient carried as a 100% distribution split. The open
-    /// must validate as receiver-payee and must NOT validate as recipient-payee.
+    /// Regression guard for the correct open: `payee = feePayer` with the real
+    /// recipient carried as a 100% distribution split. The open must validate
+    /// as fee-payer-payee and must NOT validate as receiver-authorizer-payee
+    /// or recipient-payee.
     #[test]
-    fn receiver_open_binds_channel_payee_to_the_settle_signer() {
+    fn open_binds_channel_payee_to_the_fee_payer_settle_signer() {
         let payer = Pubkey::new_unique();
         let fee_payer = Pubkey::new_unique();
         let receiver_authorizer = Pubkey::new_unique();
@@ -1874,7 +1888,7 @@ mod tests {
         let params = OpenChannelParams {
             payer,
             rent_payer: fee_payer,
-            payee: receiver_authorizer,
+            payee: fee_payer,
             mint,
             authorized_signer: receiver_authorizer,
             salt: 7,
@@ -1892,14 +1906,14 @@ mod tests {
         let channel = derive_channel_addresses(&params).channel;
         let tx = unsigned_tx(&[build_open_instruction(&params)]);
 
-        assert!(
+        let check = |payee: &Pubkey| {
             validate_open_instruction(
                 &tx,
                 &pc::default_program_id(),
                 &fee_payer,
                 &receiver_authorizer,
                 &payer,
-                &receiver_authorizer,
+                payee,
                 &mint,
                 &token_program(),
                 &channel,
@@ -1909,32 +1923,21 @@ mod tests {
                 None,
                 None,
             )
-            .is_ok(),
-            "receiver-authorizer open must validate"
-        );
+        };
 
-        // The recipient is NOT the channel payee: validating the same open as
-        // recipient-payee must fail — proving settle can't be authorized by a
-        // recipient that never signs (the shape that caused 0x6 in prod).
+        assert!(check(&fee_payer).is_ok(), "fee-payer-payee open must validate");
+
+        // Neither the receiver authorizer nor the recipient is the channel
+        // payee: validating the same open against either must fail — proving
+        // settle can only be authorized by the fee payer that actually signs
+        // (any other payee is the shape that reverts settle with 0x6).
         assert!(
-            validate_open_instruction(
-                &tx,
-                &pc::default_program_id(),
-                &fee_payer,
-                &receiver_authorizer,
-                &payer,
-                &recipient,
-                &mint,
-                &token_program(),
-                &channel,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .is_err(),
-            "channel payee must be the receiver authorizer, never the payout recipient"
+            check(&receiver_authorizer).is_err(),
+            "channel payee must be the fee payer, not the receiver authorizer"
+        );
+        assert!(
+            check(&recipient).is_err(),
+            "channel payee must be the fee payer, never the payout recipient"
         );
     }
 
@@ -1947,7 +1950,7 @@ mod tests {
         assert_eq!(
             req.extra.receiver_authorizer,
             engine.receiver_authorizer(),
-            "receiverAuthorizer must be the settle signer"
+            "receiverAuthorizer must be the voucher signer"
         );
         assert_ne!(
             req.pay_to,

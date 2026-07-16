@@ -46,10 +46,11 @@ public func parseUptoAccepts(
 /// Build an `upto` payload for a `payment-channel` requirement.
 ///
 /// The client (`signer`) is the channel payer. `extra.feePayer` is the
-/// transaction fee payer and rent payer; `extra.receiverAuthorizer` is the
-/// channel payee and voucher signer. The `open` transaction is signed only in
-/// the client's payer slot; the server co-signs and broadcasts. `expiresAt` is
-/// the authorization deadline (Unix seconds).
+/// transaction fee payer, rent payer, and zero-share channel payee;
+/// `extra.receiverAuthorizer` is the voucher signer only. The `open`
+/// transaction is signed only in the client's payer slot; the facilitator
+/// co-signs and broadcasts. `expiresAt` is the authorization deadline
+/// (Unix seconds).
 ///
 /// - Parameters:
 ///   - nonce: Ignored; the payload nonce is the channel salt decimal string.
@@ -86,15 +87,13 @@ public func buildUptoPayload(
     }
     let beneficiary = try Pubkey(base58: requirements.payTo)
 
-    let recipients: [PaymentChannels.Distribution]
-    if beneficiary == receiverAuthorizer {
-        recipients = []
-    } else {
-        recipients = [PaymentChannels.Distribution(
-            recipient: beneficiary,
-            bps: 10_000
-        )]
-    }
+    // Always explicit: the payee seat is held by the facilitator (feePayer)
+    // with a zero implicit remainder, so 100% of settled funds must be
+    // assigned to payTo through the recipients list.
+    let recipients = [PaymentChannels.Distribution(
+        recipient: beneficiary,
+        bps: 10_000
+    )]
 
     let programId = PaymentChannels.programId
 
@@ -133,7 +132,7 @@ public func buildUptoPayload(
     let channelSalt = salt ?? PaymentChannels.uniqueSalt()
     let open = try await PaymentChannels.buildOpenTransaction(
         payer: signer,
-        payee: receiverAuthorizer,
+        payee: feePayer,
         mint: mint,
         authorizedSigner: receiverAuthorizer,
         salt: channelSalt,

@@ -108,8 +108,8 @@ func TestBuildUptoPayload(t *testing.T) {
 	if !rentPayerFromOpen.Equals(feePayer) {
 		t.Fatalf("open rent_payer = %s, want fee payer %s", rentPayerFromOpen, feePayer)
 	}
-	if !payeeFromOpen.Equals(receiverAuthorizer) {
-		t.Fatalf("open payee = %s, want receiverAuthorizer %s", payeeFromOpen, receiverAuthorizer)
+	if !payeeFromOpen.Equals(feePayer) {
+		t.Fatalf("open payee = %s, want feePayer %s", payeeFromOpen, feePayer)
 	}
 	if !authorizedSignerFromOpen.Equals(receiverAuthorizer) {
 		t.Fatalf("open authorized_signer = %s, want receiverAuthorizer %s", authorizedSignerFromOpen, receiverAuthorizer)
@@ -118,9 +118,10 @@ func TestBuildUptoPayload(t *testing.T) {
 
 func TestBuildUptoPayloadUsesCanonicalChannelProgramForChannelID(t *testing.T) {
 	priv := testutil.NewPrivateKey()
+	feePayer := testutil.NewPrivateKey().PublicKey()
 	receiverAuthorizer := testutil.NewPrivateKey().PublicKey()
 	signer := testSigner{priv}
-	req := uptoRequirements(receiverAuthorizer)
+	req := uptoRequirementsWithRoles(feePayer, receiverAuthorizer)
 
 	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
 	if err != nil {
@@ -136,9 +137,11 @@ func TestBuildUptoPayloadUsesCanonicalChannelProgramForChannelID(t *testing.T) {
 	if !channelFromOpen.Equals(channelFromPayload) {
 		t.Fatalf("open channel account = %s, payload channelId = %s", channelFromOpen, channelFromPayload)
 	}
+	// The payee PDA seed is the fee payer (zero-share seat); the receiver
+	// authorizer seeds only the authorized_signer slot.
 	want, _, err := paymentchannels.FindChannelPDAForProgram(
 		priv.PublicKey(),
-		receiverAuthorizer,
+		feePayer,
 		solana.MustPublicKeyFromBase58(req.Asset),
 		receiverAuthorizer,
 		mustReadOpenSalt(t, tx),

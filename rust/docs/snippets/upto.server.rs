@@ -42,7 +42,8 @@ async fn main() {
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
         network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
-        // `upto` uses this signer as fee payer and, by default, receiver authorizer.
+        // `upto` uses this signer as fee payer (the zero-share channel payee)
+        // and, by default, receiver authorizer (the voucher signer).
         fee_payer_signer: Some(Arc::new(operator)),
         ..Default::default()
     })

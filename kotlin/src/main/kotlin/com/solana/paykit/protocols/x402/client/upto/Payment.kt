@@ -24,10 +24,10 @@ import java.util.Base64
  * parsing and authorization building.
  *
  * The client opens a channel whose deposit is the authorized maximum, with the
- * advertised receiver authorizer as payee/authorized signer and the advertised
- * fee payer as transaction/rent payer. The client signs only its payer slot of
- * the ``open`` transaction; the server co-signs the fee-payer slot and
- * broadcasts. The
+ * advertised receiver authorizer as authorized (voucher) signer and the
+ * advertised fee payer as transaction fee payer, rent payer, and zero-share
+ * channel payee. The client signs only its payer slot of the ``open``
+ * transaction; the server co-signs the fee-payer slot and broadcasts. The
  * client never signs a voucher and never needs SOL.
  *
  * The envelope is the canonical x402 v2 shape ``{ x402Version, accepted,
@@ -156,11 +156,10 @@ fun buildUptoPayload(
     }
     val beneficiary = parsePubkey(requirements.payTo, "payTo")
 
-    val recipients = if (beneficiary == receiverAuthorizer) {
-        emptyList()
-    } else {
-        listOf(PaymentChannels.Distribution(recipient = beneficiary, bps = 10_000))
-    }
+    // Always explicit: the payee seat is held by the facilitator (feePayer)
+    // with a zero implicit remainder, so 100% of settled funds must be
+    // assigned to payTo through the recipients list.
+    val recipients = listOf(PaymentChannels.Distribution(recipient = beneficiary, bps = 10_000))
 
     val programId = PublicKey.fromBase58(PaymentChannels.PROGRAM_ID)
     val tokenProgram = extra.tokenProgram?.let { parsePubkey(it, "tokenProgram") }
@@ -177,7 +176,7 @@ fun buildUptoPayload(
     val salt = saltProvider()
     val open = PaymentChannels.buildOpenTransaction(
         payer = signer,
-        payee = receiverAuthorizer,
+        payee = feePayer,
         mint = mint,
         authorizedSigner = receiverAuthorizer,
         salt = salt,

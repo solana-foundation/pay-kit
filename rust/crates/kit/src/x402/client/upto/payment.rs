@@ -1,9 +1,11 @@
 //! Client-side payment building for the x402 `upto` scheme (payment-channel).
 //!
 //! The client opens a channel whose `deposit` is the authorized maximum, with
-//! `authorized_signer = receiverAuthorizer` so the receiver can settle the
-//! actual amount with a single voucher. The client signs only the `open`
-//! transaction; the fee payer broadcasts it and settlement runs after metering.
+//! `authorized_signer = receiverAuthorizer` (the voucher signer) and
+//! `payee = feePayer` — the facilitator's zero-share lifecycle seat, which also
+//! sponsors the fee and rent. The client signs only the `open` transaction; the
+//! fee payer broadcasts it and later submits the settlement carrying the
+//! receiver authorizer's voucher for the metered amount.
 
 use std::str::FromStr;
 
@@ -47,14 +49,13 @@ pub async fn build_upto_payload(
     }
     let beneficiary = Pubkey::from_str(&requirements.pay_to)
         .map_err(|e| Error::Other(format!("invalid payTo: {e}")))?;
-    let recipients = if beneficiary == receiver_authorizer {
-        Vec::new()
-    } else {
-        vec![pc::Distribution {
-            recipient: beneficiary,
-            bps: 10_000,
-        }]
-    };
+    // Always explicit: the payee seat is held by the facilitator (fee payer)
+    // with a zero implicit remainder, so 100% of settled funds must be
+    // assigned to `payTo` through the recipients list.
+    let recipients = vec![pc::Distribution {
+        recipient: beneficiary,
+        bps: 10_000,
+    }];
     let program_id = pc::default_program_id();
     let token_program = match &requirements.extra.token_program {
         Some(value) => Pubkey::from_str(value)
@@ -80,7 +81,8 @@ pub async fn build_upto_payload(
     let salt = pc::random_salt();
     let open = pc::build_open_payment_channel_tx(
         payer_signer,
-        &receiver_authorizer,
+        // Channel payee: the fee payer's zero-share lifecycle seat.
+        &fee_payer,
         &mint,
         &receiver_authorizer,
         salt,

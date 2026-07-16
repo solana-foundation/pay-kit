@@ -5,7 +5,7 @@ import Testing
 // MARK: - Fixtures
 
 private enum UptoFixture {
-    static let feePayerAddr = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    static let feePayerAddr = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
     static let receiverAuthorizerAddr = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
     static let payTo = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
     static let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -286,10 +286,11 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: salt
         )
         let payer = try Pubkey(bytes: signer.publicKey)
+        let feePayer = try Pubkey(base58: UptoFixture.feePayerAddr)
         let receiverAuthorizer = try Pubkey(base58: UptoFixture.receiverAuthorizerAddr)
         let mint = try Pubkey(base58: UptoFixture.mint)
         let expected = try PaymentChannels.findChannelPda(
-            payer: payer, payee: receiverAuthorizer, mint: mint, authorizedSigner: receiverAuthorizer,
+            payer: payer, payee: feePayer, mint: mint, authorizedSigner: receiverAuthorizer,
             salt: salt, openSlot: UptoFixture.recentSlotValue, programId: PaymentChannels.programId
         )
         #expect(payload.channelId == expected.base58)
@@ -306,10 +307,11 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: salt, openSlot: 2222
         )
         let payer = try Pubkey(bytes: signer.publicKey)
+        let feePayer = try Pubkey(base58: UptoFixture.feePayerAddr)
         let receiverAuthorizer = try Pubkey(base58: UptoFixture.receiverAuthorizerAddr)
         let mint = try Pubkey(base58: UptoFixture.mint)
         let expected = try PaymentChannels.findChannelPda(
-            payer: payer, payee: receiverAuthorizer, mint: mint, authorizedSigner: receiverAuthorizer,
+            payer: payer, payee: feePayer, mint: mint, authorizedSigner: receiverAuthorizer,
             salt: salt, openSlot: 2222, programId: PaymentChannels.programId
         )
         #expect(payload.channelId == expected.base58)
@@ -321,7 +323,10 @@ struct X402UptoBuildTests {
     }
 
     @Test
-    func payToEqualsReceiverAuthorizerYieldsEmptyRecipients() async throws {
+    func payToEqualsReceiverAuthorizerStillYieldsExplicitSplit() async throws {
+        // The payee seat is the zero-share facilitator (feePayer), so the
+        // distribution is always the explicit single 100% payTo split — even
+        // when payTo is the receiver authorizer.
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements(payTo: UptoFixture.receiverAuthorizerAddr)
         let payload = try await buildUptoPayload(
@@ -331,7 +336,7 @@ struct X402UptoBuildTests {
         let decoded = try LegacyTxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
-        #expect(decoded.recipientBps.isEmpty)
+        #expect(decoded.recipientBps == [10_000])
         #expect(decoded.salt == 99)
         #expect(decoded.deposit == 1_000_000)
         #expect(decoded.gracePeriod == 900)
@@ -340,7 +345,7 @@ struct X402UptoBuildTests {
     }
 
     @Test
-    func payToDifferentFromReceiverAuthorizerYieldsOneDistribution() async throws {
+    func recipientsAlwaysCarrySinglePayToSplit() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
         let payload = try await buildUptoPayload(

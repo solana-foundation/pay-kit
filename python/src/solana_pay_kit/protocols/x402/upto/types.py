@@ -49,7 +49,10 @@ class UptoExtra(_UptoExtraRequired, total=False):
     """The ``extra`` object on an ``upto`` payment requirement.
 
     ``decimals``/``tokenProgram``/``feePayer``/``receiverAuthorizer``/
-    ``withdrawDelay`` are required. ``recentBlockhash``/``recentSlot``/
+    ``withdrawDelay`` are required. ``feePayer`` is the transaction fee payer,
+    channel rent payer, and zero-share channel payee (lifecycle authority);
+    ``receiverAuthorizer`` is the authorized voucher signer only (payment
+    authority). ``recentBlockhash``/``recentSlot``/
     ``lastValidBlockHeight``/``validAfter`` are optional. ``recentSlot`` is the
     server-fetched slot the client uses as the channel ``openSlot`` (u64-as-string
     like the session challenge; a plain number is accepted inbound).

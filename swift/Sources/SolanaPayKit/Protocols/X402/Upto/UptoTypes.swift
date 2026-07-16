@@ -12,9 +12,9 @@ public let X402UptoScheme: String = "upto"
 public struct X402UptoExtra: Codable, Sendable, Equatable {
     /// Token program address (legacy SPL or Token-2022); defaults to legacy SPL.
     public let tokenProgram: String?
-    /// Transaction fee payer and channel rent payer.
+    /// Transaction fee payer, channel rent payer, and zero-share channel payee.
     public let feePayer: String
-    /// Channel payee and voucher signer.
+    /// Authorized voucher signer (server hot key).
     public let receiverAuthorizer: String
     /// Forced-close/withdraw delay advertised by the server.
     public let withdrawDelay: UInt32

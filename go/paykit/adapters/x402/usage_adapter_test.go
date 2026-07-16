@@ -3,7 +3,9 @@ package x402
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -61,6 +63,22 @@ func (r *uptoTestRPC) GetAccountInfoWithOpts(ctx context.Context, account solana
 		}, nil
 	}
 	return r.FakeRPC.GetAccountInfoWithOpts(ctx, account, opts)
+}
+
+// singleSplitDistributionHash is the sealed hash of the always-explicit
+// single-entry 100% recipient split ([count u32 LE][recipient][bps u16 LE]).
+func singleSplitDistributionHash(recipient solana.PublicKey) [32]byte {
+	hasher := sha256.New()
+	var count [4]byte
+	binary.LittleEndian.PutUint32(count[:], 1)
+	_, _ = hasher.Write(count[:])
+	_, _ = hasher.Write(recipient.Bytes())
+	var bps [2]byte
+	binary.LittleEndian.PutUint16(bps[:], 10_000)
+	_, _ = hasher.Write(bps[:])
+	var out [32]byte
+	copy(out[:], hasher.Sum(nil))
+	return out
 }
 
 type testSigner struct {
@@ -319,7 +337,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		Salt:             salt,
 		Deposit:          1_000_000,
 		GracePeriod:      900,
-		DistributionHash: proto.EmptyDistributionHash,
+		DistributionHash: singleSplitDistributionHash(payee),
 		Payer:            payerKey.PublicKey(),
 		Payee:            payee,
 		AuthorizedSigner: operatorKey.PublicKey(),

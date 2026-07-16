@@ -5,8 +5,15 @@ settled before the handler runs), ``upto`` is two-phase: :meth:`X402Upto.verify_
 broadcasts the client's channel ``open`` (the signed deposit is the ceiling) and
 binds the on-chain channel state *before* the resource is served;
 :meth:`X402Upto.settle_actual` signs a receiver-authorizer voucher for the metered
-amount and submits ``settle_and_seal`` + ATA setup + ``distribute``,
-refunding ``deposit − actual`` *after* the resource is served.
+amount and submits the fee-payer-signed ``settle_and_seal`` + ATA setup +
+``distribute``, refunding ``deposit − actual`` *after* the resource is served.
+
+Channel roles: the receiver authorizer is the voucher signer only (payment
+authority). The fee payer is the transaction fee payer, rent payer, and
+zero-share channel ``payee`` (lifecycle authority): it signs ``settle_and_seal``
+and can always seal an abandoned channel with ``has_voucher = 0`` to recover its
+rent, but holds no payment authority — the distribution is always the explicit
+single-entry 100% ``payTo`` split, so the payee's implicit remainder is zero.
 
 Mirrors the Rust spine (``server/upto.rs``) and the Go reference
 (``go/protocols/x402/upto.go``). The on-chain machinery is reused from
@@ -80,13 +87,6 @@ _CHANNEL_STATUS_OPEN = 0
 
 # Default authorization window (Go DefaultMaxTimeoutSeconds).
 _DEFAULT_MAX_TIMEOUT_SECONDS = 6 * 50  # 300
-
-# The empty-recipient distribution hash baked into the program (no splits).
-_EMPTY_DISTRIBUTION_HASH = [
-    223, 63, 97, 152, 4, 169, 47, 219, 64, 87, 25, 45, 196, 61, 215, 72,
-    234, 119, 138, 220, 82, 188, 73, 140, 232, 5, 36, 192, 20, 184, 17, 25,
-]  # fmt: skip
-
 
 def _empty_distribution() -> list[Distribution]:
     return []
@@ -273,7 +273,9 @@ class X402Upto:
         mint = Pubkey.from_string(requirements["asset"])
         fee_payer_pubkey = Pubkey.from_string(fee_payer)
         receiver_authorizer_pubkey = Pubkey.from_string(receiver_authorizer)
-        payee = receiver_authorizer_pubkey
+        # The fee payer holds the channel payee seat (zero-share lifecycle
+        # authority); the receiver authorizer signs vouchers only.
+        payee = fee_payer_pubkey
         distribution = self._distribution(requirements)
         token_program = Pubkey.from_string(requirements["extra"]["tokenProgram"])
         channel_id = Pubkey.from_string(payload["channelId"])
@@ -381,9 +383,11 @@ class X402Upto:
         try:
             assert_settlement_within_ceiling(actual, verified.max_amount)
 
+            # settle_and_seal is signed by the fee payer (the zero-share payee
+            # seat); the receiver authorizer signs only the Ed25519 voucher.
             if actual == 0:
                 instructions: list[Instruction] = build_settle_and_seal_instructions(
-                    payee=receiver_authorizer,
+                    payee=fee_payer,
                     channel=verified.channel_id,
                     authorized_signer=receiver_authorizer,
                     signature=None,
@@ -399,7 +403,7 @@ class X402Upto:
                         f"voucher signature length {len(sig_bytes)}, want 64", code="payment_invalid"
                     )
                 instructions = build_settle_and_seal_instructions(
-                    payee=receiver_authorizer,
+                    payee=fee_payer,
                     channel=verified.channel_id,
                     authorized_signer=receiver_authorizer,
                     signature=sig_bytes,
@@ -408,9 +412,11 @@ class X402Upto:
                     program_id=verified.program_id,
                 )
 
-            # Settle to the payee the channel was opened and validated against in
-            # verify_open (gate.pay_to), not the global recipient - a usage gate
-            # may set its own pay_to, and distribute must target that ATA.
+            # Distribute against the payee seat the channel was opened and
+            # validated with in verify_open (the fee payer, zero share); the
+            # settled funds flow entirely through the bound distribution split
+            # (gate.pay_to, not the global recipient - a usage gate may set its
+            # own pay_to, and distribute must target that ATA).
             payee = verified.payee
             treasury = treasury_owner()
             distribute = build_distribute_instruction(
@@ -506,10 +512,10 @@ class X402Upto:
         return value if isinstance(value, str) and value != "" else None
 
     def _distribution(self, requirements: UptoRequirements) -> list[Distribution]:
-        receiver_authorizer = Pubkey.from_string(requirements["extra"]["receiverAuthorizer"])
+        # Always explicit: the payee seat is held by the facilitator (feePayer)
+        # with a zero implicit remainder, so 100% of settled funds must be
+        # assigned to payTo through the recipients list.
         beneficiary = Pubkey.from_string(requirements["payTo"])
-        if beneficiary == receiver_authorizer:
-            return []
         return [Distribution(recipient=beneficiary, bps=10_000)]
 
     async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Any:
@@ -546,7 +552,8 @@ class X402Upto:
             raise InvalidProofError(f"token mint mismatch: expected {mint}, got {channel.mint}", code="payment_invalid")
         if str(channel.payee) != str(payee):
             raise InvalidProofError(
-                f"recipient mismatch: expected {payee}, got {channel.payee}", code="payment_invalid"
+                f"channel payee mismatch: expected the fee payer {payee}, got {channel.payee}",
+                code="payment_invalid",
             )
         expected_hash = list(_distribution_hash(distribution))
         if list(channel.distributionHash) != expected_hash:

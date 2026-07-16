@@ -215,17 +215,24 @@ func (o *UptoVerifiedOpen) Release() {
 
 // UptoConfig configures the x402 upto server engine.
 type UptoConfig struct {
-	Recipient                string
-	Currency                 string
-	Decimals                 uint8
-	Network                  uptoNetwork
-	RPCURL                   string
-	Resource                 string
-	Description              string
-	MaxTimeoutSeconds        uint64
-	TokenProgram             string
-	ChannelProgram           string
-	FeePayerSigner           uptoSigner
+	Recipient         string
+	Currency          string
+	Decimals          uint8
+	Network           uptoNetwork
+	RPCURL            string
+	Resource          string
+	Description       string
+	MaxTimeoutSeconds uint64
+	TokenProgram      string
+	ChannelProgram    string
+	// FeePayerSigner is the transaction fee payer, channel rent payer, and
+	// zero-share channel payee. It signs settle_and_seal (lifecycle
+	// authority) and can always seal an abandoned channel with
+	// has_voucher = 0 to recover its rent.
+	FeePayerSigner uptoSigner
+	// ReceiverAuthorizerSigner is the channel authorized_signer: it signs
+	// only the Ed25519 vouchers (payment authority). Defaults to
+	// FeePayerSigner for self-facilitation.
 	ReceiverAuthorizerSigner uptoSigner
 	WithdrawDelay            uint32
 	RecentBlockhashProvider  func() (string, error)
@@ -312,10 +319,15 @@ func (u *X402Upto) SetRPCForTests(rpcClient solanatx.RPCClient) {
 	u.rpc = rpcClient
 }
 
-// FeePayer returns the transaction fee/rent payer public key.
+// FeePayer returns the transaction fee payer, channel rent payer, and
+// zero-share channel payee public key. Holding the payee seat gives it
+// lifecycle authority: it can always settle_and_seal with has_voucher = 0 to
+// recover its rent, but cannot settle a nonzero amount or redirect funds —
+// those need the receiver authorizer's voucher and the sealed distribution.
 func (u *X402Upto) FeePayer() string { return u.feePayer.String() }
 
-// ReceiverAuthorizer returns the channel payee and voucher signer public key.
+// ReceiverAuthorizer returns the voucher signer public key (the channel
+// authorized_signer). It signs only the Ed25519 voucher, never transactions.
 func (u *X402Upto) ReceiverAuthorizer() string { return u.receiverAuthorizer.String() }
 
 // UptoRequirements builds the route-pinned upto requirement for maxAmount.
@@ -445,7 +457,10 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err != nil {
 		return nil, fmt.Errorf("invalid mint: %w", err)
 	}
-	expectedPayee := u.receiverAuthorizer
+	// The fee payer (facilitator) holds the channel payee seat with a
+	// zero-share distribution; the receiver authorizer is only the
+	// authorized voucher signer.
+	expectedPayee := u.feePayer
 	expectedDistribution, err := u.distribution()
 	if err != nil {
 		return nil, err
@@ -537,7 +552,7 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 		return nil, fmt.Errorf("token mint mismatch: expected %s, got %s", expectedMint, channel.Mint)
 	}
 	if !channel.Payee.Equals(expectedPayee) {
-		return nil, fmt.Errorf("recipient mismatch: expected %s, got %s", expectedPayee, channel.Payee)
+		return nil, fmt.Errorf("channel payee mismatch: expected fee payer %s, got %s", expectedPayee, channel.Payee)
 	}
 	expectedDistributionHash := distributionHash(expectedDistribution)
 	if !bytes.Equal(channel.DistributionHash[:], expectedDistributionHash[:]) {
@@ -580,7 +595,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if actual == 0 {
 		var err error
 		instructions, err = paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
-			Payee: u.receiverAuthorizer, Channel: open.ChannelID, AuthorizedSigner: u.receiverAuthorizer,
+			Payee: u.feePayer, Channel: open.ChannelID, AuthorizedSigner: u.receiverAuthorizer,
 			Signature: nil, CumulativeAmount: 0, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 		})
 		if err != nil {
@@ -601,7 +616,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		var voucherSignature [64]byte
 		copy(voucherSignature[:], sigBytes)
 		instructions, err = paymentchannels.BuildSettleAndSealInstructions(paymentchannels.SettleAndSealParams{
-			Payee: u.receiverAuthorizer, Channel: open.ChannelID, AuthorizedSigner: u.receiverAuthorizer,
+			Payee: u.feePayer, Channel: open.ChannelID, AuthorizedSigner: u.receiverAuthorizer,
 			Signature: &voucherSignature, CumulativeAmount: actual, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 		})
 		if err != nil {
@@ -610,7 +625,7 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	}
 	payee := open.Payee
 	if payee.IsZero() {
-		payee = u.receiverAuthorizer
+		payee = u.feePayer
 	}
 	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
 		Channel: open.ChannelID, Payer: open.Payer, RentPayer: open.RentPayer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
@@ -646,9 +661,8 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("build settlement transaction: %w", err)
 	}
-	if err := signPaykitTransaction(ctx, tx, u.cfg.ReceiverAuthorizerSigner); err != nil {
-		return UptoSettlementResponse{}, fmt.Errorf("receiver authorizer signing failed: %w", err)
-	}
+	// settle_and_seal is signed by the fee payer (the channel payee); the
+	// receiver authorizer signs only the Ed25519 voucher above.
 	if err := signPaykitTransaction(ctx, tx, u.cfg.FeePayerSigner); err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("fee payer signing failed: %w", err)
 	}
@@ -662,10 +676,11 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	return UptoSettlementResponse{Success: true, Payer: open.Payer.String(), Transaction: signature.String(), Network: open.Network, Amount: strconv.FormatUint(actual, 10)}, nil
 }
 
+// distribution returns the sealed recipient split: always the explicit
+// single-entry 100% payTo split. The payee seat is held by the facilitator
+// (fee payer) with a zero implicit remainder, so all settled funds must be
+// assigned to the recipient through the recipients list.
 func (u *X402Upto) distribution() ([]paymentchannels.Distribution, error) {
-	if u.cfg.Recipient == "" || u.cfg.Recipient == u.ReceiverAuthorizer() {
-		return nil, nil
-	}
 	recipient, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient: %w", err)

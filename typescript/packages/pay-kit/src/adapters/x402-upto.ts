@@ -102,6 +102,9 @@ export class X402Upto {
 
     constructor(config: PayKitConfig) {
         this.#network = caip2(config.network) as Network;
+        // The operator key holds both seats: fee payer (transaction sponsor,
+        // rent payer, and zero-share channel payee) and receiver authorizer
+        // (voucher signer).
         this.#feePayer = config.operator.signer.pubkey;
         this.#receiverAuthorizer = config.operator.signer.pubkey;
         this.#signer = config.operator.signer;
@@ -175,7 +178,8 @@ export class X402Upto {
 
     /**
      * Settle the metered amount (`actualBaseUnits`, clamped to the ceiling) against
-     * a verified open: receiver-authorizer voucher, settle-and-seal, refund the remainder.
+     * a verified open: receiver-authorizer voucher, fee-payer-signed settle-and-seal,
+     * refund the remainder.
      *
      * @throws {InvalidProofError} when settlement fails.
      */
@@ -205,7 +209,7 @@ export class X402Upto {
                 channelId: payload.channelId,
                 mint: verified.requirements.asset,
                 network: verified.requirements.network,
-                payee: this.#receiverAuthorizer,
+                payee: this.#feePayer,
                 payer: payload.from,
                 rentPayer: this.#feePayer,
                 rpc: submitRpc,
@@ -263,7 +267,10 @@ export class X402Upto {
     }
 
     #recipientSplits(recipient: string): readonly { readonly bps: number; readonly recipient: string }[] {
-        return this.#receiverAuthorizer === recipient ? [] : [{ bps: BASIS_POINTS_DENOMINATOR, recipient }];
+        // Always explicit: the payee seat is held by the fee payer with a zero
+        // implicit remainder, so 100% of settled funds must be assigned to
+        // `payTo` through the recipients list.
+        return [{ bps: BASIS_POINTS_DENOMINATOR, recipient }];
     }
 
     /**

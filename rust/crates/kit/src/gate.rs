@@ -121,7 +121,8 @@ pub struct PayKit {
     mpp: Arc<Mpp>,
     x402: Arc<X402>,
     /// Usage-based x402 `upto` handler. `Some` only when `fee_payer_signer` is
-    /// set — the operator must sign settlement vouchers, so `upto` routes
+    /// set — the operator signs `settle_and_seal` as the zero-share channel
+    /// payee and, by default, the settlement vouchers, so `upto` routes
     /// require a signer.
     x402_upto: Option<Arc<X402Upto>>,
     /// High-throughput x402 `batch-settlement` handler. `Some` only when
@@ -187,7 +188,8 @@ impl PayKit {
         })
         .map_err(|e| PayKitError::X402(e.to_string()))?;
 
-        // The `upto` scheme needs an operator signer to settle vouchers, so it
+        // The `upto` scheme needs an operator signer to sign `settle_and_seal`
+        // (as the zero-share channel payee) and the settlement vouchers, so it
         // is only available when the gate sponsors fees with a signer.
         let x402_upto = config
             .fee_payer_signer
@@ -804,8 +806,8 @@ async fn upto_gate_middleware(
 /// **maximum** price. The handler reports actual usage via the [`Charge`]
 /// extractor; the gate settles that amount and refunds the rest.
 ///
-/// Requires a `fee_payer_signer` on [`PayKitConfig`] (the operator signs
-/// settlement vouchers).
+/// Requires a `fee_payer_signer` on [`PayKitConfig`] (the operator signs the
+/// settlement, as the channel's zero-share payee, and the vouchers).
 pub fn paid_upto_get<H, T, S>(
     handler: H,
     max_price: impl Into<Price>,

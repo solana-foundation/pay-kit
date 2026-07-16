@@ -31,11 +31,13 @@ func randomSalt() (uint64, error) {
 }
 
 // BuildUptoPayload derives the payment-channel open and assembles the upto
-// authorization payload. The channel open_slot comes from the challenge
-// (extra.recentSlot, pre-fetched by the server alongside
-// extra.recentBlockhash); clients never fetch the slot via RPC. It is a
-// channel PDA seed and an open arg, and the program rejects future slots and
-// slots older than the 1500-slot window.
+// authorization payload. The open names extra.feePayer as transaction fee
+// payer, rent payer, and zero-share channel payee, and
+// extra.receiverAuthorizer as the authorized voucher signer only. The channel
+// open_slot comes from the challenge (extra.recentSlot, pre-fetched by the
+// server alongside extra.recentBlockhash); clients never fetch the slot via
+// RPC. It is a channel PDA seed and an open arg, and the program rejects
+// future slots and slots older than the 1500-slot window.
 func BuildUptoPayload(
 	ctx context.Context,
 	signer solanatx.Signer,
@@ -73,13 +75,13 @@ func BuildUptoPayload(
 	if requirements.Extra.WithdrawDelay == 0 {
 		return nil, errors.New("x402 client: requirement missing extra.withdrawDelay")
 	}
-	recipients := []paymentchannels.Distribution(nil)
-	if !beneficiary.Equals(receiverAuthorizer) {
-		recipients = []paymentchannels.Distribution{{
-			Recipient: beneficiary,
-			Bps:       10_000,
-		}}
-	}
+	// Always explicit: the payee seat is held by the facilitator (feePayer)
+	// with a zero implicit remainder, so 100% of settled funds must be
+	// assigned to payTo through the recipients list.
+	recipients := []paymentchannels.Distribution{{
+		Recipient: beneficiary,
+		Bps:       10_000,
+	}}
 	programID := paymentchannels.ProgramPubkey()
 	var tokenProgram solana.PublicKey
 	if requirements.Extra.TokenProgram != "" {
@@ -106,7 +108,7 @@ func BuildUptoPayload(
 	}
 	channel, _, err := paymentchannels.FindChannelPDAForProgram(
 		signer.PublicKey(),
-		receiverAuthorizer,
+		feePayer,
 		mint,
 		receiverAuthorizer,
 		salt,
@@ -119,7 +121,7 @@ func BuildUptoPayload(
 	openIx, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            signer.PublicKey(),
 		RentPayer:        feePayer,
-		Payee:            receiverAuthorizer,
+		Payee:            feePayer,
 		Mint:             mint,
 		AuthorizedSigner: receiverAuthorizer,
 		Salt:             salt,

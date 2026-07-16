@@ -263,6 +263,57 @@ def test_client_open_tx_passes_engine_validator() -> None:
     assert build_upto_header(client, req, int(time.time()) + 300, nonce="n")
 
 
+def test_client_open_tx_payee_is_fee_payer() -> None:
+    """With distinct feePayer/receiverAuthorizer keys, the client puts the fee
+    payer in the payee seat (slot 2 + PDA seed) and keeps the receiver
+    authorizer as the authorized signer only (slot 4 + voucher)."""
+    _, fee_payer = _operator()
+    _, authorizer = _operator()
+    client = LocalSigner.from_keypair(Keypair())
+    req = _requirements(fee_payer, str(Keypair().pubkey()))
+    req["extra"]["receiverAuthorizer"] = authorizer
+    payload = build_upto_payload(client, req, int(time.time()) + 300)
+    assert payload["authorizedSigner"] == authorizer
+    account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
+    assert account_keys[0] == fee_payer
+    validate_upto_open_instruction(
+        account_keys,
+        instructions,
+        program_id=_default_program(),
+        fee_payer=Pubkey.from_string(fee_payer),
+        receiver_authorizer=Pubkey.from_string(authorizer),
+        payer=Pubkey.from_string(client.pubkey()),
+        payee=Pubkey.from_string(fee_payer),  # the zero-share payee seat
+        mint=Pubkey.from_string(MINT),
+        token_program=Pubkey.from_string(TOKEN_PROGRAM),
+        channel_id=Pubkey.from_string(payload["channelId"]),
+        max_amount=MAX,
+        withdraw_delay=900,
+        payload_nonce=payload["nonce"],
+        payload_open_slot=payload["openSlot"],
+        recent_slot=4242,
+    )
+    # A validator that expects the receiver authorizer in the payee seat rejects.
+    with pytest.raises(InvalidProofError, match="payee mismatch"):
+        validate_upto_open_instruction(
+            account_keys,
+            instructions,
+            program_id=_default_program(),
+            fee_payer=Pubkey.from_string(fee_payer),
+            receiver_authorizer=Pubkey.from_string(authorizer),
+            payer=Pubkey.from_string(client.pubkey()),
+            payee=Pubkey.from_string(authorizer),  # the old payee assignment
+            mint=Pubkey.from_string(MINT),
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            channel_id=Pubkey.from_string(payload["channelId"]),
+            max_amount=MAX,
+            withdraw_delay=900,
+            payload_nonce=payload["nonce"],
+            payload_open_slot=payload["openSlot"],
+            recent_slot=4242,
+        )
+
+
 def test_client_open_tx_validator_rejects_wrong_payee() -> None:
     _, op = _operator()
     payee = str(Keypair().pubkey())

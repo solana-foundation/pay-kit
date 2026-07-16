@@ -106,11 +106,17 @@ func TestUptoDistributionBranches(t *testing.T) {
 	receiverAuthorizerKey := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 
-	// Recipient == receiver authorizer collapses to no split.
+	// The split is always the explicit single-entry 100% payTo split, even
+	// when the recipient is the receiver authorizer: the fee payer holds the
+	// payee seat with a zero implicit remainder.
 	same := newCoverageUptoEngine(t, nil)
 	same.cfg.Recipient = same.ReceiverAuthorizer()
-	if entries, err := same.distribution(); err != nil || entries != nil {
-		t.Fatalf("distribution(recipient==receiverAuthorizer) = %v, %v; want nil, nil", entries, err)
+	sameEntries, err := same.distribution()
+	if err != nil {
+		t.Fatalf("distribution(recipient==receiverAuthorizer): %v", err)
+	}
+	if len(sameEntries) != 1 || sameEntries[0].Recipient.String() != same.ReceiverAuthorizer() || sameEntries[0].Bps != 10_000 {
+		t.Fatalf("distribution = %+v, want single 10000bps split to receiver authorizer", sameEntries)
 	}
 
 	// A distinct recipient gets the whole payment as a single split.
@@ -298,17 +304,18 @@ func TestUptoSettleActualErrorPaths(t *testing.T) {
 		t.Fatalf("error = %v, want empty blockhash rejection", err)
 	}
 
-	// Settle-transaction signing failure: the receiver-authorizer key is not a
-	// required signer when the configured signer advertises the wrong pubkey.
-	wrongSigner := newCoverageUptoEngine(t, &operatorKey)
-	wrongSigner.cfg.ReceiverAuthorizerSigner = failingSigner{
-		pubkey: testutil.NewPrivateKey().PublicKey().String(),
-		sign:   func([]byte) ([]byte, error) { return make([]byte, 64), nil },
+	// Settle-transaction signing failure: the fee payer signs settle_and_seal
+	// as the channel payee (the receiver authorizer signs only the voucher,
+	// which the still-configured working signer covers here).
+	txSignErr := newCoverageUptoEngine(t, &operatorKey)
+	txSignErr.cfg.FeePayerSigner = failingSigner{
+		pubkey: operatorKey.PublicKey().String(),
+		sign:   func([]byte) ([]byte, error) { return nil, errors.New("kms down") },
 	}
-	wrongSigner.SetRPCForTests(newUptoTestRPC())
-	if _, err := wrongSigner.SettleActual(context.Background(), verifiedOpen(), 1); err == nil ||
-		!strings.Contains(err.Error(), "receiver authorizer signing failed") {
-		t.Fatalf("error = %v, want receiver authorizer signing failure", err)
+	txSignErr.SetRPCForTests(newUptoTestRPC())
+	if _, err := txSignErr.SettleActual(context.Background(), verifiedOpen(), 1); err == nil ||
+		!strings.Contains(err.Error(), "fee payer signing failed") {
+		t.Fatalf("error = %v, want fee payer signing failure", err)
 	}
 
 	// Broadcast failure.

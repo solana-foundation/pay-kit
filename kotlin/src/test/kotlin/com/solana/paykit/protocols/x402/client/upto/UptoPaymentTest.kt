@@ -32,7 +32,9 @@ class UptoPaymentTest {
     // is deterministic across runs.
     private val signer = MemorySigner.fromSeed(ByteArray(32) { (it + 1).toByte() })
 
-    private val feePayer = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    // Distinct fee payer (zero-share channel payee) and receiver authorizer
+    // (voucher signer) so payee-seat assertions can tell the roles apart.
+    private val feePayer = MemorySigner.fromSeed(ByteArray(32) { (it + 2).toByte() }).address
     private val receiverAuthorizer = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
     private val mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     private val beneficiary = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
@@ -254,7 +256,7 @@ class UptoPaymentTest {
         val payload = buildUptoPayload(signer, requirements(), 1L, saltProvider = { fixedSalt })
         val expected = PaymentChannels.findChannelPda(
             payer = PublicKey(signer.publicKeyBytes),
-            payee = PublicKey.fromBase58(receiverAuthorizer),
+            payee = PublicKey.fromBase58(feePayer),
             mint = PublicKey.fromBase58(mint),
             authorizedSigner = PublicKey.fromBase58(receiverAuthorizer),
             salt = fixedSalt,
@@ -272,13 +274,19 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun pay_to_equals_receiver_authorizer_yields_empty_recipients() {
+    fun pay_to_equals_receiver_authorizer_still_yields_full_split() {
+        // The payee seat is the zero-share fee payer, so even payTo ==
+        // receiverAuthorizer must be an explicit single 100% split.
         val req = requirements(payTo = receiverAuthorizer)
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
         // discriminator(1)+salt(8)+deposit(8)+gracePeriod(4)+openSlot(8) = 29,
         // then u32 count.
-        assertEquals(0, u32Le(data, 29))
+        assertEquals(1, u32Le(data, 29))
+        val recipient = data.copyOfRange(33, 65)
+        assertTrue(recipient.contentEquals(PublicKey.fromBase58(receiverAuthorizer).bytes))
+        val bps = (data[65].toInt() and 0xff) or ((data[66].toInt() and 0xff) shl 8)
+        assertEquals(10_000, bps)
     }
 
     @Test
@@ -293,7 +301,7 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun pay_to_not_receiver_authorizer_yields_one_distribution_with_full_bps() {
+    fun distribution_is_always_one_pay_to_entry_with_full_bps() {
         val req = requirements(payTo = beneficiary)
         val payload = buildUptoPayload(signer, req, 1L, saltProvider = { fixedSalt })
         val data = openInstructionData(payload.openTransaction!!)
@@ -306,14 +314,16 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun recipients_branch_changes_open_transaction() {
-        val opAsBeneficiary = buildUptoPayload(
+    fun different_pay_to_changes_open_transaction() {
+        // The sole distribution entry is payTo, so a different beneficiary
+        // must produce a different signed open transaction.
+        val toReceiverAuthorizer = buildUptoPayload(
             signer, requirements(payTo = receiverAuthorizer), 1L, saltProvider = { fixedSalt },
         )
-        val split = buildUptoPayload(
+        val toBeneficiary = buildUptoPayload(
             signer, requirements(payTo = beneficiary), 1L, saltProvider = { fixedSalt },
         )
-        assertNotEquals(opAsBeneficiary.openTransaction, split.openTransaction)
+        assertNotEquals(toReceiverAuthorizer.openTransaction, toBeneficiary.openTransaction)
     }
 
     @Test
