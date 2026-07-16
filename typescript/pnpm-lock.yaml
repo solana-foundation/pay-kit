@@ -122,13 +122,8 @@ importers:
         specifier: file:../../.x402-vendor/x402-core-2.16.0.tgz
         version: file:.x402-vendor/x402-core-2.16.0.tgz
       '@x402/svm':
-<<<<<<< HEAD
         specifier: file:../../.x402-vendor/x402-svm-2.16.0-paykit.2.tgz
-        version: file:.x402-vendor/x402-svm-2.16.0-paykit.2.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
-=======
-        specifier: file:../../.x402-vendor/x402-svm-2.16.0-paykit.1.tgz
-        version: file:.x402-vendor/x402-svm-2.16.0-paykit.1.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
->>>>>>> origin/main
+        version: file:.x402-vendor/x402-svm-2.16.0-paykit.2.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.8)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.0)
@@ -5906,11 +5901,7 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-<<<<<<< HEAD
-  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0-paykit.2.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@6.10.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))':
-=======
-  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0-paykit.1.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))':
->>>>>>> origin/main
+  '@x402/svm@file:.x402-vendor/x402-svm-2.16.0-paykit.2.tgz(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))':
     dependencies:
       '@solana-program/compute-budget': 0.11.0(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@solana-program/token': 0.9.0(@solana/kit@6.10.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@6.0.6))
