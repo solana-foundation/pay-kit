@@ -1925,7 +1925,10 @@ mod tests {
             )
         };
 
-        assert!(check(&fee_payer).is_ok(), "fee-payer-payee open must validate");
+        assert!(
+            check(&fee_payer).is_ok(),
+            "fee-payer-payee open must validate"
+        );
 
         // Neither the receiver authorizer nor the recipient is the channel
         // payee: validating the same open against either must fail — proving

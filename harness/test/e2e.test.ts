@@ -1073,30 +1073,35 @@ function expectPaymentChannelSettlement(
   scenarioEnv: Record<string, string>,
 ): void {
   const actual = primaryDelta(scenario);
+  // The split tail is always the explicit single payTo entry now, so every
+  // settlement carries an idempotent recipient-ATA create before distribute.
   if (actual === 0n) {
     expect(
       message.instructions,
       "x402-upto zero-actual settlement instruction count",
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   } else {
     expect(
       message.instructions,
       "x402-upto settlement instruction count",
-    ).toHaveLength(5);
+    ).toHaveLength(6);
   }
 
   let settle: (typeof message.instructions)[number];
   let createPayee: (typeof message.instructions)[number];
   let createTreasury: (typeof message.instructions)[number];
+  let createRecipient: (typeof message.instructions)[number];
   let distribute: (typeof message.instructions)[number];
   if (actual === 0n) {
-    [settle, createPayee, createTreasury, distribute] = message.instructions;
+    [settle, createPayee, createTreasury, createRecipient, distribute] =
+      message.instructions;
   } else {
     const [
       verify,
       nonZeroSettle,
       nonZeroCreatePayee,
       nonZeroCreateTreasury,
+      nonZeroCreateRecipient,
       nonZeroDistribute,
     ] = message.instructions;
     expect(accountAt(message, verify.programAddressIndex)).toBe(
@@ -1114,6 +1119,7 @@ function expectPaymentChannelSettlement(
     settle = nonZeroSettle;
     createPayee = nonZeroCreatePayee;
     createTreasury = nonZeroCreateTreasury;
+    createRecipient = nonZeroCreateRecipient;
     distribute = nonZeroDistribute;
   }
 
@@ -1155,6 +1161,12 @@ function expectPaymentChannelSettlement(
   expectIdempotentAtaCreationInstruction(message, createTreasury, {
     ata: treasuryAta,
     owner: PAYMENT_CHANNEL_TREASURY_OWNER,
+    mint,
+    tokenProgram,
+  });
+  expectIdempotentAtaCreationInstruction(message, createRecipient, {
+    ata: recipientAta,
+    owner: primaryRecipientForScenario(scenario, scenarioEnv),
     mint,
     tokenProgram,
   });
