@@ -22,11 +22,11 @@ fn write_stdout_line(line: &str) {
     }
 }
 use solana_pay_kit::mpp::client::build_credential_header;
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::mpp::solana_rpc_client::rpc_client::RpcClient;
 use solana_pay_kit::mpp::{
     parse_www_authenticate_all, AUTHORIZATION_HEADER, WWW_AUTHENTICATE_HEADER,
 };
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 
 const SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 

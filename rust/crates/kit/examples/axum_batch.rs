@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::{paid_batch_get, PayKit, PayKitConfig, Payment};
 
 /// A cheap, high-frequency endpoint: each call costs $0.001.

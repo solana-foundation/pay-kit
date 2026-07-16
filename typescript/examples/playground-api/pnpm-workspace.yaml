@@ -1,2 +1,6 @@
 packages:
   - .
+allowBuilds:
+  bufferutil: false
+  esbuild: true
+  utf-8-validate: false

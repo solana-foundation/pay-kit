@@ -4,7 +4,6 @@ use solana_commitment_config::CommitmentConfig;
 use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
@@ -645,28 +644,14 @@ impl X402 {
             VerifiedExactPayment::Transaction(tx) => tx,
         };
 
-        // Co-sign the fee-payer slot (the client left it empty for the sponsor).
-        // Solana's fee payer is always account index 0, so require the sponsor
-        // to occupy that slot — finding the key anywhere in the account list
-        // would let a crafted tx put another signer at index 0 and the sponsor
-        // later, signing the wrong slot and leaving the real fee payer unsigned.
-        let fee_payer_key = fee_payer.pubkey();
-        if tx.message.static_account_keys().first() != Some(&fee_payer_key) {
-            return Err(Error::Other(
-                "transaction fee payer must match the provided fee payer signer".into(),
-            ));
-        }
-        if tx.signatures.is_empty() {
-            return Err(Error::Other(
-                "fee payer is not a required transaction signer".into(),
-            ));
-        }
-        let signer_index = 0;
-        let signature = fee_payer
-            .sign_message(&tx.message.serialize())
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-        tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
+        let configured_fee_payer = self.config.fee_payer_key.as_deref().ok_or_else(|| {
+            Error::Other("fee_payer_key must be configured before exact settlement".into())
+        })?;
+        let expected_fee_payer = Pubkey::from_str(configured_fee_payer).map_err(|error| {
+            Error::Other(format!("invalid configured fee payer pubkey: {error}"))
+        })?;
+        crate::core::signing::cosign_versioned_fee_payer(fee_payer, &expected_fee_payer, &mut tx)
+            .await?;
 
         // Broadcast + confirm, relying on the node's preflight simulation
         // (skip_preflight stays off) instead of a separate simulate round-trip.
@@ -986,6 +971,43 @@ mod tests {
                 .collect(),
             ..config()
         }
+    }
+
+    fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        Box::new(solana_keychain::MemorySigner::from_bytes(&keypair).expect("valid keypair"))
+    }
+
+    #[tokio::test]
+    async fn settle_exact_rejects_a_signer_that_differs_from_the_configured_sponsor() {
+        let fee_payer = memory_signer(7);
+        let mut server_config = config();
+        server_config.fee_payer_key = Some(Pubkey::new_unique().to_string());
+        let x402 = X402::new(server_config).unwrap();
+
+        let recipient = Pubkey::new_unique();
+        let message = Message::new_with_blockhash(
+            &[system_instruction::transfer(
+                &fee_payer.pubkey(),
+                &recipient,
+                1,
+            )],
+            Some(&fee_payer.pubkey()),
+            &Hash::new_unique(),
+        );
+        let tx = VersionedTransaction::from(Transaction::new_unsigned(message));
+
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx), fee_payer.as_ref())
+            .await
+            .expect_err("a signer other than the configured sponsor must be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("fee payer signer does not match the expected fee payer"));
     }
 
     #[test]

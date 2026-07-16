@@ -859,7 +859,6 @@ async fn partial_sign_tx(
     use solana_transaction::Transaction;
     let message = Message::new_with_blockhash(instructions, Some(fee_payer), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
-    let msg = tx.message_data();
 
     // Sign the sender slot only when the sender is a required signer on this tx
     // (the final transfer's authority). The proof/record-account txs have no
@@ -868,18 +867,14 @@ async fn partial_sign_tx(
     let sender_pubkey = signer.pubkey();
     let num_signers = tx.message.header.num_required_signatures as usize;
     if tx.message.account_keys[..num_signers].contains(&sender_pubkey) {
-        let sig_bytes = signer
-            .sign_message(&msg)
+        signer
+            .sign_transaction(&mut tx)
             .await
             .map_err(|e| Error::Other(format!("signing failed: {e}")))?;
-        set_signature(
-            &mut tx,
-            &sender_pubkey,
-            Signature::from(<[u8; 64]>::from(sig_bytes)),
-        )?;
     }
 
     // Ephemeral account keypairs sign synchronously.
+    let msg = tx.message_data();
     for kp in extra {
         set_signature(&mut tx, &kp.pubkey(), kp.sign_message(&msg))?;
     }
@@ -955,6 +950,8 @@ pub(crate) fn cast_ae_ciphertext_v7_to_legacy(v7: &AeCiphertext) -> PodAeCiphert
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use solana_keychain::{SignTransactionResult, SignerError};
     use solana_zk_sdk::encryption::auth_encryption::AeKey;
 
     fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {
@@ -963,6 +960,43 @@ mod tests {
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
         Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    struct TransactionOnlySigner(Pubkey);
+
+    #[async_trait]
+    impl SolanaSigner for TransactionOnlySigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::Transaction,
+        ) -> std::result::Result<SignTransactionResult, SignerError> {
+            let index = tx
+                .message
+                .account_keys
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
+            let signature = Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(SignTransactionResult::Partial((String::new(), signature)))
+        }
+
+        async fn sign_message(
+            &self,
+            _message: &[u8],
+        ) -> std::result::Result<Signature, SignerError> {
+            Err(SignerError::Other(
+                "transaction bytes used the off-chain signing path".into(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
     }
 
     fn decode_tx(b64: &str) -> solana_transaction::Transaction {
@@ -1029,12 +1063,12 @@ mod tests {
 
     #[tokio::test]
     async fn partial_sign_signs_sender_when_it_is_a_required_signer() {
-        let signer = memory_signer(1);
+        let signer = TransactionOnlySigner(Pubkey::new_unique());
         let sender = signer.pubkey();
-        let gateway = memory_signer(2).pubkey();
+        let gateway = Pubkey::new_unique();
         // Transfer makes `sender` a required signer; gateway is the fee payer.
         let ix = system_instruction::transfer(&sender, &gateway, 1);
-        let b64 = partial_sign_tx(signer.as_ref(), &gateway, &[], &[ix], Hash::default())
+        let b64 = partial_sign_tx(&signer, &gateway, &[], &[ix], Hash::default())
             .await
             .unwrap();
         let tx = decode_tx(&b64);
@@ -1043,6 +1077,6 @@ mod tests {
         let gw = keys.iter().position(|k| *k == gateway).unwrap();
         assert_eq!(tx.signatures[gw], Signature::default());
         let s = keys.iter().position(|k| *k == sender).unwrap();
-        assert_ne!(tx.signatures[s], Signature::default());
+        assert_eq!(tx.signatures[s], Signature::from([7u8; 64]));
     }
 }

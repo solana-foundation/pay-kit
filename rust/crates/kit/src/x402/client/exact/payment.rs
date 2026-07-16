@@ -92,18 +92,7 @@ pub async fn build_payment(
         message: versioned_message,
     };
 
-    let sig_bytes = signer
-        .sign_message(&tx.message.serialize())
-        .await
-        .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    let signer_index = tx
-        .message
-        .static_account_keys()
-        .iter()
-        .position(|k| k == &signer_pubkey)
-        .ok_or_else(|| Error::Other("Signer not found in transaction accounts".to_string()))?;
-    tx.signatures[signer_index] = sig;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx).await?;
 
     let serialized =
         bincode::serialize(&tx).map_err(|e| Error::Other(format!("Serialization failed: {e}")))?;
@@ -1012,6 +1001,37 @@ mod tests {
             .unwrap()
             .chars()
             .all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn sponsored_payment_signs_only_the_payer_slot() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let sponsor = Pubkey::new_unique();
+        let rpc = RpcClient::new("http://localhost:8899".to_string());
+        let mut requirements = test_requirements("SOL");
+        requirements.fee_payer = Some(true);
+        requirements.fee_payer_key = Some(sponsor.to_string());
+
+        let payload = build_payment(&signer, &rpc, &requirements).await.unwrap();
+        let PaymentProof::Transaction { transaction } = payload.proof else {
+            panic!("expected transaction payload");
+        };
+        let tx = decode_tx(&transaction);
+        assert!(matches!(&tx.message, VersionedMessage::V0(_)));
+        assert_eq!(tx.message.static_account_keys()[0], sponsor);
+
+        let signer_index = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|key| key == &signer.pubkey)
+            .unwrap();
+        assert_ne!(signer_index, 0);
+        assert_eq!(tx.signatures[0], Signature::default());
+        assert_eq!(tx.signatures[signer_index], Signature::from([7u8; 64]));
     }
 
     #[tokio::test]

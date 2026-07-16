@@ -47,11 +47,11 @@ fn write_stderr_line(line: &str) {
 use solana_pay_kit::mpp::protocol::intents::ChargeRequest;
 use solana_pay_kit::mpp::protocol::solana::Split;
 use solana_pay_kit::mpp::server::{ChargeOptions, Config, Mpp};
-use solana_pay_kit::mpp::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::mpp::{
     format_www_authenticate, parse_authorization, AUTHORIZATION_HEADER, PAYMENT_RECEIPT_HEADER,
     WWW_AUTHENTICATE_HEADER,
 };
+use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
 
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
 const HEALTH_PATH: &str = "/health";

@@ -1,6 +1,9 @@
 {
   "private": true,
-  "packageManager": "pnpm@10.14.0",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "playground:install": "cd playground && pnpm install",
     "playground:dev": "cd playground && pnpm dev",

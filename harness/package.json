@@ -2,18 +2,13 @@
   "private": true,
   "name": "mpp-sdk-harness",
   "type": "module",
-  "packageManager": "pnpm@10.14.0",
+  "packageManager": "pnpm@11.13.0",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "test:onchain": "HARNESS_ONCHAIN=1 vitest run -c vitest.onchain.config.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:onchain": "tsc --noEmit -p tsconfig.onchain.json"
-  },
-  "pnpm": {
-    "overrides": {
-      "ws": "^8.20.1"
-    }
   },
   "dependencies": {
     "@solana/kit": "^6.5.0",

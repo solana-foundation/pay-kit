@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::{paid_upto_post, Charge, PayKit, PayKitConfig, Payment};
 
 /// Price per generated token, in USDC base units (6 decimals): 100 = $0.0001.

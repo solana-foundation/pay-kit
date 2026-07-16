@@ -2,6 +2,7 @@
   "name": "playground-api",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.13.0",
   "scripts": {
     "dev": "tsx watch --clear-screen=false index.ts",
     "start": "tsx index.ts",

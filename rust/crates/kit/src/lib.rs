@@ -21,6 +21,9 @@
 //! - [`generated`]: Codama-generated program clients (payment-channels +
 //!   subscriptions), consumed by `core`/`mpp`.
 
+/// Protocol-neutral access to the signer traits and backends used by pay-kit.
+pub use solana_keychain;
+
 /// Codama-generated program clients (payment-channels + subscriptions).
 #[cfg(any(feature = "mpp", feature = "x402"))]
 pub mod generated;

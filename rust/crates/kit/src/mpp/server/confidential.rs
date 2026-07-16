@@ -14,6 +14,7 @@ use solana_transaction::{versioned::VersionedTransaction, Transaction};
 
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{programs, MethodDetails};
+#[cfg(feature = "worker")]
 use crate::mpp::store::Store;
 
 use super::charge::{

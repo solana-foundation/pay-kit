@@ -9,7 +9,7 @@ use std::{
 
 use base64::Engine as _;
 use serde_json::json;
-use solana_keychain::{memory::MemorySigner, SolanaSigner};
+use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::exact::{PaymentRequiredEnvelope, PaymentRequirements},
     server::{
@@ -18,7 +18,6 @@ use solana_pay_kit::x402::{
     PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V2,
 };
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
@@ -343,18 +342,8 @@ async fn sign_fee_payer(
     fee_payer: &MemorySigner,
 ) -> Result<VersionedTransaction, Box<dyn std::error::Error + Send + Sync>> {
     let fee_payer_key = fee_payer.pubkey();
-    let signer_index = tx
-        .message
-        .static_account_keys()
-        .iter()
-        .position(|key| key == &fee_payer_key)
-        .ok_or_else(|| "fee payer not found in transaction accounts".to_string())?;
-    if signer_index >= tx.signatures.len() {
-        return Err("fee payer is not a required transaction signer".into());
-    }
-
-    let signature = fee_payer.sign_message(&tx.message.serialize()).await?;
-    tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
+    solana_pay_kit::core::signing::cosign_versioned_fee_payer(fee_payer, &fee_payer_key, &mut tx)
+        .await?;
     Ok(tx)
 }
 

@@ -1,8 +1,23 @@
 packages:
   - 'packages/*'
 
+allowBuilds:
+  bufferutil: false
+  esbuild: true
+  unrs-resolver: true
+  utf-8-validate: false
+
 # Force transitive `ws` past GHSA-58qx-3vcg-4xpx (uninitialized memory
 # disclosure, patched in 8.20.1). Reaches us via
 # @solana/kit > @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket.
 overrides:
-  ws: '^8.20.1'
+  ws: '^8.21.0'
+  '@x402/core': 'file:.x402-vendor/x402-core-2.16.0.tgz'
+  '@hono/node-server': '>=1.19.13'
+  fast-uri: '>=3.1.2'
+  hono: '>=4.12.25'
+  ip-address: '>=10.1.1'
+  js-yaml: '>=4.2.0'
+  path-to-regexp: '>=8.4.0'
+  qs: '>=6.15.2'
+  yaml: '>=2.8.3'

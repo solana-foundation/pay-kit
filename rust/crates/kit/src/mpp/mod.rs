@@ -99,7 +99,7 @@ pub use store::{
 };
 
 // Re-export crates callers need to use with the charge builder.
-pub use solana_keychain;
+pub use crate::solana_keychain;
 pub use solana_rpc_client;
 
 /// Reusable OpenTelemetry init (feature `otel`), shared with x402/pay so spans

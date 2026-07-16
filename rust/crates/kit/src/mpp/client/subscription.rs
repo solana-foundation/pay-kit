@@ -16,7 +16,6 @@ use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_transaction::Transaction;
 
 use crate::mpp::error::Error;
@@ -307,21 +306,12 @@ pub async fn build_subscription_activation_transaction_with_options(
 
     // Sign as subscriber; the server adds the puller and fee-payer
     // signatures (puller is the server, so the server holds the puller key
-    // too). For v0 the subscriber is the only client-side signer; when fee
+    // too). The subscriber is the only client-side signer; when fee
     // sponsorship is in play, the tx is broadcast partially signed.
-    let serialized_msg = tx.message_data();
-    let sig_bytes = signer
-        .sign_message(&serialized_msg)
+    signer
+        .sign_transaction(&mut tx)
         .await
         .map_err(|e| Error::Other(format!("Subscriber signature failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    let subscriber_idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| k == &subscriber)
-        .ok_or_else(|| Error::Other("Subscriber not in account keys".into()))?;
-    tx.signatures[subscriber_idx] = sig;
 
     let serialized = bincode::serialize(&tx)
         .map_err(|e| Error::Other(format!("Failed to serialize tx: {e}")))?;
@@ -370,12 +360,10 @@ async fn ensure_subscription_authority_init_id(
 
     let message = Message::new_with_blockhash(&[init_ix], Some(&subscriber), blockhash);
     let mut tx = Transaction::new_unsigned(message);
-    let sig_bytes = signer
-        .sign_message(&tx.message_data())
+    signer
+        .sign_transaction(&mut tx)
         .await
         .map_err(|e| Error::Other(format!("SA init signature failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    tx.signatures[0] = sig;
 
     rpc.send_and_confirm_transaction(&tx).map_err(|e| {
         Error::Other(format!(
@@ -490,6 +478,9 @@ fn compute_unit_limit_ix(units: u32) -> Instruction {
 mod tests {
     use super::*;
     use crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID;
+    use async_trait::async_trait;
+    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_signature::Signature;
 
     #[test]
     fn method_details_parse_required_fields() {
@@ -524,6 +515,43 @@ mod tests {
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
         Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    struct TransactionOnlySigner(Pubkey);
+
+    #[async_trait]
+    impl SolanaSigner for TransactionOnlySigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            tx: &mut Transaction,
+        ) -> std::result::Result<SignTransactionResult, SignerError> {
+            let index = tx
+                .message
+                .account_keys
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
+            let signature = Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(SignTransactionResult::Partial((String::new(), signature)))
+        }
+
+        async fn sign_message(
+            &self,
+            _message: &[u8],
+        ) -> std::result::Result<Signature, SignerError> {
+            Err(SignerError::Other(
+                "transaction bytes used the off-chain signing path".into(),
+            ))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
     }
 
     fn make_method_details(
@@ -645,12 +673,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn fee_payer_true_with_fee_payer_key_sets_fee_payer_account() {
-        let signer = make_signer();
+        let signer = TransactionOnlySigner(Pubkey::new_unique());
         let rpc = RpcClient::new_mock("succeeds".to_string());
         let fee_payer_key = "FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
         let md = make_method_details(true, Some(fee_payer_key));
         let payload = build_subscription_activation_transaction_with_options(
-            &*signer,
+            &signer,
             &rpc,
             &md,
             pinned_options(BuildSubscriptionActivationOptions::default()),
@@ -665,9 +693,19 @@ mod tests {
                 )
                 .expect("base64 decode");
                 let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
-                // In a v0 message the fee payer is account_keys[0].
+                // In a sponsored transaction the fee payer is account_keys[0].
                 let expected_fee_payer = Pubkey::from_str(fee_payer_key).unwrap();
                 assert_eq!(tx.message.account_keys[0], expected_fee_payer);
+
+                let subscriber_index = tx
+                    .message
+                    .account_keys
+                    .iter()
+                    .position(|key| key == &signer.pubkey())
+                    .expect("subscriber signer account");
+                assert_ne!(subscriber_index, 0);
+                assert_eq!(tx.signatures[0], Signature::default());
+                assert_eq!(tx.signatures[subscriber_index], Signature::from([7u8; 64]));
             }
             _ => panic!("expected Transaction payload"),
         }

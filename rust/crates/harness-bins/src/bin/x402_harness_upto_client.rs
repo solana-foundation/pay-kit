@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde_json::json;
-use solana_keychain::memory::MemorySigner;
+use solana_pay_kit::solana_keychain::memory::MemorySigner;
 use solana_pay_kit::x402::{
     client::upto::{build_upto_header, parse_upto_challenge},
     PAYMENT_SIGNATURE_HEADER,

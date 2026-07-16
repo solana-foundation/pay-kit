@@ -1,8 +1,8 @@
 {
   "private": true,
-  "packageManager": "pnpm@10.14.0",
+  "packageManager": "pnpm@11.13.0",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -22,20 +22,6 @@
     "docs:watch": "typedoc --watch"
   },
   "prettier": "@solana/prettier-config-solana",
-  "pnpm": {
-    "overrides": {
-      "ws": "^8.21.0",
-      "@x402/core": "file:.x402-vendor/x402-core-2.16.0.tgz",
-      "@hono/node-server": ">=1.19.13",
-      "fast-uri": ">=3.1.2",
-      "hono": ">=4.12.25",
-      "ip-address": ">=10.1.1",
-      "js-yaml": ">=4.2.0",
-      "path-to-regexp": ">=8.4.0",
-      "qs": ">=6.15.2",
-      "yaml": ">=2.8.3"
-    }
-  },
   "devDependencies": {
     "@solana/eslint-config-solana": "^6.0.0",
     "@solana/prettier-config-solana": "^0.0.6",
