@@ -180,8 +180,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-v2-
+          key: ${{ runner.os }}-luarocks-runtime-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-runtime-v3-
       - name: Install runtime rocks
         if: steps.cache-rocks.outputs.cache-hit != 'true'
         working-directory: lua

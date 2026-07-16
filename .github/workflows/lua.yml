@@ -25,8 +25,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-v2-
+          # Keep the dev toolchain separate from the runtime-only harness
+          # cache: the latter does not contain luacheck or luacov.
+          key: ${{ runner.os }}-luarocks-dev-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-dev-v3-
 
       - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec + lua-resty-openssl + cjson)
         if: steps.cache-rocks.outputs.cache-hit != 'true'
@@ -110,8 +112,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-v2-
+          key: ${{ runner.os }}-luarocks-runtime-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-runtime-v3-
 
       - name: Install runtime rocks
         if: steps.cache-rocks.outputs.cache-hit != 'true'
