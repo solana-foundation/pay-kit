@@ -10,7 +10,6 @@
 //! - `axum` — unified dual-protocol payment gate (needs both protocols).
 //! - `confidential` — Token-2022 confidential transfers (mpp).
 //! - `gcp_kms` — GCP KMS signer support.
-//! - `ledger` — Ledger hardware-wallet signer support (Solana SDK v3).
 //! - `otel` — OpenTelemetry init.
 //! - `testkit` — settlement test/demo harness.
 //!

@@ -557,15 +557,6 @@ mod tests {
             &self,
             _message: &[u8],
         ) -> Result<solana_signature::Signature, SignerError> {
-            Err(SignerError::Other(
-                "transaction bytes used the off-chain signing path".to_string(),
-            ))
-        }
-
-        async fn sign_transaction_message(
-            &self,
-            _message: &[u8],
-        ) -> Result<solana_signature::Signature, SignerError> {
             if self.fail_sign {
                 Err(SignerError::SigningFailed("boom".to_string()))
             } else {

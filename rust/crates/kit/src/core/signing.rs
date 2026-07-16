@@ -1,8 +1,8 @@
 //! Shared transaction-signing helpers.
 //!
-//! Transaction bytes must go through a signer's transaction-signing path.
-//! `sign_message` is reserved for protocol and off-chain messages because
-//! hardware wallets may wrap those bytes in Solana's off-chain envelope.
+//! The current keychain release signs serialized transaction messages through
+//! `sign_message`. Hardware-wallet support stays out of this release until its
+//! transaction-signing API is published.
 
 use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
@@ -11,28 +11,7 @@ use solana_transaction::versioned::VersionedTransaction;
 
 use crate::core::{Error, Result};
 
-/// Connect to a Ledger using the default device selection policy.
-///
-/// This protocol-neutral wrapper keeps downstream applications insulated from
-/// the keychain backend's constructor details. `derivation_path` defaults to
-/// Ledger Live's first Solana account when omitted. Set
-/// `confirm_pubkey_on_device` while registering an account, but not on every
-/// subsequent signing connection.
-#[cfg(feature = "ledger")]
-pub fn connect_ledger(
-    derivation_path: Option<&str>,
-    confirm_pubkey_on_device: bool,
-) -> std::result::Result<solana_keychain::Signer, solana_keychain::SignerError> {
-    solana_keychain::LedgerSigner::connect(derivation_path, confirm_pubkey_on_device, None)
-        .map(solana_keychain::Signer::Ledger)
-}
-
 /// Sign the calling signer's required slot in a legacy or v0 transaction.
-///
-/// `VersionedTransaction` covers both wire formats. The keychain method takes
-/// the serialized message so hardware wallets can route it through their
-/// transaction parser while software signers preserve their existing raw
-/// Ed25519 signature.
 pub async fn sign_versioned_transaction_slot(
     signer: &dyn SolanaSigner,
     tx: &mut VersionedTransaction,
@@ -58,7 +37,7 @@ pub async fn sign_versioned_transaction_slot(
     }
 
     let signature = signer
-        .sign_transaction_message(&tx.message.serialize())
+        .sign_message(&tx.message.serialize())
         .await
         .map_err(|error| Error::Other(format!("transaction signing failed: {error}")))?;
     tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
@@ -123,13 +102,6 @@ mod tests {
         }
 
         async fn sign_message(
-            &self,
-            _message: &[u8],
-        ) -> std::result::Result<Signature, SignerError> {
-            Err(SignerError::Other("wrong off-chain path".into()))
-        }
-
-        async fn sign_transaction_message(
             &self,
             message: &[u8],
         ) -> std::result::Result<Signature, SignerError> {
