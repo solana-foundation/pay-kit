@@ -23,6 +23,7 @@ expect(["rust/crates/kit/src/mpp/lib.rs"], ["rust"]);
 expect(["harness/go-server/main.go"], ["go"]);
 expect(["python/src/solana_pay_kit/protocols/mpp/server/session.py"], ["python"]);
 expect(["harness/python-server/server.py"], ["python"]);
+expect(["scripts/check-python-supply-chain.sh"], ["python"]);
 expect(["ruby/lib/pay_kit/protocols/mpp/store.rb"], ["ruby"]);
 expect(["lua/pay_kit/protocols/mpp/store.lua"], ["lua"]);
 expect(["php/src/Protocol/Mpp/Store.php"], ["php"]);

@@ -31,6 +31,7 @@ const LANGUAGE_PATHS = {
     "python/",
     "harness/python-server/",
     ".github/workflows/python.yml",
+    "scripts/check-python-supply-chain",
   ],
   ruby: ["ruby/", "harness/ruby-server/", ".github/workflows/ruby.yml"],
   lua: ["lua/", "harness/lua-server/", ".github/workflows/lua.yml"],

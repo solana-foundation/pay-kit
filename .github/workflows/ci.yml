@@ -82,6 +82,9 @@ jobs:
       - name: Publish workflow guard self-test
         working-directory: .
         run: bash scripts/check-publish-workflow-guards_test.sh
+      - name: Python supply-chain guard self-test
+        working-directory: .
+        run: bash scripts/check-python-supply-chain_test.sh
 
   typecheck:
     name: Typecheck

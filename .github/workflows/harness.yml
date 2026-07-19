@@ -115,19 +115,28 @@ jobs:
     name: "Harness: Python"
     needs: build
     runs-on: ubuntu-latest
+    env:
+      UV_MALWARE_CHECK: "1"
+      UV_PREVIEW_FEATURES: "audit-command,malware-check"
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Python supply-chain guard self-test
+        run: bash scripts/check-python-supply-chain_test.sh
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
+          version: "0.11.26"
           # uv owns the frozen dependency cache; a pip cache is absent after uv sync.
           cache-dependency-glob: python/uv.lock
           enable-cache: true
       - name: Verify uv.lock is up to date
         working-directory: python
         run: uv lock --check
+      - name: Audit locked Python dependencies
+        working-directory: python
+        run: uv audit --frozen
       - name: Install Python SDK (frozen)
         working-directory: python
         # Install from the committed uv.lock (not a floating `pip install -e`) so
