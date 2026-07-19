@@ -15,10 +15,10 @@ job_policy() {
   local file="$1"
   local job="$2"
   awk -v target="  ${job}:" '
-    function scan_uv_sync(line) {
+    function scan_uv_command(line) {
       sub(/^[[:space:]]+/, "", line)
       if (line ~ /^#/ || line ~ /^[[:space:]]*$/) return
-      if (line ~ /(^|[[:space:]])uv[[:space:]]+sync([[:space:]]|$)/ &&
+      if (line ~ /(^|[[:space:]])uv[[:space:]]+(sync|run)([[:space:]]|$)/ &&
           line !~ /(^|[[:space:]])--frozen([[:space:]]|$)/) {
         unfrozen = 1
       }
@@ -47,7 +47,7 @@ job_policy() {
       if (in_env && line == "UV_PREVIEW_FEATURES: \"audit-command,malware-check\"") preview = 1
       else misplaced = 1
     }
-    in_job { scan_uv_sync($0) }
+    in_job { scan_uv_command($0) }
     END { if (in_job) emit() }
   ' "$file"
 }
@@ -72,7 +72,7 @@ check_job_policy() {
     fail_check "${file#$ROOT/}:${job} overrides supply-chain env outside its job-level env"
   fi
   if grep -Fq 'unfrozen=1' <<<"$policy"; then
-    fail_check "${file#$ROOT/}:${job} contains a non-frozen uv sync"
+    fail_check "${file#$ROOT/}:${job} contains a non-frozen uv sync or uv run"
   fi
   if grep -Fq 'disabled=1' <<<"$policy"; then
     fail_check "${file#$ROOT/}:${job} can be disabled by a job-level condition"
@@ -158,6 +158,7 @@ check_job_policy "$harness_workflow" python
 check_job_policy "$pypi_workflow" publish
 
 check_blocking_audit "$python_workflow" test-python
+check_blocking_audit "$python_workflow" harness-python
 check_blocking_audit "$harness_workflow" python
 check_blocking_audit "$pypi_workflow" publish
 

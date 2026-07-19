@@ -54,6 +54,20 @@ if ROOT="$work" "$guard" >/dev/null 2>&1; then
 fi
 
 reset_fixture
+awk '
+  $0 == "  harness-python:" { in_job = 1 }
+  in_job && $0 ~ /^  [A-Za-z0-9_-]+:/ && $0 != "  harness-python:" { in_job = 0 }
+  in_job && $0 == "      - name: Audit locked Python dependencies" { skip = 1; next }
+  skip && $0 ~ /^      - / { skip = 0 }
+  skip { next }
+  { print }
+' "$work/.github/workflows/python.yml" > "$work/python.yml"
+mv "$work/python.yml" "$work/.github/workflows/python.yml"
+if ROOT="$work" "$guard" >/dev/null 2>&1; then
+  fail "guard accepted the Python harness matrix without the blocking audit"
+fi
+
+reset_fixture
 sed 's/run: uv sync --frozen --extra dev/run: uv sync --extra dev/' \
   "$work/.github/workflows/harness.yml" > "$work/harness.yml"
 mv "$work/harness.yml" "$work/.github/workflows/harness.yml"
@@ -71,6 +85,17 @@ awk '/run: uv sync --frozen --extra dev/ && replaced == 0 {
 mv "$work/harness.yml" "$work/.github/workflows/harness.yml"
 if ROOT="$work" "$guard" >/dev/null 2>&1; then
   fail "guard accepted a non-frozen Python harness sync in a block scalar"
+fi
+
+reset_fixture
+awk 'replaced == 0 && /run: uv run --frozen pydoc-markdown/ {
+  sub(/uv run --frozen/, "uv run")
+  replaced = 1
+}
+{ print }' "$work/.github/workflows/python.yml" > "$work/python.yml"
+mv "$work/python.yml" "$work/.github/workflows/python.yml"
+if ROOT="$work" "$guard" >/dev/null 2>&1; then
+  fail "guard accepted a non-frozen Python tool invocation"
 fi
 
 reset_fixture

@@ -42,12 +42,12 @@ jobs:
         run: uv run --frozen pydoc-markdown >/dev/null
       - name: Lint with ruff
         working-directory: python
-        run: uv run ruff check src tests
+        run: uv run --frozen ruff check src tests
       - name: Type check with pyright
         working-directory: python
         # Point pyright at the interpreter the extras were installed into; it
         # does not reliably auto-detect the active env on the runner.
-        run: uv run pyright --pythonpath "$(uv run python -c 'import sys; print(sys.executable)')"
+        run: uv run --frozen pyright --pythonpath "$(uv run --frozen python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
         # Coverage gate: line coverage at 90% over solana_pay_kit (the MPP wire layer
@@ -55,7 +55,7 @@ jobs:
         # pyproject (live-RPC paths). Branch coverage gate is follow-up work,
         # tracked in #108.
         run: |
-          uv run pytest \
+          uv run --frozen pytest \
             --cov=solana_pay_kit \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
@@ -85,6 +85,9 @@ jobs:
           version: "0.11.26"
           cache-dependency-glob: python/uv.lock
           enable-cache: true
+      - name: Audit locked Python dependencies
+        working-directory: python
+        run: uv audit --frozen
       - name: Install Python SDK
         working-directory: python
         run: |
