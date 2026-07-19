@@ -87,6 +87,28 @@ if ROOT="$work" "$guard" >/dev/null 2>&1; then
 fi
 
 reset_fixture
+awk '/- name: Install Python SDK \(frozen\)/ && added == 0 {
+  print "      - name: Attempted runtime supply-chain override"
+  print "        run: echo UV_MALWARE_CHECK=0 UV_PREVIEW_FEATURES=none >> \"$GITHUB_ENV\""
+  added = 1
+} { print }' "$work/.github/workflows/harness.yml" > "$work/harness.yml"
+mv "$work/harness.yml" "$work/.github/workflows/harness.yml"
+if ROOT="$work" "$guard" >/dev/null 2>&1; then
+  fail "guard accepted a runtime supply-chain environment override"
+fi
+
+reset_fixture
+awk '$0 == "  test-python:" {
+  print
+  print "    if: ${{ false }}"
+  next
+} { print }' "$work/.github/workflows/python.yml" > "$work/python.yml"
+mv "$work/python.yml" "$work/.github/workflows/python.yml"
+if ROOT="$work" "$guard" >/dev/null 2>&1; then
+  fail "guard accepted a disabled Python test job"
+fi
+
+reset_fixture
 awk 'replaced == 0 && /version: "0.11.26"/ {
   print "          # version: \"0.11.26\""
   replaced = 1

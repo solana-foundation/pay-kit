@@ -28,18 +28,20 @@ job_policy() {
       print "preview=" preview
       print "misplaced=" misplaced
       print "unfrozen=" unfrozen
+      print "disabled=" disabled
     }
     $0 == target { in_job = 1; next }
     in_job && $0 ~ /^  [A-Za-z0-9_-]+:/ { emit(); exit }
     in_job && $0 ~ /^    env:[[:space:]]*$/ { in_env = 1; next }
     in_job && in_env && $0 ~ /^    [A-Za-z0-9_-]+:/ { in_env = 0 }
-    in_job && /UV_MALWARE_CHECK:/ {
+    in_job && $0 ~ /^    if:/ { disabled = 1 }
+    in_job && /UV_MALWARE_CHECK/ {
       line = $0
       sub(/^[[:space:]]+/, "", line)
       if (in_env && line == "UV_MALWARE_CHECK: \"1\"") malware = 1
       else misplaced = 1
     }
-    in_job && /UV_PREVIEW_FEATURES:/ {
+    in_job && /UV_PREVIEW_FEATURES/ {
       line = $0
       sub(/^[[:space:]]+/, "", line)
       if (in_env && line == "UV_PREVIEW_FEATURES: \"audit-command,malware-check\"") preview = 1
@@ -71,6 +73,9 @@ check_job_policy() {
   fi
   if grep -Fq 'unfrozen=1' <<<"$policy"; then
     fail_check "${file#$ROOT/}:${job} contains a non-frozen uv sync"
+  fi
+  if grep -Fq 'disabled=1' <<<"$policy"; then
+    fail_check "${file#$ROOT/}:${job} can be disabled by a job-level condition"
   fi
 }
 
