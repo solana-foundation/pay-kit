@@ -54,6 +54,14 @@ if ROOT="$work" "$guard" >/dev/null 2>&1; then
 fi
 
 reset_fixture
+sed 's/run: uv audit --frozen/run: echo audit-disabled/' \
+  "$work/.github/workflows/pypi-publish.yml" > "$work/pypi-publish.yml"
+mv "$work/pypi-publish.yml" "$work/.github/workflows/pypi-publish.yml"
+if ROOT="$work" "$guard" >/dev/null 2>&1; then
+  fail "guard accepted the PyPI publish workflow without the blocking audit"
+fi
+
+reset_fixture
 awk '
   $0 == "  harness-python:" { in_job = 1 }
   in_job && $0 ~ /^  [A-Za-z0-9_-]+:/ && $0 != "  harness-python:" { in_job = 0 }

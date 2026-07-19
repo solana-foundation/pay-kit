@@ -182,6 +182,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: [
       "uv",
       "run",
+      "--frozen",
       "--project",
       "../python",
       "python",
@@ -198,6 +199,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: [
       "uv",
       "run",
+      "--frozen",
       "--project",
       "../python",
       "python",
@@ -298,6 +300,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: [
       "uv",
       "run",
+      "--frozen",
       "--project",
       "../python",
       "python",
@@ -413,6 +416,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "uv",
       "run",
+      "--frozen",
       "--project",
       "../python",
       "python",
@@ -520,6 +524,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "uv",
       "run",
+      "--frozen",
       "--project",
       "../python",
       "python",
