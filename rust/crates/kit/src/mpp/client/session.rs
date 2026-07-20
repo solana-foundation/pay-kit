@@ -1006,6 +1006,7 @@ mod open_tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
+            settlement_authority: crate::mpp::SessionSettlementAuthority::ClientVoucher,
             modes: vec![SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,

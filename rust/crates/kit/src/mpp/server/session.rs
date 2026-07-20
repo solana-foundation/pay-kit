@@ -58,17 +58,7 @@ pub struct Split {
 /// The simpler successor to the removed `multi_delegator` path. Both settle
 /// through the same batched worker; the difference is only who holds the
 /// channel's `authorized_signer`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum SettlementAuthority {
-    /// Client's ephemeral key signs each voucher (classic MPP push). Default —
-    /// preserves existing behavior.
-    #[default]
-    ClientVoucher,
-    /// Operator is the channel `authorized_signer` and signs settlement (the
-    /// x402 `upto` model). Usage metered server-side; one settlement at close.
-    Delegated,
-}
+pub use crate::mpp::protocol::intents::session::SessionSettlementAuthority as SettlementAuthority;
 
 impl SettlementAuthority {
     /// The channel `authorized_signer` to open with under this mode: the
@@ -112,6 +102,9 @@ pub struct SessionConfig {
     /// Minimum voucher increment (base units). 0 = no minimum.
     pub min_voucher_delta: u64,
 
+    /// Voucher signing authority, independent of transaction submission mode.
+    pub settlement_authority: SettlementAuthority,
+
     /// Forced-close grace period (seconds) used as the voucher settlement
     /// window: a non-zero voucher expiry MUST outlast this window so the
     /// operator can still redeem the voucher on-chain after the asynchronous
@@ -149,6 +142,7 @@ impl Default for SessionConfig {
             network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
+            settlement_authority: SettlementAuthority::ClientVoucher,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
@@ -334,6 +328,7 @@ impl<S: ChannelStore> SessionServer<S> {
             } else {
                 None
             },
+            settlement_authority: self.config.settlement_authority,
             // Omit if only Push — clients assume Push when modes is absent.
             modes: if self.config.modes == [SessionMode::Push] {
                 vec![]
@@ -414,6 +409,14 @@ impl<S: ChannelStore> SessionServer<S> {
         // missing/empty operator must hard-fail rather than silently skip the
         // rentPayer pin. rentPayer is pinned to it below (slot-1 == operator).
         let operator = parse_required_operator(&self.config.operator)?;
+
+        if self.config.settlement_authority == SettlementAuthority::Delegated
+            && authorized_signer != operator
+        {
+            return Err(Error::Other(
+                "delegated settlement requires authorizedSigner to match the operator".to_string(),
+            ));
+        }
 
         if payee != expected_payee {
             return Err(Error::Other(
@@ -1352,6 +1355,7 @@ mod tests {
                 network: "localnet".to_string(),
                 program_id: None,
                 min_voucher_delta: 0,
+                settlement_authority: SettlementAuthority::ClientVoucher,
                 grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
                 modes: vec![SessionMode::Push],
                 pull_voucher_strategy: None,
@@ -1373,6 +1377,7 @@ mod tests {
                 network: "localnet".to_string(),
                 program_id: None,
                 min_voucher_delta: min_delta,
+                settlement_authority: SettlementAuthority::ClientVoucher,
                 grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
                 modes: vec![SessionMode::Push],
                 pull_voucher_strategy: None,
@@ -1588,6 +1593,20 @@ mod tests {
                 .program_id,
             payment_channels::to_address(&expected.program_id)
         );
+
+        let delegated_server = SessionServer::new(
+            SessionConfig {
+                settlement_authority: SettlementAuthority::Delegated,
+                ..server.config.clone()
+            },
+            MemoryChannelStore::new(),
+        );
+        let err = delegated_server
+            .payment_channel_open_params(&payload)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("authorizedSigner to match the operator"));
 
         let mut wrong_payee = payload.clone();
         wrong_payee.payee = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
@@ -1992,6 +2011,7 @@ mod tests {
             network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
+            settlement_authority: SettlementAuthority::ClientVoucher,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
@@ -2015,6 +2035,7 @@ mod tests {
             network: "localnet".to_string(),
             program_id: None,
             min_voucher_delta: 500,
+            settlement_authority: SettlementAuthority::ClientVoucher,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
@@ -2044,6 +2065,7 @@ mod tests {
             network: "localnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
+            settlement_authority: SettlementAuthority::ClientVoucher,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push, SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),

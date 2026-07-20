@@ -14,8 +14,8 @@ pub use charge::ChargeRequest;
 pub use session::{
     ClosePayload, CommitPayload, CommitReceipt, CommitStatus, MeteredEnvelope, MeteringDirective,
     MeteringUsage, OpenPayload, SessionAction, SessionMode, SessionPullVoucherStrategy,
-    SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
-    DEFAULT_SESSION_EXPIRES_AT,
+    SessionRequest, SessionSettlementAuthority, SessionSplit, SignedVoucher, TopUpPayload,
+    VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
 };
 pub use subscription::{
     ActivatePayload, SubscriptionAction, SubscriptionMethodDetails, SubscriptionPeriodUnit,

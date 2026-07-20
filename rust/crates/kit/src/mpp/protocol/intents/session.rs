@@ -77,6 +77,23 @@ pub enum SessionMode {
     Pull,
 }
 
+/// Who holds voucher signing authority for the payment channel.
+///
+/// This is independent of [`SessionMode`], which only describes how the open
+/// transaction is submitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSettlementAuthority {
+    /// A payer-controlled key (normally an ephemeral session key) signs each
+    /// cumulative voucher before the server delivers paid service.
+    #[default]
+    ClientVoucher,
+    /// The payer binds the operator as `authorizedSigner`; the operator meters
+    /// usage and signs the cumulative settlement voucher before releasing the
+    /// buffered response.
+    Delegated,
+}
+
 /// Voucher authority used when [`SessionMode::Pull`] is advertised.
 ///
 /// This intentionally separates "how the session is opened" from "who signs
@@ -139,6 +156,11 @@ pub struct SessionRequest {
     /// Minimum voucher increment (base units). Prevents micro-increment spam.
     #[serde(rename = "minVoucherDelta", skip_serializing_if = "Option::is_none")]
     pub min_voucher_delta: Option<String>,
+
+    /// Voucher signing authority for this channel. Defaults to
+    /// `clientVoucher` for wire compatibility.
+    #[serde(rename = "settlementAuthority", default)]
+    pub settlement_authority: SessionSettlementAuthority,
 
     /// Session modes supported by this server.
     ///
@@ -810,6 +832,7 @@ mod tests {
             description: Some("API session".to_string()),
             external_id: None,
             min_voucher_delta: None,
+            settlement_authority: SessionSettlementAuthority::ClientVoucher,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -821,6 +844,23 @@ mod tests {
         assert_eq!(back.currency, "USDC");
         assert_eq!(back.description.as_deref(), Some("API session"));
         assert_eq!(back.modes, vec![SessionMode::Push]);
+        assert_eq!(
+            back.settlement_authority,
+            SessionSettlementAuthority::ClientVoucher
+        );
+    }
+
+    #[test]
+    fn session_request_delegated_settlement_authority_roundtrip() {
+        let json = r#"{"cap":"1000","currency":"USDC","operator":"op","recipient":"rec","settlementAuthority":"delegated"}"#;
+        let request: SessionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            request.settlement_authority,
+            SessionSettlementAuthority::Delegated
+        );
+        assert!(serde_json::to_string(&request)
+            .unwrap()
+            .contains("\"settlementAuthority\":\"delegated\""));
     }
 
     #[test]
@@ -837,6 +877,7 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
+            settlement_authority: SessionSettlementAuthority::ClientVoucher,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -865,6 +906,7 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
+            settlement_authority: SessionSettlementAuthority::ClientVoucher,
             modes: vec![SessionMode::Push, SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,
@@ -907,6 +949,7 @@ mod tests {
             description: None,
             external_id: Some("ref-1".to_string()),
             min_voucher_delta: None,
+            settlement_authority: SessionSettlementAuthority::ClientVoucher,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -1461,6 +1504,7 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: Some("500".to_string()),
+            settlement_authority: SessionSettlementAuthority::ClientVoucher,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -1486,6 +1530,7 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
+            settlement_authority: SessionSettlementAuthority::ClientVoucher,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
