@@ -536,6 +536,18 @@ impl<S: ChannelStore> SessionServer<S> {
             )));
         }
 
+        if self.config.settlement_authority == SettlementAuthority::Delegated {
+            let operator = parse_required_operator(&self.config.operator)?;
+            let authorized_signer =
+                parse_pubkey_field(&payload.authorized_signer, "authorizedSigner")?;
+            if authorized_signer != operator {
+                return Err(Error::Other(
+                    "delegated settlement requires authorizedSigner to match the operator"
+                        .to_string(),
+                ));
+            }
+        }
+
         // On-chain verification: confirm the open transaction was accepted.
         //
         // Pull mode: host integrations submit server-broadcast transactions or
@@ -1459,6 +1471,23 @@ mod tests {
 
         assert_eq!(state.channel_id, "chan1");
         assert_eq!(state.deposit, 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn delegated_open_rejects_non_operator_authorized_signer() {
+        let server = SessionServer::new(
+            SessionConfig {
+                settlement_authority: SettlementAuthority::Delegated,
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let payload = open_payload("chan1", 1_000_000, &Pubkey::new_unique().to_string());
+
+        let err = server.process_preverified_open(&payload).await.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("delegated settlement requires authorizedSigner to match the operator"));
     }
 
     #[tokio::test]
