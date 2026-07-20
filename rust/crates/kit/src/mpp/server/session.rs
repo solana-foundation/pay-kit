@@ -486,6 +486,25 @@ impl<S: ChannelStore> SessionServer<S> {
     /// existing channel are rejected when the channel is sealed or when the
     /// payload's authorized signer differs from the stored one.
     pub async fn process_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
+        self.process_open_inner(payload, true).await
+    }
+
+    /// Process an `open` action whose transaction the host already verified.
+    ///
+    /// This performs every payload, challenge, replay, and store validation in
+    /// [`Self::process_open`], but skips the RPC signature lookup. It is only
+    /// safe for host integrations that have independently validated the exact
+    /// open transaction, submitted it, and observed a successful on-chain
+    /// status before calling this method.
+    pub async fn process_preverified_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
+        self.process_open_inner(payload, false).await
+    }
+
+    async fn process_open_inner(
+        &self,
+        payload: &OpenPayload,
+        verify_on_chain: bool,
+    ) -> Result<ChannelState> {
         let supports_mode = if self.config.modes.is_empty() {
             payload.mode == SessionMode::Push
         } else {
@@ -521,7 +540,7 @@ impl<S: ChannelStore> SessionServer<S> {
         // method. Skip tx-sig verification here.
         //
         // Push mode: verify the payment-channel open tx is confirmed before persisting.
-        if payload.mode == SessionMode::Push {
+        if verify_on_chain && payload.mode == SessionMode::Push {
             if let Some(ref rpc_url) = self.config.rpc_url {
                 verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open)
                     .await
@@ -1411,6 +1430,25 @@ mod tests {
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
         assert_eq!(state.authorized_signer, "signer1");
+    }
+
+    #[tokio::test]
+    async fn process_preverified_open_skips_rpc_lookup() {
+        let server = SessionServer::new(
+            SessionConfig {
+                rpc_url: Some("http://127.0.0.1:1".to_string()),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+
+        let state = server
+            .process_preverified_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .await
+            .unwrap();
+
+        assert_eq!(state.channel_id, "chan1");
+        assert_eq!(state.deposit, 1_000_000);
     }
 
     #[tokio::test]
