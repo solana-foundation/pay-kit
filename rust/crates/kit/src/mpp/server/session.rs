@@ -1219,17 +1219,22 @@ async fn verify_transaction_signature_with_policy(
     let max_attempts = max_attempts.max(1);
 
     for attempt in 1..=max_attempts {
-        match rpc
-            .get_signature_status(&sig)
-            .await
-            .map_err(|e| Error::Other(format!("RPC error verifying {tx} tx: {e}")))?
-        {
-            Some(Ok(())) => return Ok(()),
-            Some(Err(e)) => {
+        match rpc.get_signature_status(&sig).await {
+            Ok(Some(Ok(()))) => return Ok(()),
+            Ok(Some(Err(e))) => {
                 return Err(Error::Other(format!("{tx} tx was rejected on-chain: {e}")));
             }
-            None if attempt < max_attempts => tokio::time::sleep(retry_delay).await,
-            None => break,
+            Ok(None) if attempt < max_attempts => tokio::time::sleep(retry_delay).await,
+            Ok(None) => break,
+            Err(error) if attempt < max_attempts => {
+                tracing::debug!(%error, attempt, "RPC error verifying {tx} tx, retrying");
+                tokio::time::sleep(retry_delay).await;
+            }
+            Err(error) => {
+                return Err(Error::Other(format!(
+                    "RPC error verifying {tx} tx: {error}"
+                )));
+            }
         }
     }
 
@@ -2839,6 +2844,70 @@ mod tests {
                 "result": {
                     "context": { "slot": 1 },
                     "value": [status]
+                }
+            }))
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/", post(signature_status))
+            .with_state(Arc::clone(&calls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let signature = solana_signature::Signature::from([7_u8; 64]).to_string();
+
+        verify_transaction_signature_with_policy(
+            &signature,
+            &rpc_url,
+            VerifiedTx::Open,
+            2,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn transaction_verification_retries_after_rpc_error() {
+        use axum::{extract::State, routing::post, Json, Router};
+        use serde_json::{json, Value};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        async fn signature_status(
+            State(calls): State<Arc<AtomicUsize>>,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"].clone(),
+                    "error": {
+                        "code": -32005,
+                        "message": "Node is unhealthy"
+                    }
+                }));
+            }
+
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "context": { "slot": 1 },
+                    "value": [{
+                        "slot": 1,
+                        "confirmations": null,
+                        "err": null,
+                        "confirmationStatus": "finalized",
+                        "status": { "Ok": null }
+                    }]
                 }
             }))
         }

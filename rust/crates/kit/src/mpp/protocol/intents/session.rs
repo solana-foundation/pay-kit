@@ -83,6 +83,7 @@ pub enum SessionMode {
 /// transaction is submitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum SessionSettlementAuthority {
     /// A payer-controlled key (normally an ephemeral session key) signs each
     /// cumulative voucher before the server delivers paid service.
