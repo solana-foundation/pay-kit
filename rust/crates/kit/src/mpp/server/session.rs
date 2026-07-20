@@ -523,10 +523,12 @@ impl<S: ChannelStore> SessionServer<S> {
         // Push mode: verify the payment-channel open tx is confirmed before persisting.
         if payload.mode == SessionMode::Push {
             if let Some(ref rpc_url) = self.config.rpc_url {
-                verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open).map_err(|e| {
-                    tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
-                    e
-                })?;
+                verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open)
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
+                        e
+                    })?;
                 tracing::debug!(signature = %payload.signature, "open tx confirmed on-chain");
             }
         }
@@ -647,10 +649,12 @@ impl<S: ChannelStore> SessionServer<S> {
         // On-chain verification: confirm the top-up transaction was accepted
         // (same RPC path as process_open).
         if let Some(ref rpc_url) = self.config.rpc_url {
-            verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::TopUp).map_err(|e| {
-                tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
-                e
-            })?;
+            verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::TopUp)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
+                    e
+                })?;
             tracing::debug!(signature = %payload.signature, "top-up tx confirmed on-chain");
         }
 
@@ -1141,6 +1145,11 @@ enum VerifiedTx {
 }
 
 #[cfg(feature = "server")]
+const TRANSACTION_STATUS_MAX_ATTEMPTS: usize = 60;
+#[cfg(feature = "server")]
+const TRANSACTION_STATUS_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[cfg(feature = "server")]
 impl std::fmt::Display for VerifiedTx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -1150,15 +1159,34 @@ impl std::fmt::Display for VerifiedTx {
     }
 }
 
-/// Confirm that `sig_str` is a finalized, successful transaction on-chain.
+/// Confirm that `sig_str` is a successful transaction on-chain.
 ///
 /// `tx` names the transaction in error messages (see [`VerifiedTx`]).
-/// Uses the blocking `RpcClient` — consistent with the rest of this module.
-/// Returns an error if the signature is malformed, the tx was rejected, or
-/// the tx is not found (not yet processed or doesn't exist).
+/// Retries temporarily missing statuses because RPC providers may route
+/// consecutive requests to replicas with different visibility. Returns an
+/// error if the signature is malformed, the tx was rejected, or it remains
+/// unavailable after the bounded retry window.
 #[cfg(feature = "server")]
-fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) -> Result<()> {
-    use solana_rpc_client::rpc_client::RpcClient;
+async fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) -> Result<()> {
+    verify_transaction_signature_with_policy(
+        sig_str,
+        rpc_url,
+        tx,
+        TRANSACTION_STATUS_MAX_ATTEMPTS,
+        TRANSACTION_STATUS_RETRY_DELAY,
+    )
+    .await
+}
+
+#[cfg(feature = "server")]
+async fn verify_transaction_signature_with_policy(
+    sig_str: &str,
+    rpc_url: &str,
+    tx: VerifiedTx,
+    max_attempts: usize,
+    retry_delay: std::time::Duration,
+) -> Result<()> {
+    use solana_rpc_client::nonblocking::rpc_client::RpcClient;
     use solana_signature::Signature;
     use std::str::FromStr;
 
@@ -1166,17 +1194,26 @@ fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) ->
         .map_err(|e| Error::Other(format!("invalid {tx} tx signature '{sig_str}': {e}")))?;
 
     let rpc = RpcClient::new(rpc_url.to_string());
+    let max_attempts = max_attempts.max(1);
 
-    match rpc
-        .get_signature_status(&sig)
-        .map_err(|e| Error::Other(format!("RPC error verifying {tx} tx: {e}")))?
-    {
-        Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(Error::Other(format!("{tx} tx was rejected on-chain: {e}"))),
-        None => Err(Error::Other(format!(
-            "{tx} tx '{sig_str}' not found — not yet confirmed or does not exist"
-        ))),
+    for attempt in 1..=max_attempts {
+        match rpc
+            .get_signature_status(&sig)
+            .await
+            .map_err(|e| Error::Other(format!("RPC error verifying {tx} tx: {e}")))?
+        {
+            Some(Ok(())) => return Ok(()),
+            Some(Err(e)) => {
+                return Err(Error::Other(format!("{tx} tx was rejected on-chain: {e}")));
+            }
+            None if attempt < max_attempts => tokio::time::sleep(retry_delay).await,
+            None => break,
+        }
     }
+
+    Err(Error::Other(format!(
+        "{tx} tx '{sig_str}' not found — not yet confirmed or does not exist"
+    )))
 }
 
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
@@ -2709,5 +2746,63 @@ mod tests {
                 || err.to_string().contains("close"),
             "Expected double-close error, got: {err}"
         );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn transaction_verification_retries_until_status_is_visible() {
+        use axum::{extract::State, routing::post, Json, Router};
+        use serde_json::{json, Value};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        async fn signature_status(
+            State(calls): State<Arc<AtomicUsize>>,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            let status = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Value::Null
+            } else {
+                json!({
+                    "slot": 1,
+                    "confirmations": null,
+                    "err": null,
+                    "confirmationStatus": "finalized",
+                    "status": { "Ok": null }
+                })
+            };
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"].clone(),
+                "result": {
+                    "context": { "slot": 1 },
+                    "value": [status]
+                }
+            }))
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/", post(signature_status))
+            .with_state(Arc::clone(&calls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let signature = solana_signature::Signature::from([7_u8; 64]).to_string();
+
+        verify_transaction_signature_with_policy(
+            &signature,
+            &rpc_url,
+            VerifiedTx::Open,
+            2,
+            std::time::Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 }
