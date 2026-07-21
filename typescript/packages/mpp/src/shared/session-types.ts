@@ -16,6 +16,7 @@ export type {
     SessionContext,
     SessionMode,
     SessionPullVoucherStrategy,
+    SessionSettlementAuthority,
     SessionRequest,
     SessionSigner,
     SessionSplit,

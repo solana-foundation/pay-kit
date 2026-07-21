@@ -2,6 +2,7 @@ import { Method, z } from 'mppx';
 
 const sessionMode = z.enum(['push', 'pull']);
 const sessionPullVoucherStrategy = z.enum(['clientVoucher', 'operatedVoucher']);
+const sessionSettlementAuthority = z.enum(['clientVoucher', 'delegated']);
 
 /**
  * `expiresAt` is an i64 on the wire, but JSON numbers above 2^53 - 1 lose
@@ -292,6 +293,8 @@ export const session = Method.from({
             programId: z.optional(z.string()),
             /** Voucher authority for pull-mode sessions. */
             pullVoucherStrategy: z.optional(sessionPullVoucherStrategy),
+            /** Voucher signing authority; absent defaults to clientVoucher. */
+            settlementAuthority: z.optional(sessionSettlementAuthority),
             /** Server-provided recent blockhash. */
             recentBlockhash: z.optional(z.string()),
             /** Server-provided current slot used as the channel `openSlot` PDA seed. */

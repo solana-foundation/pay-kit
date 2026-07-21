@@ -44,6 +44,12 @@ enum class SessionPullVoucherStrategy {
 }
 
 @Serializable
+enum class SessionSettlementAuthority {
+    @SerialName("clientVoucher") CLIENT_VOUCHER,
+    @SerialName("delegated") DELEGATED,
+}
+
+@Serializable
 enum class CommitStatus {
     @SerialName("committed") COMMITTED,
     @SerialName("replayed") REPLAYED,
@@ -92,6 +98,7 @@ data class SessionRequest(
     val minVoucherDelta: String? = null,
     val modes: List<SessionMode> = emptyList(),
     val pullVoucherStrategy: SessionPullVoucherStrategy? = null,
+    val settlementAuthority: SessionSettlementAuthority = SessionSettlementAuthority.CLIENT_VOUCHER,
     val recentBlockhash: String? = null,
     /** Server-prefetched current slot; the program's `open_slot` PDA seed the client echoes on open. */
     @Serializable(with = SaltStringSerializer::class) val recentSlot: ULong? = null,

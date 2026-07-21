@@ -16,6 +16,7 @@ import type {
     OpenPayload,
     SessionMode,
     SessionPullVoucherStrategy,
+    SessionSettlementAuthority,
     SessionRequest,
     SessionSplit,
     SignedVoucher,
@@ -102,6 +103,7 @@ export function session(parameters: session.Parameters) {
         programId,
         modes,
         pullVoucherStrategy,
+        settlementAuthority = 'clientVoucher',
         splits,
         pricing,
         rpc,
@@ -241,6 +243,7 @@ export function session(parameters: session.Parameters) {
                 ...(recentBlockhash ? { recentBlockhash } : {}),
                 ...(recentSlot ? { recentSlot } : {}),
                 recipient,
+                settlementAuthority,
                 ...(splits?.length ? { splits: [...splits] } : {}),
             };
 
@@ -270,6 +273,7 @@ export function session(parameters: session.Parameters) {
                         payload: cred.payload,
                         programId: resolvedProgramId,
                         pullVoucherStrategy,
+                        settlementAuthority,
                         recipient,
                         rpc,
                         store,
@@ -420,6 +424,7 @@ interface HandleOpenArgs {
     readonly payload: OpenPayload & { readonly action: 'open' };
     readonly programId: Address;
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
+    readonly settlementAuthority: SessionSettlementAuthority;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
@@ -433,6 +438,9 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     }
     if (mode === 'pull' && !args.pullVoucherStrategy) {
         throw new Error('pull-mode open requires a pullVoucherStrategy on the server config');
+    }
+    if (args.settlementAuthority === 'delegated' && payload.authorizedSigner !== args.operator) {
+        throw new Error('delegated settlement requires authorizedSigner to match the operator');
     }
 
     let channelId: string;
@@ -1276,6 +1284,8 @@ export declare namespace session {
         readonly programId?: Address | string;
         /** Voucher authority for pull-mode sessions. Required when modes includes 'pull'. */
         readonly pullVoucherStrategy?: SessionPullVoucherStrategy;
+        /** Voucher signing authority advertised by this session. */
+        readonly settlementAuthority?: SessionSettlementAuthority;
         /** Primary recipient (base58). */
         readonly recipient: string;
         /** Optional RPC client used for on-chain checks + transactions. */

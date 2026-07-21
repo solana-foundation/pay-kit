@@ -54,6 +54,16 @@ const (
 	SessionPullVoucherStrategyOperatedVoucher SessionPullVoucherStrategy = "operatedVoucher"
 )
 
+// SessionSettlementAuthority identifies who signs cumulative session vouchers.
+type SessionSettlementAuthority string
+
+const (
+	// SessionSettlementAuthorityClientVoucher means the client signs vouchers.
+	SessionSettlementAuthorityClientVoucher SessionSettlementAuthority = "clientVoucher"
+	// SessionSettlementAuthorityDelegated means the operator signs vouchers.
+	SessionSettlementAuthorityDelegated SessionSettlementAuthority = "delegated"
+)
+
 // CommitStatus is the commit receipt status.
 type CommitStatus string
 
@@ -118,6 +128,9 @@ type SessionRequest struct {
 	// Required when Modes includes SessionModePull. Omitted when pull is not
 	// supported.
 	PullVoucherStrategy *SessionPullVoucherStrategy `json:"pullVoucherStrategy,omitempty"`
+
+	// SettlementAuthority identifies who signs cumulative vouchers.
+	SettlementAuthority SessionSettlementAuthority `json:"settlementAuthority,omitempty"`
 
 	// RecentBlockhash is a recent blockhash pre-fetched by the server
 	// (base58). Included when the client needs to build server-broadcast

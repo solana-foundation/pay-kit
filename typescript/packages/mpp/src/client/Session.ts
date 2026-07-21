@@ -30,6 +30,9 @@ export type SessionMode = 'pull' | 'push';
  */
 export type SessionPullVoucherStrategy = 'clientVoucher' | 'operatedVoucher';
 
+/** Voucher signing authority advertised by a session challenge. */
+export type SessionSettlementAuthority = 'clientVoucher' | 'delegated';
+
 /**
  * Signer capable of Ed25519-signing exact voucher message bytes.
  */
@@ -71,6 +74,8 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly programId?: string | undefined;
     /** Voucher authority for pull-mode sessions. */
     readonly pullVoucherStrategy?: SessionPullVoucherStrategy | undefined;
+    /** Voucher signing authority; absent challenges default to client vouchers. */
+    readonly settlementAuthority?: SessionSettlementAuthority | undefined;
     /** Server-provided recent blockhash, saving the client an RPC round-trip. */
     readonly recentBlockhash?: string | undefined;
     /** Server-provided current slot, used as the channel `openSlot` PDA seed (u64 as string). */

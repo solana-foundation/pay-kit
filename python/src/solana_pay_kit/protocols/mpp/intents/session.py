@@ -23,6 +23,7 @@ __all__ = [
     "DEFAULT_SESSION_EXPIRES_AT",
     "SessionMode",
     "SessionPullVoucherStrategy",
+    "SessionSettlementAuthority",
     "CommitStatus",
     "SessionSplit",
     "SessionRequest",
@@ -75,6 +76,9 @@ SessionMode = Literal["push", "pull"]
 # Voucher authority used when ``"pull"`` mode is advertised. Encoded on the wire
 # as the camelCase string ``"clientVoucher"`` or ``"operatedVoucher"``.
 SessionPullVoucherStrategy = Literal["clientVoucher", "operatedVoucher"]
+
+# Voucher signing authority advertised by a session challenge.
+SessionSettlementAuthority = Literal["clientVoucher", "delegated"]
 
 # Commit receipt status. Encoded on the wire as the camelCase string
 # ``"committed"`` or ``"replayed"``.
@@ -160,6 +164,7 @@ class SessionRequest:
     min_voucher_delta: str | None = None
     modes: list[SessionMode] = field(default_factory=list)
     pull_voucher_strategy: SessionPullVoucherStrategy | None = None
+    settlement_authority: SessionSettlementAuthority = "clientVoucher"
     recent_blockhash: str | None = None
     recent_slot: int | None = None
 
@@ -188,6 +193,7 @@ class SessionRequest:
             d["modes"] = list(self.modes)
         if self.pull_voucher_strategy is not None:
             d["pullVoucherStrategy"] = self.pull_voucher_strategy
+        d["settlementAuthority"] = self.settlement_authority
         if self.recent_blockhash is not None:
             d["recentBlockhash"] = self.recent_blockhash
         recent_slot = _u64_to_wire(self.recent_slot)
@@ -209,6 +215,9 @@ class SessionRequest:
         strategy = data.get("pullVoucherStrategy")
         if strategy is not None and strategy not in ("clientVoucher", "operatedVoucher"):
             raise ValueError(f"session request: unknown pullVoucherStrategy {strategy!r}")
+        settlement_authority = data.get("settlementAuthority", "clientVoucher")
+        if settlement_authority not in ("clientVoucher", "delegated"):
+            raise ValueError(f"session request: unknown settlementAuthority {settlement_authority!r}")
         return cls(
             cap=data.get("cap", ""),
             currency=data.get("currency", ""),
@@ -223,6 +232,7 @@ class SessionRequest:
             min_voucher_delta=data.get("minVoucherDelta"),
             modes=modes,
             pull_voucher_strategy=strategy,
+            settlement_authority=settlement_authority,
             recent_blockhash=data.get("recentBlockhash"),
             recent_slot=_u64_from_wire(data.get("recentSlot"), "recentSlot"),
         )

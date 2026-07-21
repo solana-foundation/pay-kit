@@ -24,6 +24,11 @@ public enum SessionPullVoucherStrategy: String, Codable, Equatable, Sendable {
     case operatedVoucher
 }
 
+public enum SessionSettlementAuthority: String, Codable, Equatable, Sendable {
+    case clientVoucher
+    case delegated
+}
+
 public enum CommitStatus: String, Codable, Equatable, Sendable {
     case committed
     case replayed
@@ -53,6 +58,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
     public let minVoucherDelta: String?
     public let modes: [SessionMode]
     public let pullVoucherStrategy: SessionPullVoucherStrategy?
+    public let settlementAuthority: SessionSettlementAuthority
     public let recentBlockhash: String?
     /// Server-prefetched current slot for the channel `open` (the same RPC call
     /// that prefetches `recentBlockhash` returns it). Serializes as a decimal
@@ -73,6 +79,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         minVoucherDelta: String? = nil,
         modes: [SessionMode] = [],
         pullVoucherStrategy: SessionPullVoucherStrategy? = nil,
+        settlementAuthority: SessionSettlementAuthority = .clientVoucher,
         recentBlockhash: String? = nil,
         recentSlot: UInt64? = nil
     ) {
@@ -89,6 +96,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         self.minVoucherDelta = minVoucherDelta
         self.modes = modes
         self.pullVoucherStrategy = pullVoucherStrategy
+        self.settlementAuthority = settlementAuthority
         self.recentBlockhash = recentBlockhash
         self.recentSlot = recentSlot
     }
@@ -97,6 +105,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         case cap, currency, decimals, network, `operator`, recipient, splits
         case programId, description, externalId, minVoucherDelta, modes
         case pullVoucherStrategy, recentBlockhash, recentSlot
+        case settlementAuthority
     }
 
     public init(from decoder: Decoder) throws {
@@ -114,6 +123,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         minVoucherDelta = try c.decodeIfPresent(String.self, forKey: .minVoucherDelta)
         modes = try c.decodeIfPresent([SessionMode].self, forKey: .modes) ?? []
         pullVoucherStrategy = try c.decodeIfPresent(SessionPullVoucherStrategy.self, forKey: .pullVoucherStrategy)
+        settlementAuthority = try c.decodeIfPresent(SessionSettlementAuthority.self, forKey: .settlementAuthority) ?? .clientVoucher
         recentBlockhash = try c.decodeIfPresent(String.self, forKey: .recentBlockhash)
         recentSlot = try decodeU64StringOrNumber(c, forKey: .recentSlot)
     }
@@ -133,6 +143,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         try c.encodeIfPresent(minVoucherDelta, forKey: .minVoucherDelta)
         if !modes.isEmpty { try c.encode(modes, forKey: .modes) }
         try c.encodeIfPresent(pullVoucherStrategy, forKey: .pullVoucherStrategy)
+        try c.encode(settlementAuthority, forKey: .settlementAuthority)
         try c.encodeIfPresent(recentBlockhash, forKey: .recentBlockhash)
         // recentSlot always serializes as a decimal string.
         if let recentSlot { try c.encode(String(recentSlot), forKey: .recentSlot) }

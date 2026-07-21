@@ -107,6 +107,9 @@ type SessionConfig struct {
 	// Required when Modes includes pull.
 	PullVoucherStrategy *intents.SessionPullVoucherStrategy
 
+	// SettlementAuthority identifies who signs cumulative vouchers.
+	SettlementAuthority intents.SessionSettlementAuthority
+
 	// VerifyOpenTx, when set, confirms the open transaction on-chain (push
 	// mode) before ProcessOpen persists channel state. See SessionTxVerifier.
 	VerifyOpenTx SessionTxVerifier[intents.OpenPayload]
@@ -171,13 +174,18 @@ func (s *SessionServer) Store() ChannelStore {
 func (s *SessionServer) BuildChallengeRequest(cap uint64) intents.SessionRequest {
 	effectiveCap := min(cap, s.config.MaxCap)
 	decimals := s.config.Decimals
+	authority := s.config.SettlementAuthority
+	if authority == "" {
+		authority = intents.SessionSettlementAuthorityClientVoucher
+	}
 
 	request := intents.SessionRequest{
-		Cap:       strconv.FormatUint(effectiveCap, 10),
-		Currency:  s.config.Currency,
-		Decimals:  &decimals,
-		Operator:  s.config.Operator,
-		Recipient: s.config.Recipient,
+		Cap:                 strconv.FormatUint(effectiveCap, 10),
+		Currency:            s.config.Currency,
+		Decimals:            &decimals,
+		Operator:            s.config.Operator,
+		Recipient:           s.config.Recipient,
+		SettlementAuthority: authority,
 	}
 	if s.config.Network != "" {
 		network := s.config.Network
@@ -256,6 +264,10 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 	}
 	if deposit > s.config.MaxCap {
 		return ChannelState{}, fmt.Errorf("deposit %d exceeds max cap %d", deposit, s.config.MaxCap)
+	}
+	if s.config.SettlementAuthority == intents.SessionSettlementAuthorityDelegated &&
+		payload.AuthorizedSigner != s.config.Operator {
+		return ChannelState{}, fmt.Errorf("delegated settlement requires authorizedSigner to match the operator")
 	}
 
 	// On-chain verification seam (push mode only; pull-mode host integrations

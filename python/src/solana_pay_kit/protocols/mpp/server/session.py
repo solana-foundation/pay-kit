@@ -39,6 +39,7 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     OpenPayload,
     SessionMode,
     SessionPullVoucherStrategy,
+    SessionSettlementAuthority,
     SessionRequest,
     SessionSplit,
     TopUpPayload,
@@ -145,6 +146,9 @@ class SessionConfig:
     # PullVoucherStrategy is the voucher authority used for pull sessions.
     # Required when modes includes pull.
     pull_voucher_strategy: SessionPullVoucherStrategy | None = None
+
+    # Voucher signing authority advertised to clients.
+    settlement_authority: SessionSettlementAuthority = "clientVoucher"
 
     # VerifyOpenTx, when set, confirms the open transaction on-chain (push
     # mode) before process_open persists channel state.
@@ -278,6 +282,7 @@ class SessionServer:
             operator=self._config.operator,
             recipient=self._config.recipient,
             decimals=self._config.decimals,
+            settlement_authority=self._config.settlement_authority,
         )
         if self._config.network != "":
             request.network = self._config.network
@@ -328,6 +333,12 @@ class SessionServer:
             raise ValueError("deposit must be greater than zero")
         if deposit > self._config.max_cap:
             raise ValueError(f"deposit {deposit} exceeds max cap {self._config.max_cap}")
+
+        if (
+            self._config.settlement_authority == "delegated"
+            and payload.authorized_signer != self._config.operator
+        ):
+            raise ValueError("delegated settlement requires authorizedSigner to match the operator")
 
         # On-chain verification seam (push mode only; pull-mode host
         # integrations submit server-broadcast transactions or validate
