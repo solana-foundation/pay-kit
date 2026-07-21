@@ -1286,13 +1286,12 @@ export declare namespace session {
         readonly pullVoucherStrategy?: SessionPullVoucherStrategy;
         /** Primary recipient (base58). */
         readonly recipient: string;
-        /** Voucher signing authority advertised by this session. */
         /** Optional RPC client used for on-chain checks + transactions. */
         readonly rpc?: RpcLike;
-        /** Voucher signing authority advertised by this session. */
-        readonly settlementAuthority?: SessionSettlementAuthority;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
+        /** Voucher signing authority advertised by this session. */
+        readonly settlementAuthority?: SessionSettlementAuthority;
         /**
          * Settlement window in seconds — the forced-close grace period a
          * non-zero voucher `expiresAt` must outlast. When set, a voucher

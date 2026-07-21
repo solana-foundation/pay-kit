@@ -804,8 +804,8 @@ function createOpenAction(
             payee: requireString(context.payee, 'payee'),
             payer: requireString(context.payer, 'payer'),
             salt: requireValue(context.salt, 'salt'),
-            signature,
             authorizedSigner: delegatedAuthorizedSigner(challenge),
+            signature,
             transaction: context.transaction,
         });
     }
