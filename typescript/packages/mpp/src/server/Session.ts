@@ -273,9 +273,9 @@ export function session(parameters: session.Parameters) {
                         payload: cred.payload,
                         programId: resolvedProgramId,
                         pullVoucherStrategy,
-                        settlementAuthority,
                         recipient,
                         rpc,
+                        settlementAuthority,
                         store,
                     });
                 case 'voucher':
@@ -425,8 +425,8 @@ interface HandleOpenArgs {
     readonly programId: Address;
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
     readonly recipient: string;
-    readonly settlementAuthority: SessionSettlementAuthority;
     readonly rpc: RpcLike | undefined;
+    readonly settlementAuthority: SessionSettlementAuthority;
     readonly store: SessionStore;
 }
 
@@ -1287,9 +1287,10 @@ export declare namespace session {
         /** Primary recipient (base58). */
         readonly recipient: string;
         /** Voucher signing authority advertised by this session. */
-        readonly settlementAuthority?: SessionSettlementAuthority;
         /** Optional RPC client used for on-chain checks + transactions. */
         readonly rpc?: RpcLike;
+        /** Voucher signing authority advertised by this session. */
+        readonly settlementAuthority?: SessionSettlementAuthority;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
         /**

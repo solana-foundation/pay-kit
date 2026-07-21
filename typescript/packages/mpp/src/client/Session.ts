@@ -630,10 +630,10 @@ export declare namespace ActiveSession {
     }
 
     interface OpenOptions {
-        /** Funding mode. Defaults to `push`. */
-        readonly mode?: SessionMode | undefined;
         /** Authorized voucher signer; delegated sessions use the advertised operator. */
         readonly authorizedSigner?: string | undefined;
+        /** Funding mode. Defaults to `push`. */
+        readonly mode?: SessionMode | undefined;
         /** Base64 signed open transaction for server-side submission. */
         readonly transaction?: string | undefined;
     }
@@ -805,15 +805,15 @@ function createOpenAction(
             payer: requireString(context.payer, 'payer'),
             salt: requireValue(context.salt, 'salt'),
             signature,
-            transaction: context.transaction,
             authorizedSigner: delegatedAuthorizedSigner(challenge),
+            transaction: context.transaction,
         });
     }
 
     return session_.openAction(context.deposit ?? challenge.request.cap, signature, {
+        authorizedSigner: delegatedAuthorizedSigner(challenge),
         mode,
         transaction: context.transaction,
-        authorizedSigner: delegatedAuthorizedSigner(challenge),
     });
 }
 
