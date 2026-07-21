@@ -16,8 +16,8 @@ import type {
     OpenPayload,
     SessionMode,
     SessionPullVoucherStrategy,
-    SessionSettlementAuthority,
     SessionRequest,
+    SessionSettlementAuthority,
     SessionSplit,
     SignedVoucher,
 } from '../shared/session-types.js';
@@ -424,8 +424,8 @@ interface HandleOpenArgs {
     readonly payload: OpenPayload & { readonly action: 'open' };
     readonly programId: Address;
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
-    readonly settlementAuthority: SessionSettlementAuthority;
     readonly recipient: string;
+    readonly settlementAuthority: SessionSettlementAuthority;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
 }
@@ -1284,10 +1284,10 @@ export declare namespace session {
         readonly programId?: Address | string;
         /** Voucher authority for pull-mode sessions. Required when modes includes 'pull'. */
         readonly pullVoucherStrategy?: SessionPullVoucherStrategy;
-        /** Voucher signing authority advertised by this session. */
-        readonly settlementAuthority?: SessionSettlementAuthority;
         /** Primary recipient (base58). */
         readonly recipient: string;
+        /** Voucher signing authority advertised by this session. */
+        readonly settlementAuthority?: SessionSettlementAuthority;
         /** Optional RPC client used for on-chain checks + transactions. */
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */

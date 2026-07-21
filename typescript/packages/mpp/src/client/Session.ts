@@ -74,14 +74,14 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly programId?: string | undefined;
     /** Voucher authority for pull-mode sessions. */
     readonly pullVoucherStrategy?: SessionPullVoucherStrategy | undefined;
-    /** Voucher signing authority; absent challenges default to client vouchers. */
-    readonly settlementAuthority?: SessionSettlementAuthority | undefined;
     /** Server-provided recent blockhash, saving the client an RPC round-trip. */
     readonly recentBlockhash?: string | undefined;
     /** Server-provided current slot, used as the channel `openSlot` PDA seed (u64 as string). */
     readonly recentSlot?: number | string | undefined;
     /** Primary recipient of the settled amount (base58). */
     readonly recipient: string;
+    /** Voucher signing authority; absent challenges default to client vouchers. */
+    readonly settlementAuthority?: SessionSettlementAuthority | undefined;
     /** Basis-point splits distributed at close. */
     readonly splits?: SessionSplit[] | undefined;
 }

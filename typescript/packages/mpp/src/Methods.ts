@@ -293,14 +293,14 @@ export const session = Method.from({
             programId: z.optional(z.string()),
             /** Voucher authority for pull-mode sessions. */
             pullVoucherStrategy: z.optional(sessionPullVoucherStrategy),
-            /** Voucher signing authority; absent defaults to clientVoucher. */
-            settlementAuthority: z.optional(sessionSettlementAuthority),
             /** Server-provided recent blockhash. */
             recentBlockhash: z.optional(z.string()),
             /** Server-provided current slot used as the channel `openSlot` PDA seed. */
             recentSlot: z.optional(z.union([z.string(), z.number()])),
             /** Primary recipient for channel proceeds. */
             recipient: z.string(),
+            /** Voucher signing authority; absent defaults to clientVoucher. */
+            settlementAuthority: z.optional(sessionSettlementAuthority),
             /** Optional basis-point splits distributed at close. */
             splits: z.optional(
                 z.array(
