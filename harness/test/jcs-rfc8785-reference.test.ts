@@ -30,7 +30,9 @@ function assertJcsReferenceVectors(
 }
 
 describe("RFC 8785 reference corpus vectors", () => {
-  assertJcsReferenceVectors(vectors);
+  it("has the expected fixture schema", () => {
+    assertJcsReferenceVectors(vectors);
+  });
 
   for (const vector of vectors) {
     it(`${vector.id}: matches the attributed canonical JSON output`, () => {
