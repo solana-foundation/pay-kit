@@ -535,7 +535,7 @@ export class ActiveSession {
     ): OpenPayload & { readonly action: 'open' } {
         return {
             action: 'open',
-            authorizedSigner: this.authorizedSigner,
+            authorizedSigner: options.authorizedSigner ?? this.authorizedSigner,
             channelId: this.#channelId,
             deposit: formatAmount(deposit, 'deposit'),
             mode: options.mode ?? 'push',
@@ -552,7 +552,7 @@ export class ActiveSession {
     ): OpenPayload & { readonly action: 'open' } {
         return {
             action: 'open',
-            authorizedSigner: this.authorizedSigner,
+            authorizedSigner: parameters.authorizedSigner ?? this.authorizedSigner,
             channelId: this.#channelId,
             deposit: formatAmount(parameters.deposit, 'deposit'),
             gracePeriod: parameters.gracePeriod,
@@ -574,7 +574,7 @@ export class ActiveSession {
         return {
             action: 'open',
             approvedAmount: formatAmount(parameters.approvedAmount, 'approvedAmount'),
-            authorizedSigner: this.authorizedSigner,
+            authorizedSigner: parameters.authorizedSigner ?? this.authorizedSigner,
             ...(parameters.initMultiDelegateTx ? { initMultiDelegateTx: parameters.initMultiDelegateTx } : {}),
             mode: 'pull',
             owner: parameters.owner,
@@ -632,6 +632,8 @@ export declare namespace ActiveSession {
     interface OpenOptions {
         /** Funding mode. Defaults to `push`. */
         readonly mode?: SessionMode | undefined;
+        /** Authorized voucher signer; delegated sessions use the advertised operator. */
+        readonly authorizedSigner?: string | undefined;
         /** Base64 signed open transaction for server-side submission. */
         readonly transaction?: string | undefined;
     }
@@ -658,6 +660,8 @@ export declare namespace ActiveSession {
     interface PullOpenParameters {
         /** Delegated amount approved by the wallet, in base units. */
         readonly approvedAmount: AmountLike;
+        /** Authorized voucher signer; delegated sessions use the advertised operator. */
+        readonly authorizedSigner?: string | undefined;
         /** Pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
         readonly initMultiDelegateTx?: string | undefined;
         /** Wallet that owns the delegated token account (base58). */
@@ -774,6 +778,7 @@ function createOpenAction(
     if (mode === 'pull' && shouldUseDelegatedPull(context, challenge)) {
         return session_.openPullAction({
             approvedAmount: context.approvedAmount ?? context.deposit ?? challenge.request.cap,
+            authorizedSigner: delegatedAuthorizedSigner(challenge),
             initMultiDelegateTx: context.initMultiDelegateTx,
             owner: requireString(context.owner, 'owner'),
             signature,
@@ -801,13 +806,19 @@ function createOpenAction(
             salt: requireValue(context.salt, 'salt'),
             signature,
             transaction: context.transaction,
+            authorizedSigner: delegatedAuthorizedSigner(challenge),
         });
     }
 
     return session_.openAction(context.deposit ?? challenge.request.cap, signature, {
         mode,
         transaction: context.transaction,
+        authorizedSigner: delegatedAuthorizedSigner(challenge),
     });
+}
+
+function delegatedAuthorizedSigner(challenge: SessionChallenge): string | undefined {
+    return challenge.request.settlementAuthority === 'delegated' ? challenge.request.operator : undefined;
 }
 
 function shouldUseDelegatedPull(context: SessionContext, challenge: SessionChallenge): boolean {
