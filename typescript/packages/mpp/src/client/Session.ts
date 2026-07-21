@@ -796,6 +796,7 @@ function createOpenAction(
         context.gracePeriod !== undefined
     ) {
         return session_.openPaymentChannelAction({
+            authorizedSigner: delegatedAuthorizedSigner(challenge),
             deposit: context.deposit ?? challenge.request.cap,
             gracePeriod: requireValue(context.gracePeriod, 'gracePeriod'),
             mint: requireString(context.mint, 'mint'),
@@ -804,7 +805,6 @@ function createOpenAction(
             payee: requireString(context.payee, 'payee'),
             payer: requireString(context.payer, 'payer'),
             salt: requireValue(context.salt, 'salt'),
-            authorizedSigner: delegatedAuthorizedSigner(challenge),
             signature,
             transaction: context.transaction,
         });
