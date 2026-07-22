@@ -225,6 +225,16 @@ pub struct ChannelState {
 /// Implementations MUST guarantee that `advance_cumulative` is atomic to
 /// prevent double-spend under concurrent requests.
 pub trait ChannelStore: Send + Sync {
+    /// Return a weakly-consistent snapshot of every channel in this store's
+    /// namespace.
+    ///
+    /// This is intended for durable reconciliation workers. Implementations
+    /// may observe concurrent inserts or updates on a later scan; callers must
+    /// therefore reconcile each result against the authoritative chain state.
+    fn list_channels(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>>;
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -276,6 +286,12 @@ impl<T> ChannelStore for std::sync::Arc<T>
 where
     T: ChannelStore + ?Sized,
 {
+    fn list_channels(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
+        (**self).list_channels()
+    }
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -344,6 +360,13 @@ impl MemoryChannelStore {
 }
 
 impl ChannelStore for MemoryChannelStore {
+    fn list_channels(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
+        let channels = self.data.lock().unwrap().values().cloned().collect();
+        Box::pin(async move { Ok(channels) })
+    }
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -471,6 +494,20 @@ impl RedisChannelStore {
         format!("{}{}", self.key_prefix, channel_id)
     }
 
+    fn scan_pattern(&self) -> String {
+        // Redis MATCH uses glob syntax. Escape metacharacters so a configured
+        // namespace is always interpreted literally.
+        let mut pattern = String::with_capacity(self.key_prefix.len() + 1);
+        for ch in self.key_prefix.chars() {
+            if matches!(ch, '*' | '?' | '[' | ']' | '\\') {
+                pattern.push('\\');
+            }
+            pattern.push(ch);
+        }
+        pattern.push('*');
+        pattern
+    }
+
     async fn get_raw(&self, channel_id: &str) -> Result<Option<String>, StoreError> {
         let mut connection = self.connection.clone();
         redis::cmd("GET")
@@ -522,6 +559,59 @@ return 1
 
 #[cfg(feature = "redis-store")]
 impl ChannelStore for RedisChannelStore {
+    fn list_channels(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
+        Box::pin(async move {
+            let mut connection = self.connection.clone();
+            let pattern = self.scan_pattern();
+            let mut cursor = 0_u64;
+            let mut channels = Vec::new();
+            let mut seen_keys = std::collections::HashSet::new();
+
+            loop {
+                let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(&pattern)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|e| StoreError::Internal(format!("Redis SCAN: {e}")))?;
+
+                let keys = keys
+                    .into_iter()
+                    // SCAN may return the same key more than once while the
+                    // keyspace changes. Never enqueue a channel twice in one
+                    // reconciliation pass.
+                    .filter(|key| seen_keys.insert(key.clone()))
+                    .collect::<Vec<_>>();
+                if !keys.is_empty() {
+                    let values: Vec<Option<String>> = redis::cmd("MGET")
+                        .arg(&keys)
+                        .query_async(&mut connection)
+                        .await
+                        .map_err(|e| StoreError::Internal(format!("Redis MGET: {e}")))?;
+                    channels.extend(
+                        values
+                            .into_iter()
+                            .flatten()
+                            .map(|raw| Self::decode(&raw))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
+
+                cursor = next_cursor;
+                if cursor == 0 {
+                    break;
+                }
+            }
+
+            Ok(channels)
+        })
+    }
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -700,6 +790,7 @@ mod tests {
         assert_eq!(state.deposit, 1_000_000);
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
+        assert_eq!(store.list_channels().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -758,6 +849,9 @@ mod tests {
         let state = store.get_channel("c1").await.unwrap().unwrap();
         assert_eq!(state.deposit, 2_000_000);
         assert!(state.sealed);
+        let channels = store.list_channels().await.unwrap();
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].channel_id, "c1");
     }
 
     #[tokio::test]
