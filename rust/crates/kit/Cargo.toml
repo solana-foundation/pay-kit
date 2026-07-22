@@ -24,6 +24,9 @@ client = ["dep:reqwest"]
 # plus the server side.
 axum = ["mpp", "x402", "server", "dep:axum"]
 gcp_kms = ["solana-keychain/gcp_kms"]
+# Durable server-side session state. Opt-in so clients and local-only servers
+# do not pull a Redis runtime into their dependency graph.
+redis-store = ["dep:redis"]
 # Token-2022 confidential transfers: ZK proof generation + the Token-2022
 # confidential-transfer instruction builders. Opt-in so non-confidential
 # consumers (mobile/wasm/FFI) stay lean.
@@ -152,6 +155,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # Observability
 tracing = "0.1"
 async-trait = "0.1"
+redis = { version = "0.32.5", optional = true, features = ["tokio-comp", "connection-manager"] }
 
 # OpenTelemetry (feature `otel`) — optional.
 opentelemetry = { version = "0.31", optional = true }

@@ -272,6 +272,58 @@ pub trait ChannelStore: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 }
 
+impl<T> ChannelStore for std::sync::Arc<T>
+where
+    T: ChannelStore + ?Sized,
+{
+    fn get_channel(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>> {
+        (**self).get_channel(channel_id)
+    }
+
+    fn put_channel(
+        &self,
+        channel_id: &str,
+        state: ChannelState,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).put_channel(channel_id, state)
+    }
+
+    fn update_channel(
+        &self,
+        channel_id: &str,
+        updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+        (**self).update_channel(channel_id, updater)
+    }
+
+    fn advance_cumulative(
+        &self,
+        channel_id: &str,
+        expected: u64,
+        new: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        (**self).advance_cumulative(channel_id, expected, new)
+    }
+
+    fn update_deposit(
+        &self,
+        channel_id: &str,
+        new_deposit: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).update_deposit(channel_id, new_deposit)
+    }
+
+    fn mark_sealed(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).mark_sealed(channel_id)
+    }
+}
+
 /// In-memory channel store backed by a Mutex.
 pub struct MemoryChannelStore {
     data: std::sync::Mutex<std::collections::HashMap<String, ChannelState>>,
@@ -379,6 +431,216 @@ impl ChannelStore for MemoryChannelStore {
     }
 }
 
+// ── Redis channel store ──
+
+/// Durable Redis-backed payment-channel state.
+///
+/// Enabled by the `redis-store` feature. Every read/modify/write operation is
+/// guarded by a Lua compare-and-set, so multiple gateway instances cannot
+/// silently overwrite one another. A conflicting generic `update_channel`
+/// returns an error and is safe for the caller to retry; the dedicated
+/// `advance_cumulative` operation reports the conflict as `Ok(false)`, matching
+/// the [`ChannelStore`] contract.
+#[cfg(feature = "redis-store")]
+#[derive(Clone)]
+pub struct RedisChannelStore {
+    connection: redis::aio::ConnectionManager,
+    key_prefix: String,
+}
+
+#[cfg(feature = "redis-store")]
+impl RedisChannelStore {
+    /// Connect to Redis and namespace channel records under `key_prefix`.
+    pub async fn connect(
+        redis_url: &str,
+        key_prefix: impl Into<String>,
+    ) -> Result<Self, StoreError> {
+        let client = redis::Client::open(redis_url)
+            .map_err(|e| StoreError::Internal(format!("Redis client: {e}")))?;
+        let connection = client
+            .get_connection_manager()
+            .await
+            .map_err(|e| StoreError::Internal(format!("Redis connect: {e}")))?;
+        Ok(Self {
+            connection,
+            key_prefix: key_prefix.into(),
+        })
+    }
+
+    fn key(&self, channel_id: &str) -> String {
+        format!("{}{}", self.key_prefix, channel_id)
+    }
+
+    async fn get_raw(&self, channel_id: &str) -> Result<Option<String>, StoreError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("GET")
+            .arg(self.key(channel_id))
+            .query_async(&mut connection)
+            .await
+            .map_err(|e| StoreError::Internal(format!("Redis GET: {e}")))
+    }
+
+    async fn compare_and_set(
+        &self,
+        channel_id: &str,
+        expected: Option<&str>,
+        new_value: &str,
+    ) -> Result<bool, StoreError> {
+        // Compare the complete serialized value. This works on ordinary Redis
+        // (no RedisJSON dependency) and makes the write indivisible across
+        // gateway instances.
+        const SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '0' then
+  if current then return 0 end
+elseif (not current) or current ~= ARGV[2] then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[3])
+return 1
+"#;
+        let mut connection = self.connection.clone();
+        let updated: i32 = redis::Script::new(SCRIPT)
+            .key(self.key(channel_id))
+            .arg(if expected.is_some() { "1" } else { "0" })
+            .arg(expected.unwrap_or_default())
+            .arg(new_value)
+            .invoke_async(&mut connection)
+            .await
+            .map_err(|e| StoreError::Internal(format!("Redis CAS: {e}")))?;
+        Ok(updated == 1)
+    }
+
+    fn decode(raw: &str) -> Result<ChannelState, StoreError> {
+        serde_json::from_str(raw).map_err(|e| StoreError::Serialization(e.to_string()))
+    }
+
+    fn encode(state: &ChannelState) -> Result<String, StoreError> {
+        serde_json::to_string(state).map_err(|e| StoreError::Serialization(e.to_string()))
+    }
+}
+
+#[cfg(feature = "redis-store")]
+impl ChannelStore for RedisChannelStore {
+    fn get_channel(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            self.get_raw(&channel_id)
+                .await?
+                .as_deref()
+                .map(Self::decode)
+                .transpose()
+        })
+    }
+
+    fn put_channel(
+        &self,
+        channel_id: &str,
+        state: ChannelState,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let key = self.key(channel_id);
+        Box::pin(async move {
+            let encoded = Self::encode(&state)?;
+            let mut connection = self.connection.clone();
+            redis::cmd("SET")
+                .arg(key)
+                .arg(encoded)
+                .query_async::<()>(&mut connection)
+                .await
+                .map_err(|e| StoreError::Internal(format!("Redis SET: {e}")))
+        })
+    }
+
+    fn update_channel(
+        &self,
+        channel_id: &str,
+        updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let current_raw = self.get_raw(&channel_id).await?;
+            let current = current_raw.as_deref().map(Self::decode).transpose()?;
+            let new_state = updater(current)?;
+            let new_raw = Self::encode(&new_state)?;
+            if !self
+                .compare_and_set(&channel_id, current_raw.as_deref(), &new_raw)
+                .await?
+            {
+                return Err(StoreError::Internal(
+                    "Concurrent channel update; retry the request".to_string(),
+                ));
+            }
+            Ok(new_state)
+        })
+    }
+
+    fn advance_cumulative(
+        &self,
+        channel_id: &str,
+        expected: u64,
+        new: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let Some(current_raw) = self.get_raw(&channel_id).await? else {
+                return Err(StoreError::Internal("Channel not found".to_string()));
+            };
+            let mut state = Self::decode(&current_raw)?;
+            if state.cumulative != expected {
+                return Ok(false);
+            }
+            state.cumulative = new;
+            let new_raw = Self::encode(&state)?;
+            self.compare_and_set(&channel_id, Some(&current_raw), &new_raw)
+                .await
+        })
+    }
+
+    fn update_deposit(
+        &self,
+        channel_id: &str,
+        new_deposit: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            self.update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state
+                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
+                    state.deposit = new_deposit;
+                    Ok(state)
+                }),
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+
+    fn mark_sealed(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            self.update_channel(
+                &channel_id,
+                Box::new(|state| {
+                    let mut state = state
+                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
+                    state.sealed = true;
+                    Ok(state)
+                }),
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,6 +700,64 @@ mod tests {
         assert_eq!(state.deposit, 1_000_000);
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
+    }
+
+    #[tokio::test]
+    async fn channel_store_works_behind_arc_trait_object() {
+        let store: std::sync::Arc<dyn ChannelStore> =
+            std::sync::Arc::new(MemoryChannelStore::new());
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_channel("c1").await.unwrap().unwrap().deposit,
+            1_000_000
+        );
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
+    async fn redis_channel_store_roundtrip_and_atomic_watermark() {
+        let Ok(redis_url) = std::env::var("PAY_KIT_TEST_REDIS_URL") else {
+            // CI/local unit runs do not require a Redis daemon. Set this env
+            // var to exercise the real integration path.
+            return;
+        };
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let store = RedisChannelStore::connect(
+            &redis_url,
+            format!("pay-kit:test:{}:{unique}:", std::process::id()),
+        )
+        .await
+        .unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+
+        let (left, right) = tokio::join!(
+            store.advance_cumulative("c1", 0, 100),
+            store.advance_cumulative("c1", 0, 200),
+        );
+        let successes = [left.unwrap(), right.unwrap()]
+            .into_iter()
+            .filter(|updated| *updated)
+            .count();
+        assert_eq!(successes, 1, "exactly one concurrent CAS must win");
+        assert!(matches!(
+            store.get_channel("c1").await.unwrap().unwrap().cumulative,
+            100 | 200
+        ));
+
+        store.update_deposit("c1", 2_000_000).await.unwrap();
+        store.mark_sealed("c1").await.unwrap();
+        let state = store.get_channel("c1").await.unwrap().unwrap();
+        assert_eq!(state.deposit, 2_000_000);
+        assert!(state.sealed);
     }
 
     #[tokio::test]
