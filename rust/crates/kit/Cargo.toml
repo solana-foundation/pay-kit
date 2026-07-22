@@ -155,7 +155,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # Observability
 tracing = "0.1"
 async-trait = "0.1"
-redis = { version = "0.32.5", optional = true, features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.32.5", optional = true, features = ["tokio-rustls-comp", "connection-manager"] }
 
 # OpenTelemetry (feature `otel`) — optional.
 opentelemetry = { version = "0.31", optional = true }
