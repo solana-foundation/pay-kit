@@ -13,8 +13,8 @@ allowBuilds:
 overrides:
   ws: '^8.21.0'
   '@x402/core': 'file:.x402-vendor/x402-core-2.16.0.tgz'
-  '@hono/node-server': '>=1.19.13'
-  fast-uri: '>=3.1.2'
+  '@hono/node-server': '>=2.0.10'
+  fast-uri: '>=4.1.1'
   hono: '>=4.12.25'
   ip-address: '>=10.1.1'
   js-yaml: '>=5.2.1'
