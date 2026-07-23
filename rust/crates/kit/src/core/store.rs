@@ -474,6 +474,10 @@ pub struct RedisChannelStore {
 #[cfg(feature = "redis-store")]
 impl RedisChannelStore {
     /// Connect to Redis and namespace channel records under `key_prefix`.
+    ///
+    /// The namespace is length-prefixed to keep scans disjoint. Raw-prefix
+    /// keys written by pre-release builds are intentionally not read; clear
+    /// those keys once when deploying the released key format.
     pub async fn connect(
         redis_url: &str,
         key_prefix: impl Into<String>,
