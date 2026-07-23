@@ -240,6 +240,11 @@ pub trait ChannelStore: Send + Sync {
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>>;
 
+    /// Atomically create a channel.
+    ///
+    /// Implementations MUST reject an existing `channel_id`; overwriting a
+    /// live channel could reset its accepted voucher watermark and allow the
+    /// same payment to serve twice.
     fn put_channel(
         &self,
         channel_id: &str,
@@ -380,11 +385,16 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         state: ChannelState,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        self.data
-            .lock()
-            .unwrap()
-            .insert(channel_id.to_string(), state);
-        Box::pin(async { Ok(()) })
+        let result = match self.data.lock().unwrap().entry(channel_id.to_string()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(state);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => Err(StoreError::Internal(format!(
+                "Channel {channel_id} already exists"
+            ))),
+        };
+        Box::pin(async move { result })
     }
 
     fn update_channel(
@@ -641,16 +651,15 @@ impl ChannelStore for RedisChannelStore {
         channel_id: &str,
         state: ChannelState,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let key = self.key(channel_id);
+        let channel_id = channel_id.to_string();
         Box::pin(async move {
             let encoded = Self::encode(&state)?;
-            let mut connection = self.connection.clone();
-            redis::cmd("SET")
-                .arg(key)
-                .arg(encoded)
-                .query_async::<()>(&mut connection)
-                .await
-                .map_err(|e| StoreError::Internal(format!("Redis SET: {e}")))
+            if !self.compare_and_set(&channel_id, None, &encoded).await? {
+                return Err(StoreError::Internal(format!(
+                    "Channel {channel_id} already exists"
+                )));
+            }
+            Ok(())
         })
     }
 
@@ -804,6 +813,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_store_put_rejects_existing_without_reset() {
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+        assert!(store
+            .put_channel("c1", make_state("c1", 2_000_000))
+            .await
+            .is_err());
+        assert_eq!(
+            store.get_channel("c1").await.unwrap().unwrap().deposit,
+            1_000_000
+        );
+    }
+
+    #[tokio::test]
     async fn channel_store_works_behind_arc_trait_object() {
         let store: std::sync::Arc<dyn ChannelStore> =
             std::sync::Arc::new(MemoryChannelStore::new());
@@ -834,11 +860,8 @@ mod tests {
     #[cfg(feature = "redis-store")]
     #[tokio::test]
     async fn redis_channel_store_roundtrip_and_atomic_watermark() {
-        let Ok(redis_url) = std::env::var("PAY_KIT_TEST_REDIS_URL") else {
-            // CI/local unit runs do not require a Redis daemon. Set this env
-            // var to exercise the real integration path.
-            return;
-        };
+        let redis_url = std::env::var("PAY_KIT_TEST_REDIS_URL")
+            .expect("PAY_KIT_TEST_REDIS_URL is required for the Redis integration test");
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -876,6 +899,27 @@ mod tests {
         let channels = store.list_channels().await.unwrap();
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0].channel_id, "c1");
+
+        let create_one = make_state("created-once", 1_000_000);
+        let create_two = make_state("created-once", 2_000_000);
+        let (left, right) = tokio::join!(
+            store.put_channel("created-once", create_one),
+            store.put_channel("created-once", create_two),
+        );
+        assert_eq!(
+            [left, right].into_iter().filter(Result::is_ok).count(),
+            1,
+            "exactly one concurrent channel creation must win"
+        );
+        assert!(matches!(
+            store
+                .get_channel("created-once")
+                .await
+                .unwrap()
+                .unwrap()
+                .deposit,
+            1_000_000 | 2_000_000
+        ));
 
         let prefix = format!("pay-kit:test:{}:{unique}:tenant", std::process::id());
         let tenant_one = RedisChannelStore::connect(&redis_url, format!("{prefix}:1"))

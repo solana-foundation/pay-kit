@@ -170,6 +170,16 @@ jobs:
     name: Rust tests
     needs: build-html
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -219,6 +229,15 @@ jobs:
       - name: Run solana-pay-kit x402 library tests
         working-directory: rust
         run: cargo test -p solana-pay-kit --lib x402
+
+      - name: Run Redis channel store integration test
+        working-directory: rust
+        env:
+          PAY_KIT_TEST_REDIS_URL: redis://127.0.0.1:6379
+        run: >-
+          cargo test -p solana-pay-kit --features redis-store --lib
+          core::store::tests::redis_channel_store_roundtrip_and_atomic_watermark
+          -- --exact
 
       - name: Enforce Rust coverage floor (>=90 cross-SDK baseline)
         working-directory: rust
