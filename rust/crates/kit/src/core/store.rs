@@ -486,8 +486,14 @@ impl RedisChannelStore {
             .map_err(|e| StoreError::Internal(format!("Redis connect: {e}")))?;
         Ok(Self {
             connection,
-            key_prefix: key_prefix.into(),
+            key_prefix: Self::namespace_key_prefix(key_prefix.into()),
         })
+    }
+
+    fn namespace_key_prefix(key_prefix: String) -> String {
+        // Length-prefix the configured namespace so no encoded namespace can
+        // be a prefix of another, even when namespaces are nested.
+        format!("{}:{key_prefix}:", key_prefix.len())
     }
 
     fn key(&self, channel_id: &str) -> String {
@@ -808,6 +814,20 @@ mod tests {
     }
 
     #[cfg(feature = "redis-store")]
+    #[test]
+    fn redis_channel_store_prefix_has_namespace_boundary() {
+        let tenant = RedisChannelStore::namespace_key_prefix("tenant:1".to_string());
+        let adjacent = RedisChannelStore::namespace_key_prefix("tenant:10".to_string());
+        let nested = RedisChannelStore::namespace_key_prefix("tenant:1:child".to_string());
+
+        assert_eq!(tenant, "8:tenant:1:");
+        assert_eq!(adjacent, "9:tenant:10:");
+        assert_eq!(nested, "14:tenant:1:child:");
+        assert!(!adjacent.starts_with(&tenant));
+        assert!(!nested.starts_with(&tenant));
+    }
+
+    #[cfg(feature = "redis-store")]
     #[tokio::test]
     async fn redis_channel_store_roundtrip_and_atomic_watermark() {
         let Ok(redis_url) = std::env::var("PAY_KIT_TEST_REDIS_URL") else {
@@ -852,6 +872,43 @@ mod tests {
         let channels = store.list_channels().await.unwrap();
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0].channel_id, "c1");
+
+        let prefix = format!("pay-kit:test:{}:{unique}:tenant", std::process::id());
+        let tenant_one = RedisChannelStore::connect(&redis_url, format!("{prefix}:1"))
+            .await
+            .unwrap();
+        let tenant_ten = RedisChannelStore::connect(&redis_url, format!("{prefix}:10"))
+            .await
+            .unwrap();
+        tenant_one
+            .put_channel("one", make_state("one", 1_000_000))
+            .await
+            .unwrap();
+        tenant_ten
+            .put_channel("ten", make_state("ten", 10_000_000))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tenant_one
+                .list_channels()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|state| state.channel_id)
+                .collect::<Vec<_>>(),
+            vec!["one"]
+        );
+        assert_eq!(
+            tenant_ten
+                .list_channels()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|state| state.channel_id)
+                .collect::<Vec<_>>(),
+            vec!["ten"]
+        );
     }
 
     #[tokio::test]
