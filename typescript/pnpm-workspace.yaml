@@ -7,6 +7,9 @@ allowBuilds:
   unrs-resolver: true
   utf-8-validate: false
 
+minimumReleaseAgeExclude:
+  - js-yaml@5.2.2
+
 # Force transitive `ws` past GHSA-58qx-3vcg-4xpx (uninitialized memory
 # disclosure, patched in 8.20.1). Reaches us via
 # @solana/kit > @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket.
@@ -17,7 +20,7 @@ overrides:
   fast-uri: '>=4.1.1'
   hono: '>=4.12.25'
   ip-address: '>=10.1.1'
-  js-yaml: '>=5.2.1'
+  js-yaml: '>=5.2.2'
   path-to-regexp: '>=8.4.0'
   qs: '>=6.15.2'
   yaml: '>=2.8.3'
