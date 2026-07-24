@@ -77,6 +77,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
 
+      # Tokenless OIDC trusted publishing requires npm >= 11.5.1; the Node
+      # release bundles an older npm that publishes unauthenticated and 404s.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@^11.5.1
+
       - name: Install dependencies
         run: cd typescript && pnpm install --frozen-lockfile
 
@@ -295,6 +300,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
+
+      # Tokenless OIDC trusted publishing requires npm >= 11.5.1; the Node
+      # release bundles an older npm that publishes unauthenticated and 404s.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@^11.5.1
 
       # The vendored @x402 tarballs are committed under typescript/.x402-vendor,
       # so a plain frozen install resolves them — no submodule checkout needed.
