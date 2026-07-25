@@ -1,10 +1,25 @@
-import { describe, expect, it, vi } from 'vitest';
+import type { ExactSvmSchemeOptions } from '@x402/svm';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+
+import type { X402Options } from '../config.js';
+
+// Compile-time drift guard against the vendored @x402/svm option type.
+expectTypeOf<
+    Pick<
+        ExactSvmSchemeOptions,
+        | 'enableSmartWalletVerification'
+        | 'smartWalletMaxComputeUnits'
+        | 'smartWalletMaxPriorityFeeMicroLamports'
+        | 'smartWalletAllowedPrograms'
+    >
+>().toExtend<X402Options>();
 
 // The upto challenge requires a server-fetched recentBlockhash + recentSlot
 // (one getLatestBlockhash call); stub the RPC so the enriched requirement is
 // deterministic offline, and let tests flip `fail` to exercise the
 // no-bare-offer failure path.
 const rpcState = vi.hoisted(() => ({ fail: false }));
+const ctorCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@solana/kit', async importOriginal => {
     const actual = await importOriginal<typeof import('@solana/kit')>();
     return {
@@ -23,6 +38,20 @@ vi.mock('@solana/kit', async importOriginal => {
                 },
             }),
         }),
+    };
+});
+
+// Subclass spy: records constructor args while preserving real behavior.
+vi.mock('@x402/svm/exact/facilitator', async importOriginal => {
+    const actual = await importOriginal<typeof import('@x402/svm/exact/facilitator')>();
+    return {
+        ...actual,
+        ExactSvmScheme: class extends actual.ExactSvmScheme {
+            constructor(...args: ConstructorParameters<typeof actual.ExactSvmScheme>) {
+                ctorCalls.push(args);
+                super(...args);
+            }
+        },
     };
 });
 
@@ -72,6 +101,55 @@ describe('x402 exact adapter', () => {
         const headers = await adapter.challengeHeaders(gateFor(config), new Request('http://localhost/r'));
         expect(typeof headers['payment-required']).toBe('string');
         expect(headers['payment-required'].length).toBeGreaterThan(0);
+    });
+});
+
+describe('x402 smart-wallet options', () => {
+    beforeEach(() => {
+        ctorCalls.length = 0;
+    });
+
+    it('passes x402 options through configure() into the frozen config', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { enableSmartWalletVerification: true, smartWalletMaxComputeUnits: 300_000 },
+        });
+        expect(config.x402.enableSmartWalletVerification).toBe(true);
+        expect(config.x402.smartWalletMaxComputeUnits).toBe(300_000);
+        expect(Object.isFrozen(config.x402)).toBe(true);
+    });
+
+    it('constructs the adapter with smart-wallet verification enabled', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { enableSmartWalletVerification: true },
+        });
+        expect(() => createX402ExactAdapter(config)).not.toThrow();
+    });
+
+    it('forwards config.x402 to the facilitator constructor', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { enableSmartWalletVerification: true, smartWalletMaxPriorityFeeMicroLamports: 25_000 },
+        });
+        createX402ExactAdapter(config);
+        expect(ctorCalls.length).toBeGreaterThan(0);
+        expect(ctorCalls.at(-1)?.[2]).toEqual(config.x402);
+    });
+
+    it('copies the allowlist so callers cannot mutate verification policy', async () => {
+        const allowed = ['SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf'];
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { smartWalletAllowedPrograms: allowed },
+        });
+        allowed.push('mutated');
+        expect(config.x402.smartWalletAllowedPrograms).toEqual(['SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf']);
+        expect(Object.isFrozen(config.x402.smartWalletAllowedPrograms)).toBe(true);
     });
 });
 

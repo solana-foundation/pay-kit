@@ -185,6 +185,13 @@ The facilitator MUST-checks on the signed transaction (compute-budget caps,
 `verify_exact_versioned_transaction` after the version gate
 (server/exact.rs:568-569).
 
+> **Divergence from the Rust spine.** TypeScript additionally exposes the vendored `@x402/svm`
+> smart-wallet verification (Path 2) as an opt-in
+> (`X402Options.enableSmartWalletVerification`); the Rust spine has no
+> Path 2 yet, so an enabled TypeScript server accepts smart-wallet
+> transactions that Rust rejects with
+> `invalid_exact_svm_payload_no_transfer_instruction`.
+
 The server still **emits v2 challenges by default**: `exact_with_options`
 and `exact_with_payment_options` build envelopes with
 `x402_version = X402_VERSION_V2` (server/exact.rs:182-189, 284-291).

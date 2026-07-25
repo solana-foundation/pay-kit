@@ -26,8 +26,17 @@ export type MppOptions = {
     readonly realm?: string;
 };
 
-/** x402 protocol options. Reserved for future scheme-specific settings. */
-export type X402Options = Record<string, never>;
+/**
+ * x402 options forwarded to the vendored exact-scheme facilitator; omitted
+ * fields use upstream defaults. Smart-wallet (Path 2) verification needs an
+ * RPC whose `simulateTransaction` returns inner instructions.
+ */
+export type X402Options = {
+    readonly enableSmartWalletVerification?: boolean;
+    readonly smartWalletAllowedPrograms?: readonly string[];
+    readonly smartWalletMaxComputeUnits?: number;
+    readonly smartWalletMaxPriorityFeeMicroLamports?: number;
+};
 
 /** Merchant identity: where money lands and which key signs. */
 export type OperatorParams = {
@@ -83,7 +92,7 @@ export type PayKitConfig = {
     readonly replayStore: Store.Store | undefined;
     readonly rpcUrl: string;
     readonly stablecoins: readonly Stablecoin[];
-    readonly x402: Record<string, never>;
+    readonly x402: X402Options;
 };
 
 const DEFAULT_EXPIRES_IN_SECONDS = 120;
@@ -184,7 +193,12 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         replayStore: params.replayStore,
         rpcUrl: params.rpcUrl ?? DEFAULT_RPC_URLS[toSolanaNetwork(network)] ?? DEFAULT_RPC_URLS.mainnet,
         stablecoins: Object.freeze([...stablecoins]),
-        x402: Object.freeze({}),
+        x402: Object.freeze({
+            ...params.x402,
+            ...(params.x402?.smartWalletAllowedPrograms && {
+                smartWalletAllowedPrograms: Object.freeze([...params.x402.smartWalletAllowedPrograms]),
+            }),
+        }),
     });
 }
 

@@ -39,12 +39,21 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
 export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = caip2(config.network) as Network;
     const operator = config.operator.signer.pubkey;
+    const { smartWalletAllowedPrograms, ...schemeOptionsWithoutAllowlist } = config.x402;
+    const schemeOptions = {
+        ...schemeOptionsWithoutAllowlist,
+        ...(smartWalletAllowedPrograms && {
+            smartWalletAllowedPrograms: [...smartWalletAllowedPrograms],
+        }),
+    };
 
     // In-process facilitator: the operator both fee-pays and signs settlement.
     const facilitator = new x402Facilitator().register(
         network,
         new ExactSvmFacilitator(
             toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
+            undefined,
+            schemeOptions,
         ),
     );
 
