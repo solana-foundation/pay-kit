@@ -3,16 +3,13 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import type { X402Options } from '../config.js';
 
-// Compile-time drift guard against the vendored @x402/svm option type.
-expectTypeOf<
-    Pick<
-        ExactSvmSchemeOptions,
-        | 'enableSmartWalletVerification'
-        | 'smartWalletMaxComputeUnits'
-        | 'smartWalletMaxPriorityFeeMicroLamports'
-        | 'smartWalletAllowedPrograms'
-    >
->().toExtend<X402Options>();
+// Compile-time drift guard: X402Options must equal the full vendored
+// @x402/svm option surface modulo readonly (our config is frozen). Key drift
+// in either direction — including upstream adding an option we don't expose —
+// optionality drift, and per-key widening/narrowing all fail typecheck.
+type ImmutableValue<V> = V extends readonly (infer E)[] ? readonly E[] : V;
+type Immutable<T> = { readonly [K in keyof T]: ImmutableValue<T[K]> };
+expectTypeOf<Immutable<ExactSvmSchemeOptions>>().toEqualTypeOf<X402Options>();
 
 // The upto challenge requires a server-fetched recentBlockhash + recentSlot
 // (one getLatestBlockhash call); stub the RPC so the enriched requirement is
