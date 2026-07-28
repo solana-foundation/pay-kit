@@ -235,6 +235,7 @@ mod tests {
                     next_delivery_sequence: 0,
                     pending_deliveries: vec![],
                     committed_deliveries: vec![],
+                    lifecycle: None,
                 },
             )
             .await
@@ -295,6 +296,7 @@ mod tests {
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+            lifecycle: None,
         }
     }
 

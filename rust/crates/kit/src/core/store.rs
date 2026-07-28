@@ -152,6 +152,24 @@ pub struct CommittedDelivery {
     pub voucher_signature: String,
 }
 
+/// Durable lifecycle scheduling metadata for a payment channel.
+///
+/// Request-serving processes only advance this deadline. A lifecycle worker
+/// reads it through [`ChannelStore::list_channels`] and owns the clock and
+/// close decision.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ChannelLifecycle {
+    /// Ephemeral worker namespace used by an embedded lifecycle worker.
+    ///
+    /// Durable reconciliation workers may process every due channel regardless
+    /// of owner.
+    pub owner: String,
+
+    /// Unix timestamp in milliseconds after which the channel is idle.
+    #[serde(rename = "closeAfter")]
+    pub close_after: u64,
+}
+
 /// Persisted state of a payment channel, managed by the server.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChannelState {
@@ -218,6 +236,11 @@ pub struct ChannelState {
     /// Recently committed deliveries, kept for idempotent commit replay.
     #[serde(default)]
     pub committed_deliveries: Vec<CommittedDelivery>,
+
+    /// Store-backed idle-close deadline. Missing on records written before
+    /// lifecycle scheduling became durable.
+    #[serde(default)]
+    pub lifecycle: Option<ChannelLifecycle>,
 }
 
 /// Async store for channel state with compare-and-swap watermark advancement.
@@ -260,6 +283,14 @@ pub trait ChannelStore: Send + Sync {
         &self,
         channel_id: &str,
         updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>>;
+
+    /// Persist an idle-close deadline without allowing an older touch to move
+    /// an existing deadline backwards.
+    fn touch_channel_lifecycle(
+        &self,
+        channel_id: &str,
+        lifecycle: ChannelLifecycle,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>>;
 
     /// Atomically advance the settled watermark from `expected` to `new`.
@@ -318,6 +349,14 @@ where
         updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
         (**self).update_channel(channel_id, updater)
+    }
+
+    fn touch_channel_lifecycle(
+        &self,
+        channel_id: &str,
+        lifecycle: ChannelLifecycle,
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+        (**self).touch_channel_lifecycle(channel_id, lifecycle)
     }
 
     fn advance_cumulative(
@@ -413,6 +452,32 @@ impl ChannelStore for MemoryChannelStore {
                 }
                 Err(e) => Err(e),
             }
+        };
+        Box::pin(async move { result })
+    }
+
+    fn touch_channel_lifecycle(
+        &self,
+        channel_id: &str,
+        lifecycle: ChannelLifecycle,
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+        let result = {
+            let mut data = self.data.lock().unwrap();
+            let state = data
+                .get_mut(channel_id)
+                .ok_or_else(|| StoreError::Internal("Channel not found".to_string()));
+            state.map(|state| {
+                let replace = !state.sealed
+                    && state.close_requested_at.is_none()
+                    && state
+                        .lifecycle
+                        .as_ref()
+                        .is_none_or(|current| lifecycle.close_after >= current.close_after);
+                if replace {
+                    state.lifecycle = Some(lifecycle);
+                }
+                state.clone()
+            })
         };
         Box::pin(async move { result })
     }
@@ -686,6 +751,43 @@ impl ChannelStore for RedisChannelStore {
         })
     }
 
+    fn touch_channel_lifecycle(
+        &self,
+        channel_id: &str,
+        lifecycle: ChannelLifecycle,
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            const MAX_ATTEMPTS: usize = 8;
+            for _ in 0..MAX_ATTEMPTS {
+                let Some(current_raw) = self.get_raw(&channel_id).await? else {
+                    return Err(StoreError::Internal("Channel not found".to_string()));
+                };
+                let mut state = Self::decode(&current_raw)?;
+                let replace = !state.sealed
+                    && state.close_requested_at.is_none()
+                    && state
+                        .lifecycle
+                        .as_ref()
+                        .is_none_or(|current| lifecycle.close_after >= current.close_after);
+                if !replace {
+                    return Ok(state);
+                }
+                state.lifecycle = Some(lifecycle.clone());
+                let new_raw = Self::encode(&state)?;
+                if self
+                    .compare_and_set(&channel_id, Some(&current_raw), &new_raw)
+                    .await?
+                {
+                    return Ok(state);
+                }
+            }
+            Err(StoreError::Internal(
+                "Concurrent channel lifecycle updates; retry the request".to_string(),
+            ))
+        })
+    }
+
     fn advance_cumulative(
         &self,
         channel_id: &str,
@@ -794,6 +896,7 @@ mod tests {
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+            lifecycle: None,
         }
     }
 
@@ -810,6 +913,80 @@ mod tests {
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
         assert_eq!(store.list_channels().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn channel_lifecycle_touch_is_store_backed_and_monotonic() {
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+
+        let latest = ChannelLifecycle {
+            owner: "worker-b".to_string(),
+            close_after: 2_000,
+        };
+        store
+            .touch_channel_lifecycle("c1", latest.clone())
+            .await
+            .unwrap();
+        store
+            .touch_channel_lifecycle(
+                "c1",
+                ChannelLifecycle {
+                    owner: "worker-a".to_string(),
+                    close_after: 1_000,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get_channel("c1").await.unwrap().unwrap().lifecycle,
+            Some(latest.clone())
+        );
+
+        store
+            .update_channel(
+                "c1",
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.close_requested_at = Some(2);
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let claimed = store
+            .touch_channel_lifecycle(
+                "c1",
+                ChannelLifecycle {
+                    owner: "worker-c".to_string(),
+                    close_after: 3_000,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.lifecycle, Some(latest));
+    }
+
+    #[test]
+    fn channel_state_without_lifecycle_remains_decodable() {
+        let persisted = serde_json::json!({
+            "channel_id": "c1",
+            "authorized_signer": "signer1",
+            "deposit": 1_000_000,
+            "cumulative": 42,
+            "sealed": false,
+            "highest_voucher_signature": null,
+            "highest_voucher_expires_at": null,
+            "close_requested_at": null,
+            "operator": null
+        });
+
+        let decoded: ChannelState = serde_json::from_value(persisted).unwrap();
+        assert!(decoded.lifecycle.is_none());
     }
 
     #[tokio::test]
@@ -890,6 +1067,19 @@ mod tests {
             store.get_channel("c1").await.unwrap().unwrap().cumulative,
             100 | 200
         ));
+
+        let lifecycle = ChannelLifecycle {
+            owner: "redis-worker".to_string(),
+            close_after: 120_000,
+        };
+        store
+            .touch_channel_lifecycle("c1", lifecycle.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_channel("c1").await.unwrap().unwrap().lifecycle,
+            Some(lifecycle)
+        );
 
         store.update_deposit("c1", 2_000_000).await.unwrap();
         store.mark_sealed("c1").await.unwrap();

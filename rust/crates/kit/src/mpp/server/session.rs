@@ -585,6 +585,7 @@ impl<S: ChannelStore> SessionServer<S> {
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+            lifecycle: None,
         };
 
         // Atomic check-and-insert: a replayed open re-passes all checks above
@@ -2674,6 +2675,7 @@ mod tests {
                     next_delivery_sequence: 0,
                     pending_deliveries: vec![],
                     committed_deliveries: vec![],
+                    lifecycle: None,
                 },
             )
             .await
