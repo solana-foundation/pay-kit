@@ -58,6 +58,21 @@ pub const VOUCHER_MAGIC: [u8; 2] = [0x56, 0x01];
 /// rejected), and `reclaim` unlocks only once `clock.slot > open_slot + 1500`.
 pub const OPEN_SLOT_WINDOW: u64 = 1_500;
 
+/// Maximum voucher-backed settlement operations in one legacy transaction.
+///
+/// Each operation contributes an Ed25519 verification plus a `settle` or
+/// `settle_and_seal` instruction. Four fit below the 1,232-byte transaction
+/// limit; five do not.
+pub const MAX_VOUCHER_SETTLEMENTS_PER_TX: usize = 4;
+
+/// Maximum `reclaim` operations in one legacy transaction when the fee payer
+/// is also the shared rent payer. Twenty-eight serialize to 1,230 bytes;
+/// twenty-nine require 1,268 bytes.
+///
+/// Reclaim batches with distinct rent payers may fit fewer operations; the
+/// generic packer always enforces the serialized transaction-size limit too.
+pub const MAX_RECLAIMS_PER_TX: usize = 28;
+
 /// Channel PDA seed prefix.
 pub const CHANNEL_SEED: &[u8] = b"channel";
 

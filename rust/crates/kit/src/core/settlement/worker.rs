@@ -2,8 +2,9 @@
 //!
 //! An mpsc actor that accumulates per-channel settlement instructions and
 //! flushes them as **legacy** transactions on either trigger:
-//!   - **size:** the batch fills (`max_channels_per_tx`, or the next channel
-//!     would exceed the 1232-byte packet limit) → seal a tx, start a new batch;
+//!   - **size:** the batch fills (`max_voucher_settlements_per_tx`, or the next
+//!     settlement would exceed the 1232-byte packet limit) → seal a tx, start a
+//!     new batch;
 //!   - **timer:** a `linger` window (default 350ms) elapses → flush whatever's
 //!     pending.
 //!
@@ -30,9 +31,9 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::Instant;
 use tracing::Instrument;
 
-use crate::core::rpc::SKIP_PREFLIGHT_SEND;
+use crate::core::{payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX, rpc::SKIP_PREFLIGHT_SEND};
 
-use super::packing::{tx_size, would_overflow_tx, DEFAULT_MAX_CHANNELS_PER_TX};
+use super::packing::{tx_size, would_overflow_tx};
 
 /// Settlement outcome returned to a submitter: the broadcast tx signature.
 pub type SettlementResult = Result<String, String>;
@@ -73,8 +74,9 @@ pub trait Broadcaster: Send + Sync {
 pub struct SettlementConfig {
     pub operator: Pubkey,
     pub operator_signer: Arc<dyn SolanaSigner>,
-    /// Calibrated cap (P0 = 3 for settle+seal); packing is also byte-bounded.
-    pub max_channels_per_tx: usize,
+    /// Calibrated cap for voucher settlement operations; packing is also
+    /// byte-bounded.
+    pub max_voucher_settlements_per_tx: usize,
     /// Linger window before flushing a partial batch.
     pub linger: Duration,
     /// Max concurrent in-flight flush transactions.
@@ -88,7 +90,7 @@ impl SettlementConfig {
         Self {
             operator,
             operator_signer,
-            max_channels_per_tx: DEFAULT_MAX_CHANNELS_PER_TX,
+            max_voucher_settlements_per_tx: MAX_VOUCHER_SETTLEMENTS_PER_TX,
             linger: Duration::from_millis(350),
             max_in_flight_tx: 16,
             confirm_attempts: 10,
@@ -153,9 +155,9 @@ pub fn spawn(cfg: SettlementConfig, broadcaster: Arc<dyn Broadcaster>) -> Settle
                             deadline = Some(Instant::now() + cfg.linger);
                         }
                         // Size trigger: seal full transactions eagerly. Clamp to
-                        // >=1 so a misconfigured `max_channels_per_tx == 0` can't
+                        // >=1 so a misconfigured operation cap of zero cannot
                         // spin draining nothing while spawning empty flushes.
-                        let max_per_tx = cfg.max_channels_per_tx.max(1);
+                        let max_per_tx = cfg.max_voucher_settlements_per_tx.max(1);
                         while pending.len() >= max_per_tx {
                             let batch = pending.drain(..max_per_tx).collect();
                             spawn_flush(batch, cfg.clone(), broadcaster.clone(), sem.clone(), "size");
@@ -194,7 +196,7 @@ fn spawn_flush(
     trigger: &'static str,
 ) {
     tokio::spawn(async move {
-        for group in regroup(units, &cfg.operator, cfg.max_channels_per_tx) {
+        for group in regroup(units, &cfg.operator, cfg.max_voucher_settlements_per_tx) {
             // One permit per settle transaction (not per flush, which may
             // regroup into several): bounds concurrent in-flight settle txs
             // across all flushes to `max_in_flight_tx`. The worker owns the
@@ -516,7 +518,7 @@ mod tests {
             Pubkey::new_from_array([0xAA; 32]),
             Arc::new(TestSigner(Pubkey::new_from_array([0xAA; 32]))),
         );
-        cfg.max_channels_per_tx = max_per_tx;
+        cfg.max_voucher_settlements_per_tx = max_per_tx;
         cfg.linger = Duration::from_millis(linger_ms);
         (spawn(cfg, bc.clone()), bc)
     }
@@ -591,7 +593,7 @@ mod tests {
             channels.push((channel.to_string(), ixs));
         }
 
-        let (h, bc) = handle(3, 5_000); // cap 3, long linger → size trigger packs 3,3,1
+        let (h, bc) = handle(MAX_VOUCHER_SETTLEMENTS_PER_TX, 5_000);
         let mut tasks = Vec::new();
         for (id, ixs) in channels {
             let h = h.clone();
@@ -603,23 +605,19 @@ mod tests {
             sigs.push(r.expect("settle reply ok"));
         }
 
-        // 7 channels @ 3/tx ⇒ 3 transactions.
+        // 7 channels @ 4/tx ⇒ 2 transactions.
         let mut distinct = sigs.clone();
         distinct.sort();
         distinct.dedup();
         assert_eq!(
             distinct.len(),
-            3,
-            "7 channels should batch into 3 transactions"
+            2,
+            "7 channels should batch into 2 transactions"
         );
 
-        // Instruction counts per tx: 2 per channel ⇒ [6, 6, 2].
+        // Instruction counts per tx: 2 per channel ⇒ [8, 6].
         let mut sent = bc.sent.lock().unwrap().clone();
         sent.sort();
-        assert_eq!(
-            sent,
-            vec![2, 6, 6],
-            "expected 3+3+1 channels per tx (2 ix each)"
-        );
+        assert_eq!(sent, vec![6, 8], "expected 4+3 channels per tx (2 ix each)");
     }
 }

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use solana_instruction::Instruction;
+use solana_pay_kit::core::payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX;
 use solana_pay_kit::mpp::program::payment_channels as pc;
 use solana_pay_kit::mpp::settlement::testkit;
 use solana_pay_kit::mpp::settlement::worker::{spawn, RpcBroadcaster, SettlementConfig};
@@ -328,7 +329,7 @@ async fn channels_settle_on_chain_in_batches() {
 /// throughput through the worker against the live surfnet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settlement_throughput_smoke() {
-    const K: u64 = 30; // ⌈30/3⌉ = 10 batched settle txs
+    const K: u64 = 30;
     let url = rpc_url();
     if RpcClient::new(url.clone())
         .get_latest_blockhash()
@@ -370,18 +371,18 @@ async fn settlement_throughput_smoke() {
 
     assert_eq!(
         by_tx.len() as u64,
-        K.div_ceil(3),
-        "K channels should batch into ⌈K/3⌉ txs"
+        K.div_ceil(MAX_VOUCHER_SETTLEMENTS_PER_TX as u64),
+        "K channels should batch according to the shared per-transaction cap"
     );
 }
 
 /// Packing run-loop demo: drives the worker, prints the batching decisions
 /// (size-trigger vs 350ms-timer + channel_ids per tx) and a packing report, and
 /// (feature `otel`) exports the `settlement_flush` spans + metrics to the
-/// collector. K=7 → 3 + 3 + 1.
+/// collector. K=7 → 4 + 3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settlement_packing_runloop_demo() {
-    const K: u64 = 7; // 3 (size) + 3 (size) + 1 (timer) → 3 txs
+    const K: u64 = 7; // 4 (size) + 3 (timer) → 2 txs
 
     #[cfg(feature = "otel")]
     let endpoint =
@@ -411,7 +412,10 @@ async fn settlement_packing_runloop_demo() {
     })
     .await;
 
-    eprintln!("\n>>> submitting {K} channels to the worker (cap 3/tx, 350ms linger) <<<\n");
+    eprintln!(
+        "\n>>> submitting {K} channels to the worker \
+         (cap {MAX_VOUCHER_SETTLEMENTS_PER_TX}/tx, 350ms linger) <<<\n"
+    );
     let cfg = SettlementConfig::new(operator, operator_signer);
     let handle = spawn(cfg, Arc::new(RpcBroadcaster::new(url.clone())));
     let by_tx = testkit::drive_settlement(&handle, units).await;
@@ -428,11 +432,11 @@ async fn settlement_packing_runloop_demo() {
     }
     eprintln!("==================================================\n");
 
-    // ⌈7/3⌉ = 3 txs regardless of how the size/timer triggers split them.
+    let expected_txs = K.div_ceil(MAX_VOUCHER_SETTLEMENTS_PER_TX as u64);
     assert_eq!(
-        by_tx.len(),
-        3,
-        "7 channels should pack into 3 txs (3 + 3 + 1)"
+        by_tx.len() as u64,
+        expected_txs,
+        "{K} channels should pack according to the shared per-transaction cap"
     );
 
     // `_otel` guard flushes the batch exporter on drop → query the collector
