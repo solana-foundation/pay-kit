@@ -254,9 +254,19 @@ pub trait ChannelStore: Send + Sync {
     /// This is intended for durable reconciliation workers. Implementations
     /// may observe concurrent inserts or updates on a later scan; callers must
     /// therefore reconcile each result against the authoritative chain state.
+    ///
+    /// The default preserves source compatibility for stores implemented
+    /// before channel enumeration was added. Lifecycle workers require an
+    /// implementation that overrides this method.
     fn list_channels(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
+        Box::pin(async {
+            Err(StoreError::Internal(
+                "Channel enumeration is not supported by this store".to_string(),
+            ))
+        })
+    }
 
     fn get_channel(
         &self,
@@ -288,11 +298,37 @@ pub trait ChannelStore: Send + Sync {
     /// Persist an idle-close deadline without allowing an older touch to move
     /// an existing deadline backwards. Once close is claimed or the channel is
     /// sealed, return the current state without changing its lifecycle.
+    ///
+    /// The default uses the existing atomic [`ChannelStore::update_channel`]
+    /// contract so pre-existing custom stores gain correct lifecycle touches
+    /// without having to add a new method.
     fn touch_channel_lifecycle(
         &self,
         channel_id: &str,
         lifecycle: ChannelLifecycle,
-    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            self.update_channel(
+                &channel_id,
+                Box::new(move |state| {
+                    let mut state = state
+                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
+                    let replace = !state.sealed
+                        && state.close_requested_at.is_none()
+                        && state
+                            .lifecycle
+                            .as_ref()
+                            .is_none_or(|current| lifecycle.close_after >= current.close_after);
+                    if replace {
+                        state.lifecycle = Some(lifecycle);
+                    }
+                    Ok(state)
+                }),
+            )
+            .await
+        })
+    }
 
     /// Atomically advance the settled watermark from `expected` to `new`.
     ///
@@ -534,12 +570,11 @@ impl ChannelStore for MemoryChannelStore {
 
 /// Durable Redis-backed payment-channel state.
 ///
-/// Enabled by the `redis-store` feature. Every read/modify/write operation is
-/// guarded by a Lua compare-and-set, so multiple gateway instances cannot
-/// silently overwrite one another. A conflicting generic `update_channel`
-/// returns an error and is safe for the caller to retry; the dedicated
-/// `advance_cumulative` operation reports the conflict as `Ok(false)`, matching
-/// the [`ChannelStore`] contract.
+/// Enabled by the `redis-store` feature. Read/modify/write operations use Lua
+/// scripts so multiple gateway instances cannot silently overwrite one
+/// another. A conflicting generic `update_channel` returns an error and is
+/// safe for the caller to retry; dedicated operations use the atomic semantics
+/// required by their [`ChannelStore`] contracts.
 #[cfg(feature = "redis-store")]
 #[derive(Clone)]
 pub struct RedisChannelStore {
@@ -632,6 +667,42 @@ return 1
             .await
             .map_err(|e| StoreError::Internal(format!("Redis CAS: {e}")))?;
         Ok(updated == 1)
+    }
+
+    async fn mark_sealed_atomic(&self, channel_id: &str) -> Result<(), StoreError> {
+        // Mutate only the boolean field in one Redis script. Decoding and
+        // re-encoding through Lua cjson would coerce large u64 values through
+        // an imprecise floating-point representation.
+        const SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+
+local sealed_false = '"sealed":false'
+local sealed_true = '"sealed":true'
+if string.find(current, sealed_true, 1, true) then return 1 end
+
+local first, last = string.find(current, sealed_false, 1, true)
+if not first then return -1 end
+
+local updated = string.sub(current, 1, first - 1)
+  .. sealed_true
+  .. string.sub(current, last + 1)
+redis.call('SET', KEYS[1], updated)
+return 1
+"#;
+        let mut connection = self.connection.clone();
+        let result: i32 = redis::Script::new(SCRIPT)
+            .key(self.key(channel_id))
+            .invoke_async(&mut connection)
+            .await
+            .map_err(|e| StoreError::Internal(format!("Redis mark sealed: {e}")))?;
+        match result {
+            1 => Ok(()),
+            0 => Err(StoreError::Internal("Channel not found".to_string())),
+            _ => Err(StoreError::Serialization(
+                "Channel record is missing its sealed field".to_string(),
+            )),
+        }
     }
 
     fn decode(raw: &str) -> Result<ChannelState, StoreError> {
@@ -837,25 +908,69 @@ impl ChannelStore for RedisChannelStore {
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         let channel_id = channel_id.to_string();
-        Box::pin(async move {
-            self.update_channel(
-                &channel_id,
-                Box::new(|state| {
-                    let mut state = state
-                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
-                    state.sealed = true;
-                    Ok(state)
-                }),
-            )
-            .await
-            .map(|_| ())
-        })
+        Box::pin(async move { self.mark_sealed_atomic(&channel_id).await })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Models a third-party implementation written before lifecycle methods
+    /// were added to the trait.
+    struct LegacyChannelStore(MemoryChannelStore);
+
+    impl ChannelStore for LegacyChannelStore {
+        fn get_channel(
+            &self,
+            channel_id: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>>
+        {
+            self.0.get_channel(channel_id)
+        }
+
+        fn put_channel(
+            &self,
+            channel_id: &str,
+            state: ChannelState,
+        ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+            self.0.put_channel(channel_id, state)
+        }
+
+        fn update_channel(
+            &self,
+            channel_id: &str,
+            updater: Box<
+                dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send,
+            >,
+        ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
+            self.0.update_channel(channel_id, updater)
+        }
+
+        fn advance_cumulative(
+            &self,
+            channel_id: &str,
+            expected: u64,
+            new: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+            self.0.advance_cumulative(channel_id, expected, new)
+        }
+
+        fn update_deposit(
+            &self,
+            channel_id: &str,
+            new_deposit: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+            self.0.update_deposit(channel_id, new_deposit)
+        }
+
+        fn mark_sealed(
+            &self,
+            channel_id: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+            self.0.mark_sealed(channel_id)
+        }
+    }
 
     #[tokio::test]
     async fn memory_store_get_put_delete() {
@@ -972,6 +1087,31 @@ mod tests {
         assert_eq!(claimed.lifecycle, Some(latest));
     }
 
+    #[tokio::test]
+    async fn lifecycle_methods_preserve_legacy_store_compatibility() {
+        let store = LegacyChannelStore(MemoryChannelStore::new());
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+
+        let lifecycle = ChannelLifecycle {
+            owner: "worker".to_string(),
+            close_after: 60_000,
+        };
+        let state = store
+            .touch_channel_lifecycle("c1", lifecycle.clone())
+            .await
+            .unwrap();
+        assert_eq!(state.lifecycle, Some(lifecycle));
+
+        let error = store.list_channels().await.unwrap_err();
+        assert!(
+            error.to_string().contains("enumeration is not supported"),
+            "default enumeration must fail explicitly"
+        );
+    }
+
     #[test]
     fn channel_state_without_lifecycle_remains_decodable() {
         let persisted = serde_json::json!({
@@ -1082,14 +1222,47 @@ mod tests {
             Some(lifecycle)
         );
 
+        store
+            .put_channel("seal-race", make_state("seal-race", 1_000_000))
+            .await
+            .unwrap();
+        let sealing_store = store.clone();
+        let touching_store = store.clone();
+        let (sealed, touched) = tokio::join!(sealing_store.mark_sealed("seal-race"), async move {
+            for close_after in 1..=32 {
+                touching_store
+                    .touch_channel_lifecycle(
+                        "seal-race",
+                        ChannelLifecycle {
+                            owner: "concurrent-worker".to_string(),
+                            close_after,
+                        },
+                    )
+                    .await?;
+            }
+            Ok::<_, StoreError>(())
+        });
+        sealed.unwrap();
+        touched.unwrap();
+        assert!(
+            store
+                .get_channel("seal-race")
+                .await
+                .unwrap()
+                .unwrap()
+                .sealed
+        );
+
         store.update_deposit("c1", 2_000_000).await.unwrap();
         store.mark_sealed("c1").await.unwrap();
         let state = store.get_channel("c1").await.unwrap().unwrap();
         assert_eq!(state.deposit, 2_000_000);
         assert!(state.sealed);
         let channels = store.list_channels().await.unwrap();
-        assert_eq!(channels.len(), 1);
-        assert_eq!(channels[0].channel_id, "c1");
+        assert_eq!(channels.len(), 2);
+        assert!(channels
+            .iter()
+            .any(|channel| channel.channel_id.as_str() == "c1"));
 
         let create_one = make_state("created-once", 1_000_000);
         let create_two = make_state("created-once", 2_000_000);
