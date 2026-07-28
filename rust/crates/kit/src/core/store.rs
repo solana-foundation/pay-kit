@@ -286,7 +286,8 @@ pub trait ChannelStore: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>>;
 
     /// Persist an idle-close deadline without allowing an older touch to move
-    /// an existing deadline backwards.
+    /// an existing deadline backwards. Once close is claimed or the channel is
+    /// sealed, return the current state without changing its lifecycle.
     fn touch_channel_lifecycle(
         &self,
         channel_id: &str,
