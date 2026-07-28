@@ -9,6 +9,13 @@
 
 use std::future::Future;
 use std::pin::Pin;
+#[cfg(feature = "redis-store")]
+use std::time::Duration;
+
+/// Default time to retain a finalized channel record for reconciliation,
+/// debugging, and idempotent retries before Redis removes it.
+#[cfg(feature = "redis-store")]
+pub const DEFAULT_FINALIZED_CHANNEL_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Async key-value store interface.
 pub trait Store: Send + Sync {
@@ -353,6 +360,20 @@ pub trait ChannelStore: Send + Sync {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
+    /// Mark a channel's lifecycle as fully finalized.
+    ///
+    /// The default preserves compatibility with stores that do not implement
+    /// retention. Durable stores may use this stronger signal to schedule safe
+    /// cleanup after a retention window. Callers must not invoke it after only
+    /// the phase-1 seal; all required distribution work must be complete or the
+    /// channel must already be absent on-chain.
+    fn mark_finalized(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        self.mark_sealed(channel_id)
+    }
 }
 
 impl<T> ChannelStore for std::sync::Arc<T>
@@ -418,6 +439,13 @@ where
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         (**self).mark_sealed(channel_id)
+    }
+
+    fn mark_finalized(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).mark_finalized(channel_id)
     }
 }
 
@@ -580,6 +608,7 @@ impl ChannelStore for MemoryChannelStore {
 pub struct RedisChannelStore {
     connection: redis::aio::ConnectionManager,
     key_prefix: String,
+    finalized_retention_seconds: u64,
 }
 
 #[cfg(feature = "redis-store")]
@@ -593,6 +622,28 @@ impl RedisChannelStore {
         redis_url: &str,
         key_prefix: impl Into<String>,
     ) -> Result<Self, StoreError> {
+        Self::connect_with_finalized_retention(
+            redis_url,
+            key_prefix,
+            DEFAULT_FINALIZED_CHANNEL_RETENTION,
+        )
+        .await
+    }
+
+    /// Connect with a caller-selected finalized-record retention window.
+    ///
+    /// A zero duration is rejected instead of turning finalization into an
+    /// immediate delete.
+    pub async fn connect_with_finalized_retention(
+        redis_url: &str,
+        key_prefix: impl Into<String>,
+        finalized_retention: Duration,
+    ) -> Result<Self, StoreError> {
+        if finalized_retention.is_zero() {
+            return Err(StoreError::Internal(
+                "Finalized channel retention must be greater than zero".to_string(),
+            ));
+        }
         let client = redis::Client::open(redis_url)
             .map_err(|e| StoreError::Internal(format!("Redis client: {e}")))?;
         let connection = client
@@ -602,6 +653,7 @@ impl RedisChannelStore {
         Ok(Self {
             connection,
             key_prefix: Self::namespace_key_prefix(key_prefix.into()),
+            finalized_retention_seconds: finalized_retention.as_secs(),
         })
     }
 
@@ -654,7 +706,11 @@ if ARGV[1] == '0' then
 elseif (not current) or current ~= ARGV[2] then
   return 0
 end
-redis.call('SET', KEYS[1], ARGV[3])
+if ARGV[1] == '0' then
+  redis.call('SET', KEYS[1], ARGV[3])
+else
+  redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')
+end
 return 1
 "#;
         let mut connection = self.connection.clone();
@@ -696,6 +752,48 @@ return 1
             .invoke_async(&mut connection)
             .await
             .map_err(|e| StoreError::Internal(format!("Redis mark sealed: {e}")))?;
+        match result {
+            1 => Ok(()),
+            0 => Err(StoreError::Internal("Channel not found".to_string())),
+            _ => Err(StoreError::Serialization(
+                "Channel record is missing its sealed field".to_string(),
+            )),
+        }
+    }
+
+    async fn mark_finalized_atomic(&self, channel_id: &str) -> Result<(), StoreError> {
+        // Apply the retention in the same script that flips the lifecycle bit.
+        // Repeated reconciliation of an already-finalized record only backfills
+        // a missing TTL; it never refreshes an existing expiry indefinitely.
+        const SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+
+local sealed_false = '"sealed":false'
+local sealed_true = '"sealed":true'
+if string.find(current, sealed_true, 1, true) then
+  if redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+  end
+  return 1
+end
+
+local first, last = string.find(current, sealed_false, 1, true)
+if not first then return -1 end
+
+local updated = string.sub(current, 1, first - 1)
+  .. sealed_true
+  .. string.sub(current, last + 1)
+redis.call('SET', KEYS[1], updated, 'EX', ARGV[1])
+return 1
+"#;
+        let mut connection = self.connection.clone();
+        let result: i32 = redis::Script::new(SCRIPT)
+            .key(self.key(channel_id))
+            .arg(self.finalized_retention_seconds)
+            .invoke_async(&mut connection)
+            .await
+            .map_err(|e| StoreError::Internal(format!("Redis mark finalized: {e}")))?;
         match result {
             1 => Ok(()),
             0 => Err(StoreError::Internal("Channel not found".to_string())),
@@ -909,6 +1007,14 @@ impl ChannelStore for RedisChannelStore {
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         let channel_id = channel_id.to_string();
         Box::pin(async move { self.mark_sealed_atomic(&channel_id).await })
+    }
+
+    fn mark_finalized(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move { self.mark_finalized_atomic(&channel_id).await })
     }
 }
 
@@ -1177,6 +1283,18 @@ mod tests {
 
     #[cfg(feature = "redis-store")]
     #[tokio::test]
+    async fn redis_channel_store_rejects_zero_finalized_retention() {
+        let result = RedisChannelStore::connect_with_finalized_retention(
+            "redis://127.0.0.1/",
+            "test",
+            Duration::ZERO,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[tokio::test]
     async fn redis_channel_store_roundtrip_and_atomic_watermark() {
         let redis_url = std::env::var("PAY_KIT_TEST_REDIS_URL")
             .expect("PAY_KIT_TEST_REDIS_URL is required for the Redis integration test");
@@ -1258,8 +1376,33 @@ mod tests {
         let state = store.get_channel("c1").await.unwrap().unwrap();
         assert_eq!(state.deposit, 2_000_000);
         assert!(state.sealed);
+
+        store
+            .put_channel("finalized", make_state("finalized", 1_000_000))
+            .await
+            .unwrap();
+        store.mark_sealed("finalized").await.unwrap();
+        let mut connection = store.connection.clone();
+        let ttl_before: i64 = redis::cmd("TTL")
+            .arg(store.key("finalized"))
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(ttl_before, -1, "phase-1 seal must not start retention");
+
+        store.mark_finalized("finalized").await.unwrap();
+        let ttl_after: i64 = redis::cmd("TTL")
+            .arg(store.key("finalized"))
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert!(
+            ttl_after > 0 && ttl_after <= DEFAULT_FINALIZED_CHANNEL_RETENTION.as_secs() as i64,
+            "finalization must attach the bounded retention TTL"
+        );
+
         let channels = store.list_channels().await.unwrap();
-        assert_eq!(channels.len(), 2);
+        assert_eq!(channels.len(), 3);
         assert!(channels
             .iter()
             .any(|channel| channel.channel_id.as_str() == "c1"));
@@ -1373,6 +1516,8 @@ mod tests {
             5_000_000
         );
         store.mark_sealed("c1").await.unwrap();
+        assert!(store.get_channel("c1").await.unwrap().unwrap().sealed);
+        store.mark_finalized("c1").await.unwrap();
         assert!(store.get_channel("c1").await.unwrap().unwrap().sealed);
         assert!(store.update_deposit("ghost", 1).await.is_err());
         assert!(store.mark_sealed("ghost").await.is_err());
