@@ -291,6 +291,23 @@ pub trait ChannelStore: Send + Sync {
         state: ChannelState,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 
+    /// Delete a terminal channel record.
+    ///
+    /// This operation is idempotent. Callers must first establish from the
+    /// authoritative chain state that the channel account no longer exists;
+    /// deleting a live record could discard an accepted voucher watermark.
+    fn delete_channel(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            Err(StoreError::Internal(format!(
+                "Channel deletion is not supported for {channel_id}"
+            )))
+        })
+    }
+
     /// Atomically read-modify-write channel state.
     ///
     /// The `updater` closure receives the current state (None if absent) and
@@ -401,6 +418,13 @@ where
         (**self).put_channel(channel_id, state)
     }
 
+    fn delete_channel(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).delete_channel(channel_id)
+    }
+
     fn update_channel(
         &self,
         channel_id: &str,
@@ -499,6 +523,14 @@ impl ChannelStore for MemoryChannelStore {
             ))),
         };
         Box::pin(async move { result })
+    }
+
+    fn delete_channel(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        self.data.lock().unwrap().remove(channel_id);
+        Box::pin(async { Ok(()) })
     }
 
     fn update_channel(
@@ -898,6 +930,22 @@ impl ChannelStore for RedisChannelStore {
         })
     }
 
+    fn delete_channel(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let mut connection = self.connection.clone();
+            redis::cmd("DEL")
+                .arg(self.key(&channel_id))
+                .query_async::<u64>(&mut connection)
+                .await
+                .map_err(|error| StoreError::Internal(format!("Redis DEL: {error}")))?;
+            Ok(())
+        })
+    }
+
     fn update_channel(
         &self,
         channel_id: &str,
@@ -1135,6 +1183,19 @@ mod tests {
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
         assert_eq!(store.list_channels().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn channel_store_delete_is_idempotent() {
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+
+        store.delete_channel("c1").await.unwrap();
+        assert!(store.get_channel("c1").await.unwrap().is_none());
+        store.delete_channel("c1").await.unwrap();
     }
 
     #[tokio::test]
@@ -1400,6 +1461,14 @@ mod tests {
             ttl_after > 0 && ttl_after <= DEFAULT_FINALIZED_CHANNEL_RETENTION.as_secs() as i64,
             "finalization must attach the bounded retention TTL"
         );
+
+        store
+            .put_channel("deleted", make_state("deleted", 1_000_000))
+            .await
+            .unwrap();
+        store.delete_channel("deleted").await.unwrap();
+        assert!(store.get_channel("deleted").await.unwrap().is_none());
+        store.delete_channel("deleted").await.unwrap();
 
         let channels = store.list_channels().await.unwrap();
         assert_eq!(channels.len(), 3);
