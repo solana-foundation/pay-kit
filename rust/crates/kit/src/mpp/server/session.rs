@@ -71,6 +71,16 @@ impl SettlementAuthority {
     }
 }
 
+/// Result of accepting a channel-open action.
+#[derive(Debug, Clone)]
+pub struct OpenAcceptance {
+    /// Persisted channel state after processing the open.
+    pub state: ChannelState,
+
+    /// Whether the channel already existed and the open was an idempotent replay.
+    pub replay: bool,
+}
+
 /// Server configuration for the session intent.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -489,6 +499,11 @@ impl<S: ChannelStore> SessionServer<S> {
     /// existing channel are rejected when the channel is sealed or when the
     /// payload's authorized signer differs from the stored one.
     pub async fn process_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
+        Ok(self.process_open_with_outcome(payload).await?.state)
+    }
+
+    /// Process an `open` action and report whether it created channel state.
+    pub async fn process_open_with_outcome(&self, payload: &OpenPayload) -> Result<OpenAcceptance> {
         self.process_open_inner(payload, true).await
     }
 
@@ -500,6 +515,17 @@ impl<S: ChannelStore> SessionServer<S> {
     /// open transaction, submitted it, and observed a successful on-chain
     /// status before calling this method.
     pub async fn process_preverified_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
+        Ok(self
+            .process_preverified_open_with_outcome(payload)
+            .await?
+            .state)
+    }
+
+    /// Process a host-verified `open` and report whether it created channel state.
+    pub async fn process_preverified_open_with_outcome(
+        &self,
+        payload: &OpenPayload,
+    ) -> Result<OpenAcceptance> {
         self.process_open_inner(payload, false).await
     }
 
@@ -507,7 +533,7 @@ impl<S: ChannelStore> SessionServer<S> {
         &self,
         payload: &OpenPayload,
         verify_on_chain: bool,
-    ) -> Result<ChannelState> {
+    ) -> Result<OpenAcceptance> {
         let supports_mode = if self.config.modes.is_empty() {
             payload.mode == SessionMode::Push
         } else {
@@ -594,7 +620,10 @@ impl<S: ChannelStore> SessionServer<S> {
         // accepted vouchers before close.
         let session_id_owned = session_id.to_string();
         let authorized_signer = payload.authorized_signer.clone();
-        self.store
+        let replay = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let replay_out = std::sync::Arc::clone(&replay);
+        let state = self
+            .store
             .update_channel(
                 session_id,
                 Box::new(move |state_opt| match state_opt {
@@ -610,13 +639,17 @@ impl<S: ChannelStore> SessionServer<S> {
                             )));
                         }
                         // Idempotent replay: keep existing state untouched.
+                        replay_out.store(true, std::sync::atomic::Ordering::Relaxed);
                         Ok(existing)
                     }
                     None => Ok(fresh_state),
                 }),
             )
             .await
-            .map_err(store_err)
+            .map_err(store_err)?;
+
+        let replay = replay.load(std::sync::atomic::Ordering::Relaxed);
+        Ok(OpenAcceptance { state, replay })
     }
 
     /// Verify a voucher, advance the watermark, and return the acceptance
@@ -1445,10 +1478,12 @@ mod tests {
     #[tokio::test]
     async fn process_open_stores_state() {
         let server = make_server();
-        let state = server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+        let acceptance = server
+            .process_open_with_outcome(&open_payload("chan1", 1_000_000, "signer1"))
             .await
             .unwrap();
+        let state = acceptance.state;
+        assert!(!acceptance.replay);
         assert_eq!(state.deposit, 1_000_000);
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
@@ -1828,7 +1863,9 @@ mod tests {
             .unwrap();
 
         // Replayed open (re-passes all open checks) must not mutate state.
-        let state = server.process_open(&payload).await.unwrap();
+        let acceptance = server.process_open_with_outcome(&payload).await.unwrap();
+        let state = acceptance.state;
+        assert!(acceptance.replay);
         assert_eq!(state.cumulative, 750_000);
         assert_eq!(
             state.highest_voucher_signature.as_deref(),
