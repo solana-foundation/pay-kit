@@ -747,7 +747,7 @@ if not first then return -1 end
 local updated = string.sub(current, 1, first - 1)
   .. sealed_true
   .. string.sub(current, last + 1)
-redis.call('SET', KEYS[1], updated)
+redis.call('SET', KEYS[1], updated, 'KEEPTTL')
 return 1
 "#;
         let mut connection = self.connection.clone();
@@ -1352,6 +1352,38 @@ mod tests {
             ttl_after > 0 && ttl_after <= DEFAULT_FINALIZED_CHANNEL_RETENTION.as_secs() as i64,
             "finalization must attach the bounded retention TTL"
         );
+        store.mark_sealed("finalized").await.unwrap();
+        let ttl_after_reseal: i64 = redis::cmd("TTL")
+            .arg(store.key("finalized"))
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert!(
+            ttl_after_reseal > 0 && ttl_after_reseal <= ttl_after,
+            "repeated sealing must preserve, not refresh, finalized retention"
+        );
+
+        store
+            .put_channel("sealed-with-ttl", make_state("sealed-with-ttl", 1_000_000))
+            .await
+            .unwrap();
+        redis::cmd("EXPIRE")
+            .arg(store.key("sealed-with-ttl"))
+            .arg(120)
+            .query_async::<bool>(&mut connection)
+            .await
+            .unwrap();
+        store.mark_sealed("sealed-with-ttl").await.unwrap();
+        let sealed_ttl: i64 = redis::cmd("TTL")
+            .arg(store.key("sealed-with-ttl"))
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        assert!(
+            sealed_ttl > 0 && sealed_ttl <= 120,
+            "sealing an expiring record must preserve its existing TTL"
+        );
+        store.delete_channel("sealed-with-ttl").await.unwrap();
 
         store
             .put_channel("deleted", make_state("deleted", 1_000_000))
