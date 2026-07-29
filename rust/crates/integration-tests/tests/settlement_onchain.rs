@@ -280,11 +280,11 @@ async fn expired_voucher_is_rejected_on_chain() {
     eprintln!("✅ expired voucher rejected on-chain; channel stayed Open");
 }
 
-/// Authoritative proof: open 4 real channels, settle through the worker, assert
-/// they batch into 2 txs and every channel seals on-chain.
+/// Authoritative proof: open one full transaction of real channels, settle
+/// through the worker, and assert every channel seals on-chain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn channels_settle_on_chain_in_batches() {
-    const CHANNELS: u64 = 4; // ⌈4/3⌉ = 2 settle transactions ⇒ proves batching
+    const CHANNELS: u64 = MAX_VOUCHER_SETTLEMENTS_PER_TX as u64;
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
     if rpc.get_latest_blockhash().await.is_err() {
@@ -301,7 +301,11 @@ async fn channels_settle_on_chain_in_batches() {
     let by_tx = testkit::drive_settlement(&handle, units).await;
 
     eprintln!("settlement txs: {:?}", by_tx.keys().collect::<Vec<_>>());
-    assert_eq!(by_tx.len(), 2, "4 channels should settle in 2 batched txs");
+    assert_eq!(
+        by_tx.len(),
+        1,
+        "{CHANNELS} channels should fit in one batched transaction"
+    );
 
     for sig in by_tx.keys() {
         confirm(&rpc, sig).await;

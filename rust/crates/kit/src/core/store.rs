@@ -636,16 +636,17 @@ impl RedisChannelStore {
 
     /// Connect with a caller-selected finalized-record retention window.
     ///
-    /// A zero duration is rejected instead of turning finalization into an
-    /// immediate delete.
+    /// Durations shorter than one second are rejected instead of truncating
+    /// them to an immediate delete.
     pub async fn connect_with_finalized_retention(
         redis_url: &str,
         key_prefix: impl Into<String>,
         finalized_retention: Duration,
     ) -> Result<Self, StoreError> {
-        if finalized_retention.is_zero() {
+        let finalized_retention_seconds = finalized_retention.as_secs();
+        if finalized_retention_seconds == 0 {
             return Err(StoreError::Internal(
-                "Finalized channel retention must be greater than zero".to_string(),
+                "Finalized channel retention must be at least one second".to_string(),
             ));
         }
         let client = redis::Client::open(redis_url)
@@ -657,7 +658,7 @@ impl RedisChannelStore {
         Ok(Self {
             connection,
             key_prefix: Self::namespace_key_prefix(key_prefix.into()),
-            finalized_retention_seconds: finalized_retention.as_secs(),
+            finalized_retention_seconds,
         })
     }
 
@@ -1170,6 +1171,38 @@ mod tests {
         assert_eq!(claimed.lifecycle, Some(latest));
     }
 
+    #[tokio::test]
+    async fn channel_lifecycle_touch_does_not_update_sealed_memory_channel() {
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
+        let original = ChannelLifecycle {
+            owner: "worker-a".to_string(),
+            close_after: 1_000,
+        };
+        store
+            .touch_channel_lifecycle("c1", original.clone())
+            .await
+            .unwrap();
+        store.mark_sealed("c1").await.unwrap();
+
+        let touched = store
+            .touch_channel_lifecycle(
+                "c1",
+                ChannelLifecycle {
+                    owner: "worker-b".to_string(),
+                    close_after: 2_000,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(touched.sealed);
+        assert_eq!(touched.lifecycle, Some(original));
+    }
+
     #[test]
     fn channel_state_without_lifecycle_remains_decodable() {
         let persisted = serde_json::json!({
@@ -1235,14 +1268,16 @@ mod tests {
 
     #[cfg(feature = "redis-store")]
     #[tokio::test]
-    async fn redis_channel_store_rejects_zero_finalized_retention() {
-        let result = RedisChannelStore::connect_with_finalized_retention(
-            "redis://127.0.0.1/",
-            "test",
-            Duration::ZERO,
-        )
-        .await;
-        assert!(result.is_err());
+    async fn redis_channel_store_rejects_subsecond_finalized_retention() {
+        for retention in [Duration::ZERO, Duration::from_millis(500)] {
+            let result = RedisChannelStore::connect_with_finalized_retention(
+                "redis://127.0.0.1/",
+                "test",
+                retention,
+            )
+            .await;
+            assert!(result.is_err());
+        }
     }
 
     #[cfg(feature = "redis-store")]
@@ -1322,6 +1357,33 @@ mod tests {
                 .unwrap()
                 .sealed
         );
+
+        store
+            .put_channel("sealed-touch", make_state("sealed-touch", 1_000_000))
+            .await
+            .unwrap();
+        let original = ChannelLifecycle {
+            owner: "redis-worker-a".to_string(),
+            close_after: 1_000,
+        };
+        store
+            .touch_channel_lifecycle("sealed-touch", original.clone())
+            .await
+            .unwrap();
+        store.mark_sealed("sealed-touch").await.unwrap();
+        let touched = store
+            .touch_channel_lifecycle(
+                "sealed-touch",
+                ChannelLifecycle {
+                    owner: "redis-worker-b".to_string(),
+                    close_after: 2_000,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(touched.sealed);
+        assert_eq!(touched.lifecycle, Some(original));
+        store.delete_channel("sealed-touch").await.unwrap();
 
         store.update_deposit("c1", 2_000_000).await.unwrap();
         store.mark_sealed("c1").await.unwrap();
