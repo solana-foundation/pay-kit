@@ -244,8 +244,10 @@ pub struct ChannelState {
     #[serde(default)]
     pub committed_deliveries: Vec<CommittedDelivery>,
 
-    /// Store-backed idle-close deadline. Missing on records written before
-    /// lifecycle scheduling became durable.
+    /// Store-backed idle-close deadline.
+    ///
+    /// The Serde default keeps existing persisted channel records readable.
+    /// Adding this public field is an intentional pre-1.0 Rust API change.
     #[serde(default)]
     pub lifecycle: Option<ChannelLifecycle>,
 }
@@ -261,19 +263,9 @@ pub trait ChannelStore: Send + Sync {
     /// This is intended for durable reconciliation workers. Implementations
     /// may observe concurrent inserts or updates on a later scan; callers must
     /// therefore reconcile each result against the authoritative chain state.
-    ///
-    /// The default preserves source compatibility for stores implemented
-    /// before channel enumeration was added. Lifecycle workers require an
-    /// implementation that overrides this method.
     fn list_channels(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
-        Box::pin(async {
-            Err(StoreError::Internal(
-                "Channel enumeration is not supported by this store".to_string(),
-            ))
-        })
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>>;
 
     fn get_channel(
         &self,
@@ -299,14 +291,7 @@ pub trait ChannelStore: Send + Sync {
     fn delete_channel(
         &self,
         channel_id: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let channel_id = channel_id.to_string();
-        Box::pin(async move {
-            Err(StoreError::Internal(format!(
-                "Channel deletion is not supported for {channel_id}"
-            )))
-        })
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 
     /// Atomically read-modify-write channel state.
     ///
@@ -322,37 +307,11 @@ pub trait ChannelStore: Send + Sync {
     /// Persist an idle-close deadline without allowing an older touch to move
     /// an existing deadline backwards. Once close is claimed or the channel is
     /// sealed, return the current state without changing its lifecycle.
-    ///
-    /// The default uses the existing atomic [`ChannelStore::update_channel`]
-    /// contract so pre-existing custom stores gain correct lifecycle touches
-    /// without having to add a new method.
     fn touch_channel_lifecycle(
         &self,
         channel_id: &str,
         lifecycle: ChannelLifecycle,
-    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
-        let channel_id = channel_id.to_string();
-        Box::pin(async move {
-            self.update_channel(
-                &channel_id,
-                Box::new(move |state| {
-                    let mut state = state
-                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
-                    let replace = !state.sealed
-                        && state.close_requested_at.is_none()
-                        && state
-                            .lifecycle
-                            .as_ref()
-                            .is_none_or(|current| lifecycle.close_after >= current.close_after);
-                    if replace {
-                        state.lifecycle = Some(lifecycle);
-                    }
-                    Ok(state)
-                }),
-            )
-            .await
-        })
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>>;
 
     /// Atomically advance the settled watermark from `expected` to `new`.
     ///
@@ -380,17 +339,13 @@ pub trait ChannelStore: Send + Sync {
 
     /// Mark a channel's lifecycle as fully finalized.
     ///
-    /// The default preserves compatibility with stores that do not implement
-    /// retention. Durable stores may use this stronger signal to schedule safe
-    /// cleanup after a retention window. Callers must not invoke it after only
-    /// the phase-1 seal; all required distribution work must be complete or the
-    /// channel must already be absent on-chain.
+    /// Callers must not invoke this after only the phase-1 seal; all required
+    /// distribution work must be complete or the channel must already be
+    /// absent on-chain.
     fn mark_finalized(
         &self,
         channel_id: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        self.mark_sealed(channel_id)
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
 }
 
 impl<T> ChannelStore for std::sync::Arc<T>
@@ -623,6 +578,13 @@ impl ChannelStore for MemoryChannelStore {
             }
             None => Box::pin(async { Err(StoreError::Internal("Channel not found".to_string())) }),
         }
+    }
+
+    fn mark_finalized(
+        &self,
+        channel_id: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        self.mark_sealed(channel_id)
     }
 }
 
@@ -1070,62 +1032,6 @@ impl ChannelStore for RedisChannelStore {
 mod tests {
     use super::*;
 
-    /// Models a third-party implementation written before lifecycle methods
-    /// were added to the trait.
-    struct LegacyChannelStore(MemoryChannelStore);
-
-    impl ChannelStore for LegacyChannelStore {
-        fn get_channel(
-            &self,
-            channel_id: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>>
-        {
-            self.0.get_channel(channel_id)
-        }
-
-        fn put_channel(
-            &self,
-            channel_id: &str,
-            state: ChannelState,
-        ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-            self.0.put_channel(channel_id, state)
-        }
-
-        fn update_channel(
-            &self,
-            channel_id: &str,
-            updater: Box<
-                dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send,
-            >,
-        ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
-            self.0.update_channel(channel_id, updater)
-        }
-
-        fn advance_cumulative(
-            &self,
-            channel_id: &str,
-            expected: u64,
-            new: u64,
-        ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
-            self.0.advance_cumulative(channel_id, expected, new)
-        }
-
-        fn update_deposit(
-            &self,
-            channel_id: &str,
-            new_deposit: u64,
-        ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-            self.0.update_deposit(channel_id, new_deposit)
-        }
-
-        fn mark_sealed(
-            &self,
-            channel_id: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-            self.0.mark_sealed(channel_id)
-        }
-    }
-
     #[tokio::test]
     async fn memory_store_get_put_delete() {
         let store = MemoryStore::new();
@@ -1252,31 +1158,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(claimed.lifecycle, Some(latest));
-    }
-
-    #[tokio::test]
-    async fn lifecycle_methods_preserve_legacy_store_compatibility() {
-        let store = LegacyChannelStore(MemoryChannelStore::new());
-        store
-            .put_channel("c1", make_state("c1", 1_000_000))
-            .await
-            .unwrap();
-
-        let lifecycle = ChannelLifecycle {
-            owner: "worker".to_string(),
-            close_after: 60_000,
-        };
-        let state = store
-            .touch_channel_lifecycle("c1", lifecycle.clone())
-            .await
-            .unwrap();
-        assert_eq!(state.lifecycle, Some(lifecycle));
-
-        let error = store.list_channels().await.unwrap_err();
-        assert!(
-            error.to_string().contains("enumeration is not supported"),
-            "default enumeration must fail explicitly"
-        );
     }
 
     #[test]
