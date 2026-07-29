@@ -178,6 +178,12 @@ pub struct ChannelLifecycle {
 }
 
 /// Persisted state of a payment channel, managed by the server.
+///
+/// # Breaking change
+///
+/// Lifecycle scheduling is part of the channel state contract. Consumers
+/// upgrading to this API must initialize [`ChannelState::lifecycle`] in struct
+/// literals, typically to `None` before the first store-backed touch.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChannelState {
     /// On-chain channel address (base58).
@@ -256,6 +262,10 @@ pub struct ChannelState {
 ///
 /// Implementations MUST guarantee that `advance_cumulative` is atomic to
 /// prevent double-spend under concurrent requests.
+///
+/// This trait deliberately requires the complete lifecycle contract. Custom
+/// stores must implement enumeration, touch, deletion, and finalization rather
+/// than inheriting defaults that fail only when a lifecycle worker runs.
 pub trait ChannelStore: Send + Sync {
     /// Return a weakly-consistent snapshot of every channel in this store's
     /// namespace.
