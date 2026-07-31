@@ -34,9 +34,10 @@ use crate::core::session::VoucherAcceptance;
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
 use crate::mpp::protocol::intents::session::{
-    ClosePayload, CommitPayload, CommitReceipt, CommitStatus, MeteringDirective, OpenPayload,
-    SessionMode, SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher,
-    TopUpPayload, VoucherPayload,
+    resolve_idle_timeout_seconds, validate_idle_timeout_options, ClosePayload, CommitPayload,
+    CommitReceipt, CommitStatus, MeteringDirective, OpenPayload, SessionMode,
+    SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher, TopUpPayload,
+    VoucherPayload,
 };
 use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 use crate::mpp::store::{
@@ -58,15 +59,15 @@ pub struct Split {
 /// The simpler successor to the removed `multi_delegator` path. Both settle
 /// through the same batched worker; the difference is only who holds the
 /// channel's `authorized_signer`.
-pub use crate::mpp::protocol::intents::session::SessionSettlementAuthority as SettlementAuthority;
+pub use crate::mpp::protocol::intents::session::SessionVoucherSigner as VoucherSigner;
 
-impl SettlementAuthority {
+impl VoucherSigner {
     /// The channel `authorized_signer` to open with under this mode: the
-    /// operator (Delegated) or the client's own ephemeral key (ClientVoucher).
+    /// operator (`Operator`) or the client's own ephemeral key (`Client`).
     pub fn authorized_signer(self, operator: Pubkey, client: Pubkey) -> Pubkey {
         match self {
-            Self::Delegated => operator,
-            Self::ClientVoucher => client,
+            Self::Operator => operator,
+            Self::Client => client,
         }
     }
 }
@@ -113,7 +114,16 @@ pub struct SessionConfig {
     pub min_voucher_delta: u64,
 
     /// Voucher signing authority, independent of transaction submission mode.
-    pub settlement_authority: SettlementAuthority,
+    pub voucher_signer: VoucherSigner,
+
+    /// RFC3339 expiry applied to reusable operator-mode proofs.
+    pub authentication_expires: Option<String>,
+
+    /// Inactivity thresholds offered for a new channel.
+    pub idle_timeout_options_seconds: Option<Vec<u32>>,
+
+    /// Server-selected inactivity threshold in seconds.
+    pub idle_timeout_seconds: u32,
 
     /// Forced-close grace period (seconds) used as the voucher settlement
     /// window: a non-zero voucher expiry MUST outlast this window so the
@@ -152,7 +162,10 @@ impl Default for SessionConfig {
             network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
-            settlement_authority: SettlementAuthority::ClientVoucher,
+            voucher_signer: VoucherSigner::Client,
+            authentication_expires: None,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
@@ -338,7 +351,10 @@ impl<S: ChannelStore> SessionServer<S> {
             } else {
                 None
             },
-            settlement_authority: self.config.settlement_authority,
+            authentication_expires: self.config.authentication_expires.clone(),
+            voucher_signer: self.config.voucher_signer,
+            idle_timeout_options_seconds: self.config.idle_timeout_options_seconds.clone(),
+            idle_timeout_seconds: None,
             // Omit if only Push — clients assume Push when modes is absent.
             modes: if self.config.modes == [SessionMode::Push] {
                 vec![]
@@ -420,11 +436,10 @@ impl<S: ChannelStore> SessionServer<S> {
         // rentPayer pin. rentPayer is pinned to it below (slot-1 == operator).
         let operator = parse_required_operator(&self.config.operator)?;
 
-        if self.config.settlement_authority == SettlementAuthority::Delegated
-            && authorized_signer != operator
-        {
+        if self.config.voucher_signer == VoucherSigner::Operator && authorized_signer != operator {
             return Err(Error::Other(
-                "delegated settlement requires authorizedSigner to match the operator".to_string(),
+                "operator voucher signing requires authorizedSigner to match the operator"
+                    .to_string(),
             ));
         }
 
@@ -548,6 +563,14 @@ impl<S: ChannelStore> SessionServer<S> {
 
         let session_id = payload.session_id()?;
         let deposit = payload.deposit_amount()?;
+        let _effective_idle_timeout = resolve_idle_timeout_seconds(
+            self.config.idle_timeout_seconds,
+            self.config.idle_timeout_options_seconds.as_deref(),
+            payload.idle_timeout_seconds,
+        )?;
+        if let Some(options) = self.config.idle_timeout_options_seconds.as_deref() {
+            validate_idle_timeout_options(options)?;
+        }
 
         if deposit == 0 {
             return Err(Error::Other(
@@ -562,16 +585,34 @@ impl<S: ChannelStore> SessionServer<S> {
             )));
         }
 
-        if self.config.settlement_authority == SettlementAuthority::Delegated {
+        if self.config.voucher_signer == VoucherSigner::Operator {
             let operator = parse_required_operator(&self.config.operator)?;
             let authorized_signer =
                 parse_pubkey_field(&payload.authorized_signer, "authorizedSigner")?;
             if authorized_signer != operator {
                 return Err(Error::Other(
-                    "delegated settlement requires authorizedSigner to match the operator"
+                    "operator voucher signing requires authorizedSigner to match the operator"
                         .to_string(),
                 ));
             }
+            let authentication = payload.authentication.as_ref().ok_or_else(|| {
+                Error::Other("operator voucher signing requires authentication".to_string())
+            })?;
+            let expected_payer = payload.owner.as_ref().or(payload.payer.as_ref());
+            if expected_payer.is_some_and(|payer| authentication.payer != *payer) {
+                return Err(Error::Other(
+                    "session authentication payer does not match the channel payer".to_string(),
+                ));
+            }
+            if !authentication.verify(session_id)? {
+                return Err(Error::Other(
+                    "invalid session authentication signature".to_string(),
+                ));
+            }
+        } else if payload.authentication.is_some() {
+            return Err(Error::Other(
+                "authentication is only valid when voucherSigner is operator".to_string(),
+            ));
         }
 
         // On-chain verification: confirm the open transaction was accepted.
@@ -1406,7 +1447,10 @@ mod tests {
                 network: "localnet".to_string(),
                 program_id: None,
                 min_voucher_delta: 0,
-                settlement_authority: SettlementAuthority::ClientVoucher,
+                voucher_signer: VoucherSigner::Client,
+                authentication_expires: None,
+                idle_timeout_options_seconds: None,
+                idle_timeout_seconds: 300,
                 grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
                 modes: vec![SessionMode::Push],
                 pull_voucher_strategy: None,
@@ -1428,7 +1472,10 @@ mod tests {
                 network: "localnet".to_string(),
                 program_id: None,
                 min_voucher_delta: min_delta,
-                settlement_authority: SettlementAuthority::ClientVoucher,
+                voucher_signer: VoucherSigner::Client,
+                authentication_expires: None,
+                idle_timeout_options_seconds: None,
+                idle_timeout_seconds: 300,
                 grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
                 modes: vec![SessionMode::Push],
                 pull_voucher_strategy: None,
@@ -1510,10 +1557,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delegated_open_rejects_non_operator_authorized_signer() {
+    async fn operator_open_rejects_non_operator_authorized_signer() {
         let server = SessionServer::new(
             SessionConfig {
-                settlement_authority: SettlementAuthority::Delegated,
+                voucher_signer: VoucherSigner::Operator,
                 ..make_server().config
             },
             MemoryChannelStore::new(),
@@ -1523,7 +1570,7 @@ mod tests {
         let err = server.process_preverified_open(&payload).await.unwrap_err();
         assert!(err
             .to_string()
-            .contains("delegated settlement requires authorizedSigner to match the operator"));
+            .contains("operator voucher signing requires authorizedSigner to match the operator"));
     }
 
     #[tokio::test]
@@ -1666,7 +1713,7 @@ mod tests {
 
         let delegated_server = SessionServer::new(
             SessionConfig {
-                settlement_authority: SettlementAuthority::Delegated,
+                voucher_signer: VoucherSigner::Operator,
                 ..server.config.clone()
             },
             MemoryChannelStore::new(),
@@ -2083,7 +2130,10 @@ mod tests {
             network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
-            settlement_authority: SettlementAuthority::ClientVoucher,
+            voucher_signer: VoucherSigner::Client,
+            authentication_expires: None,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
@@ -2107,7 +2157,10 @@ mod tests {
             network: "localnet".to_string(),
             program_id: None,
             min_voucher_delta: 500,
-            settlement_authority: SettlementAuthority::ClientVoucher,
+            voucher_signer: VoucherSigner::Client,
+            authentication_expires: None,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
@@ -2137,7 +2190,10 @@ mod tests {
             network: "localnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
-            settlement_authority: SettlementAuthority::ClientVoucher,
+            voucher_signer: VoucherSigner::Client,
+            authentication_expires: None,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push, SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
@@ -2456,6 +2512,7 @@ mod tests {
         server
             .process_close(&ClosePayload {
                 channel_id: chan.clone(),
+                authentication: None,
                 voucher: None,
             })
             .await
@@ -2513,6 +2570,7 @@ mod tests {
         let params = server
             .process_close(&ClosePayload {
                 channel_id: chan.clone(),
+                authentication: None,
                 voucher: None,
             })
             .await
@@ -2542,6 +2600,7 @@ mod tests {
         let params = server
             .process_close(&ClosePayload {
                 channel_id: chan_str,
+                authentication: None,
                 voucher: Some(final_voucher),
             })
             .await
@@ -2555,6 +2614,7 @@ mod tests {
         let err = server
             .process_close(&ClosePayload {
                 channel_id: bs58::encode(Pubkey::new_unique().as_ref()).into_string(),
+                authentication: None,
                 voucher: None,
             })
             .await;
@@ -2795,6 +2855,7 @@ mod tests {
         server
             .process_close(&ClosePayload {
                 channel_id: chan.clone(),
+                authentication: None,
                 voucher: None,
             })
             .await
@@ -2834,6 +2895,7 @@ mod tests {
         server
             .process_close(&ClosePayload {
                 channel_id: chan.clone(),
+                authentication: None,
                 voucher: None,
             })
             .await
@@ -2861,6 +2923,7 @@ mod tests {
         server
             .process_close(&ClosePayload {
                 channel_id: chan.clone(),
+                authentication: None,
                 voucher: None,
             })
             .await
@@ -2870,6 +2933,7 @@ mod tests {
         let err = server
             .process_close(&ClosePayload {
                 channel_id: chan.clone(),
+                authentication: None,
                 voucher: None,
             })
             .await

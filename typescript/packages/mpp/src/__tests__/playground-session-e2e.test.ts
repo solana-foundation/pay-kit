@@ -148,7 +148,7 @@ describe('playground session e2e', () => {
         expect(receipt).not.toBeNull();
         expect(receipt!.cumulative).toBe(cumulative.toString());
 
-        // 5) The idle-close watchdog (closeDelayMs = 2s) settles the real
+        // 5) The idle-close watchdog settles the real
         //    channel on-chain — poll until the settle signature lands.
         let settled: string | null = null;
         const deadline = Date.now() + 60_000;

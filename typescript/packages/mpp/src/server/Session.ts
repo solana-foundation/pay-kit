@@ -1,7 +1,10 @@
 import {
     type Address,
+    createSignableMessage,
     createSolanaRpc,
+    getBase58Decoder,
     isTransactionPartialSigner,
+    type MessagePartialSigner,
     type Signature,
     type TransactionPartialSigner,
     type TransactionSigner,
@@ -9,19 +12,27 @@ import {
 import { Method, Receipt } from 'mppx';
 
 import { DEFAULT_RPC_URLS, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
+import {
+    DEFAULT_SESSION_EXPIRES_AT,
+    resolveIdleTimeoutSeconds,
+    validateIdleTimeoutOptions,
+    verifySessionAuthentication,
+} from '../client/Session.js';
 import * as Methods from '../Methods.js';
 import type {
     CommitReceipt,
     MeteringDirective,
     OpenPayload,
+    SessionAction,
+    SessionAuthentication,
     SessionMode,
     SessionPullVoucherStrategy,
     SessionRequest,
-    SessionSettlementAuthority,
+    SessionVoucherSigner,
     SessionSplit,
     SignedVoucher,
 } from '../shared/session-types.js';
-import { normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
+import { encodeVoucherMessageLoose, normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
     type MultiDelegateSubmitRpc,
@@ -103,15 +114,18 @@ export function session(parameters: session.Parameters) {
         programId,
         modes,
         pullVoucherStrategy,
-        settlementAuthority = 'clientVoucher',
+        voucherSigner = 'client',
         splits,
         pricing,
         rpc,
-        closeDelayMs = 0,
+        authenticationExpires,
+        idleTimeoutOptionsSeconds,
+        idleTimeoutSeconds = 300,
         minVoucherDelta,
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
         settlementWindowSeconds,
+        operatorVoucherSigner,
     } = parameters;
 
     if (cap <= 0n) {
@@ -136,6 +150,17 @@ export function session(parameters: session.Parameters) {
     if (pricing.perDelivery !== undefined && pricing.perDelivery <= 0n) {
         throw new Error('pricing.perDelivery must be positive when set');
     }
+    if (idleTimeoutOptionsSeconds) validateIdleTimeoutOptions(idleTimeoutOptionsSeconds);
+    resolveIdleTimeoutSeconds({ defaultSeconds: idleTimeoutSeconds, options: idleTimeoutOptionsSeconds });
+    if (authenticationExpires && Number.isNaN(Date.parse(authenticationExpires))) {
+        throw new Error('authenticationExpires must be an RFC3339 timestamp');
+    }
+    if (voucherSigner === 'operator' && !operatorVoucherSigner) {
+        throw new Error('operatorVoucherSigner is required when voucherSigner is operator');
+    }
+    if (operatorVoucherSigner && operatorVoucherSigner.address !== operator) {
+        throw new Error('operatorVoucherSigner address must match operator');
+    }
 
     const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet'];
     const store = resolveSessionStore(parameters);
@@ -147,7 +172,7 @@ export function session(parameters: session.Parameters) {
     // Note: lifecycle's closeOnIdle would normally drive an on-chain settle.
     // Because that requires a configured merchant signer + rpc, we only
     // create the lifecycle when both are present.
-    if (closeDelayMs > 0) {
+    if (idleTimeoutSeconds > 0) {
         lifecycleRef.value = createLifecycle(
             store,
             async channelId => {
@@ -175,7 +200,7 @@ export function session(parameters: session.Parameters) {
                     console.warn(`[solana-mpp] idle-close settle failed for ${channelId}:`, error);
                 }
             },
-            closeDelayMs,
+            idleTimeoutSeconds * 1_000,
         );
     }
 
@@ -231,6 +256,8 @@ export function session(parameters: session.Parameters) {
                 ...(decimals !== undefined ? { decimals } : {}),
                 ...(request.description ? { description: request.description } : {}),
                 ...(request.externalId ? { externalId: request.externalId } : {}),
+                ...(authenticationExpires ? { authenticationExpires } : {}),
+                ...(idleTimeoutOptionsSeconds ? { idleTimeoutOptionsSeconds: [...idleTimeoutOptionsSeconds] } : {}),
                 ...(minVoucherDelta !== undefined && minVoucherDelta > 0n
                     ? { minVoucherDelta: minVoucherDelta.toString() }
                     : {}),
@@ -243,7 +270,7 @@ export function session(parameters: session.Parameters) {
                 ...(recentBlockhash ? { recentBlockhash } : {}),
                 ...(recentSlot ? { recentSlot } : {}),
                 recipient,
-                settlementAuthority,
+                voucherSigner,
                 ...(splits?.length ? { splits: [...splits] } : {}),
             };
 
@@ -260,9 +287,12 @@ export function session(parameters: session.Parameters) {
                         cap,
                         challengeId: cred.challenge.id,
                         challengeOpenSlot: parseOptionalU64(cred.challenge.request.recentSlot, 'recentSlot'),
+                        authenticationExpires,
                         currency,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
+                        idleTimeoutOptionsSeconds,
+                        idleTimeoutSeconds,
                         merchantSigner: signer,
                         mint: resolvedMint,
                         modes: effectiveModes,
@@ -275,7 +305,19 @@ export function session(parameters: session.Parameters) {
                         pullVoucherStrategy,
                         recipient,
                         rpc,
-                        settlementAuthority,
+                        voucherSigner,
+                        store,
+                    });
+                case 'use':
+                    if (!operatorVoucherSigner) {
+                        throw new Error('use is only valid when voucherSigner is operator');
+                    }
+                    return await handleUse({
+                        challengeId: cred.challenge.id,
+                        externalId: cred.challenge.request.externalId,
+                        operatorVoucherSigner,
+                        payload: cred.payload,
+                        price: pricing.perDelivery,
                         store,
                     });
                 case 'voucher':
@@ -406,6 +448,7 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
 // ─────────────────────────────────────────────────────────────────────
 
 interface HandleOpenArgs {
+    readonly authenticationExpires: string | undefined;
     readonly cap: bigint;
     readonly challengeId: string | undefined;
     /** Slot issued in the 402 challenge; the open tx must echo it. */
@@ -413,6 +456,8 @@ interface HandleOpenArgs {
     readonly currency: string;
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
+    readonly idleTimeoutOptionsSeconds: readonly number[] | undefined;
+    readonly idleTimeoutSeconds: number;
     readonly merchantSigner: TransactionPartialSigner | undefined;
     readonly mint: string;
     readonly modes: SessionMode[];
@@ -426,7 +471,7 @@ interface HandleOpenArgs {
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
-    readonly settlementAuthority: SessionSettlementAuthority;
+    readonly voucherSigner: SessionVoucherSigner;
     readonly store: SessionStore;
 }
 
@@ -439,8 +484,11 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     if (mode === 'pull' && !args.pullVoucherStrategy) {
         throw new Error('pull-mode open requires a pullVoucherStrategy on the server config');
     }
-    if (args.settlementAuthority === 'delegated' && payload.authorizedSigner !== args.operator) {
-        throw new Error('delegated settlement requires authorizedSigner to match the operator');
+    if (args.voucherSigner === 'operator' && payload.authorizedSigner !== args.operator) {
+        throw new Error('operator voucher signing requires authorizedSigner to match the operator');
+    }
+    if (args.voucherSigner === 'client' && payload.authentication) {
+        throw new Error('authentication is only valid when voucherSigner is operator');
     }
 
     let channelId: string;
@@ -559,7 +607,32 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     if (deposit === 0n) throw new Error('deposit must be greater than zero');
     if (deposit > args.cap) throw new Error(`deposit ${deposit} exceeds cap ${args.cap}`);
 
+    const effectiveIdleTimeoutSeconds = resolveIdleTimeoutSeconds({
+        defaultSeconds: args.idleTimeoutSeconds,
+        options: args.idleTimeoutOptionsSeconds,
+        selected: payload.idleTimeoutSeconds,
+    });
+    if (args.voucherSigner === 'operator') {
+        const authentication = payload.authentication;
+        if (!authentication) throw new Error('operator voucher signing requires authentication');
+        if (authentication.challengeId !== args.challengeId) {
+            throw new Error('session authentication challengeId does not match the open challenge');
+        }
+        const expectedPayer = channelPayer ?? payload.owner ?? payload.payer;
+        if (expectedPayer && authentication.payer !== expectedPayer) {
+            throw new Error('session authentication payer does not match the channel payer');
+        }
+        if (args.authenticationExpires && Date.parse(args.authenticationExpires) <= Date.now()) {
+            throw new Error('session authentication has expired');
+        }
+        if (!(await verifySessionAuthentication(authentication, channelId))) {
+            throw new Error('invalid session authentication signature');
+        }
+    }
+
     const newState: ChannelState = {
+        authentication: payload.authentication,
+        authenticationExpires: args.authenticationExpires,
         authorizedSigner: payload.authorizedSigner,
         channelId,
         closeRequestedAt: undefined,
@@ -568,6 +641,8 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         deposit,
         highestVoucherExpiresAt: undefined,
         highestVoucherSignature: undefined,
+        idleTimeoutSeconds: effectiveIdleTimeoutSeconds,
+        lastActivityAt: Date.now(),
         nextDeliverySequence: 0n,
         openSlot,
         // Prefer the payer read from the verified open transaction (account 0,
@@ -577,6 +652,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         operator: channelPayer ?? payload.owner ?? payload.payer,
         pendingDeliveries: [],
         sealed: false,
+        voucherSigner: args.voucherSigner,
     };
 
     // The existence check lives inside the atomic mutator so a concurrent
@@ -617,6 +693,76 @@ interface HandleVoucherArgs {
     /** Forced-close grace period a non-zero voucher expiry must outlast. */
     readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
+}
+
+interface HandleUseArgs {
+    readonly challengeId: string | undefined;
+    readonly externalId: string | undefined;
+    readonly operatorVoucherSigner: MessagePartialSigner;
+    readonly payload: {
+        readonly action: 'use';
+        readonly authentication: SessionAuthentication;
+        readonly channelId: string;
+    };
+    readonly price: bigint | undefined;
+    readonly store: SessionStore;
+}
+
+async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
+    const price = args.price;
+    if (price === undefined) throw new Error('operator-signed use requires pricing.perDelivery');
+    const existing = await args.store.getChannel(args.payload.channelId);
+    if (!existing) throw new Error(`Channel ${args.payload.channelId} not found`);
+    if (existing.voucherSigner !== 'operator' || !existing.authentication) {
+        throw new Error('use is only valid for an operator-signed channel');
+    }
+    if (JSON.stringify(args.payload.authentication) !== JSON.stringify(existing.authentication)) {
+        throw new Error('session authentication does not match the proof bound at open');
+    }
+    if (existing.authenticationExpires && Date.parse(existing.authenticationExpires) <= Date.now()) {
+        throw new Error('session authentication has expired');
+    }
+    if (!(await verifySessionAuthentication(args.payload.authentication, args.payload.channelId))) {
+        throw new Error('invalid session authentication signature');
+    }
+
+    let voucherSignature = '';
+    let cumulative = 0n;
+    await args.store.updateChannel(args.payload.channelId, async current => {
+        if (!current) throw new Error(`Channel ${args.payload.channelId} not found`);
+        if (current.sealed || current.closeRequestedAt !== undefined) {
+            throw new Error('Channel is closed or close is pending');
+        }
+        cumulative = current.cumulative + price;
+        if (cumulative > current.deposit) throw new Error('insufficient channel availability');
+        const data = {
+            channelId: current.channelId,
+            cumulativeAmount: cumulative.toString(),
+            expiresAt: DEFAULT_SESSION_EXPIRES_AT,
+        };
+        const [signatures] = await args.operatorVoucherSigner.signMessages([
+            createSignableMessage(encodeVoucherMessageLoose(data)),
+        ]);
+        const signature = signatures?.[args.operatorVoucherSigner.address];
+        if (!signature) throw new Error('operator voucher signer did not return a signature');
+        voucherSignature = getBase58Decoder().decode(new Uint8Array(signature));
+        return {
+            ...current,
+            cumulative,
+            highestVoucherExpiresAt: BigInt(DEFAULT_SESSION_EXPIRES_AT),
+            highestVoucherSignature: voucherSignature,
+            lastActivityAt: Date.now(),
+        };
+    });
+
+    return Receipt.from({
+        method: 'solana',
+        ...(args.challengeId ? { challengeId: args.challengeId } : {}),
+        ...(args.externalId ? { externalId: args.externalId } : {}),
+        reference: `${args.payload.channelId}:${cumulative.toString()}:${voucherSignature}`,
+        status: 'success',
+        timestamp: new Date().toISOString(),
+    });
 }
 
 async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> {
@@ -1217,17 +1363,7 @@ type CredentialPayload = {
         id?: string;
         request: SessionRequest;
     };
-    payload:
-        | {
-              readonly action: 'topUp';
-              readonly channelId: string;
-              readonly newDeposit: string;
-              readonly signature: string;
-          }
-        | { readonly action: 'close'; readonly channelId: string; readonly voucher?: SignedVoucher | undefined }
-        | { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher }
-        | { readonly action: 'voucher'; readonly voucher: SignedVoucher }
-        | (OpenPayload & { readonly action: 'open' });
+    payload: SessionAction;
 };
 
 interface DeliveryRequestBody {
@@ -1258,16 +1394,20 @@ export declare namespace session {
     }
 
     interface Parameters {
+        /** RFC3339 expiry applied to reusable operator-mode proofs. */
+        readonly authenticationExpires?: string;
         /** Maximum session cap the server will offer (base units). */
         readonly cap: bigint;
-        /** Idle-close delay in ms. 0 (default) disables the watchdog. */
-        readonly closeDelayMs?: number;
         /** Currency identifier (e.g. 'USDC' or an SPL mint address). */
         readonly currency: string;
         /** Token decimals (default 6). */
         readonly decimals?: number;
         /** Minimum voucher increment in base units. Defaults to 0. */
         readonly minVoucherDelta?: bigint;
+        /** Inactivity thresholds offered to clients for a new channel. */
+        readonly idleTimeoutOptionsSeconds?: readonly number[];
+        /** Server-selected inactivity threshold in seconds. Defaults to 300. */
+        readonly idleTimeoutSeconds?: number;
         /** Funding modes. Defaults to ['push']. */
         readonly modes?: readonly SessionMode[];
         /** Solana network. Defaults to 'mainnet'. */
@@ -1276,6 +1416,8 @@ export declare namespace session {
         readonly openTxSubmitter?: 'client' | 'server';
         /** Operator public key (base58). */
         readonly operator: string;
+        /** Ed25519 signer used to create cumulative vouchers in operator mode. */
+        readonly operatorVoucherSigner?: MessagePartialSigner;
         /** Signer used when push-mode `openTxSubmitter='server'` requires a fee-payer signer. */
         readonly paymentChannelPayerSigner?: TransactionPartialSigner;
         /** Pricing hints surfaced to clients (Phase F+ will use these). */
@@ -1291,7 +1433,7 @@ export declare namespace session {
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
         /** Voucher signing authority advertised by this session. */
-        readonly settlementAuthority?: SessionSettlementAuthority;
+        readonly voucherSigner?: SessionVoucherSigner;
         /**
          * Settlement window in seconds — the forced-close grace period a
          * non-zero voucher `expiresAt` must outlast. When set, a voucher

@@ -14,6 +14,7 @@ amount-parsing entry point.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -21,9 +22,16 @@ from solana_pay_kit.protocols.mpp.intents.charge import parse_units
 
 __all__ = [
     "DEFAULT_SESSION_EXPIRES_AT",
+    "MAX_IDLE_TIMEOUT_SECONDS",
+    "SESSION_AUTHENTICATION_DOMAIN",
     "SessionMode",
     "SessionPullVoucherStrategy",
-    "SessionSettlementAuthority",
+    "SessionVoucherSigner",
+    "SessionAuthentication",
+    "resolve_idle_timeout_seconds",
+    "sign_session_authentication",
+    "validate_idle_timeout_options",
+    "verify_session_authentication",
     "CommitStatus",
     "SessionSplit",
     "SessionRequest",
@@ -36,6 +44,7 @@ __all__ = [
     "CommitReceipt",
     "TopUpPayload",
     "ClosePayload",
+    "UsePayload",
     "MeteringDirective",
     "MeteringUsage",
     "MeteredEnvelope",
@@ -47,6 +56,8 @@ __all__ = [
 # This stays below JavaScript's max safe integer so JSON intermediaries do not
 # round it before the credential is decoded.
 DEFAULT_SESSION_EXPIRES_AT = 4_102_444_800
+MAX_IDLE_TIMEOUT_SECONDS = 2_592_000
+SESSION_AUTHENTICATION_DOMAIN = "mpp-session-auth-v1"
 
 _U64_MAX = 2**64 - 1
 
@@ -78,7 +89,7 @@ SessionMode = Literal["push", "pull"]
 SessionPullVoucherStrategy = Literal["clientVoucher", "operatedVoucher"]
 
 # Voucher signing authority advertised by a session challenge.
-SessionSettlementAuthority = Literal["clientVoucher", "delegated"]
+SessionVoucherSigner = Literal["client", "operator"]
 
 # Commit receipt status. Encoded on the wire as the camelCase string
 # ``"committed"`` or ``"replayed"``.
@@ -86,7 +97,110 @@ CommitStatus = Literal["committed", "replayed"]
 
 # Action discriminator values. Note ``"topUp"`` is camelCase on the wire, in
 # line with the rest of the session field naming.
-_SessionActionTag = Literal["open", "voucher", "commit", "topUp", "close"]
+_SessionActionTag = Literal["open", "voucher", "use", "commit", "topUp", "close"]
+
+
+@dataclass(frozen=True)
+class SessionAuthentication:
+    """Reusable payer proof bound to one challenge and channel."""
+
+    challenge_id: str
+    payer: str
+    signature: str
+    type: Literal["proof"] = "proof"
+
+    def message_bytes(self, channel_id: str) -> bytes:
+        return json.dumps(
+            {
+                "channelId": channel_id,
+                "domain": SESSION_AUTHENTICATION_DOMAIN,
+                "payer": self.payer,
+                "sessionChallengeId": self.challenge_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "type": self.type,
+            "challengeId": self.challenge_id,
+            "payer": self.payer,
+            "signature": self.signature,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SessionAuthentication:
+        if data.get("type") != "proof":
+            raise ValueError("session authentication: type must be 'proof'")
+        return cls(
+            challenge_id=str(data.get("challengeId", "")),
+            payer=str(data.get("payer", "")),
+            signature=str(data.get("signature", "")),
+        )
+
+
+def sign_session_authentication(
+    challenge_id: str, channel_id: str, signer: Any
+) -> SessionAuthentication:
+    """Create a reusable proof with a solders-compatible Ed25519 keypair."""
+    payer = str(signer.pubkey())
+    unsigned = SessionAuthentication(challenge_id, payer, "")
+    return SessionAuthentication(
+        challenge_id,
+        payer,
+        str(signer.sign_message(unsigned.message_bytes(channel_id))),
+    )
+
+
+def verify_session_authentication(
+    authentication: SessionAuthentication, channel_id: str
+) -> bool:
+    """Verify a reusable payer proof against its bound channel."""
+    from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+    from solders.signature import Signature  # type: ignore[import-untyped]
+
+    try:
+        payer = Pubkey.from_string(authentication.payer)
+        signature = Signature.from_string(authentication.signature)
+    except (TypeError, ValueError):
+        return False
+    return signature.verify(payer, authentication.message_bytes(channel_id))
+
+
+def validate_idle_timeout_options(options: list[int]) -> None:
+    """Validate the non-empty, strictly increasing timeout offer list."""
+    if not options:
+        raise ValueError("idleTimeoutOptionsSeconds must not be empty")
+    previous = 0
+    for value in options:
+        if isinstance(value, bool) or not 1 <= value <= MAX_IDLE_TIMEOUT_SECONDS:
+            raise ValueError(f"idle timeout must be between 1 and {MAX_IDLE_TIMEOUT_SECONDS}")
+        if value <= previous:
+            raise ValueError("idleTimeoutOptionsSeconds must be strictly increasing")
+        previous = value
+
+
+def resolve_idle_timeout_seconds(
+    default_seconds: int,
+    options: list[int] | None = None,
+    selected: int | None = None,
+) -> int:
+    """Resolve the effective timeout and reject an unsupported selection."""
+    if isinstance(default_seconds, bool) or not 1 <= default_seconds <= MAX_IDLE_TIMEOUT_SECONDS:
+        raise ValueError(f"default idle timeout must be between 1 and {MAX_IDLE_TIMEOUT_SECONDS}")
+    if options is not None:
+        validate_idle_timeout_options(options)
+    if selected is not None:
+        if options is None:
+            raise ValueError("idleTimeoutSeconds is not allowed when no options were advertised")
+        if selected not in options:
+            raise ValueError("idleTimeoutSeconds was not one of the advertised options")
+        return selected
+    if options is not None and default_seconds not in options:
+        return options[0]
+    return default_seconds
 
 
 @dataclass
@@ -161,10 +275,13 @@ class SessionRequest:
     program_id: str | None = None
     description: str | None = None
     external_id: str | None = None
+    authentication_expires: str | None = None
     min_voucher_delta: str | None = None
+    idle_timeout_options_seconds: list[int] | None = None
+    idle_timeout_seconds: int | None = None
     modes: list[SessionMode] = field(default_factory=list)
     pull_voucher_strategy: SessionPullVoucherStrategy | None = None
-    settlement_authority: SessionSettlementAuthority = "clientVoucher"
+    voucher_signer: SessionVoucherSigner = "client"
     recent_blockhash: str | None = None
     recent_slot: int | None = None
 
@@ -187,13 +304,20 @@ class SessionRequest:
             d["description"] = self.description
         if self.external_id is not None:
             d["externalId"] = self.external_id
+        if self.authentication_expires is not None:
+            d["authenticationExpires"] = self.authentication_expires
         if self.min_voucher_delta is not None:
             d["minVoucherDelta"] = self.min_voucher_delta
         if self.modes:
             d["modes"] = list(self.modes)
         if self.pull_voucher_strategy is not None:
             d["pullVoucherStrategy"] = self.pull_voucher_strategy
-        d["settlementAuthority"] = self.settlement_authority
+        if self.idle_timeout_options_seconds is not None:
+            validate_idle_timeout_options(self.idle_timeout_options_seconds)
+            d["idleTimeoutOptionsSeconds"] = list(self.idle_timeout_options_seconds)
+        if self.idle_timeout_seconds is not None:
+            d["idleTimeoutSeconds"] = self.idle_timeout_seconds
+        d["voucherSigner"] = self.voucher_signer
         if self.recent_blockhash is not None:
             d["recentBlockhash"] = self.recent_blockhash
         recent_slot = _u64_to_wire(self.recent_slot)
@@ -215,9 +339,13 @@ class SessionRequest:
         strategy = data.get("pullVoucherStrategy")
         if strategy is not None and strategy not in ("clientVoucher", "operatedVoucher"):
             raise ValueError(f"session request: unknown pullVoucherStrategy {strategy!r}")
-        settlement_authority = data.get("settlementAuthority", "clientVoucher")
-        if settlement_authority not in ("clientVoucher", "delegated"):
-            raise ValueError(f"session request: unknown settlementAuthority {settlement_authority!r}")
+        voucher_signer = data.get("voucherSigner", "client")
+        if voucher_signer not in ("client", "operator"):
+            raise ValueError(f"session request: unknown voucherSigner {voucher_signer!r}")
+        timeout_options = data.get("idleTimeoutOptionsSeconds")
+        if timeout_options is not None:
+            timeout_options = [int(value) for value in timeout_options]
+            validate_idle_timeout_options(timeout_options)
         return cls(
             cap=data.get("cap", ""),
             currency=data.get("currency", ""),
@@ -229,10 +357,15 @@ class SessionRequest:
             program_id=data.get("programId"),
             description=data.get("description"),
             external_id=data.get("externalId"),
+            authentication_expires=data.get("authenticationExpires"),
             min_voucher_delta=data.get("minVoucherDelta"),
+            idle_timeout_options_seconds=timeout_options,
+            idle_timeout_seconds=(
+                int(data["idleTimeoutSeconds"]) if data.get("idleTimeoutSeconds") is not None else None
+            ),
             modes=modes,
             pull_voucher_strategy=strategy,
-            settlement_authority=settlement_authority,
+            voucher_signer=voucher_signer,
             recent_blockhash=data.get("recentBlockhash"),
             recent_slot=_u64_from_wire(data.get("recentSlot"), "recentSlot"),
         )
@@ -336,6 +469,8 @@ class OpenPayload:
     owner: str | None = None
     init_multi_delegate_tx: str | None = None
     update_delegation_tx: str | None = None
+    authentication: SessionAuthentication | None = None
+    idle_timeout_seconds: int | None = None
 
     @classmethod
     def push(
@@ -553,6 +688,10 @@ class OpenPayload:
             d["initMultiDelegateTx"] = self.init_multi_delegate_tx
         if self.update_delegation_tx is not None:
             d["updateDelegationTx"] = self.update_delegation_tx
+        if self.authentication is not None:
+            d["authentication"] = self.authentication.to_dict()
+        if self.idle_timeout_seconds is not None:
+            d["idleTimeoutSeconds"] = self.idle_timeout_seconds
         d["authorizedSigner"] = self.authorized_signer
         d["signature"] = self.signature
         return d
@@ -585,6 +724,14 @@ class OpenPayload:
             owner=data.get("owner"),
             init_multi_delegate_tx=data.get("initMultiDelegateTx"),
             update_delegation_tx=data.get("updateDelegationTx"),
+            authentication=(
+                SessionAuthentication.from_dict(data["authentication"])
+                if data.get("authentication") is not None
+                else None
+            ),
+            idle_timeout_seconds=(
+                int(data["idleTimeoutSeconds"]) if data.get("idleTimeoutSeconds") is not None else None
+            ),
         )
 
 
@@ -764,10 +911,13 @@ class ClosePayload:
     """
 
     channel_id: str
+    authentication: SessionAuthentication | None = None
     voucher: SignedVoucher | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"channelId": self.channel_id}
+        if self.authentication is not None:
+            d["authentication"] = self.authentication.to_dict()
         if self.voucher is not None:
             d["voucher"] = self.voucher.to_dict()
         return d
@@ -777,7 +927,30 @@ class ClosePayload:
         voucher = data.get("voucher")
         return cls(
             channel_id=data.get("channelId", ""),
+            authentication=(
+                SessionAuthentication.from_dict(data["authentication"])
+                if data.get("authentication") is not None
+                else None
+            ),
             voucher=SignedVoucher.from_dict(voucher) if voucher is not None else None,
+        )
+
+
+@dataclass
+class UsePayload:
+    """Billable request payload for an operator-signed session."""
+
+    channel_id: str
+    authentication: SessionAuthentication
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"channelId": self.channel_id, "authentication": self.authentication.to_dict()}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UsePayload:
+        return cls(
+            channel_id=str(data.get("channelId", "")),
+            authentication=SessionAuthentication.from_dict(data.get("authentication", {})),
         )
 
 
@@ -786,13 +959,14 @@ class SessionAction:
     """The action submitted by the client in an Authorization header.
 
     Serialized as a tagged object with
-    ``"action": "open" | "voucher" | "commit" | "topUp" | "close"`` and the
+    ``"action": "open" | "voucher" | "use" | "commit" | "topUp" | "close"`` and the
     payload fields flattened alongside the discriminator. Exactly one payload is
     set for a valid action.
     """
 
     open: OpenPayload | None = None
     voucher: VoucherPayload | None = None
+    use: UsePayload | None = None
     commit: CommitPayload | None = None
     top_up: TopUpPayload | None = None
     close: ClosePayload | None = None
@@ -806,6 +980,11 @@ class SessionAction:
     def voucher_action(cls, payload: VoucherPayload) -> SessionAction:
         """Wrap a :class:`VoucherPayload` as a :class:`SessionAction`."""
         return cls(voucher=payload)
+
+    @classmethod
+    def use_action(cls, payload: UsePayload) -> SessionAction:
+        """Wrap a :class:`UsePayload` as a :class:`SessionAction`."""
+        return cls(use=payload)
 
     @classmethod
     def commit_action(cls, payload: CommitPayload) -> SessionAction:
@@ -833,6 +1012,8 @@ class SessionAction:
             variants.append(("open", self.open.to_dict()))
         if self.voucher is not None:
             variants.append(("voucher", self.voucher.to_dict()))
+        if self.use is not None:
+            variants.append(("use", self.use.to_dict()))
         if self.commit is not None:
             variants.append(("commit", self.commit.to_dict()))
         if self.top_up is not None:
@@ -859,6 +1040,8 @@ class SessionAction:
             return cls(open=OpenPayload.from_dict(data))
         if action == "voucher":
             return cls(voucher=VoucherPayload.from_dict(data))
+        if action == "use":
+            return cls(use=UsePayload.from_dict(data))
         if action == "commit":
             return cls(commit=CommitPayload.from_dict(data))
         if action == "topUp":

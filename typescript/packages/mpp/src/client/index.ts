@@ -47,10 +47,17 @@ export { solana } from './Methods.js';
 export {
     ActiveSession,
     DEFAULT_SESSION_EXPIRES_AT,
+    MAX_IDLE_TIMEOUT_SECONDS,
+    resolveIdleTimeoutSeconds,
     serializeSessionCredential,
     session,
+    SESSION_AUTHENTICATION_DOMAIN,
+    sessionAuthenticationMessage,
     sessionContextSchema,
     sessionRequestModes,
+    signSessionAuthentication,
+    validateIdleTimeoutOptions,
+    verifySessionAuthentication,
     voucherMessageBytes,
 } from './Session.js';
 export type {
@@ -67,7 +74,8 @@ export type {
     SessionContext,
     SessionMode,
     SessionPullVoucherStrategy,
-    SessionSettlementAuthority,
+    SessionAuthentication,
+    SessionVoucherSigner,
     SessionRequest,
     SessionSigner,
     SessionSplit,

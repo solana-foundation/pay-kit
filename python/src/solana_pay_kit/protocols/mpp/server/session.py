@@ -40,10 +40,13 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     SessionMode,
     SessionPullVoucherStrategy,
     SessionRequest,
-    SessionSettlementAuthority,
     SessionSplit,
+    SessionVoucherSigner,
     TopUpPayload,
     VoucherPayload,
+    resolve_idle_timeout_seconds,
+    validate_idle_timeout_options,
+    verify_session_authentication,
 )
 from solana_pay_kit.protocols.mpp.server.session_store import (
     ChannelState,
@@ -148,7 +151,16 @@ class SessionConfig:
     pull_voucher_strategy: SessionPullVoucherStrategy | None = None
 
     # Voucher signing authority advertised to clients.
-    settlement_authority: SessionSettlementAuthority = "clientVoucher"
+    voucher_signer: SessionVoucherSigner = "client"
+
+    # RFC3339 expiry applied to reusable operator-mode proofs.
+    authentication_expires: str | None = None
+
+    # Inactivity thresholds offered for a new channel.
+    idle_timeout_options_seconds: list[int] | None = None
+
+    # Server-selected inactivity threshold in seconds.
+    idle_timeout_seconds: int = 300
 
     # VerifyOpenTx, when set, confirms the open transaction on-chain (push
     # mode) before process_open persists channel state.
@@ -282,7 +294,9 @@ class SessionServer:
             operator=self._config.operator,
             recipient=self._config.recipient,
             decimals=self._config.decimals,
-            settlement_authority=self._config.settlement_authority,
+            authentication_expires=self._config.authentication_expires,
+            idle_timeout_options_seconds=self._config.idle_timeout_options_seconds,
+            voucher_signer=self._config.voucher_signer,
         )
         if self._config.network != "":
             request.network = self._config.network
@@ -335,10 +349,28 @@ class SessionServer:
             raise ValueError(f"deposit {deposit} exceeds max cap {self._config.max_cap}")
 
         if (
-            self._config.settlement_authority == "delegated"
+            self._config.voucher_signer == "operator"
             and payload.authorized_signer != self._config.operator
         ):
-            raise ValueError("delegated settlement requires authorizedSigner to match the operator")
+            raise ValueError("operator voucher signing requires authorizedSigner to match the operator")
+
+        resolve_idle_timeout_seconds(
+            self._config.idle_timeout_seconds,
+            self._config.idle_timeout_options_seconds,
+            payload.idle_timeout_seconds,
+        )
+        if self._config.idle_timeout_options_seconds is not None:
+            validate_idle_timeout_options(self._config.idle_timeout_options_seconds)
+        if self._config.voucher_signer == "client" and payload.authentication is not None:
+            raise ValueError("authentication is only valid when voucherSigner is operator")
+        if self._config.voucher_signer == "operator":
+            if payload.authentication is None:
+                raise ValueError("operator voucher signing requires authentication")
+            expected_payer = payload.owner or payload.payer
+            if expected_payer is not None and payload.authentication.payer != expected_payer:
+                raise ValueError("session authentication payer does not match the channel payer")
+            if not verify_session_authentication(payload.authentication, session_id):
+                raise ValueError("invalid session authentication signature")
 
         # On-chain verification seam (push mode only; pull-mode host
         # integrations submit server-broadcast transactions or validate

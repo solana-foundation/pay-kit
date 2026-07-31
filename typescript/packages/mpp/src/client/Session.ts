@@ -1,4 +1,12 @@
-import { createSignableMessage, getBase58Decoder, type MessagePartialSigner } from '@solana/kit';
+import {
+    type Address,
+    createSignableMessage,
+    getBase58Decoder,
+    getBase58Encoder,
+    getPublicKeyFromAddress,
+    type MessagePartialSigner,
+    verifySignature,
+} from '@solana/kit';
 import type { Challenge as MppxChallenge } from 'mppx';
 import { Credential, Method, z } from 'mppx';
 
@@ -11,6 +19,8 @@ const U64_MAX = (1n << 64n) - 1n;
  * Default voucher expiry timestamp, matching the Rust SDK and program tests.
  */
 export const DEFAULT_SESSION_EXPIRES_AT = 4_102_444_800;
+export const MAX_IDLE_TIMEOUT_SECONDS = 2_592_000;
+export const SESSION_AUTHENTICATION_DOMAIN = 'mpp-session-auth-v1';
 
 /**
  * Numeric input accepted by the session helpers.
@@ -30,8 +40,16 @@ export type SessionMode = 'pull' | 'push';
  */
 export type SessionPullVoucherStrategy = 'clientVoucher' | 'operatedVoucher';
 
-/** Voucher signing authority advertised by a session challenge. */
-export type SessionSettlementAuthority = 'clientVoucher' | 'delegated';
+/** Party that signs cumulative vouchers. */
+export type SessionVoucherSigner = 'client' | 'operator';
+
+/** Reusable payer proof for an operator-signed channel. */
+export interface SessionAuthentication {
+    readonly challengeId: string;
+    readonly payer: string;
+    readonly signature: string;
+    readonly type: 'proof';
+}
 
 /**
  * Signer capable of Ed25519-signing exact voucher message bytes.
@@ -52,6 +70,8 @@ export interface SessionSplit {
  * Request embedded in a Solana `session` challenge.
  */
 export interface SessionRequest extends Record<string, unknown> {
+    /** RFC3339 expiry of an operator-mode reusable proof. */
+    readonly authenticationExpires?: string | undefined;
     /** Maximum the session may spend, in base units. */
     readonly cap: string;
     /** Currency identifier: a symbol like `'USDC'` or an SPL mint address. */
@@ -64,6 +84,10 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly externalId?: string | undefined;
     /** Smallest voucher increment the server accepts, in base units. */
     readonly minVoucherDelta?: string | undefined;
+    /** Effective inactivity threshold for a resumed channel. */
+    readonly idleTimeoutSeconds?: number | undefined;
+    /** Inactivity thresholds offered for a new channel. */
+    readonly idleTimeoutOptionsSeconds?: number[] | undefined;
     /** Funding modes the server supports. Omitted or empty means push only. */
     readonly modes?: SessionMode[] | undefined;
     /** Solana network slug (`mainnet`, `devnet`, `localnet`). */
@@ -80,10 +104,10 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly recentSlot?: number | string | undefined;
     /** Primary recipient of the settled amount (base58). */
     readonly recipient: string;
-    /** Voucher signing authority; absent challenges default to client vouchers. */
-    readonly settlementAuthority?: SessionSettlementAuthority | undefined;
     /** Basis-point splits distributed at close. */
     readonly splits?: SessionSplit[] | undefined;
+    /** Party that signs cumulative vouchers; absent means `client`. */
+    readonly voucherSigner?: SessionVoucherSigner | undefined;
 }
 
 /**
@@ -139,6 +163,8 @@ export interface OpenPayload {
     readonly approvedAmount?: string | undefined;
     /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
+    /** Reusable payer proof required for operator-signed vouchers. */
+    readonly authentication?: SessionAuthentication | undefined;
     /** Channel address (push) or delegated token account (pull), base58. */
     readonly channelId?: string | undefined;
     /** Push mode: deposit locked in the payment channel, in base units. */
@@ -147,6 +173,8 @@ export interface OpenPayload {
     readonly gracePeriod?: number | undefined;
     /** Pull mode: pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
     readonly initMultiDelegateTx?: string | undefined;
+    /** Negotiated inactivity threshold in seconds. */
+    readonly idleTimeoutSeconds?: number | undefined;
     /** SPL mint of the funding asset (base58). */
     readonly mint?: string | undefined;
     /** Funding mode this open uses. */
@@ -175,9 +203,15 @@ export interface OpenPayload {
  * Client action sent as a Solana session credential payload.
  */
 export type SessionAction =
-    | { readonly action: 'close'; readonly channelId: string; readonly voucher?: SignedVoucher | undefined }
+    | {
+          readonly action: 'close';
+          readonly authentication?: SessionAuthentication | undefined;
+          readonly channelId: string;
+          readonly voucher?: SignedVoucher | undefined;
+      }
     | { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher }
     | { readonly action: 'topUp'; readonly channelId: string; readonly newDeposit: string; readonly signature: string }
+    | { readonly action: 'use'; readonly authentication: SessionAuthentication; readonly channelId: string }
     | { readonly action: 'voucher'; readonly voucher: SignedVoucher }
     | (OpenPayload & { readonly action: 'open' });
 
@@ -321,6 +355,98 @@ export const sessionContextSchema = z.custom<SessionContext>();
  */
 export function sessionRequestModes(request: Pick<SessionRequest, 'modes'>): readonly SessionMode[] {
     return request.modes && request.modes.length > 0 ? request.modes : ['push'];
+}
+
+/** Validates the idle-timeout option list defined by the session draft. */
+export function validateIdleTimeoutOptions(options: readonly number[]): void {
+    if (options.length === 0) throw new Error('idleTimeoutOptionsSeconds must not be empty');
+    let previous = 0;
+    for (const value of options) {
+        if (!Number.isInteger(value) || value < 1 || value > MAX_IDLE_TIMEOUT_SECONDS) {
+            throw new Error(`idle timeout must be an integer between 1 and ${MAX_IDLE_TIMEOUT_SECONDS}`);
+        }
+        if (value <= previous) throw new Error('idleTimeoutOptionsSeconds must be strictly increasing');
+        previous = value;
+    }
+}
+
+/** Resolves an effective timeout while rejecting unsupported client selections. */
+export function resolveIdleTimeoutSeconds(parameters: {
+    readonly defaultSeconds: number;
+    readonly options?: readonly number[] | undefined;
+    readonly selected?: number | undefined;
+}): number {
+    const { defaultSeconds, options, selected } = parameters;
+    if (!Number.isInteger(defaultSeconds) || defaultSeconds < 1 || defaultSeconds > MAX_IDLE_TIMEOUT_SECONDS) {
+        throw new Error(`default idle timeout must be between 1 and ${MAX_IDLE_TIMEOUT_SECONDS}`);
+    }
+    if (options) validateIdleTimeoutOptions(options);
+    if (selected !== undefined) {
+        if (!options) throw new Error('idleTimeoutSeconds is not allowed when no options were advertised');
+        if (!options.includes(selected)) throw new Error('idleTimeoutSeconds was not one of the advertised options');
+        return selected;
+    }
+    return options && !options.includes(defaultSeconds) ? options[0]! : defaultSeconds;
+}
+
+/** Canonical JCS bytes signed by a reusable operator-mode proof. */
+export function sessionAuthenticationMessage(parameters: {
+    readonly challengeId: string;
+    readonly channelId: string;
+    readonly payer: string;
+}): Uint8Array {
+    return new TextEncoder().encode(
+        JSON.stringify({
+            channelId: parameters.channelId,
+            domain: SESSION_AUTHENTICATION_DOMAIN,
+            payer: parameters.payer,
+            sessionChallengeId: parameters.challengeId,
+        }),
+    );
+}
+
+/** Creates a reusable payer proof for an operator-signed channel. */
+export async function signSessionAuthentication(parameters: {
+    readonly challengeId: string;
+    readonly channelId: string;
+    readonly signer: MessagePartialSigner;
+}): Promise<SessionAuthentication> {
+    const message = sessionAuthenticationMessage({
+        challengeId: parameters.challengeId,
+        channelId: parameters.channelId,
+        payer: parameters.signer.address,
+    });
+    const [signatures] = await parameters.signer.signMessages([createSignableMessage(message)]);
+    const signature = signatures?.[parameters.signer.address];
+    if (!signature) throw new Error(`Signer ${parameters.signer.address} did not return a session proof`);
+    return {
+        challengeId: parameters.challengeId,
+        payer: parameters.signer.address,
+        signature: getBase58Decoder().decode(new Uint8Array(signature)),
+        type: 'proof',
+    };
+}
+
+/** Verifies a reusable payer proof against its bound channel. */
+export async function verifySessionAuthentication(
+    authentication: SessionAuthentication,
+    channelId: string,
+): Promise<boolean> {
+    try {
+        const publicKey = await getPublicKeyFromAddress(authentication.payer as Address);
+        const signature = getBase58Encoder().encode(authentication.signature);
+        return await verifySignature(
+            publicKey,
+            signature as Parameters<typeof verifySignature>[1],
+            sessionAuthenticationMessage({
+                challengeId: authentication.challengeId,
+                channelId,
+                payer: authentication.payer,
+            }),
+        );
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -540,6 +666,8 @@ export class ActiveSession {
             deposit: formatAmount(deposit, 'deposit'),
             mode: options.mode ?? 'push',
             signature,
+            ...(options.authentication ? { authentication: options.authentication } : {}),
+            ...(options.idleTimeoutSeconds !== undefined ? { idleTimeoutSeconds: options.idleTimeoutSeconds } : {}),
             ...(options.transaction ? { transaction: options.transaction } : {}),
         };
     }
@@ -563,6 +691,10 @@ export class ActiveSession {
             recentSlot: formatAmount(parameters.openSlot, 'openSlot'),
             salt: formatAmount(parameters.salt, 'salt'),
             signature: parameters.signature,
+            ...(parameters.authentication ? { authentication: parameters.authentication } : {}),
+            ...(parameters.idleTimeoutSeconds !== undefined
+                ? { idleTimeoutSeconds: parameters.idleTimeoutSeconds }
+                : {}),
             ...(parameters.transaction ? { transaction: parameters.transaction } : {}),
         };
     }
@@ -580,6 +712,10 @@ export class ActiveSession {
             owner: parameters.owner,
             signature: parameters.signature,
             tokenAccount: parameters.tokenAccount ?? this.#channelId,
+            ...(parameters.authentication ? { authentication: parameters.authentication } : {}),
+            ...(parameters.idleTimeoutSeconds !== undefined
+                ? { idleTimeoutSeconds: parameters.idleTimeoutSeconds }
+                : {}),
             ...(parameters.updateDelegationTx ? { updateDelegationTx: parameters.updateDelegationTx } : {}),
         };
     }
@@ -594,6 +730,11 @@ export class ActiveSession {
             newDeposit: formatAmount(newDeposit, 'newDeposit'),
             signature,
         };
+    }
+
+    /** Builds a billable request action for an operator-signed session. */
+    useAction(authentication: SessionAuthentication): SessionAction {
+        return { action: 'use', authentication, channelId: this.#channelId };
     }
 
     /**
@@ -630,8 +771,12 @@ export declare namespace ActiveSession {
     }
 
     interface OpenOptions {
-        /** Authorized voucher signer; delegated sessions use the advertised operator. */
+        /** Authorized voucher signer; operator sessions use the advertised operator. */
         readonly authorizedSigner?: string | undefined;
+        /** Reusable payer proof for an operator-signed session. */
+        readonly authentication?: SessionAuthentication | undefined;
+        /** Selected inactivity threshold from the challenge's offered values. */
+        readonly idleTimeoutSeconds?: number | undefined;
         /** Funding mode. Defaults to `push`. */
         readonly mode?: SessionMode | undefined;
         /** Base64 signed open transaction for server-side submission. */
@@ -657,11 +802,9 @@ export declare namespace ActiveSession {
         readonly signature: string;
     }
 
-    interface PullOpenParameters {
+    interface PullOpenParameters extends OpenOptions {
         /** Delegated amount approved by the wallet, in base units. */
         readonly approvedAmount: AmountLike;
-        /** Authorized voucher signer; delegated sessions use the advertised operator. */
-        readonly authorizedSigner?: string | undefined;
         /** Pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
         readonly initMultiDelegateTx?: string | undefined;
         /** Wallet that owns the delegated token account (base58). */
@@ -818,7 +961,7 @@ function createOpenAction(
 }
 
 function delegatedAuthorizedSigner(challenge: SessionChallenge): string | undefined {
-    return challenge.request.settlementAuthority === 'delegated' ? challenge.request.operator : undefined;
+    return challenge.request.voucherSigner === 'operator' ? challenge.request.operator : undefined;
 }
 
 function shouldUseDelegatedPull(context: SessionContext, challenge: SessionChallenge): boolean {

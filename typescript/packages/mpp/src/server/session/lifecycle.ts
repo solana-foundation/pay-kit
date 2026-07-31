@@ -22,12 +22,12 @@ export interface Lifecycle {
     removeChannel(channelId: string): void;
     /** Cancel every outstanding timer. */
     shutdown(): void;
-    /** Reset the idle timer for `channelId`. No-op if `closeDelayMs` is 0. */
+    /** Reset the idle timer for `channelId`. No-op if `idleTimeoutMs` is 0. */
     touch(channelId: string): void;
 }
 
 /**
- * Create a lifecycle watchdog. `closeDelayMs <= 0` disables the timer
+ * Create a lifecycle watchdog. `idleTimeoutMs <= 0` disables the timer
  * entirely (all operations become no-ops) — the right default for tests
  * and for callers that drive close explicitly.
  *
@@ -39,7 +39,7 @@ export interface Lifecycle {
 export function createLifecycle(
     store: SessionStore,
     closeOnIdle: (channelId: string) => Promise<void> | void,
-    closeDelayMs: number,
+    idleTimeoutMs: number,
 ): Lifecycle {
     void store;
     const timers = new Map<string, NodeJS.Timeout>();
@@ -61,7 +61,7 @@ export function createLifecycle(
             timers.clear();
         },
         touch(channelId) {
-            if (closeDelayMs <= 0) return;
+            if (idleTimeoutMs <= 0) return;
             clear(channelId);
             const handle = setTimeout(() => {
                 timers.delete(channelId);
@@ -71,7 +71,7 @@ export function createLifecycle(
                 void Promise.resolve()
                     .then(() => closeOnIdle(channelId))
                     .catch(() => undefined);
-            }, closeDelayMs);
+            }, idleTimeoutMs);
             // Don't keep the process alive on test shutdown.
             if (typeof handle.unref === 'function') handle.unref();
             timers.set(channelId, handle);

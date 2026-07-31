@@ -11,6 +11,8 @@
 // `store.updateChannel`. That keeps the verifier easy to test and lets
 // the integration layer pick its own consistency story (CAS, RMW, etc.).
 
+import type { SessionAuthentication, SessionVoucherSigner } from '../../client/Session.js';
+
 /**
  * One delivery that the server has reserved against a channel but not yet
  * received a signed voucher for. Mirrors Rust `PendingDelivery`.
@@ -39,6 +41,10 @@ export interface CommittedDelivery {
  * every Rust `u64` so we don't lose precision on > 2^53 amounts.
  */
 export interface ChannelState {
+    /** Reusable payer proof bound at open for operator-signed vouchers. */
+    readonly authentication?: SessionAuthentication | undefined;
+    /** RFC3339 expiry of `authentication`. */
+    readonly authenticationExpires?: string | undefined;
     /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
     /**
@@ -60,6 +66,10 @@ export interface ChannelState {
     readonly highestVoucherExpiresAt?: bigint | undefined;
     /** Signature of the highest accepted voucher (base58). For idempotent replay. */
     readonly highestVoucherSignature?: string | undefined;
+    /** Effective negotiated inactivity threshold, in seconds. */
+    readonly idleTimeoutSeconds?: number | undefined;
+    /** Unix milliseconds of the most recent accepted channel activity. */
+    readonly lastActivityAt?: number | undefined;
     /** Next server-side metered delivery sequence. */
     readonly nextDeliverySequence: bigint;
     /**
@@ -76,6 +86,8 @@ export interface ChannelState {
     readonly sealed: boolean;
     /** On-chain settle_and_seal transaction signature (base58), once submitted. */
     readonly settledSignature?: string | undefined;
+    /** Party responsible for signing cumulative vouchers. */
+    readonly voucherSigner?: SessionVoucherSigner | undefined;
 }
 
 /**

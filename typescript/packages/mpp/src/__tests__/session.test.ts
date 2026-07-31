@@ -10,13 +10,40 @@ import { Credential } from 'mppx';
 import {
     ActiveSession,
     DEFAULT_SESSION_EXPIRES_AT,
+    resolveIdleTimeoutSeconds,
     serializeSessionCredential,
     session,
+    sessionAuthenticationMessage,
     type SessionAction,
     type SessionChallenge,
     type SessionRequest,
     voucherMessageBytes,
 } from '../client/Session.js';
+
+describe('session authentication and idle timeout', () => {
+    it('builds the canonical challenge-and-channel-bound proof message', () => {
+        expect(
+            new TextDecoder().decode(
+                sessionAuthenticationMessage({
+                    challengeId: 'challenge-1',
+                    channelId: 'channel-1',
+                    payer: 'payer-1',
+                }),
+            ),
+        ).toBe(
+            '{"channelId":"channel-1","domain":"mpp-session-auth-v1","payer":"payer-1","sessionChallengeId":"challenge-1"}',
+        );
+    });
+
+    it('accepts only advertised idle timeout selections', () => {
+        expect(resolveIdleTimeoutSeconds({ defaultSeconds: 600, options: [30, 600, 86_400], selected: 86_400 })).toBe(
+            86_400,
+        );
+        expect(() =>
+            resolveIdleTimeoutSeconds({ defaultSeconds: 600, options: [30, 600, 86_400], selected: 60 }),
+        ).toThrow('not one of the advertised options');
+    });
+});
 
 function request(overrides: Partial<SessionRequest> = {}): SessionRequest {
     return {

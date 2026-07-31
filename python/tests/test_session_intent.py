@@ -25,15 +25,65 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     MeteringUsage,
     OpenPayload,
     SessionAction,
+    SessionAuthentication,
     SessionMode,
     SessionPullVoucherStrategy,
     SessionRequest,
     SessionSplit,
     SignedVoucher,
     TopUpPayload,
+    UsePayload,
     VoucherData,
     VoucherPayload,
+    resolve_idle_timeout_seconds,
+    sign_session_authentication,
+    validate_idle_timeout_options,
+    verify_session_authentication,
 )
+
+
+def test_session_authentication_message_and_use_roundtrip():
+    authentication = SessionAuthentication(
+        challenge_id="challenge-1", payer="payer-1", signature="signature-1"
+    )
+    assert authentication.message_bytes("channel-1") == (
+        b'{"channelId":"channel-1","domain":"mpp-session-auth-v1",'
+        b'"payer":"payer-1","sessionChallengeId":"challenge-1"}'
+    )
+    action = SessionAction.use_action(UsePayload("channel-1", authentication))
+    assert SessionAction.from_dict(action.to_dict()) == action
+
+
+def test_idle_timeout_negotiation():
+    assert resolve_idle_timeout_seconds(600, [30, 600, 86_400], 86_400) == 86_400
+    with pytest.raises(ValueError, match="not one of the advertised options"):
+        resolve_idle_timeout_seconds(600, [30, 600, 86_400], 60)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        validate_idle_timeout_options([30, 30])
+
+
+def test_session_request_uses_new_voucher_signer_and_idle_fields_only():
+    request = SessionRequest(
+        cap="1000",
+        currency="USDC",
+        operator="operator",
+        recipient="recipient",
+        voucher_signer="operator",
+        authentication_expires="2030-01-01T00:00:00Z",
+        idle_timeout_options_seconds=[30, 600],
+    )
+    wire = request.to_dict()
+    assert wire["voucherSigner"] == "operator"
+    assert wire["idleTimeoutOptionsSeconds"] == [30, 600]
+    assert "settlementAuthority" not in wire
+
+
+def test_session_authentication_signs_and_verifies_channel_binding():
+    from solders.keypair import Keypair
+
+    authentication = sign_session_authentication("challenge-1", "channel-1", Keypair())
+    assert verify_session_authentication(authentication, "channel-1")
+    assert not verify_session_authentication(authentication, "channel-2")
 
 
 def _voucher(channel_id: str = "chan1", cumulative: str = "500000", nonce: int | None = 3) -> SignedVoucher:

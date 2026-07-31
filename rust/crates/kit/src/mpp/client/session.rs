@@ -204,6 +204,7 @@ impl ActiveSession {
         };
         Ok(SessionAction::Close(ClosePayload {
             channel_id: self.channel_id_str(),
+            authentication: None,
             voucher,
         }))
     }
@@ -1006,7 +1007,10 @@ mod open_tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            settlement_authority: crate::mpp::SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: crate::mpp::SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,

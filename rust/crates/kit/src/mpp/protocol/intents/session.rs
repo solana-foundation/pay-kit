@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 /// This stays below JavaScript's max safe integer so JSON intermediaries do not
 /// round it before the credential is decoded.
 pub const DEFAULT_SESSION_EXPIRES_AT: i64 = 4_102_444_800;
+/// Maximum negotiated idle timeout (30 days), in seconds.
+pub const MAX_IDLE_TIMEOUT_SECONDS: u32 = 2_592_000;
+/// Domain separator for reusable session authentication proofs.
+pub const SESSION_AUTHENTICATION_DOMAIN: &str = "mpp-session-auth-v1";
 
 fn serialize_optional_u64_as_string<S>(
     value: &Option<u64>,
@@ -84,15 +88,99 @@ pub enum SessionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub enum SessionSettlementAuthority {
-    /// A payer-controlled key (normally an ephemeral session key) signs each
-    /// cumulative voucher before the server delivers paid service.
+pub enum SessionVoucherSigner {
+    /// A payer-controlled key signs each cumulative voucher.
     #[default]
-    ClientVoucher,
-    /// The payer binds the operator as `authorizedSigner`; the operator meters
-    /// usage and signs the cumulative settlement voucher before releasing the
-    /// buffered response.
-    Delegated,
+    Client,
+    /// The operator meters usage and signs cumulative vouchers after verifying
+    /// the payer's reusable session proof.
+    Operator,
+}
+
+/// Reusable payer proof bound to one challenge and channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionAuthentication {
+    /// Always `proof` on the wire.
+    #[serde(rename = "type")]
+    pub kind: SessionAuthenticationType,
+    /// Session challenge identifier signed into the proof.
+    pub challenge_id: String,
+    /// Payer public key (base58).
+    pub payer: String,
+    /// Ed25519 signature over the canonical authentication message (base58).
+    pub signature: String,
+}
+
+/// Discriminator for a reusable session proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionAuthenticationType {
+    /// An Ed25519 payer proof.
+    Proof,
+}
+
+impl SessionAuthentication {
+    /// Create a reusable proof with an Ed25519 signing key.
+    pub fn sign(
+        challenge_id: impl Into<String>,
+        channel_id: &str,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> crate::mpp::error::Result<Self> {
+        use ed25519_dalek::Signer;
+
+        let mut authentication = Self {
+            kind: SessionAuthenticationType::Proof,
+            challenge_id: challenge_id.into(),
+            payer: bs58::encode(signing_key.verifying_key().as_bytes()).into_string(),
+            signature: String::new(),
+        };
+        authentication.signature = bs58::encode(
+            signing_key
+                .sign(&authentication.message_bytes(channel_id)?)
+                .to_bytes(),
+        )
+        .into_string();
+        Ok(authentication)
+    }
+
+    /// Return the RFC 8785/JCS message bytes signed by the payer.
+    pub fn message_bytes(&self, channel_id: &str) -> crate::mpp::error::Result<Vec<u8>> {
+        let value = serde_json::json!({
+            "channelId": channel_id,
+            "domain": SESSION_AUTHENTICATION_DOMAIN,
+            "payer": self.payer,
+            "sessionChallengeId": self.challenge_id,
+        });
+        serde_json_canonicalizer::to_vec(&value)
+            .map_err(|error| crate::mpp::error::Error::Other(error.to_string()))
+    }
+
+    /// Verify this proof against its payer and bound channel.
+    pub fn verify(&self, channel_id: &str) -> crate::mpp::error::Result<bool> {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let payer: [u8; 32] = bs58::decode(&self.payer)
+            .into_vec()
+            .map_err(|error| crate::mpp::error::Error::Other(error.to_string()))?
+            .try_into()
+            .map_err(|_| crate::mpp::error::Error::Other("payer must be 32 bytes".to_string()))?;
+        let signature: [u8; 64] = bs58::decode(&self.signature)
+            .into_vec()
+            .map_err(|error| crate::mpp::error::Error::Other(error.to_string()))?
+            .try_into()
+            .map_err(|_| {
+                crate::mpp::error::Error::Other("signature must be 64 bytes".to_string())
+            })?;
+        let key = VerifyingKey::from_bytes(&payer)
+            .map_err(|error| crate::mpp::error::Error::Other(error.to_string()))?;
+        Ok(key
+            .verify(
+                &self.message_bytes(channel_id)?,
+                &Signature::from_bytes(&signature),
+            )
+            .is_ok())
+    }
 }
 
 /// Voucher authority used when [`SessionMode::Pull`] is advertised.
@@ -118,6 +206,12 @@ pub enum SessionPullVoucherStrategy {
 /// Describes the channel parameters: cap, currency, splits, network, etc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRequest {
+    /// RFC3339 expiry of the reusable proof in operator mode.
+    #[serde(
+        rename = "authenticationExpires",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub authentication_expires: Option<String>,
     /// Maximum total amount the client may spend in this session (base units).
     pub cap: String,
 
@@ -158,10 +252,20 @@ pub struct SessionRequest {
     #[serde(rename = "minVoucherDelta", skip_serializing_if = "Option::is_none")]
     pub min_voucher_delta: Option<String>,
 
-    /// Voucher signing authority for this channel. Defaults to
-    /// `clientVoucher` for wire compatibility.
-    #[serde(rename = "settlementAuthority", default)]
-    pub settlement_authority: SessionSettlementAuthority,
+    /// Party that signs cumulative vouchers. Defaults to `client`.
+    #[serde(rename = "voucherSigner", default)]
+    pub voucher_signer: SessionVoucherSigner,
+
+    /// Inactivity thresholds offered for a new channel, in seconds.
+    #[serde(
+        rename = "idleTimeoutOptionsSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub idle_timeout_options_seconds: Option<Vec<u32>>,
+
+    /// Effective inactivity threshold for a resumed channel, in seconds.
+    #[serde(rename = "idleTimeoutSeconds", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u32>,
 
     /// Session modes supported by this server.
     ///
@@ -222,7 +326,7 @@ pub struct SessionSplit {
 
 /// The action submitted by the client in an Authorization header.
 ///
-/// Serialized as a tagged object with `"action": "open" | "voucher" | "topup" | "close"`.
+/// Serialized as a tagged object with `"action": "open" | "voucher" | "use" | "topUp" | "close"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
 // `Open` is inherently the big variant (the full channel-open wire payload);
@@ -235,6 +339,9 @@ pub enum SessionAction {
 
     /// Submit a signed voucher authorizing payment for an API call.
     Voucher(VoucherPayload),
+
+    /// Use an operator-signed session with its reusable payer proof.
+    Use(UsePayload),
 
     /// Commit a metered delivery by attaching a signed voucher.
     Commit(CommitPayload),
@@ -361,6 +468,14 @@ pub struct OpenPayload {
     #[serde(rename = "updateDelegationTx", skip_serializing_if = "Option::is_none")]
     pub update_delegation_tx: Option<String>,
 
+    /// Reusable payer proof required for operator-signed vouchers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<SessionAuthentication>,
+
+    /// Negotiated inactivity threshold in seconds.
+    #[serde(rename = "idleTimeoutSeconds", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u32>,
+
     // ── Shared ─────────────────────────────────────────────────────────────
     /// The public key authorized to sign vouchers for this session (base58).
     /// Usually an ephemeral key generated by the client.
@@ -400,6 +515,8 @@ impl OpenPayload {
             owner: None,
             init_multi_delegate_tx: None,
             update_delegation_tx: None,
+            authentication: None,
+            idle_timeout_seconds: None,
             authorized_signer,
             signature,
         }
@@ -465,6 +582,8 @@ impl OpenPayload {
             owner: None,
             init_multi_delegate_tx: None,
             update_delegation_tx: None,
+            authentication: None,
+            idle_timeout_seconds: None,
             authorized_signer,
             signature,
         }
@@ -473,6 +592,18 @@ impl OpenPayload {
     /// Attach a signed open transaction for operator/server broadcast.
     pub fn with_transaction(mut self, tx_base64: String) -> Self {
         self.transaction = Some(tx_base64);
+        self
+    }
+
+    /// Bind a reusable payer proof to an operator-signed open.
+    pub fn with_authentication(mut self, authentication: SessionAuthentication) -> Self {
+        self.authentication = Some(authentication);
+        self
+    }
+
+    /// Select one of the challenge's offered inactivity thresholds.
+    pub fn with_idle_timeout(mut self, seconds: u32) -> Self {
+        self.idle_timeout_seconds = Some(seconds);
         self
     }
 
@@ -500,6 +631,8 @@ impl OpenPayload {
             owner: Some(owner),
             init_multi_delegate_tx: None,
             update_delegation_tx: None,
+            authentication: None,
+            idle_timeout_seconds: None,
             authorized_signer,
             signature,
         }
@@ -711,9 +844,82 @@ pub struct ClosePayload {
     #[serde(rename = "channelId")]
     pub channel_id: String,
 
+    /// Reusable payer proof required for operator-signed vouchers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<SessionAuthentication>,
+
     /// Final signed voucher for any remaining balance owed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voucher: Option<SignedVoucher>,
+}
+
+/// Payload for a billable request in operator-signed mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsePayload {
+    /// Channel identifier (base58).
+    #[serde(rename = "channelId")]
+    pub channel_id: String,
+    /// Reusable payer proof bound at channel open.
+    pub authentication: SessionAuthentication,
+}
+
+/// Validate an offered idle-timeout list.
+pub fn validate_idle_timeout_options(options: &[u32]) -> crate::mpp::error::Result<()> {
+    if options.is_empty() {
+        return Err(crate::mpp::error::Error::Other(
+            "idleTimeoutOptionsSeconds must not be empty".to_string(),
+        ));
+    }
+    let mut previous = 0;
+    for &value in options {
+        if value == 0 || value > MAX_IDLE_TIMEOUT_SECONDS {
+            return Err(crate::mpp::error::Error::Other(format!(
+                "idle timeout must be between 1 and {MAX_IDLE_TIMEOUT_SECONDS}"
+            )));
+        }
+        if value <= previous {
+            return Err(crate::mpp::error::Error::Other(
+                "idleTimeoutOptionsSeconds must be strictly increasing".to_string(),
+            ));
+        }
+        previous = value;
+    }
+    Ok(())
+}
+
+/// Resolve the effective timeout while rejecting unsupported selections.
+pub fn resolve_idle_timeout_seconds(
+    default_seconds: u32,
+    options: Option<&[u32]>,
+    selected: Option<u32>,
+) -> crate::mpp::error::Result<u32> {
+    if default_seconds == 0 || default_seconds > MAX_IDLE_TIMEOUT_SECONDS {
+        return Err(crate::mpp::error::Error::Other(format!(
+            "default idle timeout must be between 1 and {MAX_IDLE_TIMEOUT_SECONDS}"
+        )));
+    }
+    if let Some(options) = options {
+        validate_idle_timeout_options(options)?;
+    }
+    match selected {
+        Some(value) => match options {
+            Some(options) if options.contains(&value) => Ok(value),
+            Some(_) => Err(crate::mpp::error::Error::Other(
+                "idleTimeoutSeconds was not one of the advertised options".to_string(),
+            )),
+            None => Err(crate::mpp::error::Error::Other(
+                "idleTimeoutSeconds is not allowed when no options were advertised".to_string(),
+            )),
+        },
+        None => Ok(options
+            .and_then(|values| {
+                values
+                    .contains(&default_seconds)
+                    .then_some(default_seconds)
+                    .or(values.first().copied())
+            })
+            .unwrap_or(default_seconds)),
+    }
 }
 
 // ── Vouchers ──
@@ -817,6 +1023,60 @@ mod tests {
         assert_eq!(back, SessionPullVoucherStrategy::OperatedVoucher);
     }
 
+    #[test]
+    fn session_authentication_uses_canonical_bound_message() {
+        let authentication = SessionAuthentication {
+            kind: SessionAuthenticationType::Proof,
+            challenge_id: "challenge-1".to_string(),
+            payer: "payer-1".to_string(),
+            signature: "signature-1".to_string(),
+        };
+        assert_eq!(
+            authentication.message_bytes("channel-1").unwrap(),
+            br#"{"channelId":"channel-1","domain":"mpp-session-auth-v1","payer":"payer-1","sessionChallengeId":"challenge-1"}"#
+        );
+        let json = serde_json::to_string(&authentication).unwrap();
+        assert!(json.contains(r#""type":"proof""#));
+    }
+
+    #[test]
+    fn session_authentication_signs_and_verifies_its_channel_binding() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let authentication = SessionAuthentication::sign("challenge-1", "channel-1", &key).unwrap();
+        assert!(authentication.verify("channel-1").unwrap());
+        assert!(!authentication.verify("channel-2").unwrap());
+    }
+
+    #[test]
+    fn idle_timeout_negotiation_rejects_invalid_selection() {
+        let options = [30, 600, 86_400];
+        assert_eq!(
+            resolve_idle_timeout_seconds(600, Some(&options), Some(86_400)).unwrap(),
+            86_400
+        );
+        assert!(resolve_idle_timeout_seconds(600, Some(&options), Some(60)).is_err());
+        assert!(validate_idle_timeout_options(&[30, 30]).is_err());
+    }
+
+    #[test]
+    fn session_use_action_roundtrip() {
+        let action = SessionAction::Use(UsePayload {
+            channel_id: "channel-1".to_string(),
+            authentication: SessionAuthentication {
+                kind: SessionAuthenticationType::Proof,
+                challenge_id: "challenge-1".to_string(),
+                payer: "payer-1".to_string(),
+                signature: "signature-1".to_string(),
+            },
+        });
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains(r#""action":"use""#));
+        assert!(matches!(
+            serde_json::from_str::<SessionAction>(&json).unwrap(),
+            SessionAction::Use(_)
+        ));
+    }
+
     // ── SessionRequest ────────────────────────────────────────────────────────
 
     #[test]
@@ -833,7 +1093,10 @@ mod tests {
             description: Some("API session".to_string()),
             external_id: None,
             min_voucher_delta: None,
-            settlement_authority: SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -845,23 +1108,17 @@ mod tests {
         assert_eq!(back.currency, "USDC");
         assert_eq!(back.description.as_deref(), Some("API session"));
         assert_eq!(back.modes, vec![SessionMode::Push]);
-        assert_eq!(
-            back.settlement_authority,
-            SessionSettlementAuthority::ClientVoucher
-        );
+        assert_eq!(back.voucher_signer, SessionVoucherSigner::Client);
     }
 
     #[test]
-    fn session_request_delegated_settlement_authority_roundtrip() {
-        let json = r#"{"cap":"1000","currency":"USDC","operator":"op","recipient":"rec","settlementAuthority":"delegated"}"#;
+    fn session_request_operator_voucher_signer_roundtrip() {
+        let json = r#"{"cap":"1000","currency":"USDC","operator":"op","recipient":"rec","voucherSigner":"operator"}"#;
         let request: SessionRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            request.settlement_authority,
-            SessionSettlementAuthority::Delegated
-        );
+        assert_eq!(request.voucher_signer, SessionVoucherSigner::Operator);
         assert!(serde_json::to_string(&request)
             .unwrap()
-            .contains("\"settlementAuthority\":\"delegated\""));
+            .contains("\"voucherSigner\":\"operator\""));
     }
 
     #[test]
@@ -878,7 +1135,10 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            settlement_authority: SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -907,7 +1167,10 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            settlement_authority: SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![SessionMode::Push, SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,
@@ -950,7 +1213,10 @@ mod tests {
             description: None,
             external_id: Some("ref-1".to_string()),
             min_voucher_delta: None,
-            settlement_authority: SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -1374,6 +1640,7 @@ mod tests {
     fn session_action_close_no_voucher_roundtrip() {
         let action = SessionAction::Close(ClosePayload {
             channel_id: "chan1".to_string(),
+            authentication: None,
             voucher: None,
         });
         let json = serde_json::to_string(&action).unwrap();
@@ -1390,6 +1657,7 @@ mod tests {
     fn session_action_close_with_voucher_roundtrip() {
         let action = SessionAction::Close(ClosePayload {
             channel_id: "chan1".to_string(),
+            authentication: None,
             voucher: Some(SignedVoucher {
                 data: VoucherData {
                     channel_id: "chan1".to_string(),
@@ -1505,7 +1773,10 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: Some("500".to_string()),
-            settlement_authority: SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
@@ -1531,7 +1802,10 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            settlement_authority: SessionSettlementAuthority::ClientVoucher,
+            authentication_expires: None,
+            voucher_signer: SessionVoucherSigner::Client,
+            idle_timeout_options_seconds: None,
+            idle_timeout_seconds: None,
             modes: vec![],
             pull_voucher_strategy: None,
             recent_blockhash: None,
