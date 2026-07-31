@@ -219,20 +219,23 @@ export const session = Method.from({
                     /** SPL approved amount for pull mode. */
                     approvedAmount: z.optional(z.string()),
 
-                    /** Public key authorized to sign vouchers for this session. */
-                    authorizedSigner: z.string(),
                     /** Reusable payer proof required for operator-signed vouchers. */
                     authentication: z.optional(sessionAuthentication),
+
+                    /** Public key authorized to sign vouchers for this session. */
+                    authorizedSigner: z.string(),
                     /** Payment-channel address for push mode. */
                     channelId: z.optional(z.string()),
                     /** Deposit locked by the channel open, in base units. */
                     deposit: z.optional(z.string()),
                     /** Grace period used by the payment-channels close path. */
                     gracePeriod: z.optional(z.number()),
-                    /** Pre-signed pull-mode initialization transaction. */
-                    initMultiDelegateTx: z.optional(z.string()),
+
                     /** Negotiated inactivity threshold in seconds. */
                     idleTimeoutSeconds: z.optional(z.number()),
+
+                    /** Pre-signed pull-mode initialization transaction. */
+                    initMultiDelegateTx: z.optional(z.string()),
                     /** SPL mint locked in the channel. */
                     mint: z.optional(z.string()),
                     /** Session funding mode. */
@@ -287,22 +290,29 @@ export const session = Method.from({
             ]),
         },
         request: z.object({
-            /** Maximum total amount the client may spend in this session, in base units. */
-            cap: z.string(),
-            /** Currency or SPL mint identifier. */
-            currency: z.string(),
-            /** Token decimals. Defaults to USDC-like 6 decimals server-side. */
-            decimals: z.optional(z.number()),
-            /** Human-readable memo for the session. */
-            description: z.optional(z.string()),
-            /** Merchant/session reference. */
-            externalId: z.optional(z.string()),
             /** RFC3339 expiry of an operator-mode reusable proof. */
             authenticationExpires: z.optional(z.string()),
-            /** Effective inactivity threshold for a resumed channel. */
-            idleTimeoutSeconds: z.optional(z.number()),
+
+            /** Maximum total amount the client may spend in this session, in base units. */
+            cap: z.string(),
+
+            /** Currency or SPL mint identifier. */
+            currency: z.string(),
+
+            /** Token decimals. Defaults to USDC-like 6 decimals server-side. */
+            decimals: z.optional(z.number()),
+
+            /** Human-readable memo for the session. */
+            description: z.optional(z.string()),
+
+            /** Merchant/session reference. */
+            externalId: z.optional(z.string()),
+
             /** Inactivity thresholds offered for a new channel. */
             idleTimeoutOptionsSeconds: z.optional(z.array(z.number())),
+
+            /** Effective inactivity threshold for a resumed channel. */
+            idleTimeoutSeconds: z.optional(z.number()),
             /** Minimum voucher increment, in base units. */
             minVoucherDelta: z.optional(z.string()),
             /** Supported funding modes. Omitted means push mode only. */

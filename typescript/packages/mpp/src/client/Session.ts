@@ -82,12 +82,12 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly description?: string | undefined;
     /** Merchant correlation id echoed in receipts. */
     readonly externalId?: string | undefined;
-    /** Smallest voucher increment the server accepts, in base units. */
-    readonly minVoucherDelta?: string | undefined;
-    /** Effective inactivity threshold for a resumed channel. */
-    readonly idleTimeoutSeconds?: number | undefined;
     /** Inactivity thresholds offered for a new channel. */
     readonly idleTimeoutOptionsSeconds?: number[] | undefined;
+    /** Effective inactivity threshold for a resumed channel. */
+    readonly idleTimeoutSeconds?: number | undefined;
+    /** Smallest voucher increment the server accepts, in base units. */
+    readonly minVoucherDelta?: string | undefined;
     /** Funding modes the server supports. Omitted or empty means push only. */
     readonly modes?: SessionMode[] | undefined;
     /** Solana network slug (`mainnet`, `devnet`, `localnet`). */
@@ -161,20 +161,20 @@ export interface SignedVoucher {
 export interface OpenPayload {
     /** Pull mode: delegated amount approved by the wallet, in base units. */
     readonly approvedAmount?: string | undefined;
-    /** Public key authorized to sign vouchers for this session (base58). */
-    readonly authorizedSigner: string;
     /** Reusable payer proof required for operator-signed vouchers. */
     readonly authentication?: SessionAuthentication | undefined;
+    /** Public key authorized to sign vouchers for this session (base58). */
+    readonly authorizedSigner: string;
     /** Channel address (push) or delegated token account (pull), base58. */
     readonly channelId?: string | undefined;
     /** Push mode: deposit locked in the payment channel, in base units. */
     readonly deposit?: string | undefined;
     /** Push mode: close grace period in seconds. */
     readonly gracePeriod?: number | undefined;
-    /** Pull mode: pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
-    readonly initMultiDelegateTx?: string | undefined;
     /** Negotiated inactivity threshold in seconds. */
     readonly idleTimeoutSeconds?: number | undefined;
+    /** Pull mode: pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
+    readonly initMultiDelegateTx?: string | undefined;
     /** SPL mint of the funding asset (base58). */
     readonly mint?: string | undefined;
     /** Funding mode this open uses. */
@@ -386,7 +386,9 @@ export function resolveIdleTimeoutSeconds(parameters: {
         if (!options.includes(selected)) throw new Error('idleTimeoutSeconds was not one of the advertised options');
         return selected;
     }
-    return options && !options.includes(defaultSeconds) ? options[0]! : defaultSeconds;
+    return options && !options.includes(defaultSeconds)
+        ? requireValue(options[0], 'idle timeout option')
+        : defaultSeconds;
 }
 
 /** Canonical JCS bytes signed by a reusable operator-mode proof. */
@@ -771,10 +773,10 @@ export declare namespace ActiveSession {
     }
 
     interface OpenOptions {
-        /** Authorized voucher signer; operator sessions use the advertised operator. */
-        readonly authorizedSigner?: string | undefined;
         /** Reusable payer proof for an operator-signed session. */
         readonly authentication?: SessionAuthentication | undefined;
+        /** Authorized voucher signer; operator sessions use the advertised operator. */
+        readonly authorizedSigner?: string | undefined;
         /** Selected inactivity threshold from the challenge's offered values. */
         readonly idleTimeoutSeconds?: number | undefined;
         /** Funding mode. Defaults to `push`. */

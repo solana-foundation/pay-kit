@@ -11,13 +11,13 @@ import {
 } from '@solana/kit';
 import { Method, Receipt } from 'mppx';
 
-import { DEFAULT_RPC_URLS, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
 import {
     DEFAULT_SESSION_EXPIRES_AT,
     resolveIdleTimeoutSeconds,
     validateIdleTimeoutOptions,
     verifySessionAuthentication,
 } from '../client/Session.js';
+import { DEFAULT_RPC_URLS, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
 import * as Methods from '../Methods.js';
 import type {
     CommitReceipt,
@@ -28,8 +28,8 @@ import type {
     SessionMode,
     SessionPullVoucherStrategy,
     SessionRequest,
-    SessionVoucherSigner,
     SessionSplit,
+    SessionVoucherSigner,
     SignedVoucher,
 } from '../shared/session-types.js';
 import { encodeVoucherMessageLoose, normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
@@ -284,15 +284,15 @@ export function session(parameters: session.Parameters) {
             switch (action) {
                 case 'open':
                     return await handleOpen({
+                        authenticationExpires,
                         cap,
                         challengeId: cred.challenge.id,
                         challengeOpenSlot: parseOptionalU64(cred.challenge.request.recentSlot, 'recentSlot'),
-                        authenticationExpires,
                         currency,
                         externalId: cred.challenge.request.externalId,
-                        lifecycle: lifecycleRef.value,
                         idleTimeoutOptionsSeconds,
                         idleTimeoutSeconds,
+                        lifecycle: lifecycleRef.value,
                         merchantSigner: signer,
                         mint: resolvedMint,
                         modes: effectiveModes,
@@ -305,8 +305,8 @@ export function session(parameters: session.Parameters) {
                         pullVoucherStrategy,
                         recipient,
                         rpc,
-                        voucherSigner,
                         store,
+                        voucherSigner,
                     });
                 case 'use':
                     if (!operatorVoucherSigner) {
@@ -315,6 +315,7 @@ export function session(parameters: session.Parameters) {
                     return await handleUse({
                         challengeId: cred.challenge.id,
                         externalId: cred.challenge.request.externalId,
+                        lifecycle: lifecycleRef.value,
                         operatorVoucherSigner,
                         payload: cred.payload,
                         price: pricing.perDelivery,
@@ -455,9 +456,9 @@ interface HandleOpenArgs {
     readonly challengeOpenSlot: bigint | undefined;
     readonly currency: string;
     readonly externalId: string | undefined;
-    readonly lifecycle: Lifecycle | undefined;
     readonly idleTimeoutOptionsSeconds: readonly number[] | undefined;
     readonly idleTimeoutSeconds: number;
+    readonly lifecycle: Lifecycle | undefined;
     readonly merchantSigner: TransactionPartialSigner | undefined;
     readonly mint: string;
     readonly modes: SessionMode[];
@@ -471,8 +472,8 @@ interface HandleOpenArgs {
     readonly pullVoucherStrategy: SessionPullVoucherStrategy | undefined;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
-    readonly voucherSigner: SessionVoucherSigner;
     readonly store: SessionStore;
+    readonly voucherSigner: SessionVoucherSigner;
 }
 
 async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
@@ -657,7 +658,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
 
     // The existence check lives inside the atomic mutator so a concurrent
     // open replay cannot race a fresh create.
-    await args.store.updateChannel(channelId, current => {
+    const persisted = await args.store.updateChannel(channelId, current => {
         if (current) {
             if (current.sealed) {
                 throw new Error(`Channel ${channelId} is already sealed`);
@@ -668,11 +669,11 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 );
             }
             // Idempotent replay: never reset the voucher watermark.
-            return current;
+            return { ...current, lastActivityAt: Date.now() };
         }
         return newState;
     });
-    args.lifecycle?.touch(channelId);
+    args.lifecycle?.touch(channelId, persisted.idleTimeoutSeconds);
 
     return Receipt.from({
         method: 'solana',
@@ -698,6 +699,7 @@ interface HandleVoucherArgs {
 interface HandleUseArgs {
     readonly challengeId: string | undefined;
     readonly externalId: string | undefined;
+    readonly lifecycle: Lifecycle | undefined;
     readonly operatorVoucherSigner: MessagePartialSigner;
     readonly payload: {
         readonly action: 'use';
@@ -728,12 +730,14 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
 
     let voucherSignature = '';
     let cumulative = 0n;
+    let idleTimeoutSeconds: number | undefined;
     await args.store.updateChannel(args.payload.channelId, async current => {
         if (!current) throw new Error(`Channel ${args.payload.channelId} not found`);
         if (current.sealed || current.closeRequestedAt !== undefined) {
             throw new Error('Channel is closed or close is pending');
         }
         cumulative = current.cumulative + price;
+        idleTimeoutSeconds = current.idleTimeoutSeconds;
         if (cumulative > current.deposit) throw new Error('insufficient channel availability');
         const data = {
             channelId: current.channelId,
@@ -754,6 +758,7 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
             lastActivityAt: Date.now(),
         };
     });
+    args.lifecycle?.touch(args.payload.channelId, idleTimeoutSeconds);
 
     return Receipt.from({
         method: 'solana',
@@ -803,9 +808,12 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
             cumulative: result.newCumulative,
             highestVoucherExpiresAt: result.newExpiresAt,
             highestVoucherSignature: result.newSignature,
+            lastActivityAt: Date.now(),
         };
     });
-    args.lifecycle?.touch(channelId);
+    if (finalResult.status === 'accepted') {
+        args.lifecycle?.touch(channelId, existing.idleTimeoutSeconds);
+    }
 
     const cumulative =
         finalResult.status === 'accepted' || finalResult.status === 'replayed' ? finalResult.newCumulative : 0n;
@@ -835,7 +843,10 @@ async function handleCommit(args: HandleCommitArgs): Promise<Receipt.Receipt> {
         settlementWindow: args.settlementWindow,
         voucher: args.payload.voucher,
     });
-    args.lifecycle?.touch(receipt.sessionId);
+    if (receipt.status === 'committed') {
+        const state = await args.store.getChannel(receipt.sessionId);
+        args.lifecycle?.touch(receipt.sessionId, state?.idleTimeoutSeconds);
+    }
 
     return Receipt.from({
         method: 'solana',
@@ -893,7 +904,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         }
         return { ...current, deposit: newDeposit };
     });
-    args.lifecycle?.touch(result.channelId);
+    args.lifecycle?.touch(result.channelId, result.idleTimeoutSeconds);
 
     return Receipt.from({
         method: 'solana',
@@ -1153,6 +1164,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
             cumulative: newCumulative,
             highestVoucherExpiresAt: BigInt(signed.data.expiresAt),
             highestVoucherSignature: signed.signature,
+            lastActivityAt: Date.now(),
             pendingDeliveries: nextPending,
         };
     });
@@ -1402,12 +1414,12 @@ export declare namespace session {
         readonly currency: string;
         /** Token decimals (default 6). */
         readonly decimals?: number;
-        /** Minimum voucher increment in base units. Defaults to 0. */
-        readonly minVoucherDelta?: bigint;
         /** Inactivity thresholds offered to clients for a new channel. */
         readonly idleTimeoutOptionsSeconds?: readonly number[];
         /** Server-selected inactivity threshold in seconds. Defaults to 300. */
         readonly idleTimeoutSeconds?: number;
+        /** Minimum voucher increment in base units. Defaults to 0. */
+        readonly minVoucherDelta?: bigint;
         /** Funding modes. Defaults to ['push']. */
         readonly modes?: readonly SessionMode[];
         /** Solana network. Defaults to 'mainnet'. */
@@ -1432,8 +1444,6 @@ export declare namespace session {
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
-        /** Voucher signing authority advertised by this session. */
-        readonly voucherSigner?: SessionVoucherSigner;
         /**
          * Settlement window in seconds — the forced-close grace period a
          * non-zero voucher `expiresAt` must outlast. When set, a voucher
@@ -1453,5 +1463,7 @@ export declare namespace session {
         readonly store?: SessionStore;
         /** SPL token program (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from currency/network. */
         readonly tokenProgram?: string;
+        /** Voucher signing authority advertised by this session. */
+        readonly voucherSigner?: SessionVoucherSigner;
     }
 }

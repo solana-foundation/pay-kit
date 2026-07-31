@@ -23,6 +23,7 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     TopUpPayload,
     VoucherData,
     VoucherPayload,
+    sign_session_authentication,
 )
 from solana_pay_kit.protocols.mpp.server.session import (
     DeliveryRequest,
@@ -76,6 +77,24 @@ def _far_future() -> int:
 
 def _channel_key() -> str:
     return str(Keypair().pubkey())
+
+
+@pytest.mark.asyncio
+async def test_operator_open_rejects_expired_authentication() -> None:
+    operator = Keypair()
+    payer = Keypair()
+    channel_id = _channel_key()
+    config = replace(
+        session_test_config(),
+        operator=str(operator.pubkey()),
+        voucher_signer="operator",
+        authentication_expires="2000-01-01T00:00:00Z",
+    )
+    payload = session_open_payload(channel_id, 1_000, str(operator.pubkey()))
+    payload.authentication = sign_session_authentication("challenge-1", channel_id, payer)
+
+    with pytest.raises(ValueError, match="authentication has expired"):
+        await new_session_test_server(config).process_open(payload)
 
 
 async def _open_test_channel(server: SessionServer, deposit: int) -> tuple[_TestVoucherSigner, str]:

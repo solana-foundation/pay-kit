@@ -27,6 +27,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TypeVar
 
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -82,6 +83,17 @@ _P = TypeVar("_P")
 # signature on-chain. This is the seam the on-chain layer plugs into; ``None``
 # skips verification. Raising signals a verification failure.
 SessionTxVerifier = Callable[[_P], Awaitable[None]]
+
+
+def _authentication_expired(value: str) -> bool:
+    """Parse an RFC3339 expiry and report whether it has elapsed."""
+    try:
+        expiry = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("authenticationExpires must be an RFC3339 timestamp") from exc
+    if expiry.tzinfo is None:
+        raise ValueError("authenticationExpires must include a timezone")
+    return expiry <= datetime.now(UTC)
 
 
 @dataclass
@@ -366,6 +378,10 @@ class SessionServer:
         if self._config.voucher_signer == "operator":
             if payload.authentication is None:
                 raise ValueError("operator voucher signing requires authentication")
+            if self._config.authentication_expires is not None and _authentication_expired(
+                self._config.authentication_expires
+            ):
+                raise ValueError("session authentication has expired")
             expected_payer = payload.owner or payload.payer
             if expected_payer is not None and payload.authentication.payer != expected_payer:
                 raise ValueError("session authentication payer does not match the channel payer")

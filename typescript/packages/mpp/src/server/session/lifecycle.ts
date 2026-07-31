@@ -1,8 +1,9 @@
 // Per-channel idle-close lifecycle.
 //
 // When the server accepts an `open`, we arm a single-shot timer keyed on
-// the channel id. Every voucher / commit / topUp `touch()` resets the
-// timer. When the timer fires, we invoke `closeOnIdle(channelId)` so the
+// the channel id. Every accepted activity calls `touch()` with that channel's
+// negotiated timeout to reset the timer. When the timer fires, we invoke
+// `closeOnIdle(channelId)` so the
 // server can run its close-and-settle path without waiting for a client
 // `close` action.
 //
@@ -22,8 +23,8 @@ export interface Lifecycle {
     removeChannel(channelId: string): void;
     /** Cancel every outstanding timer. */
     shutdown(): void;
-    /** Reset the idle timer for `channelId`. No-op if `idleTimeoutMs` is 0. */
-    touch(channelId: string): void;
+    /** Reset the idle timer using the channel's negotiated timeout. */
+    touch(channelId: string, idleTimeoutSeconds?: number): void;
 }
 
 /**
@@ -60,8 +61,9 @@ export function createLifecycle(
             for (const handle of timers.values()) clearTimeout(handle);
             timers.clear();
         },
-        touch(channelId) {
-            if (idleTimeoutMs <= 0) return;
+        touch(channelId, idleTimeoutSeconds) {
+            const effectiveTimeoutMs = idleTimeoutSeconds === undefined ? idleTimeoutMs : idleTimeoutSeconds * 1_000;
+            if (effectiveTimeoutMs <= 0) return;
             clear(channelId);
             const handle = setTimeout(() => {
                 timers.delete(channelId);
@@ -71,7 +73,7 @@ export function createLifecycle(
                 void Promise.resolve()
                     .then(() => closeOnIdle(channelId))
                     .catch(() => undefined);
-            }, idleTimeoutMs);
+            }, effectiveTimeoutMs);
             // Don't keep the process alive on test shutdown.
             if (typeof handle.unref === 'function') handle.unref();
             timers.set(channelId, handle);
