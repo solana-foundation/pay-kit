@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::mpp::error::{Error, Result};
 use crate::mpp::protocol::intents::session::{
-    CommitPayload, CommitReceipt, MeteredEnvelope, MeteringDirective,
+    CommitPayload, CommitReceipt, CommitStatus, MeteredEnvelope, MeteringDirective,
 };
 
 use super::session::ActiveSession;
@@ -88,7 +88,36 @@ impl<T: CommitTransport> SessionConsumer<T> {
         };
 
         let receipt = self.transport.commit(directive, payload.clone()).await?;
-        self.session.record_voucher(&payload.voucher)?;
+        // A `replayed` receipt means the server already settled this delivery,
+        // so its `cumulative` is the authoritative settled position. Recording
+        // the freshly prepared (higher) voucher would push the local watermark
+        // past the server's state and let a later close sign for more than was
+        // agreed; skipping it entirely would instead leave the watermark behind
+        // the server when the original response was lost, so the next delivery
+        // signs a non-monotonic cumulative. Reconcile to the receipt cumulative
+        // on replay (never regressing); record the voucher on a fresh commit.
+        //
+        // The server is untrusted: clamp the reported cumulative to the voucher
+        // just prepared in this call. An honest lost-response replay settles at
+        // or below it (single-threaded session), so a server reporting a higher
+        // cumulative cannot push the watermark past what the client actually
+        // signed — otherwise the next voucher would over-authorize up to the
+        // on-chain deposit.
+        if receipt.status == CommitStatus::Replayed {
+            let settled = receipt
+                .cumulative
+                .parse::<u64>()
+                .map_err(|_| Error::Other("invalid replayed receipt cumulative".to_string()))?;
+            let prepared = payload
+                .voucher
+                .data
+                .cumulative
+                .parse::<u64>()
+                .map_err(|_| Error::Other("invalid prepared voucher cumulative".to_string()))?;
+            self.session.reconcile_settled(settled.min(prepared));
+        } else {
+            self.session.record_voucher(&payload.voucher)?;
+        }
         Ok(receipt)
     }
 
@@ -317,5 +346,87 @@ mod tests {
         let err = consumer.commit_directive(&directive).await.unwrap_err();
         assert!(err.to_string().contains("commit failed"));
         assert_eq!(consumer.session().cumulative, 0);
+    }
+
+    /// Transport that reports every commit as an idempotent replay settled at a
+    /// fixed cumulative, regardless of the voucher it was sent.
+    struct ReplayTransport {
+        settled_cumulative: String,
+    }
+
+    impl CommitTransport for ReplayTransport {
+        fn commit<'a>(
+            &'a self,
+            directive: &'a MeteringDirective,
+            _payload: CommitPayload,
+        ) -> Pin<Box<dyn Future<Output = Result<CommitReceipt>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(CommitReceipt {
+                    delivery_id: directive.delivery_id.clone(),
+                    session_id: directive.session_id.clone(),
+                    amount: directive.amount.clone(),
+                    cumulative: self.settled_cumulative.clone(),
+                    status: CommitStatus::Replayed,
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn replayed_receipt_reconciles_to_settled_cumulative() {
+        let channel_id = Pubkey::new_unique();
+        let session = ActiveSession::new(channel_id, signer());
+        let transport = ReplayTransport {
+            settled_cumulative: "100".to_string(),
+        };
+        let mut consumer = SessionConsumer::new(session, transport);
+        let directive = directive(consumer.session().channel_id_str(), 250);
+
+        // Lost-response case: the server already settled this delivery at 100,
+        // but the client never recorded it (watermark still 0). The freshly
+        // prepared voucher is for 250; on replay the client must reconcile to
+        // the server-settled 100, not jump to the prepared 250 and not stay at
+        // 0 (which would make the next delivery sign a non-monotonic cumulative).
+        let receipt = consumer.commit_directive(&directive).await.unwrap();
+        assert_eq!(receipt.status, CommitStatus::Replayed);
+        assert_eq!(receipt.cumulative, "100");
+        assert_eq!(consumer.session().cumulative, 100);
+    }
+
+    #[tokio::test]
+    async fn replayed_receipt_never_regresses_local_watermark() {
+        let channel_id = Pubkey::new_unique();
+        let mut session = ActiveSession::new(channel_id, signer());
+        // Client is already ahead at 300 (later deliveries already settled).
+        session.reconcile_settled(300);
+        let transport = ReplayTransport {
+            settled_cumulative: "100".to_string(),
+        };
+        let mut consumer = SessionConsumer::new(session, transport);
+        let directive = directive(consumer.session().channel_id_str(), 50);
+
+        let receipt = consumer.commit_directive(&directive).await.unwrap();
+        assert_eq!(receipt.status, CommitStatus::Replayed);
+        assert_eq!(consumer.session().cumulative, 300);
+    }
+
+    #[tokio::test]
+    async fn replayed_receipt_cumulative_is_clamped_to_prepared_voucher() {
+        // A malicious/buggy server cannot push the watermark past the voucher
+        // the client just signed: it reports a replay settled far above the
+        // prepared cumulative, but the watermark must clamp to the prepared
+        // value (250), not the inflated server value, so the next voucher does
+        // not over-authorize.
+        let channel_id = Pubkey::new_unique();
+        let session = ActiveSession::new(channel_id, signer());
+        let transport = ReplayTransport {
+            settled_cumulative: "1000000".to_string(),
+        };
+        let mut consumer = SessionConsumer::new(session, transport);
+        let directive = directive(consumer.session().channel_id_str(), 250);
+
+        let receipt = consumer.commit_directive(&directive).await.unwrap();
+        assert_eq!(receipt.status, CommitStatus::Replayed);
+        assert_eq!(consumer.session().cumulative, 250);
     }
 }

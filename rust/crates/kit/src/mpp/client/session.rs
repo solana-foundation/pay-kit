@@ -166,6 +166,13 @@ impl ActiveSession {
 
     /// Record a prepared voucher as accepted by the server.
     pub fn record_voucher(&mut self, voucher: &SignedVoucher) -> Result<()> {
+        if voucher.data.channel_id != self.channel_id_str() {
+            return Err(Error::Other(format!(
+                "voucher channel {} does not match active session {}",
+                voucher.data.channel_id,
+                self.channel_id_str()
+            )));
+        }
         let cumulative = voucher
             .data
             .cumulative
@@ -180,6 +187,14 @@ impl ActiveSession {
         self.cumulative = cumulative;
         self.nonce = self.nonce.max(voucher.data.nonce.unwrap_or(self.nonce + 1));
         Ok(())
+    }
+
+    /// Reconcile local state with a server-settled cumulative watermark.
+    pub fn reconcile_settled(&mut self, settled: u64) {
+        if settled > self.cumulative {
+            self.cumulative = settled;
+            self.nonce += 1;
+        }
     }
 
     /// Sign a voucher adding `amount` to the current cumulative.
@@ -783,6 +798,53 @@ mod tests {
         s.record_voucher(&without_nonce).unwrap();
         assert_eq!(s.cumulative, 15);
         assert_eq!(s.nonce, 1);
+    }
+
+    #[test]
+    fn record_voucher_rejects_foreign_channel() {
+        let mut s = make_session();
+        let foreign = SignedVoucher {
+            data: VoucherData {
+                channel_id: Pubkey::new_unique().to_string(),
+                cumulative: "100".to_string(),
+                expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
+                nonce: Some(1),
+            },
+            signature: "sig".to_string(),
+        };
+        let err = s.record_voucher(&foreign).unwrap_err();
+        assert!(err.to_string().contains("does not match active session"));
+        assert_eq!(s.cumulative, 0);
+    }
+
+    #[test]
+    fn reconcile_settled_advances_but_never_regresses() {
+        let mut s = make_session();
+        // Advancing the watermark also bumps the request nonce.
+        s.reconcile_settled(100);
+        assert_eq!(s.cumulative, 100);
+        assert_eq!(s.nonce, 1);
+        // A lower settled value (e.g. a stale replayed receipt) does not regress
+        // and does not touch the nonce.
+        s.reconcile_settled(40);
+        assert_eq!(s.cumulative, 100);
+        assert_eq!(s.nonce, 1);
+        s.reconcile_settled(250);
+        assert_eq!(s.cumulative, 250);
+        assert_eq!(s.nonce, 2);
+    }
+
+    #[tokio::test]
+    async fn delivery_after_replay_does_not_reuse_settled_nonce() {
+        // After a lost-response replay reconciles to the settled cumulative, the
+        // next prepared voucher must carry a fresh nonce, not the one already
+        // settled by the server.
+        let mut s = make_session();
+        let replayed = s.prepare_increment(100).await.unwrap();
+        let replayed_nonce = replayed.data.nonce.unwrap();
+        s.reconcile_settled(100); // server settled the lost delivery at 100
+        let next = s.prepare_increment(50).await.unwrap();
+        assert!(next.data.nonce.unwrap() > replayed_nonce);
     }
 
     #[tokio::test]
