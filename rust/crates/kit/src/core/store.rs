@@ -604,9 +604,10 @@ impl ChannelStore for MemoryChannelStore {
 ///
 /// Enabled by the `redis-store` feature. Read/modify/write operations use Lua
 /// scripts so multiple gateway instances cannot silently overwrite one
-/// another. A conflicting generic `update_channel` returns an error and is
-/// safe for the caller to retry; dedicated operations use the atomic semantics
-/// required by their [`ChannelStore`] contracts.
+/// another. No-op updates return the state read by the updater without writing,
+/// while a conflicting state change returns an error and is safe for the caller
+/// to retry. Dedicated operations use the atomic semantics required by their
+/// [`ChannelStore`] contracts.
 #[cfg(feature = "redis-store")]
 #[derive(Clone)]
 pub struct RedisChannelStore {
@@ -930,6 +931,9 @@ impl ChannelStore for RedisChannelStore {
             let current = current_raw.as_deref().map(Self::decode).transpose()?;
             let new_state = updater(current)?;
             let new_raw = Self::encode(&new_state)?;
+            if current_raw.as_deref() == Some(new_raw.as_str()) {
+                return Ok(new_state);
+            }
             if !self
                 .compare_and_set(&channel_id, current_raw.as_deref(), &new_raw)
                 .await?
@@ -1281,7 +1285,7 @@ mod tests {
     }
 
     #[cfg(feature = "redis-store")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn redis_channel_store_roundtrip_and_atomic_watermark() {
         let redis_url = std::env::var("PAY_KIT_TEST_REDIS_URL")
             .expect("PAY_KIT_TEST_REDIS_URL is required for the Redis integration test");
@@ -1313,6 +1317,48 @@ mod tests {
             store.get_channel("c1").await.unwrap().unwrap().cumulative,
             100 | 200
         ));
+
+        store
+            .put_channel("noop-race", make_state("noop-race", 1_000_000))
+            .await
+            .unwrap();
+        let no_op_store = store.clone();
+        let writer_store = store.clone();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let no_op = tokio::spawn(async move {
+            no_op_store
+                .update_channel(
+                    "noop-race",
+                    Box::new(move |state| {
+                        read_tx.send(()).unwrap();
+                        continue_rx.recv().unwrap();
+                        Ok(state.unwrap())
+                    }),
+                )
+                .await
+        });
+        read_rx.recv().unwrap();
+        writer_store
+            .advance_cumulative("noop-race", 0, 100)
+            .await
+            .unwrap();
+        continue_tx.send(()).unwrap();
+        let stale_read = no_op
+            .await
+            .unwrap()
+            .expect("a no-op must not fail because another writer advanced the channel");
+        assert_eq!(stale_read.cumulative, 0);
+        assert_eq!(
+            store
+                .get_channel("noop-race")
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            100,
+            "the no-op must not overwrite the concurrent writer"
+        );
 
         let lifecycle = ChannelLifecycle {
             owner: "redis-worker".to_string(),
@@ -1456,7 +1502,7 @@ mod tests {
         store.delete_channel("deleted").await.unwrap();
 
         let channels = store.list_channels().await.unwrap();
-        assert_eq!(channels.len(), 3);
+        assert_eq!(channels.len(), 4);
         assert!(channels
             .iter()
             .any(|channel| channel.channel_id.as_str() == "c1"));
