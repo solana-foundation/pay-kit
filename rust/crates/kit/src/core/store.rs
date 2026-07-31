@@ -307,7 +307,10 @@ pub trait ChannelStore: Send + Sync {
     ///
     /// The `updater` closure receives the current state (None if absent) and
     /// returns the new state or an error. Implementations MUST guarantee the
-    /// entire read-modify-write is atomic — no concurrent update can interleave.
+    /// entire modifying read-modify-write is atomic — no concurrent update can
+    /// interleave. If the updater returns the state unchanged, implementations
+    /// may skip the write and return the snapshot originally passed to the
+    /// updater; that snapshot can be stale if another writer commits afterward.
     fn update_channel(
         &self,
         channel_id: &str,
@@ -605,9 +608,10 @@ impl ChannelStore for MemoryChannelStore {
 /// Enabled by the `redis-store` feature. Read/modify/write operations use Lua
 /// scripts so multiple gateway instances cannot silently overwrite one
 /// another. No-op updates return the state read by the updater without writing,
-/// while a conflicting state change returns an error and is safe for the caller
-/// to retry. Dedicated operations use the atomic semantics required by their
-/// [`ChannelStore`] contracts.
+/// and that snapshot may be stale if another writer commits after the initial
+/// read. A conflicting modifying update returns an error and is safe for the
+/// caller to retry. Dedicated operations use the atomic semantics required by
+/// their [`ChannelStore`] contracts.
 #[cfg(feature = "redis-store")]
 #[derive(Clone)]
 pub struct RedisChannelStore {
@@ -1332,13 +1336,13 @@ mod tests {
                     "noop-race",
                     Box::new(move |state| {
                         read_tx.send(()).unwrap();
-                        continue_rx.recv().unwrap();
+                        tokio::task::block_in_place(|| continue_rx.recv()).unwrap();
                         Ok(state.unwrap())
                     }),
                 )
                 .await
         });
-        read_rx.recv().unwrap();
+        tokio::task::block_in_place(|| read_rx.recv()).unwrap();
         writer_store
             .advance_cumulative("noop-race", 0, 100)
             .await
