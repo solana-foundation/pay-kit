@@ -4,6 +4,12 @@
 //! API call. Vouchers are Ed25519-signed over the on-chain Borsh voucher
 //! layout used by the payment-channels program.
 //!
+//! When a server needs the payer's identity before it can resolve or issue a
+//! delegated-session challenge, answer its zero-amount `solana`/`charge`
+//! preflight with [`super::charge::build_credential_header`]. The returned
+//! proof identifies the payer; it does not replace the payer-signed channel
+//! open or token-delegation transaction.
+//!
 //! # Example
 //!
 //! ```ignore

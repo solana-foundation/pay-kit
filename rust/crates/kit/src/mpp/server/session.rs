@@ -27,6 +27,13 @@
 //!
 //! Replayed `open` payloads for an existing channel are idempotent: they
 //! never reset the voucher watermark or any other channel state.
+//!
+//! A host that needs payer identity before constructing a reusable or
+//! delegated-session challenge can first issue and verify a zero-amount
+//! `solana`/`charge` challenge with [`super::charge::Mpp`]. After successful
+//! verification, use the credential `source` DID only to resolve session state
+//! belonging to that payer. The proof does not replace verification of the
+//! signed channel-open or token-delegation transaction.
 
 use solana_pubkey::Pubkey;
 

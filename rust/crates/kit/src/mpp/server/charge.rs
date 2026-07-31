@@ -49,7 +49,8 @@ use crate::mpp::protocol::core::{
 };
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
-    default_rpc_url, programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
+    default_rpc_url, format_charge_proof_message, programs, CredentialPayload, MethodDetails,
+    Split, DEFAULT_NETWORK, MAX_MEMO_BYTES,
 };
 use crate::mpp::store::{MemoryStore, Store};
 
@@ -474,6 +475,12 @@ impl Mpp {
         self.validate_charge_options(&options)?;
         let base_units = crate::mpp::protocol::intents::parse_units(amount, self.decimals as u8)?;
 
+        if base_units == "0" && !options.splits.is_empty() {
+            return Err(Error::InvalidConfig(
+                "Zero-amount charge proofs cannot include payment splits".into(),
+            ));
+        }
+
         let mut request = ChargeRequest {
             amount: base_units,
             currency: self.currency.clone(),
@@ -523,9 +530,13 @@ impl Mpp {
         // and emitting it only on a cache hit would make the field flicker in
         // and out of the challenge depending on cache warmth. The x402 paths,
         // which already commit to the field, forward it; MPP does not.
-        let blockhash = match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
-            Some(cached) => Some(cached.blockhash),
-            None => self.rpc.get_latest_blockhash().ok().map(|h| h.to_string()),
+        let blockhash = if request.amount == "0" {
+            None
+        } else {
+            match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
+                Some(cached) => Some(cached.blockhash),
+                None => self.rpc.get_latest_blockhash().ok().map(|h| h.to_string()),
+            }
         };
         if let Some(blockhash) = blockhash {
             details.insert("recentBlockhash".into(), serde_json::json!(blockhash));
@@ -670,7 +681,7 @@ impl Mpp {
     /// fragments that pin the server-side configuration
     /// (`network`, `decimals`, `tokenProgram`, splits).
     fn validate_charge_request(&self, request: &ChargeRequest) -> Result<(), Error> {
-        request.parse_amount()?;
+        let amount = request.parse_amount()?;
 
         if !request.currency.eq_ignore_ascii_case(&self.currency) {
             return Err(Error::InvalidConfig(format!(
@@ -723,6 +734,17 @@ impl Mpp {
             // recipients, too many splits) all surface here.
             if let Some(splits) = md.splits.as_deref() {
                 crate::mpp::protocol::solana::validate_splits(splits)?;
+                if amount == 0 && !splits.is_empty() {
+                    return Err(Error::InvalidConfig(
+                        "Zero-amount charge proofs cannot include payment splits".into(),
+                    ));
+                }
+            }
+
+            if amount == 0 && md.confidential == Some(true) {
+                return Err(Error::InvalidConfig(
+                    "Zero-amount charge proofs cannot be confidential transfers".into(),
+                ));
             }
         }
 
@@ -903,6 +925,37 @@ impl Mpp {
             })?
             .unwrap_or_default();
 
+        let amount = request.amount.parse::<u64>().map_err(|_| {
+            VerificationError::invalid_amount(format!("Invalid charge amount `{}`", request.amount))
+        })?;
+        let is_zero_amount = amount == 0;
+
+        if is_zero_amount && !matches!(payload, CredentialPayload::Proof { .. }) {
+            return Err(VerificationError::credential_mismatch(
+                "Zero-amount charges must use a Proof credential",
+            ));
+        }
+        if !is_zero_amount && matches!(payload, CredentialPayload::Proof { .. }) {
+            return Err(VerificationError::credential_mismatch(
+                "Proof credentials are only valid for zero-amount charges",
+            ));
+        }
+        if is_zero_amount
+            && method_details
+                .splits
+                .as_ref()
+                .is_some_and(|splits| !splits.is_empty())
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Zero-amount charge proofs cannot include payment splits",
+            ));
+        }
+        if is_zero_amount && method_details.confidential == Some(true) {
+            return Err(VerificationError::credential_mismatch(
+                "Zero-amount charge proofs cannot be confidential transfers",
+            ));
+        }
+
         // A challenge issued in confidential mode (`methodDetails.confidential`)
         // can ONLY be settled with a confidential Bundle credential. Reject a
         // cleartext Transaction or push Signature here, fail-closed and
@@ -918,13 +971,20 @@ impl Mpp {
             ));
         }
 
-        // Settle, with the consume_signature reservation sitting between
-        // broadcast and confirmation polling. If the server crashes or the
-        // poll loop times out after the transaction has already landed,
-        // the signature is still reserved so a retry of the same credential
-        // cannot trigger a second broadcast. See PR #85 Greptile P1 and
-        // audit gap G05.
-        let signature_str = match payload {
+        // Settle transaction credentials or verify an off-chain proof. For
+        // pull mode, the consume_signature reservation sits between broadcast
+        // and confirmation polling so a crash or timeout cannot trigger a
+        // second broadcast. See PR #85 Greptile P1 and audit gap G05.
+        let reference = match payload {
+            CredentialPayload::Proof { ref signature } => {
+                verify_charge_proof(
+                    credential.source.as_deref(),
+                    signature,
+                    &credential.challenge.id,
+                    method_details.network.as_deref().unwrap_or(DEFAULT_NETWORK),
+                )?;
+                credential.challenge.id.clone()
+            }
             CredentialPayload::Transaction { ref transaction } => {
                 let signature = self
                     .broadcast_pull(transaction, request, &method_details)
@@ -987,7 +1047,7 @@ impl Mpp {
 
         Ok(Receipt::success(
             METHOD_NAME,
-            &signature_str,
+            &reference,
             credential.challenge.id.clone(),
         ))
     }
@@ -3009,6 +3069,48 @@ fn extract_parsed_instructions(
     Ok(all)
 }
 
+/// Verify a zero-amount proof without touching Solana RPC.
+fn verify_charge_proof(
+    source: Option<&str>,
+    signature: &str,
+    challenge_id: &str,
+    expected_network: &str,
+) -> Result<(), VerificationError> {
+    use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
+
+    let source = source.ok_or_else(|| {
+        VerificationError::invalid_payload("Zero-amount charge proof requires credential.source")
+    })?;
+    let prefix = format!("did:pkh:solana:{expected_network}:");
+    let address = source.strip_prefix(&prefix).ok_or_else(|| {
+        VerificationError::wrong_network(format!("Proof source must use `{prefix}<address>`"))
+    })?;
+    if address.is_empty() || address.contains(':') {
+        return Err(VerificationError::invalid_payload(
+            "Proof source contains an invalid Solana address",
+        ));
+    }
+
+    let pubkey = Pubkey::from_str(address).map_err(|e| {
+        VerificationError::invalid_payload(format!("Invalid proof source address: {e}"))
+    })?;
+    let verifying_key = VerifyingKey::from_bytes(pubkey.as_array()).map_err(|e| {
+        VerificationError::invalid_payload(format!("Invalid proof source public key: {e}"))
+    })?;
+
+    let signature_bytes = bs58::decode(signature).into_vec().map_err(|e| {
+        VerificationError::invalid_payload(format!("Invalid proof signature base58: {e}"))
+    })?;
+    let signature_bytes: [u8; 64] = signature_bytes.try_into().map_err(|_| {
+        VerificationError::invalid_payload("Proof signature must decode to 64 bytes")
+    })?;
+    let signature = Ed25519Signature::from_bytes(&signature_bytes);
+    let message = format_charge_proof_message(expected_network, challenge_id);
+    verifying_key
+        .verify(message.as_bytes(), &signature)
+        .map_err(|_| VerificationError::credential_mismatch("Invalid charge proof signature"))
+}
+
 // ── VerificationError ──
 
 /// Error returned when payment verification fails.
@@ -4657,6 +4759,94 @@ mod tests {
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
         Arc::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    fn zero_charge_proof_credential(challenge: &PaymentChallenge) -> PaymentCredential {
+        use ed25519_dalek::{Signer as _, SigningKey};
+
+        let signing_key = SigningKey::from_bytes(&[29u8; 32]);
+        let address = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
+        let message = format_charge_proof_message("devnet", &challenge.id);
+        let signature = signing_key.sign(message.as_bytes());
+        PaymentCredential::with_source(
+            challenge.to_echo(),
+            PaymentCredential::solana_did("devnet", &address),
+            CredentialPayload::Proof {
+                signature: bs58::encode(signature.to_bytes()).into_string(),
+            },
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_amount_charge_accepts_proof_without_transaction() {
+        let mpp = test_mpp_sol();
+        let challenge = mpp.charge("0").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let credential = zero_charge_proof_credential(&challenge);
+
+        let receipt = mpp
+            .verify_credential_with_expected(&credential, &request)
+            .await
+            .unwrap();
+
+        assert!(receipt.is_success());
+        assert_eq!(receipt.reference, challenge.id);
+        assert_eq!(receipt.challenge_id, challenge.id);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_amount_charge_rejects_missing_proof_source() {
+        let mpp = test_mpp_sol();
+        let challenge = mpp.charge("0").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let mut credential = zero_charge_proof_credential(&challenge);
+        credential.source = None;
+
+        let err = mpp.verify(&credential, &request).await.unwrap_err();
+        assert!(err.message.contains("credential.source"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_amount_charge_rejects_wrong_source_network() {
+        let mpp = test_mpp_sol();
+        let challenge = mpp.charge("0").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let mut credential = zero_charge_proof_credential(&challenge);
+        credential.source = credential
+            .source
+            .map(|source| source.replacen("solana:devnet:", "solana:mainnet:", 1));
+
+        let err = mpp.verify(&credential, &request).await.unwrap_err();
+        assert_eq!(err.code, Some("wrong-network"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_amount_charge_rejects_tampered_proof_signature() {
+        let mpp = test_mpp_sol();
+        let challenge = mpp.charge("0").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let mut credential = zero_charge_proof_credential(&challenge);
+        credential.payload = serde_json::json!({
+            "type": "proof",
+            "signature": bs58::encode([0u8; 64]).into_string(),
+        });
+
+        let err = mpp.verify(&credential, &request).await.unwrap_err();
+        assert!(err.message.contains("Invalid charge proof signature"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nonzero_charge_rejects_proof() {
+        let mpp = test_mpp_sol();
+        let challenge = mpp.charge("0.000000001").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let credential = zero_charge_proof_credential(&challenge);
+
+        let err = mpp.verify(&credential, &request).await.unwrap_err();
+        assert!(
+            err.message.contains("only valid for zero-amount charges"),
+            "got: {err:?}"
+        );
     }
 
     // ── Mpp::new() config validation tests ──

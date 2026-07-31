@@ -34,6 +34,15 @@ pub const NETWORK_LOCALNET: &str = "localnet";
 /// mainnet if omitted" guidance.
 pub const DEFAULT_NETWORK: &str = NETWORK_MAINNET;
 
+/// Domain-separated UTF-8 message signed for a zero-amount charge proof.
+///
+/// The challenge ID is HMAC-bound to the full challenge by the server. Signing
+/// this message therefore proves control of the source account for exactly one
+/// challenge without creating an on-chain transaction.
+pub fn format_charge_proof_message(network: &str, challenge_id: &str) -> String {
+    format!("MPP charge proof v1:\nNetwork: {network}\nChallenge ID: {challenge_id}")
+}
+
 /// Maximum byte length of an SPL Memo instruction payload.
 pub const MAX_MEMO_BYTES: usize = 566;
 
@@ -388,6 +397,28 @@ mod tests {
             }
             _ => panic!("Expected Signature variant"),
         }
+    }
+
+    #[test]
+    fn credential_payload_proof_serde() {
+        let cp = CredentialPayload::Proof {
+            signature: "proofsig123".to_string(),
+        };
+        let json = serde_json::to_string(&cp).unwrap();
+        assert_eq!(json, r#"{"type":"proof","signature":"proofsig123"}"#);
+        let deserialized: CredentialPayload = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            CredentialPayload::Proof { signature } => assert_eq!(signature, "proofsig123"),
+            _ => panic!("Expected Proof variant"),
+        }
+    }
+
+    #[test]
+    fn charge_proof_message_is_domain_separated() {
+        assert_eq!(
+            format_charge_proof_message("devnet", "challenge-123"),
+            "MPP charge proof v1:\nNetwork: devnet\nChallenge ID: challenge-123"
+        );
     }
 
     // ── Split serde ──
@@ -980,5 +1011,13 @@ pub enum CredentialPayload {
         /// transactions. The final element MUST contain the confidential
         /// transfer instruction.
         transactions: Vec<String>,
+    },
+    /// Zero-amount mode: the client proves control of `credential.source` by
+    /// signing [`format_charge_proof_message`] over the challenge ID. No
+    /// transaction is constructed or submitted.
+    #[serde(rename = "proof")]
+    Proof {
+        /// Base58-encoded Ed25519 signature.
+        signature: String,
     },
 }

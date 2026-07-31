@@ -5,6 +5,8 @@
 //!
 //! - **Pull mode** (`type="transaction"`): Client signs, server broadcasts.
 //! - **Push mode** (`type="signature"`): Client broadcasts, server verifies.
+//! - **Zero-amount proof** (`type="proof"`): Client signs the network and
+//!   challenge ID; no transaction is created.
 //!
 //! # Features
 //!
@@ -78,14 +80,12 @@ pub use protocol::core::{
 
 // Intent types
 pub use protocol::intents::{
-    parse_units, ActivatePayload, AuthenticateMethodDetails, AuthenticatePayload,
-    AuthenticateRequest, ChargeRequest, ClosePayload, CommitPayload, CommitReceipt, CommitStatus,
-    MeteredEnvelope, MeteringDirective, MeteringUsage, OpenPayload, SessionAction, SessionMode,
-    SessionPullVoucherStrategy, SessionRequest, SessionSettlementAuthority, SessionSplit,
-    SignedVoucher, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
-    SubscriptionRequest, TopUpPayload, VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
-    RESOURCE_SCHEME_HTTP, RESOURCE_SCHEME_SOLANA_SESSION, RESOURCE_SCHEME_SOLANA_SUBSCRIPTION,
-    SIGNATURE_SCHEME_SIWMPP, SIGNATURE_TYPE_ED25519, SIWMPP_VERSION,
+    parse_units, ActivatePayload, ChargeRequest, ClosePayload, CommitPayload, CommitReceipt,
+    CommitStatus, MeteredEnvelope, MeteringDirective, MeteringUsage, OpenPayload, SessionAction,
+    SessionMode, SessionPullVoucherStrategy, SessionRequest, SessionSettlementAuthority,
+    SessionSplit, SignedVoucher, SubscriptionAction, SubscriptionPeriodUnit,
+    SubscriptionReceiptExtensions, SubscriptionRequest, TopUpPayload, VoucherData, VoucherPayload,
+    DEFAULT_SESSION_EXPIRES_AT,
 };
 
 pub use protocol::solana::{

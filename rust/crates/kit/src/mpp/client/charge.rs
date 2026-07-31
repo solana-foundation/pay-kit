@@ -14,7 +14,8 @@ use crate::mpp::protocol::core::{
 };
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
-    programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
+    format_charge_proof_message, programs, CredentialPayload, MethodDetails, Split,
+    DEFAULT_NETWORK, MAX_MEMO_BYTES,
 };
 
 /// Build a charge transaction from challenge parameters.
@@ -303,8 +304,9 @@ pub async fn build_charge_transaction_with_options(
 
 /// Build a credential from a challenge and return the `Authorization` header value.
 ///
-/// Parses the challenge, builds and signs the transaction, and formats the
-/// credential as `"Payment <base64url(credential_json)>"`.
+/// Parses the challenge and formats a signed credential as
+/// `"Payment <base64url(credential_json)>"`. Non-zero charges build a
+/// transaction; zero-amount charges sign an off-chain proof.
 pub async fn build_credential_header(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -365,6 +367,60 @@ pub async fn build_credential_header_with_options(
         .recipient
         .as_deref()
         .ok_or_else(|| Error::Other("No recipient in challenge".into()))?;
+
+    let amount = request
+        .amount
+        .parse::<u64>()
+        .map_err(|_| Error::Other(format!("Invalid amount: {}", request.amount)))?;
+
+    // A zero-amount charge is authorization, not settlement. Mirror the Tempo
+    // charge pattern with a method-native proof bound to the challenge ID.
+    // This branch deliberately runs before transaction construction, so it
+    // performs no blockhash lookup or other RPC operation.
+    if amount == 0 {
+        if method_details
+            .splits
+            .as_ref()
+            .is_some_and(|splits| !splits.is_empty())
+        {
+            return Err(Error::InvalidConfig(
+                "Zero-amount charge proofs cannot include payment splits".into(),
+            ));
+        }
+        if method_details.confidential == Some(true) {
+            return Err(Error::InvalidConfig(
+                "Zero-amount charge proofs cannot be confidential transfers".into(),
+            ));
+        }
+        if let Some(cap) = options.max_amount_base_units {
+            if amount > cap {
+                return Err(Error::Other(format!(
+                    "Challenge amount {amount} exceeds client max_amount_base_units {cap}"
+                )));
+            }
+        }
+        let network = method_details.network.as_deref().unwrap_or(DEFAULT_NETWORK);
+        if let Some(expected) = options.expected_network.as_deref() {
+            if network != expected {
+                return Err(Error::Other(format!(
+                    "Challenge network `{network}` does not match client expected_network `{expected}`"
+                )));
+            }
+        }
+
+        let message = format_charge_proof_message(network, &challenge.id);
+        let signature = signer
+            .sign_message(message.as_bytes())
+            .await
+            .map_err(|e| Error::Other(format!("Proof signing failed: {e}")))?;
+        let payload = CredentialPayload::Proof {
+            signature: bs58::encode(<[u8; 64]>::from(signature)).into_string(),
+        };
+        let source = PaymentCredential::solana_did(network, &signer.pubkey().to_string());
+        let credential = PaymentCredential::with_source(challenge.to_echo(), source, payload);
+        return format_authorization(&credential)
+            .map_err(|e| Error::Other(format!("Failed to format credential: {e}")));
+    }
 
     // Default external_id to the challenge's value if the caller didn't
     // override it (preserves prior build_credential_header behavior).
@@ -1518,6 +1574,38 @@ mod tests {
     const ZERO_HASH: &str = "11111111111111111111111111111111";
     const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
     const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    #[tokio::test]
+    async fn build_zero_amount_charge_uses_offchain_proof() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "0".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(serde_json::json!({"network": "devnet"})),
+            ..Default::default()
+        };
+        let challenge = PaymentChallenge::new(
+            "zero-charge-id",
+            "api.example.com",
+            "solana",
+            "charge",
+            crate::mpp::protocol::core::Base64UrlJson::from_typed(&request).unwrap(),
+        );
+
+        let header = build_credential_header(signer.as_ref(), &rpc, &challenge)
+            .await
+            .unwrap();
+        let credential = PaymentCredential::from_header(&header).unwrap();
+        let expected_source = PaymentCredential::solana_did("devnet", &signer.pubkey().to_string());
+
+        assert_eq!(credential.source.as_deref(), Some(expected_source.as_str()));
+        assert!(matches!(
+            credential.payload_as::<CredentialPayload>().unwrap(),
+            CredentialPayload::Proof { .. }
+        ));
+    }
 
     // A confidential charge given a currency SYMBOL must resolve it to a mint
     // address before the bundle builder (which feeds it to Pubkey::from_str).
