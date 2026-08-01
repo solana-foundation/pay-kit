@@ -39,6 +39,7 @@ import {
     submitSettleAndDistribute,
     type SubmitSettleAndDistributeResult,
     submitTopUpTx,
+    transactionSignatureFromWire,
     verifyOpenTx,
 } from './session/on-chain.js';
 import {
@@ -847,6 +848,20 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // Cheap pre-checks before touching the network.
     const existing = await args.store.getChannel(args.payload.channelId);
     if (!existing) throw new Error(`Channel ${args.payload.channelId} not found`);
+    // Idempotent replay: this exact transaction was already credited, so
+    // report success without re-broadcasting (a re-broadcast of a landed
+    // transaction fails at preflight).
+    const topUpSignature = transactionSignatureFromWire(args.payload.transaction) as unknown as string;
+    if (existing.processedTopUpSignatures?.includes(topUpSignature)) {
+        return Receipt.from({
+            method: 'solana',
+            ...(args.challengeId ? { challengeId: args.challengeId } : {}),
+            ...(args.externalId ? { externalId: args.externalId } : {}),
+            reference: topUpSignature,
+            status: 'success',
+            timestamp: new Date().toISOString(),
+        });
+    }
     if (existing.sealed) throw new Error('Channel is already sealed');
     if (existing.closeRequestedAt !== undefined) {
         throw new Error('Channel close is pending — no further top-ups accepted');
@@ -856,6 +871,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         additionalAmount,
         channelId: args.payload.channelId,
         channelProgram: args.channelProgram,
+        currentDeposit: existing.deposit,
         payer: existing.payer,
         rpc: args.rpc as SubmitOpenRpc,
         transaction: args.payload.transaction,
@@ -863,11 +879,21 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
 
     const result = await args.store.updateChannel(args.payload.channelId, current => {
         if (!current) throw new Error(`Channel ${args.payload.channelId} not found`);
+        // Signature dedupe must live inside the atomic mutator: two
+        // in-flight submissions of the same signed top-up both confirm the
+        // same landed transaction, so only the first check-and-record may
+        // credit the deposit.
+        if (current.processedTopUpSignatures?.includes(topUpSignature)) return current;
         if (current.sealed) throw new Error('Channel is already sealed');
         if (current.closeRequestedAt !== undefined) {
             throw new Error('Channel close is pending — no further top-ups accepted');
         }
-        return { ...current, deposit: current.deposit + additionalAmount, lastActivityAt: Date.now() };
+        return {
+            ...current,
+            deposit: current.deposit + additionalAmount,
+            lastActivityAt: Date.now(),
+            processedTopUpSignatures: [...(current.processedTopUpSignatures ?? []), topUpSignature],
+        };
     });
     args.lifecycle?.touch(result.channelId, result.idleTimeoutSeconds);
 

@@ -95,6 +95,14 @@ export interface ChannelState {
     readonly payer: string;
     /** Deliveries reserved but not yet committed. */
     readonly pendingDeliveries: readonly PendingDelivery[];
+    /**
+     * Transaction signatures of top-ups already credited to `deposit`
+     * (base58). Checked inside the atomic top-up mutator so a resubmitted or
+     * concurrently duplicated top-up transaction credits exactly once.
+     * `undefined` on records written before this field existed. Mirrors Rust
+     * `processed_topup_signatures`.
+     */
+    readonly processedTopUpSignatures?: readonly string[] | undefined;
     /** Cached use results used to make retries exactly-once. */
     readonly processedUses: readonly ProcessedUse[];
     /** Account that funded and receives the channel rent. */

@@ -13,10 +13,12 @@
 //     handleClose): the operator-authorized and client-authorized paths and
 //     the rejection of an unauthorized closer.
 
-import { generateKeyPairSigner, type KeyPairSigner } from '@solana/kit';
+import { address, generateKeyPairSigner, getBase64Codec, type KeyPairSigner } from '@solana/kit';
 import { describe, expect, test } from 'vitest';
 
 import { ActiveSession, signSessionAuthentication } from '../client/Session.js';
+import { getChannelEncoder } from '../generated/payment-channels/accounts/channel.js';
+import { ChannelStatus } from '../generated/payment-channels/types/channelStatus.js';
 import { session } from '../server/Session.js';
 import { buildTopUpInstruction, PAYMENT_CHANNELS_PROGRAM_ID } from '../server/session/on-chain.js';
 import { type ChannelState, createMemorySessionStore, type SessionStore } from '../server/session/store.js';
@@ -35,11 +37,28 @@ const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N';
  * (open/topUp/settle broadcast), and `getSignatureStatuses`
  * (submitTopUpTx confirmation).
  */
-function mockRpc(options: { confirmErr?: unknown; sendErrors?: number } = {}) {
+function mockRpc(options: { accountData?: string; confirmErr?: unknown; sendErrors?: number } = {}) {
     let sendErrors = options.sendErrors ?? 0;
     const sent: string[] = [];
     const statusCalls: string[] = [];
     const rpc = {
+        getAccountInfo: () => ({
+            send: () =>
+                Promise.resolve({
+                    context: { slot: 314n },
+                    value:
+                        options.accountData === undefined
+                            ? null
+                            : {
+                                  data: [options.accountData, 'base64'],
+                                  executable: false,
+                                  lamports: 1_000_000n,
+                                  owner: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+                                  rentEpoch: 0n,
+                                  space: BigInt(getBase64Codec().encode(options.accountData).byteLength),
+                              },
+                }),
+        }),
         getLatestBlockhash: () => ({
             send: () =>
                 Promise.resolve({
@@ -116,6 +135,34 @@ async function seedChannel(f: Fixture, overrides: Partial<ChannelState> = {}): P
     return await f.store.updateChannel(f.channel.address, () => channelState(f, overrides));
 }
 
+/**
+ * Base64 account data for the fixture channel as `fetchChannel` returns it,
+ * with the given confirmed deposit — served to `submitTopUpTx`'s
+ * post-confirm re-check.
+ */
+function channelAccountData(f: Fixture, deposit: bigint): string {
+    const data = getChannelEncoder().encode({
+        authorizedSigner: address(f.sessionSigner.address),
+        bump: 255,
+        closureStartedAt: 0n,
+        deposit,
+        discriminator: 1,
+        distributionHash: new Array<number>(32).fill(0),
+        gracePeriod: 900,
+        mint: address(USDC_DEVNET_MINT),
+        openSlot: 314n,
+        payee: address(f.merchant.address),
+        payer: address(f.payer.address),
+        payerWithdrawnAt: 0n,
+        rentPayer: address(f.payer.address),
+        salt: 7n,
+        settlement: { payoutWatermark: 0n, settled: 0n },
+        status: Number(ChannelStatus.Open),
+        version: 1,
+    });
+    return getBase64Codec().decode(data as Uint8Array);
+}
+
 function makeMethod(f: Fixture, rpc: unknown, overrides: Record<string, unknown> = {}) {
     return session({
         amount: 100n,
@@ -177,7 +224,7 @@ async function buildTopUpWire(f: Fixture, rpc: unknown, amount: bigint, payerSig
 describe('session() verify() topUp', () => {
     test('topUp verifies the wire transaction, confirms it on-chain, and raises the deposit', async () => {
         const f = await makeFixture();
-        const { rpc, sent, statusCalls } = mockRpc();
+        const { rpc, sent, statusCalls } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
         const method = makeMethod(f, rpc);
         await seedChannel(f);
 
@@ -198,6 +245,56 @@ describe('session() verify() topUp', () => {
         expect(statusCalls).toContain('MockSig1');
         const state = await f.store.getChannel(f.channel.address);
         expect(state?.deposit).toBe(5_000n);
+    });
+
+    test('a resubmitted top-up transaction credits the deposit exactly once', async () => {
+        const f = await makeFixture();
+        const { rpc, sent } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, rpc);
+        await seedChannel(f);
+
+        const wire = await buildTopUpWire(f, rpc, 4_000n);
+        const cred = makeCred(f, {
+            action: 'topUp',
+            additionalAmount: '4000',
+            channelId: f.channel.address,
+            transaction: wire,
+        });
+        await verify(method, cred);
+        const replayed = await verify(method, cred);
+
+        expect(replayed.status).toBe('success');
+        // The replay is answered from the recorded signature — no second
+        // broadcast, no second credit.
+        expect(sent).toHaveLength(1);
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.deposit).toBe(5_000n);
+        expect(state?.processedTopUpSignatures).toHaveLength(1);
+    });
+
+    test('concurrently duplicated top-ups credit the deposit exactly once', async () => {
+        const f = await makeFixture();
+        const { rpc } = mockRpc({ accountData: channelAccountData(f, 5_000n) });
+        const method = makeMethod(f, rpc);
+        await seedChannel(f);
+
+        const wire = await buildTopUpWire(f, rpc, 4_000n);
+        const cred = makeCred(f, {
+            action: 'topUp',
+            additionalAmount: '4000',
+            channelId: f.channel.address,
+            transaction: wire,
+        });
+        // Both submissions read the pre-credit state and pass the replay
+        // pre-check; the signature dedupe inside the atomic mutator is what
+        // guarantees a single credit.
+        const [first, second] = await Promise.all([verify(method, cred), verify(method, cred)]);
+
+        expect(first.status).toBe('success');
+        expect(second.status).toBe('success');
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.deposit).toBe(5_000n);
+        expect(state?.processedTopUpSignatures).toHaveLength(1);
     });
 
     test('topUp rejects an unknown channel before touching the network', async () => {

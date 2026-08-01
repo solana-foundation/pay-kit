@@ -23,6 +23,7 @@ import {
     getCompiledTransactionMessageDecoder,
     getI64Encoder,
     getProgramDerivedAddress,
+    getSignatureFromTransaction,
     getTransactionDecoder,
     getU64Encoder,
     getUtf8Encoder,
@@ -747,6 +748,8 @@ export async function submitTopUpTx(args: {
     readonly additionalAmount: bigint;
     readonly channelId: string;
     readonly channelProgram: string;
+    /** Deposit recorded before this top-up, for the post-confirm re-check. */
+    readonly currentDeposit: bigint;
     readonly payer: string;
     readonly rpc: SignatureStatusRpc & {
         sendTransaction: (wire: string, config?: unknown) => { send(): Promise<Signature> };
@@ -780,11 +783,40 @@ export async function submitTopUpTx(args: {
         found = true;
     }
     if (!found) throw new Error('submitTopUpTx: top-up instruction not found');
-    const signature = await args.rpc
-        .sendTransaction(args.transaction, { encoding: 'base64', skipPreflight: false })
-        .send();
+    let signature: Signature;
+    try {
+        signature = await args.rpc
+            .sendTransaction(args.transaction, { encoding: 'base64', skipPreflight: false })
+            .send();
+    } catch (error) {
+        // A duplicate of an already-landed top-up dies at preflight with
+        // "already processed". The signature identifies this exact verified
+        // transaction — an unrelated top-up cannot satisfy it — so a landed
+        // non-error status means the escrow was funded by the first
+        // submission, and the caller's signature dedupe decides whether it
+        // was already credited.
+        const landed = getSignatureFromTransaction(decoded);
+        const [status] = (await args.rpc.getSignatureStatuses([landed]).send()).value;
+        if (!status || status.err) throw error;
+        signature = landed;
+    }
     await waitForSignatureConfirmation({ context: 'submitTopUpTx', rpc: args.rpc, signature });
+    // Post-confirm re-check, mirroring Rust: the confirmed channel account
+    // must be open and reflect at least the recorded deposit plus this
+    // top-up before the deposit cap is raised.
+    const account = await fetchChannel(args.rpc as never, address(args.channelId), { commitment: 'confirmed' });
+    if (
+        account.data.status !== Number(ChannelStatus.Open) ||
+        account.data.deposit < args.currentDeposit + args.additionalAmount
+    ) {
+        throw new Error('submitTopUpTx: confirmed channel state does not reflect the submitted top-up');
+    }
     return signature;
+}
+
+/** Signature (transaction id) of a base64-encoded wire transaction. */
+export function transactionSignatureFromWire(transaction: string): Signature {
+    return getSignatureFromTransaction(getTransactionDecoder().decode(getBase64Codec().encode(transaction)));
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */
