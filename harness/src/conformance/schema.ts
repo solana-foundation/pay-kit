@@ -248,6 +248,36 @@ export type VectorInput = {
     expiresAt: number;
   };
 
+  // canonical-bytes (session): the UTF-8 JSON message a payer signs to mint
+  // a reusable SessionAuthentication proof. The runner drives the
+  // PRODUCTION SDK message builder (never a local re-implementation) and
+  // emits the bytes as exactBytes.canonicalJson/base64Url. Pins the domain
+  // constant, the field names, and the key order:
+  // `{"channelId":…,"domain":"mpp-session-auth-v1","payer":…,
+  //   "sessionChallengeId":…}` (compact, keys sorted — JCS-equivalent for
+  // these all-string values).
+  sessionAuthenticationMessage?: {
+    challengeId: string;
+    payer: string;
+    channelId: string;
+  };
+
+  // canonical-bytes (session): a session wire-shape round-trip. The runner
+  // DECODES `value` with the production SDK wire parser for `shape`
+  // ("request" = the challenge SessionRequest incl. methodDetails;
+  // "action" = the credential payload tagged union open/voucher/use/topUp/
+  // close), RE-ENCODES it with the production serializer, JCS-canonicalizes
+  // the result, and emits exactBytes.canonicalJson/base64Url. Accept
+  // vectors carry exactly-canonical wire JSON, so any SDK that renames,
+  // drops, or retypes a field diverges from the frozen bytes; reject
+  // vectors pin the shapes every SDK must refuse (superseded draft field
+  // names, unknown enum values, wrong action tags) with rejectCode
+  // "invalid-payload".
+  sessionWire?: {
+    shape: "request" | "action";
+    value: unknown;
+  };
+
   // ── x402-exact inputs ────────────────────────────────────────────────
   // build-transaction (x402): the offer the client selects + wraps into a
   // payment header. The runner emits the decoded X402EnvelopeShape.

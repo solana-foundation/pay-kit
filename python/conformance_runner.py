@@ -46,7 +46,12 @@ from solana_pay_kit.protocols.mpp.client.charge import build_charge_transaction
 from solana_pay_kit.protocols.mpp.core import json as wire_json
 from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
-from solana_pay_kit.protocols.mpp.intents.session import VoucherData
+from solana_pay_kit.protocols.mpp.intents.session import (
+    SessionAction,
+    SessionAuthentication,
+    SessionRequest,
+    VoucherData,
+)
 from solana_pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
 from solana_pay_kit.protocols.x402.client.exact.payment import (
     _caip2_for_selection,
@@ -373,20 +378,53 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
 
     vp = inp.get("voucherPreimage")
     if vp:
-        # The 48-byte session voucher preimage,
-        # channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64,
-        # computed by the production SDK packer (VoucherData.message_bytes ->
-        # _paymentchannels.voucher_message_bytes) so a byte mismatch is caught
-        # cross-SDK rather than behind a live channel. Mirrors the Go runner
-        # (paymentchannels.VoucherMessageBytes).
+        # The 50-byte session voucher preimage,
+        # magic(0x56,0x01) || channelId(32, base58) || cumulativeAmount LE u64
+        # || expiresAt LE i64, computed by the production SDK packer
+        # (VoucherData.message_bytes -> _paymentchannels.voucher_message_bytes)
+        # so a byte mismatch is caught cross-SDK rather than behind a live
+        # channel. Mirrors the Go runner (paymentchannels.VoucherMessageBytes).
         voucher = VoucherData(
             channel_id=vp["channelId"],
-            cumulative=str(vp["cumulativeAmount"]),
+            cumulative_amount=str(vp["cumulativeAmount"]),
             expires_at=int(vp["expiresAt"]),
         )
         preimage = voucher.message_bytes()
         exact["bytes"] = list(preimage)
         exact["base64Url"] = base64url_encode(preimage)
+
+    sam = inp.get("sessionAuthenticationMessage")
+    if sam:
+        # The UTF-8 JSON message a payer signs to mint a reusable
+        # SessionAuthentication proof, built by the PRODUCTION SDK
+        # (SessionAuthentication.message_bytes) so a domain/field/ordering
+        # drift is caught byte-for-byte.
+        message = SessionAuthentication(
+            challenge_id=sam["challengeId"],
+            payer=sam["payer"],
+            signature="",
+        ).message_bytes(sam["channelId"])
+        exact["canonicalJson"] = message.decode("utf-8")
+        exact["base64Url"] = base64url_encode(message)
+
+    sw = inp.get("sessionWire")
+    if sw:
+        # Round-trip the session wire shape through the PRODUCTION parser and
+        # serializer, then JCS-canonicalize. A field the SDK renamed, dropped,
+        # or retyped either fails the parse (reject) or diverges from the
+        # frozen canonical bytes.
+        try:
+            if sw["shape"] == "request":
+                decoded = SessionRequest.from_dict(sw["value"]).to_dict()
+            elif sw["shape"] == "action":
+                decoded = SessionAction.from_dict(sw["value"]).to_dict()
+            else:
+                raise ValueError(f"unknown sessionWire shape {sw['shape']!r}")
+        except Exception as exc:
+            raise ValueError(f"invalid session payload: {exc}") from exc
+        canonical = wire_json.encode_canonical(decoded)
+        exact["canonicalJson"] = canonical.decode("utf-8")
+        exact["base64Url"] = base64url_encode(canonical)
 
     return exact
 

@@ -13,7 +13,12 @@
 
 import { createHmac } from "node:crypto";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
-import { buildChargeTransaction } from "@solana/mpp/client";
+import { session as sessionMethod } from "@solana/mpp";
+import {
+  buildChargeTransaction,
+  sessionAuthenticationMessage,
+  voucherMessageBytes,
+} from "@solana/mpp/client";
 import {
   defaultTokenProgramForCurrency,
   resolveStablecoinMint,
@@ -234,6 +239,58 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
       } else if (enc.utf8) {
         exactBytes.base64Url = base64UrlFromUtf8(enc.utf8);
       }
+    }
+    if (vector.input.voucherPreimage) {
+      // The 50-byte session voucher preimage, computed by the production
+      // SDK packer (voucherMessageBytes) so a byte mismatch is caught
+      // cross-SDK rather than behind a live channel. Mirrors the Go and
+      // Python runners.
+      const vp = vector.input.voucherPreimage;
+      const preimage = Buffer.from(
+        voucherMessageBytes({
+          channelId: vp.channelId,
+          cumulativeAmount: vp.cumulativeAmount,
+          expiresAt: vp.expiresAt,
+        }),
+      );
+      exactBytes.bytes = Array.from(preimage);
+      exactBytes.base64Url = preimage.toString("base64url");
+    }
+    if (vector.input.sessionAuthenticationMessage) {
+      // Drive the PRODUCTION session-authentication message builder so a
+      // domain/field/ordering drift in the SDK is caught byte-for-byte,
+      // never a local re-implementation of the preimage.
+      const p = vector.input.sessionAuthenticationMessage;
+      const message = Buffer.from(
+        sessionAuthenticationMessage({
+          challengeId: p.challengeId,
+          channelId: p.channelId,
+          payer: p.payer,
+        }),
+      );
+      exactBytes.canonicalJson = message.toString("utf8");
+      exactBytes.base64Url = message.toString("base64url");
+    }
+    if (vector.input.sessionWire) {
+      // Round-trip the session wire shape through the PRODUCTION schema:
+      // parse with the shared zod contract (@solana/mpp Methods.session),
+      // re-encode the parsed value, and JCS-canonicalize. A field the SDK
+      // renamed, dropped, or retyped either fails the parse (reject) or
+      // diverges from the frozen canonical bytes.
+      const sw = vector.input.sessionWire;
+      let decoded: unknown;
+      try {
+        decoded =
+          sw.shape === "request"
+            ? sessionMethod.schema.request.parse(sw.value)
+            : sessionMethod.schema.credential.payload.parse(sw.value);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`invalid session payload: ${detail}`);
+      }
+      const canonicalJson = canonicalizeJson(decoded);
+      exactBytes.canonicalJson = canonicalJson;
+      exactBytes.base64Url = base64UrlFromUtf8(canonicalJson);
     }
     if (vector.input.challengeId) {
       const c = vector.input.challengeId;

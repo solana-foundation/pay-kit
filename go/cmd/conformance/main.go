@@ -99,6 +99,15 @@ type VectorInput struct {
 	// VoucherPreimage supplies the inputs to the 50-byte session voucher
 	// preimage in canonical-bytes mode; nil otherwise.
 	VoucherPreimage *VoucherPreimage `json:"voucherPreimage"`
+	// SessionAuthenticationMessage and SessionWire drive the session wire
+	// vectors (production authentication-message bytes and wire-shape
+	// round-trips). The Go session layer has not migrated to the final wire
+	// contract yet, so these are declared only to be skipped explicitly
+	// (unsupported-mode) instead of failing on empty exactBytes. Tracked
+	// follow-up: implement once go/protocols/mpp/intents/session.go is on
+	// the final shapes.
+	SessionAuthenticationMessage json.RawMessage `json:"sessionAuthenticationMessage"`
+	SessionWire                  json.RawMessage `json:"sessionWire"`
 
 	// x402-exact inputs.
 	X402Offer *X402Offer `json:"x402Offer"`
@@ -454,6 +463,16 @@ func runVector(vector Vector) RunnerResult {
 	}
 	switch vector.Mode {
 	case "canonical-bytes":
+		if vector.Input.SessionAuthenticationMessage != nil || vector.Input.SessionWire != nil {
+			// Session wire vectors need the final session wire contract,
+			// which the Go SDK has not migrated to yet. Skip loudly instead
+			// of failing on empty exactBytes.
+			return RunnerResult{
+				ID:      vector.ID,
+				Outcome: "unsupported-mode",
+				Error:   "unsupported-mode: session wire vectors are not implemented for the Go SDK yet",
+			}
+		}
 		eb, err := runCanonicalBytes(vector)
 		if err != nil {
 			return rejected(vector.ID, err)

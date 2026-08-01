@@ -61,6 +61,14 @@ private struct VectorInput: Decodable {
     let challengeId: ChallengeID?
     // session canonical-bytes: the 50-byte Ed25519 voucher preimage.
     let voucherPreimage: VoucherPreimage?
+    // session canonical-bytes: the authentication-message and wire-shape
+    // vectors. The Swift session credential layer is still on the superseded
+    // draft (OpenPayload mode/deposit/signature), so these are declared only
+    // to be skipped explicitly (unsupported-mode) instead of failing on
+    // empty exactBytes. Tracked follow-up: implement once SessionTypes.swift
+    // is on the final wire contract.
+    let sessionAuthenticationMessage: JSONValue?
+    let sessionWire: JSONValue?
     // x402-exact build inputs.
     let x402Version: Int?
     let x402Offer: JSONValue?
@@ -712,6 +720,11 @@ private func shapeFromTransaction(_ base64: String) throws -> TransactionShape {
 // MARK: - canonical-bytes
 
 private func runCanonicalBytes(_ vector: Vector, rawValue: Any?) throws -> ExactBytes {
+    if vector.input.sessionAuthenticationMessage != nil || vector.input.sessionWire != nil {
+        throw RunnerError.message(
+            "unsupported-mode: session wire vectors are not implemented for the Swift runner yet"
+        )
+    }
     var eb = ExactBytes()
     if let value = rawValue {
         // Canonical JSON via Foundation's sorted-key serializer, the same

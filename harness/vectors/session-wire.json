@@ -1,0 +1,177 @@
+[
+  {
+    "id": "session-wire-request-new-channel-frozen",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "New-channel session challenge SessionRequest (mpp-specs e702dd8): methodDetails has NO channelId, so recentBlockhash (base58, the open transaction's blockhash) and recentSlot (decimal-string u64 from the same getLatestBlockhash response's context.slot, the client's default openSlot) are REQUIRED and frozen here byte-for-byte. Round-tripped through the production wire parser and JCS-canonicalized; a rename, retype (e.g. numeric recentSlot on encode), or drop of either field diverges from the frozen bytes.",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "description": "metered inference",
+          "methodDetails": {
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "decimals": 6,
+            "gracePeriodSeconds": 900,
+            "idleTimeoutOptionsSeconds": [
+              60,
+              300,
+              900
+            ],
+            "network": "devnet",
+            "recentBlockhash": "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N",
+            "recentSlot": "250000000",
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "voucherSigner": "operator"
+          },
+          "minimumDeposit": "1000",
+          "recipient": "11111111111111111111111111111111",
+          "suggestedDeposit": "5000",
+          "unitType": "request"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"description\":\"metered inference\",\"methodDetails\":{\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"decimals\":6,\"gracePeriodSeconds\":900,\"idleTimeoutOptionsSeconds\":[60,300,900],\"network\":\"devnet\",\"recentBlockhash\":\"EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N\",\"recentSlot\":\"250000000\",\"tokenProgram\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"voucherSigner\":\"operator\"},\"minimumDeposit\":\"1000\",\"recipient\":\"11111111111111111111111111111111\",\"suggestedDeposit\":\"5000\",\"unitType\":\"request\"}",
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJkZXNjcmlwdGlvbiI6Im1ldGVyZWQgaW5mZXJlbmNlIiwibWV0aG9kRGV0YWlscyI6eyJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwiZGVjaW1hbHMiOjYsImdyYWNlUGVyaW9kU2Vjb25kcyI6OTAwLCJpZGxlVGltZW91dE9wdGlvbnNTZWNvbmRzIjpbNjAsMzAwLDkwMF0sIm5ldHdvcmsiOiJkZXZuZXQiLCJyZWNlbnRCbG9ja2hhc2giOiJFa1NuTldpZDJjdndFVm5WeDlhQnFhd25taUNOaURncDNnVWRrRFBUS04xTiIsInJlY2VudFNsb3QiOiIyNTAwMDAwMDAiLCJ0b2tlblByb2dyYW0iOiJUb2tlbmtlZ1FmZVp5aU53QUpiTmJHS1BGWENXdUJ2ZjlTczYyM1ZRNURBIiwidm91Y2hlclNpZ25lciI6Im9wZXJhdG9yIn0sIm1pbmltdW1EZXBvc2l0IjoiMTAwMCIsInJlY2lwaWVudCI6IjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic3VnZ2VzdGVkRGVwb3NpdCI6IjUwMDAiLCJ1bml0VHlwZSI6InJlcXVlc3QifQ"
+      }
+    }
+  },
+  {
+    "id": "session-wire-request-resume-frozen",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Resume session challenge SessionRequest (mpp-specs e702dd8): methodDetails.channelId is present, so recentBlockhash and recentSlot MUST be absent from the wire \u2014 the frozen bytes contain neither key. An SDK that emits the pair on resume (or serializes null placeholders) diverges.",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "amount": "100",
+          "currency": "USDC",
+          "methodDetails": {
+            "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+            "channelProgram": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+            "network": "devnet"
+          },
+          "recipient": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"amount\":\"100\",\"currency\":\"USDC\",\"methodDetails\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"channelProgram\":\"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX\",\"network\":\"devnet\"},\"recipient\":\"11111111111111111111111111111111\"}",
+        "base64Url": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6IlVTREMiLCJtZXRob2REZXRhaWxzIjp7ImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4iLCJjaGFubmVsUHJvZ3JhbSI6IkNITkx4WXZWQTI4TUpQOVByRnVEWGNjdW9HWEF4N2pCYWNmTEVrYWh5R3NYIiwibmV0d29yayI6ImRldm5ldCJ9LCJyZWNpcGllbnQiOiIxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSJ9"
+      }
+    }
+  },
+  {
+    "id": "session-wire-action-open-frozen",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Session open credential payload (mpp-specs e702dd8): the channel's PDA-seed slot travels as openSlot (decimal-string u64, defaulted by the client from the challenged recentSlot). Frozen byte-for-byte through the production parser; the superseded draft echo name recentSlot must not appear in the open payload.",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "idleTimeoutSeconds": 300,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "openSlot": "250000000",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "salt": "7777",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"action\":\"open\",\"authorizedSigner\":\"Config1111111111111111111111111111111111111\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"depositAmount\":\"5000\",\"gracePeriodSeconds\":900,\"idleTimeoutSeconds\":300,\"mint\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"openSlot\":\"250000000\",\"payee\":\"Stake11111111111111111111111111111111111111\",\"payer\":\"Vote111111111111111111111111111111111111111\",\"salt\":\"7777\",\"transaction\":\"AQID\"}",
+        "base64Url": "eyJhY3Rpb24iOiJvcGVuIiwiYXV0aG9yaXplZFNpZ25lciI6IkNvbmZpZzExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEiLCJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiZGVwb3NpdEFtb3VudCI6IjUwMDAiLCJncmFjZVBlcmlvZFNlY29uZHMiOjkwMCwiaWRsZVRpbWVvdXRTZWNvbmRzIjozMDAsIm1pbnQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm9wZW5TbG90IjoiMjUwMDAwMDAwIiwicGF5ZWUiOiJTdGFrZTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwicGF5ZXIiOiJWb3RlMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwic2FsdCI6Ijc3NzciLCJ0cmFuc2FjdGlvbiI6IkFRSUQifQ"
+      }
+    }
+  },
+  {
+    "id": "session-wire-request-superseded-draft-reject",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Superseded draft SessionRequest shape (top-level cap/programId, no amount/methodDetails). Every SDK's wire parser must refuse it \u2014 accepting it would mean the SDK still speaks the pre-e702dd8 draft.",
+    "input": {
+      "sessionWire": {
+        "shape": "request",
+        "value": {
+          "cap": "5000",
+          "currency": "USDC",
+          "network": "devnet",
+          "programId": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
+          "recipient": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectReason": "pre-e702dd8 draft request shape: top-level cap/programId with no amount or methodDetails",
+      "rejectCode": "invalid-payload"
+    }
+  },
+  {
+    "id": "session-wire-action-open-draft-slot-echo-reject",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Open payload carrying the superseded draft echo name recentSlot instead of openSlot (mpp-specs e702dd8 renamed the open payload's slot field). openSlot is required, so every SDK must refuse this payload rather than silently defaulting the PDA-seed slot.",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "open",
+          "authorizedSigner": "Config1111111111111111111111111111111111111",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "depositAmount": "5000",
+          "gracePeriodSeconds": 900,
+          "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "payee": "Stake11111111111111111111111111111111111111",
+          "payer": "Vote111111111111111111111111111111111111111",
+          "recentSlot": "250000000",
+          "salt": "7777",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectReason": "draft slot echo: open payload uses recentSlot where the final contract requires openSlot",
+      "rejectCode": "invalid-payload"
+    }
+  },
+  {
+    "id": "session-wire-action-unknown-tag-reject",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Credential payload with an action tag outside the frozen set open/voucher/use/topUp/close (multiDelegate was removed from the final contract). Every SDK must refuse unknown action tags.",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "multiDelegate",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "transaction": "AQID"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectReason": "unknown credential action tag",
+      "rejectCode": "invalid-payload"
+    }
+  }
+]
