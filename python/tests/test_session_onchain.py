@@ -24,6 +24,7 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
 from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionOpenContext
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
+    TopUpTxVerifier,
     VerifyOpenTxExpected,
     confirm_transaction_signature,
     is_placeholder_signature,
@@ -31,7 +32,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     new_top_up_tx_verifier,
     verify_open_tx,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, MemoryChannelStore
 
 USDC_MAINNET_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
@@ -329,3 +330,225 @@ async def test_verify_open_tx_rejects_bad_encoding_and_fee_payer() -> None:
     fixture.expected.fee_payer = str(Keypair().pubkey())
     with pytest.raises(PaymentError, match="fee payer"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+# -- landed-signature rescues -------------------------------------------------
+#
+# A broadcast rejection is not authoritative: mainnet rejects a duplicate of an
+# already-landed transaction at preflight, so a retry whose first submission
+# landed (response lost, or the store write after it failed) must be resolved
+# against the chain, not the broadcast error. Mirrors the Rust
+# retried_open_survives_preflight_rejection_without_stored_state scenario and
+# the TS submitTopUpTx rescue.
+
+
+class _MainnetLikeRpc:
+    """Mock RPC that, like mainnet, rejects a duplicate send at preflight."""
+
+    def __init__(self, *, account: object | None, status: dict | None) -> None:
+        self.sent: list[bytes] = []
+        self.account = account
+        self.status = status
+
+    async def send_raw_transaction(self, raw_tx: bytes) -> object:
+        if raw_tx in self.sent:
+            raise RuntimeError("Transaction simulation failed: This transaction has already been processed")
+        self.sent.append(raw_tx)
+        signature = _first_signature(raw_tx)
+
+        class _Resp:
+            value = signature
+
+        return _Resp()
+
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        del signatures
+        return [dict(self.status) if self.status is not None else None]
+
+    async def get_account_info(self, _addr: object, commitment: str = "confirmed") -> object:
+        del commitment
+        from types import SimpleNamespace
+
+        return SimpleNamespace(value=self.account)
+
+    async def get_latest_blockhash(self, commitment: str = "confirmed") -> object:
+        del commitment
+        raise AssertionError("not used by rescue tests")
+
+
+def _first_signature(raw_tx: bytes) -> str:
+    return str(Transaction.from_bytes(raw_tx).signatures[0])
+
+
+_LANDED_CLEAN = {"err": None, "confirmationStatus": "finalized"}
+
+
+def _open_config(fixture: _Fixture) -> SessionConfig:
+    return SessionConfig(
+        recipient=fixture.expected.recipient,
+        amount=25,
+        currency="USDC",
+        network="mainnet",
+        channel_program=str(PROGRAM_ID),
+        token_program=TOKEN_PROGRAM,
+        grace_period_seconds=900,
+        minimum_deposit=100,
+    )
+
+
+def _channel_account(fixture: _Fixture) -> object:
+    """The confirmed on-chain channel account the fixture's open creates."""
+    from types import SimpleNamespace
+
+    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    body = Channel.layout.build(
+        {
+            "version": 1,
+            "bump": 255,
+            "status": 0,
+            "salt": fixture.payload.salt,
+            "deposit": int(fixture.payload.deposit_amount),
+            "settlement": {"settled": 0, "payoutWatermark": 0},
+            "closureStartedAt": 0,
+            "payerWithdrawnAt": 0,
+            "gracePeriod": fixture.payload.grace_period_seconds,
+            "distributionHash": [0] * 32,
+            "payer": Pubkey.from_string(fixture.payload.payer),
+            "payee": Pubkey.from_string(fixture.payload.payee),
+            "authorizedSigner": Pubkey.from_string(fixture.payload.authorized_signer),
+            "mint": Pubkey.from_string(fixture.payload.mint),
+            "rentPayer": Pubkey.from_string(fixture.payload.payer),
+            "openSlot": fixture.payload.open_slot,
+        }
+    )
+    return SimpleNamespace(owner=PROGRAM_ID, data=bytes([7]) + bytes(body))
+
+
+async def test_open_verifier_rescues_landed_open_on_duplicate_preflight_rejection() -> None:
+    # First submission lands but the response (or the store write after it) is
+    # lost; the retry of the same signed transaction dies at preflight. The
+    # confirmed channel account matches the verified open params only if this
+    # exact open succeeded, so the retry must verify.
+    fixture = _fixture()
+    rpc = _MainnetLikeRpc(account=_channel_account(fixture), status=_LANDED_CLEAN)
+    verifier = new_open_tx_verifier(_open_config(fixture), rpc)
+    await verifier(fixture.payload, _context())
+    await verifier(fixture.payload, _context())
+    assert len(rpc.sent) == 1
+
+
+async def test_open_verifier_keeps_broadcast_error_without_matching_account() -> None:
+    # The rescue only applies on a full field match: if the confirmed account
+    # is missing, the original broadcast failure stays authoritative.
+    fixture = _fixture()
+    rpc = _MainnetLikeRpc(account=None, status=_LANDED_CLEAN)
+    rpc.sent.append(base64.b64decode(fixture.payload.transaction))
+    verifier = new_open_tx_verifier(_open_config(fixture), rpc)
+    with pytest.raises(RuntimeError, match="already been processed"):
+        await verifier(fixture.payload, _context())
+
+
+async def test_open_verifier_still_fails_on_account_mismatch_after_clean_broadcast() -> None:
+    # A clean broadcast with a non-matching confirmed account is still a
+    # verification failure — the rescue must not weaken the account check.
+    fixture = _fixture()
+    rpc = _MainnetLikeRpc(account=None, status=_LANDED_CLEAN)
+    verifier = new_open_tx_verifier(_open_config(fixture), rpc)
+    with pytest.raises(PaymentError, match="confirmed channel account was not found"):
+        await verifier(fixture.payload, _context())
+
+
+def _top_up_scenario(*, deposit_after: int) -> tuple[TopUpPayload, ChannelState, object]:
+    from types import SimpleNamespace
+
+    from solana_pay_kit._paycore.solana import resolve_mint
+    from solana_pay_kit.protocols.mpp._paymentchannels import TopUpParams, build_top_up_instruction
+    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    payer = Keypair.from_seed(bytes([11] * 32))
+    channel = Keypair.from_seed(bytes([12] * 32)).pubkey()
+    mint = Pubkey.from_string(resolve_mint("USDC", "mainnet"))
+    state = ChannelState(
+        channel_id=str(channel),
+        authorized_signer=str(Keypair.from_seed(bytes([13] * 32)).pubkey()),
+        payer=str(payer.pubkey()),
+        rent_payer=str(payer.pubkey()),
+        deposit=1_000,
+    )
+    instruction = build_top_up_instruction(
+        TopUpParams(
+            payer=payer.pubkey(),
+            channel=channel,
+            mint=mint,
+            amount=250,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            program_id=PROGRAM_ID,
+        )
+    )
+    transaction = Transaction(
+        [payer], Message.new_with_blockhash([instruction], payer.pubkey(), Hash.default()), Hash.default()
+    )
+    payload = TopUpPayload(str(channel), "250", base64.b64encode(bytes(transaction)).decode())
+    body = Channel.layout.build(
+        {
+            "version": 1,
+            "bump": 255,
+            "status": 0,
+            "salt": 0,
+            "deposit": deposit_after,
+            "settlement": {"settled": 0, "payoutWatermark": 0},
+            "closureStartedAt": 0,
+            "payerWithdrawnAt": 0,
+            "gracePeriod": 900,
+            "distributionHash": [0] * 32,
+            "payer": payer.pubkey(),
+            "payee": Keypair.from_seed(bytes([14] * 32)).pubkey(),
+            "authorizedSigner": Pubkey.from_string(state.authorized_signer),
+            "mint": mint,
+            "rentPayer": payer.pubkey(),
+            "openSlot": 0,
+        }
+    )
+    account = SimpleNamespace(owner=PROGRAM_ID, data=bytes([7]) + bytes(body))
+    return payload, state, account
+
+
+async def _seeded_top_up_verifier(rpc: _MainnetLikeRpc, state: ChannelState) -> TopUpTxVerifier:
+    store = MemoryChannelStore()
+    await store.update_channel(state.channel_id, lambda _: state)
+    config = SessionConfig(currency="USDC", network="mainnet", channel_program=str(PROGRAM_ID))
+    return new_top_up_tx_verifier(config, store, rpc)
+
+
+async def test_top_up_verifier_rescues_landed_top_up_on_duplicate_preflight_rejection() -> None:
+    # First submission funds escrow but the credit is lost before it persists;
+    # the retry dies at preflight. The transaction's own signature landed clean
+    # and the confirmed deposit reflects the top-up, so the retry must verify.
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN)
+    verifier = await _seeded_top_up_verifier(rpc, state)
+    await verifier(payload)
+    await verifier(payload)
+    assert len(rpc.sent) == 1
+
+
+async def test_top_up_verifier_keeps_broadcast_error_when_transaction_failed_on_chain() -> None:
+    # A landed-but-FAILED transaction did not fund escrow: the original
+    # broadcast failure stays authoritative.
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    rpc = _MainnetLikeRpc(account=account, status={"err": {"InstructionError": [0, "Custom"]}})
+    rpc.sent.append(base64.b64decode(payload.transaction))
+    verifier = await _seeded_top_up_verifier(rpc, state)
+    with pytest.raises(RuntimeError, match="already been processed"):
+        await verifier(payload)
+
+
+async def test_top_up_verifier_keeps_broadcast_error_when_signature_never_landed() -> None:
+    # No landed status means the first submission did not fund escrow either.
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    rpc = _MainnetLikeRpc(account=account, status=None)
+    rpc.sent.append(base64.b64decode(payload.transaction))
+    verifier = await _seeded_top_up_verifier(rpc, state)
+    with pytest.raises(RuntimeError, match="already been processed"):
+        await verifier(payload)

@@ -490,31 +490,51 @@ def new_open_tx_verifier(
             recent_blockhash=context.recent_blockhash,
         )
         verified = await verify_open_tx(expected, payload, None)
+        # A broadcast rejection is not authoritative: a retry of an open whose
+        # first submission landed (response lost, or the store write after it
+        # failed) dies at preflight with "already processed". The confirmed
+        # channel account is authoritative — it matches the verified open
+        # params only if this exact open succeeded — so a full field match
+        # below is treated as success regardless of what the broadcast said.
+        # Mirrors the Rust open retry-idempotency fix.
+        broadcast_error: Exception | None = None
         if config.fee_payer:
             if fee_payer_signer is None:
                 raise PaymentError("fee-payer signing requires a configured signer", code="invalid-config")
-            signature = await cosign_and_broadcast_open(payload, fee_payer=fee_payer_signer, rpc=rpc_client)
+            try:
+                await cosign_and_broadcast_open(payload, fee_payer=fee_payer_signer, rpc=rpc_client)
+            except Exception as exc:  # noqa: BLE001 — resolved against the confirmed account below
+                broadcast_error = exc
         else:
             raw = base64.b64decode(payload.transaction, validate=True)
-            sent = await rpc_client.send_raw_transaction(raw)
-            signature = str(sent.value)
-            await confirm_transaction_signature(rpc_client, signature, "open")
-        await _verify_channel_account(
-            rpc_client,
-            verified.channel_id,
-            program_id=program_id,
-            expected={
-                "authorized_signer": payload.authorized_signer,
-                "deposit": verified.deposit,
-                "grace_period": payload.grace_period_seconds,
-                "mint": expected.mint or resolve_mint(config.currency, config.network),
-                "open_slot": payload.open_slot,
-                "payee": config.recipient,
-                "payer": payload.payer,
-                "rent_payer": fee_payer,
-                "salt": payload.salt,
-            },
-        )
+            try:
+                sent = await rpc_client.send_raw_transaction(raw)
+                await confirm_transaction_signature(rpc_client, str(sent.value), "open")
+            except Exception as exc:  # noqa: BLE001 — resolved against the confirmed account below
+                broadcast_error = exc
+        try:
+            await _verify_channel_account(
+                rpc_client,
+                verified.channel_id,
+                program_id=program_id,
+                expected={
+                    "authorized_signer": payload.authorized_signer,
+                    "deposit": verified.deposit,
+                    "grace_period": payload.grace_period_seconds,
+                    "mint": expected.mint or resolve_mint(config.currency, config.network),
+                    "open_slot": payload.open_slot,
+                    "payee": config.recipient,
+                    "payer": payload.payer,
+                    "rent_payer": fee_payer,
+                    "salt": payload.salt,
+                },
+            )
+        except Exception as verify_error:
+            # Anything short of a full field match keeps the broadcast
+            # failure authoritative.
+            if broadcast_error is not None:
+                raise broadcast_error from verify_error
+            raise
 
     return verifier
 
@@ -578,8 +598,26 @@ def new_top_up_tx_verifier(
         payer = Pubkey.from_string(state.payer)
         if payer_index >= len(signatures) or not signatures[payer_index].verify(payer, _signed_message_bytes(message)):
             raise PaymentError("top-up payer signature is invalid", code="invalid-payload")
-        sent = await rpc_client.send_raw_transaction(raw)
-        signature = str(sent.value)
+        try:
+            sent = await rpc_client.send_raw_transaction(raw)
+            signature = str(sent.value)
+        except Exception:  # noqa: BLE001 — resolved against the landed signature below
+            # A duplicate of an already-landed top-up dies at preflight with
+            # "already processed". The signature identifies this exact
+            # verified transaction — an unrelated top-up cannot satisfy it —
+            # so a landed clean status means escrow was funded by the first
+            # submission; the post-confirm deposit re-check and the mutator's
+            # signature dedupe decide whether it was already credited. A
+            # landed-but-FAILED transaction (err set) keeps the broadcast
+            # failure authoritative. Mirrors the TS submitTopUpTx rescue.
+            if not signatures:
+                raise
+            landed = str(signatures[0])
+            statuses = await rpc_client.get_signature_statuses([landed])
+            status = statuses[0] if statuses else None
+            if status is None or status.get("err") is not None:
+                raise
+            signature = landed
         await confirm_transaction_signature(rpc_client, signature, "top-up")
         if amount > _U64_MAX - state.deposit:
             raise PaymentError("top-up deposit overflows u64", code="invalid-payload")
