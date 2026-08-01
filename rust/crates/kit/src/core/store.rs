@@ -280,6 +280,12 @@ pub struct ChannelState {
     #[serde(default)]
     pub processed_uses: Vec<ProcessedUse>,
 
+    /// Transaction signatures of top-ups already credited to `deposit`
+    /// (base58). Checked inside the atomic top-up mutator so a resubmitted or
+    /// concurrently duplicated top-up transaction credits exactly once.
+    #[serde(default)]
+    pub processed_topup_signatures: Vec<String>,
+
     /// Next server-side metered delivery sequence.
     #[serde(default)]
     pub next_delivery_sequence: u64,
@@ -1211,6 +1217,7 @@ mod tests {
             spent_amount: 0,
             settled_on_chain: 0,
             processed_uses: vec![],
+            processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],

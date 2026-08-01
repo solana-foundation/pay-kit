@@ -720,6 +720,7 @@ impl<S: ChannelStore> SessionServer<S> {
             spent_amount: 0,
             settled_on_chain: 0,
             processed_uses: vec![],
+            processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
@@ -1045,12 +1046,26 @@ impl<S: ChannelStore> SessionServer<S> {
                 "additionalAmount must be positive".to_string(),
             ));
         }
+        let topup_signature = payment_channels::decode_transaction(&payload.transaction)?
+            .signatures
+            .first()
+            .ok_or_else(|| Error::Other("top-up transaction is missing a signature".to_string()))?
+            .to_string();
         let existing = self
             .store
             .get_channel(&payload.channel_id)
             .await
             .map_err(store_err)?
             .ok_or_else(|| Error::Other(format!("Channel {} not found", payload.channel_id)))?;
+        // Idempotent replay: this exact transaction was already credited, so
+        // report the stored state without re-broadcasting (a re-broadcast of
+        // a landed transaction fails at preflight).
+        if existing
+            .processed_topup_signatures
+            .contains(&topup_signature)
+        {
+            return Ok(existing);
+        }
         if existing.sealed || existing.close_requested_at.is_some() {
             return Err(Error::Other(
                 "Channel is closed or close is pending".to_string(),
@@ -1070,8 +1085,15 @@ impl<S: ChannelStore> SessionServer<S> {
             .update_channel(
                 &payload.channel_id,
                 Box::new(move |state_opt| {
-                    let state = state_opt
+                    let mut state = state_opt
                         .ok_or_else(|| StoreError::Internal(format!("Channel {cid} not found")))?;
+                    // Signature dedupe must live inside the atomic mutator:
+                    // two in-flight submissions of the same signed top-up
+                    // both confirm the same landed transaction, so only the
+                    // first check-and-record may credit the deposit.
+                    if state.processed_topup_signatures.contains(&topup_signature) {
+                        return Ok(state);
+                    }
                     if state.sealed {
                         return Err(StoreError::Internal(
                             "Channel is already sealed".to_string(),
@@ -1090,16 +1112,14 @@ impl<S: ChannelStore> SessionServer<S> {
                                 StoreError::Internal("top-up deposit overflow".to_string())
                             })?;
                     let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
-                    let lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
+                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
                         owner: lifecycle_owner.clone(),
                         close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
                     });
-                    Ok(ChannelState {
-                        deposit: new_deposit,
-                        last_activity_at: now_ms,
-                        lifecycle,
-                        ..state
-                    })
+                    state.deposit = new_deposit;
+                    state.last_activity_at = now_ms;
+                    state.processed_topup_signatures.push(topup_signature.clone());
+                    Ok(state)
                 }),
             )
             .await
@@ -1699,8 +1719,29 @@ async fn verify_submit_and_fetch_open(
     }
 
     let rpc = RpcClient::new(rpc_url.to_string());
-    rpc.send_and_confirm_transaction(&tx)
-        .map_err(|error| Error::Rpc(format!("open broadcast failed: {error}")))?;
+    // A broadcast rejection is not authoritative: a retry of an open whose
+    // first submission landed (response lost, or the store write after it
+    // failed) dies at preflight with "already processed". The confirmed
+    // channel account is — it matches the verified open params only if this
+    // exact open succeeded, so a match is treated as success regardless of
+    // what the broadcast said.
+    let broadcast_error = rpc
+        .send_and_confirm_transaction(&tx)
+        .map_err(|error| Error::Rpc(format!("open broadcast failed: {error}")))
+        .err();
+    let confirmed = fetch_and_match_open_channel(&rpc, params);
+    match (broadcast_error, confirmed) {
+        (None, confirmed) => confirmed,
+        (Some(_), Ok(())) => Ok(()),
+        (Some(broadcast_error), Err(_)) => Err(broadcast_error),
+    }
+}
+
+#[cfg(feature = "server")]
+fn fetch_and_match_open_channel(
+    rpc: &solana_rpc_client::rpc_client::RpcClient,
+    params: &payment_channels::OpenChannelParams,
+) -> Result<()> {
     let channel_address = payment_channels::derive_channel_addresses(params).channel;
     let account = rpc
         .get_account(&channel_address)
@@ -1821,8 +1862,20 @@ async fn verify_submit_and_fetch_topup(
         return Err(Error::Other("top-up instruction not found".to_string()));
     }
     let rpc = RpcClient::new(rpc_url.to_string());
-    rpc.send_and_confirm_transaction(&tx)
-        .map_err(|error| Error::Rpc(format!("top-up broadcast failed: {error}")))?;
+    if let Err(error) = rpc.send_and_confirm_transaction(&tx) {
+        // A duplicate of an already-landed top-up dies at preflight with
+        // "already processed". The signature identifies this exact verified
+        // transaction — an unrelated top-up cannot satisfy it — so a
+        // confirmed non-error status means escrow was funded once and the
+        // deposit re-check below plus the mutator's signature dedupe decide
+        // whether it was already credited.
+        let signature = tx.signatures.first().ok_or_else(|| {
+            Error::Other("top-up transaction is missing a signature".to_string())
+        })?;
+        if !matches!(rpc.get_signature_status(signature), Ok(Some(Ok(())))) {
+            return Err(Error::Rpc(format!("top-up broadcast failed: {error}")));
+        }
+    }
     let account = rpc
         .get_account(&channel)
         .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?;
@@ -2030,6 +2083,7 @@ mod tests {
             spent_amount: 0,
             settled_on_chain: 0,
             processed_uses: vec![],
+            processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
@@ -2104,10 +2158,17 @@ mod tests {
         let account_data = borsh::to_vec(&channel).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
+        // Mainnet-faithful duplicate handling: a signature lands exactly once,
+        // so a repeated `sendTransaction` is rejected at preflight the way a
+        // real RPC rejects it, and `getSignatureStatuses` reports only
+        // signatures that actually landed.
+        let landed: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::Arc::default();
         let handle = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let account_data = account_data.clone();
+                let landed = std::sync::Arc::clone(&landed);
                 tokio::spawn(async move {
                     let mut bytes = Vec::new();
                     let body_start = loop {
@@ -2145,23 +2206,57 @@ mod tests {
                         serde_json::from_slice(&bytes[body_start..body_start + content_length])
                             .unwrap();
                     let result = match request["method"].as_str().unwrap_or_default() {
-                        "sendTransaction" => json!(payment_channels::decode_transaction(
-                            request["params"][0].as_str().unwrap(),
-                        )
-                        .unwrap()
-                        .signatures[0]
-                            .to_string()),
-                        "getSignatureStatuses" => json!({
-                            "context": { "slot": 43 },
-                            "value": [{
-                                "slot": 43,
-                                "confirmations": null,
-                                "err": null,
-                                "confirmationStatus": "finalized",
-                                "status": { "Ok": null }
-                            }]
-                        }),
-                        "getAccountInfo" => json!({
+                        "sendTransaction" => {
+                            let signature = payment_channels::decode_transaction(
+                                request["params"][0].as_str().unwrap(),
+                            )
+                            .unwrap()
+                            .signatures[0]
+                                .to_string();
+                            if !landed.lock().unwrap().insert(signature.clone()) {
+                                Err(json!({
+                                    "code": -32002,
+                                    "message": "Transaction simulation failed: This transaction has already been processed",
+                                    "data": {
+                                        "accounts": null,
+                                        "err": "AlreadyProcessed",
+                                        "logs": [],
+                                        "unitsConsumed": 0
+                                    }
+                                }))
+                            } else {
+                                Ok(json!(signature))
+                            }
+                        }
+                        "getSignatureStatuses" => {
+                            let statuses = request["params"][0]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|signature| {
+                                    if landed
+                                        .lock()
+                                        .unwrap()
+                                        .contains(signature.as_str().unwrap())
+                                    {
+                                        json!({
+                                            "slot": 43,
+                                            "confirmations": null,
+                                            "err": null,
+                                            "confirmationStatus": "finalized",
+                                            "status": { "Ok": null }
+                                        })
+                                    } else {
+                                        Value::Null
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            Ok(json!({
+                                "context": { "slot": 43 },
+                                "value": statuses
+                            }))
+                        }
+                        "getAccountInfo" => Ok(json!({
                             "context": { "slot": 43 },
                             "value": {
                                 "data": [
@@ -2174,14 +2269,21 @@ mod tests {
                                 "rentEpoch": 0,
                                 "space": 256
                             }
-                        }),
+                        })),
                         method => panic!("unexpected RPC method {method}"),
                     };
-                    let body = serde_json::to_vec(&json!({
-                        "jsonrpc": "2.0",
-                        "id": request["id"].clone(),
-                        "result": result
-                    }))
+                    let body = serde_json::to_vec(&match result {
+                        Ok(result) => json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"].clone(),
+                            "result": result
+                        }),
+                        Err(error) => json!({
+                            "jsonrpc": "2.0",
+                            "id": request["id"].clone(),
+                            "error": error
+                        }),
+                    })
                     .unwrap();
                     let response = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
@@ -2493,6 +2595,72 @@ mod tests {
         rpc.abort();
     }
 
+    /// The hardest retry: the first submission's broadcast landed but the
+    /// store write after it was lost, so no state exists for the replay
+    /// branch and the retry's re-broadcast dies at preflight with
+    /// "already processed". The confirmed channel account matching the
+    /// verified open params is the only signal left — it must be accepted.
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retried_open_survives_preflight_rejection_without_stored_state() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+
+        let mut server =
+            SessionServer::new(config(VoucherSigner::Operator), MemoryChannelStore::new());
+        let (mut open, params) = signed_open(&server, 6).await;
+        open.authentication =
+            Some(SessionAuthentication::sign("opening", &open.channel_id, &key(6)).unwrap());
+        let channel = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: params.salt,
+            deposit: params.deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: params.grace_period,
+            distribution_hash: payment_channels::distribution_hash(&params.recipients),
+            payer: payment_channels::to_address(&params.payer),
+            payee: payment_channels::to_address(&params.payee),
+            authorized_signer: payment_channels::to_address(&params.authorized_signer),
+            mint: payment_channels::to_address(&params.mint),
+            rent_payer: payment_channels::to_address(&params.rent_payer),
+            open_slot: params.open_slot,
+        };
+        let (url, rpc) = rpc_for_channel(channel).await;
+        server.config.rpc_url = Some(url);
+        let challenged_blockhash = test_blockhash().to_string();
+        let context = SessionOpenContext {
+            challenge_id: "opening",
+            expires: None,
+            recent_blockhash: &challenged_blockhash,
+            recent_slot: CHALLENGED_SLOT,
+        };
+        let first = server
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap();
+        assert!(!first.replay);
+
+        // Same signed transaction against the same RPC (which now rejects the
+        // duplicate at preflight), but an empty store: the retry must still
+        // succeed and re-create the channel state.
+        let fresh = SessionServer::new(server.config.clone(), MemoryChannelStore::new());
+        let retried = fresh
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap();
+        assert!(!retried.replay);
+        assert_eq!(retried.state.deposit, 1_000);
+        assert_eq!(retried.state.opening_challenge_id, "opening");
+        rpc.abort();
+    }
+
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn confirmed_topup_adds_only_the_declared_amount() {
@@ -2565,16 +2733,47 @@ mod tests {
         };
         let (url, rpc) = rpc_for_channel(account).await;
         server.config.rpc_url = Some(url);
-        let updated = server
-            .process_topup(&TopUpPayload {
-                channel_id,
-                additional_amount: "100".into(),
-                transaction,
-            })
-            .await
-            .unwrap();
+        let payload = TopUpPayload {
+            channel_id: channel_id.clone(),
+            additional_amount: "100".into(),
+            transaction,
+        };
+        let updated = server.process_topup(&payload).await.unwrap();
         assert_eq!(updated.deposit, 1_100);
         assert!(updated.lifecycle.is_some());
+
+        // A plain retry replays from the recorded signature without
+        // re-broadcasting — no second credit.
+        let replayed = server.process_topup(&payload).await.unwrap();
+        assert_eq!(replayed.deposit, 1_100);
+
+        // Broadcast landed but the credit was lost (crash between confirm
+        // and store write): the retry's re-broadcast dies at preflight, the
+        // landed-signature status check rescues it, and the mutator credits
+        // exactly once.
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(|state| {
+                    let mut state = state.unwrap();
+                    state.deposit = 1_000;
+                    state.processed_topup_signatures.clear();
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+        let redriven = server.process_topup(&payload).await.unwrap();
+        assert_eq!(redriven.deposit, 1_100);
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.deposit, 1_100);
+        assert_eq!(stored.processed_topup_signatures.len(), 1);
         rpc.abort();
     }
 
