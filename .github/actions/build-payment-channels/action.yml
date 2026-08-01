@@ -32,12 +32,28 @@ runs:
         ref: ${{ inputs.ref }}
         path: _payment-channels
         fetch-depth: 1
+    # The build is fully determined by the pinned ref, the declared program
+    # id, and this action file (which carries the sentinel patch and the
+    # pinned platform-tools version), so the resulting .so can be cached on
+    # exactly those and the Anza CLI install (~16s), the platform-tools v1.52
+    # download (~45-60s of silence before the first Compiling line), and the
+    # build-sbf run are all skipped on a hit. No runner.os in the key: the
+    # artifact is SBF bytecode, host-independent, so the ubuntu-built .so
+    # serves the macOS legs too.
+    - name: Cache built program
+      id: so-cache
+      uses: actions/cache@v5
+      with:
+        path: _payment-channels/target/deploy
+        key: payment-channels-so-${{ inputs.ref }}-${{ inputs.program-id }}-${{ hashFiles('.github/actions/build-payment-channels/action.yml') }}
     - name: Install Anza CLI
+      if: steps.so-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
         echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
     - name: Patch payment channels treasury owner
+      if: steps.so-cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: _payment-channels
       run: |
@@ -59,6 +75,7 @@ runs:
           exit 1
         fi
     - name: Build payment channels program
+      if: steps.so-cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: _payment-channels/program/payment_channels
       run: cargo build-sbf --tools-version v1.52 --arch v1
