@@ -1118,7 +1118,9 @@ impl<S: ChannelStore> SessionServer<S> {
                     });
                     state.deposit = new_deposit;
                     state.last_activity_at = now_ms;
-                    state.processed_topup_signatures.push(topup_signature.clone());
+                    state
+                        .processed_topup_signatures
+                        .push(topup_signature.clone());
                     Ok(state)
                 }),
             )
@@ -1869,9 +1871,10 @@ async fn verify_submit_and_fetch_topup(
         // confirmed non-error status means escrow was funded once and the
         // deposit re-check below plus the mutator's signature dedupe decide
         // whether it was already credited.
-        let signature = tx.signatures.first().ok_or_else(|| {
-            Error::Other("top-up transaction is missing a signature".to_string())
-        })?;
+        let signature = tx
+            .signatures
+            .first()
+            .ok_or_else(|| Error::Other("top-up transaction is missing a signature".to_string()))?;
         if !matches!(rpc.get_signature_status(signature), Ok(Some(Ok(())))) {
             return Err(Error::Rpc(format!("top-up broadcast failed: {error}")));
         }
@@ -2234,10 +2237,7 @@ mod tests {
                                 .unwrap()
                                 .iter()
                                 .map(|signature| {
-                                    if landed
-                                        .lock()
-                                        .unwrap()
-                                        .contains(signature.as_str().unwrap())
+                                    if landed.lock().unwrap().contains(signature.as_str().unwrap())
                                     {
                                         json!({
                                             "slot": 43,
