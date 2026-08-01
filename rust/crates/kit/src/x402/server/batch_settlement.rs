@@ -25,7 +25,9 @@ use solana_transaction::Transaction;
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 use crate::core::session::{accept_voucher, VoucherAcceptance};
-use crate::core::store::{ChannelState, ChannelStore, MemoryChannelStore, StoreError};
+use crate::core::store::{
+    ChannelState, ChannelStore, MemoryChannelStore, StoreError, CHANNEL_STATE_SCHEMA_VERSION,
+};
 use crate::core::voucher::verify_voucher_signature;
 use crate::core::{
     payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX,
@@ -503,6 +505,8 @@ impl X402BatchSettlement {
                     pending_deliveries: vec![],
                     committed_deliveries: vec![],
                     lifecycle: None,
+                    schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+                    extra: Default::default(),
                 },
             )
             .await
@@ -979,6 +983,8 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: vec![],
             lifecycle: None,
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
         }
     }
 

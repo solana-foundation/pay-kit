@@ -36,6 +36,7 @@ use crate::mpp::protocol::intents::session::{
 use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 use crate::mpp::store::{
     ChannelLifecycle, ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError,
+    CHANNEL_STATE_SCHEMA_VERSION,
 };
 
 // ── Configuration ──
@@ -726,6 +727,8 @@ impl<S: ChannelStore> SessionServer<S> {
                 owner: self.config.operator.clone(),
                 close_after: now_ms.saturating_add(u64::from(effective_idle_timeout) * 1_000),
             }),
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
         };
 
         // Atomic check-and-insert: a replayed open re-passes all checks above
@@ -912,6 +915,17 @@ impl<S: ChannelStore> SessionServer<S> {
                     if state.sealed || state.close_requested_at.is_some() {
                         return Err(StoreError::Internal(
                             "Channel is closed or close is pending".to_string(),
+                        ));
+                    }
+                    // A record with no binding at all is not a mismatch: it
+                    // either predates proof binding or was rewritten by a
+                    // pre-binding writer (the 2026-08-01 wipe). Name it so the
+                    // client knows re-opening — not retrying the proof — is
+                    // the fix.
+                    if state.opening_challenge_id.is_empty() && state.authentication.is_none() {
+                        return Err(StoreError::Internal(
+                            "session channel predates proof binding; open a new session"
+                                .to_string(),
                         ));
                     }
                     if state.voucher_signer != "operator"
@@ -1407,6 +1421,23 @@ impl<S: ChannelStore> SessionServer<S> {
                         return Err(StoreError::Internal("Close already requested".to_string()));
                     }
 
+                    // A close that presents authentication against a record
+                    // with no proof binding (and no operator marker) is an
+                    // operator-signed session whose record predates — or was
+                    // stripped of — the binding fields. Without this, the
+                    // wiped row falls through to the client branch below and
+                    // reports a misleading error.
+                    if authentication_opt.is_some()
+                        && state.voucher_signer != "operator"
+                        && state.opening_challenge_id.is_empty()
+                        && state.authentication.is_none()
+                    {
+                        return Err(StoreError::Internal(
+                            "session channel predates proof binding; \
+                             the lifecycle worker will close it"
+                                .to_string(),
+                        ));
+                    }
                     if state.voucher_signer == "operator" {
                         if voucher_opt.is_some() {
                             return Err(StoreError::Internal(
@@ -1418,6 +1449,15 @@ impl<S: ChannelStore> SessionServer<S> {
                                 "operator close requires the proof bound at open".to_string(),
                             )
                         })?;
+                        if state.opening_challenge_id.is_empty()
+                            && state.authentication.is_none()
+                        {
+                            return Err(StoreError::Internal(
+                                "session channel predates proof binding; \
+                                 the lifecycle worker will close it"
+                                    .to_string(),
+                            ));
+                        }
                         let encoded = serde_json::to_string(authentication)
                             .map_err(|error| StoreError::Internal(error.to_string()))?;
                         if state.authentication.as_deref() != Some(encoded.as_str())
@@ -1994,6 +2034,8 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: vec![],
             lifecycle: None,
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
         }
     }
 
@@ -2737,6 +2779,80 @@ mod tests {
             })
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn wiped_or_pre_binding_rows_report_a_distinct_error() {
+        let cfg = config(VoucherSigner::Operator);
+        let channel_id = Pubkey::new_unique().to_string();
+        let payer = key(3);
+        let proof = SessionAuthentication::sign("opening", &channel_id, &payer).unwrap();
+        // A record rewritten by a pre-binding writer: the three binding
+        // fields decode to their serde defaults, indistinguishable from a
+        // record that predates proof binding.
+        let mut stored = state(channel_id.clone(), cfg.operator.clone());
+        stored.payer = proof.payer.clone();
+        stored.opening_challenge_id = String::new();
+        stored.authentication = None;
+        stored.voucher_signer = String::new();
+        let store = MemoryChannelStore::new();
+        store.put_channel(&channel_id, stored).await.unwrap();
+        let server = SessionServer::new(cfg, store);
+
+        let use_err = server
+            .process_use(
+                &UsePayload {
+                    channel_id: channel_id.clone(),
+                    authentication: proof.clone(),
+                },
+                "use-1",
+                "request-1",
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            use_err.to_string().contains("predates proof binding"),
+            "got: {use_err}"
+        );
+
+        let close_err = server
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
+                authentication: Some(proof.clone()),
+                voucher: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            close_err.to_string().contains("predates proof binding"),
+            "got: {close_err}"
+        );
+
+        // Same split when the operator marker survived but the binding did
+        // not (a pre-binding record written after voucher_signer existed).
+        let channel_id_2 = Pubkey::new_unique().to_string();
+        let mut stored = state(channel_id_2.clone(), server.config.operator.clone());
+        stored.payer = proof.payer.clone();
+        stored.opening_challenge_id = String::new();
+        stored.authentication = None;
+        stored.voucher_signer = "operator".into();
+        server
+            .store
+            .put_channel(&channel_id_2, stored)
+            .await
+            .unwrap();
+        let close_err = server
+            .process_close(&ClosePayload {
+                channel_id: channel_id_2,
+                authentication: Some(proof),
+                voucher: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            close_err.to_string().contains("predates proof binding"),
+            "got: {close_err}"
+        );
     }
 
     #[tokio::test]

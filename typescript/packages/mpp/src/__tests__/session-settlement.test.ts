@@ -573,6 +573,40 @@ describe('session() verify() close authorization', () => {
         expect(sent).toHaveLength(0);
     });
 
+    test('operator-mode close against a record with no proof binding names the wiped/legacy state', async () => {
+        const { authentication, f, method, sent } = await operatorFixture();
+        // Simulate a record rewritten by a pre-binding writer: the binding
+        // fields are gone, indistinguishable from a pre-binding record.
+        await seedChannel(f, { authentication: undefined, openingChallengeId: '', voucherSigner: undefined });
+
+        await expect(
+            verify(method, makeCred(f, { action: 'close', authentication, channelId: f.channel.address })),
+        ).rejects.toThrow(/session channel predates proof binding/);
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.closeRequestedAt).toBeUndefined();
+        expect(sent).toHaveLength(0);
+    });
+
+    test('use against a record with no proof binding names the wiped/legacy state', async () => {
+        const { authentication, f, method } = await operatorFixture();
+        await seedChannel(f, { authentication: undefined, openingChallengeId: '', voucherSigner: undefined });
+
+        const credential = makeCred(f, { action: 'use', authentication, channelId: f.channel.address });
+        const envelope = {
+            capturedRequest: {
+                headers: new Headers({ 'Idempotency-Key': 'request-1' }),
+                method: 'POST',
+                url: new URL('https://api.test/inference'),
+            },
+            challenge: credential.challenge,
+            credential,
+            request: credential.challenge.request,
+        };
+        await expect(
+            method.verify({ credential, envelope, request: credential.challenge.request } as never),
+        ).rejects.toThrow(/session channel predates proof binding/);
+    });
+
     test('operator-mode close rejects a bound proof whose signature does not verify for this channel', async () => {
         const f = await makeFixture();
         const operator = await generateKeyPairSigner();

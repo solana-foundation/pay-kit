@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
@@ -25,7 +26,7 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     sign_session_authentication,
 )
 from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest, SessionConfig, SessionServer, Split
-from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, MemoryChannelStore
 
 PAYER = Keypair.from_seed(bytes([1] * 32))
 PAYEE = str(Keypair.from_seed(bytes([2] * 32)).pubkey())
@@ -445,6 +446,24 @@ async def test_operator_use_rejects_invalid_state_and_amounts() -> None:
     await operator.process_close(ClosePayload(CHANNEL, authentication=_authentication(challenge.id)))
     with pytest.raises(ValueError, match="closed"):
         await operator.process_use(UsePayload(CHANNEL, _authentication(challenge.id)), challenge.id, "closed")
+
+
+async def test_use_and_close_name_pre_binding_records() -> None:
+    """A record whose binding fields were stripped by a pre-binding writer
+    (or that predates proof binding) must fail with its own error, not the
+    generic proof-mismatch one."""
+    operator, _, challenge = await _server(operator=True)
+
+    def wipe(current: ChannelState | None) -> ChannelState:
+        assert current is not None
+        return replace(current, opening_challenge_id="", authentication=None, voucher_signer="")
+
+    await operator.store().update_channel(CHANNEL, wipe)
+
+    with pytest.raises(ValueError, match="predates proof binding"):
+        await operator.process_use(UsePayload(CHANNEL, _authentication(challenge.id)), challenge.id, "key")
+    with pytest.raises(ValueError, match="predates proof binding"):
+        await operator.process_close(ClosePayload(CHANNEL, authentication=_authentication(challenge.id)))
 
 
 async def test_voucher_rejections_cover_channel_mode_delta_and_deposit() -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -132,6 +133,15 @@ class ProcessedUse:
         )
 
 
+# Schema version stamped on every channel record this SDK writes.
+#
+# A writer must refuse records stamped with a *newer* version than its own:
+# decoding one would drop the fields it does not know, and a subsequent
+# re-encode would destroy them for every reader. Unknown fields at the same
+# or an older version round-trip verbatim through ``ChannelState.extra``.
+CHANNEL_STATE_SCHEMA_VERSION = 1
+
+
 @dataclass
 class ChannelState:
     """Persisted state of a single payment channel from the server's point of
@@ -221,6 +231,15 @@ class ChannelState:
     # commit replay.
     committed_deliveries: list[CommittedDelivery] = field(default_factory=list)
 
+    # Schema version stamped by the last writer. 0 for records persisted
+    # before versioning. See CHANNEL_STATE_SCHEMA_VERSION.
+    schema_version: int = 0
+
+    # Fields this SDK version does not know, preserved verbatim so a
+    # read-modify-write by an older writer can never strip a newer schema's
+    # fields off a shared record.
+    extra: dict[str, Any] = field(default_factory=dict)
+
     def clone(self) -> ChannelState:
         """Return a deep copy so callers can never alias store-internal state.
 
@@ -233,6 +252,7 @@ class ChannelState:
             pending_deliveries=[replace(d) for d in self.pending_deliveries],
             committed_deliveries=[replace(d) for d in self.committed_deliveries],
             processed_uses=[replace(use) for use in self.processed_uses],
+            extra=deepcopy(self.extra),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -271,6 +291,10 @@ class ChannelState:
         # settled_signature is omitted from the wire form when unset.
         if self.settled_signature is not None:
             d["settled_signature"] = self.settled_signature
+        # Serialization is the write path: stamp this writer's version, and
+        # re-emit fields decoded from newer same-version writers verbatim.
+        d["schema_version"] = CHANNEL_STATE_SCHEMA_VERSION
+        d.update(self.extra)
         return d
 
     @classmethod
@@ -284,6 +308,12 @@ class ChannelState:
             raise ValueError(
                 "legacy pre-seal channel record (field 'finalized') is not supported; "
                 "migrate or reset the durable channel store"
+            )
+        schema_version = int(data.get("schema_version", 0))
+        if schema_version > CHANNEL_STATE_SCHEMA_VERSION:
+            raise ValueError(
+                f"channel record schema_version {schema_version} is newer than this "
+                f"writer's {CHANNEL_STATE_SCHEMA_VERSION}; refusing lossy decode"
             )
         return cls(
             channel_id=data.get("channel_id", ""),
@@ -316,7 +346,41 @@ class ChannelState:
             # and ``[]`` together; ``from_dict`` never iterates ``None``.
             pending_deliveries=[PendingDelivery.from_dict(p) for p in (data.get("pending_deliveries") or [])],
             committed_deliveries=[CommittedDelivery.from_dict(c) for c in (data.get("committed_deliveries") or [])],
+            schema_version=schema_version,
+            extra={k: v for k, v in data.items() if k not in _CHANNEL_STATE_KNOWN_KEYS},
         )
+
+
+# Keys ``ChannelState`` decodes into named fields; everything else lands in
+# ``extra``. ``finalized`` is rejected before this set matters.
+_CHANNEL_STATE_KNOWN_KEYS = frozenset(
+    {
+        "channel_id",
+        "authorized_signer",
+        "deposit",
+        "cumulative",
+        "sealed",
+        "open_slot",
+        "payer",
+        "rent_payer",
+        "opening_challenge_id",
+        "authentication",
+        "voucher_signer",
+        "idle_timeout_seconds",
+        "last_activity_at",
+        "spent_amount",
+        "settled_on_chain",
+        "processed_uses",
+        "highest_voucher_signature",
+        "highest_voucher_expires_at",
+        "close_requested_at",
+        "settled_signature",
+        "next_delivery_sequence",
+        "pending_deliveries",
+        "committed_deliveries",
+        "schema_version",
+    }
+)
 
 
 @dataclass

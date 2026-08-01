@@ -97,7 +97,7 @@ pub use protocol::solana::{
 // Store types
 pub use store::{
     ChannelState, ChannelStore, CommittedDelivery, MemoryChannelStore, MemoryStore,
-    PendingDelivery, Store, StoreError,
+    PendingDelivery, Store, StoreError, CHANNEL_STATE_SCHEMA_VERSION,
 };
 
 // Re-export crates callers need to use with the charge builder.

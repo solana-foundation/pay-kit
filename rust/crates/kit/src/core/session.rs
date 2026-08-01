@@ -197,7 +197,7 @@ pub async fn accept_voucher(
 mod tests {
     use super::*;
     use crate::core::payment_channels::voucher_message_bytes;
-    use crate::core::store::MemoryChannelStore;
+    use crate::core::store::{MemoryChannelStore, CHANNEL_STATE_SCHEMA_VERSION};
     use ed25519_dalek::{Signer, SigningKey};
     use solana_pubkey::Pubkey;
 
@@ -245,6 +245,8 @@ mod tests {
                     pending_deliveries: vec![],
                     committed_deliveries: vec![],
                     lifecycle: None,
+                    schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+                    extra: Default::default(),
                 },
             )
             .await
@@ -315,6 +317,8 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: vec![],
             lifecycle: None,
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
         }
     }
 

@@ -608,6 +608,12 @@ class SessionServer:
                 raise ValueError(f"channel {payload.channel_id} not found")
             if current.sealed or current.close_requested_at is not None:
                 raise ValueError("channel is closed or close is pending")
+            # A record with no binding at all is not a mismatch: it either
+            # predates proof binding or was rewritten by a pre-binding
+            # writer. Name it so the client knows re-opening — not retrying
+            # the proof — is the fix.
+            if not current.opening_challenge_id and current.authentication is None:
+                raise ValueError("session channel predates proof binding; open a new session")
             if current.voucher_signer != "operator" or current.authentication is None:
                 raise ValueError("use is only valid for an operator-signed channel")
             if payload.authentication.to_dict() != current.authentication:
@@ -979,10 +985,27 @@ class SessionServer:
             if current.close_requested_at is not None:
                 raise ValueError("close already requested")
 
+            # A close that presents authentication against a record with no
+            # proof binding (and no operator marker) is an operator-signed
+            # session whose record predates — or was stripped of — the
+            # binding fields.
+            if (
+                payload.authentication is not None
+                and current.voucher_signer != "operator"
+                and not current.opening_challenge_id
+                and current.authentication is None
+            ):
+                raise ValueError("session channel predates proof binding; the lifecycle worker will close it")
             if current.voucher_signer == "operator":
                 if voucher is not None:
                     raise ValueError("operator close must use authentication, not a client voucher")
-                if payload.authentication is None or current.authentication is None:
+                if payload.authentication is None:
+                    raise ValueError("operator close requires authentication")
+                if current.authentication is None:
+                    if not current.opening_challenge_id:
+                        raise ValueError(
+                            "session channel predates proof binding; the lifecycle worker will close it"
+                        )
                     raise ValueError("operator close requires authentication")
                 if payload.authentication.to_dict() != current.authentication:
                     raise ValueError("session authentication does not match the proof bound at open")

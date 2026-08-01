@@ -3,6 +3,7 @@ export { type ChallengeRequest, charge, verifyChargeTransaction } from './Charge
 export { solana } from './Methods.js';
 export { type RpcLike, session, type SessionOpenContext, type SubmitOpenRpc, type VerifyOpenRpc } from './Session.js';
 export {
+    CHANNEL_STATE_SCHEMA_VERSION,
     type ChannelMutator,
     type ChannelState,
     type CommittedDelivery,

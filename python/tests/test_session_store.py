@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from solana_pay_kit.protocols.mpp.server.session_store import (
+    CHANNEL_STATE_SCHEMA_VERSION,
     ChannelState,
     CommittedDelivery,
     ListChannelsFilter,
@@ -316,3 +317,31 @@ def test_round_trips_go_style_null_record() -> None:
     re_encoded = ChannelState.from_dict(go_record).to_dict()
     assert re_encoded["pending_deliveries"] is None
     assert re_encoded["committed_deliveries"] is None
+
+
+def test_round_trips_unknown_fields_and_stamps_schema_version() -> None:
+    """A record written by a newer schema, then read and re-encoded by this
+    writer: the unknown field must survive, not vanish (the 2026-08-01
+    proof-binding wipe)."""
+    state = ChannelState.from_dict(
+        {
+            "channel_id": "c1",
+            "authorized_signer": "signer1",
+            "proof_binding_v9": {"k": 1},
+        }
+    )
+    assert state.extra == {"proof_binding_v9": {"k": 1}}
+    encoded = state.to_dict()
+    assert encoded["proof_binding_v9"] == {"k": 1}
+    assert encoded["schema_version"] == CHANNEL_STATE_SCHEMA_VERSION
+
+
+def test_from_dict_refuses_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer"):
+        ChannelState.from_dict(
+            {
+                "channel_id": "c1",
+                "authorized_signer": "signer1",
+                "schema_version": CHANNEL_STATE_SCHEMA_VERSION + 1,
+            }
+        )

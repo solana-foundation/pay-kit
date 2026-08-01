@@ -42,6 +42,7 @@ import {
     verifyOpenTx,
 } from './session/on-chain.js';
 import {
+    CHANNEL_STATE_SCHEMA_VERSION,
     type ChannelState,
     type CommittedDelivery,
     createMemorySessionStore,
@@ -609,6 +610,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         pendingDeliveries: [],
         processedUses: [],
         rentPayer,
+        schemaVersion: CHANNEL_STATE_SCHEMA_VERSION,
         sealed: false,
         settledOnChain: 0n,
         spentAmount: 0n,
@@ -690,6 +692,12 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
     if (!args.idempotencyKey) throw new Error('operator-signed use requires an Idempotency-Key header');
     const existing = await args.store.getChannel(args.payload.channelId);
     if (!existing) throw new Error(`Channel ${args.payload.channelId} not found`);
+    // A record with no binding at all is not a mismatch: it either predates
+    // proof binding or was rewritten by a pre-binding writer. Name it so the
+    // client knows re-opening — not retrying the proof — is the fix.
+    if (!existing.openingChallengeId && !existing.authentication) {
+        throw new Error('session channel predates proof binding; open a new session');
+    }
     if (existing.voucherSigner !== 'operator' || !existing.authentication) {
         throw new Error('use is only valid for an operator-signed channel');
     }
@@ -906,10 +914,24 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
     await args.store.updateChannel(channelId, async current => {
         if (!current) throw new Error(`Channel ${channelId} not found`);
         if (current.sealed) throw new Error('Channel is already sealed');
+        // A close that presents authentication against a record with no proof
+        // binding (and no operator marker) is an operator-signed session whose
+        // record predates — or was stripped of — the binding fields.
+        if (
+            args.payload.authentication &&
+            current.voucherSigner !== 'operator' &&
+            !current.openingChallengeId &&
+            !current.authentication
+        ) {
+            throw new Error('session channel predates proof binding; the lifecycle worker will close it');
+        }
         if (current.voucherSigner === 'operator') {
             if (args.payload.voucher) throw new Error('operator-mode close must not include a voucher');
-            if (!current.authentication || !args.payload.authentication) {
+            if (!args.payload.authentication) {
                 throw new Error('operator-mode close requires the bound authentication proof');
+            }
+            if (!current.authentication) {
+                throw new Error('session channel predates proof binding; the lifecycle worker will close it');
             }
             if (!sessionAuthenticationMatches(args.payload.authentication, current.authentication)) {
                 throw new Error('close authentication does not match the proof bound at open');

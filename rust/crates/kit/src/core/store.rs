@@ -177,6 +177,15 @@ pub struct ChannelLifecycle {
     pub close_after: u64,
 }
 
+/// Schema version stamped on every channel record this crate writes.
+///
+/// A writer must refuse records stamped with a *newer* version than its own:
+/// decoding one would drop the fields it does not know, and a subsequent
+/// re-encode + CAS write would destroy them for every reader. Unknown fields
+/// at the same or an older version round-trip verbatim through
+/// [`ChannelState::extra`] instead.
+pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 1;
+
 /// Persisted state of a payment channel, managed by the server.
 ///
 /// # Breaking change
@@ -289,6 +298,18 @@ pub struct ChannelState {
     /// Adding this public field is an intentional pre-1.0 Rust API change.
     #[serde(default)]
     pub lifecycle: Option<ChannelLifecycle>,
+
+    /// Schema version stamped by the last writer. `0` for records persisted
+    /// before versioning. Durable stores refuse records newer than
+    /// [`CHANNEL_STATE_SCHEMA_VERSION`] instead of decoding them lossily.
+    #[serde(default)]
+    pub schema_version: u32,
+
+    /// Fields this crate version does not know, preserved verbatim so a
+    /// read-modify-write by an older writer can never strip a newer schema's
+    /// fields off a shared record (the 2026-08-01 proof-binding wipe).
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Cached result for one operator-signed `use` request.
@@ -856,7 +877,24 @@ return 1
     }
 
     fn decode(raw: &str) -> Result<ChannelState, StoreError> {
-        serde_json::from_str(raw).map_err(|e| StoreError::Serialization(e.to_string()))
+        let state: ChannelState =
+            serde_json::from_str(raw).map_err(|e| StoreError::Serialization(e.to_string()))?;
+        if state.schema_version > CHANNEL_STATE_SCHEMA_VERSION {
+            return Err(StoreError::Serialization(format!(
+                "channel record schema_version {} is newer than this writer's {}; \
+                 refusing lossy decode",
+                state.schema_version, CHANNEL_STATE_SCHEMA_VERSION
+            )));
+        }
+        Ok(state)
+    }
+
+    /// Stamp this writer's schema version and encode for persistence, so a
+    /// record always reflects the newest schema that has written it.
+    fn encode_for_write(mut state: ChannelState) -> Result<(String, ChannelState), StoreError> {
+        state.schema_version = CHANNEL_STATE_SCHEMA_VERSION;
+        let raw = Self::encode(&state)?;
+        Ok((raw, state))
     }
 
     fn encode(state: &ChannelState) -> Result<String, StoreError> {
@@ -940,7 +978,7 @@ impl ChannelStore for RedisChannelStore {
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         let channel_id = channel_id.to_string();
         Box::pin(async move {
-            let encoded = Self::encode(&state)?;
+            let (encoded, _) = Self::encode_for_write(state)?;
             if !self.compare_and_set(&channel_id, None, &encoded).await? {
                 return Err(StoreError::Internal(format!(
                     "Channel {channel_id} already exists"
@@ -976,7 +1014,7 @@ impl ChannelStore for RedisChannelStore {
             let current_raw = self.get_raw(&channel_id).await?;
             let current = current_raw.as_deref().map(Self::decode).transpose()?;
             let new_state = updater(current)?;
-            let new_raw = Self::encode(&new_state)?;
+            let (new_raw, new_state) = Self::encode_for_write(new_state)?;
             if current_raw.as_deref() == Some(new_raw.as_str()) {
                 return Ok(new_state);
             }
@@ -1015,7 +1053,7 @@ impl ChannelStore for RedisChannelStore {
                     return Ok(state);
                 }
                 state.lifecycle = Some(lifecycle.clone());
-                let new_raw = Self::encode(&state)?;
+                let (new_raw, state) = Self::encode_for_write(state)?;
                 if self
                     .compare_and_set(&channel_id, Some(&current_raw), &new_raw)
                     .await?
@@ -1045,7 +1083,7 @@ impl ChannelStore for RedisChannelStore {
                 return Ok(false);
             }
             state.cumulative = new;
-            let new_raw = Self::encode(&state)?;
+            let (new_raw, _) = Self::encode_for_write(state)?;
             self.compare_and_set(&channel_id, Some(&current_raw), &new_raw)
                 .await
         })
@@ -1118,6 +1156,40 @@ mod tests {
         assert_eq!(store.get("k").await.unwrap(), Some(v));
     }
 
+    #[test]
+    fn channel_state_roundtrips_unknown_fields() {
+        // A record written by a newer schema, then read and re-encoded by
+        // this writer: the unknown field must survive, not vanish.
+        let mut value = serde_json::to_value(make_state("c1", 1_000)).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("proof_binding_v9".to_string(), serde_json::json!({"k": 1}));
+        let decoded: ChannelState = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            decoded.extra.get("proof_binding_v9"),
+            Some(&serde_json::json!({"k": 1}))
+        );
+        let reencoded = serde_json::to_string(&decoded).unwrap();
+        assert!(reencoded.contains("proof_binding_v9"));
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn redis_store_refuses_newer_schema_and_stamps_writes() {
+        let mut state = make_state("c1", 1_000);
+        state.schema_version = CHANNEL_STATE_SCHEMA_VERSION + 1;
+        let raw = serde_json::to_string(&state).unwrap();
+        let err = RedisChannelStore::decode(&raw).unwrap_err();
+        assert!(err.to_string().contains("newer"), "got: {err}");
+
+        state.schema_version = 0;
+        let (encoded, stamped) = RedisChannelStore::encode_for_write(state).unwrap();
+        assert_eq!(stamped.schema_version, CHANNEL_STATE_SCHEMA_VERSION);
+        let decoded = RedisChannelStore::decode(&encoded).unwrap();
+        assert_eq!(decoded.schema_version, CHANNEL_STATE_SCHEMA_VERSION);
+    }
+
     fn make_state(channel_id: &str, deposit: u64) -> ChannelState {
         ChannelState {
             channel_id: channel_id.to_string(),
@@ -1143,6 +1215,8 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: vec![],
             lifecycle: None,
+            schema_version: CHANNEL_STATE_SCHEMA_VERSION,
+            extra: Default::default(),
         }
     }
 

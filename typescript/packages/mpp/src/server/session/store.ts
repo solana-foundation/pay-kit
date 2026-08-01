@@ -44,6 +44,17 @@ export interface ProcessedUse {
 }
 
 /**
+ * Schema version stamped on every channel record this SDK writes.
+ *
+ * Durable store implementations MUST refuse to load a record whose
+ * `schemaVersion` is newer than this value (decoding it would drop the
+ * fields this SDK does not know, and a re-encode would destroy them for
+ * every reader), and MUST round-trip unknown fields verbatim when they
+ * serialize a record. Mirrors Rust `CHANNEL_STATE_SCHEMA_VERSION`.
+ */
+export const CHANNEL_STATE_SCHEMA_VERSION = 1;
+
+/**
  * Persisted state of a single payment channel from the server's POV.
  * Field-for-field mirror of Rust `ChannelState`. `bigint` is used for
  * every Rust `u64` so we don't lose precision on > 2^53 amounts.
@@ -88,6 +99,11 @@ export interface ChannelState {
     readonly processedUses: readonly ProcessedUse[];
     /** Account that funded and receives the channel rent. */
     readonly rentPayer: string;
+    /**
+     * Schema version stamped by the last writer. `undefined`/`0` for records
+     * persisted before versioning. See `CHANNEL_STATE_SCHEMA_VERSION`.
+     */
+    readonly schemaVersion?: number | undefined;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
     /** Highest cumulative amount confirmed settled on-chain. */
