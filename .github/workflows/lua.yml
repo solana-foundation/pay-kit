@@ -74,11 +74,10 @@ jobs:
           luacov
           ./scripts/check_coverage.sh ../luacov.report.out 90
 
-      # The coverage gate excludes pay_kit/solana/ata because luacov disables
-      # LuaJIT trace recording and the on-curve check gets far slower under
-      # coverage. This second run exercises the suite on the JIT path, which
-      # is the one downstream users actually run: a regression that only
-      # shows up with the trace compiler on would otherwise never surface.
+      # This second run exercises the suite on the JIT path, which is the one
+      # downstream users actually run. luacov's line hook stops LuaJIT from
+      # running compiled traces, so a regression that only shows up with the
+      # trace compiler on would otherwise never surface.
       - name: Run the suite on the JIT path, without coverage
         working-directory: lua
         run: |
