@@ -14,6 +14,8 @@
 
 import type { SessionStore } from './store.js';
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 /**
  * Idle-close watchdog handle. `touch` resets the per-channel timer,
  * `removeChannel` cancels it, and `shutdown` cancels everything.
@@ -53,6 +55,37 @@ export function createLifecycle(
         }
     }
 
+    function close(channelId: string): void {
+        timers.delete(channelId);
+        // Errors during idle close are swallowed — there is no
+        // synchronous caller to report them to. The handler is
+        // expected to log internally.
+        void Promise.resolve()
+            .then(() => closeOnIdle(channelId))
+            .catch(() => undefined);
+    }
+
+    function schedule(channelId: string, deadlineMs: number): void {
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) {
+            close(channelId);
+            return;
+        }
+        const handle = setTimeout(
+            () => {
+                if (Date.now() < deadlineMs) {
+                    schedule(channelId, deadlineMs);
+                } else {
+                    close(channelId);
+                }
+            },
+            Math.min(remainingMs, MAX_TIMER_DELAY_MS),
+        );
+        // Don't keep the process alive on test shutdown.
+        if (typeof handle.unref === 'function') handle.unref();
+        timers.set(channelId, handle);
+    }
+
     return {
         removeChannel(channelId) {
             clear(channelId);
@@ -65,18 +98,7 @@ export function createLifecycle(
             const effectiveTimeoutMs = idleTimeoutSeconds === undefined ? idleTimeoutMs : idleTimeoutSeconds * 1_000;
             if (effectiveTimeoutMs <= 0) return;
             clear(channelId);
-            const handle = setTimeout(() => {
-                timers.delete(channelId);
-                // Errors during idle close are swallowed — there is no
-                // synchronous caller to report them to. The handler is
-                // expected to log internally.
-                void Promise.resolve()
-                    .then(() => closeOnIdle(channelId))
-                    .catch(() => undefined);
-            }, effectiveTimeoutMs);
-            // Don't keep the process alive on test shutdown.
-            if (typeof handle.unref === 'function') handle.unref();
-            timers.set(channelId, handle);
+            schedule(channelId, Date.now() + effectiveTimeoutMs);
         },
     };
 }

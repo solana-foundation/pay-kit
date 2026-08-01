@@ -20,6 +20,7 @@ import time
 
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
 from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
 from solana_pay_kit.protocols.mpp.server.session_routes import session_routes
@@ -61,7 +62,17 @@ async def _open(server: SessionServer) -> tuple[_Signer, str]:
 
     signer = _Signer()
     channel_id = str(Keypair().pubkey())
-    await server.process_open(OpenPayload.push(channel_id, "1000", signer.address(), "dummy_tx_sig"))
+    challenge = PaymentChallenge(
+        id="challenge-1",
+        realm="api.test",
+        method="solana",
+        intent="session",
+        request="",
+    )
+    await server.process_open(
+        OpenPayload.push(channel_id, "1000", signer.address(), "dummy_tx_sig"),
+        challenge,
+    )
     return signer, channel_id
 
 

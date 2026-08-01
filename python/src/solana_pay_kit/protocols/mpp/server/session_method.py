@@ -454,7 +454,11 @@ class Session:
                     f"the challenge recentSlot {request.recent_slot}",
                     code="invalid-payload",
                 )
-            reference = await self._handle_open(action.open, challenge_recent_slot=request.recent_slot)
+            reference = await self._handle_open(
+                action.open,
+                challenge=challenge,
+                challenge_recent_slot=request.recent_slot,
+            )
         elif action.voucher is not None:
             reference = await self._handle_voucher(action.voucher)
         elif action.commit is not None:
@@ -561,7 +565,12 @@ class Session:
             recent_slot=challenge_recent_slot,
         )
 
-    async def _handle_open(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> str:
+    async def _handle_open(
+        self,
+        payload: OpenPayload,
+        challenge: PaymentChallenge,
+        challenge_recent_slot: int | None = None,
+    ) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
 
@@ -684,7 +693,7 @@ class Session:
         # openTxSubmitter=server is configured.
 
         try:
-            state = await self._core.process_open(payload)
+            state = await self._core.process_open(payload, challenge)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         self._touch(state.channel_id)

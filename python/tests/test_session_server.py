@@ -14,6 +14,7 @@ from dataclasses import replace
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
@@ -23,6 +24,7 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     TopUpPayload,
     VoucherData,
     VoucherPayload,
+    sign_session_authentication,
 )
 from solana_pay_kit.protocols.mpp.server.session import (
     DeliveryRequest,
@@ -47,8 +49,27 @@ def session_test_config() -> SessionConfig:
     )
 
 
-def new_session_test_server(config: SessionConfig) -> SessionServer:
-    return SessionServer(config, MemoryChannelStore())
+def _opening_challenge() -> PaymentChallenge:
+    return PaymentChallenge(
+        id="challenge-1",
+        realm="api.test",
+        method="solana",
+        intent="session",
+        request="",
+    )
+
+
+class _TestSessionServer(SessionServer):
+    async def process_open(  # type: ignore[override]
+        self,
+        payload: OpenPayload,
+        challenge: PaymentChallenge | None = None,
+    ):
+        return await super().process_open(payload, challenge or _opening_challenge())
+
+
+def new_session_test_server(config: SessionConfig) -> _TestSessionServer:
+    return _TestSessionServer(config, MemoryChannelStore())
 
 
 def session_open_payload(channel_id: str, deposit: int, signer: str) -> OpenPayload:
@@ -78,11 +99,49 @@ def _channel_key() -> str:
     return str(Keypair().pubkey())
 
 
-async def _open_test_channel(server: SessionServer, deposit: int) -> tuple[_TestVoucherSigner, str]:
+async def _open_test_channel(server: _TestSessionServer, deposit: int) -> tuple[_TestVoucherSigner, str]:
     signer = _TestVoucherSigner(seed=7)
     channel_id = _channel_key()
     await server.process_open(session_open_payload(channel_id, deposit, signer.address()))
     return signer, channel_id
+
+
+@pytest.mark.asyncio
+async def test_operator_open_binds_authentication_to_opening_challenge() -> None:
+    operator = Keypair()
+    payer = Keypair()
+    channel_id = _channel_key()
+    config = replace(
+        session_test_config(),
+        operator=str(operator.pubkey()),
+        voucher_signer="operator",
+    )
+    payload = session_open_payload(channel_id, 1_000, str(operator.pubkey()))
+    payload.payer = str(payer.pubkey())
+    payload.authentication = sign_session_authentication("different-challenge", channel_id, payer)
+
+    with pytest.raises(ValueError, match="challengeId does not match"):
+        await new_session_test_server(config).process_open(payload, _opening_challenge())
+
+
+@pytest.mark.asyncio
+async def test_operator_open_rejects_expired_opening_challenge() -> None:
+    operator = Keypair()
+    payer = Keypair()
+    channel_id = _channel_key()
+    config = replace(
+        session_test_config(),
+        operator=str(operator.pubkey()),
+        voucher_signer="operator",
+    )
+    payload = session_open_payload(channel_id, 1_000, str(operator.pubkey()))
+    payload.payer = str(payer.pubkey())
+    payload.authentication = sign_session_authentication("challenge-1", channel_id, payer)
+    challenge = _opening_challenge()
+    challenge.expires = "2000-01-01T00:00:00Z"
+
+    with pytest.raises(ValueError, match="challenge expired"):
+        await new_session_test_server(config).process_open(payload, challenge)
 
 
 async def _submit_voucher(server: SessionServer, signer: _TestVoucherSigner, channel_id: str, cumulative: int) -> int:

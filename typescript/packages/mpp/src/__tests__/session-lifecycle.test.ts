@@ -21,4 +21,18 @@ describe('session lifecycle', () => {
         expect(closeOnIdle).toHaveBeenCalledOnce();
         expect(closeOnIdle).toHaveBeenCalledWith('channel-1');
     });
+
+    it('chunks negotiated timeouts above the Node timer limit', async () => {
+        vi.useFakeTimers();
+        const closeOnIdle = vi.fn();
+        const lifecycle = createLifecycle(createMemorySessionStore(), closeOnIdle, 10_000);
+        const timeoutSeconds = 2_147_485;
+
+        lifecycle.touch('channel-1', timeoutSeconds);
+        await vi.advanceTimersByTimeAsync(2_147_483_647);
+        expect(closeOnIdle).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(timeoutSeconds * 1_000 - 2_147_483_647);
+        expect(closeOnIdle).toHaveBeenCalledOnce();
+    });
 });

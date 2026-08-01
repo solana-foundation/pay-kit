@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
@@ -323,7 +324,7 @@ class SessionServer:
             return mode == "push"
         return mode in modes
 
-    async def process_open(self, payload: OpenPayload) -> ChannelState:
+    async def process_open(self, payload: OpenPayload, challenge: PaymentChallenge) -> ChannelState:
         """Process an open action and persist the channel state.
 
         The channel is keyed by ``OpenPayload.session_id`` (channelId first,
@@ -334,6 +335,8 @@ class SessionServer:
         when the channel is sealed or when the payload's authorized signer
         differs from the stored one.
         """
+        if challenge.is_expired():
+            raise ValueError(f"challenge expired at {challenge.expires}")
         if not self._supports_mode(payload.mode):
             raise ValueError(f"session mode {payload.mode!r} is not supported by this challenge")
 
@@ -344,10 +347,7 @@ class SessionServer:
         if deposit > self._config.max_cap:
             raise ValueError(f"deposit {deposit} exceeds max cap {self._config.max_cap}")
 
-        if (
-            self._config.voucher_signer == "operator"
-            and payload.authorized_signer != self._config.operator
-        ):
+        if self._config.voucher_signer == "operator" and payload.authorized_signer != self._config.operator:
             raise ValueError("operator voucher signing requires authorizedSigner to match the operator")
 
         resolve_idle_timeout_seconds(
@@ -362,6 +362,8 @@ class SessionServer:
         if self._config.voucher_signer == "operator":
             if payload.authentication is None:
                 raise ValueError("operator voucher signing requires authentication")
+            if payload.authentication.challenge_id != challenge.id:
+                raise ValueError("session authentication challengeId does not match the opening challenge")
             expected_payer = payload.owner or payload.payer
             if expected_payer is not None and payload.authentication.payer != expected_payer:
                 raise ValueError("session authentication payer does not match the channel payer")

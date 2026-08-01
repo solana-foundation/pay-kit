@@ -29,6 +29,7 @@
 //! never reset the voucher watermark or any other channel state.
 
 use solana_pubkey::Pubkey;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
 use crate::mpp::error::{Error, Result};
@@ -45,6 +46,29 @@ use crate::mpp::store::{
 };
 
 // ── Configuration ──
+
+/// Verified outer challenge facts required while opening a session.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionOpenContext<'a> {
+    /// ID of the challenge echoed by the opening credential.
+    pub challenge_id: &'a str,
+    /// Standard challenge expiry from the `expires` auth-param.
+    pub expires: Option<&'a str>,
+}
+
+impl SessionOpenContext<'_> {
+    fn ensure_not_expired(self) -> Result<()> {
+        let Some(expires) = self.expires else {
+            return Ok(());
+        };
+        let expiry = OffsetDateTime::parse(expires, &Rfc3339)
+            .map_err(|_| Error::ChallengeExpired(expires.to_string()))?;
+        if expiry <= OffsetDateTime::now_utc() {
+            return Err(Error::ChallengeExpired(expires.to_string()));
+        }
+        Ok(())
+    }
+}
 
 /// A payment split committed at channel open; distributed at close.
 #[derive(Debug, Clone)]
@@ -508,13 +532,24 @@ impl<S: ChannelStore> SessionServer<S> {
     /// returned unchanged — the voucher watermark is never reset. Opens for an
     /// existing channel are rejected when the channel is sealed or when the
     /// payload's authorized signer differs from the stored one.
-    pub async fn process_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
-        Ok(self.process_open_with_outcome(payload).await?.state)
+    pub async fn process_open(
+        &self,
+        payload: &OpenPayload,
+        context: SessionOpenContext<'_>,
+    ) -> Result<ChannelState> {
+        Ok(self
+            .process_open_with_outcome(payload, context)
+            .await?
+            .state)
     }
 
     /// Process an `open` action and report whether it created channel state.
-    pub async fn process_open_with_outcome(&self, payload: &OpenPayload) -> Result<OpenAcceptance> {
-        self.process_open_inner(payload, true).await
+    pub async fn process_open_with_outcome(
+        &self,
+        payload: &OpenPayload,
+        context: SessionOpenContext<'_>,
+    ) -> Result<OpenAcceptance> {
+        self.process_open_inner(payload, context, true).await
     }
 
     /// Process an `open` action whose transaction the host already verified.
@@ -524,9 +559,13 @@ impl<S: ChannelStore> SessionServer<S> {
     /// safe for host integrations that have independently validated the exact
     /// open transaction, submitted it, and observed a successful on-chain
     /// status before calling this method.
-    pub async fn process_preverified_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
+    pub async fn process_preverified_open(
+        &self,
+        payload: &OpenPayload,
+        context: SessionOpenContext<'_>,
+    ) -> Result<ChannelState> {
         Ok(self
-            .process_preverified_open_with_outcome(payload)
+            .process_preverified_open_with_outcome(payload, context)
             .await?
             .state)
     }
@@ -535,15 +574,18 @@ impl<S: ChannelStore> SessionServer<S> {
     pub async fn process_preverified_open_with_outcome(
         &self,
         payload: &OpenPayload,
+        context: SessionOpenContext<'_>,
     ) -> Result<OpenAcceptance> {
-        self.process_open_inner(payload, false).await
+        self.process_open_inner(payload, context, false).await
     }
 
     async fn process_open_inner(
         &self,
         payload: &OpenPayload,
+        context: SessionOpenContext<'_>,
         verify_on_chain: bool,
     ) -> Result<OpenAcceptance> {
+        context.ensure_not_expired()?;
         let supports_mode = if self.config.modes.is_empty() {
             payload.mode == SessionMode::Push
         } else {
@@ -593,6 +635,12 @@ impl<S: ChannelStore> SessionServer<S> {
             let authentication = payload.authentication.as_ref().ok_or_else(|| {
                 Error::Other("operator voucher signing requires authentication".to_string())
             })?;
+            if authentication.challenge_id != context.challenge_id {
+                return Err(Error::Other(
+                    "session authentication challengeId does not match the opening challenge"
+                        .to_string(),
+                ));
+            }
             let expected_payer = payload.owner.as_ref().or(payload.payer.as_ref());
             if expected_payer.is_some_and(|payer| authentication.payer != *payer) {
                 return Err(Error::Other(
@@ -1430,6 +1478,13 @@ mod tests {
 
     const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
 
+    fn open_context() -> SessionOpenContext<'static> {
+        SessionOpenContext {
+            challenge_id: "challenge-1",
+            expires: None,
+        }
+    }
+
     fn make_server() -> SessionServer<MemoryChannelStore> {
         SessionServer::new(
             SessionConfig {
@@ -1519,7 +1574,7 @@ mod tests {
     async fn process_open_stores_state() {
         let server = make_server();
         let acceptance = server
-            .process_open_with_outcome(&open_payload("chan1", 1_000_000, "signer1"))
+            .process_open_with_outcome(&open_payload("chan1", 1_000_000, "signer1"), open_context())
             .await
             .unwrap();
         let state = acceptance.state;
@@ -1541,7 +1596,7 @@ mod tests {
         );
 
         let state = server
-            .process_preverified_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .process_preverified_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
             .await
             .unwrap();
 
@@ -1560,17 +1615,64 @@ mod tests {
         );
         let payload = open_payload("chan1", 1_000_000, &Pubkey::new_unique().to_string());
 
-        let err = server.process_preverified_open(&payload).await.unwrap_err();
+        let err = server
+            .process_preverified_open(&payload, open_context())
+            .await
+            .unwrap_err();
         assert!(err
             .to_string()
             .contains("operator voucher signing requires authorizedSigner to match the operator"));
     }
 
     #[tokio::test]
+    async fn operator_open_binds_authentication_to_opening_challenge() {
+        let operator = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let payer = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let operator_address = bs58::encode(operator.verifying_key().as_bytes()).into_string();
+        let mut payload = open_payload("chan1", 1_000_000, &operator_address);
+        payload.payer = Some(bs58::encode(payer.verifying_key().as_bytes()).into_string());
+        payload.authentication = Some(
+            crate::mpp::SessionAuthentication::sign("different-challenge", "chan1", &payer)
+                .unwrap(),
+        );
+        let server = SessionServer::new(
+            SessionConfig {
+                operator: operator_address,
+                voucher_signer: VoucherSigner::Operator,
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+
+        let error = server
+            .process_preverified_open(&payload, open_context())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("challengeId does not match"));
+    }
+
+    #[tokio::test]
+    async fn process_open_rejects_expired_opening_challenge() {
+        let server = make_server();
+        let context = SessionOpenContext {
+            challenge_id: "challenge-1",
+            expires: Some("2000-01-01T00:00:00Z"),
+        };
+
+        let error = server
+            .process_preverified_open(&open_payload("chan1", 1_000_000, "signer1"), context)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ChallengeExpired(_)));
+    }
+
+    #[tokio::test]
     async fn process_open_zero_deposit_rejected() {
         let server = make_server();
         assert!(server
-            .process_open(&open_payload("chan1", 0, "signer1"))
+            .process_open(&open_payload("chan1", 0, "signer1"), open_context())
             .await
             .is_err());
     }
@@ -1579,7 +1681,10 @@ mod tests {
     async fn process_open_exceeds_cap_rejected() {
         let server = make_server();
         assert!(server
-            .process_open(&open_payload("chan1", 20_000_000, "signer1"))
+            .process_open(
+                &open_payload("chan1", 20_000_000, "signer1"),
+                open_context(),
+            )
             .await
             .is_err());
     }
@@ -1601,7 +1706,10 @@ mod tests {
             "pending".to_string(),
         );
 
-        let err = server.process_open(&payload).await.unwrap_err();
+        let err = server
+            .process_open(&payload, open_context())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not supported"));
     }
 
@@ -1629,7 +1737,7 @@ mod tests {
             "pending".to_string(),
         );
 
-        let state = server.process_open(&payload).await.unwrap();
+        let state = server.process_open(&payload, open_context()).await.unwrap();
         assert_eq!(state.channel_id, "chan1");
         assert_eq!(state.deposit, 1_000_000);
     }
@@ -1872,7 +1980,7 @@ mod tests {
     async fn process_open_exactly_at_cap_accepted() {
         let server = make_server();
         let state = server
-            .process_open(&open_payload("chan1", 10_000_000, "s"))
+            .process_open(&open_payload("chan1", 10_000_000, "s"), open_context())
             .await
             .unwrap();
         assert_eq!(state.deposit, 10_000_000);
@@ -1882,7 +1990,7 @@ mod tests {
     async fn process_open_replay_does_not_reset_watermark() {
         let server = make_server();
         let payload = open_payload("chan1", 1_000_000, "signer1");
-        server.process_open(&payload).await.unwrap();
+        server.process_open(&payload, open_context()).await.unwrap();
 
         // Simulate accepted vouchers advancing the watermark.
         server
@@ -1903,7 +2011,10 @@ mod tests {
             .unwrap();
 
         // Replayed open (re-passes all open checks) must not mutate state.
-        let acceptance = server.process_open_with_outcome(&payload).await.unwrap();
+        let acceptance = server
+            .process_open_with_outcome(&payload, open_context())
+            .await
+            .unwrap();
         let state = acceptance.state;
         assert!(acceptance.replay);
         assert_eq!(state.cumulative, 750_000);
@@ -1925,12 +2036,12 @@ mod tests {
     async fn process_open_existing_channel_mismatched_signer_rejected() {
         let server = make_server();
         server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
             .await
             .unwrap();
 
         let err = server
-            .process_open(&open_payload("chan1", 1_000_000, "signer2"))
+            .process_open(&open_payload("chan1", 1_000_000, "signer2"), open_context())
             .await
             .unwrap_err();
         assert!(
@@ -1943,10 +2054,13 @@ mod tests {
     async fn process_open_on_sealed_channel_rejected() {
         let server = make_server();
         let payload = open_payload("chan1", 1_000_000, "signer1");
-        server.process_open(&payload).await.unwrap();
+        server.process_open(&payload, open_context()).await.unwrap();
         server.mark_sealed("chan1").await.unwrap();
 
-        let err = server.process_open(&payload).await.unwrap_err();
+        let err = server
+            .process_open(&payload, open_context())
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("sealed"),
             "Expected sealed error, got: {err}"
@@ -1961,7 +2075,10 @@ mod tests {
         let server = make_server();
         let (_session, authorized_signer, channel_id, _channel) = make_e2e_session();
         server
-            .process_open(&open_payload(&channel_id, 1_000, &authorized_signer))
+            .process_open(
+                &open_payload(&channel_id, 1_000, &authorized_signer),
+                open_context(),
+            )
             .await
             .unwrap();
 
@@ -1998,7 +2115,10 @@ mod tests {
         let server = make_server();
         let (mut session, authorized_signer, channel_id, _channel) = make_e2e_session();
         server
-            .process_open(&open_payload(&channel_id, 1_000, &authorized_signer))
+            .process_open(
+                &open_payload(&channel_id, 1_000, &authorized_signer),
+                open_context(),
+            )
             .await
             .unwrap();
         let directive = server
@@ -2037,7 +2157,10 @@ mod tests {
         let server = make_server();
         let (mut session, authorized_signer, channel_id, _channel) = make_e2e_session();
         server
-            .process_open(&open_payload(&channel_id, 1_000, &authorized_signer))
+            .process_open(
+                &open_payload(&channel_id, 1_000, &authorized_signer),
+                open_context(),
+            )
             .await
             .unwrap();
         let directive = server
@@ -2062,7 +2185,10 @@ mod tests {
         let server = make_server();
         let (mut session, authorized_signer, channel_id, _channel) = make_e2e_session();
         server
-            .process_open(&open_payload(&channel_id, 1_000, &authorized_signer))
+            .process_open(
+                &open_payload(&channel_id, 1_000, &authorized_signer),
+                open_context(),
+            )
             .await
             .unwrap();
         let directive = server
@@ -2225,7 +2351,10 @@ mod tests {
         let server = make_server();
         let (mut session, auth_signer, chan_str, _) = make_e2e_session();
         server
-            .process_open(&open_payload(&chan_str, 5_000_000, &auth_signer))
+            .process_open(
+                &open_payload(&chan_str, 5_000_000, &auth_signer),
+                open_context(),
+            )
             .await
             .unwrap();
 
@@ -2243,7 +2372,10 @@ mod tests {
         let server = make_server();
         let (mut session, auth_signer, chan_str, _) = make_e2e_session();
         server
-            .process_open(&open_payload(&chan_str, 5_000_000, &auth_signer))
+            .process_open(
+                &open_payload(&chan_str, 5_000_000, &auth_signer),
+                open_context(),
+            )
             .await
             .unwrap();
 
@@ -2286,7 +2418,7 @@ mod tests {
     async fn verify_voucher_stale_cumulative_rejected() {
         let server = make_server();
         server
-            .process_open(&open_payload("chan1", 5_000_000, "signer1"))
+            .process_open(&open_payload("chan1", 5_000_000, "signer1"), open_context())
             .await
             .unwrap();
 
@@ -2315,7 +2447,7 @@ mod tests {
     async fn verify_voucher_exceeds_deposit_rejected() {
         let server = make_server();
         server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
             .await
             .unwrap();
 
@@ -2337,7 +2469,7 @@ mod tests {
     async fn verify_voucher_bad_cumulative_format_rejected() {
         let server = make_server();
         server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
             .await
             .unwrap();
 
@@ -2362,7 +2494,10 @@ mod tests {
         let server = make_server();
         let (mut session, auth_signer, chan_str, _) = make_e2e_session();
         server
-            .process_open(&open_payload(&chan_str, 5_000_000, &auth_signer))
+            .process_open(
+                &open_payload(&chan_str, 5_000_000, &auth_signer),
+                open_context(),
+            )
             .await
             .unwrap();
 
@@ -2380,7 +2515,7 @@ mod tests {
     async fn verify_voucher_on_sealed_channel_rejected() {
         let server = make_server();
         server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
             .await
             .unwrap();
         server.mark_sealed("chan1").await.unwrap();
@@ -2406,7 +2541,7 @@ mod tests {
         let server = make_server();
         let chan = "chan1";
         server
-            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2426,7 +2561,7 @@ mod tests {
         let server = make_server();
         let chan = "chan1";
         server
-            .process_open(&open_payload(chan, 3_000_000, "s"))
+            .process_open(&open_payload(chan, 3_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2445,7 +2580,7 @@ mod tests {
         let server = make_server();
         let chan = "chan1";
         server
-            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2464,7 +2599,7 @@ mod tests {
         let server = make_server();
         let chan = "chan1";
         server
-            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2496,7 +2631,7 @@ mod tests {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
         server
-            .process_open(&open_payload(&chan, 1_000_000, "s"))
+            .process_open(&open_payload(&chan, 1_000_000, "s"), open_context())
             .await
             .unwrap();
         server
@@ -2527,7 +2662,7 @@ mod tests {
         let server = make_server();
         let chan = "chan1";
         server
-            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
             .await
             .unwrap();
         server.mark_sealed(chan).await.unwrap();
@@ -2553,7 +2688,7 @@ mod tests {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
         server
-            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2574,7 +2709,10 @@ mod tests {
         let server = make_server();
         let (mut session, auth_signer, chan_str, _) = make_e2e_session();
         server
-            .process_open(&open_payload(&chan_str, 5_000_000, &auth_signer))
+            .process_open(
+                &open_payload(&chan_str, 5_000_000, &auth_signer),
+                open_context(),
+            )
             .await
             .unwrap();
 
@@ -2619,7 +2757,7 @@ mod tests {
         let channel = Pubkey::new_unique();
         let chan_str = bs58::encode(channel.as_ref()).into_string();
         server
-            .process_open(&open_payload(&chan_str, 5_000_000, "s"))
+            .process_open(&open_payload(&chan_str, 5_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2652,7 +2790,7 @@ mod tests {
     async fn mark_sealed_sets_flag() {
         let server = make_server();
         server
-            .process_open(&open_payload("chan1", 1_000_000, "s"))
+            .process_open(&open_payload("chan1", 1_000_000, "s"), open_context())
             .await
             .unwrap();
         server.mark_sealed("chan1").await.unwrap();
@@ -2806,7 +2944,7 @@ mod tests {
     async fn verify_voucher_min_delta_enforced() {
         let server = make_server_with_min_delta(500_000);
         server
-            .process_open(&open_payload("chan1", 5_000_000, "signer1"))
+            .process_open(&open_payload("chan1", 5_000_000, "signer1"), open_context())
             .await
             .unwrap();
 
@@ -2837,7 +2975,7 @@ mod tests {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
         server
-            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2878,7 +3016,7 @@ mod tests {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
         server
-            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
             .await
             .unwrap();
 
@@ -2905,7 +3043,7 @@ mod tests {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
         server
-            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
             .await
             .unwrap();
 
