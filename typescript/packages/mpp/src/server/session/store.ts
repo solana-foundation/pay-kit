@@ -43,8 +43,6 @@ export interface CommittedDelivery {
 export interface ChannelState {
     /** Reusable payer proof bound at open for operator-signed vouchers. */
     readonly authentication?: SessionAuthentication | undefined;
-    /** RFC3339 expiry of `authentication`. */
-    readonly authenticationExpires?: string | undefined;
     /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
     /**

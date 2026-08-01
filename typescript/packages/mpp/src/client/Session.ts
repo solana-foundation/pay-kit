@@ -70,8 +70,6 @@ export interface SessionSplit {
  * Request embedded in a Solana `session` challenge.
  */
 export interface SessionRequest extends Record<string, unknown> {
-    /** RFC3339 expiry of an operator-mode reusable proof. */
-    readonly authenticationExpires?: string | undefined;
     /** Maximum the session may spend, in base units. */
     readonly cap: string;
     /** Currency identifier: a symbol like `'USDC'` or an SPL mint address. */

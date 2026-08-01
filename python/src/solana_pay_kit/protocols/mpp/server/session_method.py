@@ -427,9 +427,6 @@ class Session:
         )
         if not challenge.verify(self._secret_key):
             raise ChallengeMismatchError()
-        if challenge.is_expired():
-            raise ChallengeExpiredError(f"challenge expired at {challenge.expires}")
-
         from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
 
         request = SessionRequest.from_dict(challenge.decode_request())
@@ -441,6 +438,8 @@ class Session:
             raise PaymentError(f"decode session action: {exc}", code="invalid-payload") from exc
 
         if action.open is not None:
+            if challenge.is_expired():
+                raise ChallengeExpiredError(f"challenge expired at {challenge.expires}")
             # Challenge-bound recentSlot sanity check: the server stamped the
             # challenge's recentSlot, so an open that claims a different one is
             # rejected here alongside the other pinned-field checks (the

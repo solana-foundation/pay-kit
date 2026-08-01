@@ -56,7 +56,11 @@ async function makeSignedVoucher(
     return { data, signature: getBase58Decoder().decode(new Uint8Array(sigBytes)) };
 }
 
-function makeCred<P>(payload: P, requestOverrides: Record<string, unknown> = {}) {
+function makeCred<P>(
+    payload: P,
+    requestOverrides: Record<string, unknown> = {},
+    challengeOverrides: Record<string, unknown> = {},
+) {
     return {
         challenge: {
             id: 'challenge-id-123',
@@ -70,6 +74,7 @@ function makeCred<P>(payload: P, requestOverrides: Record<string, unknown> = {})
                 recipient: RECIPIENT,
                 ...requestOverrides,
             },
+            ...challengeOverrides,
         },
         payload,
     } as unknown as Parameters<NonNullable<ReturnType<typeof session>['verify']>>[0]['credential'];
@@ -195,6 +200,35 @@ describe('session() request()', () => {
 // ── verify() — open ─────────────────────────────────────────────────────
 
 describe('session() verify() open', () => {
+    test('rejects an expired challenge when opening', async () => {
+        const method = session({
+            cap: 5_000_000n,
+            currency: 'USDC',
+            network: 'devnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+        });
+
+        await expect(
+            method.verify({
+                credential: makeCred(
+                    {
+                        action: 'open',
+                        authorizedSigner: OPERATOR,
+                        channelId: '11111111111111111111111111111111',
+                        deposit: '1000000',
+                        mode: 'push',
+                        signature: 'sig-1',
+                    },
+                    {},
+                    { expires: '2000-01-01T00:00:00Z' },
+                ),
+                request: {} as never,
+            }),
+        ).rejects.toThrow('challenge expired');
+    });
+
     test('open without transaction trusts channelId+deposit', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
@@ -286,7 +320,7 @@ describe('session() verify() open', () => {
 // ── verify() — voucher ────────────────────────────────────────────────
 
 describe('session() verify() voucher', () => {
-    test('accepted voucher advances watermark', async () => {
+    test('accepted voucher advances watermark after the opening challenge expires', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
@@ -314,7 +348,7 @@ describe('session() verify() voucher', () => {
 
         const voucher = await makeSignedVoucher(signer, channelId, 250n);
         const receipt = await method.verify({
-            credential: makeCred({ action: 'voucher', voucher }),
+            credential: makeCred({ action: 'voucher', voucher }, {}, { expires: '2000-01-01T00:00:00Z' }),
             request: {} as never,
         });
         expect(receipt.status).toBe('success');

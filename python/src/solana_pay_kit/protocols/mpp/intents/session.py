@@ -275,7 +275,6 @@ class SessionRequest:
     program_id: str | None = None
     description: str | None = None
     external_id: str | None = None
-    authentication_expires: str | None = None
     min_voucher_delta: str | None = None
     idle_timeout_options_seconds: list[int] | None = None
     idle_timeout_seconds: int | None = None
@@ -304,8 +303,6 @@ class SessionRequest:
             d["description"] = self.description
         if self.external_id is not None:
             d["externalId"] = self.external_id
-        if self.authentication_expires is not None:
-            d["authenticationExpires"] = self.authentication_expires
         if self.min_voucher_delta is not None:
             d["minVoucherDelta"] = self.min_voucher_delta
         if self.modes:
@@ -357,7 +354,6 @@ class SessionRequest:
             program_id=data.get("programId"),
             description=data.get("description"),
             external_id=data.get("externalId"),
-            authentication_expires=data.get("authenticationExpires"),
             min_voucher_delta=data.get("minVoucherDelta"),
             idle_timeout_options_seconds=timeout_options,
             idle_timeout_seconds=(

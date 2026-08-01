@@ -118,7 +118,6 @@ export function session(parameters: session.Parameters) {
         splits,
         pricing,
         rpc,
-        authenticationExpires,
         idleTimeoutOptionsSeconds,
         idleTimeoutSeconds = 300,
         minVoucherDelta,
@@ -152,9 +151,6 @@ export function session(parameters: session.Parameters) {
     }
     if (idleTimeoutOptionsSeconds) validateIdleTimeoutOptions(idleTimeoutOptionsSeconds);
     resolveIdleTimeoutSeconds({ defaultSeconds: idleTimeoutSeconds, options: idleTimeoutOptionsSeconds });
-    if (authenticationExpires && Number.isNaN(Date.parse(authenticationExpires))) {
-        throw new Error('authenticationExpires must be an RFC3339 timestamp');
-    }
     if (voucherSigner === 'operator' && !operatorVoucherSigner) {
         throw new Error('operatorVoucherSigner is required when voucherSigner is operator');
     }
@@ -256,7 +252,6 @@ export function session(parameters: session.Parameters) {
                 ...(decimals !== undefined ? { decimals } : {}),
                 ...(request.description ? { description: request.description } : {}),
                 ...(request.externalId ? { externalId: request.externalId } : {}),
-                ...(authenticationExpires ? { authenticationExpires } : {}),
                 ...(idleTimeoutOptionsSeconds ? { idleTimeoutOptionsSeconds: [...idleTimeoutOptionsSeconds] } : {}),
                 ...(minVoucherDelta !== undefined && minVoucherDelta > 0n
                     ? { minVoucherDelta: minVoucherDelta.toString() }
@@ -283,8 +278,8 @@ export function session(parameters: session.Parameters) {
 
             switch (action) {
                 case 'open':
+                    assertChallengeOpenNotExpired(cred.challenge.expires);
                     return await handleOpen({
-                        authenticationExpires,
                         cap,
                         challengeId: cred.challenge.id,
                         challengeOpenSlot: parseOptionalU64(cred.challenge.request.recentSlot, 'recentSlot'),
@@ -379,6 +374,13 @@ export function session(parameters: session.Parameters) {
     return method;
 }
 
+function assertChallengeOpenNotExpired(expires: string | undefined): void {
+    if (expires === undefined) return;
+    const expiresAt = Date.parse(expires);
+    if (Number.isNaN(expiresAt)) throw new Error('challenge expires must be an RFC3339 timestamp');
+    if (expiresAt <= Date.now()) throw new Error(`challenge expired at ${expires}`);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Routes — side-channel HTTP endpoints for deliveries / commit.
 // ─────────────────────────────────────────────────────────────────────
@@ -449,7 +451,6 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
 // ─────────────────────────────────────────────────────────────────────
 
 interface HandleOpenArgs {
-    readonly authenticationExpires: string | undefined;
     readonly cap: bigint;
     readonly challengeId: string | undefined;
     /** Slot issued in the 402 challenge; the open tx must echo it. */
@@ -623,9 +624,6 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         if (expectedPayer && authentication.payer !== expectedPayer) {
             throw new Error('session authentication payer does not match the channel payer');
         }
-        if (args.authenticationExpires && Date.parse(args.authenticationExpires) <= Date.now()) {
-            throw new Error('session authentication has expired');
-        }
         if (!(await verifySessionAuthentication(authentication, channelId))) {
             throw new Error('invalid session authentication signature');
         }
@@ -633,7 +631,6 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
 
     const newState: ChannelState = {
         authentication: payload.authentication,
-        authenticationExpires: args.authenticationExpires,
         authorizedSigner: payload.authorizedSigner,
         channelId,
         closeRequestedAt: undefined,
@@ -720,9 +717,6 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
     }
     if (JSON.stringify(args.payload.authentication) !== JSON.stringify(existing.authentication)) {
         throw new Error('session authentication does not match the proof bound at open');
-    }
-    if (existing.authenticationExpires && Date.parse(existing.authenticationExpires) <= Date.now()) {
-        throw new Error('session authentication has expired');
     }
     if (!(await verifySessionAuthentication(args.payload.authentication, args.payload.channelId))) {
         throw new Error('invalid session authentication signature');
@@ -1372,6 +1366,7 @@ export type SubmitOpenRpc = VerifyOpenRpc & {
 
 type CredentialPayload = {
     challenge: {
+        expires?: string;
         id?: string;
         request: SessionRequest;
     };
@@ -1406,8 +1401,6 @@ export declare namespace session {
     }
 
     interface Parameters {
-        /** RFC3339 expiry applied to reusable operator-mode proofs. */
-        readonly authenticationExpires?: string;
         /** Maximum session cap the server will offer (base units). */
         readonly cap: bigint;
         /** Currency identifier (e.g. 'USDC' or an SPL mint address). */

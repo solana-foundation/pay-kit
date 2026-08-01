@@ -29,7 +29,6 @@
 //! never reset the voucher watermark or any other channel state.
 
 use solana_pubkey::Pubkey;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
 use crate::mpp::error::{Error, Result};
@@ -46,21 +45,6 @@ use crate::mpp::store::{
 };
 
 // ── Configuration ──
-
-fn ensure_authentication_not_expired(expires: Option<&str>) -> Result<()> {
-    let Some(expires) = expires else {
-        return Ok(());
-    };
-    let expiry = OffsetDateTime::parse(expires, &Rfc3339).map_err(|_| {
-        Error::Other("authenticationExpires must be an RFC3339 timestamp".to_string())
-    })?;
-    if expiry <= OffsetDateTime::now_utc() {
-        return Err(Error::Other(
-            "session authentication has expired".to_string(),
-        ));
-    }
-    Ok(())
-}
 
 /// A payment split committed at channel open; distributed at close.
 #[derive(Debug, Clone)]
@@ -132,9 +116,6 @@ pub struct SessionConfig {
     /// Voucher signing authority, independent of transaction submission mode.
     pub voucher_signer: VoucherSigner,
 
-    /// RFC3339 expiry applied to reusable operator-mode proofs.
-    pub authentication_expires: Option<String>,
-
     /// Inactivity thresholds offered for a new channel.
     pub idle_timeout_options_seconds: Option<Vec<u32>>,
 
@@ -179,7 +160,6 @@ impl Default for SessionConfig {
             program_id: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
-            authentication_expires: None,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
@@ -367,7 +347,6 @@ impl<S: ChannelStore> SessionServer<S> {
             } else {
                 None
             },
-            authentication_expires: self.config.authentication_expires.clone(),
             voucher_signer: self.config.voucher_signer,
             idle_timeout_options_seconds: self.config.idle_timeout_options_seconds.clone(),
             idle_timeout_seconds: None,
@@ -614,7 +593,6 @@ impl<S: ChannelStore> SessionServer<S> {
             let authentication = payload.authentication.as_ref().ok_or_else(|| {
                 Error::Other("operator voucher signing requires authentication".to_string())
             })?;
-            ensure_authentication_not_expired(self.config.authentication_expires.as_deref())?;
             let expected_payer = payload.owner.as_ref().or(payload.payer.as_ref());
             if expected_payer.is_some_and(|payer| authentication.payer != *payer) {
                 return Err(Error::Other(
@@ -1452,12 +1430,6 @@ mod tests {
 
     const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
 
-    #[test]
-    fn rejects_expired_session_authentication() {
-        let error = ensure_authentication_not_expired(Some("2000-01-01T00:00:00Z")).unwrap_err();
-        assert!(error.to_string().contains("authentication has expired"));
-    }
-
     fn make_server() -> SessionServer<MemoryChannelStore> {
         SessionServer::new(
             SessionConfig {
@@ -1471,7 +1443,6 @@ mod tests {
                 program_id: None,
                 min_voucher_delta: 0,
                 voucher_signer: VoucherSigner::Client,
-                authentication_expires: None,
                 idle_timeout_options_seconds: None,
                 idle_timeout_seconds: 300,
                 grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
@@ -1496,7 +1467,6 @@ mod tests {
                 program_id: None,
                 min_voucher_delta: min_delta,
                 voucher_signer: VoucherSigner::Client,
-                authentication_expires: None,
                 idle_timeout_options_seconds: None,
                 idle_timeout_seconds: 300,
                 grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
@@ -2154,7 +2124,6 @@ mod tests {
             program_id: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
-            authentication_expires: None,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
@@ -2181,7 +2150,6 @@ mod tests {
             program_id: None,
             min_voucher_delta: 500,
             voucher_signer: VoucherSigner::Client,
-            authentication_expires: None,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
@@ -2214,7 +2182,6 @@ mod tests {
             program_id: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
-            authentication_expires: None,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,

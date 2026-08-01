@@ -290,9 +290,6 @@ export const session = Method.from({
             ]),
         },
         request: z.object({
-            /** RFC3339 expiry of an operator-mode reusable proof. */
-            authenticationExpires: z.optional(z.string()),
-
             /** Maximum total amount the client may spend in this session, in base units. */
             cap: z.string(),
 

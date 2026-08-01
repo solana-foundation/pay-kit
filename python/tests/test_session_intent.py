@@ -69,7 +69,6 @@ def test_session_request_uses_new_voucher_signer_and_idle_fields_only():
         operator="operator",
         recipient="recipient",
         voucher_signer="operator",
-        authentication_expires="2030-01-01T00:00:00Z",
         idle_timeout_options_seconds=[30, 600],
     )
     wire = request.to_dict()

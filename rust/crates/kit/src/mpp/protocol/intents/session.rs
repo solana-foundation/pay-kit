@@ -206,12 +206,6 @@ pub enum SessionPullVoucherStrategy {
 /// Describes the channel parameters: cap, currency, splits, network, etc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRequest {
-    /// RFC3339 expiry of the reusable proof in operator mode.
-    #[serde(
-        rename = "authenticationExpires",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub authentication_expires: Option<String>,
     /// Maximum total amount the client may spend in this session (base units).
     pub cap: String,
 
@@ -1093,7 +1087,6 @@ mod tests {
             description: Some("API session".to_string()),
             external_id: None,
             min_voucher_delta: None,
-            authentication_expires: None,
             voucher_signer: SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,
@@ -1135,7 +1128,6 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            authentication_expires: None,
             voucher_signer: SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,
@@ -1167,7 +1159,6 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            authentication_expires: None,
             voucher_signer: SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,
@@ -1213,7 +1204,6 @@ mod tests {
             description: None,
             external_id: Some("ref-1".to_string()),
             min_voucher_delta: None,
-            authentication_expires: None,
             voucher_signer: SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,
@@ -1773,7 +1763,6 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: Some("500".to_string()),
-            authentication_expires: None,
             voucher_signer: SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,
@@ -1802,7 +1791,6 @@ mod tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            authentication_expires: None,
             voucher_signer: SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,

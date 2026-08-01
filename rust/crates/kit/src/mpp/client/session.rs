@@ -1007,7 +1007,6 @@ mod open_tests {
             description: None,
             external_id: None,
             min_voucher_delta: None,
-            authentication_expires: None,
             voucher_signer: crate::mpp::SessionVoucherSigner::Client,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: None,

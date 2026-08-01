@@ -348,6 +348,28 @@ async def test_verify_credential_rejects_tampered_and_expired_challenges() -> No
         await session.verify_credential(expired_credential)
 
 
+async def test_verify_credential_allows_channel_activity_after_challenge_expiry() -> None:
+    session = _new_test_session()
+    signer, channel_id = await _open_trusted_channel(session, 1_000)
+    voucher = signer.sign_voucher(channel_id, 250, _far_future())
+    action = SessionAction.voucher_action(VoucherPayload(voucher=voucher))
+    request = session.core().build_challenge_request(1_000)
+    expired = PaymentChallenge.with_secret_key(
+        secret_key=SESSION_METHOD_SECRET,
+        realm="api.test",
+        method="solana",
+        intent="session",
+        request=PaymentChallenge.encode_request(request.to_dict()),
+        expires="2020-01-01T00:00:00Z",
+    )
+
+    receipt = await session.verify_credential(
+        PaymentCredential(challenge=expired.to_echo(), payload=action.to_dict())
+    )
+
+    assert receipt.reference == f"{channel_id}:250"
+
+
 async def test_verify_credential_pinned_field_backstop() -> None:
     """Mirrors TestVerifyCredentialPinnedFieldBackstop."""
     session = _new_test_session()
