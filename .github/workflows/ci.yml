@@ -204,6 +204,12 @@ jobs:
       # See .github/actions/setup-harness/action.yml for why the key must not
       # hash only the gitignored lockfile: a constant key froze this cache at
       # its first save and cargo rebuilt all ~890 crates on every run.
+      #
+      # The `-cov` namespace is load-bearing: this job builds coverage-
+      # instrumented artifacts under target/llvm-cov-target, while the E2E
+      # job below builds plain ones. Under a shared key the shorter E2E job
+      # wins the save race every time, this job restores artifacts it cannot
+      # use, and the instrumented build never gets cached at all.
       - name: Compute cargo cache key
         id: cargo-key
         run: echo "rustc=$(rustc -V | tr -d ' ()')" >> "$GITHUB_OUTPUT"
@@ -213,8 +219,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-rust-${{ steps.cargo-key.outputs.rustc }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
-          restore-keys: ${{ runner.os }}-cargo-rust-${{ steps.cargo-key.outputs.rustc }}-
+          key: ${{ runner.os }}-cargo-rust-cov-${{ steps.cargo-key.outputs.rustc }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-rust-cov-${{ steps.cargo-key.outputs.rustc }}-
       - name: Download HTML assets
         uses: actions/download-artifact@v7
         with:
