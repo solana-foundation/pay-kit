@@ -464,9 +464,9 @@ describe('verifyOpenTx binds distributionSplits to the challenge', () => {
             salt: 7n,
             signer: payer,
         });
-        const declaredSplits = (openRecipients ?? challengedSplits.map(s => ({ bps: s.shareBps, recipient: s.recipient }))).map(
-            entry => ({ recipient: entry.recipient, shareBps: entry.bps }),
-        );
+        const declaredSplits = (
+            openRecipients ?? challengedSplits.map(s => ({ bps: s.shareBps, recipient: s.recipient }))
+        ).map(entry => ({ recipient: entry.recipient, shareBps: entry.bps }));
         const openPayload = {
             authorizedSigner: sessionSigner.address,
             channelId: open.channelId,

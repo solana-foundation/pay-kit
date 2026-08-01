@@ -242,9 +242,9 @@ describe('verifyOpenTx binds the open instruction to the challenge', () => {
 
     test('rejects a mint that does not match the challenge currency', async () => {
         const { expected, openPayload } = await verifiedOpenFixture();
-        await expect(
-            verifyOpenTx({ expected: { ...expected, mint: USDC_MAINNET_MINT }, openPayload }),
-        ).rejects.toThrow(/mint .* != expected mint/);
+        await expect(verifyOpenTx({ expected: { ...expected, mint: USDC_MAINNET_MINT }, openPayload })).rejects.toThrow(
+            /mint .* != expected mint/,
+        );
     });
 
     test('rejects a token program that does not match the challenge', async () => {
@@ -288,9 +288,9 @@ describe('verifyOpenTx binds the open instruction to the challenge', () => {
 
     test('rejects a deposit below the challenged minimumDeposit', async () => {
         const { expected, openPayload } = await verifiedOpenFixture();
-        await expect(
-            verifyOpenTx({ expected: { ...expected, minimumDeposit: 5_001n }, openPayload }),
-        ).rejects.toThrow(/deposit 5000 is below minimumDeposit 5001/);
+        await expect(verifyOpenTx({ expected: { ...expected, minimumDeposit: 5_001n }, openPayload })).rejects.toThrow(
+            /deposit 5000 is below minimumDeposit 5001/,
+        );
     });
 
     test('rejects a declared depositAmount that disagrees with the instruction', async () => {
