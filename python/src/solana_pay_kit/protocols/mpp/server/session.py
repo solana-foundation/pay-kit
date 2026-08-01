@@ -535,16 +535,20 @@ class SessionServer:
 
         if self._config.verify_open_tx is None:
             raise ValueError("open transaction verification requires a configured RPC verifier")
-        try:
-            await self._config.verify_open_tx(payload, context)
-        except Exception as exc:
-            raise _wrap("open tx verification failed", exc) from exc
-
+        # Resolve the negotiated idle timeout BEFORE the verifier broadcasts
+        # the funding transaction: an unsupported selection must fail while
+        # the deposit is still in the client's wallet, not after the funds are
+        # locked in escrow (mirrors the Rust and TS ordering).
         effective_idle_timeout = resolve_idle_timeout_seconds(
             self._config.idle_timeout_seconds,
             self._config.idle_timeout_options_seconds,
             payload.idle_timeout_seconds,
         )
+        try:
+            await self._config.verify_open_tx(payload, context)
+        except Exception as exc:
+            raise _wrap("open tx verification failed", exc) from exc
+
         now_ms = int(time.time() * 1000)
         fresh = ChannelState(
             channel_id=session_id,
@@ -761,6 +765,19 @@ class SessionServer:
         if additional_amount == 0:
             raise ValueError("additionalAmount must be greater than zero")
 
+        channel_id = payload.channel_id
+
+        from solana_pay_kit.protocols.mpp.server.session_onchain import top_up_transaction_signature
+
+        topup_signature = top_up_transaction_signature(payload.transaction)
+        if topup_signature is not None:
+            existing = await self._store.get_channel(channel_id)
+            if existing is not None and topup_signature in existing.processed_topup_signatures:
+                # Idempotent replay: this exact transaction was already
+                # credited, so report the stored state without re-broadcasting
+                # (a re-broadcast of a landed transaction fails at preflight).
+                return existing
+
         # On-chain verification seam (same shape as process_open).
         if self._config.verify_top_up_tx is None:
             raise ValueError("top-up transaction verification requires a configured RPC verifier")
@@ -769,11 +786,15 @@ class SessionServer:
         except Exception as exc:
             raise _wrap("top-up tx verification failed", exc) from exc
 
-        channel_id = payload.channel_id
-
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise ValueError(f"channel {channel_id} not found")
+            # Signature dedupe must live inside the atomic mutator: two
+            # in-flight submissions of the same signed top-up both confirm
+            # the same landed transaction, so only the first check-and-record
+            # may credit the deposit.
+            if topup_signature is not None and topup_signature in current.processed_topup_signatures:
+                return current.clone()
             if current.sealed:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
@@ -783,6 +804,8 @@ class SessionServer:
             nxt = current.clone()
             nxt.deposit = current.deposit + additional_amount
             nxt.last_activity_at = int(time.time() * 1000)
+            if topup_signature is not None:
+                nxt.processed_topup_signatures = [*current.processed_topup_signatures, topup_signature]
             return nxt
 
         return await self._store.update_channel(channel_id, mutator)
@@ -1011,9 +1034,7 @@ class SessionServer:
                     raise ValueError("operator close requires authentication")
                 if current.authentication is None:
                     if not current.opening_challenge_id:
-                        raise ValueError(
-                            "session channel predates proof binding; the lifecycle worker will close it"
-                        )
+                        raise ValueError("session channel predates proof binding; the lifecycle worker will close it")
                     raise ValueError("operator close requires authentication")
                 if payload.authentication.to_dict() != current.authentication:
                     raise ValueError("session authentication does not match the proof bound at open")

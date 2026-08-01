@@ -586,6 +586,66 @@ async def test_commit_rejects_expired_and_over_reserved_vouchers() -> None:
         await server.process_commit(CommitPayload(valid.delivery_id, _voucher(150)))
 
 
+async def test_open_rejects_unsupported_idle_timeout_before_broadcast() -> None:
+    """An unsupported idle-timeout selection must fail before the verifier
+    broadcasts the funding transaction: afterwards the deposit is locked in
+    escrow and every retry fails the same way (mirrors the Rust/TS ordering)."""
+    config = _config()
+    broadcasts: list[str] = []
+
+    async def verify_open(payload: OpenPayload, _: object) -> None:
+        broadcasts.append(payload.channel_id)
+
+    config.verify_open_tx = verify_open
+    challenge = await _challenge(config)
+    payload = _open(config, challenge)
+    payload.idle_timeout_seconds = 999
+    server = SessionServer(config, MemoryChannelStore())
+    with pytest.raises(ValueError, match="idleTimeoutSeconds"):
+        await server.process_open(payload, challenge)
+    assert broadcasts == []
+
+
+async def test_top_up_credits_exactly_once_per_transaction_signature() -> None:
+    """The same signed top-up transaction submitted twice (a retry after a
+    lost response, or two in-flight duplicates) must credit the deposit
+    exactly once; a distinct transaction still credits."""
+    import base64
+
+    from solders.hash import Hash
+    from solders.message import Message
+    from solders.system_program import TransferParams, transfer
+    from solders.transaction import Transaction
+
+    server, _, _ = await _server()
+    payer = Keypair.from_seed(bytes([31] * 32))
+
+    def wire(blockhash: Hash) -> tuple[str, str]:
+        # Any decodable signed wire transaction works here: the on-chain
+        # verifier seam is stubbed by _server(); the real transaction
+        # verification is covered by the on-chain tests.
+        ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=payer.pubkey(), lamports=1))
+        tx = Transaction([payer], Message.new_with_blockhash([ix], payer.pubkey(), blockhash), blockhash)
+        return base64.b64encode(bytes(tx)).decode(), str(tx.signatures[0])
+
+    first_wire, first_signature = wire(Hash.default())
+    payload = TopUpPayload(CHANNEL, "250", first_wire)
+    first = await server.process_top_up(payload)
+    assert first.deposit == 1_250
+    replayed = await server.process_top_up(payload)
+    assert replayed.deposit == 1_250
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.deposit == 1_250
+    assert state.processed_topup_signatures == [first_signature]
+
+    second_wire, second_signature = wire(Hash.new_unique())
+    second = await server.process_top_up(TopUpPayload(CHANNEL, "250", second_wire))
+    assert second.deposit == 1_500
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None
+    assert state.processed_topup_signatures == [first_signature, second_signature]
+
+
 async def test_client_close_final_voucher_rules_and_double_close() -> None:
     server, _, _ = await _server()
     await server.verify_voucher(VoucherPayload(_voucher(100)))

@@ -209,6 +209,23 @@ def _decode_transaction(transaction_b64: str) -> tuple[bytes, Any, list[str], li
     return raw, message, account_keys, instructions, signatures
 
 
+def top_up_transaction_signature(transaction_b64: str) -> str | None:
+    """Best-effort signature (transaction id) of a base64 top-up transaction.
+
+    The dedupe key for exactly-once deposit crediting. Returns ``None`` when
+    the payload is not a decodable wire transaction — the mandatory top-up
+    verifier rejects those before any state changes, so dedupe never needs a
+    key for them.
+    """
+    try:
+        _, _, _, _, signatures = _decode_transaction(transaction_b64)
+    except Exception:
+        return None
+    if not signatures:
+        return None
+    return str(signatures[0])
+
+
 def _signed_message_bytes(message: Any) -> bytes:
     """Return the exact legacy or versioned bytes covered by signatures."""
     from solders.message import MessageV0, to_bytes_versioned  # type: ignore[import-untyped]
@@ -752,8 +769,10 @@ async def settle_and_seal_channel(
         token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
         program_id=program_id,
         # rentPayer recovers the channel/escrow rent at distribute (or via
-        # reclaim); it is the operator recorded as rentPayer at open.
-        rent_payer=Pubkey.from_string(config.operator) if config.operator else None,
+        # reclaim). The on-chain program pins it to the account recorded at
+        # open (the fee payer, or the payer in non-gasless configs) — building
+        # with any other account makes the settle bundle revert forever.
+        rent_payer=Pubkey.from_string(state.rent_payer) if state.rent_payer else None,
     )
 
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)

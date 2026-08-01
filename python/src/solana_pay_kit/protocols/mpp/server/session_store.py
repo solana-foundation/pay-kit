@@ -192,6 +192,11 @@ class ChannelState:
     settled_on_chain: int = 0
     processed_uses: list[ProcessedUse] = field(default_factory=list)
 
+    # Transaction signatures of top-ups already credited to ``deposit``
+    # (base58). Checked inside the atomic top-up mutator so a resubmitted or
+    # concurrently duplicated top-up transaction credits exactly once.
+    processed_topup_signatures: list[str] = field(default_factory=list)
+
     # HighestVoucherSignature is the signature of the highest accepted voucher
     # (base58). Stored for idempotent replay detection.
     highest_voucher_signature: str | None = None
@@ -252,6 +257,7 @@ class ChannelState:
             pending_deliveries=[replace(d) for d in self.pending_deliveries],
             committed_deliveries=[replace(d) for d in self.committed_deliveries],
             processed_uses=[replace(use) for use in self.processed_uses],
+            processed_topup_signatures=list(self.processed_topup_signatures),
             extra=deepcopy(self.extra),
         )
 
@@ -279,6 +285,7 @@ class ChannelState:
             "spent_amount": self.spent_amount,
             "settled_on_chain": self.settled_on_chain,
             "processed_uses": [use.to_dict() for use in self.processed_uses],
+            "processed_topup_signatures": list(self.processed_topup_signatures),
             "highest_voucher_signature": self.highest_voucher_signature,
             "highest_voucher_expires_at": self.highest_voucher_expires_at,
             "close_requested_at": self.close_requested_at,
@@ -334,6 +341,7 @@ class ChannelState:
             spent_amount=int(data.get("spent_amount", 0)),
             settled_on_chain=int(data.get("settled_on_chain", 0)),
             processed_uses=[ProcessedUse.from_dict(use) for use in (data.get("processed_uses") or [])],
+            processed_topup_signatures=[str(s) for s in (data.get("processed_topup_signatures") or [])],
             highest_voucher_signature=data.get("highest_voucher_signature"),
             highest_voucher_expires_at=(
                 None if data.get("highest_voucher_expires_at") is None else int(data["highest_voucher_expires_at"])
@@ -371,6 +379,7 @@ _CHANNEL_STATE_KNOWN_KEYS = frozenset(
         "spent_amount",
         "settled_on_chain",
         "processed_uses",
+        "processed_topup_signatures",
         "highest_voucher_signature",
         "highest_voucher_expires_at",
         "close_requested_at",

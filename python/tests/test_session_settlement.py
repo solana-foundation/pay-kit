@@ -137,6 +137,28 @@ async def test_settlement_requires_recorded_payer() -> None:
     session.shutdown()
 
 
+async def test_settlement_distribute_uses_the_recorded_rent_payer() -> None:
+    """Non-gasless config: the channel rent was funded by an account that is
+    neither the operator nor the payer. The distribute instruction must
+    reference the recorded ``rent_payer`` — the on-chain check pins to it, so
+    building with any other account makes the settle bundle revert forever."""
+    from solders.transaction import Transaction
+
+    merchant = Keypair.from_seed(bytes([8] * 32))
+    rent_payer = Keypair.from_seed(bytes([9] * 32))
+    rpc = _Rpc()
+    session = _session(rpc, merchant)
+    state = _state(payer=str(Keypair.from_seed(bytes([10] * 32)).pubkey()))
+    state.rent_payer = str(rent_payer.pubkey())
+    await _seed(session, state)
+
+    assert await session._settle_channel(state.channel_id) == SETTLEMENT_SIGNATURE
+    assert len(rpc.sent) == 1
+    keys = [str(key) for key in Transaction.from_bytes(rpc.sent[0]).message.account_keys]
+    assert str(rent_payer.pubkey()) in keys
+    session.shutdown()
+
+
 async def test_concurrent_settlement_broadcasts_once() -> None:
     merchant = Keypair.from_seed(bytes([7] * 32))
     rpc = _Rpc(delay=True)
