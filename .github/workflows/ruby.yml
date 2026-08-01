@@ -71,7 +71,15 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: ruby
+      # Every other workflow that drives a rust client passes `cargo-bins` so
+      # the binary is prebuilt (and cached) before the tests run. This one did
+      # not, so the x402 smoke's in-test `cargo run --quiet` was the job's
+      # first cargo invocation ever: a cold, silent compile of the full
+      # dependency tree that showed up as a single 99-second test.
       - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "paykit-harness-bins:x402_harness_client"
+          cargo-cache-key: ruby
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
       # the same ruby adapter binary. The harness's harnessEnv exposes
