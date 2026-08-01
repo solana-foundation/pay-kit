@@ -1074,7 +1074,14 @@ class SessionServer:
                         verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window)
                     )
                     if nxt.highest_voucher_expires_at is None:
-                        nxt.highest_voucher_expires_at = voucher.data.expires_at
+                        # Record the expiry as encoded in the signed bytes:
+                        # None (omitted) encodes as 0 = never-expires. The
+                        # watermark is replayed verbatim into the on-chain
+                        # settle, and a None here would make the settle
+                        # builder reject the channel as misconfigured.
+                        nxt.highest_voucher_expires_at = (
+                            0 if voucher.data.expires_at is None else voucher.data.expires_at
+                        )
                 else:
                     if cumulative > current.deposit:
                         raise ValueError("final voucher exceeds deposit")
@@ -1083,7 +1090,12 @@ class SessionServer:
                     )
                     nxt.cumulative = cumulative
                     nxt.highest_voucher_signature = voucher.signature
-                    nxt.highest_voucher_expires_at = voucher.data.expires_at
+                    # None (omitted) encodes as 0 = never-expires in the
+                    # signed bytes; the watermark must match what the
+                    # signature covers (see _effective_expiry).
+                    nxt.highest_voucher_expires_at = (
+                        0 if voucher.data.expires_at is None else voucher.data.expires_at
+                    )
             if not redrive:
                 nxt.close_requested_at = now
             nxt.last_activity_at = int(time.time() * 1000)

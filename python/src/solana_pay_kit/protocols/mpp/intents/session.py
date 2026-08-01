@@ -467,8 +467,9 @@ class VoucherData:
     Serialized as the on-chain ``VoucherArgs`` layout before signing:
     ``magic || channel_id || cumulative_amount_le || expires_at_le``. The wire
     field for the cumulative amount is ``cumulativeAmount``. ``expiresAt`` is
-    optional on the wire and defaults to the long-lived payment-channel value
-    when the canonical signing bytes are constructed.
+    optional on the wire; ``0`` or omitted means never-expires and is encoded
+    verbatim as ``0`` into the signed bytes, matching the Rust/TS SDKs and the
+    on-chain settle check.
     """
 
     channel_id: str
@@ -520,10 +521,13 @@ class VoucherData:
             cumulative = _parse_base_units(self.cumulative_amount)
         except ValueError as exc:
             raise ValueError("invalid voucher cumulative") from exc
+        # An omitted expiresAt is never-expires and encodes as 0, exactly as
+        # the wire value would: substituting any sentinel here would make the
+        # reconstructed bytes diverge from what the counterparty signed.
         return voucher_message_bytes(
             channel,
             cumulative,
-            self.expires_at if self.expires_at is not None else DEFAULT_SESSION_EXPIRES_AT,
+            self.expires_at if self.expires_at is not None else 0,
         )
 
 

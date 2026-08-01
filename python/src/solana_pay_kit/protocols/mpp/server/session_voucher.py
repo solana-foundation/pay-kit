@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 
-from solana_pay_kit.protocols.mpp.intents.session import DEFAULT_SESSION_EXPIRES_AT, SignedVoucher
+from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher
 
 
 class VoucherVerifyStatus(StrEnum):
@@ -280,7 +280,15 @@ def _voucher_reject(reason: VoucherRejectReason, detail: str) -> VoucherVerifyRe
 
 
 def _effective_expiry(expires_at: int | None) -> int:
-    return DEFAULT_SESSION_EXPIRES_AT if expires_at is None else expires_at
+    """Return the expiry exactly as it is encoded into the signed bytes.
+
+    ``None`` (omitted on the wire) encodes as ``0`` = never-expires, matching
+    Rust's ``unwrap_or(0)`` and TS's ``?? 0``. The result is recorded as the
+    channel's ``highest_voucher_expires_at`` watermark and later replayed
+    verbatim into the on-chain settle, so it MUST be the value the signature
+    covers — a sentinel here would break the settle signature.
+    """
+    return 0 if expires_at is None else expires_at
 
 
 def _check_voucher_expiry(expires_at: int | None, now: int, settlement_window: int) -> VoucherVerifyResult | None:

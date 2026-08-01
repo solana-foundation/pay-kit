@@ -205,6 +205,22 @@ def test_voucher_wire_and_message_layout() -> None:
     assert SignedVoucher.from_dict(wire) == voucher
 
 
+def test_no_expiry_voucher_preimage_encodes_zero_verbatim() -> None:
+    """An omitted expiresAt is never-expires and must encode as 0 in the signed
+    50-byte preimage, exactly as Rust (``unwrap_or(0)``) and TS (``?? 0``)
+    encode it. Substituting a sentinel would reconstruct different bytes than
+    the counterparty signed, failing cross-SDK signature verification, and
+    would silently turn never-expires into a real on-chain expiry."""
+    signer = Keypair.from_seed(bytes([7] * 32))
+    omitted = VoucherData(channel_id=str(signer.pubkey()), cumulative_amount="500", expires_at=None)
+    explicit_zero = VoucherData(channel_id=str(signer.pubkey()), cumulative_amount="500", expires_at=0)
+    message = omitted.message_bytes()
+    assert len(message) == 50
+    assert struct.unpack("<q", message[42:50])[0] == 0
+    # The omitted and explicit-zero forms are the same signed statement.
+    assert message == explicit_zero.message_bytes()
+
+
 def test_authentication_is_bound_to_opening_challenge_and_channel() -> None:
     signer = Keypair.from_seed(bytes([3] * 32))
     authentication = sign_session_authentication("opening-challenge", "channel", signer)
