@@ -70,6 +70,8 @@ logger = logging.getLogger(__name__)
 
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _U64_MAX = (1 << 64) - 1
+# Watchdog retry delay after a failed idle-close settle.
+_SETTLE_RETRY_SECONDS = 60.0
 
 
 class _AlreadySealed(Exception):
@@ -456,26 +458,23 @@ class Session:
 
     async def _handle_close(self, payload: ClosePayload) -> str:
         """Accept the optional final voucher and flip close-pending atomically.
-        The receipt reference is the channel id (the on-chain settlement path is
-        not implemented here).
 
-        Unlike :meth:`SessionServer.process_close`, where a second close is
-        always rejected, the close here is re-drivable: when a prior close
-        flipped the close-pending flag but settlement never recorded a signature
-        (``settled_signature is None``), the retry proceeds so a transient
-        settlement failure cannot strand the channel. A close-pending channel
-        that already recorded a settled signature is not re-drivable and
-        hard-rejects with "close already requested". The fund-safety final
-        voucher validation is unchanged from the core path.
+        The close is re-drivable (see :meth:`SessionServer.process_close`):
+        when a prior close flipped the close-pending flag but settlement never
+        recorded a signature, a matching retry proceeds so a transient
+        settlement failure cannot strand the channel.
         """
         channel_id = payload.channel_id
         try:
             await self._core.process_close(payload)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
+        settled = await self._settle_channel(channel_id)
+        # The idle watchdog may only forget the channel once the settle
+        # attempt is behind us: after a failed settle it is the sole actor
+        # left that can re-drive the close.
         if self._lifecycle is not None:
             self._lifecycle.remove_channel(payload.channel_id)
-        settled = await self._settle_channel(channel_id)
         # On a successful settle the reference is the on-chain signature; without
         # a signer/RPC the close is a state-flip and the channel id stands in.
         return settled or payload.channel_id
@@ -583,8 +582,13 @@ class Session:
 
         def close_if_due(current: ChannelState | None) -> ChannelState:
             nonlocal due, remaining
-            if current is None or current.sealed or current.close_requested_at is not None:
+            if current is None or current.sealed:
                 return current  # type: ignore[return-value]
+            if current.close_requested_at is not None:
+                # Close-pending with no settlement signature is a stranded
+                # settle (a prior close's broadcast failed): re-drive it.
+                due = current.settled_signature is None
+                return current
             timeout = current.idle_timeout_seconds
             if timeout is None or timeout <= 0:
                 return current
@@ -607,6 +611,10 @@ class Session:
                 await self._settle_channel(channel_id)
         except Exception:
             logging.getLogger(__name__).warning("idle-close settle failed for channel %s", channel_id, exc_info=True)
+            # Re-arm the timer: after a failed settle the watchdog is the
+            # only actor guaranteed to retry the close.
+            if self._lifecycle is not None:
+                self._lifecycle.touch(channel_id, _SETTLE_RETRY_SECONDS)
         return None
 
     async def _reconcile_lifecycle(self) -> None:
@@ -618,7 +626,14 @@ class Session:
 
         now_ms = int(time.time() * 1000)
         for state in await self._core.store().list_channels():
-            if state.sealed or state.close_requested_at is not None or not state.idle_timeout_seconds:
+            if state.sealed:
+                continue
+            if state.close_requested_at is not None:
+                # A settle stranded by a previous process: retry promptly.
+                if state.settled_signature is None:
+                    self._lifecycle.touch(state.channel_id, 0.001)
+                continue
+            if not state.idle_timeout_seconds:
                 continue
             elapsed = max(0, now_ms - state.last_activity_at) / 1000
             self._lifecycle.touch(state.channel_id, max(0.001, state.idle_timeout_seconds - elapsed))

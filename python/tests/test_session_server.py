@@ -595,6 +595,26 @@ async def test_client_close_final_voucher_rules_and_double_close() -> None:
         await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(1_001)))
     state = await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(200)))
     assert state.cumulative == 200 and state.close_requested_at is not None
+    first_close_at = state.close_requested_at
+
+    # No settlement signature recorded yet: a matching close re-drives so a
+    # transient settle failure cannot strand the channel close-pending with
+    # the merchant's accepted vouchers unsettled.
+    redriven = await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(200)))
+    assert redriven.close_requested_at == first_close_at
+    assert redriven.cumulative == 200 and not redriven.sealed
+    # The re-drive must replay the recorded final voucher, not present a new one.
+    with pytest.raises(ValueError, match="must replay the recorded final voucher"):
+        await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(300)))
+
+    # Once a settlement signature is recorded, a second close hard-rejects.
+    def record_settled(current: ChannelState | None) -> ChannelState:
+        assert current is not None
+        nxt = current.clone()
+        nxt.settled_signature = "SIG"
+        return nxt
+
+    await server.store().update_channel(CHANNEL, record_settled)
     with pytest.raises(ValueError, match="already requested"):
         await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(200)))
 

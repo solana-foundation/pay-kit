@@ -968,10 +968,13 @@ class SessionServer:
         final voucher if provided.
 
         Once close_requested_at is set, vouchers, deliveries, commits, and
-        top-ups are all rejected, and a second close is rejected with "close
-        already requested". A non-monotonic final voucher is a hard error
-        (unless it is an idempotent replay of the current highest voucher) and
-        leaves the state unchanged.
+        top-ups are all rejected. A second close is rejected with "close
+        already requested" only once a settlement signature is recorded;
+        before that, a matching close payload re-drives idempotently so a
+        transient settlement failure cannot strand the channel close-pending
+        with the merchant's accepted vouchers unsettled. A non-monotonic final
+        voucher is a hard error (unless it is an idempotent replay of the
+        current highest voucher) and leaves the state unchanged.
         """
         now = int(time.time())
         channel_id = payload.channel_id
@@ -982,7 +985,12 @@ class SessionServer:
                 raise ValueError(f"channel {channel_id} not found")
             if current.sealed:
                 raise ValueError(f"channel {channel_id} is already sealed")
-            if current.close_requested_at is not None:
+            # Re-drivable close: close-pending with no settlement signature
+            # means a prior close's settle never landed. The retry runs the
+            # full validation below but must replay the recorded final
+            # voucher, and the original close timestamp is preserved.
+            redrive = current.close_requested_at is not None
+            if redrive and current.settled_signature is not None:
                 raise ValueError("close already requested")
 
             # A close that presents authentication against a record with no
@@ -1023,6 +1031,8 @@ class SessionServer:
                     cumulative = _parse_u64(voucher.data.cumulative_amount)
                 except ValueError as exc:
                     raise ValueError(f"invalid cumulative in final voucher: {voucher.data.cumulative_amount}") from exc
+                if redrive and cumulative != current.cumulative:
+                    raise ValueError("close re-drive must replay the recorded final voucher")
                 if cumulative <= current.cumulative:
                     # Idempotent replay of the current highest voucher is
                     # allowed; any other non-monotonic final voucher is a hard
@@ -1053,7 +1063,8 @@ class SessionServer:
                     nxt.cumulative = cumulative
                     nxt.highest_voucher_signature = voucher.signature
                     nxt.highest_voucher_expires_at = voucher.data.expires_at
-            nxt.close_requested_at = now
+            if not redrive:
+                nxt.close_requested_at = now
             nxt.last_activity_at = int(time.time() * 1000)
             return nxt
 

@@ -448,12 +448,13 @@ async def test_handle_accepts_valid_operator_use_header() -> None:
 class _LifecycleSpy:
     def __init__(self) -> None:
         self.touches: list[tuple[str, float | None]] = []
+        self.removed: list[str] = []
 
     def touch(self, channel_id: str, timeout: float | None = None) -> None:
         self.touches.append((channel_id, timeout))
 
     def remove_channel(self, channel_id: str) -> None:
-        del channel_id
+        self.removed.append(channel_id)
 
     def shutdown(self) -> None:
         return None
@@ -508,3 +509,127 @@ async def test_idle_close_reschedules_recent_activity_and_reconciles_store() -> 
     session._lifecycle_reconciled = False
     await session._reconcile_lifecycle()
     assert len(spy.touches) >= 2
+
+
+async def test_failed_settle_keeps_the_watchdog_and_the_close_redrives() -> None:
+    """A close whose settle fails must not release the idle watchdog
+    (``remove_channel`` after the settle, not before) and must stay
+    re-drivable: the retried close settles, and only then is the watchdog
+    released."""
+    signer = Keypair.from_seed(bytes([14] * 32))
+    config = SessionConfig(
+        recipient=RECIPIENT,
+        amount=25,
+        currency="USDC",
+        network="localnet",
+        channel_program=str(PROGRAM_ID),
+        grace_period_seconds=900,
+    )
+
+    async def accept_open(_: OpenPayload, __: object) -> None:
+        return None
+
+    config.verify_open_tx = accept_open
+    core = _core(config)
+    challenge = await _challenge(core, "2099-01-01T00:00:00Z")
+    await core.process_open(
+        OpenPayload(
+            channel_id=RECIPIENT,
+            payer=RECIPIENT,
+            payee=RECIPIENT,
+            mint=RECIPIENT,
+            authorized_signer=str(signer.pubkey()),
+            salt=1,
+            deposit_amount="1000",
+            grace_period_seconds=900,
+            open_slot=1,
+            transaction="transaction",
+        ),
+        challenge,
+    )
+    session = _session(core)
+    spy = _LifecycleSpy()
+    session._lifecycle = spy  # type: ignore[assignment]
+
+    data = VoucherData(RECIPIENT, "200")
+    voucher = SignedVoucher(
+        data=data,
+        signer=str(signer.pubkey()),
+        signature=str(signer.sign_message(data.message_bytes())),
+    )
+
+    async def failing_settle(channel_id: str) -> str | None:
+        del channel_id
+        raise RuntimeError("settle broadcast failed")
+
+    session._settle_channel = failing_settle  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="settle broadcast failed"):
+        await session._handle_close(ClosePayload(RECIPIENT, voucher=voucher))
+    assert spy.removed == []
+    stranded = await core.store().get_channel(RECIPIENT)
+    assert stranded is not None
+    assert stranded.close_requested_at is not None and stranded.settled_signature is None
+
+    async def working_settle(channel_id: str) -> str | None:
+        del channel_id
+        return "SETTLEDSIG"
+
+    session._settle_channel = working_settle  # type: ignore[method-assign]
+    reference = await session._handle_close(ClosePayload(RECIPIENT, voucher=voucher))
+    assert reference == "SETTLEDSIG"
+    assert spy.removed == [RECIPIENT]
+
+
+async def test_idle_close_redrives_a_stranded_settle() -> None:
+    """Close-pending with no settlement signature means a prior settle never
+    landed: a watchdog fire must re-drive the settle, and lifecycle
+    reconciliation must re-arm a timer for such channels (and skip settled
+    ones)."""
+    store = MemoryChannelStore()
+    core = SessionServer(
+        SessionConfig(recipient=RECIPIENT, amount=25, currency="USDC", network="localnet"),
+        store,
+    )
+    state = ChannelState(
+        channel_id=RECIPIENT,
+        authorized_signer=RECIPIENT,
+        payer=RECIPIENT,
+        deposit=1_000,
+        idle_timeout_seconds=60,
+        last_activity_at=0,
+        close_requested_at=1,
+    )
+    await store.update_channel(RECIPIENT, lambda _: state)
+    session = _session(core)
+    settled: list[str] = []
+
+    async def spy_settle(channel_id: str) -> str | None:
+        settled.append(channel_id)
+        return None
+
+    session._settle_channel = spy_settle  # type: ignore[method-assign]
+    await session._close_on_idle(RECIPIENT)
+    assert settled == [RECIPIENT]
+
+    spy = _LifecycleSpy()
+    session._lifecycle = spy  # type: ignore[assignment]
+    session._lifecycle_reconciled = False
+    await session._reconcile_lifecycle()
+    assert (RECIPIENT, 0.001) in spy.touches
+
+    def record_settled(current: ChannelState | None) -> ChannelState:
+        assert current is not None
+        nxt = current.clone()
+        nxt.settled_signature = "SIG"
+        return nxt
+
+    await store.update_channel(RECIPIENT, record_settled)
+    settled.clear()
+    await session._close_on_idle(RECIPIENT)
+    assert settled == []
+
+    settled_spy = _LifecycleSpy()
+    session._lifecycle = settled_spy  # type: ignore[assignment]
+    session._lifecycle_reconciled = False
+    await session._reconcile_lifecycle()
+    assert settled_spy.touches == []
