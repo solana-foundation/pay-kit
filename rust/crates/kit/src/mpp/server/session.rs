@@ -1267,6 +1267,7 @@ impl<S: ChannelStore> SessionServer<S> {
         let delivery_id = payload.delivery_id.clone();
         let signature = payload.voucher.signature.clone();
         let expires_at = payload.voucher.data.expires_at.unwrap_or(0);
+        let lifecycle_owner = self.config.operator.clone();
         let commit_outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
         let _new_state = self
             .store
@@ -1340,6 +1341,17 @@ impl<S: ChannelStore> SessionServer<S> {
                         state.cumulative = new_cumulative;
                         state.highest_voucher_signature = Some(signature.clone());
                         state.highest_voucher_expires_at = Some(expires_at);
+                        // A committed delivery is channel activity: refresh the
+                        // idle-close deadline like the voucher/use/top-up paths,
+                        // or the host's lifecycle worker closes a channel that is
+                        // actively paying through the metered-delivery flow.
+                        let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
+                        state.last_activity_at = now_ms;
+                        state.lifecycle =
+                            state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
+                                owner: lifecycle_owner.clone(),
+                                close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
+                            });
                         state.committed_deliveries.push(CommittedDelivery {
                             delivery_id: delivery_id.clone(),
                             amount: actual_amount,
@@ -2615,6 +2627,66 @@ mod tests {
             .begin_delivery(DeliveryRequest::new(channel_id, 1_000))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn commits_refresh_activity_and_lifecycle() {
+        let (server, mut session, channel_id) = client_server().await;
+        // Age the channel: stale activity watermark and an idle-close deadline
+        // already in the past, as if no voucher had arrived since open.
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new(|state_opt| {
+                    let mut state = state_opt.unwrap();
+                    state.last_activity_at = 1;
+                    if let Some(lifecycle) = state.lifecycle.as_mut() {
+                        lifecycle.close_after = 1;
+                    }
+                    Ok(state)
+                }),
+            )
+            .await
+            .unwrap();
+
+        let directive = server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 50))
+            .await
+            .unwrap();
+        let payload = CommitPayload {
+            delivery_id: directive.delivery_id,
+            voucher: session.sign_increment(50).await.unwrap(),
+        };
+        let receipt = server.process_commit(&payload).await.unwrap();
+        assert_eq!(receipt.status, CommitStatus::Committed);
+
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.last_activity_at > 1);
+        let lifecycle = stored
+            .lifecycle
+            .expect("commit must re-arm the idle-close deadline");
+        assert!(lifecycle.close_after > 1);
+
+        // The idempotent replay is not fresh activity: it must not advance the
+        // watermark past what the committed path recorded.
+        let before_replay = stored.last_activity_at;
+        assert_eq!(
+            server.process_commit(&payload).await.unwrap().status,
+            CommitStatus::Replayed
+        );
+        let after_replay = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_replay.last_activity_at, before_replay);
     }
 
     #[tokio::test]

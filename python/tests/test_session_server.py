@@ -511,6 +511,34 @@ async def test_delivery_commit_happy_path_and_replay() -> None:
     assert replay.status == "replayed"
 
 
+async def test_commit_refreshes_activity_watermark_but_replay_does_not() -> None:
+    # A channel paying only through the metered-delivery flow must not look
+    # idle: the committed path refreshes last_activity_at (the field the
+    # idle-close recheck and the post-restart reconcile read), the idempotent
+    # replay does not.
+    server, _, _ = await _server()
+    directive = await server.begin_delivery(DeliveryRequest(CHANNEL, 100))
+
+    def age(current):  # type: ignore[no-untyped-def]
+        assert current is not None
+        aged = current.clone()
+        aged.last_activity_at = 1
+        return aged
+
+    await server.store().update_channel(CHANNEL, age)
+
+    receipt = await server.process_commit(CommitPayload(directive.delivery_id, _voucher(100)))
+    assert receipt.status == "committed"
+    stored = await server.store().get_channel(CHANNEL)
+    assert stored is not None and stored.last_activity_at > 1
+
+    before_replay = stored.last_activity_at
+    replay = await server.process_commit(CommitPayload(directive.delivery_id, _voucher(100)))
+    assert replay.status == "replayed"
+    after = await server.store().get_channel(CHANNEL)
+    assert after is not None and after.last_activity_at == before_replay
+
+
 async def test_delivery_and_commit_reject_invalid_reservations() -> None:
     server, _, _ = await _server()
     with pytest.raises(ValueError, match="greater than zero"):

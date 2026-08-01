@@ -938,6 +938,11 @@ class SessionServer:
             nxt.cumulative = new_cumulative
             nxt.highest_voucher_signature = signature
             nxt.highest_voucher_expires_at = voucher_expires_at
+            # A committed delivery is channel activity: refresh the durable
+            # watermark like the voucher/use/top-up paths, or the idle-close
+            # recheck (and the post-restart reconcile) closes a channel that is
+            # actively paying through the metered-delivery flow.
+            nxt.last_activity_at = int(time.time() * 1000)
             nxt.committed_deliveries.append(
                 CommittedDelivery(
                     delivery_id=delivery_id,

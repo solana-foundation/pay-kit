@@ -251,6 +251,11 @@ Idle timers are advisory wakeups. When a timer fires, atomically re-read the
 stored channel and compare `lastActivityAt + idleTimeoutSeconds` before
 closing. Recreate timers for persisted open channels on startup.
 
+A committed delivery is channel activity: the commit's atomic mutation must
+refresh `lastActivityAt` alongside the watermark advance, exactly like
+accepted vouchers, operator uses, and top-ups. Delivery reservations and
+idempotent commit replays leave `lastActivityAt` unchanged.
+
 ## Test plan
 
 - Exact challenge serialization and rejection of every removed draft field.
