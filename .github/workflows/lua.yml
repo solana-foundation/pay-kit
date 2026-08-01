@@ -74,13 +74,12 @@ jobs:
           luacov
           ./scripts/check_coverage.sh ../luacov.report.out 90
 
-      # Codex PR #103 P3: the coverage gate excludes pay_kit/solana/ata
-      # because luacov disables LuaJIT trace recording and the on-curve check
-      # becomes ~100x slower under coverage. Run the suite a second time
-      # WITHOUT luacov so the protocol-critical ATA fixture spec
-      # (`ata.derive matches the Ruby reference for the USDC Token-2022 ATA`)
-      # is actually exercised. test_helper.lua skips it when luacov is loaded.
-      - name: Run protocol-critical ATA fixture suite without coverage
+      # The coverage gate excludes pay_kit/solana/ata because luacov disables
+      # LuaJIT trace recording and the on-curve check gets far slower under
+      # coverage. This second run exercises the suite on the JIT path, which
+      # is the one downstream users actually run: a regression that only
+      # shows up with the trace compiler on would otherwise never surface.
+      - name: Run the suite on the JIT path, without coverage
         working-directory: lua
         run: |
           eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
