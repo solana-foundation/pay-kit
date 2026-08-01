@@ -27,6 +27,27 @@ helper.test('ata.derive matches the Ruby reference for the USDC Token-2022 ATA',
   )
 end)
 
+helper.test('ata.derive is stable across repeated calls', function()
+  -- `derive` memoizes on (owner, mint, token_program). A cache that keyed
+  -- on the wrong tuple, or that handed back a stale entry, would surface
+  -- here as a second call disagreeing with the pinned fixture. The
+  -- Token-2022 spec above pins the same owner / mint against a different
+  -- token program, so a key that collapsed the token program would fail
+  -- that assertion too.
+  local first = ata.derive(OWNER, USDC_MAINNET_MINT, TOKEN_PROGRAM)
+  local second = ata.derive(OWNER, USDC_MAINNET_MINT, TOKEN_PROGRAM)
+  helper.assert_equal(second, first)
+  helper.assert_equal(second, '3EjekkZPxiKdDB91mdJjUcjFjRmyWjP1Y4ySvfwSaQ4b')
+end)
+
+helper.test('ata.derive rejects malformed input even after a cached success', function()
+  -- The byte-length validation runs before the cache lookup, so a bad
+  -- input never short-circuits into a cached address.
+  helper.assert_error(function()
+    ata.derive(OWNER, USDC_MAINNET_MINT, '1111')
+  end, 'ATA derivation requires base58 inputs that decode to 32 bytes')
+end)
+
 helper.test('find_program_address rejects a non-32-byte program id', function()
   helper.assert_error(function()
     ata.find_program_address({ string.rep('\0', 32) }, '1111')
