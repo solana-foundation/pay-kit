@@ -158,14 +158,14 @@ function createSessionGatewayMock(): SessionGatewayMock {
                 commits.push({
                     amount,
                     deliveryId: expectString(body.deliveryId),
-                    voucherCumulative: voucher.data.cumulativeAmount,
+                    voucherCumulative: voucher.voucher.cumulativeAmount,
                     voucherSigner: voucher.signer,
                 });
                 return Response.json({
                     amount,
                     cumulative: committedCumulative.toString(),
                     deliveryId: expectString(body.deliveryId),
-                    sessionId: voucher.data.channelId,
+                    sessionId: voucher.voucher.channelId,
                     status: 'committed',
                 });
             }

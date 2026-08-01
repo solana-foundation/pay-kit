@@ -260,7 +260,7 @@ class ActiveSession:
     def voucher_action(self, amount: int) -> SessionAction:
         """Sign a fresh increment and wrap it as a voucher action."""
         voucher = self.sign_increment(amount)
-        return SessionAction.voucher_action(VoucherPayload(voucher=voucher))
+        return SessionAction.voucher_action(VoucherPayload(channel_id=voucher.data.channel_id, voucher=voucher))
 
     def close_action(
         self,

@@ -666,7 +666,7 @@ interface HandleVoucherArgs {
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
     readonly minVoucherDelta: bigint | undefined;
-    readonly payload: { readonly action: 'voucher'; readonly voucher: SignedVoucher };
+    readonly payload: { readonly action: 'voucher'; readonly channelId: string; readonly voucher: SignedVoucher };
     /** Forced-close grace period a non-zero voucher expiry must outlast. */
     readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
@@ -770,7 +770,15 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
 
 async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> {
     const signed = normalizeSignedVoucher(args.payload.voucher);
-    const channelId = signed.data.channelId;
+    // The top-level channelId is the routing key; it must never diverge from
+    // the signed voucher's inner channelId (spec: servers MUST reject the
+    // action when the two differ).
+    if (args.payload.channelId !== signed.voucher.channelId) {
+        throw new Error(
+            `invalid-voucher: voucher action channelId ${args.payload.channelId} does not match the signed voucher's channelId ${signed.voucher.channelId}`,
+        );
+    }
+    const channelId = signed.voucher.channelId;
     const existing = await args.store.getChannel(channelId);
     if (!existing) throw new Error(`Channel ${channelId} not found`);
 
@@ -934,6 +942,13 @@ interface HandleCloseArgs {
 
 async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
     const channelId = args.payload.channelId;
+    // Same routing-key invariant as the voucher action: a final voucher
+    // nested in a close must be bound to the channel being closed.
+    if (args.payload.voucher && args.payload.voucher.voucher.channelId !== channelId) {
+        throw new Error(
+            `invalid-voucher: close voucher channelId ${args.payload.voucher.voucher.channelId} does not match the close channelId ${channelId}`,
+        );
+    }
     const now = BigInt(Math.floor(Date.now() / 1000));
 
     // Accept the optional final voucher and flip close-pending atomically.
@@ -1136,8 +1151,8 @@ interface CommitDeliveryArgs {
 
 async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Promise<CommitReceipt> {
     const signed = normalizeSignedVoucher(args.voucher);
-    const channelId = signed.data.channelId;
-    const newCumulative = parseU64String(signed.data.cumulativeAmount, 'cumulativeAmount');
+    const channelId = signed.voucher.channelId;
+    const newCumulative = parseU64String(signed.voucher.cumulativeAmount, 'cumulativeAmount');
     const now = BigInt(Math.floor(Date.now() / 1000));
 
     let outcome: { amount: bigint; cumulative: bigint; status: 'committed' | 'replayed' } | undefined;
@@ -1196,7 +1211,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
             ...current,
             committedDeliveries: [...current.committedDeliveries, committedDelivery],
             cumulative: newCumulative,
-            highestVoucherExpiresAt: BigInt(signed.data.expiresAt ?? 0),
+            highestVoucherExpiresAt: BigInt(signed.voucher.expiresAt ?? 0),
             highestVoucherSignature: signed.signature,
             lastActivityAt: Date.now(),
             pendingDeliveries: nextPending,
@@ -1250,14 +1265,14 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         voucher = {
             authorizedSigner: state.authorizedSigner,
             signed: {
-                data: {
+                signature: state.highestVoucherSignature,
+                signatureType: 'ed25519',
+                signer: state.authorizedSigner,
+                voucher: {
                     channelId: args.channelId,
                     cumulativeAmount: state.cumulative.toString(),
                     expiresAt: Number(state.highestVoucherExpiresAt),
                 },
-                signature: state.highestVoucherSignature,
-                signatureType: 'ed25519',
-                signer: state.authorizedSigner,
             },
         };
     }
@@ -1319,7 +1334,7 @@ async function assertVoucherSignature(signed: SignedVoucher, authorizedSigner: s
         valid = await verifyVoucherSignature({
             signatureBase58: signed.signature,
             signerBase58: authorizedSigner,
-            voucher: signed.data,
+            voucher: signed.voucher,
         });
     } catch (error) {
         throw new Error(`invalid-signature: ${errorMessage(error)}`);

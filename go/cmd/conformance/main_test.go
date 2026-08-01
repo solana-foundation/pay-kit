@@ -49,12 +49,15 @@ func TestSeededVectorsConform(t *testing.T) {
 	// set is a regression and fails loudly, and once the migration lands
 	// the leftover-allowlist check below forces this set to be emptied.
 	expectedSkips := map[string]bool{
-		"session-wire-request-new-channel-frozen":         true,
-		"session-wire-request-resume-frozen":              true,
-		"session-wire-action-open-frozen":                 true,
-		"session-wire-request-superseded-draft-reject":    true,
-		"session-wire-action-open-draft-slot-echo-reject": true,
-		"session-wire-action-unknown-tag-reject":          true,
+		"session-wire-request-new-channel-frozen":              true,
+		"session-wire-request-resume-frozen":                   true,
+		"session-wire-action-open-frozen":                      true,
+		"session-wire-request-superseded-draft-reject":         true,
+		"session-wire-action-open-draft-slot-echo-reject":      true,
+		"session-wire-action-unknown-tag-reject":               true,
+		"session-wire-action-voucher-frozen":                   true,
+		"session-wire-action-close-frozen":                     true,
+		"session-wire-action-voucher-legacy-inner-data-reject": true,
 	}
 	skippedIDs := map[string]bool{}
 

@@ -121,7 +121,7 @@ async def test_session_lifecycle_settles_on_chain() -> None:
         # 2. In-band voucher advances the watermark.
         voucher = opener.session.prepare_increment(250)
         opener.session.record_voucher(voucher)
-        await session._handle_voucher(VoucherPayload(voucher=voucher))
+        await session._handle_voucher(VoucherPayload(voucher.data.channel_id, voucher))
 
         # 3. Close settles the highest voucher on-chain and seals.
         close_reference = await session._handle_close(ClosePayload(channel_id=str(channel_id), voucher=voucher))

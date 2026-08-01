@@ -141,14 +141,17 @@ export interface VoucherDataInput {
  * Signed cumulative voucher.
  */
 export interface SignedVoucher {
-    /** The signed voucher fields. */
-    readonly data: VoucherData;
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
     readonly signature: string;
     /** Voucher signature algorithm. */
     readonly signatureType: 'ed25519';
     /** Base58 public key that signed the voucher. */
     readonly signer: string;
+    /**
+     * The signed voucher fields, carried on the wire as `voucher` per the
+     * spec's Signed Voucher table (mpp-specs e702dd8).
+     */
+    readonly voucher: VoucherData;
 }
 
 /**
@@ -204,7 +207,7 @@ export type SessionAction =
           readonly transaction: string;
       }
     | { readonly action: 'use'; readonly authentication: SessionAuthentication; readonly channelId: string }
-    | { readonly action: 'voucher'; readonly voucher: SignedVoucher }
+    | { readonly action: 'voucher'; readonly channelId: string; readonly voucher: SignedVoucher }
     | (OpenPayload & { readonly action: 'open' });
 
 /**
@@ -602,10 +605,10 @@ export class ActiveSession {
         }
 
         return {
-            data,
             signature: getBase58Decoder().decode(new Uint8Array(signatureBytes)),
             signatureType: 'ed25519',
             signer: this.#signer.address,
+            voucher: data,
         };
     }
 
@@ -620,13 +623,13 @@ export class ActiveSession {
      * Records a prepared voucher as accepted by the server.
      */
     recordVoucher(voucher: SignedVoucher): void {
-        if (voucher.data.channelId !== this.#channelId) {
+        if (voucher.voucher.channelId !== this.#channelId) {
             throw new Error(
-                `Voucher channel ${voucher.data.channelId} does not match active session ${this.#channelId}`,
+                `Voucher channel ${voucher.voucher.channelId} does not match active session ${this.#channelId}`,
             );
         }
 
-        const cumulative = parseAmount(voucher.data.cumulativeAmount, 'cumulativeAmount');
+        const cumulative = parseAmount(voucher.voucher.cumulativeAmount, 'cumulativeAmount');
         if (cumulative <= this.#cumulative) {
             throw new Error(
                 `Voucher cumulative ${cumulative.toString()} must exceed current watermark ${this.#cumulative.toString()}`,
@@ -656,7 +659,8 @@ export class ActiveSession {
      * Builds a `voucher` action for a freshly signed increment.
      */
     async voucherAction(amount: AmountLike): Promise<SessionAction> {
-        return { action: 'voucher', voucher: await this.signIncrement(amount) };
+        const voucher = await this.signIncrement(amount);
+        return { action: 'voucher', channelId: voucher.voucher.channelId, voucher };
     }
 
     /**
@@ -927,9 +931,12 @@ async function createOpenAction(
 }
 
 async function createVoucherAction(session_: ActiveSession, context: SessionContext): Promise<SessionAction> {
-    if (context.voucher) return { action: 'voucher', voucher: context.voucher };
+    if (context.voucher) {
+        return { action: 'voucher', channelId: context.voucher.voucher.channelId, voucher: context.voucher };
+    }
     if (context.cumulativeAmount !== undefined) {
-        return { action: 'voucher', voucher: await session_.signVoucher(context.cumulativeAmount) };
+        const voucher = await session_.signVoucher(context.cumulativeAmount);
+        return { action: 'voucher', channelId: voucher.voucher.channelId, voucher };
     }
     return await session_.voucherAction(requireValue(context.amount, 'amount'));
 }

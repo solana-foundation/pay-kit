@@ -129,7 +129,7 @@ def test_top_up_and_client_close_actions() -> None:
     }
     close = session.close_action(final_increment=10).to_dict()
     assert close["action"] == "close"
-    assert close["voucher"]["data"]["cumulativeAmount"] == "10"
+    assert close["voucher"]["voucher"]["cumulativeAmount"] == "10"
 
 
 def test_credential_serialization_roundtrips() -> None:

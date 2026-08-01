@@ -687,6 +687,15 @@ class SessionServer:
         persisted.
         """
         voucher = payload.voucher
+        # The top-level channelId is the routing key; it must never diverge
+        # from the signed voucher's inner channelId (spec: servers MUST reject
+        # the action when the two differ).
+        if payload.channel_id != voucher.data.channel_id:
+            raise ValueError(
+                "voucher action channelId "
+                f"{payload.channel_id!r} does not match the signed voucher's "
+                f"channelId {voucher.data.channel_id!r}"
+            )
         channel_id = voucher.data.channel_id
 
         state = await self._store.get_channel(channel_id)
@@ -1002,6 +1011,12 @@ class SessionServer:
         now = int(time.time())
         channel_id = payload.channel_id
         voucher = payload.voucher
+        # Same routing-key invariant as the voucher action: a final voucher
+        # nested in a close must be bound to the channel being closed.
+        if voucher is not None and voucher.data.channel_id != channel_id:
+            raise ValueError(
+                f"close voucher channelId {voucher.data.channel_id!r} does not match the close channelId {channel_id!r}"
+            )
 
         def mutator(current: ChannelState | None) -> ChannelState:
             if current is None:
@@ -1093,9 +1108,7 @@ class SessionServer:
                     # None (omitted) encodes as 0 = never-expires in the
                     # signed bytes; the watermark must match what the
                     # signature covers (see _effective_expiry).
-                    nxt.highest_voucher_expires_at = (
-                        0 if voucher.data.expires_at is None else voucher.data.expires_at
-                    )
+                    nxt.highest_voucher_expires_at = 0 if voucher.data.expires_at is None else voucher.data.expires_at
             if not redrive:
                 nxt.close_requested_at = now
             nxt.last_activity_at = int(time.time() * 1000)

@@ -245,7 +245,8 @@ export type VectorInput = {
   voucherPreimage?: {
     channelId: string;
     cumulativeAmount: string;
-    expiresAt: number;
+    /** Omitted means never-expires; the SDK must encode 0 verbatim. */
+    expiresAt?: number;
   };
 
   // canonical-bytes (session): the UTF-8 JSON message a payer signs to mint

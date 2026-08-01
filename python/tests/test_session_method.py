@@ -109,6 +109,10 @@ def _session(core: SessionServer) -> Session:
     )
 
 
+def _voucher_payload(voucher):
+    return VoucherPayload(channel_id=voucher.data.channel_id, voucher=voucher)
+
+
 def test_new_session_fails_closed_without_rpc() -> None:
     with pytest.raises(PaymentError, match="RPC client"):
         new_session(_options(rpc=None))
@@ -383,7 +387,7 @@ async def test_verify_dispatches_client_voucher_top_up_and_close() -> None:
     voucher_receipt = await session.verify_credential(
         PaymentCredential(
             challenge=challenge.to_echo(),
-            payload=SessionAction.voucher_action(VoucherPayload(voucher(100))).to_dict(),
+            payload=SessionAction.voucher_action(_voucher_payload(voucher(100))).to_dict(),
         )
     )
     assert voucher_receipt.reference == f"{RECIPIENT}:100"

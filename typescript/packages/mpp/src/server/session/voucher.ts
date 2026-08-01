@@ -103,7 +103,7 @@ export interface VerifyVoucherArgs {
  */
 export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<VoucherVerifyResult> {
     const { state, signed, deposit } = args;
-    const { data } = signed;
+    const { voucher: data } = signed;
     if (signed.signatureType !== 'ed25519' || signed.signer !== state.authorizedSigner) {
         return reject('invalid-signature', 'voucher signer does not match the channel authorized signer');
     }
@@ -230,7 +230,7 @@ async function safeVerifySignature(
         const valid = await verifyVoucherSignature({
             signatureBase58: signed.signature,
             signerBase58: authorizedSigner,
-            voucher: signed.data,
+            voucher: signed.voucher,
         });
         if (!valid) {
             return { ok: false, reject: reject('invalid-signature', 'Voucher signature verification failed') };

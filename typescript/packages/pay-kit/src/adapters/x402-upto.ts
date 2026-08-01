@@ -245,14 +245,14 @@ export class X402Upto {
             const signed =
                 actual > 0n
                     ? {
-                          data: {
+                          signature: await this.#signVoucher(payload.channelId, actual, BigInt(payload.expiresAt)),
+                          signatureType: 'ed25519' as const,
+                          signer: this.#receiverAuthorizer,
+                          voucher: {
                               channelId: payload.channelId,
                               cumulativeAmount: actual.toString(),
                               expiresAt: payload.expiresAt,
                           },
-                          signature: await this.#signVoucher(payload.channelId, actual, BigInt(payload.expiresAt)),
-                          signatureType: 'ed25519' as const,
-                          signer: this.#receiverAuthorizer,
                       }
                     : undefined;
             const result = await submitSettleAndDistribute({

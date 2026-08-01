@@ -173,5 +173,97 @@
       "rejectReason": "unknown credential action tag",
       "rejectCode": "invalid-payload"
     }
+  },
+  {
+    "id": "session-wire-action-voucher-frozen",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Voucher action payload (mpp-specs e702dd8): a top-level channelId routing key is REQUIRED next to the signed voucher, and the signed voucher's inner data field is named voucher (not the superseded data). Frozen byte-for-byte through the production parser; servers MUST reject the action when the top-level channelId differs from the signed voucher's inner channelId. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "voucher",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "ed25519",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "250",
+              "expiresAt": 4102444800
+            }
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"action\":\"voucher\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"voucher\":{\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"signatureType\":\"ed25519\",\"signer\":\"Config1111111111111111111111111111111111111\",\"voucher\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"cumulativeAmount\":\"250\",\"expiresAt\":4102444800}}}",
+        "base64Url": "eyJhY3Rpb24iOiJ2b3VjaGVyIiwiY2hhbm5lbElkIjoiY0dmSGlDNktnZzNGcEZadmd3R2Nzd3NDUnRwNGFCUDJmenVYUlFQaXp1TiIsInZvdWNoZXIiOnsic2lnbmF0dXJlIjoiQUtBaDlMVW9XRkcyc3hBTW90em1MTnBLd1BUQ2lHNlE0WVR3QWluWk1ua3ZZS1BBS1ZQd1lTZm9RRHA4WExLV3pwYkNOeDY2WEIxQnJjRDFaVVBxVTM5Iiwic2lnbmF0dXJlVHlwZSI6ImVkMjU1MTkiLCJzaWduZXIiOiJDb25maWcxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwidm91Y2hlciI6eyJjaGFubmVsSWQiOiJjR2ZIaUM2S2dnM0ZwRlp2Z3dHY3N3c0NSdHA0YUJQMmZ6dVhSUVBpenVOIiwiY3VtdWxhdGl2ZUFtb3VudCI6IjI1MCIsImV4cGlyZXNBdCI6NDEwMjQ0NDgwMH19fQ"
+      }
+    }
+  },
+  {
+    "id": "session-wire-action-close-frozen",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Close action payload with a nested final voucher (mpp-specs e702dd8): the nested signed voucher uses the same inner voucher key as the voucher action, and this voucher omits expiresAt (never-expires) — the frozen bytes contain no expiresAt key, so a serializer that emits a null/sentinel placeholder diverges. The nested voucher's channelId MUST equal the close channelId; servers reject a divergent pair. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "close",
+          "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "voucher": {
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "ed25519",
+            "signer": "Config1111111111111111111111111111111111111",
+            "voucher": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "1000"
+            }
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"action\":\"close\",\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"voucher\":{\"signature\":\"AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39\",\"signatureType\":\"ed25519\",\"signer\":\"Config1111111111111111111111111111111111111\",\"voucher\":{\"channelId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"cumulativeAmount\":\"1000\"}}}",
+        "base64Url": "eyJhY3Rpb24iOiJjbG9zZSIsImNoYW5uZWxJZCI6ImNHZkhpQzZLZ2czRnBGWnZnd0djc3dzQ1J0cDRhQlAyZnp1WFJRUGl6dU4iLCJ2b3VjaGVyIjp7InNpZ25hdHVyZSI6IkFLQWg5TFVvV0ZHMnN4QU1vdHptTE5wS3dQVENpRzZRNFlUd0FpblpNbmt2WUtQQUtWUHdZU2ZvUURwOFhMS1d6cGJDTng2NlhCMUJyY0QxWlVQcVUzOSIsInNpZ25hdHVyZVR5cGUiOiJlZDI1NTE5Iiwic2lnbmVyIjoiQ29uZmlnMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsInZvdWNoZXIiOnsiY2hhbm5lbElkIjoiY0dmSGlDNktnZzNGcEZadmd3R2Nzd3NDUnRwNGFCUDJmenVYUlFQaXp1TiIsImN1bXVsYXRpdmVBbW91bnQiOiIxMDAwIn19fQ"
+      }
+    }
+  },
+  {
+    "id": "session-wire-action-voucher-legacy-inner-data-reject",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Superseded voucher action shape: signed voucher nested under inner key data with no top-level channelId. A migrated SDK's wire parser must refuse it — accepting it would mean the SDK still speaks the pre-e702dd8 draft voucher shape, which is exactly how the three SDKs drifted from the spec undetected while the freeze covered challenge/open only. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
+    "input": {
+      "sessionWire": {
+        "shape": "action",
+        "value": {
+          "action": "voucher",
+          "voucher": {
+            "data": {
+              "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "cumulativeAmount": "250",
+              "expiresAt": 4102444800
+            },
+            "signature": "AKAh9LUoWFG2sxAMotzmLNpKwPTCiG6Q4YTwAinZMnkvYKPAKVPwYSfoQDp8XLKWzpbCNx66XB1BrcD1ZUPqU39",
+            "signatureType": "ed25519",
+            "signer": "Config1111111111111111111111111111111111111"
+          }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectReason": "pre-e702dd8 voucher shape: inner key data and no top-level channelId",
+      "rejectCode": "invalid-payload"
+    }
   }
 ]

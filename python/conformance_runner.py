@@ -384,10 +384,13 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
         # (VoucherData.message_bytes -> _paymentchannels.voucher_message_bytes)
         # so a byte mismatch is caught cross-SDK rather than behind a live
         # channel. Mirrors the Go runner (paymentchannels.VoucherMessageBytes).
+        # An omitted expiresAt exercises the SDK's never-expires default
+        # (None -> encoded verbatim as 0), the exact path the session voucher
+        # signer uses.
         voucher = VoucherData(
             channel_id=vp["channelId"],
             cumulative_amount=str(vp["cumulativeAmount"]),
-            expires_at=int(vp["expiresAt"]),
+            expires_at=(int(vp["expiresAt"]) if vp.get("expiresAt") is not None else None),
         )
         preimage = voucher.message_bytes()
         exact["bytes"] = list(preimage)

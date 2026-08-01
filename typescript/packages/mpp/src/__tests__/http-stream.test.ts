@@ -22,7 +22,7 @@ class RecordingTransport implements CommitTransport {
         this.commits.push(payload);
         return {
             amount: directive.amount,
-            cumulative: payload.voucher.data.cumulativeAmount,
+            cumulative: payload.voucher.voucher.cumulativeAmount,
             deliveryId: directive.deliveryId,
             sessionId: directive.sessionId,
             status: 'committed',
@@ -141,7 +141,7 @@ describe('MeteredSseSession', () => {
         expect(receipt).toMatchObject({ amount: '64', cumulative: '64', deliveryId: 'reserved' });
         expect(transport.commits[0]).toMatchObject({
             deliveryId: 'reserved',
-            voucher: { data: { cumulativeAmount: '64' } },
+            voucher: { voucher: { cumulativeAmount: '64' } },
         });
     });
 

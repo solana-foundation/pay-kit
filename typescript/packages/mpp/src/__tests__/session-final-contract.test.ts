@@ -52,12 +52,12 @@ describe('final session wire contract', () => {
         const session = new ActiveSession({ channelId: channel.address, signer });
         const voucher = await session.signVoucher(25n);
 
-        expect(voucher.data).toEqual({
+        expect(voucher.voucher).toEqual({
             channelId: channel.address,
             cumulativeAmount: '25',
             expiresAt: session.expiresAt,
         });
-        expect(voucher.data).not.toHaveProperty('nonce');
+        expect(voucher.voucher).not.toHaveProperty('nonce');
         expect(session.topUpAction(75n, 'wire')).toEqual({
             action: 'topUp',
             additionalAmount: '75',

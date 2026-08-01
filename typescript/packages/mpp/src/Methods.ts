@@ -23,15 +23,6 @@ const voucherExpiresAt = z
     );
 
 const signedVoucher = z.object({
-    data: z.object({
-        /** Channel/session ID the voucher is bound to. */
-        channelId: z.string(),
-        /** Cumulative amount authorized in base units. */
-        cumulativeAmount: z.string(),
-        /** Unix timestamp at which this voucher expires. */
-        expiresAt: z.optional(voucherExpiresAt),
-    }),
-
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
     signature: z.string(),
 
@@ -40,6 +31,19 @@ const signedVoucher = z.object({
 
     /** Base58 public key that signed the voucher. */
     signer: z.string(),
+
+    /**
+     * The voucher content, carried on the wire as `voucher` per the spec's
+     * Signed Voucher table (mpp-specs e702dd8).
+     */
+    voucher: z.object({
+        /** Channel/session ID the voucher is bound to. */
+        channelId: z.string(),
+        /** Cumulative amount authorized in base units. */
+        cumulativeAmount: z.string(),
+        /** Unix timestamp at which this voucher expires. */
+        expiresAt: z.optional(voucherExpiresAt),
+    }),
 });
 
 /**
@@ -228,6 +232,12 @@ export const session = Method.from({
                 }),
                 z.object({
                     action: z.literal('voucher'),
+                    /**
+                     * REQUIRED routing key next to the signed voucher; the
+                     * server rejects the action when it differs from the
+                     * signed voucher's inner `channelId`.
+                     */
+                    channelId: z.string(),
                     voucher: signedVoucher,
                 }),
                 z.object({

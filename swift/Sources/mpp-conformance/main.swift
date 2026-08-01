@@ -122,7 +122,7 @@ private struct EncodeBase64URL: Decodable {
 private struct VoucherPreimage: Decodable {
     let channelId: String
     let cumulativeAmount: String
-    let expiresAt: Int64
+    let expiresAt: Int64?
 }
 
 // challenge-id HMAC input (mirror schema.ts / ts-runner challengeId).
@@ -773,7 +773,7 @@ private func runCanonicalBytes(_ vector: Vector, rawValue: Any?) throws -> Exact
         }
         let channel = try Pubkey(base58: vp.channelId)
         let preimage = PaymentChannels.voucherMessageBytes(
-            channelId: channel, cumulative: cumulative, expiresAt: vp.expiresAt
+            channelId: channel, cumulative: cumulative, expiresAt: vp.expiresAt ?? 0
         )
         eb.bytes = [UInt8](preimage).map { Int($0) }
         eb.base64Url = base64Url(preimage)

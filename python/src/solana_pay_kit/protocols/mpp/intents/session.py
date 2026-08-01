@@ -487,11 +487,11 @@ class VoucherData:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> VoucherData:
-        cumulative = data.get("cumulativeAmount", "")
+        cumulative = data.get("cumulativeAmount")
         if not isinstance(cumulative, str):
             raise ValueError("cumulativeAmount must be a decimal string")
         return cls(
-            channel_id=str(data.get("channelId", "")),
+            channel_id=_string_from_wire(data.get("channelId"), "voucher.channelId"),
             cumulative_amount=cumulative,
             expires_at=(int(data["expiresAt"]) if data.get("expiresAt") is not None else None),
         )
@@ -541,6 +541,8 @@ class SignedVoucher:
     ``message_bytes``.
     """
 
+    #: The voucher content, carried on the wire as ``voucher`` per the spec's
+    #: Signed Voucher table (mpp-specs e702dd8).
     data: VoucherData
     signer: str
     signature: str
@@ -548,7 +550,7 @@ class SignedVoucher:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "data": self.data.to_dict(),
+            "voucher": self.data.to_dict(),
             "signer": self.signer,
             "signature": self.signature,
             "signatureType": self.signature_type,
@@ -557,7 +559,7 @@ class SignedVoucher:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SignedVoucher:
         return cls(
-            data=VoucherData.from_dict(data.get("data", {})),
+            data=VoucherData.from_dict(data.get("voucher", {})),
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),
             signature_type=_signature_type(data.get("signatureType")),
@@ -578,14 +580,22 @@ class VoucherPayload:
     request against an open channel.
     """
 
+    #: REQUIRED routing key next to the signed voucher; servers MUST reject
+    #: the action when it differs from the signed voucher's inner
+    #: ``channelId`` — the routing key must never diverge from the signed
+    #: content.
+    channel_id: str
     voucher: SignedVoucher
 
     def to_dict(self) -> dict[str, Any]:
-        return {"voucher": self.voucher.to_dict()}
+        return {"channelId": self.channel_id, "voucher": self.voucher.to_dict()}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> VoucherPayload:
-        return cls(voucher=SignedVoucher.from_dict(data.get("voucher", {})))
+        return cls(
+            channel_id=_string_from_wire(data.get("channelId"), "channelId"),
+            voucher=SignedVoucher.from_dict(data.get("voucher", {})),
+        )
 
 
 @dataclass

@@ -25,7 +25,7 @@ import java.util.Base64
  */
 
 @Serializable
-private data class VoucherPreimage(val channelId: String, val cumulativeAmount: String, val expiresAt: Long)
+private data class VoucherPreimage(val channelId: String, val cumulativeAmount: String, val expiresAt: Long = 0)
 
 @Serializable
 private data class VectorInput(val voucherPreimage: VoucherPreimage? = null)

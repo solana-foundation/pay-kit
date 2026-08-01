@@ -252,7 +252,7 @@ describe('buildSettleAndSealInstructions', () => {
         const [, , , authorized, merchant] = await loadFixedSigners();
         const signatureBytes = new Uint8Array(64).fill(0xaa);
         const signed: SignedVoucher = {
-            data: { channelId: CHANNEL_ID, cumulativeAmount: '500', expiresAt: 1_700_000_000 },
+            voucher: { channelId: CHANNEL_ID, cumulativeAmount: '500', expiresAt: 1_700_000_000 },
             signature: bs58Encode(signatureBytes),
             signatureType: 'ed25519',
             signer: authorized.address,

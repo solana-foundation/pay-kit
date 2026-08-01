@@ -455,7 +455,7 @@ async function watermarkedFixture(rpcOptions: { sendErrors?: number } = {}) {
 
     const active = new ActiveSession({ channelId: f.channel.address, signer: f.sessionSigner });
     const voucher = await active.prepareVoucher(250n);
-    const receipt = await verify(method, makeCred(f, { action: 'voucher', voucher }));
+    const receipt = await verify(method, makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher }));
     return { ...mock, active, f, method, receipt, voucher };
 }
 
@@ -468,6 +468,37 @@ describe('session() verify() close monotonicity', () => {
         const state = await f.store.getChannel(f.channel.address);
         expect(state?.cumulative).toBe(250n);
         expect(state?.highestVoucherSignature).toBe(voucher.signature);
+    });
+
+    test('a voucher action whose top-level channelId diverges from the signed voucher is rejected', async () => {
+        const { f, method } = await watermarkedFixture();
+        const voucher = await new ActiveSession({
+            channelId: f.channel.address,
+            signer: f.sessionSigner,
+        }).prepareVoucher(300n);
+
+        await expect(
+            verify(method, makeCred(f, { action: 'voucher', channelId: '11111111111111111111111111111111', voucher })),
+        ).rejects.toThrow(/does not match the signed voucher/);
+
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.cumulative).toBe(250n);
+    });
+
+    test('a close whose nested voucher is bound to another channel is rejected', async () => {
+        const { f, method, sent } = await watermarkedFixture();
+        const foreign = await new ActiveSession({
+            channelId: '11111111111111111111111111111111',
+            signer: f.sessionSigner,
+        }).prepareVoucher(300n);
+
+        await expect(
+            verify(method, makeCred(f, { action: 'close', channelId: f.channel.address, voucher: foreign })),
+        ).rejects.toThrow(/does not match the close channelId/);
+
+        const state = await f.store.getChannel(f.channel.address);
+        expect(state?.closeRequestedAt).toBeUndefined();
+        expect(sent).toHaveLength(0);
     });
 
     test('close rejects a non-monotonic final voucher and does not flip close-pending', async () => {

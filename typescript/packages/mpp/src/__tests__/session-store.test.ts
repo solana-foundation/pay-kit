@@ -42,10 +42,10 @@ async function signVoucher(
     const sigBytes = signatures?.[signer.address];
     if (!sigBytes) throw new Error('signer did not produce a signature');
     return {
-        data,
         signature: getBase58Decoder().decode(new Uint8Array(sigBytes)),
         signatureType: 'ed25519',
         signer: signer.address,
+        voucher: data,
     };
 }
 
@@ -307,10 +307,10 @@ describe('verifyVoucherForChannel', () => {
         const real = await signVoucher(signer, '11111111111111111111111111111111', 100n, FAR_FUTURE);
         // Tamper the data field after signing — verifier should reject on parse before sig.
         const badData: SignedVoucher = {
-            data: { ...real.data, cumulativeAmount: 'not-a-number' },
             signature: real.signature,
             signatureType: real.signatureType,
             signer: real.signer,
+            voucher: { ...real.voucher, cumulativeAmount: 'not-a-number' },
         };
         const state = makeState({ authorizedSigner: signer.address });
 

@@ -329,10 +329,34 @@ async def test_concurrent_open_verifies_and_persists_once() -> None:
 async def test_client_voucher_advances_watermark_and_replays_idempotently() -> None:
     server, _, _ = await _server()
     voucher = _voucher(100)
-    assert await server.verify_voucher(VoucherPayload(voucher)) == 100
-    assert await server.verify_voucher(VoucherPayload(voucher)) == 100
+    assert await server.verify_voucher(_voucher_payload(voucher)) == 100
+    assert await server.verify_voucher(_voucher_payload(voucher)) == 100
     state = await server.store().get_channel(CHANNEL)
     assert state is not None and state.cumulative == 100
+
+
+async def test_voucher_action_channel_id_must_match_the_signed_voucher() -> None:
+    # The top-level channelId is the routing key; it must never diverge from
+    # the signed voucher's inner channelId (spec: servers MUST reject).
+    server, _, _ = await _server()
+    voucher = _voucher(100)
+    with pytest.raises(ValueError, match="does not match the signed voucher"):
+        await server.verify_voucher(VoucherPayload("SomeOtherChannel1111111111111111", voucher))
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.cumulative == 0
+
+
+async def test_close_voucher_channel_id_must_match_the_close() -> None:
+    # Same routing-key invariant on close: a final voucher bound to another
+    # channel is rejected before any state transition.
+    server, _, _ = await _server()
+    await server.verify_voucher(_voucher_payload(_voucher(100)))
+    foreign = _voucher(200)
+    foreign.data.channel_id = "SomeOtherChannel1111111111111111"
+    with pytest.raises(ValueError, match="does not match the close channelId"):
+        await server.process_close(ClosePayload(CHANNEL, voucher=foreign))
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.close_requested_at is None
 
 
 async def test_operator_use_requires_idempotency_and_charges_once() -> None:
@@ -476,20 +500,20 @@ async def test_voucher_rejections_cover_channel_mode_delta_and_deposit() -> None
         signature=str(CLIENT_SIGNER.sign_message(other_data.message_bytes())),
     )
     with pytest.raises(ValueError, match="not found"):
-        await server.verify_voucher(VoucherPayload(other_voucher))
+        await server.verify_voucher(_voucher_payload(other_voucher))
 
     config.min_voucher_delta = 100
     with pytest.raises(ValueError, match="below-min-delta"):
-        await server.verify_voucher(VoucherPayload(_voucher(50)))
-    await server.verify_voucher(VoucherPayload(_voucher(100)))
+        await server.verify_voucher(_voucher_payload(_voucher(50)))
+    await server.verify_voucher(_voucher_payload(_voucher(100)))
     with pytest.raises(ValueError, match="cumulative-not-monotonic"):
-        await server.verify_voucher(VoucherPayload(_voucher(99)))
+        await server.verify_voucher(_voucher_payload(_voucher(99)))
     with pytest.raises(ValueError, match="exceeds-deposit"):
-        await server.verify_voucher(VoucherPayload(_voucher(1_001)))
+        await server.verify_voucher(_voucher_payload(_voucher(1_001)))
 
     operator, _, _ = await _server(operator=True)
     with pytest.raises(ValueError, match="client-signed"):
-        await operator.verify_voucher(VoucherPayload(_voucher(1)))
+        await operator.verify_voucher(_voucher_payload(_voucher(1)))
 
 
 async def test_top_up_rejects_invalid_amount_state_and_verifier_errors() -> None:
@@ -648,7 +672,7 @@ async def test_top_up_credits_exactly_once_per_transaction_signature() -> None:
 
 async def test_client_close_final_voucher_rules_and_double_close() -> None:
     server, _, _ = await _server()
-    await server.verify_voucher(VoucherPayload(_voucher(100)))
+    await server.verify_voucher(_voucher_payload(_voucher(100)))
     with pytest.raises(ValueError, match="must exceed watermark"):
         await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(99)))
     with pytest.raises(ValueError, match="exceeds deposit"):
@@ -730,3 +754,7 @@ async def test_process_open_rejects_unsolicited_splits() -> None:
     server = SessionServer(config, MemoryChannelStore())
     with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
         await server.process_open(payload, challenge)
+
+
+def _voucher_payload(voucher: SignedVoucher) -> VoucherPayload:
+    return VoucherPayload(channel_id=voucher.data.channel_id, voucher=voucher)

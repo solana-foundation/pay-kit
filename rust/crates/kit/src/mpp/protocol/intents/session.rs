@@ -357,7 +357,16 @@ impl OpenPayload {
 
 /// Payload for the `voucher` action (per-request micropayment).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VoucherPayload {
+    /// The channel/session ID this voucher is submitted against (base58).
+    ///
+    /// REQUIRED routing key next to the signed voucher; servers MUST reject
+    /// the action when it differs from the signed voucher's inner
+    /// `channelId` — the routing key must never diverge from the signed
+    /// content.
+    pub channel_id: String,
+
     /// The signed voucher authorizing cumulative spend.
     pub voucher: SignedVoucher,
 }
@@ -584,7 +593,9 @@ pub fn resolve_idle_timeout_seconds(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedVoucher {
-    /// The voucher content.
+    /// The voucher content, carried on the wire as `voucher` per the spec's
+    /// Signed Voucher table (mpp-specs e702dd8).
+    #[serde(rename = "voucher")]
     pub data: VoucherData,
 
     /// Base58 public key that signed the voucher.
@@ -841,11 +852,17 @@ mod tests {
             signature_type: VoucherSignatureType::Ed25519,
         };
         let value = serde_json::to_value(SessionAction::Voucher(VoucherPayload {
+            channel_id: voucher.data.channel_id.clone(),
             voucher: voucher.clone(),
         }))
         .unwrap();
         assert_eq!(value["action"], "voucher");
-        assert_eq!(value["voucher"]["data"]["cumulativeAmount"], "25");
+        // Spec wire shape (mpp-specs e702dd8): top-level channelId routing
+        // key next to the signed voucher, whose inner data field is named
+        // `voucher` (not `data`).
+        assert_eq!(value["channelId"], voucher.data.channel_id);
+        assert_eq!(value["voucher"]["voucher"]["cumulativeAmount"], "25");
+        assert!(value["voucher"].get("data").is_none());
         let commit = CommitPayload {
             delivery_id: "d1".into(),
             voucher,

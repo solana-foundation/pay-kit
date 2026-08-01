@@ -31,14 +31,14 @@ export const VOUCHER_MAGIC: Readonly<Uint8Array> = new Uint8Array([0x56, 0x01]);
  * Signed voucher as it arrives on the wire.
  */
 export interface WireSignedVoucher {
-    readonly data: {
+    readonly signature: string;
+    readonly signatureType: 'ed25519';
+    readonly signer: string;
+    readonly voucher: {
         readonly channelId: string;
         readonly cumulativeAmount: string;
         readonly expiresAt?: number | undefined;
     };
-    readonly signature: string;
-    readonly signatureType: 'ed25519';
-    readonly signer: string;
 }
 
 /**
@@ -46,7 +46,7 @@ export interface WireSignedVoucher {
  * `expiresAt` survived JSON parsing intact.
  */
 export function normalizeSignedVoucher(signed: WireSignedVoucher): SignedVoucher {
-    const { data } = signed;
+    const { voucher: data } = signed;
     if (data.expiresAt !== undefined && !Number.isSafeInteger(data.expiresAt)) {
         throw new Error(
             `invalid-voucher: expiresAt ${data.expiresAt} is not a safe JavaScript integer — ` +
@@ -54,14 +54,14 @@ export function normalizeSignedVoucher(signed: WireSignedVoucher): SignedVoucher
         );
     }
     return {
-        data: {
+        signature: signed.signature,
+        signatureType: signed.signatureType,
+        signer: signed.signer,
+        voucher: {
             channelId: data.channelId,
             cumulativeAmount: data.cumulativeAmount,
             ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
         },
-        signature: signed.signature,
-        signatureType: signed.signatureType,
-        signer: signed.signer,
     };
 }
 

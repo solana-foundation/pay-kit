@@ -805,6 +805,15 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
     pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
+        // The top-level channelId is the routing key; it must never diverge
+        // from the signed voucher's inner channelId (spec: servers MUST
+        // reject the action when the two differ).
+        if payload.channel_id != voucher.data.channel_id {
+            return Err(Error::Other(
+                "voucher action channelId does not match the signed voucher's channelId"
+                    .to_string(),
+            ));
+        }
         let state = self
             .store
             .get_channel(&voucher.data.channel_id)
@@ -1424,6 +1433,15 @@ impl<S: ChannelStore> SessionServer<S> {
             .unwrap_or_default()
             .as_secs();
         let voucher_opt = payload.voucher.clone();
+        // Same routing-key invariant as the voucher action: a final voucher
+        // nested in a close must be bound to the channel being closed.
+        if let Some(ref voucher) = voucher_opt {
+            if voucher.data.channel_id != payload.channel_id {
+                return Err(Error::Other(
+                    "close voucher channelId does not match the close channelId".to_string(),
+                ));
+            }
+        }
         let authentication_opt = payload.authentication.clone();
         let settlement_window = self.config.grace_period_seconds as i64;
 
@@ -2783,6 +2801,7 @@ mod tests {
         let voucher = session.sign_increment(100).await.unwrap();
         let accepted = server
             .verify_voucher(&VoucherPayload {
+                channel_id: voucher.data.channel_id.clone(),
                 voucher: voucher.clone(),
             })
             .await
@@ -2791,6 +2810,7 @@ mod tests {
         assert!(!accepted.replay);
         let replay = server
             .verify_voucher(&VoucherPayload {
+                channel_id: voucher.data.channel_id.clone(),
                 voucher: voucher.clone(),
             })
             .await
@@ -2806,17 +2826,35 @@ mod tests {
         assert!(stored.lifecycle.is_some());
         assert!(stored.last_activity_at > 1);
 
+        // The top-level routing key must match the signed voucher's inner
+        // channelId — a divergent pair is rejected before any state lookup.
+        let mismatch = server
+            .verify_voucher(&VoucherPayload {
+                channel_id: Pubkey::new_unique().to_string(),
+                voucher: voucher.clone(),
+            })
+            .await;
+        assert!(mismatch
+            .unwrap_err()
+            .to_string()
+            .contains("does not match the signed voucher"));
+
         let mut wrong = voucher;
         wrong.signer = Pubkey::new_unique().to_string();
         assert!(server
-            .verify_voucher(&VoucherPayload { voucher: wrong })
+            .verify_voucher(&VoucherPayload {
+                channel_id: wrong.data.channel_id.clone(),
+                voucher: wrong,
+            })
             .await
             .is_err());
+        let unknown_channel = Pubkey::new_unique().to_string();
         assert!(server
             .verify_voucher(&VoucherPayload {
+                channel_id: unknown_channel.clone(),
                 voucher: SignedVoucher {
                     data: VoucherData {
-                        channel_id: Pubkey::new_unique().to_string(),
+                        channel_id: unknown_channel,
                         cumulative_amount: "1".into(),
                         expires_at: None,
                     },
@@ -3058,6 +3096,19 @@ mod tests {
     async fn client_close_seal_and_store_lifecycle_are_consistent() {
         let (server, mut session, channel_id) = client_server().await;
         let voucher = session.sign_increment(100).await.unwrap();
+        // Routing-key invariant on close: a final voucher signed for another
+        // channel must be rejected before any state transition.
+        let foreign = server
+            .process_close(&ClosePayload {
+                channel_id: Pubkey::new_unique().to_string(),
+                authentication: None,
+                voucher: Some(voucher.clone()),
+            })
+            .await;
+        assert!(foreign
+            .unwrap_err()
+            .to_string()
+            .contains("does not match the close channelId"));
         let params = server
             .process_close(&ClosePayload {
                 channel_id: channel_id.clone(),

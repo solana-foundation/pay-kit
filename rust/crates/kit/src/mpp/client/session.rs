@@ -185,7 +185,10 @@ impl ActiveSession {
     /// Build a `SessionAction::Voucher` wrapping a freshly-signed increment.
     pub async fn voucher_action(&mut self, amount: u64) -> Result<SessionAction> {
         let voucher = self.sign_increment(amount).await?;
-        Ok(SessionAction::Voucher(VoucherPayload { voucher }))
+        Ok(SessionAction::Voucher(VoucherPayload {
+            channel_id: voucher.data.channel_id.clone(),
+            voucher,
+        }))
     }
 
     /// Build a `SessionAction::Close` for cooperative channel close.

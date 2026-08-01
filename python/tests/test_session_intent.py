@@ -114,9 +114,7 @@ def test_session_request_rejects_missing_required_fields(missing: str) -> None:
     # The wire parser must refuse a request lacking a required field instead
     # of defaulting it — a pre-e702dd8 draft request (cap/programId, no
     # amount/methodDetails) must fail the parse, matching the Rust spine.
-    wire = SessionRequest(
-        amount="25", currency="USDC", recipient="recipient", method_details=_details()
-    ).to_dict()
+    wire = SessionRequest(amount="25", currency="USDC", recipient="recipient", method_details=_details()).to_dict()
     del wire[missing]
     with pytest.raises(ValueError):
         SessionRequest.from_dict(wire)
@@ -181,7 +179,7 @@ def test_action_union_contains_only_final_actions() -> None:
     voucher = _voucher()
     actions = [
         SessionAction.open_action(_open()),
-        SessionAction.voucher_action(VoucherPayload(voucher)),
+        SessionAction.voucher_action(VoucherPayload(voucher.data.channel_id, voucher)),
         SessionAction.use_action(UsePayload("channel", authentication)),
         SessionAction.top_up_action(TopUpPayload("channel", "10", "transaction")),
         SessionAction.close_action(ClosePayload("channel", voucher=voucher)),
@@ -196,8 +194,11 @@ def test_voucher_wire_and_message_layout() -> None:
     voucher = _voucher()
     wire = voucher.to_dict()
     assert wire["signatureType"] == "ed25519"
-    assert wire["data"]["cumulativeAmount"] == "500"
-    assert "cumulative" not in wire["data"]
+    # Spec wire shape (mpp-specs e702dd8): the inner data field is named
+    # `voucher`, not `data`.
+    assert "data" not in wire
+    assert wire["voucher"]["cumulativeAmount"] == "500"
+    assert "cumulative" not in wire["voucher"]
     message = voucher.data.message_bytes()
     assert len(message) == 50
     assert message[:2] == bytes([0x56, 0x01])

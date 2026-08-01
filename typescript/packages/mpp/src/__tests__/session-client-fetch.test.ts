@@ -123,8 +123,8 @@ function createGatewayMock(): GatewayMock {
                 const attempt: CommitAttempt = {
                     amount: expectString(body.amount),
                     deliveryId: expectString(body.deliveryId),
-                    voucherChannelId: voucher.data.channelId,
-                    voucherCumulative: voucher.data.cumulativeAmount,
+                    voucherChannelId: voucher.voucher.channelId,
+                    voucherCumulative: voucher.voucher.cumulativeAmount,
                 };
                 commitAttempts.push(attempt);
                 if (gateway.failNextCommits > 0) {

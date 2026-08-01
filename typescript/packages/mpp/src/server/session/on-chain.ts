@@ -230,8 +230,8 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
 
     if (args.voucher) {
         const { signed, authorizedSigner } = args.voucher;
-        cumulativeAmount = parseU64String(signed.data.cumulativeAmount, 'voucher.cumulativeAmount');
-        expiresAt = toBigInt(signed.data.expiresAt ?? 0);
+        cumulativeAmount = parseU64String(signed.voucher.cumulativeAmount, 'voucher.cumulativeAmount');
+        expiresAt = toBigInt(signed.voucher.expiresAt ?? 0);
         hasVoucher = 1;
 
         const signerBytes = getBase58Encoder().encode(authorizedSigner) as Uint8Array;
@@ -243,7 +243,7 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
             throw new Error(`voucher signature must decode to 64 bytes; got ${signatureBytes.byteLength}`);
         }
         const message = encodeVoucherMessageBytes({
-            channelId: signed.data.channelId,
+            channelId: signed.voucher.channelId,
             cumulativeAmount,
             expiresAt,
         });

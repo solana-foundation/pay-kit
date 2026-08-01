@@ -246,11 +246,13 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
       // cross-SDK rather than behind a live channel. Mirrors the Go and
       // Python runners.
       const vp = vector.input.voucherPreimage;
+      // An omitted expiresAt exercises the SDK's never-expires default
+      // (encoded verbatim as 0), the exact path the session signer uses.
       const preimage = Buffer.from(
         voucherMessageBytes({
           channelId: vp.channelId,
           cumulativeAmount: vp.cumulativeAmount,
-          expiresAt: vp.expiresAt,
+          expiresAt: vp.expiresAt ?? 0,
         }),
       );
       exactBytes.bytes = Array.from(preimage);
