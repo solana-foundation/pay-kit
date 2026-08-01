@@ -3,7 +3,7 @@
     "id": "session-wire-request-new-channel-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "New-channel session challenge SessionRequest (mpp-specs e702dd8): methodDetails has NO channelId, so recentBlockhash (base58, the open transaction's blockhash) and recentSlot (decimal-string u64 from the same getLatestBlockhash response's context.slot, the client's default openSlot) are REQUIRED and frozen here byte-for-byte. Round-tripped through the production wire parser and JCS-canonicalized; a rename, retype (e.g. numeric recentSlot on encode), or drop of either field diverges from the frozen bytes.",
+    "description": "New-channel session challenge SessionRequest (mpp-specs e702dd8): methodDetails has NO channelId, so recentBlockhash (base58, the open transaction's blockhash) and recentSlot (decimal-string u64 from the same getLatestBlockhash response's context.slot, the client's default openSlot) are REQUIRED and frozen here byte-for-byte. Round-tripped through the production wire parser and JCS-canonicalized; a rename, retype (e.g. numeric recentSlot on encode), or drop of either field diverges from the frozen bytes. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
     "input": {
       "sessionWire": {
         "shape": "request",
@@ -45,7 +45,7 @@
     "id": "session-wire-request-resume-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "Resume session challenge SessionRequest (mpp-specs e702dd8): methodDetails.channelId is present, so recentBlockhash and recentSlot MUST be absent from the wire \u2014 the frozen bytes contain neither key. An SDK that emits the pair on resume (or serializes null placeholders) diverges.",
+    "description": "Resume session challenge SessionRequest (mpp-specs e702dd8): methodDetails.channelId is present, so recentBlockhash and recentSlot MUST be absent from the wire — the frozen bytes contain neither key. An SDK that emits the pair on resume (or serializes null placeholders) diverges. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
     "input": {
       "sessionWire": {
         "shape": "request",
@@ -73,7 +73,7 @@
     "id": "session-wire-action-open-frozen",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "Session open credential payload (mpp-specs e702dd8): the channel's PDA-seed slot travels as openSlot (decimal-string u64, defaulted by the client from the challenged recentSlot). Frozen byte-for-byte through the production parser; the superseded draft echo name recentSlot must not appear in the open payload.",
+    "description": "Session open credential payload (mpp-specs e702dd8): the channel's PDA-seed slot travels as openSlot (decimal-string u64, defaulted by the client from the challenged recentSlot). Frozen byte-for-byte through the production parser; the superseded draft echo name recentSlot must not appear in the open payload. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -105,7 +105,7 @@
     "id": "session-wire-request-superseded-draft-reject",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "Superseded draft SessionRequest shape (top-level cap/programId, no amount/methodDetails). Every SDK's wire parser must refuse it \u2014 accepting it would mean the SDK still speaks the pre-e702dd8 draft.",
+    "description": "Superseded draft SessionRequest shape (top-level cap/programId, no amount/methodDetails). A migrated SDK's wire parser must refuse it — accepting it would mean the SDK still speaks the pre-e702dd8 draft. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
     "input": {
       "sessionWire": {
         "shape": "request",
@@ -128,7 +128,7 @@
     "id": "session-wire-action-open-draft-slot-echo-reject",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "Open payload carrying the superseded draft echo name recentSlot instead of openSlot (mpp-specs e702dd8 renamed the open payload's slot field). openSlot is required, so every SDK must refuse this payload rather than silently defaulting the PDA-seed slot.",
+    "description": "Open payload carrying the superseded draft echo name recentSlot instead of openSlot (mpp-specs e702dd8 renamed the open payload's slot field). openSlot is required, so a migrated SDK must refuse this payload rather than silently defaulting the PDA-seed slot. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
     "input": {
       "sessionWire": {
         "shape": "action",
@@ -157,7 +157,7 @@
     "id": "session-wire-action-unknown-tag-reject",
     "intent": "session",
     "mode": "canonical-bytes",
-    "description": "Credential payload with an action tag outside the frozen set open/voucher/use/topUp/close (multiDelegate was removed from the final contract). Every SDK must refuse unknown action tags.",
+    "description": "Credential payload with an action tag outside the frozen set open/voucher/use/topUp/close (multiDelegate was removed from the final contract). A migrated SDK must refuse unknown action tags. NOTE: Go/Kotlin/Swift have not migrated to the final e702dd8 wire contract and declare an expected unsupported-mode skip for this vector (allowlisted in their seeded conformance tests); until the follow-up migration PR lands, this vector is enforced by the TypeScript and Python parsers only.",
     "input": {
       "sessionWire": {
         "shape": "action",
