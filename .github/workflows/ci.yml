@@ -201,14 +201,20 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
+      # See .github/actions/setup-harness/action.yml for why the key must not
+      # hash only the gitignored lockfile: a constant key froze this cache at
+      # its first save and cargo rebuilt all ~890 crates on every run.
+      - name: Compute cargo cache key
+        id: cargo-key
+        run: echo "rustc=$(rustc -V | tr -d ' ()')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-rust-
+          key: ${{ runner.os }}-cargo-rust-${{ steps.cargo-key.outputs.rustc }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-rust-${{ steps.cargo-key.outputs.rustc }}-
       - name: Download HTML assets
         uses: actions/download-artifact@v7
         with:
@@ -406,14 +412,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      # Same key as the Rust tests job above, same rationale: a key hashing
+      # only the gitignored lockfile is constant, so this cache was frozen and
+      # the test server rebuilt ~490 crates per run.
+      - name: Compute cargo cache key
+        id: cargo-key
+        run: echo "rustc=$(rustc -V | tr -d ' ()')" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-rust-
+          key: ${{ runner.os }}-cargo-rust-${{ steps.cargo-key.outputs.rustc }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-rust-${{ steps.cargo-key.outputs.rustc }}-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
