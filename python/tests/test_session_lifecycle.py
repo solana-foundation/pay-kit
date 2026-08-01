@@ -36,8 +36,8 @@ class _IdleRecorder:
 async def test_zero_delay_disables_timers() -> None:
     """Mirrors TestSessionLifecycleZeroDelayDisablesTimers."""
     recorder = _IdleRecorder()
-    lifecycle = SessionLifecycle(recorder.handler, 0)
-    lifecycle.touch("c1")
+    lifecycle = SessionLifecycle(recorder.handler)
+    lifecycle.touch("c1", 0)
 
     await asyncio.sleep(0.03)
     assert recorder.count() == 0
@@ -46,9 +46,9 @@ async def test_zero_delay_disables_timers() -> None:
 async def test_fires_after_idle() -> None:
     """Mirrors TestSessionLifecycleFiresAfterIdle."""
     recorder = _IdleRecorder()
-    lifecycle = SessionLifecycle(recorder.handler, 0.01)
+    lifecycle = SessionLifecycle(recorder.handler)
     try:
-        lifecycle.touch("c1")
+        lifecycle.touch("c1", 0.01)
         await asyncio.wait_for(recorder.event.wait(), timeout=2.0)
         assert recorder.fired[0] == "c1"
     finally:
@@ -58,12 +58,12 @@ async def test_fires_after_idle() -> None:
 async def test_touch_resets_timer() -> None:
     """Mirrors TestSessionLifecycleTouchResetsTimer."""
     recorder = _IdleRecorder()
-    lifecycle = SessionLifecycle(recorder.handler, 0.08)
+    lifecycle = SessionLifecycle(recorder.handler)
     try:
-        lifecycle.touch("c1")
+        lifecycle.touch("c1", 0.08)
         for _ in range(3):
             await asyncio.sleep(0.03)
-            lifecycle.touch("c1")
+            lifecycle.touch("c1", 0.08)
             assert recorder.count() == 0
         await asyncio.wait_for(recorder.event.wait(), timeout=2.0)
         assert recorder.count() == 1
@@ -74,9 +74,9 @@ async def test_touch_resets_timer() -> None:
 async def test_remove_channel_cancels_timer() -> None:
     """Mirrors TestSessionLifecycleRemoveChannelCancelsTimer."""
     recorder = _IdleRecorder()
-    lifecycle = SessionLifecycle(recorder.handler, 0.02)
+    lifecycle = SessionLifecycle(recorder.handler)
     try:
-        lifecycle.touch("c1")
+        lifecycle.touch("c1", 0.02)
         lifecycle.remove_channel("c1")
 
         await asyncio.sleep(0.06)
@@ -88,12 +88,12 @@ async def test_remove_channel_cancels_timer() -> None:
 async def test_shutdown_cancels_all_timers_and_disables_touch() -> None:
     """Mirrors TestSessionLifecycleShutdownCancelsAllTimersAndDisablesTouch."""
     recorder = _IdleRecorder()
-    lifecycle = SessionLifecycle(recorder.handler, 0.02)
+    lifecycle = SessionLifecycle(recorder.handler)
 
-    lifecycle.touch("c1")
-    lifecycle.touch("c2")
+    lifecycle.touch("c1", 0.02)
+    lifecycle.touch("c2", 0.02)
     lifecycle.shutdown()
-    lifecycle.touch("c3")
+    lifecycle.touch("c3", 0.02)
 
     await asyncio.sleep(0.06)
     assert recorder.count() == 0

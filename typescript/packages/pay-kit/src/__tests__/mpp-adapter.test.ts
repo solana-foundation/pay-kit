@@ -11,7 +11,7 @@ const PLATFORM = 'CXG3Pq3DwZb1HVckhPQbVxiwoNGM3jNGYvC2BSdkj1pK';
 
 async function setup() {
     const config = await configure({
-        mpp: { challengeBindingSecret: 'adapter-test-secret', realm: 'Adapter test' },
+        mpp: { challengeBindingSecret: 'adapter-test-secret-at-least-32-bytes', realm: 'Adapter test' },
         operator: { recipient: SELLER, signer: await Signer.generate() },
     });
     return { adapter: createMppAdapter(config), config };

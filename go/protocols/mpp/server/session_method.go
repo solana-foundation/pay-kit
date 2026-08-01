@@ -569,11 +569,6 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		// Pull mode without a channel transaction: trust the
 		// channelId/tokenAccount + approvedAmount. Keying order is channelId
 		// first, then tokenAccount.
-		//
-		// The Go SDK has no multi-delegate program builders, so
-		// operated-voucher opens do not submit a multi-delegate init
-		// transaction here (the client cannot produce those transactions
-		// either; see go/README.md scope notes).
 		var err error
 		channelID, err = payload.SessionID()
 		if err != nil {

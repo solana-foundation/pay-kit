@@ -35,6 +35,14 @@ export interface CommittedDelivery {
     readonly voucherSignature: string;
 }
 
+/** Cached operator-use result keyed by the HTTP idempotency key. */
+export interface ProcessedUse {
+    readonly challengeId: string;
+    readonly cumulative: bigint;
+    readonly idempotencyKey: string;
+    readonly voucherSignature: string;
+}
+
 /**
  * Persisted state of a single payment channel from the server's POV.
  * Field-for-field mirror of Rust `ChannelState`. `bigint` is used for
@@ -45,12 +53,7 @@ export interface ChannelState {
     readonly authentication?: SessionAuthentication | undefined;
     /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
-    /**
-     * On-chain channel address (base58).
-     *
-     * - Push sessions: payment-channel address.
-     * - Pull sessions: FixedDelegation PDA address.
-     */
+    /** On-chain payment-channel address (base58). */
     readonly channelId: string;
     /** Unix seconds when cooperative close was requested. Vouchers blocked once set. */
     readonly closeRequestedAt?: bigint | undefined;
@@ -73,17 +76,26 @@ export interface ChannelState {
     /**
      * Slot the channel was opened at (a channel PDA seed). Needed to
      * re-derive the PDA and to gate reclaim (`slot > openSlot + 1500`).
-     * `undefined` for pull sessions and bare push opens that never carried it.
      */
     readonly openSlot?: bigint | undefined;
-    /** Pull-mode only: client wallet pubkey (base58). `undefined` for push. */
-    readonly operator?: string | undefined;
+    /** Challenge that was verified when the channel proof was bound. */
+    readonly openingChallengeId?: string | undefined;
+    /** On-chain channel payer and refund destination. */
+    readonly payer: string;
     /** Deliveries reserved but not yet committed. */
     readonly pendingDeliveries: readonly PendingDelivery[];
+    /** Cached use results used to make retries exactly-once. */
+    readonly processedUses: readonly ProcessedUse[];
+    /** Account that funded and receives the channel rent. */
+    readonly rentPayer: string;
     /** True once the channel has been sealed on-chain. */
     readonly sealed: boolean;
+    /** Highest cumulative amount confirmed settled on-chain. */
+    readonly settledOnChain: bigint;
     /** On-chain settle_and_seal transaction signature (base58), once submitted. */
     readonly settledSignature?: string | undefined;
+    /** Cumulative amount charged for delivered service. */
+    readonly spentAmount: bigint;
     /** Party responsible for signing cumulative vouchers. */
     readonly voucherSigner?: SessionVoucherSigner | undefined;
 }

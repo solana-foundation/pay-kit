@@ -1,25 +1,8 @@
-// Per-channel idle-close lifecycle.
-//
-// When the server accepts an `open`, we arm a single-shot timer keyed on
-// the channel id. Every accepted activity calls `touch()` with that channel's
-// negotiated timeout to reset the timer. When the timer fires, we invoke
-// `closeOnIdle(channelId)` so the
-// server can run its close-and-settle path without waiting for a client
-// `close` action.
-//
-// The idle-close watchdog is a TS-only extension — the Rust
-// `SessionServer` has no equivalent; host integrations there drive close
-// explicitly. The timer is unref'd so it doesn't keep the event loop
-// alive on shutdown.
-
 import type { SessionStore } from './store.js';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-/**
- * Idle-close watchdog handle. `touch` resets the per-channel timer,
- * `removeChannel` cancels it, and `shutdown` cancels everything.
- */
+/** Idle-close watchdog backed by persisted channel activity. */
 export interface Lifecycle {
     /** Cancel the idle timer for `channelId`. */
     removeChannel(channelId: string): void;
@@ -30,21 +13,14 @@ export interface Lifecycle {
 }
 
 /**
- * Create a lifecycle watchdog. `idleTimeoutMs <= 0` disables the timer
- * entirely (all operations become no-ops) — the right default for tests
- * and for callers that drive close explicitly.
- *
- * `closeOnIdle` is invoked with the channel id when a timer fires. The
- * lifecycle itself does not call `store` — `store` is passed for parity
- * with the Rust signature and for future extension (e.g. skip closing a
- * channel already sealed).
+ * Creates an idle watchdog that restores open channels from the store and
+ * atomically rechecks their activity before beginning close.
  */
 export function createLifecycle(
     store: SessionStore,
     closeOnIdle: (channelId: string) => Promise<void> | void,
     idleTimeoutMs: number,
 ): Lifecycle {
-    void store;
     const timers = new Map<string, NodeJS.Timeout>();
 
     function clear(channelId: string): void {
@@ -55,36 +31,65 @@ export function createLifecycle(
         }
     }
 
-    function close(channelId: string): void {
+    async function closeIfIdle(channelId: string): Promise<void> {
         timers.delete(channelId);
-        // Errors during idle close are swallowed — there is no
-        // synchronous caller to report them to. The handler is
-        // expected to log internally.
-        void Promise.resolve()
-            .then(() => closeOnIdle(channelId))
-            .catch(() => undefined);
+        let shouldClose = false;
+        let nextDeadline: number | undefined;
+        await store.updateChannel(channelId, current => {
+            if (!current) throw new Error(`Channel ${channelId} not found`);
+            if (current.sealed || current.closeRequestedAt !== undefined) return current;
+            const timeoutSeconds = current.idleTimeoutSeconds;
+            if (!timeoutSeconds || !current.lastActivityAt) return current;
+            const deadline = current.lastActivityAt + timeoutSeconds * 1_000;
+            if (Date.now() < deadline) {
+                nextDeadline = deadline;
+                return current;
+            }
+            shouldClose = true;
+            return { ...current, closeRequestedAt: BigInt(Math.floor(Date.now() / 1_000)) };
+        });
+        if (nextDeadline !== undefined) {
+            schedule(channelId, nextDeadline);
+        } else if (shouldClose) {
+            await closeOnIdle(channelId);
+        }
     }
 
     function schedule(channelId: string, deadlineMs: number): void {
         const remainingMs = deadlineMs - Date.now();
         if (remainingMs <= 0) {
-            close(channelId);
+            void closeIfIdle(channelId).catch(() => undefined);
             return;
         }
         const handle = setTimeout(
             () => {
-                if (Date.now() < deadlineMs) {
-                    schedule(channelId, deadlineMs);
-                } else {
-                    close(channelId);
-                }
+                if (Date.now() < deadlineMs) schedule(channelId, deadlineMs);
+                else void closeIfIdle(channelId).catch(() => undefined);
             },
             Math.min(remainingMs, MAX_TIMER_DELAY_MS),
         );
-        // Don't keep the process alive on test shutdown.
         if (typeof handle.unref === 'function') handle.unref();
         timers.set(channelId, handle);
     }
+
+    function scheduleFromStore(channelId: string, fallbackSeconds?: number): void {
+        void store
+            .getChannel(channelId)
+            .then(state => {
+                if (!state || state.sealed || state.closeRequestedAt !== undefined) return;
+                const seconds = state.idleTimeoutSeconds ?? fallbackSeconds;
+                if (!seconds || seconds <= 0) return;
+                schedule(channelId, (state.lastActivityAt ?? Date.now()) + seconds * 1_000);
+            })
+            .catch(() => undefined);
+    }
+
+    void store
+        .listChannels({ sealed: false })
+        .then(channels => {
+            for (const channel of channels) scheduleFromStore(channel.channelId);
+        })
+        .catch(() => undefined);
 
     return {
         removeChannel(channelId) {
@@ -95,10 +100,10 @@ export function createLifecycle(
             timers.clear();
         },
         touch(channelId, idleTimeoutSeconds) {
-            const effectiveTimeoutMs = idleTimeoutSeconds === undefined ? idleTimeoutMs : idleTimeoutSeconds * 1_000;
-            if (effectiveTimeoutMs <= 0) return;
+            const fallbackSeconds = idleTimeoutSeconds === undefined ? idleTimeoutMs / 1_000 : idleTimeoutSeconds;
+            if (fallbackSeconds <= 0) return;
             clear(channelId);
-            schedule(channelId, Date.now() + effectiveTimeoutMs);
+            scheduleFromStore(channelId, fallbackSeconds);
         },
     };
 }

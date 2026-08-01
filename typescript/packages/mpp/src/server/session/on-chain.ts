@@ -5,8 +5,7 @@
 // in `rust/crates/mpp/src/server/session.rs`. Two responsibilities:
 //
 //   1. Build the exact instruction bytes the on-chain payment-channels
-//      program expects (settle_and_seal, distribute, top_up, reclaim, plus
-//      the multi-delegator init/update for OperatedVoucher pull parity).
+//      program expects (settle_and_seal, distribute, top_up, reclaim).
 //   2. Verify client-submitted open transactions against the session
 //      challenge before persisting channel state.
 //
@@ -16,11 +15,9 @@
 
 import {
     type AccountMeta,
-    AccountRole,
     type Address,
     address,
     getAddressEncoder,
-    getBase58Decoder,
     getBase58Encoder,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
@@ -40,12 +37,16 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
+import { fetchChannel } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
+import { getOpenInstructionDataDecoder } from '../../generated/payment-channels/instructions/open.js';
 import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
 import { getSettleAndSealInstruction } from '../../generated/payment-channels/instructions/settleAndSeal.js';
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
+import { getTopUpInstructionDataDecoder } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
+import { ChannelStatus } from '../../generated/payment-channels/types/channelStatus.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { VOUCHER_MAGIC } from '../../shared/voucher.js';
 import { coSignBase64Transaction } from '../../utils/transactions.js';
@@ -75,9 +76,15 @@ export const ED25519_PROGRAM_ADDRESS =
  */
 export const PAYMENT_CHANNELS_PROGRAM_ID = PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 
-/** Canonical multi-delegator program ID. */
-export const MULTI_DELEGATOR_PROGRAM_ID =
-    'EPEUTog1kptYkthDJF6MuB1aM4aDAwHYwoF32Rzv5rqg' as Address<'EPEUTog1kptYkthDJF6MuB1aM4aDAwHYwoF32Rzv5rqg'>;
+/**
+ * On-chain freshness window (in slots, ~10 minutes) around a channel's
+ * `openSlot`: the program rejects opens whose `openSlot` is in the future or
+ * older than this many slots, and gates reclaim until the window has passed.
+ * The server enforces the same window between the challenged `recentSlot`
+ * and the payload's `openSlot` before broadcasting an open. Mirrors
+ * `OPEN_SLOT_WINDOW` in `rust/crates/kit/src/core/payment_channels.rs`.
+ */
+export const OPEN_SLOT_WINDOW = 1_500n;
 
 /**
  * Treasury owner baked into the deployed (mainnet-build) payment-channels
@@ -223,7 +230,7 @@ export function buildSettleAndSealInstructions(args: SettleAndSealBuildArgs): Se
     if (args.voucher) {
         const { signed, authorizedSigner } = args.voucher;
         cumulativeAmount = parseU64String(signed.data.cumulativeAmount, 'voucher.cumulativeAmount');
-        expiresAt = toBigInt(signed.data.expiresAt);
+        expiresAt = toBigInt(signed.data.expiresAt ?? 0);
         hasVoucher = 1;
 
         const signerBytes = getBase58Encoder().encode(authorizedSigner) as Uint8Array;
@@ -422,8 +429,12 @@ export function buildReclaimInstruction(args: ReclaimBuildArgs): ServerInstructi
  */
 export interface VerifyOpenTxExpected {
     readonly authorizedSigner: string;
+    /** Optional override for the payment-channels program id. */
+    readonly channelProgram?: string | undefined;
     readonly currency: string;
-    readonly maxCap: bigint;
+    /** Transaction fee payer required by the challenge policy. */
+    readonly feePayer: string;
+    readonly minimumDeposit?: bigint | undefined;
     /** Optional override for the SPL mint (otherwise resolved from currency/network). */
     readonly mint?: string | undefined;
     readonly network?: string | undefined;
@@ -432,18 +443,24 @@ export interface VerifyOpenTxExpected {
      * arg must equal it — the client is required to echo the slot the server
      * handed out in the 402 challenge.
      */
-    readonly openSlot?: bigint | undefined;
+    readonly openSlot: bigint;
+    /**
+     * The challenged `methodDetails.recentBlockhash` (base58). The compiled
+     * open message MUST use exactly this blockhash: it proves the transaction
+     * was built for this challenge, not replayed from an older one the server
+     * never authorized. Mirrors `SessionOpenContext::recent_blockhash` in
+     * `rust/crates/kit/src/mpp/server/session.rs`.
+     */
+    readonly recentBlockhash: string;
+    /** Primary recipient (challenge `recipient`). */
+    readonly recipient: string;
     /**
      * Operator / fee-payer pubkey (base58) = the expected `rentPayer`. The open
      * instruction's `rentPayer` account (slot 1) must equal it (it is pinned to
      * the operator that co-signs open as fee payer while gasless). Required: the
      * rentPayer slot is a security boundary and is always checked.
      */
-    readonly operator: string;
-    /** Optional override for the payment-channels program id. */
-    readonly programId?: string | undefined;
-    /** Primary recipient (challenge `recipient`). */
-    readonly recipient: string;
+    readonly rentPayer: string;
     /** Optional explicit token program (otherwise derived from currency/network). */
     readonly tokenProgram?: string | undefined;
 }
@@ -499,21 +516,16 @@ export interface VerifyOpenTxResult {
  *
  * Asserts the embedded Open IX targets the configured payment-channels
  * program, that `payee == expected.recipient`, that the mint matches the
- * challenge currency/network, that `deposit <= maxCap`, and that the
+ * challenge currency/network, that the deposit and other declared open fields
+ * match the instruction, and that the
  * channel PDA matches the recomputed value.
  *
- * When the payload carries a non-placeholder `signature`, it must equal
- * the transaction's own first signature — a client must not be able to
- * pair unrelated (but confirmed) signatures with different transaction
- * bytes. If `rpc` is provided, that signature is also sanity-checked via
- * `getSignatureStatuses`. When the transaction is still partially-signed
- * (signature placeholder), neither check is made.
+ * Confirmation is performed by {@link submitOpenTx}; this function only
+ * validates the transaction bytes before the server broadcasts them.
  */
 export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTxResult> {
     const { openPayload, expected } = args;
-    if (!openPayload.transaction) {
-        throw new Error('openPayload.transaction is required for push-mode open verification');
-    }
+    if (!openPayload.transaction) throw new Error('openPayload.transaction is required');
 
     const txBytes = getBase64Codec().encode(openPayload.transaction);
     const decoded = getTransactionDecoder().decode(txBytes);
@@ -526,8 +538,20 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             data?: Uint8Array | undefined;
             programAddressIndex: number;
         }[];
+        lifetimeToken?: string | undefined;
         staticAccounts: readonly string[];
     };
+
+    // The compiled message must use the challenged `recentBlockhash`: it
+    // proves the transaction was built for this challenge, not replayed from
+    // an older one the server never authorized. Mirrors
+    // `verify_submit_and_fetch_open` in the Rust SessionServer.
+    if (!expected.recentBlockhash) {
+        throw new Error('verifyOpenTx: expected.recentBlockhash is required');
+    }
+    if (message.lifetimeToken !== expected.recentBlockhash) {
+        throw new Error('verifyOpenTx: open transaction does not use the challenged recentBlockhash');
+    }
 
     // Reject address-lookup tables. The operator co-signs the open as fee
     // payer, and every account this verifier inspects (payer, rentPayer,
@@ -541,25 +565,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         );
     }
 
-    // Bind the claimed signature to this transaction (see doc comment).
-    if (openPayload.signature && !isPlaceholderSignature(openPayload.signature)) {
-        const feePayer = message.staticAccounts[0];
-        const signatures = decoded.signatures as Readonly<Record<string, Uint8Array | null>>;
-        const firstSignature = feePayer === undefined ? undefined : signatures[feePayer];
-        if (!firstSignature || firstSignature.every(byte => byte === 0)) {
-            throw new Error(
-                'verifyOpenTx: openPayload.signature is set but the transaction carries no fee-payer signature',
-            );
-        }
-        const txSignature = getBase58Decoder().decode(firstSignature);
-        if (txSignature !== openPayload.signature) {
-            throw new Error(
-                `verifyOpenTx: openPayload.signature ${openPayload.signature} != transaction signature ${txSignature}`,
-            );
-        }
-    }
-
-    const programIdStr = expected.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
+    const programIdStr = expected.channelProgram ?? PAYMENT_CHANNELS_PROGRAM_ID;
     const expectedMint =
         expected.mint ?? resolveStablecoinMint(expected.currency, expected.network ?? 'mainnet') ?? expected.currency;
     if (!expectedMint) {
@@ -569,12 +575,17 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     let openIx: { accountIndices: readonly number[]; data: Uint8Array } | undefined;
     for (const ix of message.instructions) {
         const programIxAddr = message.staticAccounts[ix.programAddressIndex];
-        if (programIxAddr !== programIdStr) continue;
+        if (programIxAddr !== programIdStr) {
+            if (programIxAddr !== 'ComputeBudget111111111111111111111111111111') {
+                throw new Error(`verifyOpenTx: unexpected instruction program ${String(programIxAddr)}`);
+            }
+            continue;
+        }
         // Some decoders omit `data` entirely for empty instruction data.
         if (!ix.data || ix.data.length < 1) continue;
         if (ix.data[0] !== OPEN_DISCRIMINATOR) continue;
+        if (openIx) throw new Error('verifyOpenTx: transaction contains more than one open instruction');
         openIx = { accountIndices: ix.accountIndices ?? [], data: ix.data };
-        break;
     }
     if (!openIx) {
         throw new Error('verifyOpenTx: no payment-channels open instruction found');
@@ -586,7 +597,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     //   6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, …
     // rentPayer (slot 1) is pinned to the operator / fee payer.
     const indices = openIx.accountIndices;
-    if (indices.length < 8) {
+    if (indices.length < 9) {
         throw new Error(`verifyOpenTx: open instruction has too few accounts (${indices.length})`);
     }
     const accountAt = (slot: number, label: string): string => {
@@ -601,6 +612,19 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     const mintAddr = accountAt(3, 'mint');
     const authorizedSignerAddr = accountAt(4, 'authorizedSigner');
     const channelAddr = accountAt(5, 'channel');
+    const channelTokenAccountAddr = accountAt(7, 'channelTokenAccount');
+    const tokenProgramAddr = accountAt(8, 'tokenProgram');
+
+    if (message.staticAccounts[0] !== expected.feePayer) {
+        throw new Error(
+            `verifyOpenTx: transaction fee payer ${String(message.staticAccounts[0])} != expected ${expected.feePayer}`,
+        );
+    }
+    const signatures = decoded.signatures as Readonly<Record<string, Uint8Array | null>>;
+    const payerSignature = signatures[payerAddr];
+    if (!payerSignature || payerSignature.every(byte => byte === 0)) {
+        throw new Error('verifyOpenTx: channel payer must sign the open transaction');
+    }
 
     if (payeeAddr !== expected.recipient) {
         throw new Error(`verifyOpenTx: payee ${payeeAddr} != expected recipient ${expected.recipient}`);
@@ -608,36 +632,57 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     if (mintAddr !== expectedMint) {
         throw new Error(`verifyOpenTx: mint ${mintAddr} != expected mint ${expectedMint}`);
     }
+    if (expected.tokenProgram && tokenProgramAddr !== expected.tokenProgram) {
+        throw new Error(`verifyOpenTx: tokenProgram ${tokenProgramAddr} != expected ${expected.tokenProgram}`);
+    }
     if (authorizedSignerAddr !== expected.authorizedSigner) {
         throw new Error(
             `verifyOpenTx: authorizedSigner ${authorizedSignerAddr} != expected ${expected.authorizedSigner}`,
         );
     }
-    if (!expected.operator) {
-        throw new Error('verifyOpenTx: expected.operator (the channel rentPayer) is required');
+    if (!expected.rentPayer) {
+        throw new Error('verifyOpenTx: expected.rentPayer is required');
     }
-    if (rentPayerAddr !== expected.operator) {
-        throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected operator ${expected.operator}`);
+    if (rentPayerAddr !== expected.rentPayer) {
+        throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected ${expected.rentPayer}`);
     }
 
-    // ix data: [discriminator u8][salt u64][deposit u64][grace u32][openSlot u64][recipients array]
-    if (openIx.data.length < 1 + 8 + 8 + 4 + 8) {
-        throw new Error('verifyOpenTx: open instruction data too short');
-    }
-    const view = new DataView(openIx.data.buffer, openIx.data.byteOffset, openIx.data.byteLength);
-    const salt = view.getBigUint64(1, true);
-    const deposit = view.getBigUint64(9, true);
-    const gracePeriod = view.getUint32(17, true);
-    const openSlot = view.getBigUint64(21, true);
+    const decodedOpen = getOpenInstructionDataDecoder().decode(openIx.data);
+    const { deposit, gracePeriod, openSlot, recipients, salt } = decodedOpen.openArgs;
 
     if (deposit === 0n) {
         throw new Error('verifyOpenTx: deposit must be greater than zero');
     }
-    if (deposit > expected.maxCap) {
-        throw new Error(`verifyOpenTx: deposit ${deposit} exceeds maxCap ${expected.maxCap}`);
+    const declaredDeposit = BigInt(openPayload.depositAmount);
+    if (deposit !== declaredDeposit) {
+        throw new Error(`verifyOpenTx: deposit ${deposit} != payload depositAmount ${declaredDeposit}`);
     }
-    if (expected.openSlot !== undefined && openSlot !== expected.openSlot) {
-        throw new Error(`verifyOpenTx: openSlot ${openSlot} != challenge-issued openSlot ${expected.openSlot}`);
+    if (expected.minimumDeposit !== undefined && deposit < expected.minimumDeposit) {
+        throw new Error(`verifyOpenTx: deposit ${deposit} is below minimumDeposit ${expected.minimumDeposit}`);
+    }
+    if (openSlot !== expected.openSlot || openSlot !== BigInt(openPayload.openSlot)) {
+        throw new Error(`verifyOpenTx: openSlot ${openSlot} does not match the payload`);
+    }
+    if (gracePeriod !== openPayload.gracePeriodSeconds) {
+        throw new Error(
+            `verifyOpenTx: gracePeriod ${gracePeriod} != payload gracePeriodSeconds ${openPayload.gracePeriodSeconds}`,
+        );
+    }
+    if (salt !== BigInt(openPayload.salt)) {
+        throw new Error(`verifyOpenTx: salt ${salt} != payload salt ${openPayload.salt}`);
+    }
+    if (payerAddr !== openPayload.payer || payeeAddr !== openPayload.payee || mintAddr !== openPayload.mint) {
+        throw new Error('verifyOpenTx: payer, payee, or mint does not match the open payload');
+    }
+    const declaredSplits = openPayload.distributionSplits ?? [];
+    if (
+        recipients.length !== declaredSplits.length ||
+        recipients.some(
+            (entry, index) =>
+                entry.recipient !== declaredSplits[index]?.recipient || entry.bps !== declaredSplits[index]?.shareBps,
+        )
+    ) {
+        throw new Error('verifyOpenTx: distributionSplits do not match the open instruction');
     }
 
     // Re-derive the channel PDA and assert it matches.
@@ -657,26 +702,64 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     if (derivedChannel !== channelAddr) {
         throw new Error(`verifyOpenTx: channel PDA ${channelAddr} != derived ${derivedChannel}`);
     }
-    if (openPayload.channelId && openPayload.channelId !== channelAddr) {
+    if (openPayload.channelId !== channelAddr) {
         throw new Error(`verifyOpenTx: openPayload.channelId ${openPayload.channelId} != tx channel ${channelAddr}`);
     }
-    if (openPayload.recentSlot !== undefined && BigInt(openPayload.recentSlot) !== openSlot) {
-        throw new Error(`verifyOpenTx: openPayload.recentSlot ${openPayload.recentSlot} != tx openSlot ${openSlot}`);
-    }
-
-    // Optional liveness check — only when caller provides an RPC and the
-    // client has already populated the tx signature (push mode).
-    if (args.rpc && openPayload.signature && !isPlaceholderSignature(openPayload.signature)) {
-        const [status] = (await args.rpc.getSignatureStatuses([openPayload.signature as Signature]).send()).value;
-        if (!status) {
-            throw new Error(`verifyOpenTx: tx ${openPayload.signature} not found on-chain`);
-        }
-        if (status.err) {
-            throw new Error(`verifyOpenTx: tx ${openPayload.signature} failed on-chain: ${JSON.stringify(status.err)}`);
-        }
+    const [expectedEscrow] = await findAssociatedTokenPda({
+        mint: address(mintAddr),
+        owner: address(channelAddr),
+        tokenProgram: address(tokenProgramAddr),
+    });
+    if (expectedEscrow !== channelTokenAccountAddr) {
+        throw new Error(`verifyOpenTx: channel token account ${channelTokenAccountAddr} is not the canonical ATA`);
     }
 
     return { channelId: channelAddr, deposit, gracePeriod, openSlot, payer: payerAddr, salt };
+}
+
+/** Validate, broadcast, and confirm a top-up transaction bound to one channel. */
+export async function submitTopUpTx(args: {
+    readonly additionalAmount: bigint;
+    readonly channelId: string;
+    readonly channelProgram: string;
+    readonly payer: string;
+    readonly rpc: SignatureStatusRpc & {
+        sendTransaction: (wire: string, config?: unknown) => { send(): Promise<Signature> };
+    };
+    readonly transaction: string;
+}): Promise<Signature> {
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(args.transaction));
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        addressTableLookups?: readonly unknown[] | undefined;
+        instructions: readonly { accountIndices?: readonly number[]; data?: Uint8Array; programAddressIndex: number }[];
+        staticAccounts: readonly string[];
+    };
+    if (message.addressTableLookups?.length) throw new Error('submitTopUpTx: address lookup tables are not permitted');
+    let found = false;
+    for (const ix of message.instructions) {
+        const program = message.staticAccounts[ix.programAddressIndex];
+        if (program === 'ComputeBudget111111111111111111111111111111') continue;
+        if (program !== args.channelProgram || !ix.data || found) {
+            throw new Error(`submitTopUpTx: unexpected instruction program ${String(program)}`);
+        }
+        const decodedData = getTopUpInstructionDataDecoder().decode(ix.data);
+        const indices = ix.accountIndices ?? [];
+        const payer = message.staticAccounts[indices[0] ?? -1];
+        const channel = message.staticAccounts[indices[1] ?? -1];
+        if (payer !== args.payer || channel !== args.channelId) {
+            throw new Error('submitTopUpTx: payer or channel does not match persisted channel state');
+        }
+        if (decodedData.topUpArgs.amount !== args.additionalAmount) {
+            throw new Error('submitTopUpTx: amount does not match additionalAmount');
+        }
+        found = true;
+    }
+    if (!found) throw new Error('submitTopUpTx: top-up instruction not found');
+    const signature = await args.rpc
+        .sendTransaction(args.transaction, { encoding: 'base64', skipPreflight: false })
+        .send();
+    await waitForSignatureConfirmation({ context: 'submitTopUpTx', rpc: args.rpc, signature });
+    return signature;
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */
@@ -745,6 +828,7 @@ export interface SubmitOpenTxArgs extends VerifyOpenTxArgs {
      */
     readonly payerSigner?: TransactionPartialSigner | undefined;
     readonly rpc: SignatureStatusRpc & {
+        getAccountInfo: (address: Address, config?: unknown) => { send: () => Promise<unknown> };
         sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
     };
 }
@@ -758,7 +842,7 @@ export interface SubmitOpenTxResult extends VerifyOpenTxResult {
 /**
  * Verifies a client-built open transaction, broadcasts it, and waits for
  * confirmation. Used when the session is configured with
- * `openTxSubmitter: 'server'`.
+ * a server-sponsored open.
  */
 export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTxResult> {
     const verified = await verifyOpenTx(args);
@@ -779,6 +863,28 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
         rpc: args.rpc,
         signature,
     });
+    const account = await fetchChannel(args.rpc as never, address(verified.channelId), {
+        commitment: 'confirmed',
+    });
+    const channel = account.data;
+    const expectedMint =
+        args.expected.mint ??
+        resolveStablecoinMint(args.expected.currency, args.expected.network ?? 'mainnet') ??
+        args.expected.currency;
+    if (
+        channel.status !== Number(ChannelStatus.Open) ||
+        channel.deposit !== verified.deposit ||
+        channel.salt !== verified.salt ||
+        channel.openSlot !== verified.openSlot ||
+        channel.gracePeriod !== verified.gracePeriod ||
+        channel.payer !== verified.payer ||
+        channel.payee !== args.expected.recipient ||
+        channel.mint !== expectedMint ||
+        channel.authorizedSigner !== args.expected.authorizedSigner ||
+        channel.rentPayer !== args.expected.rentPayer
+    ) {
+        throw new Error('submitOpenTx: confirmed channel state does not match the verified open transaction');
+    }
     return { ...verified, signature };
 }
 
@@ -869,199 +975,10 @@ export async function submitSettleAndDistribute(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// multi-delegator (OperatedVoucher pull parity)
-// ─────────────────────────────────────────────────────────────────────
-//
-// The upstream multi-delegator TS client uses an older generator with a
-// different `program-client-core` import path; hand-encoding the two
-// instructions we need keeps the dep list small and matches the byte
-// layout in `rust/crates/mpp/src/program/multi_delegator.rs`.
-
-/** PDA seed for the multi-delegate account (mirrors the Rust program). */
-export const MULTI_DELEGATE_SEED = 'MultiDelegate';
-/** PDA seed for per-operator delegation accounts (mirrors the Rust program). */
-export const DELEGATION_SEED = 'delegation';
-
-export async function findMultiDelegatePda(args: {
-    readonly mint: string;
-    readonly programId?: Address | undefined;
-    readonly user: string;
-}): Promise<Address> {
-    const programAddress = args.programId ?? MULTI_DELEGATOR_PROGRAM_ID;
-    const [pda] = await getProgramDerivedAddress({
-        programAddress,
-        seeds: [
-            getUtf8Encoder().encode(MULTI_DELEGATE_SEED),
-            getAddressEncoder().encode(address(args.user)),
-            getAddressEncoder().encode(address(args.mint)),
-        ],
-    });
-    return pda;
-}
-
-export async function findFixedDelegationPda(args: {
-    readonly delegatee: string;
-    readonly delegator: string;
-    readonly multiDelegate: string;
-    readonly nonce: bigint;
-    readonly programId?: Address | undefined;
-}): Promise<Address> {
-    const programAddress = args.programId ?? MULTI_DELEGATOR_PROGRAM_ID;
-    const [pda] = await getProgramDerivedAddress({
-        programAddress,
-        seeds: [
-            getUtf8Encoder().encode(DELEGATION_SEED),
-            getAddressEncoder().encode(address(args.multiDelegate)),
-            getAddressEncoder().encode(address(args.delegator)),
-            getAddressEncoder().encode(address(args.delegatee)),
-            getU64Encoder().encode(args.nonce),
-        ],
-    });
-    return pda;
-}
-
-/** RPC shape needed by {@link submitInitMultiDelegateTxIfMissing}. */
-export interface MultiDelegateSubmitRpc extends SignatureStatusRpc {
-    getAccountInfo(address: Address, config?: unknown): { send(): Promise<{ value: unknown }> };
-    sendTransaction(wire: string, config?: unknown): { send(): Promise<Signature> };
-}
-
-/**
- * Idempotently submit a client-pre-signed `InitMultiDelegate` (+ initial
- * `CreateFixedDelegation`) transaction: the MultiDelegate PDA for
- * (owner, mint) is checked first via RPC and the transaction is only
- * broadcast when the PDA does not exist yet. Returns the submission
- * signature, or `undefined` when the PDA already exists.
- */
-export async function submitInitMultiDelegateTxIfMissing(args: {
-    readonly confirm?: ConfirmSignatureOptions | undefined;
-    readonly initMultiDelegateTx: string;
-    readonly mint: string;
-    readonly owner: string;
-    readonly programId?: Address | undefined;
-    readonly rpc: MultiDelegateSubmitRpc;
-}): Promise<Signature | undefined> {
-    const pda = await findMultiDelegatePda({
-        mint: args.mint,
-        programId: args.programId,
-        user: args.owner,
-    });
-    const info = await args.rpc.getAccountInfo(pda, { encoding: 'base64' }).send();
-    if (info.value) return undefined;
-
-    const signature = await args.rpc
-        .sendTransaction(args.initMultiDelegateTx, { encoding: 'base64', skipPreflight: false })
-        .send();
-    await waitForSignatureConfirmation({
-        context: 'initMultiDelegateTx',
-        options: args.confirm,
-        rpc: args.rpc,
-        signature,
-    });
-    return signature;
-}
-
-export interface MultiDelegatorInitArgs {
-    readonly mint: string;
-    readonly programId?: Address | undefined;
-    readonly tokenProgram: string;
-    readonly user: TransactionSigner;
-    readonly userAta: string;
-}
-
-/**
- * Hand-encoded `InitMultiDelegate` instruction (disc = 0x00).
- *
- * Accounts: `[user (signer/write), multiDelegate (write, derived),
- * tokenMint (read), userAta (write), systemProgram (read), tokenProgram
- * (read)]`. Matches Rust `build_init_multi_delegate_ix` in
- * `program/multi_delegator.rs`.
- */
-export async function buildMultiDelegatorInitInstruction(args: MultiDelegatorInitArgs): Promise<ServerInstruction> {
-    const programAddress = args.programId ?? MULTI_DELEGATOR_PROGRAM_ID;
-    const multiDelegate = await findMultiDelegatePda({
-        mint: args.mint,
-        programId: programAddress,
-        user: args.user.address,
-    });
-    const data = new Uint8Array([0x00]);
-    return {
-        accounts: [
-            { address: args.user.address, role: AccountRole.WRITABLE_SIGNER, signer: args.user },
-            { address: multiDelegate, role: AccountRole.WRITABLE },
-            { address: address(args.mint), role: AccountRole.READONLY },
-            { address: address(args.userAta), role: AccountRole.WRITABLE },
-            { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-            { address: address(args.tokenProgram), role: AccountRole.READONLY },
-        ],
-        data,
-        programAddress,
-    } as unknown as ServerInstruction;
-}
-
-export interface MultiDelegatorUpdateArgs {
-    readonly amount: bigint;
-    readonly delegatee: string;
-    readonly delegator: TransactionSigner;
-    /** Unix seconds, 0 = no expiry. */
-    readonly expiryTs: bigint;
-    readonly mint: string;
-    readonly nonce: bigint;
-    readonly programId?: Address | undefined;
-}
-
-/**
- * Hand-encoded `CreateFixedDelegation` instruction (disc = 0x01).
- *
- * Data: `[0x01] ++ nonce_le ++ amount_le ++ expiry_le` (25 bytes).
- * Accounts: `[delegator (signer/write), multiDelegate (read), delegationPda
- * (write), delegatee (read), systemProgram (read)]`. Matches Rust
- * `build_create_fixed_delegation_ix` in `program/multi_delegator.rs`.
- */
-export async function buildMultiDelegatorUpdateInstruction(args: MultiDelegatorUpdateArgs): Promise<ServerInstruction> {
-    const programAddress = args.programId ?? MULTI_DELEGATOR_PROGRAM_ID;
-    const multiDelegate = await findMultiDelegatePda({
-        mint: args.mint,
-        programId: programAddress,
-        user: args.delegator.address,
-    });
-    const delegationPda = await findFixedDelegationPda({
-        delegatee: args.delegatee,
-        delegator: args.delegator.address,
-        multiDelegate,
-        nonce: args.nonce,
-        programId: programAddress,
-    });
-
-    const data = new Uint8Array(25);
-    data[0] = 0x01;
-    data.set(getU64Encoder().encode(args.nonce) as Uint8Array, 1);
-    data.set(getU64Encoder().encode(args.amount) as Uint8Array, 9);
-    data.set(getI64Encoder().encode(args.expiryTs) as Uint8Array, 17);
-
-    return {
-        accounts: [
-            { address: args.delegator.address, role: AccountRole.WRITABLE_SIGNER, signer: args.delegator },
-            { address: multiDelegate, role: AccountRole.READONLY },
-            { address: delegationPda, role: AccountRole.WRITABLE },
-            { address: address(args.delegatee), role: AccountRole.READONLY },
-            { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-        ],
-        data,
-        programAddress,
-    } as unknown as ServerInstruction;
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // internals
 // ─────────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROGRAM_ADDRESS = '11111111111111111111111111111111' as Address<'11111111111111111111111111111111'>;
-
-function isPlaceholderSignature(sig: string): boolean {
-    // The pending placeholder produced by `createServerOpenedPaymentChannelSessionOpener`.
-    return sig.length === 0 || /^1{40,}$/.test(sig);
-}
 
 function deriveTreasuryAddress(): Address {
     return getBase58FromBytes(TREASURY_OWNER_BYTES);

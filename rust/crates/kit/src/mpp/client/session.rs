@@ -28,13 +28,13 @@ use solana_pubkey::Pubkey;
 
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels::{
-    build_open_payment_channel_tx, default_program_id, derive_channel_addresses, random_salt,
-    Distribution, OpenChannelParams, PaymentChannelOpenTransaction,
+    build_open_payment_channel_tx, derive_channel_addresses, random_salt, Distribution,
+    OpenChannelParams, PaymentChannelOpenTransaction,
 };
 use crate::mpp::protocol::intents::session::{
-    ClosePayload, OpenPayload, SessionAction, SessionMode, SessionPullVoucherStrategy,
-    SessionRequest, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
-    DEFAULT_SESSION_EXPIRES_AT,
+    ClosePayload, OpenPayload, SessionAction, SessionAuthentication, SessionRequest,
+    SessionVoucherSigner, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
+    VoucherSignatureType, DEFAULT_SESSION_EXPIRES_AT,
 };
 use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 
@@ -60,9 +60,6 @@ pub struct ActiveSession {
     /// Cumulative amount authorized so far (base units).
     pub cumulative: u64,
 
-    /// Nonce counter, incremented with each signed voucher.
-    nonce: u64,
-
     /// Unix timestamp at which newly signed vouchers expire.
     expires_at: i64,
 
@@ -80,7 +77,6 @@ impl ActiveSession {
         Self {
             channel_id,
             cumulative: 0,
-            nonce: 0,
             expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
             signer,
         }
@@ -95,7 +91,6 @@ impl ActiveSession {
         Self {
             channel_id,
             cumulative: 0,
-            nonce: 0,
             expires_at,
             signer,
         }
@@ -140,9 +135,8 @@ impl ActiveSession {
 
         let data = VoucherData {
             channel_id: self.channel_id_str(),
-            cumulative: cumulative.to_string(),
-            expires_at: self.expires_at,
-            nonce: Some(self.nonce + 1),
+            cumulative_amount: cumulative.to_string(),
+            expires_at: Some(self.expires_at),
         };
 
         let bytes = data.message_bytes()?;
@@ -155,7 +149,9 @@ impl ActiveSession {
 
         Ok(SignedVoucher {
             data,
+            signer: self.authorized_signer(),
             signature: sig_b58,
+            signature_type: VoucherSignatureType::Ed25519,
         })
     }
 
@@ -168,7 +164,7 @@ impl ActiveSession {
     pub fn record_voucher(&mut self, voucher: &SignedVoucher) -> Result<()> {
         let cumulative = voucher
             .data
-            .cumulative
+            .cumulative_amount
             .parse::<u64>()
             .map_err(|_| Error::Other("invalid voucher cumulative".to_string()))?;
         if cumulative <= self.cumulative {
@@ -178,7 +174,6 @@ impl ActiveSession {
             )));
         }
         self.cumulative = cumulative;
-        self.nonce = self.nonce.max(voucher.data.nonce.unwrap_or(self.nonce + 1));
         Ok(())
     }
 
@@ -209,19 +204,6 @@ impl ActiveSession {
         }))
     }
 
-    /// Build a `SessionAction::Open` for **push** mode.
-    ///
-    /// Call this after the on-chain open transaction has been confirmed.
-    /// `channel_id` in the session MUST match the confirmed channel address.
-    pub fn open_action(&self, deposit: u64, open_tx_signature: &str) -> SessionAction {
-        SessionAction::Open(OpenPayload::push(
-            self.channel_id_str(),
-            deposit.to_string(),
-            self.authorized_signer(),
-            open_tx_signature.to_string(),
-        ))
-    }
-
     /// Build a `SessionAction::Open` for the payment-channels program.
     #[allow(clippy::too_many_arguments)]
     pub fn open_payment_channel_action(
@@ -233,37 +215,9 @@ impl ActiveSession {
         salt: u64,
         grace_period: u32,
         open_slot: u64,
-        open_tx_signature: &str,
+        transaction: &str,
     ) -> SessionAction {
-        self.open_payment_channel_action_with_mode(
-            SessionMode::Push,
-            deposit,
-            payer,
-            payee,
-            mint,
-            salt,
-            grace_period,
-            open_slot,
-            open_tx_signature,
-        )
-    }
-
-    /// Build a payment-channel `SessionAction::Open` with an explicit submission mode.
-    #[allow(clippy::too_many_arguments)]
-    pub fn open_payment_channel_action_with_mode(
-        &self,
-        mode: SessionMode,
-        deposit: u64,
-        payer: &str,
-        payee: &str,
-        mint: &str,
-        salt: u64,
-        grace_period: u32,
-        open_slot: u64,
-        open_tx_signature: &str,
-    ) -> SessionAction {
-        SessionAction::Open(OpenPayload::payment_channel_with_mode(
-            mode,
+        SessionAction::Open(OpenPayload::payment_channel(
             self.channel_id_str(),
             deposit.to_string(),
             payer.to_string(),
@@ -273,49 +227,19 @@ impl ActiveSession {
             grace_period,
             open_slot,
             self.authorized_signer(),
-            open_tx_signature.to_string(),
-        ))
-    }
-
-    /// Build a `SessionAction::Open` for **pull** mode (SPL token delegation).
-    ///
-    /// Call this after the operator has broadcast and confirmed the `approve`
-    /// transaction on behalf of the client.
-    ///
-    /// - `token_account` is the SPL token account that was delegated (must match
-    ///   `self.channel_id` — callers should create the `ActiveSession` with the
-    ///   token account pubkey as the channel ID so vouchers bind to it).
-    /// - `owner` is the client's wallet pubkey (base58). The operator uses this
-    ///   to derive the MultiDelegate PDA at settlement time.
-    pub fn open_pull_action(
-        &self,
-        approved_amount: u64,
-        owner: &str,
-        approve_tx_signature: &str,
-    ) -> SessionAction {
-        SessionAction::Open(OpenPayload::pull(
-            self.channel_id_str(), // token_account used as the session identifier
-            approved_amount.to_string(),
-            owner.to_string(),
-            self.authorized_signer(),
-            approve_tx_signature.to_string(),
+            transaction.to_string(),
         ))
     }
 
     /// Build a `SessionAction::TopUp` after a top-up transaction.
-    pub fn topup_action(&self, new_deposit: u64, topup_tx_signature: &str) -> SessionAction {
+    pub fn topup_action(&self, additional_amount: u64, transaction: &str) -> SessionAction {
         SessionAction::TopUp(TopUpPayload {
             channel_id: self.channel_id_str(),
-            new_deposit: new_deposit.to_string(),
-            signature: topup_tx_signature.to_string(),
+            additional_amount: additional_amount.to_string(),
+            transaction: transaction.to_string(),
         })
     }
 }
-
-/// Placeholder signature used while the operator still needs to submit the
-/// server-broadcast open transaction.
-pub const PENDING_SERVER_SIGNATURE: &str =
-    "1111111111111111111111111111111111111111111111111111111111111111";
 
 #[derive(Debug, Clone)]
 pub struct PaymentChannelOpen {
@@ -364,9 +288,8 @@ impl PaymentChannelOpen {
         .channel
     }
 
-    pub fn open_payload(&self, mode: SessionMode, signature: impl Into<String>) -> OpenPayload {
-        OpenPayload::payment_channel_with_mode(
-            mode,
+    pub fn open_payload(&self, transaction: impl Into<String>) -> OpenPayload {
+        let mut payload = OpenPayload::payment_channel(
             pubkey_string(&self.channel_id),
             self.deposit.to_string(),
             pubkey_string(&self.payer),
@@ -376,8 +299,19 @@ impl PaymentChannelOpen {
             self.grace_period,
             self.open_slot,
             pubkey_string(&self.authorized_signer),
-            signature.into(),
-        )
+            transaction.into(),
+        );
+        payload.distribution_splits = self
+            .recipients
+            .iter()
+            .map(
+                |split| crate::mpp::protocol::intents::session::SessionSplit {
+                    recipient: pubkey_string(&split.recipient),
+                    share_bps: split.bps,
+                },
+            )
+            .collect();
+        payload
     }
 }
 
@@ -386,8 +320,9 @@ pub struct PaymentChannelOpenOptions {
     pub deposit: Option<u64>,
     pub grace_period: Option<u32>,
     /// Override for the channel's open slot (the program's `openSlot`).
-    /// Defaults to the challenge's `recentSlot` (server-prefetched); the
-    /// client never fetches a slot itself.
+    /// Defaults to the challenge's `recentSlot`. An override MAY be earlier
+    /// (shortening the operator's post-close rent float) but never later —
+    /// the server rejects an `openSlot` ahead of its challenged `recentSlot`.
     pub open_slot: Option<u64>,
     pub program_id: Option<Pubkey>,
     pub recipients: Option<Vec<Distribution>>,
@@ -412,25 +347,18 @@ pub struct PaymentChannelSessionOpen {
 #[derive(Default)]
 pub struct PaymentChannelSessionOpenOptions {
     pub open: PaymentChannelOpenOptions,
-    pub signature: Option<String>,
     pub cumulative: Option<u64>,
     pub expires_at: Option<i64>,
-}
-
-#[derive(Default)]
-pub struct ServerOpenedPaymentChannelSessionOpenOptions {
-    pub open: PaymentChannelOpenOptions,
-    pub payer: Option<Pubkey>,
-    pub signature: Option<String>,
-    pub cumulative: Option<u64>,
-    pub expires_at: Option<i64>,
+    pub authentication: Option<SessionAuthentication>,
+    pub idle_timeout_seconds: Option<u32>,
 }
 
 pub fn derive_payment_channel_open(
     params: DerivePaymentChannelOpenParams<'_>,
 ) -> Result<PaymentChannelOpen> {
     let request = params.request;
-    let network = request.network.as_deref();
+    let details = &request.method_details;
+    let network = Some(details.network.as_str());
     let mint = parse_pubkey(
         resolve_stablecoin_mint(&request.currency, network)
             .ok_or_else(|| Error::Other("session payment channels require an SPL token".into()))?,
@@ -439,42 +367,67 @@ pub fn derive_payment_channel_open(
     let payee = parse_pubkey(&request.recipient, "recipient")?;
     let deposit = match params.options.deposit {
         Some(deposit) => deposit,
-        None => parse_u64_string(&request.cap, "session cap")?,
+        None => parse_u64_string(
+            request
+                .suggested_deposit
+                .as_deref()
+                .or(request.minimum_deposit.as_deref())
+                .ok_or_else(|| {
+                    Error::Other("session challenge missing suggestedDeposit".to_string())
+                })?,
+            "suggestedDeposit",
+        )?,
     };
+    if request
+        .minimum_deposit
+        .as_deref()
+        .map(|value| parse_u64_string(value, "minimumDeposit"))
+        .transpose()?
+        .is_some_and(|minimum| deposit < minimum)
+    {
+        return Err(Error::Other("deposit is below minimumDeposit".to_string()));
+    }
     let grace_period = params
         .options
         .grace_period
-        .unwrap_or(DEFAULT_GRACE_PERIOD_SECONDS);
+        .or(details.grace_period_seconds)
+        .ok_or_else(|| Error::Other("session challenge missing gracePeriodSeconds".to_string()))?;
     let program_id = match params.options.program_id {
         Some(program_id) => program_id,
-        None => request
-            .program_id
-            .as_deref()
-            .map(|value| parse_pubkey(value, "programId"))
-            .transpose()?
-            .unwrap_or_else(default_program_id),
+        None => parse_pubkey(&details.channel_program, "channelProgram")?,
     };
     let token_program = match params.options.token_program {
         Some(token_program) => token_program,
-        None => parse_pubkey(
-            default_token_program_for_currency(&request.currency, network),
-            "token program",
-        )?,
+        None => match details.token_program.as_deref() {
+            Some(program) => parse_pubkey(program, "tokenProgram")?,
+            None => parse_pubkey(
+                default_token_program_for_currency(&request.currency, network),
+                "token program",
+            )?,
+        },
     };
     let recipients = match params.options.recipients {
         Some(recipients) => recipients,
         None => parse_splits(request)?,
     };
     let salt = params.options.salt.unwrap_or_else(random_salt);
-    // The open slot (the program's `openSlot`) is a channel-PDA seed the
-    // program only accepts within a recent window. It comes from the
-    // challenge's `recentSlot` (server-prefetched, like `recentBlockhash`) —
-    // the client never fetches a slot itself.
-    let open_slot = params
-        .options
-        .open_slot
-        .or(request.recent_slot)
-        .ok_or_else(|| Error::Other("session challenge missing recentSlot".to_string()))?;
+    let open_slot = match params.options.open_slot {
+        Some(open_slot) => {
+            if details.recent_slot.is_some_and(|recent| open_slot > recent) {
+                return Err(Error::Other(format!(
+                    "openSlot override {open_slot} is ahead of the challenged recentSlot {}",
+                    details.recent_slot.unwrap_or_default()
+                )));
+            }
+            open_slot
+        }
+        None => details.recent_slot.ok_or_else(|| {
+            Error::Other(
+                "session challenge is missing recentSlot; a new-channel challenge must provide it"
+                    .to_string(),
+            )
+        })?,
+    };
     let open_params = OpenChannelParams {
         payer: params.payer,
         // rentPayer does not affect channel-PDA derivation (the only use here);
@@ -515,26 +468,64 @@ pub struct BuildOpenPaymentChannelTransactionParams<'a> {
     pub signer: &'a dyn SolanaSigner,
     pub authorized_signer: Pubkey,
     pub fee_payer: Option<Pubkey>,
-    pub recent_blockhash: Hash,
+    /// Blockhash for the open transaction. `None` (the default) takes the
+    /// challenge's `recentBlockhash`, which the server requires the compiled
+    /// message to use; an explicit override is for tests and custom flows
+    /// that re-issue their own challenge binding.
+    pub recent_blockhash: Option<Hash>,
     pub options: PaymentChannelOpenOptions,
+}
+
+/// Resolve the open transaction's blockhash: an explicit override wins,
+/// otherwise the challenged `recentBlockhash` is required — the client never
+/// fetches its own.
+fn resolve_open_blockhash(override_hash: Option<Hash>, request: &SessionRequest) -> Result<Hash> {
+    if let Some(hash) = override_hash {
+        return Ok(hash);
+    }
+    let challenged = request
+        .method_details
+        .recent_blockhash
+        .as_deref()
+        .ok_or_else(|| {
+            Error::Other(
+                "session challenge is missing recentBlockhash; a new-channel challenge must \
+                 provide it"
+                    .to_string(),
+            )
+        })?;
+    Hash::from_str(challenged)
+        .map_err(|e| Error::Other(format!("invalid challenged recentBlockhash: {e}")))
 }
 
 pub async fn build_open_payment_channel_transaction(
     params: BuildOpenPaymentChannelTransactionParams<'_>,
 ) -> Result<PaymentChannelOpenTransaction> {
-    let operator = parse_pubkey(&params.request.operator, "operator")?;
-    let fee_payer = params.fee_payer.unwrap_or(operator);
-    // The fee payer becomes the channel `rentPayer`, and the gasless server's
-    // open verification requires `rentPayer == operator`. A caller-supplied fee
-    // payer that differs from the operator would build an open the server
-    // rejects, so reject it here rather than emit a self-incompatible open.
-    if fee_payer != operator {
+    let payer = params.signer.pubkey();
+    let advertised_fee_payer = if params.request.method_details.fee_payer == Some(true) {
+        Some(parse_pubkey(
+            params
+                .request
+                .method_details
+                .fee_payer_key
+                .as_deref()
+                .ok_or_else(|| {
+                    Error::Other("feePayerKey is required when feePayer is true".to_string())
+                })?,
+            "feePayerKey",
+        )?)
+    } else {
+        None
+    };
+    let fee_payer = params.fee_payer.or(advertised_fee_payer).unwrap_or(payer);
+    if advertised_fee_payer.is_some_and(|expected| fee_payer != expected)
+        || advertised_fee_payer.is_none() && fee_payer != payer
+    {
         return Err(Error::Other(
-            "fee_payer must equal the challenge operator: the gasless server records \
-             rentPayer == operator and rejects any other fee payer"
-                .to_string(),
+            "fee payer does not match the challenge policy".to_string(),
         ));
     }
+    let recent_blockhash = resolve_open_blockhash(params.recent_blockhash, params.request)?;
     let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
         request: params.request,
         payer: params.signer.pubkey(),
@@ -555,7 +546,7 @@ pub async fn build_open_payment_channel_transaction(
         &open.token_program,
         &open.program_id,
         &fee_payer,
-        params.recent_blockhash,
+        recent_blockhash,
     )
     .await
     .map_err(Into::into)
@@ -565,12 +556,33 @@ pub async fn create_payment_channel_session_opener(
     request: &SessionRequest,
     payer_signer: &dyn SolanaSigner,
     session_signer: Box<dyn SolanaSigner>,
-    recent_blockhash: Hash,
+    recent_blockhash: Option<Hash>,
     options: PaymentChannelSessionOpenOptions,
 ) -> Result<PaymentChannelSessionOpen> {
-    ensure_client_voucher_pull(request)?;
-    let authorized_signer = session_signer.pubkey();
-    let fee_payer = parse_pubkey(&request.operator, "operator")?;
+    let recent_blockhash = resolve_open_blockhash(recent_blockhash, request)?;
+    let authorized_signer = match request.method_details.voucher_signer {
+        Some(SessionVoucherSigner::Operator) => parse_pubkey(
+            request.method_details.operator.as_deref().ok_or_else(|| {
+                Error::Other("operator is required for operator vouchers".to_string())
+            })?,
+            "operator",
+        )?,
+        _ => session_signer.pubkey(),
+    };
+    let fee_payer = if request.method_details.fee_payer == Some(true) {
+        parse_pubkey(
+            request
+                .method_details
+                .fee_payer_key
+                .as_deref()
+                .ok_or_else(|| {
+                    Error::Other("feePayerKey is required when feePayer is true".to_string())
+                })?,
+            "feePayerKey",
+        )?
+    } else {
+        payer_signer.pubkey()
+    };
     let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
         request,
         payer: payer_signer.pubkey(),
@@ -595,64 +607,16 @@ pub async fn create_payment_channel_session_opener(
     .await?;
     let mut session = ActiveSession::new(open.channel_id, session_signer);
     configure_session(&mut session, options.cumulative, options.expires_at);
-    let signature = options
-        .signature
-        .unwrap_or_else(|| PENDING_SERVER_SIGNATURE.to_string());
-    let action = SessionAction::Open(
-        open.open_payload(SessionMode::Pull, signature)
-            .with_transaction(tx.transaction),
-    );
+    let mut payload = open.open_payload(tx.transaction);
+    payload.authentication = options.authentication;
+    payload.idle_timeout_seconds = options.idle_timeout_seconds;
+    let action = SessionAction::Open(payload);
 
     Ok(PaymentChannelSessionOpen {
         open,
         session,
         action,
     })
-}
-
-pub fn create_server_opened_payment_channel_session_opener(
-    request: &SessionRequest,
-    session_signer: Box<dyn SolanaSigner>,
-    options: ServerOpenedPaymentChannelSessionOpenOptions,
-) -> Result<PaymentChannelSessionOpen> {
-    ensure_client_voucher_pull(request)?;
-    let payer = options
-        .payer
-        .map(Ok)
-        .unwrap_or_else(|| parse_pubkey(&request.operator, "operator"))?;
-    let authorized_signer = session_signer.pubkey();
-    let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-        request,
-        payer,
-        authorized_signer,
-        options: options.open,
-    })?;
-    let mut session = ActiveSession::new(open.channel_id, session_signer);
-    configure_session(&mut session, options.cumulative, options.expires_at);
-    let signature = options
-        .signature
-        .unwrap_or_else(|| PENDING_SERVER_SIGNATURE.to_string());
-    let action = SessionAction::Open(open.open_payload(SessionMode::Pull, signature));
-
-    Ok(PaymentChannelSessionOpen {
-        open,
-        session,
-        action,
-    })
-}
-
-fn ensure_client_voucher_pull(request: &SessionRequest) -> Result<()> {
-    if !request.modes.contains(&SessionMode::Pull) {
-        return Err(Error::Other(
-            "session challenge does not advertise pull mode".to_string(),
-        ));
-    }
-    if request.pull_voucher_strategy.as_ref() != Some(&SessionPullVoucherStrategy::ClientVoucher) {
-        return Err(Error::Other(
-            "session challenge does not advertise pull + clientVoucher".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn configure_session(
@@ -666,12 +630,13 @@ fn configure_session(
 
 fn parse_splits(request: &SessionRequest) -> Result<Vec<Distribution>> {
     request
-        .splits
+        .method_details
+        .distribution_splits
         .iter()
         .map(|split| {
             Ok(Distribution {
                 recipient: parse_pubkey(&split.recipient, "split recipient")?,
-                bps: split.bps,
+                bps: split.share_bps,
             })
         })
         .collect()
@@ -694,761 +659,346 @@ fn pubkey_string(pubkey: &Pubkey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_keychain::MemorySigner;
-
-    /// Build a deterministic MemorySigner from a fixed 32-byte seed via
-    /// ed25519-dalek (already a dep), then pack into the 64-byte format that
-    /// solana-keychain's MemorySigner::from_bytes expects.
-    fn make_signer() -> Box<dyn SolanaSigner> {
-        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
-        let mut kp = [0u8; 64];
-        kp[..32].copy_from_slice(sk.as_bytes());
-        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
-        Box::new(MemorySigner::from_bytes(&kp).expect("valid keypair"))
-    }
-
-    fn make_session() -> ActiveSession {
-        ActiveSession::new(Pubkey::new_unique(), make_signer())
-    }
-
-    #[tokio::test]
-    async fn new_with_expiry_and_set_expires_at_control_voucher_expiry() {
-        let channel_id = Pubkey::new_unique();
-        let mut session = ActiveSession::new_with_expiry(channel_id, make_signer(), 1234);
-        let first = session.prepare_increment(10).await.unwrap();
-        assert_eq!(first.data.expires_at, 1234);
-        assert_eq!(session.cumulative, 0);
-
-        session.set_expires_at(5678);
-        let second = session.prepare_increment(10).await.unwrap();
-        assert_eq!(second.data.expires_at, 5678);
-    }
-
-    #[tokio::test]
-    async fn sign_increment_increases_cumulative() {
-        let mut s = make_session();
-        assert_eq!(s.cumulative, 0);
-
-        let v = s.sign_increment(100).await.unwrap();
-        assert_eq!(s.cumulative, 100);
-        assert_eq!(v.data.cumulative, "100");
-        assert_eq!(v.data.nonce, Some(1));
-    }
-
-    #[tokio::test]
-    async fn sign_voucher_absolute() {
-        let mut s = make_session();
-        s.sign_increment(50).await.unwrap();
-
-        let v = s.sign_voucher(200).await.unwrap();
-        assert_eq!(s.cumulative, 200);
-        assert_eq!(v.data.cumulative, "200");
-    }
-
-    #[tokio::test]
-    async fn prepare_and_record_voucher_are_separate_steps() {
-        let mut s = make_session();
-        let prepared = s.prepare_increment(75).await.unwrap();
-        assert_eq!(prepared.data.cumulative, "75");
-        assert_eq!(prepared.data.nonce, Some(1));
-        assert_eq!(s.cumulative, 0);
-
-        s.record_voucher(&prepared).unwrap();
-        assert_eq!(s.cumulative, 75);
-        assert!(s.record_voucher(&prepared).is_err());
-    }
-
-    #[test]
-    fn record_voucher_rejects_invalid_cumulative_and_handles_missing_nonce() {
-        let mut s = make_session();
-        let bad = SignedVoucher {
-            data: VoucherData {
-                channel_id: s.channel_id_str(),
-                cumulative: "not-a-number".to_string(),
-                expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
-                nonce: None,
-            },
-            signature: "sig".to_string(),
-        };
-        assert!(s.record_voucher(&bad).is_err());
-
-        let without_nonce = SignedVoucher {
-            data: VoucherData {
-                channel_id: s.channel_id_str(),
-                cumulative: "15".to_string(),
-                expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
-                nonce: None,
-            },
-            signature: "sig".to_string(),
-        };
-        s.record_voucher(&without_nonce).unwrap();
-        assert_eq!(s.cumulative, 15);
-        assert_eq!(s.nonce, 1);
-    }
-
-    #[tokio::test]
-    async fn sign_voucher_rejects_non_increasing() {
-        let mut s = make_session();
-        s.sign_increment(100).await.unwrap();
-
-        assert!(s.sign_voucher(100).await.is_err());
-        assert!(s.sign_voucher(50).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn sign_voucher_zero_rejected() {
-        let mut s = make_session();
-        assert!(s.sign_voucher(0).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn nonce_increments_per_voucher() {
-        let mut s = make_session();
-        let v1 = s.sign_increment(10).await.unwrap();
-        let v2 = s.sign_increment(10).await.unwrap();
-        assert_eq!(v1.data.nonce, Some(1));
-        assert_eq!(v2.data.nonce, Some(2));
-    }
-
-    #[tokio::test]
-    async fn voucher_channel_id_matches_session() {
-        let mut s = make_session();
-        let expected = s.channel_id_str();
-        let v = s.sign_increment(100).await.unwrap();
-        assert_eq!(v.data.channel_id, expected);
-    }
-
-    #[tokio::test]
-    async fn voucher_action_fields() {
-        let mut s = make_session();
-        let action = s.voucher_action(33).await.unwrap();
-        match action {
-            SessionAction::Voucher(p) => {
-                assert_eq!(p.voucher.data.cumulative, "33");
-                assert_eq!(p.voucher.data.channel_id, s.channel_id_str());
-            }
-            _ => panic!("Expected Voucher"),
-        }
-    }
-
-    #[test]
-    fn open_action_fields() {
-        use crate::mpp::protocol::intents::session::SessionMode;
-        let s = make_session();
-        let channel_id = s.channel_id_str();
-        let authorized_signer = s.authorized_signer();
-        let action = s.open_action(1_000_000, "txsig123");
-        match action {
-            SessionAction::Open(p) => {
-                assert_eq!(p.mode, SessionMode::Push);
-                assert_eq!(p.deposit.as_deref(), Some("1000000"));
-                assert_eq!(p.signature, "txsig123");
-                assert_eq!(p.channel_id.as_deref(), Some(channel_id.as_str()));
-                assert_eq!(p.authorized_signer, authorized_signer);
-            }
-            _ => panic!("Expected Open"),
-        }
-    }
-
-    #[test]
-    fn open_payment_channel_action_fields() {
-        use crate::mpp::protocol::intents::session::SessionMode;
-        let s = make_session();
-        let channel_id = s.channel_id_str();
-        let action =
-            s.open_payment_channel_action(9_000, "payer", "payee", "mint", 42, 60, 314, "open-sig");
-        match action {
-            SessionAction::Open(p) => {
-                assert_eq!(p.mode, SessionMode::Push);
-                assert_eq!(p.channel_id.as_deref(), Some(channel_id.as_str()));
-                assert_eq!(p.deposit.as_deref(), Some("9000"));
-                assert_eq!(p.payer.as_deref(), Some("payer"));
-                assert_eq!(p.payee.as_deref(), Some("payee"));
-                assert_eq!(p.mint.as_deref(), Some("mint"));
-                assert_eq!(p.salt, Some(42));
-                assert_eq!(p.grace_period, Some(60));
-                assert_eq!(p.recent_slot, Some(314));
-                assert_eq!(p.signature, "open-sig");
-            }
-            _ => panic!("Expected Open"),
-        }
-    }
-
-    #[test]
-    fn open_payment_channel_action_can_use_pull_mode() {
-        use crate::mpp::protocol::intents::session::SessionMode;
-        let s = make_session();
-        let channel_id = s.channel_id_str();
-        let action = s.open_payment_channel_action_with_mode(
-            SessionMode::Pull,
-            9_000,
-            "payer",
-            "payee",
-            "mint",
-            42,
-            60,
-            314,
-            "pending",
-        );
-        match action {
-            SessionAction::Open(p) => {
-                assert_eq!(p.mode, SessionMode::Pull);
-                assert_eq!(p.channel_id.as_deref(), Some(channel_id.as_str()));
-                assert_eq!(p.deposit.as_deref(), Some("9000"));
-                assert!(p.token_account.is_none());
-                assert!(p.approved_amount.is_none());
-            }
-            _ => panic!("Expected Open"),
-        }
-    }
-
-    #[test]
-    fn open_pull_action_fields() {
-        use crate::mpp::protocol::intents::session::SessionMode;
-        let s = make_session();
-        let channel_id = s.channel_id_str(); // used as token_account in pull mode
-        let authorized_signer = s.authorized_signer();
-        let action = s.open_pull_action(5_000_000, "wallet123", "approvesig");
-        match action {
-            SessionAction::Open(p) => {
-                assert_eq!(p.mode, SessionMode::Pull);
-                assert_eq!(p.approved_amount.as_deref(), Some("5000000"));
-                assert_eq!(p.signature, "approvesig");
-                assert_eq!(p.token_account.as_deref(), Some(channel_id.as_str()));
-                assert_eq!(p.owner.as_deref(), Some("wallet123"));
-                assert_eq!(p.authorized_signer, authorized_signer);
-                assert!(p.channel_id.is_none());
-                assert!(p.deposit.is_none());
-            }
-            _ => panic!("Expected Open"),
-        }
-    }
-
-    #[test]
-    fn topup_action_fields() {
-        let s = make_session();
-        let action = s.topup_action(5_000_000, "topuptx");
-        match action {
-            SessionAction::TopUp(p) => {
-                assert_eq!(p.new_deposit, "5000000");
-                assert_eq!(p.signature, "topuptx");
-            }
-            _ => panic!("Expected TopUp"),
-        }
-    }
-
-    #[tokio::test]
-    async fn close_action_no_final_increment() {
-        let mut s = make_session();
-        let action = s.close_action(None).await.unwrap();
-        match action {
-            SessionAction::Close(p) => {
-                assert!(p.voucher.is_none());
-            }
-            _ => panic!("Expected Close"),
-        }
-    }
-
-    #[tokio::test]
-    async fn close_action_with_final_increment() {
-        let mut s = make_session();
-        s.sign_increment(100).await.unwrap();
-        let action = s.close_action(Some(50)).await.unwrap();
-        match action {
-            SessionAction::Close(p) => {
-                let v = p.voucher.unwrap();
-                assert_eq!(v.data.cumulative, "150");
-            }
-            _ => panic!("Expected Close"),
-        }
-    }
-
-    #[tokio::test]
-    async fn close_action_zero_increment_no_voucher() {
-        let mut s = make_session();
-        let action = s.close_action(Some(0)).await.unwrap();
-        match action {
-            SessionAction::Close(p) => {
-                assert!(p.voucher.is_none());
-            }
-            _ => panic!("Expected Close"),
-        }
-    }
-}
-
-#[cfg(test)]
-mod open_tests {
-    use super::*;
-    use crate::mpp::protocol::intents::session::SessionSplit;
+    use crate::mpp::program::payment_channels::PAYMENT_CHANNELS_PROGRAM_ID;
+    use crate::mpp::protocol::intents::session::{SessionMethodDetails, SessionSplit};
     use crate::mpp::protocol::solana::{mints, programs};
-    use base64::Engine;
     use solana_keychain::MemorySigner;
-    use solana_signature::Signature;
-    use solana_transaction::Transaction;
 
-    fn make_signer(seed: u8) -> Box<dyn SolanaSigner> {
-        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut kp = [0u8; 64];
-        kp[..32].copy_from_slice(sk.as_bytes());
-        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
-        Box::new(MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    fn signer(seed: u8) -> Box<dyn SolanaSigner> {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut bytes = [0_u8; 64];
+        bytes[..32].copy_from_slice(key.as_bytes());
+        bytes[32..].copy_from_slice(key.verifying_key().as_bytes());
+        Box::new(MemorySigner::from_bytes(&bytes).unwrap())
     }
 
-    fn test_request(operator: Pubkey, recipient: Pubkey) -> SessionRequest {
+    /// The `recentBlockhash` every test challenge advertises.
+    fn test_blockhash() -> Hash {
+        Hash::new_from_array([7; 32])
+    }
+
+    fn request(recipient: Pubkey) -> SessionRequest {
         SessionRequest {
-            cap: "1000".to_string(),
-            currency: "USDC".to_string(),
-            decimals: Some(6),
-            network: Some("localnet".to_string()),
-            operator: pubkey_string(&operator),
+            amount: "25".into(),
+            currency: "USDC".into(),
             recipient: pubkey_string(&recipient),
-            splits: vec![],
-            program_id: None,
             description: None,
             external_id: None,
-            min_voucher_delta: None,
-            voucher_signer: crate::mpp::SessionVoucherSigner::Client,
-            idle_timeout_options_seconds: None,
-            idle_timeout_seconds: None,
-            modes: vec![SessionMode::Pull],
-            pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
-            recent_blockhash: None,
-            // The server pre-fetches the current slot into the challenge; the
-            // client derives the channel PDA from it.
-            recent_slot: Some(314),
+            minimum_deposit: Some("100".into()),
+            suggested_deposit: Some("1000".into()),
+            unit_type: Some("request".into()),
+            method_details: SessionMethodDetails {
+                network: "mainnet".into(),
+                channel_program: PAYMENT_CHANNELS_PROGRAM_ID.to_string(),
+                channel_id: None,
+                recent_blockhash: Some(test_blockhash().to_string()),
+                recent_slot: Some(42),
+                decimals: Some(6),
+                token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+                fee_payer: None,
+                fee_payer_key: None,
+                voucher_signer: Some(SessionVoucherSigner::Client),
+                operator: None,
+                min_voucher_delta: None,
+                ttl_seconds: None,
+                idle_timeout_options_seconds: Some(vec![60, 300]),
+                idle_timeout_seconds: Some(300),
+                grace_period_seconds: Some(900),
+                distribution_splits: vec![],
+            },
         }
     }
 
-    fn decode_transaction(encoded: &str) -> Transaction {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .expect("base64 transaction");
-        bincode::deserialize(&bytes).expect("bincode transaction")
+    #[tokio::test]
+    async fn active_session_signs_records_and_builds_exact_actions() {
+        let channel = Pubkey::new_unique();
+        let mut active = ActiveSession::new_with_expiry(channel, signer(1), 1234);
+        assert_eq!(active.channel_id_str(), channel.to_string());
+        assert_eq!(active.authorized_signer(), signer(1).pubkey().to_string());
+        let prepared = active.prepare_increment(25).await.unwrap();
+        assert_eq!(prepared.data.cumulative_amount, "25");
+        assert_eq!(prepared.data.expires_at, Some(1234));
+        assert_eq!(active.cumulative, 0);
+        active.record_voucher(&prepared).unwrap();
+        assert_eq!(active.cumulative, 25);
+        assert!(active.record_voucher(&prepared).is_err());
+        assert!(active.prepare_voucher(25).await.is_err());
+        assert!(active
+            .record_voucher(&SignedVoucher {
+                data: VoucherData {
+                    cumulative_amount: "bad".into(),
+                    ..prepared.data.clone()
+                },
+                ..prepared.clone()
+            })
+            .is_err());
+
+        match active.voucher_action(5).await.unwrap() {
+            SessionAction::Voucher(payload) => {
+                assert_eq!(payload.voucher.data.cumulative_amount, "30")
+            }
+            _ => panic!("voucher action"),
+        }
+        match active.close_action(Some(5)).await.unwrap() {
+            SessionAction::Close(payload) => {
+                assert_eq!(payload.voucher.unwrap().data.cumulative_amount, "35")
+            }
+            _ => panic!("close action"),
+        }
+        assert!(matches!(
+            active.close_action(None).await.unwrap(),
+            SessionAction::Close(_)
+        ));
+        assert!(matches!(
+            active.topup_action(10, "topup"),
+            SessionAction::TopUp(_)
+        ));
+        assert!(matches!(
+            active.open_payment_channel_action(100, "payer", "payee", "mint", 7, 900, 42, "wire"),
+            SessionAction::Open(_)
+        ));
+        active.set_expires_at(999);
+        assert_eq!(
+            active.sign_increment(1).await.unwrap().data.expires_at,
+            Some(999)
+        );
     }
 
     #[test]
-    fn derive_payment_channel_open_uses_challenge_defaults_and_splits() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let split_recipient = Pubkey::new_unique();
-        let mut request = test_request(operator, recipient);
-        request.splits.push(SessionSplit {
-            recipient: pubkey_string(&split_recipient),
-            bps: 10,
-        });
-
+    fn derive_open_uses_exact_nested_policy_and_validates_inputs() {
         let payer = Pubkey::new_unique();
-        let authorized_signer = Pubkey::new_unique();
+        let payee = Pubkey::new_unique();
+        let authorized = Pubkey::new_unique();
+        let split = Pubkey::new_unique();
+        let mut req = request(payee);
+        req.method_details.distribution_splits.push(SessionSplit {
+            recipient: split.to_string(),
+            share_bps: 250,
+        });
         let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
+            request: &req,
             payer,
-            authorized_signer,
+            authorized_signer: authorized,
             options: PaymentChannelOpenOptions {
-                salt: Some(42),
-                ..PaymentChannelOpenOptions::default()
+                open_slot: Some(42),
+                salt: Some(7),
+                ..Default::default()
             },
         })
         .unwrap();
-
-        assert_eq!(open.payer, payer);
-        assert_eq!(open.payee, recipient);
-        assert_eq!(open.authorized_signer, authorized_signer);
         assert_eq!(open.deposit, 1000);
-        assert_eq!(open.grace_period, DEFAULT_GRACE_PERIOD_SECONDS);
-        assert_eq!(open.salt, 42);
-        assert_eq!(open.recipients.len(), 1);
-        assert_eq!(open.recipients[0].recipient, split_recipient);
-        assert_eq!(open.recipients[0].bps, 10);
-        assert_eq!(
-            open.mint,
-            Pubkey::from_str(mints::USDC_MAINNET).expect("valid USDC mint")
+        assert_eq!(open.open_slot, 42);
+        assert_eq!(open.recipients[0].bps, 250);
+        assert_eq!(open.channel_address(), open.channel_id);
+        let payload = open.open_payload("wire");
+        assert_eq!(payload.deposit_amount, "1000");
+        assert_eq!(payload.distribution_splits[0].share_bps, 250);
+
+        let mut invalid = req.clone();
+        invalid.suggested_deposit = Some("bad".into());
+        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &invalid,
+            payer,
+            authorized_signer: authorized,
+            options: PaymentChannelOpenOptions {
+                open_slot: Some(1),
+                ..Default::default()
+            }
+        })
+        .is_err());
+        let mut below = req.clone();
+        below.suggested_deposit = Some("1".into());
+        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &below,
+            payer,
+            authorized_signer: authorized,
+            options: PaymentChannelOpenOptions {
+                open_slot: Some(1),
+                ..Default::default()
+            }
+        })
+        .is_err());
+        // Default options take `openSlot` from the challenged `recentSlot`.
+        let defaulted = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &req,
+            payer,
+            authorized_signer: authorized,
+            options: Default::default(),
+        })
+        .unwrap();
+        assert_eq!(defaulted.open_slot, 42);
+        // An override may be earlier than the challenged `recentSlot`, never later.
+        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &req,
+            payer,
+            authorized_signer: authorized,
+            options: PaymentChannelOpenOptions {
+                open_slot: Some(43),
+                ..Default::default()
+            }
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("ahead of the challenged recentSlot"));
+        // A new-channel challenge without `recentSlot` cannot derive an open.
+        let mut no_slot = req.clone();
+        no_slot.method_details.recent_slot = None;
+        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &no_slot,
+            payer,
+            authorized_signer: authorized,
+            options: Default::default()
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("missing recentSlot"));
+        let mut bad_program = req.clone();
+        bad_program.method_details.channel_program = "bad".into();
+        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &bad_program,
+            payer,
+            authorized_signer: authorized,
+            options: PaymentChannelOpenOptions {
+                open_slot: Some(1),
+                ..Default::default()
+            }
+        })
+        .is_err());
+        let mut no_deposit = req.clone();
+        no_deposit.suggested_deposit = None;
+        no_deposit.minimum_deposit = None;
+        assert!(derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &no_deposit,
+            payer,
+            authorized_signer: authorized,
+            options: PaymentChannelOpenOptions {
+                open_slot: Some(1),
+                ..Default::default()
+            }
+        })
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn transaction_and_opener_bind_fee_payer_and_operator_authentication() {
+        let payer = signer(2);
+        let session_signer = signer(3);
+        let payee = Pubkey::new_unique();
+        let mut req = request(payee);
+        // No explicit blockhash: the challenged `recentBlockhash` is used.
+        let tx = build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
+            request: &req,
+            signer: payer.as_ref(),
+            authorized_signer: session_signer.pubkey(),
+            fee_payer: None,
+            recent_blockhash: None,
+            options: PaymentChannelOpenOptions {
+                open_slot: Some(42),
+                salt: Some(7),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+        assert!(!tx.transaction.is_empty());
+        let decoded =
+            crate::mpp::program::payment_channels::decode_transaction(&tx.transaction).unwrap();
+        assert_eq!(*decoded.message.recent_blockhash(), test_blockhash());
+
+        // A new-channel challenge without `recentBlockhash` cannot build the
+        // open transaction unless the caller overrides the blockhash.
+        let mut no_blockhash = req.clone();
+        no_blockhash.method_details.recent_blockhash = None;
+        assert!(
+            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
+                request: &no_blockhash,
+                signer: payer.as_ref(),
+                authorized_signer: session_signer.pubkey(),
+                fee_payer: None,
+                recent_blockhash: None,
+                options: PaymentChannelOpenOptions {
+                    open_slot: Some(42),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("missing recentBlockhash")
         );
-        assert_eq!(
-            open.token_program,
-            Pubkey::from_str(programs::TOKEN_PROGRAM).expect("valid token program")
+
+        req.method_details.fee_payer = Some(true);
+        req.method_details.fee_payer_key = Some(Pubkey::new_unique().to_string());
+        assert!(
+            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
+                request: &req,
+                signer: payer.as_ref(),
+                authorized_signer: session_signer.pubkey(),
+                fee_payer: Some(payer.pubkey()),
+                recent_blockhash: None,
+                options: PaymentChannelOpenOptions {
+                    open_slot: Some(42),
+                    ..Default::default()
+                },
+            })
+            .await
+            .is_err()
         );
-        assert_eq!(open.channel_id, open.channel_address());
+
+        let operator = signer(4);
+        req.method_details.fee_payer_key = Some(operator.pubkey().to_string());
+        req.method_details.operator = Some(operator.pubkey().to_string());
+        req.method_details.voucher_signer = Some(SessionVoucherSigner::Operator);
+        let authentication = SessionAuthentication::sign(
+            "opening",
+            &Pubkey::new_unique().to_string(),
+            &ed25519_dalek::SigningKey::from_bytes(&[2; 32]),
+        )
+        .unwrap();
+        let opened = create_payment_channel_session_opener(
+            &req,
+            payer.as_ref(),
+            session_signer,
+            None,
+            PaymentChannelSessionOpenOptions {
+                open: PaymentChannelOpenOptions {
+                    // Earlier than the challenged recentSlot (42): allowed.
+                    open_slot: Some(41),
+                    ..Default::default()
+                },
+                cumulative: Some(5),
+                expires_at: Some(1234),
+                authentication: Some(authentication),
+                idle_timeout_seconds: Some(60),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(opened.session.cumulative, 5);
+        match opened.action {
+            SessionAction::Open(payload) => {
+                assert_eq!(payload.authorized_signer, operator.pubkey().to_string());
+                assert_eq!(payload.idle_timeout_seconds, Some(60));
+                assert!(payload.authentication.is_some());
+            }
+            _ => panic!("open action"),
+        }
     }
 
     #[test]
-    fn derive_payment_channel_open_honors_explicit_options() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let split_recipient = Pubkey::new_unique();
-        let program_id = Pubkey::new_unique();
-        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
-        let mut request = test_request(operator, recipient);
-        request.cap = "not-a-number".to_string();
-        request.splits.push(SessionSplit {
-            recipient: "not-a-pubkey".to_string(),
-            bps: 999,
-        });
-
+    fn stablecoin_and_token_program_resolution_is_exact() {
+        let req = request(Pubkey::new_unique());
         let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
+            request: &req,
             payer: Pubkey::new_unique(),
             authorized_signer: Pubkey::new_unique(),
             options: PaymentChannelOpenOptions {
-                deposit: Some(55),
-                grace_period: Some(12),
-                open_slot: Some(777),
-                program_id: Some(program_id),
-                recipients: Some(vec![Distribution {
-                    recipient: split_recipient,
-                    bps: 25,
-                }]),
-                salt: Some(7),
-                token_program: Some(token_program),
+                open_slot: Some(1),
+                ..Default::default()
             },
         })
         .unwrap();
-
-        assert_eq!(open.deposit, 55);
-        assert_eq!(open.grace_period, 12);
-        assert_eq!(open.open_slot, 777);
-        assert_eq!(open.program_id, program_id);
-        assert_eq!(open.token_program, token_program);
-        assert_eq!(open.recipients.len(), 1);
-        assert_eq!(open.recipients[0].recipient, split_recipient);
-        assert_eq!(open.recipients[0].bps, 25);
-    }
-
-    #[test]
-    fn derive_payment_channel_open_rejects_invalid_challenge_values() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let payer = Pubkey::new_unique();
-        let authorized_signer = Pubkey::new_unique();
-
-        let mut request = test_request(operator, recipient);
-        request.currency = "SOL".to_string();
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("SPL token"));
-
-        let mut request = test_request(operator, recipient);
-        request.cap = "not-a-number".to_string();
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("session cap"));
-
-        let mut request = test_request(operator, recipient);
-        request.recipient = "not-a-pubkey".to_string();
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("recipient"));
-
-        let mut request = test_request(operator, recipient);
-        request.program_id = Some("not-a-program".to_string());
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("programId"));
-
-        let mut request = test_request(operator, recipient);
-        request.splits.push(SessionSplit {
-            recipient: "not-a-pubkey".to_string(),
-            bps: 10,
-        });
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("split recipient"));
-
-        // The open slot comes from the challenge's recentSlot (or an explicit
-        // option override); the client never fetches a slot, so a challenge
-        // without one fails.
-        let mut request = test_request(operator, recipient);
-        request.recent_slot = None;
-        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer,
-            authorized_signer,
-            options: PaymentChannelOpenOptions::default(),
-        })
-        .unwrap_err();
-        assert!(err.to_string().contains("missing recentSlot"));
-    }
-
-    #[tokio::test]
-    async fn build_open_payment_channel_transaction_partially_signs_for_operator_broadcast() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let request = test_request(operator, recipient);
-        let payer_signer = make_signer(7);
-        let authorized_signer = make_signer(8).pubkey();
-
-        let built =
-            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
-                request: &request,
-                signer: payer_signer.as_ref(),
-                authorized_signer,
-                fee_payer: None,
-                recent_blockhash: Hash::new_unique(),
-                options: PaymentChannelOpenOptions {
-                    salt: Some(99),
-                    ..PaymentChannelOpenOptions::default()
-                },
-            })
-            .await
-            .unwrap();
-        let tx = decode_transaction(&built.transaction);
-        let expected_open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
-            request: &request,
-            payer: payer_signer.pubkey(),
-            authorized_signer,
-            options: PaymentChannelOpenOptions {
-                salt: Some(99),
-                ..PaymentChannelOpenOptions::default()
-            },
-        })
-        .unwrap();
-
-        assert_eq!(built.channel_id, expected_open.channel_id);
-        assert_eq!(tx.message.account_keys[0], operator);
-        assert_eq!(tx.message.instructions.len(), 1);
-
-        let payer_index = tx
-            .message
-            .account_keys
-            .iter()
-            .position(|key| key == &payer_signer.pubkey())
-            .expect("payer signer account");
-        assert_eq!(tx.signatures[0], Signature::default());
-        assert_ne!(tx.signatures[payer_index], Signature::default());
-    }
-
-    #[tokio::test]
-    async fn build_open_payment_channel_transaction_uses_operator_fee_payer() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let request = test_request(operator, recipient);
-        let payer_signer = make_signer(15);
-
-        // An explicit fee payer is allowed only when it equals the operator.
-        let built =
-            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
-                request: &request,
-                signer: payer_signer.as_ref(),
-                authorized_signer: make_signer(16).pubkey(),
-                fee_payer: Some(operator),
-                recent_blockhash: Hash::new_unique(),
-                options: PaymentChannelOpenOptions {
-                    salt: Some(123),
-                    ..PaymentChannelOpenOptions::default()
-                },
-            })
-            .await
-            .unwrap();
-        let tx = decode_transaction(&built.transaction);
-
-        assert_eq!(tx.message.account_keys[0], operator);
-    }
-
-    #[tokio::test]
-    async fn build_open_payment_channel_transaction_rejects_non_operator_fee_payer() {
-        let operator = Pubkey::new_unique();
-        let non_operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let request = test_request(operator, recipient);
-        let payer_signer = make_signer(15);
-
-        let err =
-            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
-                request: &request,
-                signer: payer_signer.as_ref(),
-                authorized_signer: make_signer(16).pubkey(),
-                fee_payer: Some(non_operator),
-                recent_blockhash: Hash::new_unique(),
-                options: PaymentChannelOpenOptions::default(),
-            })
-            .await
-            .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("fee_payer must equal the challenge operator"));
-    }
-
-    #[tokio::test]
-    async fn create_payment_channel_session_opener_builds_pull_client_voucher_action() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let request = test_request(operator, recipient);
-        let payer_signer = make_signer(9);
-        let session_signer = make_signer(10);
-        let authorized_signer = session_signer.pubkey();
-
-        let opened = create_payment_channel_session_opener(
-            &request,
-            payer_signer.as_ref(),
-            session_signer,
-            Hash::new_unique(),
-            PaymentChannelSessionOpenOptions {
-                open: PaymentChannelOpenOptions {
-                    salt: Some(11),
-                    ..PaymentChannelOpenOptions::default()
-                },
-                ..PaymentChannelSessionOpenOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(opened.session.channel_id, opened.open.channel_id);
-        match opened.action {
-            SessionAction::Open(payload) => {
-                assert_eq!(payload.mode, SessionMode::Pull);
-                assert_eq!(
-                    payload.channel_id.as_deref(),
-                    Some(pubkey_string(&opened.open.channel_id).as_str())
-                );
-                assert_eq!(
-                    payload.payer.as_deref(),
-                    Some(pubkey_string(&payer_signer.pubkey()).as_str())
-                );
-                assert_eq!(payload.authorized_signer, pubkey_string(&authorized_signer));
-                assert_eq!(payload.signature, PENDING_SERVER_SIGNATURE);
-                assert!(payload.transaction.is_some());
-                assert!(payload.token_account.is_none());
-                assert!(payload.approved_amount.is_none());
-                assert!(payload.init_multi_delegate_tx.is_none());
-                assert!(payload.update_delegation_tx.is_none());
-            }
-            _ => panic!("expected open action"),
-        }
-    }
-
-    #[tokio::test]
-    async fn create_payment_channel_session_opener_applies_session_options() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let request = test_request(operator, recipient);
-        let payer_signer = make_signer(17);
-
-        let opened = create_payment_channel_session_opener(
-            &request,
-            payer_signer.as_ref(),
-            make_signer(18),
-            Hash::new_unique(),
-            PaymentChannelSessionOpenOptions {
-                open: PaymentChannelOpenOptions {
-                    salt: Some(19),
-                    ..PaymentChannelOpenOptions::default()
-                },
-                signature: Some("operator-will-fill".to_string()),
-                cumulative: Some(20),
-                expires_at: Some(1234),
-            },
-        )
-        .await
-        .unwrap();
-
-        match &opened.action {
-            SessionAction::Open(payload) => {
-                assert_eq!(payload.signature, "operator-will-fill");
-            }
-            _ => panic!("expected open action"),
-        }
-        let voucher = opened.session.prepare_increment(5).await.unwrap();
-        assert_eq!(voucher.data.cumulative, "25");
-        assert_eq!(voucher.data.expires_at, 1234);
-    }
-
-    #[test]
-    fn create_server_opened_session_opener_uses_operator_payer_without_transaction() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let request = test_request(operator, recipient);
-        let session_signer = make_signer(12);
-        let authorized_signer = session_signer.pubkey();
-
-        let opened = create_server_opened_payment_channel_session_opener(
-            &request,
-            session_signer,
-            ServerOpenedPaymentChannelSessionOpenOptions {
-                open: PaymentChannelOpenOptions {
-                    salt: Some(13),
-                    ..PaymentChannelOpenOptions::default()
-                },
-                ..ServerOpenedPaymentChannelSessionOpenOptions::default()
-            },
-        )
-        .unwrap();
-
-        assert_eq!(opened.open.payer, operator);
-        match opened.action {
-            SessionAction::Open(payload) => {
-                assert_eq!(payload.mode, SessionMode::Pull);
-                assert_eq!(payload.payer.as_deref(), Some(request.operator.as_str()));
-                assert_eq!(payload.authorized_signer, pubkey_string(&authorized_signer));
-                assert_eq!(payload.signature, PENDING_SERVER_SIGNATURE);
-                assert!(payload.transaction.is_none());
-                assert!(payload.token_account.is_none());
-                assert!(payload.approved_amount.is_none());
-            }
-            _ => panic!("expected open action"),
-        }
-    }
-
-    #[test]
-    fn session_opener_rejects_non_pull_challenge() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let mut request = test_request(operator, recipient);
-        request.modes = vec![SessionMode::Push];
-        request.pull_voucher_strategy = None;
-
-        let err = match create_server_opened_payment_channel_session_opener(
-            &request,
-            make_signer(20),
-            ServerOpenedPaymentChannelSessionOpenOptions::default(),
-        ) {
-            Ok(_) => panic!("expected non-pull challenge to be rejected"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("pull mode"));
-    }
-
-    #[test]
-    fn session_opener_rejects_operated_voucher_pull_challenge() {
-        let operator = Pubkey::new_unique();
-        let recipient = Pubkey::new_unique();
-        let mut request = test_request(operator, recipient);
-        request.pull_voucher_strategy = Some(SessionPullVoucherStrategy::OperatedVoucher);
-
-        let err = match create_server_opened_payment_channel_session_opener(
-            &request,
-            make_signer(14),
-            ServerOpenedPaymentChannelSessionOpenOptions::default(),
-        ) {
-            Ok(_) => panic!("expected operated-voucher challenge to be rejected"),
-            Err(err) => err,
-        };
-        assert!(err
-            .to_string()
-            .contains("does not advertise pull + clientVoucher"));
+        assert_eq!(open.mint.to_string(), mints::USDC_MAINNET);
+        assert_eq!(open.token_program.to_string(), programs::TOKEN_PROGRAM);
     }
 }

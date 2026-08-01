@@ -1,30 +1,17 @@
-"""Tests for the session on-chain open-tx verifier and helpers.
-
-Mirrors the behaviors in
-``go/protocols/mpp/server/session_onchain_test.go`` for the standalone
-``verify_open_tx`` slice and the top-up / open verifier seam factories. The
-``SessionServer``-bound ``SettlementInstructions`` method and the
-``ProcessOpen`` integration tests are not ported here: the base session server
-is not yet ported to Python, so the settlement method and the
-verifier-through-``ProcessOpen`` paths land with that follow-up.
-"""
+"""Security tests for exact on-chain session transaction verification."""
 
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pytest
 from solders.hash import Hash  # type: ignore[import-untyped]
-from solders.instruction import Instruction  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.message import Message, MessageV0  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
-from solders.transaction import (  # type: ignore[import-untyped]
-    Transaction,
-    VersionedTransaction,
-)
+from solders.transaction import Transaction, VersionedTransaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
@@ -35,586 +22,310 @@ from solana_pay_kit.protocols.mpp._paymentchannels import (
     find_channel_pda,
 )
 from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionOpenContext
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
+    confirm_transaction_signature,
     is_placeholder_signature,
     new_open_tx_verifier,
     new_top_up_tx_verifier,
     verify_open_tx,
 )
+from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
 USDC_MAINNET_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
-OPEN_FIXTURE_SALT = 7
-OPEN_FIXTURE_DEPOSIT = 1_000_000
-OPEN_FIXTURE_GRACE = 900
-OPEN_FIXTURE_SLOT = 4242
-
 
 @dataclass
-class OpenTxFixture:
-    """A freshly built and signed payment-channel open tx plus the challenge
-    expectations that accept it. Mirrors ``openTxFixture`` in the Go test."""
-
-    payer: Keypair
-    payee: Pubkey
-    authorized: Pubkey
-    mint: Pubkey
-    channel: Pubkey
-    signature: str
+class _Fixture:
     payload: OpenPayload
     expected: VerifyOpenTxExpected
+    payer: Keypair
 
 
-class _FakeRpc:
-    """Minimal RPC double exposing ``get_signature_statuses`` like the
-    production ``SolanaRpc``. Mirrors ``testutil.FakeRPC``: any signature not in
-    ``statuses`` is reported confirmed with no error."""
-
-    def __init__(self) -> None:
-        self.statuses: dict[str, dict | None] = {}
-
-    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
-        out: list[dict | None] = []
-        for signature in signatures:
-            if signature in self.statuses:
-                out.append(self.statuses[signature])
-            else:
-                out.append({"err": None, "confirmationStatus": "confirmed"})
-        return out
-
-    async def get_latest_blockhash(self, commitment: str = "confirmed"):  # noqa: ANN201 (RPC seam stub)
-        raise NotImplementedError  # not exercised by the open/top-up verifier tests
-
-    async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
-        raise NotImplementedError  # not exercised by the open/top-up verifier tests
-
-
-def _kp(seed: int) -> Keypair:
-    return Keypair.from_seed(bytes([seed] * 32))
-
-
-def _sign_and_attach(fixture: OpenTxFixture, ix: Instruction, v0: bool) -> tuple[str, OpenPayload]:
-    blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-    payer_pubkey = fixture.payer.pubkey()
+def _fixture(*, v0: bool = False) -> _Fixture:
+    payer = Keypair.from_seed(bytes([1] * 32))
+    payee = Keypair.from_seed(bytes([2] * 32)).pubkey()
+    authorized = Keypair.from_seed(bytes([3] * 32)).pubkey()
+    mint = Pubkey.from_string(USDC_MAINNET_MINT)
+    salt, deposit, grace, slot = 7, 1_000, 900, 42
+    channel, _ = find_channel_pda(payer.pubkey(), payee, mint, authorized, salt, slot, PROGRAM_ID)
+    instruction = build_open_instruction(
+        OpenChannelParams(
+            payer=payer.pubkey(),
+            rent_payer=payer.pubkey(),
+            payee=payee,
+            mint=mint,
+            authorized_signer=authorized,
+            salt=salt,
+            deposit=deposit,
+            grace_period=grace,
+            open_slot=slot,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            program_id=PROGRAM_ID,
+        )
+    )
     if v0:
-        message_v0 = MessageV0.try_compile(payer_pubkey, [ix], [], blockhash)
-        vtx = VersionedTransaction(message_v0, [fixture.payer])
-        encoded = base64.b64encode(bytes(vtx)).decode("ascii")
-        signature = str(vtx.signatures[0])
+        message = MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default())
+        transaction = VersionedTransaction(message, [payer])
     else:
-        message = Message.new_with_blockhash([ix], payer_pubkey, blockhash)
-        tx = Transaction([fixture.payer], message, blockhash)
-        encoded = base64.b64encode(bytes(tx)).decode("ascii")
-        signature = str(tx.signatures[0])
-    payload = OpenPayload.payment_channel(
-        str(fixture.channel),
-        str(OPEN_FIXTURE_DEPOSIT),
-        str(payer_pubkey),
-        str(fixture.payee),
-        str(fixture.mint),
-        OPEN_FIXTURE_SALT,
-        OPEN_FIXTURE_GRACE,
-        OPEN_FIXTURE_SLOT,
-        str(fixture.authorized),
-        signature,
-    ).with_transaction(encoded)
-    return signature, payload
-
-
-def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
-    payer = _kp(1)
-    payee = _kp(2).pubkey()
-    authorized = _kp(3).pubkey()
-    mint = Pubkey.from_string(USDC_MAINNET_MINT)
-    channel, _ = find_channel_pda(
-        payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, OPEN_FIXTURE_SLOT, PROGRAM_ID
-    )
-    ix = build_open_instruction(
-        OpenChannelParams(
-            payer=payer.pubkey(),
-            payee=payee,
-            mint=mint,
-            authorized_signer=authorized,
-            salt=OPEN_FIXTURE_SALT,
-            deposit=OPEN_FIXTURE_DEPOSIT,
-            grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
-            token_program=Pubkey.from_string(TOKEN_PROGRAM),
-            rent_payer=payer.pubkey(),
+        transaction = Transaction(
+            [payer], Message.new_with_blockhash([instruction], payer.pubkey(), Hash.default()), Hash.default()
         )
-    )
-    fixture = OpenTxFixture(
-        payer=payer,
-        payee=payee,
-        authorized=authorized,
-        mint=mint,
-        channel=channel,
-        signature="",
-        payload=OpenPayload.payment_channel("", "", "", "", "", 0, 0, 0, "", ""),
-        expected=VerifyOpenTxExpected(authorized_signer="", recipient="", currency="", network=""),
-    )
-    fixture.signature, fixture.payload = _sign_and_attach(fixture, ix, v0)
-    fixture.expected = VerifyOpenTxExpected(
+    payload = OpenPayload(
+        channel_id=str(channel),
+        payer=str(payer.pubkey()),
+        payee=str(payee),
+        mint=str(mint),
         authorized_signer=str(authorized),
-        currency="USDC",
-        max_cap=5_000_000,
-        network="localnet",
-        recipient=str(payee),
-        # operator is the expected rentPayer (required); the fixture pins
-        # rentPayer to its own payer.
-        operator=str(payer.pubkey()),
+        salt=salt,
+        deposit_amount=str(deposit),
+        grace_period_seconds=grace,
+        open_slot=slot,
+        transaction=base64.b64encode(bytes(transaction)).decode(),
     )
-    return fixture
-
-
-# -- verify_open_tx: accepted encodings ---------------------------------------
-
-
-async def test_verify_open_tx_accepts_legacy_encoding() -> None:
-    """Mirrors TestVerifyOpenTxAcceptsLegacyEncoding."""
-    fixture = build_open_tx_fixture(v0=False)
-    result = await verify_open_tx(fixture.expected, fixture.payload, None)
-    assert result.channel_id == str(fixture.channel)
-    assert result.deposit == OPEN_FIXTURE_DEPOSIT
-    assert result.grace_period == OPEN_FIXTURE_GRACE
-    assert result.salt == OPEN_FIXTURE_SALT
-    # openSlot is decoded from the instruction data and surfaced so the method
-    # layer persists it (the channel PDA seed / reclaim input).
-    assert result.open_slot == OPEN_FIXTURE_SLOT
-    # payer (open slot 0) is surfaced so the method layer can record
-    # state.operator and refund the opener's ATA at settle-at-close.
-    assert result.payer == str(fixture.payer.pubkey())
-
-
-async def test_verify_open_tx_accepts_v0_encoding() -> None:
-    """Mirrors TestVerifyOpenTxAcceptsV0Encoding."""
-    fixture = build_open_tx_fixture(v0=True)
-    # Confirm the fixture really emits the v0 wire prefix before asserting it
-    # verifies: the message must round-trip through the versioned decoder.
-    assert fixture.payload.transaction is not None
-    raw = base64.b64decode(fixture.payload.transaction, validate=True)
-    vtx = VersionedTransaction.from_bytes(raw)
-    assert isinstance(vtx.message, MessageV0)
-    result = await verify_open_tx(fixture.expected, fixture.payload, None)
-    assert result.channel_id == str(fixture.channel)
-
-
-async def test_verify_open_tx_honors_explicit_mint_and_program_overrides() -> None:
-    """Mirrors TestVerifyOpenTxHonorsExplicitMintAndProgramOverrides."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(
-        fixture.expected,
-        currency="not-a-currency",
-        mint=str(fixture.mint),
-        program_id=PROGRAM_ID,
-    )
-    result = await verify_open_tx(expected, fixture.payload, None)
-    assert result.channel_id == str(fixture.channel)
-
-
-async def test_verify_open_tx_rejects_address_lookup_tables() -> None:
-    """A v0 open tx that resolves accounts through an address lookup table is
-    rejected: ``verify_open_tx`` validates the open instruction's accounts
-    against the static account keys and re-derives the channel PDA from them, so
-    an ALT could hide the real rentPayer / payee / mint behind indices the
-    verifier cannot see. The operator must never co-sign such a transaction.
-    """
-    from solders.address_lookup_table_account import (  # type: ignore[import-untyped]
-        AddressLookupTableAccount,
-    )
-
-    payer = _kp(1)
-    payee = _kp(2).pubkey()
-    authorized = _kp(3).pubkey()
-    mint = Pubkey.from_string(USDC_MAINNET_MINT)
-    channel, _ = find_channel_pda(
-        payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, OPEN_FIXTURE_SLOT, PROGRAM_ID
-    )
-    ix = build_open_instruction(
-        OpenChannelParams(
-            payer=payer.pubkey(),
-            payee=payee,
-            mint=mint,
-            authorized_signer=authorized,
-            salt=OPEN_FIXTURE_SALT,
-            deposit=OPEN_FIXTURE_DEPOSIT,
-            grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
-            token_program=Pubkey.from_string(TOKEN_PROGRAM),
-            rent_payer=payer.pubkey(),
-        )
-    )
-    # Stuff some of the instruction's read-only accounts into a lookup table so
-    # ``MessageV0.try_compile`` emits a non-empty ``address_table_lookups`` list.
-    lookup_addresses = [meta.pubkey for meta in ix.accounts if not meta.is_signer]
-    alt = AddressLookupTableAccount(key=_kp(9).pubkey(), addresses=lookup_addresses)
-    blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-    message_v0 = MessageV0.try_compile(payer.pubkey(), [ix], [alt], blockhash)
-    vtx = VersionedTransaction(message_v0, [payer])
-    # Confirm the fixture actually exercises an ALT before asserting rejection.
-    assert message_v0.address_table_lookups
-
-    encoded = base64.b64encode(bytes(vtx)).decode("ascii")
-    payload = OpenPayload.payment_channel(
-        str(channel),
-        str(OPEN_FIXTURE_DEPOSIT),
-        str(payer.pubkey()),
-        str(payee),
-        str(mint),
-        OPEN_FIXTURE_SALT,
-        OPEN_FIXTURE_GRACE,
-        OPEN_FIXTURE_SLOT,
-        str(authorized),
-        str(vtx.signatures[0]),
-    ).with_transaction(encoded)
     expected = VerifyOpenTxExpected(
         authorized_signer=str(authorized),
         currency="USDC",
-        max_cap=5_000_000,
-        network="localnet",
         recipient=str(payee),
-        operator=str(payer.pubkey()),
+        network="mainnet",
+        minimum_deposit=100,
+        mint=str(mint),
+        fee_payer=str(payer.pubkey()),
+        rent_payer=str(payer.pubkey()),
+        token_program=TOKEN_PROGRAM,
+        grace_period_seconds=grace,
+        program_id=PROGRAM_ID,
+        # The fixture transactions above compile against Hash.default(); the
+        # challenge is taken to have advertised exactly that blockhash.
+        recent_blockhash=str(Hash.default()),
+    )
+    return _Fixture(payload, expected, payer)
+
+
+def _context(recent_blockhash: str | None = None, recent_slot: int = 42) -> SessionOpenContext:
+    return SessionOpenContext(
+        challenge_id="challenge-1",
+        expires="2099-01-01T00:00:00Z",
+        recent_blockhash=recent_blockhash if recent_blockhash is not None else str(Hash.default()),
+        recent_slot=recent_slot,
     )
 
-    with pytest.raises(PaymentError, match="address lookup tables"):
-        await verify_open_tx(expected, payload, None)
+
+@pytest.mark.parametrize("v0", [False, True])
+async def test_verify_open_tx_accepts_exact_legacy_and_v0(v0: bool) -> None:
+    fixture = _fixture(v0=v0)
+    result = await verify_open_tx(fixture.expected, fixture.payload, None)
+    assert result.channel_id == fixture.payload.channel_id
+    assert result.deposit == 1_000
+    assert result.open_slot == 42
 
 
-# -- verify_open_tx: failure modes --------------------------------------------
-
-
-async def test_verify_open_tx_rejects_undecodable_transaction() -> None:
-    """Mirrors TestVerifyOpenTxRejectsUndecodableTransaction."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.transaction = "not-base64!"
-    with pytest.raises(PaymentError, match="decode open transaction"):
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("channel_id", str(Keypair().pubkey()), "channelId"),
+        ("payer", str(Keypair().pubkey()), "payload payer"),
+        ("deposit_amount", "999", "depositAmount"),
+        ("salt", 8, "payload salt"),
+        ("grace_period_seconds", 30, "gracePeriodSeconds"),
+        ("open_slot", 43, "openSlot"),
+    ],
+)
+async def test_verify_open_tx_rejects_payload_mismatch(field: str, value: object, message: str) -> None:
+    fixture = _fixture()
+    setattr(fixture.payload, field, value)
+    with pytest.raises(PaymentError, match=message):
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
+async def test_verify_open_tx_rejects_challenge_policy_mismatch() -> None:
+    fixture = _fixture()
+    fixture.expected.recipient = str(Keypair().pubkey())
+    with pytest.raises(PaymentError, match="expected recipient"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+@pytest.mark.parametrize("v0", [False, True])
+async def test_verify_open_tx_rejects_wrong_challenged_blockhash(v0: bool) -> None:
+    # The fixture transaction compiles against Hash.default(); a challenge
+    # that advertised a different recentBlockhash means the transaction was
+    # not built for this challenge — rejected before broadcast.
+    fixture = _fixture(v0=v0)
+    fixture.expected.recent_blockhash = str(Hash.new_unique())
+    with pytest.raises(PaymentError, match="challenged recentBlockhash"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_requires_challenged_blockhash() -> None:
+    # recentBlockhash is a challenge-binding boundary like feePayer/rentPayer:
+    # a standalone verifier must not accept an open without proving it.
+    fixture = _fixture()
+    fixture.expected.recent_blockhash = ""
+    with pytest.raises(ValueError, match="recentBlockhash is required"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_open_verifier_threads_challenged_blockhash() -> None:
+    # new_open_tx_verifier feeds the SessionOpenContext's recentBlockhash into
+    # the structural check, so a mismatched context rejects pre-broadcast even
+    # with a live RPC configured.
+    fixture = _fixture()
+    config = SessionConfig(
+        recipient=fixture.expected.recipient,
+        amount=25,
+        currency="USDC",
+        network="mainnet",
+        channel_program=str(PROGRAM_ID),
+        token_program=TOKEN_PROGRAM,
+        grace_period_seconds=900,
+        minimum_deposit=100,
+    )
+    broadcasts: list[bytes] = []
+
+    class _Rpc(_StatusRpc):
+        async def send_raw_transaction(self, raw_tx: bytes) -> object:
+            broadcasts.append(raw_tx)
+            raise AssertionError("must reject before broadcast")
+
+    verifier = new_open_tx_verifier(config, _Rpc([]))
+    with pytest.raises(PaymentError, match="challenged recentBlockhash"):
+        await verifier(fixture.payload, _context(recent_blockhash=str(Hash.new_unique())))
+    assert broadcasts == []
+
+
 async def test_verify_open_tx_requires_transaction() -> None:
-    """Mirrors TestVerifyOpenTxRequiresTransaction."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.transaction = None
+    fixture = _fixture()
+    fixture.payload.transaction = ""
     with pytest.raises(PaymentError, match="transaction is required"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
-async def test_verify_open_tx_rejects_wrong_payee() -> None:
-    """Mirrors TestVerifyOpenTxRejectsWrongPayee."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(fixture.expected, recipient=str(fixture.payer.pubkey()))
-    with pytest.raises(PaymentError, match="payee"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_wrong_mint() -> None:
-    """Mirrors TestVerifyOpenTxRejectsWrongMint."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(fixture.expected, currency="USDT")
-    with pytest.raises(PaymentError, match="mint"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_wrong_authorized_signer() -> None:
-    """Mirrors TestVerifyOpenTxRejectsWrongAuthorizedSigner."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(fixture.expected, authorized_signer=str(_kp(99).pubkey()))
-    with pytest.raises(PaymentError, match="authorizedSigner"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_requires_operator() -> None:
-    """rentPayer is a security boundary: an empty/None expected operator must
-    raise ValueError rather than skipping the slot-1 rentPayer check."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(fixture.expected, operator="")
-    with pytest.raises(ValueError, match="operator .*is required"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_wrong_operator() -> None:
-    """The open's slot-1 rentPayer must equal the expected operator."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(fixture.expected, operator=str(_kp(99).pubkey()))
-    with pytest.raises(PaymentError, match="rentPayer"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_over_cap_deposit() -> None:
-    """Mirrors TestVerifyOpenTxRejectsOverCapDeposit."""
-    fixture = build_open_tx_fixture(v0=False)
-    expected = replace(fixture.expected, max_cap=OPEN_FIXTURE_DEPOSIT - 1)
-    with pytest.raises(PaymentError, match="exceeds max cap"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_zero_deposit() -> None:
-    """Mirrors TestVerifyOpenTxRejectsZeroDeposit."""
-    fixture = build_open_tx_fixture(v0=False)
-    # Rebuild the open instruction with a zero deposit; the channel PDA does not
-    # embed the deposit, so only the deposit check can reject it.
-    ix = build_open_instruction(
-        OpenChannelParams(
-            payer=fixture.payer.pubkey(),
-            payee=fixture.payee,
-            mint=fixture.mint,
-            authorized_signer=fixture.authorized,
-            salt=OPEN_FIXTURE_SALT,
-            deposit=0,
-            grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
-            token_program=Pubkey.from_string(TOKEN_PROGRAM),
-            rent_payer=fixture.payer.pubkey(),
-        )
-    )
-    _, fixture.payload = _sign_and_attach(fixture, ix, v0=False)
-    with pytest.raises(PaymentError, match="greater than zero"):
+async def test_verify_open_tx_rejects_missing_payer_signature() -> None:
+    fixture = _fixture()
+    transaction = Transaction.from_bytes(base64.b64decode(fixture.payload.transaction))
+    fixture.payload.transaction = base64.b64encode(
+        bytes(Transaction.populate(transaction.message, [Signature.default()]))
+    ).decode()
+    with pytest.raises(PaymentError, match="payer signature is missing"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
-async def test_verify_open_tx_rejects_unbound_signature() -> None:
-    """Mirrors TestVerifyOpenTxRejectsUnboundSignature."""
-    fixture = build_open_tx_fixture(v0=False)
-    unrelated = _kp(50).sign_message(b"unrelated transaction")
-    fixture.payload.signature = str(unrelated)
-    with pytest.raises(PaymentError, match="transaction signature"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_signature_without_fee_payer_signature() -> None:
-    """Mirrors TestVerifyOpenTxRejectsSignatureWithoutFeePayerSignature."""
-    fixture = build_open_tx_fixture(v0=False)
-    assert fixture.payload.transaction is not None
-    raw = base64.b64decode(fixture.payload.transaction, validate=True)
-    tx = Transaction.from_bytes(raw)
-    stripped = Transaction.populate(tx.message, [Signature.default()])
-    fixture.payload.transaction = base64.b64encode(bytes(stripped)).decode("ascii")
-    with pytest.raises(PaymentError, match="no fee-payer signature"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_accepts_placeholder_signature_without_binding() -> None:
-    """Mirrors TestVerifyOpenTxAcceptsPlaceholderSignatureWithoutBinding."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.signature = "1" * 64
-    result = await verify_open_tx(fixture.expected, fixture.payload, None)
-    assert result.channel_id == str(fixture.channel)
-
-
-async def test_verify_open_tx_rejects_missing_open_instruction() -> None:
-    """Mirrors TestVerifyOpenTxRejectsMissingOpenInstruction."""
-    fixture = build_open_tx_fixture(v0=False)
-    memo = Instruction(
-        Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
-        b"not an open",
-        [],
-    )
-    _, fixture.payload = _sign_and_attach(fixture, memo, v0=False)
-    with pytest.raises(PaymentError, match="no payment-channels open instruction"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
-    """Mirrors TestVerifyOpenTxRejectsChannelPDAMismatch."""
-    fixture = build_open_tx_fixture(v0=False)
-    ix = build_open_instruction(
-        OpenChannelParams(
-            payer=fixture.payer.pubkey(),
-            payee=fixture.payee,
-            mint=fixture.mint,
-            authorized_signer=fixture.authorized,
-            salt=OPEN_FIXTURE_SALT,
-            deposit=OPEN_FIXTURE_DEPOSIT,
-            grace_period=OPEN_FIXTURE_GRACE,
-            open_slot=OPEN_FIXTURE_SLOT,
-            token_program=Pubkey.from_string(TOKEN_PROGRAM),
-            rent_payer=fixture.payer.pubkey(),
-        )
-    )
-    # Swap the channel account (slot 5, after the rentPayer +1 shift) for an
-    # unrelated key while keeping the instruction data intact: the re-derived
-    # PDA must catch it.
-    accounts = list(ix.accounts)
-    tampered = accounts[5]
-    accounts[5] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
-    forged = Instruction(ix.program_id, ix.data, accounts)
-    _, fixture.payload = _sign_and_attach(fixture, forged, v0=False)
-    with pytest.raises(PaymentError, match="PDA"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_payload_channel_id_mismatch() -> None:
-    """Mirrors TestVerifyOpenTxRejectsPayloadChannelIDMismatch."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.channel_id = str(_kp(88).pubkey())
-    with pytest.raises(PaymentError, match="channelId"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_rejects_payload_recent_slot_mismatch() -> None:
-    """A payload recentSlot that disagrees with the transaction's openSlot is
-    rejected (the instruction data is authoritative)."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.recent_slot = OPEN_FIXTURE_SLOT + 1
-    with pytest.raises(PaymentError, match="recentSlot"):
-        await verify_open_tx(fixture.expected, fixture.payload, None)
-
-
-async def test_verify_open_tx_binds_challenge_recent_slot() -> None:
-    """When the caller supplies the challenge-issued recentSlot, the
-    transaction's own openSlot must equal it — even when the payload omits
-    recentSlot (otherwise a transaction built against a different slot would
-    slip through and the decoded slot would overwrite the payload)."""
-    fixture = build_open_tx_fixture(v0=False)
-    fixture.payload.recent_slot = None
-    expected = replace(fixture.expected, recent_slot=OPEN_FIXTURE_SLOT + 1)
-    with pytest.raises(PaymentError, match="challenge recentSlot"):
-        await verify_open_tx(expected, fixture.payload, None)
-
-    accepted = replace(fixture.expected, recent_slot=OPEN_FIXTURE_SLOT)
-    result = await verify_open_tx(accepted, fixture.payload, None)
-    assert result.open_slot == OPEN_FIXTURE_SLOT
-
-
-# -- verify_open_tx: RPC liveness ---------------------------------------------
-
-
-async def test_verify_open_tx_confirms_bound_signature_via_rpc() -> None:
-    """Mirrors TestVerifyOpenTxConfirmsBoundSignatureViaRPC."""
-    fixture = build_open_tx_fixture(v0=False)
-    fake_rpc = _FakeRpc()
-    result = await verify_open_tx(fixture.expected, fixture.payload, fake_rpc)
-    assert result.channel_id == str(fixture.channel)
-
-
-async def test_verify_open_tx_surfaces_rpc_failure() -> None:
-    """Mirrors TestVerifyOpenTxSurfacesRPCFailure."""
-    fixture = build_open_tx_fixture(v0=False)
-    fake_rpc = _FakeRpc()
-    fake_rpc.statuses[fixture.signature] = {"err": "InstructionError"}
-    with pytest.raises(PaymentError, match="failed on-chain"):
-        await verify_open_tx(fixture.expected, fixture.payload, fake_rpc)
-
-
-async def test_verify_open_tx_surfaces_rpc_not_found() -> None:
-    """Mirrors TestVerifyOpenTxSurfacesRPCNotFound."""
-    fixture = build_open_tx_fixture(v0=False)
-    fake_rpc = _FakeRpc()
-    fake_rpc.statuses[fixture.signature] = None
-    with pytest.raises(PaymentError, match="not found"):
-        await verify_open_tx(fixture.expected, fixture.payload, fake_rpc)
-
-
-def test_is_placeholder_signature() -> None:
-    """Mirrors TestIsPlaceholderSignature."""
-    cases = [
-        ("", True),
-        ("1" * 64, True),
-        ("1" * 40, True),
-        ("1" * 39, False),
-        ("1" * 63 + "2", False),
-        ("5VERYrealLookingBase58SignatureValue11111111111111111111111111111", False),
-    ]
-    for signature, want in cases:
-        assert is_placeholder_signature(signature) is want
-
-
-# -- new_open_tx_verifier wiring ----------------------------------------------
-
-
-@dataclass
-class _OpenConfig:
-    """Lightweight stand-in for the not-yet-ported SessionConfig, exposing only
-    the fields new_open_tx_verifier reads."""
-
-    currency: str
-    network: str
-    recipient: str
-    max_cap: int
-    operator: str = ""
-    program_id: Pubkey | None = None
-
-
-def _open_session_config(fixture: OpenTxFixture) -> _OpenConfig:
-    return _OpenConfig(
+async def test_open_verifier_fails_closed_without_rpc() -> None:
+    fixture = _fixture()
+    config = SessionConfig(
+        recipient=fixture.expected.recipient,
+        amount=25,
         currency="USDC",
-        network="localnet",
-        recipient=str(fixture.payee),
-        max_cap=5_000_000,
-        # The fixture pins rentPayer (the operator/fee payer) to its own payer.
-        operator=str(fixture.payer.pubkey()),
+        network="mainnet",
+        channel_program=str(PROGRAM_ID),
+        token_program=TOKEN_PROGRAM,
+        grace_period_seconds=900,
     )
-
-
-async def test_new_open_tx_verifier_accepts_valid_open() -> None:
-    """Mirrors the verifier-seam half of
-    TestNewOpenTxVerifierAcceptsValidOpenThroughProcessOpen (the ProcessOpen
-    integration lands with the base session server port)."""
-    fixture = build_open_tx_fixture(v0=False)
-    verifier = new_open_tx_verifier(_open_session_config(fixture), None)
-    await verifier(fixture.payload)
-
-
-async def test_new_open_tx_verifier_rejects_foreign_recipient() -> None:
-    """Mirrors the verifier-seam half of
-    TestNewOpenTxVerifierRejectsForeignRecipientThroughProcessOpen."""
-    fixture = build_open_tx_fixture(v0=False)
-    config = _open_session_config(fixture)
-    config.recipient = str(fixture.payer.pubkey())  # not the tx payee
     verifier = new_open_tx_verifier(config, None)
-    with pytest.raises(PaymentError, match="payee"):
-        await verifier(fixture.payload)
+    with pytest.raises(PaymentError, match="requires an RPC client"):
+        await verifier(fixture.payload, _context())
 
 
-async def test_new_open_tx_verifier_without_transaction_requires_rpc() -> None:
-    """Mirrors TestNewOpenTxVerifierWithoutTransactionRequiresRPC."""
-    fixture = build_open_tx_fixture(v0=False)
-    verifier = new_open_tx_verifier(_open_session_config(fixture), None)
-    fixture.payload.transaction = None
-    with pytest.raises(PaymentError, match="RPC client"):
-        await verifier(fixture.payload)
+async def test_top_up_verifier_fails_closed_without_rpc() -> None:
+    config = SessionConfig(currency="USDC", network="mainnet", channel_program=str(PROGRAM_ID))
+    verifier = new_top_up_tx_verifier(config, MemoryChannelStore(), None)
+    with pytest.raises(PaymentError, match="requires an RPC client"):
+        await verifier(TopUpPayload(str(Keypair().pubkey()), "1", "transaction"))
 
 
-async def test_new_open_tx_verifier_without_transaction_confirms_signature() -> None:
-    """Mirrors TestNewOpenTxVerifierWithoutTransactionConfirmsSignature."""
-    fixture = build_open_tx_fixture(v0=False)
-    verifier = new_open_tx_verifier(_open_session_config(fixture), _FakeRpc())
-    fixture.payload.transaction = None
-    await verifier(fixture.payload)
+class _StatusRpc:
+    def __init__(self, statuses: list[dict | None]) -> None:
+        self.statuses = statuses
+
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        del signatures
+        return [self.statuses.pop(0)]
+
+    async def get_latest_blockhash(self, commitment: str = "confirmed") -> object:
+        del commitment
+        raise AssertionError("not used by confirmation tests")
+
+    async def send_raw_transaction(self, raw_tx: bytes) -> object:
+        del raw_tx
+        raise AssertionError("not used by confirmation tests")
 
 
-# -- new_top_up_tx_verifier ---------------------------------------------------
+async def test_confirmation_polls_until_confirmed() -> None:
+    signature = str(Keypair().sign_message(b"transaction"))
+    rpc = _StatusRpc([None, {"err": None, "confirmationStatus": "confirmed"}])
+    await confirm_transaction_signature(rpc, signature, "open", timeout_seconds=1, poll_interval_seconds=0)
 
 
-def test_new_top_up_tx_verifier_none_rpc_disables_the_seam() -> None:
-    """Mirrors TestNewTopUpTxVerifierNilRPCDisablesTheSeam."""
-    assert new_top_up_tx_verifier(None) is None
+async def test_confirmation_surfaces_chain_failure() -> None:
+    signature = str(Keypair().sign_message(b"transaction"))
+    rpc = _StatusRpc([{"err": {"InstructionError": [0, "Custom"]}, "confirmationStatus": "confirmed"}])
+    with pytest.raises(PaymentError, match="failed on-chain"):
+        await confirm_transaction_signature(rpc, signature, "open", timeout_seconds=1, poll_interval_seconds=0)
 
 
-async def test_new_top_up_tx_verifier_confirms_signature() -> None:
-    """Mirrors TestNewTopUpTxVerifierConfirmsSignature."""
-    signature = _kp(20).sign_message(b"top-up")
-    verifier = new_top_up_tx_verifier(_FakeRpc())
-    assert verifier is not None
-    payload = TopUpPayload(channel_id="chan", new_deposit="2000000", signature=str(signature))
-    await verifier(payload)
+def test_placeholder_signature_detection() -> None:
+    assert is_placeholder_signature("")
+    assert is_placeholder_signature("1" * 40)
+    assert not is_placeholder_signature("1" * 39)
+    assert not is_placeholder_signature("1" * 39 + "2")
 
 
-async def test_new_top_up_tx_verifier_surfaces_failure_and_not_found() -> None:
-    """Mirrors TestNewTopUpTxVerifierSurfacesFailureAndNotFound."""
-    signature = str(_kp(21).sign_message(b"top-up"))
-    fake_rpc = _FakeRpc()
-    fake_rpc.statuses[signature] = {"err": "InstructionError"}
-    verifier = new_top_up_tx_verifier(fake_rpc)
-    assert verifier is not None
-    payload = TopUpPayload(channel_id="chan", new_deposit="2000000", signature=signature)
-    with pytest.raises(PaymentError, match="top-up"):
-        await verifier(payload)
+async def test_confirmation_rejects_invalid_signature() -> None:
+    with pytest.raises(PaymentError, match="invalid open tx signature"):
+        await confirm_transaction_signature(_StatusRpc([]), "not-base58", "open")
 
-    fake_rpc.statuses[signature] = None
+
+async def test_confirmation_reports_not_found_and_not_confirmed() -> None:
+    signature = str(Keypair().sign_message(b"transaction"))
     with pytest.raises(PaymentError, match="not found"):
-        await verifier(payload)
+        await confirm_transaction_signature(_StatusRpc([None]), signature, "open", timeout_seconds=0)
+    with pytest.raises(PaymentError, match="not confirmed"):
+        await confirm_transaction_signature(
+            _StatusRpc([{"err": None, "confirmationStatus": "processed"}]),
+            signature,
+            "open",
+            timeout_seconds=0,
+        )
 
-    with pytest.raises(PaymentError, match="invalid top-up tx signature"):
-        await verifier(TopUpPayload(channel_id="", new_deposit="", signature="not-base58!"))
+
+class _FailingStatusRpc(_StatusRpc):
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        del signatures
+        raise RuntimeError("rpc unavailable")
+
+
+async def test_confirmation_wraps_rpc_errors() -> None:
+    signature = str(Keypair().sign_message(b"transaction"))
+    with pytest.raises(PaymentError, match="RPC error verifying open tx"):
+        await confirm_transaction_signature(_FailingStatusRpc([]), signature, "open", timeout_seconds=0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("authorized_signer", str(Keypair().pubkey()), "authorizedSigner"),
+        ("mint", str(Keypair().pubkey()), "expected mint"),
+        ("rent_payer", str(Keypair().pubkey()), "rentPayer"),
+        ("token_program", str(Keypair().pubkey()), "tokenProgram"),
+        ("grace_period_seconds", 30, "challenge"),
+        ("minimum_deposit", 2_000, "minimumDeposit"),
+    ],
+)
+async def test_verify_open_tx_rejects_additional_challenge_mismatches(field: str, value: object, message: str) -> None:
+    fixture = _fixture()
+    setattr(fixture.expected, field, value)
+    with pytest.raises(PaymentError, match=message):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_bad_encoding_and_fee_payer() -> None:
+    fixture = _fixture()
+    fixture.payload.transaction = "not base64"
+    with pytest.raises(PaymentError, match="decode open transaction"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+
+    fixture = _fixture()
+    fixture.expected.fee_payer = str(Keypair().pubkey())
+    with pytest.raises(PaymentError, match="fee payer"):
+        await verify_open_tx(fixture.expected, fixture.payload, None)

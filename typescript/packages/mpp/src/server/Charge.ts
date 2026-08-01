@@ -121,7 +121,10 @@ export function charge(parameters: charge.Parameters) {
         );
     }
 
-    const method = Method.toServer(Methods.charge, {
+    const method = Method.toServer<
+        typeof Methods.charge,
+        { readonly currency: string; readonly methodDetails: Record<string, never>; readonly recipient: string }
+    >(Methods.charge, {
         defaults: {
             currency: currency ?? 'sol',
             methodDetails: {},

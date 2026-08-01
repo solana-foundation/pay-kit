@@ -15,7 +15,7 @@
 
 import { getBase58Encoder, getI64Encoder, getU64Encoder } from '@solana/kit';
 
-import type { AmountLike, VoucherData, VoucherDataInput } from './session-types.js';
+import type { AmountLike, SignedVoucher, VoucherData, VoucherDataInput } from './session-types.js';
 
 const U64_MAX = (1n << 64n) - 1n;
 const I64_MIN = -(1n << 63n);
@@ -28,34 +28,26 @@ const I64_MAX = (1n << 63n) - 1n;
 export const VOUCHER_MAGIC: Readonly<Uint8Array> = new Uint8Array([0x56, 0x01]);
 
 /**
- * Signed voucher as it may arrive on the wire. `cumulative` is the legacy
- * alias for `cumulativeAmount` — the Rust mirror deserializes both (see
- * `VoucherData` in `rust/crates/mpp/src/protocol/intents/session.rs`).
+ * Signed voucher as it arrives on the wire.
  */
 export interface WireSignedVoucher {
     readonly data: {
         readonly channelId: string;
-        readonly cumulative?: string | undefined;
-        readonly cumulativeAmount?: string | undefined;
-        readonly expiresAt: number;
-        readonly nonce?: number | undefined;
+        readonly cumulativeAmount: string;
+        readonly expiresAt?: number | undefined;
     };
     readonly signature: string;
+    readonly signatureType: 'ed25519';
+    readonly signer: string;
 }
 
 /**
- * Normalize an inbound signed voucher to the canonical shape: maps the
- * legacy `cumulative` alias onto `cumulativeAmount` and validates that
- * `expiresAt` survived JSON parsing intact. Outbound serialization always
- * uses `cumulativeAmount`.
+ * Normalize an inbound signed voucher and validate that an optional
+ * `expiresAt` survived JSON parsing intact.
  */
-export function normalizeSignedVoucher(signed: WireSignedVoucher): { data: VoucherData; signature: string } {
+export function normalizeSignedVoucher(signed: WireSignedVoucher): SignedVoucher {
     const { data } = signed;
-    const cumulativeAmount = data.cumulativeAmount ?? data.cumulative;
-    if (cumulativeAmount === undefined) {
-        throw new Error('invalid-voucher: cumulativeAmount is required (legacy wire alias: cumulative)');
-    }
-    if (!Number.isSafeInteger(data.expiresAt)) {
+    if (data.expiresAt !== undefined && !Number.isSafeInteger(data.expiresAt)) {
         throw new Error(
             `invalid-voucher: expiresAt ${data.expiresAt} is not a safe JavaScript integer — ` +
                 'the wire type is an i64, and JSON numbers above 2^53 - 1 lose precision, so such values cannot be accepted',
@@ -64,11 +56,12 @@ export function normalizeSignedVoucher(signed: WireSignedVoucher): { data: Vouch
     return {
         data: {
             channelId: data.channelId,
-            cumulativeAmount,
-            expiresAt: data.expiresAt,
-            ...(data.nonce !== undefined ? { nonce: data.nonce } : {}),
+            cumulativeAmount: data.cumulativeAmount,
+            ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
         },
         signature: signed.signature,
+        signatureType: signed.signatureType,
+        signer: signed.signer,
     };
 }
 
@@ -77,13 +70,12 @@ export function normalizeSignedVoucher(signed: WireSignedVoucher): { data: Vouch
  * key. Accepts the strict `VoucherData` shape used in the protocol types.
  */
 export function encodeVoucherMessage(voucher: VoucherData): Uint8Array {
-    return encodeVoucherMessageLoose(voucher);
+    return encodeVoucherMessageLoose({ ...voucher, expiresAt: voucher.expiresAt ?? 0 });
 }
 
 /**
  * Variant of {@link encodeVoucherMessage} that accepts the looser input
- * shape used by client helpers (allows `cumulative` alias and string/number
- * amounts).
+ * shape used by client helpers.
  */
 export function encodeVoucherMessageLoose(data: VoucherDataInput): Uint8Array {
     const channelIdBytes = getBase58Encoder().encode(data.channelId);
@@ -91,7 +83,7 @@ export function encodeVoucherMessageLoose(data: VoucherDataInput): Uint8Array {
         throw new Error(`channelId must decode to 32 bytes; got ${channelIdBytes.byteLength}`);
     }
 
-    const cumulative = parseAmount(requiredCumulative(data), 'cumulativeAmount');
+    const cumulative = parseAmount(data.cumulativeAmount, 'cumulativeAmount');
     const expiresAt = parseI64(data.expiresAt, 'expiresAt');
 
     const bytes = new Uint8Array(50);
@@ -136,12 +128,6 @@ function toArrayBufferBacked(bytes: { [index: number]: number; byteLength: numbe
     const copy = new Uint8Array(new ArrayBuffer(bytes.byteLength));
     for (let i = 0; i < bytes.byteLength; i++) copy[i] = bytes[i] ?? 0;
     return copy;
-}
-
-function requiredCumulative(data: VoucherDataInput): AmountLike {
-    if (data.cumulativeAmount !== undefined) return data.cumulativeAmount;
-    if (data.cumulative !== undefined) return data.cumulative;
-    throw new Error('cumulativeAmount required');
 }
 
 function parseAmount(value: AmountLike, name: string): bigint {

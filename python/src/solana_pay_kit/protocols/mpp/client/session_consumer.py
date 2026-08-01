@@ -104,7 +104,7 @@ class SessionConsumer:
             # authoritative settled position. Clamp to the just-prepared voucher
             # so an untrusted server cannot push the watermark past what we
             # signed. Reconcile (never regress) instead of recording the voucher.
-            prepared = int(payload.voucher.data.cumulative)
+            prepared = int(payload.voucher.data.cumulative_amount)
             self._session.reconcile_settled(min(receipt.cumulative_base_units(), prepared))
         else:
             self._session.record_voucher(payload.voucher)

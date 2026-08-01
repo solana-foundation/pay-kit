@@ -214,7 +214,6 @@ export function subscription(parameters: subscription.Parameters) {
                 // Subscription-specific receipt extensions live alongside the
                 // Receipt's standard fields. The mppx framework treats unknown
                 // fields as opaque metadata.
-                // @ts-expect-error subscription extensions are not in the base Receipt type
                 expiresAt: challenge.subscriptionExpires,
 
                 periodEndTs: new Date(periodEndTs * 1000).toISOString(),

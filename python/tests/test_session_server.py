@@ -1,815 +1,551 @@
-"""Off-chain session handler coverage.
-
-Ports ``go/protocols/mpp/server/session_server_test.go``: open, voucher
-verification, top-up, delivery begin/commit, close, and challenge-request
-building. Each test mirrors a single Go ``Test...`` behavior through the public
-:class:`SessionServer` interface.
-"""
+"""Core session server tests for final funding and authorization semantics."""
 
 from __future__ import annotations
 
+import asyncio
 import time
-from dataclasses import replace
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
     CommitPayload,
     OpenPayload,
+    SessionAuthentication,
     SignedVoucher,
     TopUpPayload,
+    UsePayload,
     VoucherData,
     VoucherPayload,
     sign_session_authentication,
 )
-from solana_pay_kit.protocols.mpp.server.session import (
-    DeliveryRequest,
-    SessionConfig,
-    SessionServer,
-    Split,
-)
+from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest, SessionConfig, SessionServer
 from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
-SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+PAYER = Keypair.from_seed(bytes([1] * 32))
+PAYEE = str(Keypair.from_seed(bytes([2] * 32)).pubkey())
+CLIENT_SIGNER = Keypair.from_seed(bytes([3] * 32))
+OPERATOR = Keypair.from_seed(bytes([4] * 32))
+CHANNEL = str(Keypair.from_seed(bytes([5] * 32)).pubkey())
+
+# The recentBlockhash/recentSlot every test challenge advertises; matches the
+# _open fixture's open_slot so opens bind to the challenge (mirrors the Rust
+# CHALLENGED_SLOT / test_blockhash pair).
+CHALLENGED_BLOCKHASH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
+CHALLENGED_SLOT = 42
 
 
-def session_test_config() -> SessionConfig:
-    return SessionConfig(
-        operator=SESSION_TEST_RECIPIENT,
-        recipient=SESSION_TEST_RECIPIENT,
-        max_cap=10_000_000,
-        currency="USDC",
-        decimals=6,
-        network="localnet",
-        modes=["push"],
+def _core(config: SessionConfig) -> SessionServer:
+    """A SessionServer whose challenges serve the pinned open-transaction
+    context from a blockhash cache (no RPC round-trip)."""
+    return SessionServer(config, MemoryChannelStore()).with_blockhash_cache(
+        lambda: (CHALLENGED_BLOCKHASH, CHALLENGED_SLOT)
     )
 
 
-def _opening_challenge() -> PaymentChallenge:
-    return PaymentChallenge(
-        id="challenge-1",
+async def _challenge(config: SessionConfig, *, expires: str = "2099-01-01T00:00:00Z") -> PaymentChallenge:
+    return PaymentChallenge.with_secret_key(
+        secret_key="secret",
         realm="api.test",
         method="solana",
         intent="session",
-        request="",
+        request=PaymentChallenge.encode_request((await _core(config).build_challenge_request()).to_dict()),
+        expires=expires,
     )
 
 
-class _TestSessionServer(SessionServer):
-    async def process_open(  # type: ignore[override]
-        self,
-        payload: OpenPayload,
-        challenge: PaymentChallenge | None = None,
-    ):
-        return await super().process_open(payload, challenge or _opening_challenge())
-
-
-def new_session_test_server(config: SessionConfig) -> _TestSessionServer:
-    return _TestSessionServer(config, MemoryChannelStore())
-
-
-def session_open_payload(channel_id: str, deposit: int, signer: str) -> OpenPayload:
-    return OpenPayload.push(channel_id, str(deposit), signer, "dummy_tx_sig")
-
-
-class _TestVoucherSigner:
-    """In-memory Ed25519 keypair for voucher tests. Mirrors Go testVoucherSigner."""
-
-    def __init__(self, seed: int) -> None:
-        self._kp = Keypair.from_seed(bytes([seed] * 32))
-
-    def address(self) -> str:
-        return str(self._kp.pubkey())
-
-    def sign_voucher(self, channel_id: str, cumulative: int, expires_at: int) -> SignedVoucher:
-        data = VoucherData(channel_id=channel_id, cumulative=str(cumulative), expires_at=expires_at)
-        signature = self._kp.sign_message(data.message_bytes())
-        return SignedVoucher(data=data, signature=str(signature))
-
-
-def _far_future() -> int:
-    return int(time.time()) + 3600
-
-
-def _channel_key() -> str:
-    return str(Keypair().pubkey())
-
-
-async def _open_test_channel(server: _TestSessionServer, deposit: int) -> tuple[_TestVoucherSigner, str]:
-    signer = _TestVoucherSigner(seed=7)
-    channel_id = _channel_key()
-    await server.process_open(session_open_payload(channel_id, deposit, signer.address()))
-    return signer, channel_id
-
-
-@pytest.mark.asyncio
-async def test_operator_open_binds_authentication_to_opening_challenge() -> None:
-    operator = Keypair()
-    payer = Keypair()
-    channel_id = _channel_key()
-    config = replace(
-        session_test_config(),
-        operator=str(operator.pubkey()),
-        voucher_signer="operator",
+def _config(*, operator: bool = False) -> SessionConfig:
+    return SessionConfig(
+        operator=str(OPERATOR.pubkey()) if operator else "",
+        recipient=PAYEE,
+        amount=25,
+        currency="USDC",
+        decimals=6,
+        network="localnet",
+        channel_program=str(PROGRAM_ID),
+        suggested_deposit=1_000,
+        minimum_deposit=100,
+        grace_period_seconds=900,
+        voucher_signer="operator" if operator else "client",
+        operator_signer=OPERATOR if operator else None,
+        idle_timeout_options_seconds=[30, 300],
+        idle_timeout_seconds=300,
     )
-    payload = session_open_payload(channel_id, 1_000, str(operator.pubkey()))
-    payload.payer = str(payer.pubkey())
-    payload.authentication = sign_session_authentication("different-challenge", channel_id, payer)
-
-    with pytest.raises(ValueError, match="challengeId does not match"):
-        await new_session_test_server(config).process_open(payload, _opening_challenge())
 
 
-@pytest.mark.asyncio
-async def test_operator_open_rejects_expired_opening_challenge() -> None:
-    operator = Keypair()
-    payer = Keypair()
-    channel_id = _channel_key()
-    config = replace(
-        session_test_config(),
-        operator=str(operator.pubkey()),
-        voucher_signer="operator",
+def _authentication(challenge_id: str) -> SessionAuthentication:
+    return sign_session_authentication(challenge_id, CHANNEL, PAYER)
+
+
+def _open(config: SessionConfig, challenge: PaymentChallenge) -> OpenPayload:
+    return OpenPayload(
+        channel_id=CHANNEL,
+        payer=str(PAYER.pubkey()),
+        payee=PAYEE,
+        mint=str(Keypair.from_seed(bytes([6] * 32)).pubkey()),
+        authorized_signer=str(OPERATOR.pubkey())
+        if config.voucher_signer == "operator"
+        else str(CLIENT_SIGNER.pubkey()),
+        salt=7,
+        deposit_amount="1000",
+        grace_period_seconds=900,
+        idle_timeout_seconds=30,
+        open_slot=42,
+        transaction="transaction",
+        authentication=_authentication(challenge.id) if config.voucher_signer == "operator" else None,
     )
-    payload = session_open_payload(channel_id, 1_000, str(operator.pubkey()))
-    payload.payer = str(payer.pubkey())
-    payload.authentication = sign_session_authentication("challenge-1", channel_id, payer)
-    challenge = _opening_challenge()
-    challenge.expires = "2000-01-01T00:00:00Z"
-
-    with pytest.raises(ValueError, match="challenge expired"):
-        await new_session_test_server(config).process_open(payload, challenge)
 
 
-async def _submit_voucher(server: SessionServer, signer: _TestVoucherSigner, channel_id: str, cumulative: int) -> int:
-    voucher = signer.sign_voucher(channel_id, cumulative, _far_future())
-    return await server.verify_voucher(VoucherPayload(voucher=voucher))
-
-
-# -- BuildChallengeRequest --
-
-
-def test_build_challenge_request_canonical_shape() -> None:
-    """Mirrors TestBuildChallengeRequestCanonicalShape."""
-    config = session_test_config()
-    config.min_voucher_delta = 0
-    server = new_session_test_server(config)
-
-    request = server.build_challenge_request(1_000_000)
-    assert request.cap == "1000000"
-    assert request.currency == "USDC"
-    assert request.operator == SESSION_TEST_RECIPIENT
-    assert request.recipient == SESSION_TEST_RECIPIENT
-    assert request.decimals == 6
-    assert request.network == "localnet"
-
-    wire = request.to_dict()
-    for absent in ("minVoucherDelta", "modes", "pullVoucherStrategy", "recentBlockhash"):
-        assert absent not in wire
-
-
-def test_build_challenge_request_clamps_cap_to_max() -> None:
-    """Mirrors TestBuildChallengeRequestClampsCapToMax."""
-    server = new_session_test_server(session_test_config())
-    request = server.build_challenge_request(99_000_000)
-    assert request.cap == "10000000"
-
-
-def test_build_challenge_request_includes_min_voucher_delta_when_positive() -> None:
-    """Mirrors TestBuildChallengeRequestIncludesMinVoucherDeltaWhenPositive."""
-    config = session_test_config()
-    config.min_voucher_delta = 250
-    server = new_session_test_server(config)
-    request = server.build_challenge_request(1_000)
-    assert request.min_voucher_delta == "250"
-
-
-def test_build_challenge_request_advertises_pull_mode_and_strategy() -> None:
-    """Mirrors TestBuildChallengeRequestAdvertisesPullModeAndStrategy."""
-    config = session_test_config()
-    config.modes = ["push", "pull"]
-    config.pull_voucher_strategy = "clientVoucher"
-    config.splits = [Split(recipient=SESSION_TEST_RECIPIENT, bps=10)]
-    server = new_session_test_server(config)
-
-    request = server.build_challenge_request(1_000)
-    assert len(request.modes) == 2
-    assert request.pull_voucher_strategy == "clientVoucher"
-    assert len(request.splits) == 1
-    assert request.splits[0].recipient == SESSION_TEST_RECIPIENT
-    assert request.splits[0].bps == 10
-
-
-# -- process_open --
-
-
-async def test_process_open_stores_state() -> None:
-    """Mirrors TestProcessOpenStoresState."""
-    server = new_session_test_server(session_test_config())
-    payload = session_open_payload("chan1", 1_000_000, "signer1")
-    payload.recent_slot = 777
-    state = await server.process_open(payload)
-    assert state.deposit == 1_000_000
-    assert state.cumulative == 0
-    assert not state.sealed
-    # The payload recentSlot is persisted as the channel openSlot (a PDA seed).
-    assert state.open_slot == 777
-    assert state.authorized_signer == "signer1"
-
-
-async def test_process_open_zero_deposit_rejected() -> None:
-    """Mirrors TestProcessOpenZeroDepositRejected."""
-    server = new_session_test_server(session_test_config())
-    with pytest.raises(ValueError):
-        await server.process_open(session_open_payload("chan1", 0, "signer1"))
-
-
-async def test_process_open_exceeds_cap_rejected() -> None:
-    """Mirrors TestProcessOpenExceedsCapRejected."""
-    server = new_session_test_server(session_test_config())
-    with pytest.raises(ValueError):
-        await server.process_open(session_open_payload("chan1", 20_000_000, "signer1"))
-
-
-async def test_process_open_rejects_unadvertised_pull_mode() -> None:
-    """Mirrors TestProcessOpenRejectsUnadvertisedPullMode."""
-    server = new_session_test_server(session_test_config())
-    payload = OpenPayload.payment_channel_with_mode(
-        "pull", "chan1", "1000000", "payer", SESSION_TEST_RECIPIENT, "mint", 1, 900, 777, "signer1", "pending"
+def _voucher(cumulative: int) -> SignedVoucher:
+    data = VoucherData(CHANNEL, str(cumulative))
+    return SignedVoucher(
+        data=data,
+        signer=str(CLIENT_SIGNER.pubkey()),
+        signature=str(CLIENT_SIGNER.sign_message(data.message_bytes())),
     )
-    with pytest.raises(ValueError, match="not supported"):
-        await server.process_open(payload)
 
 
-async def test_process_open_accepts_advertised_pull_client_voucher_channel() -> None:
-    """Mirrors TestProcessOpenAcceptsAdvertisedPullClientVoucherChannel."""
-    config = session_test_config()
-    config.modes = ["pull"]
-    config.pull_voucher_strategy = "clientVoucher"
-    server = new_session_test_server(config)
-    payload = OpenPayload.payment_channel_with_mode(
-        "pull", "chan1", "1000000", "payer", SESSION_TEST_RECIPIENT, "mint", 1, 900, 777, "signer1", "pending"
+async def _server(*, operator: bool = False) -> tuple[SessionServer, SessionConfig, PaymentChallenge]:
+    config = _config(operator=operator)
+
+    async def verify_open(_: OpenPayload, __: object) -> None:
+        return None
+
+    async def verify_top_up(_: TopUpPayload) -> None:
+        return None
+
+    config.verify_open_tx = verify_open
+    config.verify_top_up_tx = verify_top_up
+    server = SessionServer(config, MemoryChannelStore())
+    challenge = await _challenge(config)
+    await server.process_open(_open(config, challenge), challenge)
+    return server, config, challenge
+
+
+async def test_build_challenge_request_uses_exact_nested_schema() -> None:
+    request = (await _core(_config()).build_challenge_request()).to_dict()
+    assert request["amount"] == "25"
+    assert request["suggestedDeposit"] == "1000"
+    assert request["methodDetails"]["channelProgram"] == str(PROGRAM_ID)
+    assert request["methodDetails"]["idleTimeoutOptionsSeconds"] == [30, 300]
+    # Both open-transaction context fields come from the one cached
+    # getLatestBlockhash entry — never from a per-challenge RPC call — and
+    # recentSlot is a decimal string on the wire.
+    assert request["methodDetails"]["recentBlockhash"] == CHALLENGED_BLOCKHASH
+    assert request["methodDetails"]["recentSlot"] == str(CHALLENGED_SLOT)
+    assert "channelId" not in request["methodDetails"]
+    assert request["minimumDeposit"] == "100"
+    assert "cap" not in request and "programId" not in request
+
+
+async def test_challenge_fails_without_open_transaction_context() -> None:
+    # A new-channel challenge REQUIRES recentBlockhash/recentSlot, so a server
+    # with neither a blockhash cache nor an RPC client must fail the challenge
+    # (retryable) instead of degrading to a hint-less 402 the client cannot
+    # open against.
+    server = SessionServer(_config(), MemoryChannelStore())
+    with pytest.raises(ValueError, match="recentBlockhash"):
+        await server.build_challenge_request()
+
+
+async def test_challenge_falls_back_to_one_rpc_fetch() -> None:
+    class _Rpc:
+        calls = 0
+
+        async def get_latest_blockhash(self, commitment: str = "confirmed") -> object:
+            type(self).calls += 1
+
+            class _Ctx:
+                slot = CHALLENGED_SLOT
+
+            class _Value:
+                blockhash = CHALLENGED_BLOCKHASH
+
+            class _Resp:
+                value = _Value()
+                context = _Ctx()
+
+            return _Resp()
+
+    server = SessionServer(_config(), MemoryChannelStore(), rpc=_Rpc())
+    request = await server.build_challenge_request()
+    assert _Rpc.calls == 1
+    assert request.method_details.recent_blockhash == CHALLENGED_BLOCKHASH
+    assert request.method_details.recent_slot == CHALLENGED_SLOT
+
+
+async def test_challenge_surfaces_rpc_fetch_failure() -> None:
+    class _Rpc:
+        async def get_latest_blockhash(self, commitment: str = "confirmed") -> object:
+            raise RuntimeError("rpc down")
+
+    server = SessionServer(_config(), MemoryChannelStore(), rpc=_Rpc())
+    # Fetch failure fails the challenge with a clear error; never a degraded
+    # challenge without the fields.
+    with pytest.raises(ValueError, match="failed to fetch recentBlockhash/recentSlot.*rpc down"):
+        await server.build_challenge_request()
+
+
+async def test_open_fails_closed_without_rpc_verifier() -> None:
+    config = _config()
+    challenge = await _challenge(config)
+    server = SessionServer(config, MemoryChannelStore())
+    with pytest.raises(ValueError, match="requires a configured RPC verifier"):
+        await server.process_open(_open(config, challenge), challenge)
+    assert await server.store().get_channel(CHANNEL) is None
+
+
+async def test_open_binds_open_slot_to_challenged_recent_slot() -> None:
+    config = _config()
+
+    async def verify(_: OpenPayload, __: object) -> None:
+        return None
+
+    config.verify_open_tx = verify
+    challenge = await _challenge(config)
+    server = SessionServer(config, MemoryChannelStore())
+
+    # An openSlot ahead of the challenged recentSlot was not built for this
+    # challenge.
+    ahead = _open(config, challenge)
+    ahead.open_slot = CHALLENGED_SLOT + 1
+    with pytest.raises(ValueError, match="ahead of the challenged recentSlot"):
+        await server.process_open(ahead, challenge)
+
+    # An openSlot staler than the 1500-slot freshness window is rejected.
+    from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW
+
+    stale_challenge_config = _config()
+    stale_challenge_config.verify_open_tx = verify
+    stale = PaymentChallenge.with_secret_key(
+        secret_key="secret",
+        realm="api.test",
+        method="solana",
+        intent="session",
+        request=PaymentChallenge.encode_request(
+            (
+                await SessionServer(stale_challenge_config, MemoryChannelStore())
+                .with_blockhash_cache(lambda: (CHALLENGED_BLOCKHASH, CHALLENGED_SLOT + OPEN_SLOT_WINDOW + 1))
+                .build_challenge_request()
+            ).to_dict()
+        ),
+        expires="2099-01-01T00:00:00Z",
     )
-    state = await server.process_open(payload)
-    assert state.channel_id == "chan1"
-    assert state.deposit == 1_000_000
-    assert state.operator == "payer"
+    payload = _open(stale_challenge_config, stale)
+    with pytest.raises(ValueError, match="outside the 1500-slot freshness window"):
+        await SessionServer(stale_challenge_config, MemoryChannelStore()).process_open(payload, stale)
+
+    # An earlier openSlot within the window is accepted.
+    earlier = _open(config, challenge)
+    earlier.open_slot = CHALLENGED_SLOT - 1
+    state = await server.process_open(earlier, challenge)
+    assert state.open_slot == CHALLENGED_SLOT - 1
 
 
-async def test_process_open_prefers_channel_id_over_token_account() -> None:
-    """Mirrors TestProcessOpenPrefersChannelIDOverTokenAccount."""
-    config = session_test_config()
-    config.modes = ["pull"]
-    config.pull_voucher_strategy = "clientVoucher"
-    server = new_session_test_server(config)
+async def test_open_rejects_challenge_without_open_transaction_context() -> None:
+    config = _config()
 
-    payload = OpenPayload.pull("token-acct", "1000", "owner", "signer1", "sig")
-    payload.channel_id = "delegation-pda"
+    async def verify(_: OpenPayload, __: object) -> None:
+        return None
 
-    state = await server.process_open(payload)
-    assert state.channel_id == "delegation-pda"
-    assert state.operator == "owner"
-
-
-async def test_process_open_replay_preserves_watermark() -> None:
-    """Mirrors TestProcessOpenReplayPreservesWatermark."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await _submit_voucher(server, signer, channel_id, 250)
-
-    replayed = await server.process_open(session_open_payload(channel_id, 1_000_000, signer.address()))
-    assert replayed.cumulative == 250
-    assert replayed.highest_voucher_signature is not None
+    config.verify_open_tx = verify
+    request = (await _core(config).build_challenge_request()).to_dict()
+    del request["methodDetails"]["recentBlockhash"]
+    del request["methodDetails"]["recentSlot"]
+    challenge = PaymentChallenge.with_secret_key(
+        secret_key="secret",
+        realm="api.test",
+        method="solana",
+        intent="session",
+        request=PaymentChallenge.encode_request(request),
+        expires="2099-01-01T00:00:00Z",
+    )
+    with pytest.raises(ValueError, match="missing recentBlockhash/recentSlot"):
+        await SessionServer(config, MemoryChannelStore()).process_open(_open(config, challenge), challenge)
 
 
-async def test_process_open_replay_with_different_signer_rejected() -> None:
-    """Mirrors TestProcessOpenReplayWithDifferentSignerRejected."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
+async def test_open_verifier_receives_challenged_context() -> None:
+    config = _config()
+    seen: list[object] = []
 
-    other = _TestVoucherSigner(seed=9)
-    with pytest.raises(ValueError, match="different authorized signer"):
-        await server.process_open(session_open_payload(channel_id, 1_000_000, other.address()))
+    async def verify(_: OpenPayload, context: object) -> None:
+        seen.append(context)
 
-
-async def test_process_open_replay_on_sealed_channel_rejected() -> None:
-    """Mirrors TestProcessOpenReplayOnFinalizedChannelRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await server.mark_sealed(channel_id)
-    with pytest.raises(ValueError, match="sealed"):
-        await server.process_open(session_open_payload(channel_id, 1_000_000, signer.address()))
+    config.verify_open_tx = verify
+    challenge = await _challenge(config)
+    await SessionServer(config, MemoryChannelStore()).process_open(_open(config, challenge), challenge)
+    assert len(seen) == 1
+    context = seen[0]
+    assert context.challenge_id == challenge.id  # type: ignore[attr-defined]
+    assert context.recent_blockhash == CHALLENGED_BLOCKHASH  # type: ignore[attr-defined]
+    assert context.recent_slot == CHALLENGED_SLOT  # type: ignore[attr-defined]
 
 
-async def test_process_open_invokes_verify_open_tx_seam_for_push() -> None:
-    """Mirrors TestProcessOpenInvokesVerifyOpenTxSeamForPush."""
-    calls: list[OpenPayload] = []
-
-    async def verifier(payload: OpenPayload) -> None:
-        calls.append(payload)
-
-    config = session_test_config()
-    config.verify_open_tx = verifier
-    server = new_session_test_server(config)
-    await server.process_open(session_open_payload("chan1", 1_000, "signer1"))
-    assert len(calls) == 1
-    assert calls[0].signature == "dummy_tx_sig"
-
-
-async def test_process_open_verify_open_tx_error_rejects_without_persisting() -> None:
-    """Mirrors TestProcessOpenVerifyOpenTxErrorRejectsWithoutPersisting."""
-
-    async def verifier(_: OpenPayload) -> None:
-        raise ValueError("tx not found")
-
-    config = session_test_config()
-    config.verify_open_tx = verifier
-    server = new_session_test_server(config)
-
-    with pytest.raises(ValueError, match="tx not found"):
-        await server.process_open(session_open_payload("chan1", 1_000, "signer1"))
-    state = await server.store().get_channel("chan1")
-    assert state is None
-
-
-async def test_process_open_skips_verify_open_tx_for_pull() -> None:
-    """Mirrors TestProcessOpenSkipsVerifyOpenTxForPull."""
-
-    async def verifier(_: OpenPayload) -> None:
-        raise AssertionError("verify_open_tx must not run for pull opens")
-
-    config = session_test_config()
-    config.modes = ["pull"]
-    config.pull_voucher_strategy = "clientVoucher"
-    config.verify_open_tx = verifier
-    server = new_session_test_server(config)
-
-    payload = OpenPayload.pull("token-acct", "1000", "owner", "signer1", "sig")
-    await server.process_open(payload)
-
-
-# -- verify_voucher --
-
-
-async def test_verify_voucher_advances_watermark() -> None:
-    """Mirrors TestVerifyVoucherAdvancesWatermark."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    assert await _submit_voucher(server, signer, channel_id, 100) == 100
-    assert await _submit_voucher(server, signer, channel_id, 300) == 300
-
-    state = await server.store().get_channel(channel_id)
+async def test_open_binds_challenge_payer_and_policy() -> None:
+    server, config, challenge = await _server(operator=True)
+    state = await server.store().get_channel(CHANNEL)
     assert state is not None
-    assert state.cumulative == 300
-    assert state.highest_voucher_signature is not None
-    assert state.highest_voucher_expires_at is not None
+    assert state.payer == str(PAYER.pubkey())
+    assert state.opening_challenge_id == challenge.id
+    assert state.authentication == _authentication(challenge.id).to_dict()
+    assert state.voucher_signer == "operator"
+    assert state.idle_timeout_seconds == 30
+
+    wrong = _open(config, challenge)
+    wrong.authentication = sign_session_authentication("different", CHANNEL, PAYER)
+    with pytest.raises(ValueError, match="opening challenge"):
+        await server.process_open(wrong, challenge)
 
 
-async def test_verify_voucher_rejects_expiry_inside_settlement_window() -> None:
-    """The configured ``settlement_window`` threads into voucher acceptance: a
-    non-zero voucher expiry that does not outlast ``now + settlement_window`` is
-    rejected so it cannot expire on-chain before the async close settlement."""
-    config = replace(session_test_config(), settlement_window=3_600)
-    server = new_session_test_server(config)
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
+async def test_concurrent_open_verifies_and_persists_once() -> None:
+    config = _config()
+    calls = 0
 
-    # Expires in 60s, but the settlement window is 3600s: rejected.
-    soon = int(time.time()) + 60
-    voucher = signer.sign_voucher(channel_id, 100, soon)
-    with pytest.raises(ValueError, match="expires-before-settlement|settlement window"):
-        await server.verify_voucher(VoucherPayload(voucher=voucher))
+    async def verify(_: OpenPayload, __: object) -> None:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
 
-
-async def test_verify_voucher_accepts_zero_expiry_under_settlement_window() -> None:
-    """A zero (never-expires) voucher is accepted even when a settlement window
-    is configured, matching the on-chain ``expires_at == 0`` semantics."""
-    config = replace(session_test_config(), settlement_window=3_600)
-    server = new_session_test_server(config)
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    voucher = signer.sign_voucher(channel_id, 100, 0)
-    assert await server.verify_voucher(VoucherPayload(voucher=voucher)) == 100
+    config.verify_open_tx = verify
+    challenge = await _challenge(config)
+    server = SessionServer(config, MemoryChannelStore())
+    payload = _open(config, challenge)
+    first, replay = await asyncio.gather(
+        server.process_open(payload, challenge),
+        server.process_open(payload, challenge),
+    )
+    assert first == replay
+    assert calls == 1
+    # The replay neither rebroadcasts nor resets the stored watermark.
+    assert (await server.store().get_channel(CHANNEL)).cumulative == 0  # type: ignore[union-attr]
 
 
-async def test_verify_voucher_unknown_channel_rejected() -> None:
-    """Mirrors TestVerifyVoucherUnknownChannelRejected."""
-    server = new_session_test_server(session_test_config())
-    signer = _TestVoucherSigner(seed=3)
-    voucher = signer.sign_voucher("11111111111111111111111111111111", 100, _far_future())
+async def test_client_voucher_advances_watermark_and_replays_idempotently() -> None:
+    server, _, _ = await _server()
+    voucher = _voucher(100)
+    assert await server.verify_voucher(VoucherPayload(voucher)) == 100
+    assert await server.verify_voucher(VoucherPayload(voucher)) == 100
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.cumulative == 100
+
+
+async def test_operator_use_requires_idempotency_and_charges_once() -> None:
+    server, _, challenge = await _server(operator=True)
+    authentication = _authentication(challenge.id)
+    payload = UsePayload(CHANNEL, authentication)
+    with pytest.raises(ValueError, match="Idempotency-Key"):
+        await server.process_use(payload, challenge.id, "")
+    first = await server.process_use(payload, challenge.id, "request-1")
+    replay = await server.process_use(payload, "refreshed-challenge", "request-1", 999)
+    assert first == replay
+    state = await server.store().get_channel(CHANNEL)
+    assert state is not None and state.cumulative == 25 and len(state.processed_uses) == 1
+
+
+async def test_top_up_fails_closed_and_applies_exact_additional_amount() -> None:
+    server, config, _ = await _server()
+    payload = TopUpPayload(CHANNEL, "250", "transaction")
+    config.verify_top_up_tx = None
+    with pytest.raises(ValueError, match="requires a configured RPC verifier"):
+        await server.process_top_up(payload)
+
+    async def verify(_: TopUpPayload) -> None:
+        return None
+
+    config.verify_top_up_tx = verify
+    state = await server.process_top_up(payload)
+    assert state.deposit == 1_250
+
+
+async def test_close_enforces_channel_signing_mode() -> None:
+    client, _, _ = await _server()
+    with pytest.raises(ValueError, match="final voucher"):
+        await client.process_close(ClosePayload(CHANNEL))
+    await client.process_close(ClosePayload(CHANNEL, voucher=_voucher(100)))
+
+    operator, _, challenge = await _server(operator=True)
+    with pytest.raises(ValueError, match="requires authentication"):
+        await operator.process_close(ClosePayload(CHANNEL))
+    await operator.process_close(ClosePayload(CHANNEL, authentication=_authentication(challenge.id)))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda payload: setattr(payload, "deposit_amount", "0"), "greater than zero"),
+        (lambda payload: setattr(payload, "deposit_amount", "99"), "minimumDeposit"),
+        (lambda payload: setattr(payload, "payee", str(Keypair().pubkey())), "payee"),
+        (lambda payload: setattr(payload, "grace_period_seconds", 30), "gracePeriodSeconds"),
+    ],
+)
+async def test_open_rejects_final_policy_mismatches(mutate: object, message: str) -> None:
+    config = _config()
+    challenge = await _challenge(config)
+    payload = _open(config, challenge)
+    mutate(payload)  # type: ignore[operator]
+
+    async def verify(_: OpenPayload, __: object) -> None:
+        return None
+
+    config.verify_open_tx = verify
+    with pytest.raises(ValueError, match=message):
+        await SessionServer(config, MemoryChannelStore()).process_open(payload, challenge)
+
+
+async def test_open_rejects_client_authentication_and_verifier_failure() -> None:
+    config = _config()
+    challenge = await _challenge(config)
+    payload = _open(config, challenge)
+    payload.authentication = _authentication(challenge.id)
+
+    async def verify(_: OpenPayload, __: object) -> None:
+        raise RuntimeError("rpc rejected")
+
+    config.verify_open_tx = verify
+    server = SessionServer(config, MemoryChannelStore())
+    with pytest.raises(ValueError, match="only valid"):
+        await server.process_open(payload, challenge)
+    payload.authentication = None
+    with pytest.raises(ValueError, match="open tx verification failed: rpc rejected"):
+        await server.process_open(payload, challenge)
+    assert await server.store().get_channel(CHANNEL) is None
+
+
+async def test_open_replay_rejects_mismatch_and_sealed_channel() -> None:
+    server, config, challenge = await _server()
+    mismatch = _open(config, challenge)
+    # 41 stays within the challenge's openSlot binding (<= recentSlot 42), so
+    # the replay-mismatch check is what rejects it.
+    mismatch.open_slot = 41
+    with pytest.raises(ValueError, match="does not match"):
+        await server.process_open(mismatch, challenge)
+    await server.mark_sealed(CHANNEL)
+    with pytest.raises(ValueError, match="sealed"):
+        await server.process_open(_open(config, challenge), challenge)
+
+
+async def test_operator_use_rejects_invalid_state_and_amounts() -> None:
+    client, _, challenge = await _server()
+    with pytest.raises(ValueError, match="operator-signed"):
+        await client.process_use(UsePayload(CHANNEL, _authentication(challenge.id)), challenge.id, "key")
+
+    operator, _, challenge = await _server(operator=True)
+    bad = SessionAuthentication(challenge.id, str(PAYER.pubkey()), "bad")
+    with pytest.raises(ValueError, match="invalid session authentication"):
+        await operator.process_use(UsePayload(CHANNEL, bad), challenge.id, "bad-proof")
+    with pytest.raises(ValueError, match="positive u64"):
+        await operator.process_use(UsePayload(CHANNEL, _authentication(challenge.id)), challenge.id, "zero", 0)
+    with pytest.raises(ValueError, match="availability"):
+        await operator.process_use(UsePayload(CHANNEL, _authentication(challenge.id)), challenge.id, "too-large", 1_001)
+    await operator.process_close(ClosePayload(CHANNEL, authentication=_authentication(challenge.id)))
+    with pytest.raises(ValueError, match="closed"):
+        await operator.process_use(UsePayload(CHANNEL, _authentication(challenge.id)), challenge.id, "closed")
+
+
+async def test_voucher_rejections_cover_channel_mode_delta_and_deposit() -> None:
+    server, config, _ = await _server()
+    other_channel = str(Keypair.from_seed(bytes([12] * 32)).pubkey())
+    other_data = VoucherData(other_channel, "1")
+    other_voucher = SignedVoucher(
+        data=other_data,
+        signer=str(CLIENT_SIGNER.pubkey()),
+        signature=str(CLIENT_SIGNER.sign_message(other_data.message_bytes())),
+    )
     with pytest.raises(ValueError, match="not found"):
-        await server.verify_voucher(VoucherPayload(voucher=voucher))
+        await server.verify_voucher(VoucherPayload(other_voucher))
 
-
-async def test_verify_voucher_non_monotonic_rejected() -> None:
-    """Mirrors TestVerifyVoucherNonMonotonicRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await _submit_voucher(server, signer, channel_id, 200)
-    with pytest.raises(ValueError, match="must exceed watermark"):
-        await _submit_voucher(server, signer, channel_id, 150)
-    # Equal cumulative with a different signature (different expiry) is not a
-    # replay and must also be rejected as non-monotonic.
-    different = signer.sign_voucher(channel_id, 200, _far_future() + 60)
-    with pytest.raises(ValueError, match="must exceed watermark"):
-        await server.verify_voucher(VoucherPayload(voucher=different))
-
-
-async def test_verify_voucher_idempotent_replay_returns_same_cumulative() -> None:
-    """Mirrors TestVerifyVoucherIdempotentReplayReturnsSameCumulative."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    voucher = signer.sign_voucher(channel_id, 150, _far_future())
-    await server.verify_voucher(VoucherPayload(voucher=voucher))
-    assert await server.verify_voucher(VoucherPayload(voucher=voucher)) == 150
-
-
-async def test_verify_voucher_respects_min_voucher_delta() -> None:
-    """Mirrors TestVerifyVoucherRespectsMinVoucherDelta."""
-    config = session_test_config()
     config.min_voucher_delta = 100
-    server = new_session_test_server(config)
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
+    with pytest.raises(ValueError, match="below-min-delta"):
+        await server.verify_voucher(VoucherPayload(_voucher(50)))
+    await server.verify_voucher(VoucherPayload(_voucher(100)))
+    with pytest.raises(ValueError, match="cumulative-not-monotonic"):
+        await server.verify_voucher(VoucherPayload(_voucher(99)))
+    with pytest.raises(ValueError, match="exceeds-deposit"):
+        await server.verify_voucher(VoucherPayload(_voucher(1_001)))
 
-    with pytest.raises(ValueError):
-        await _submit_voucher(server, signer, channel_id, 50)
-    assert await _submit_voucher(server, signer, channel_id, 100) == 100
-
-
-async def test_verify_voucher_accepts_legacy_cumulative_alias() -> None:
-    """Mirrors TestVerifyVoucherAcceptsLegacyCumulativeAlias."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    signed = signer.sign_voucher(channel_id, 400, _far_future())
-    # Re-encode the voucher payload with the legacy "cumulative" wire alias.
-    wire = {
-        "voucher": {
-            "data": {"channelId": channel_id, "cumulative": "400", "expiresAt": signed.data.expires_at},
-            "signature": signed.signature,
-        }
-    }
-    payload = VoucherPayload.from_dict(wire)
-    assert await server.verify_voucher(payload) == 400
+    operator, _, _ = await _server(operator=True)
+    with pytest.raises(ValueError, match="client-signed"):
+        await operator.verify_voucher(VoucherPayload(_voucher(1)))
 
 
-# -- process_top_up --
+async def test_top_up_rejects_invalid_amount_state_and_verifier_errors() -> None:
+    server, config, _ = await _server()
+    with pytest.raises(ValueError, match="greater than zero"):
+        await server.process_top_up(TopUpPayload(CHANNEL, "0", "transaction"))
 
+    async def reject(_: TopUpPayload) -> None:
+        raise RuntimeError("rpc rejected")
 
-async def test_process_top_up_raises_deposit() -> None:
-    """Mirrors TestProcessTopUpRaisesDeposit."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
+    config.verify_top_up_tx = reject
+    with pytest.raises(ValueError, match="top-up tx verification failed: rpc rejected"):
+        await server.process_top_up(TopUpPayload(CHANNEL, "1", "transaction"))
 
-    state = await server.process_top_up(
-        TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="topup_sig")
-    )
-    assert state.deposit == 2_000_000
+    async def accept(_: TopUpPayload) -> None:
+        return None
 
-
-async def test_process_top_up_rejects_non_increasing_deposit() -> None:
-    """Mirrors TestProcessTopUpRejectsNonIncreasingDeposit."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    with pytest.raises(ValueError, match="must exceed current deposit"):
-        await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="1000000", signature="sig"))
-
-
-async def test_process_top_up_rejects_over_max_cap() -> None:
-    """Mirrors TestProcessTopUpRejectsOverMaxCap."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    with pytest.raises(ValueError, match="exceeds max cap"):
-        await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="20000000", signature="sig"))
-
-
-async def test_process_top_up_rejects_when_sealed_or_close_pending() -> None:
-    """Mirrors TestProcessTopUpRejectsWhenFinalizedOrClosePending."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-    await server.process_close(ClosePayload(channel_id=channel_id))
-    with pytest.raises(ValueError, match="close is pending"):
-        await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="sig"))
-
-    server2 = new_session_test_server(session_test_config())
-    _, channel_id2 = await _open_test_channel(server2, 1_000_000)
-    await server2.mark_sealed(channel_id2)
+    config.verify_top_up_tx = accept
+    with pytest.raises(ValueError, match="not found"):
+        await server.process_top_up(TopUpPayload("missing", "1", "transaction"))
+    await server.mark_sealed(CHANNEL)
     with pytest.raises(ValueError, match="sealed"):
-        await server2.process_top_up(TopUpPayload(channel_id=channel_id2, new_deposit="2000000", signature="sig"))
+        await server.process_top_up(TopUpPayload(CHANNEL, "1", "transaction"))
 
 
-async def test_process_top_up_invokes_verify_top_up_tx_seam() -> None:
-    """Mirrors TestProcessTopUpInvokesVerifyTopUpTxSeam."""
-
-    async def verifier(payload: TopUpPayload) -> None:
-        assert payload.signature == "topup_sig"
-        raise ValueError("topup tx unknown")
-
-    config = session_test_config()
-    config.verify_top_up_tx = verifier
-    server = new_session_test_server(config)
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    with pytest.raises(ValueError, match="topup tx unknown"):
-        await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="2000000", signature="topup_sig"))
-    state = await server.store().get_channel(channel_id)
-    assert state is not None
-    assert state.deposit == 1_000_000
-
-
-async def test_voucher_accepted_after_top_up_raises_deposit() -> None:
-    """Mirrors TestVoucherAcceptedAfterTopUpRaisesDeposit."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000)
-
-    with pytest.raises(ValueError):
-        await _submit_voucher(server, signer, channel_id, 2_000)
-    await server.process_top_up(TopUpPayload(channel_id=channel_id, new_deposit="5000", signature="sig"))
-    assert await _submit_voucher(server, signer, channel_id, 2_000) == 2_000
-
-
-# -- begin_delivery --
-
-
-async def test_begin_delivery_assigns_sequence_and_default_delivery_id() -> None:
-    """Mirrors TestBeginDeliveryAssignsSequenceAndDefaultDeliveryID."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    first = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=100))
-    assert first.delivery_id == f"{channel_id}:1"
-    assert first.sequence == 1
-    assert first.amount == "100"
-    assert first.currency == "USDC"
-    assert first.session_id == channel_id
+async def test_delivery_commit_happy_path_and_replay() -> None:
+    server, _, _ = await _server()
+    first = await server.begin_delivery(DeliveryRequest(CHANNEL, 100))
+    assert first.delivery_id == f"{CHANNEL}:1"
     assert first.expires_at == DEFAULT_SESSION_EXPIRES_AT
-
-    second = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=50))
-    assert second.delivery_id == f"{channel_id}:2"
-    assert second.sequence == 2
-
-
-async def test_begin_delivery_honors_explicit_fields() -> None:
-    """Mirrors TestBeginDeliveryHonorsExplicitFields."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    expires_at = int(time.time()) + 60
-    directive = await server.begin_delivery(
-        DeliveryRequest(
-            session_id=channel_id,
-            amount=100,
-            delivery_id="custom-id",
-            commit_url="https://example.test/commit",
-            proof="proof-blob",
-            expires_at=expires_at,
-        )
+    custom = await server.begin_delivery(
+        DeliveryRequest(CHANNEL, 50, delivery_id="custom", commit_url="https://example.test/commit", proof="p")
     )
-    assert directive.delivery_id == "custom-id"
-    assert directive.expires_at == expires_at
-    assert directive.commit_url == "https://example.test/commit"
-    assert directive.proof == "proof-blob"
-
-
-async def test_begin_delivery_rejects_zero_amount_and_unknown_channel() -> None:
-    """Mirrors TestBeginDeliveryRejectsZeroAmountAndUnknownChannel."""
-    server = new_session_test_server(session_test_config())
-    with pytest.raises(ValueError):
-        await server.begin_delivery(DeliveryRequest(session_id="ghost", amount=0))
-    with pytest.raises(ValueError):
-        await server.begin_delivery(DeliveryRequest(session_id="ghost", amount=5))
-
-
-async def test_begin_delivery_rejects_duplicate_delivery_id() -> None:
-    """Mirrors TestBeginDeliveryRejectsDuplicateDeliveryID."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=10, delivery_id="dup"))
-    with pytest.raises(ValueError, match="already exists"):
-        await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=10, delivery_id="dup"))
-
-
-async def test_begin_delivery_reservation_math() -> None:
-    """Mirrors TestBeginDeliveryReservationMath."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000)
-
-    # Advance the watermark to 400 so the reservation has to account for it.
-    await _submit_voucher(server, signer, channel_id, 400)
-    # Reserve 500: cumulative 400 + pending 500 = 900 <= 1000.
-    await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=500))
-    # Reserve 100 more: 400 + 500 + 100 = 1000 <= 1000 (boundary holds).
-    await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=100))
-    # One more unit must fail: 400 + 600 + 1 > 1000.
-    with pytest.raises(ValueError, match="exceeds available deposit"):
-        await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=1))
-
-
-async def test_begin_delivery_rejected_when_close_pending() -> None:
-    """Mirrors TestBeginDeliveryRejectedWhenClosePending."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-    await server.process_close(ClosePayload(channel_id=channel_id))
-    with pytest.raises(ValueError, match="close is pending"):
-        await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=5))
-
-
-# -- process_commit --
-
-
-async def test_process_commit_commits_reserved_delivery() -> None:
-    """Mirrors TestProcessCommitCommitsReservedDelivery."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    directive = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=100))
-    voucher = signer.sign_voucher(channel_id, 100, _far_future())
-    receipt = await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=voucher))
-    assert receipt.status == "committed"
-    assert receipt.amount == "100"
-    assert receipt.cumulative == "100"
-
-    state = await server.store().get_channel(channel_id)
-    assert state is not None
-    assert state.cumulative == 100
-    assert len(state.pending_deliveries) == 0
-    assert len(state.committed_deliveries) == 1
-
-
-async def test_process_commit_replay_returns_cached_receipt() -> None:
-    """Mirrors TestProcessCommitReplayReturnsCachedReceipt."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    directive = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=100))
-    voucher = signer.sign_voucher(channel_id, 100, _far_future())
-    payload = CommitPayload(delivery_id=directive.delivery_id, voucher=voucher)
-
-    await server.process_commit(payload)
-    replay = await server.process_commit(payload)
+    assert custom.commit_url == "https://example.test/commit" and custom.proof == "p"
+    receipt = await server.process_commit(CommitPayload(first.delivery_id, _voucher(100)))
+    assert receipt.status == "committed" and receipt.amount == "100"
+    replay = await server.process_commit(CommitPayload(first.delivery_id, _voucher(100)))
     assert replay.status == "replayed"
-    assert replay.amount == "100"
-    assert replay.cumulative == "100"
 
 
-async def test_process_commit_replay_with_different_voucher_rejected() -> None:
-    """Mirrors TestProcessCommitReplayWithDifferentVoucherRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    directive = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=200))
-    first = signer.sign_voucher(channel_id, 100, _far_future())
-    await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=first))
-
-    different = signer.sign_voucher(channel_id, 150, _far_future())
-    with pytest.raises(ValueError, match="already committed with different voucher"):
-        await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=different))
-
-
-async def test_process_commit_replay_re_verifies_signature() -> None:
-    """Mirrors TestProcessCommitReplayReVerifiesSignature."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    directive = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=100))
-    voucher = signer.sign_voucher(channel_id, 100, _far_future())
-    await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=voucher))
-
-    # Same signature and cumulative, but tampered expiry: the replayed voucher
-    # no longer verifies and must be rejected.
-    tampered = SignedVoucher(
-        data=VoucherData(channel_id=channel_id, cumulative="100", expires_at=voucher.data.expires_at + 1),
-        signature=voucher.signature,
-    )
-    with pytest.raises(ValueError):
-        await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=tampered))
-
-
-async def test_process_commit_unknown_delivery_rejected() -> None:
-    """Mirrors TestProcessCommitUnknownDeliveryRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    voucher = signer.sign_voucher(channel_id, 100, _far_future())
+async def test_delivery_and_commit_reject_invalid_reservations() -> None:
+    server, _, _ = await _server()
+    with pytest.raises(ValueError, match="greater than zero"):
+        await server.begin_delivery(DeliveryRequest(CHANNEL, 0))
     with pytest.raises(ValueError, match="not found"):
-        await server.process_commit(CommitPayload(delivery_id="ghost", voucher=voucher))
+        await server.begin_delivery(DeliveryRequest("missing", 1))
+    await server.begin_delivery(DeliveryRequest(CHANNEL, 900, delivery_id="dup"))
+    with pytest.raises(ValueError, match="already exists"):
+        await server.begin_delivery(DeliveryRequest(CHANNEL, 1, delivery_id="dup"))
+    with pytest.raises(ValueError, match="available deposit"):
+        await server.begin_delivery(DeliveryRequest(CHANNEL, 101))
+    with pytest.raises(ValueError, match="not found"):
+        await server.process_commit(CommitPayload("missing", _voucher(1)))
 
 
-async def test_process_commit_expired_directive_rejected() -> None:
-    """Mirrors TestProcessCommitExpiredDirectiveRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    directive = await server.begin_delivery(
-        DeliveryRequest(session_id=channel_id, amount=100, expires_at=int(time.time()) - 10)
+async def test_commit_rejects_expired_and_over_reserved_vouchers() -> None:
+    server, _, _ = await _server()
+    expired = await server.begin_delivery(
+        DeliveryRequest(CHANNEL, 100, delivery_id="expired", expires_at=int(time.time()) - 1)
     )
-    voucher = signer.sign_voucher(channel_id, 100, _far_future())
-    with pytest.raises(ValueError, match="has expired"):
-        await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=voucher))
+    with pytest.raises(ValueError, match="expired"):
+        await server.process_commit(CommitPayload(expired.delivery_id, _voucher(100)))
 
-
-async def test_process_commit_over_reserved_amount_rejected() -> None:
-    """Mirrors TestProcessCommitOverReservedAmountRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    directive = await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=100))
-    # The voucher claims 150 against a 100 reservation.
-    voucher = signer.sign_voucher(channel_id, 150, _far_future())
+    valid = await server.begin_delivery(DeliveryRequest(CHANNEL, 100, delivery_id="valid"))
     with pytest.raises(ValueError, match="exceeds reserved amount"):
-        await server.process_commit(CommitPayload(delivery_id=directive.delivery_id, voucher=voucher))
+        await server.process_commit(CommitPayload(valid.delivery_id, _voucher(150)))
 
 
-# -- process_close --
-
-
-async def test_process_close_flips_close_pending_and_blocks_further_activity() -> None:
-    """Mirrors TestProcessCloseFlipsClosePendingAndBlocksFurtherActivity."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    state = await server.process_close(ClosePayload(channel_id=channel_id))
-    assert state.close_requested_at is not None
-
-    with pytest.raises(ValueError):
-        await _submit_voucher(server, signer, channel_id, 100)
-    with pytest.raises(ValueError):
-        await server.begin_delivery(DeliveryRequest(session_id=channel_id, amount=1))
-
-
-async def test_process_close_double_close_rejected() -> None:
-    """Mirrors TestProcessCloseDoubleCloseRejected."""
-    server = new_session_test_server(session_test_config())
-    _, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await server.process_close(ClosePayload(channel_id=channel_id))
-    with pytest.raises(ValueError, match="close already requested"):
-        await server.process_close(ClosePayload(channel_id=channel_id))
-
-
-async def test_process_close_final_voucher_advances_watermark() -> None:
-    """Mirrors TestProcessCloseFinalVoucherAdvancesWatermark."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await _submit_voucher(server, signer, channel_id, 100)
-    final = signer.sign_voucher(channel_id, 500, _far_future())
-    state = await server.process_close(ClosePayload(channel_id=channel_id, voucher=final))
-    assert state.cumulative == 500
-    assert state.highest_voucher_signature == final.signature
-
-
-async def test_process_close_non_monotonic_final_voucher_is_hard_error() -> None:
-    """Mirrors TestProcessCloseNonMonotonicFinalVoucherIsHardError."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    await _submit_voucher(server, signer, channel_id, 300)
-    stale = signer.sign_voucher(channel_id, 200, _far_future())
+async def test_client_close_final_voucher_rules_and_double_close() -> None:
+    server, _, _ = await _server()
+    await server.verify_voucher(VoucherPayload(_voucher(100)))
     with pytest.raises(ValueError, match="must exceed watermark"):
-        await server.process_close(ClosePayload(channel_id=channel_id, voucher=stale))
-
-    # The failed close must not flip close-pending.
-    state = await server.store().get_channel(channel_id)
-    assert state is not None
-    assert state.close_requested_at is None
-    assert state.cumulative == 300
-
-
-async def test_process_close_accepts_replay_of_current_highest_voucher() -> None:
-    """Mirrors TestProcessCloseAcceptsReplayOfCurrentHighestVoucher."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000_000)
-
-    highest = signer.sign_voucher(channel_id, 300, _far_future())
-    await server.verify_voucher(VoucherPayload(voucher=highest))
-    state = await server.process_close(ClosePayload(channel_id=channel_id, voucher=highest))
-    assert state.close_requested_at is not None
-    assert state.cumulative == 300
-
-
-async def test_process_close_final_voucher_exceeding_deposit_rejected() -> None:
-    """Mirrors TestProcessCloseFinalVoucherExceedingDepositRejected."""
-    server = new_session_test_server(session_test_config())
-    signer, channel_id = await _open_test_channel(server, 1_000)
-
-    final = signer.sign_voucher(channel_id, 2_000, _far_future())
+        await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(99)))
     with pytest.raises(ValueError, match="exceeds deposit"):
-        await server.process_close(ClosePayload(channel_id=channel_id, voucher=final))
-
-
-async def test_process_close_unknown_channel_rejected() -> None:
-    """Mirrors TestProcessCloseUnknownChannelRejected."""
-    server = new_session_test_server(session_test_config())
-    with pytest.raises(ValueError, match="not found"):
-        await server.process_close(ClosePayload(channel_id="ghost"))
+        await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(1_001)))
+    state = await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(200)))
+    assert state.cumulative == 200 and state.close_requested_at is not None
+    with pytest.raises(ValueError, match="already requested"):
+        await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(200)))

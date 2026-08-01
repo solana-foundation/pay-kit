@@ -3,7 +3,6 @@ import { Challenge } from 'mppx';
 
 import { normalizeNetwork, resolveStablecoinMint } from '../constants.js';
 import { charge as chargeMethod, session as sessionMethod } from '../Methods.js';
-import { type SessionMode, sessionRequestModes } from './Session.js';
 
 /** A typed Solana charge challenge accepted by the MPP client. */
 export type SolanaChargeChallenge = Challenge.Challenge<
@@ -28,10 +27,7 @@ export type SelectSolanaChargeChallengeOptions = {
 };
 
 /** Options for selecting one Solana session challenge from a challenge set. */
-export type SelectSolanaSessionChallengeOptions = SelectSolanaChargeChallengeOptions & {
-    /** Preferred funding mode. */
-    mode?: SessionMode | readonly SessionMode[] | undefined;
-};
+export type SelectSolanaSessionChallengeOptions = SelectSolanaChargeChallengeOptions;
 
 /**
  * Returns true when a challenge is a schema-valid Solana charge challenge.
@@ -135,16 +131,7 @@ export function selectSolanaSessionChallenge(
         candidates.push(typedChallenge);
     }
 
-    if (!options.mode) {
-        return candidates[0];
-    }
-
-    const acceptedModes = typeof options.mode === 'string' ? [options.mode] : options.mode;
-    return candidates.find(challenge => {
-        // An omitted or empty `modes` list means push-only.
-        const challengeModes = sessionRequestModes(challenge.request);
-        return acceptedModes.some(mode => challengeModes.includes(mode));
-    });
+    return candidates[0];
 }
 
 /**
@@ -205,7 +192,7 @@ function matchesSessionNetwork(challenge: SolanaSessionChallenge, network: strin
     if (!network) {
         return true;
     }
-    return normalizeNetwork(challenge.request.network ?? 'mainnet') === normalizeNetwork(network);
+    return normalizeNetwork(challenge.request.methodDetails.network) === normalizeNetwork(network);
 }
 
 function matchesSessionCurrency(
@@ -218,6 +205,6 @@ function matchesSessionCurrency(
 
     const acceptedCurrencies = normalizeCurrencyPreference(currency);
     return acceptedCurrencies.some(acceptedCurrency =>
-        currenciesMatch(challenge.request.currency, acceptedCurrency, challenge.request.network),
+        currenciesMatch(challenge.request.currency, acceptedCurrency, challenge.request.methodDetails.network),
     );
 }

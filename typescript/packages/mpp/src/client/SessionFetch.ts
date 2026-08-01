@@ -1,23 +1,17 @@
-import { generateKeyPairSigner, getBase58Decoder, type TransactionSigner } from '@solana/kit';
+import { getBase58Decoder } from '@solana/kit';
 
-import { defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
 import {
     selectSolanaSessionChallengeFromResponse,
     type SelectSolanaSessionChallengeOptions,
 } from './ChallengeSelection.js';
-import { buildInitMultiDelegateTx, buildUpdateDelegationTx, deriveDelegatedTokenAccount } from './MultiDelegate.js';
-import { PENDING_SERVER_SIGNATURE } from './PaymentChannels.js';
 import {
     ActiveSession,
     type AmountLike,
     type CommitReceipt,
-    DEFAULT_SESSION_EXPIRES_AT,
     type MeteringDirective,
     type OpenPayload,
     serializeSessionCredential,
     type SessionChallenge,
-    type SessionMode,
-    sessionRequestModes,
     type SignedVoucher,
 } from './Session.js';
 
@@ -105,8 +99,6 @@ export interface ReserveSessionDeliveryParameters {
 export interface CommitSessionDeliveryParameters {
     /** Committed amount, in base units. */
     readonly amount: string;
-    /** Serialized `Authorization` header value for the commit request. */
-    readonly authorization: string;
     /** Directive issued when the delivery was reserved. */
     readonly directive: MeteringDirective;
     /** Session signing the commit voucher. */
@@ -401,19 +393,9 @@ export class SessionFetchClient {
             session: open.session,
         });
         const voucher = await open.session.prepareVoucher(target);
-        const authorization = serializeSessionCredential({
-            challenge: open.challenge,
-            payload: {
-                action: 'commit',
-                deliveryId: directive.deliveryId,
-                voucher,
-            },
-            source: open.source,
-        });
         const receipt = await this.commitDelivery(
             {
                 amount,
-                authorization,
                 directive,
                 session: open.session,
                 voucher,
@@ -457,10 +439,10 @@ export class SessionFetchClient {
             body: JSON.stringify({
                 amount: parameters.amount,
                 deliveryId: parameters.directive.deliveryId,
+                voucher: parameters.voucher,
             }),
             headers: {
                 accept: 'application/json',
-                authorization: parameters.authorization,
                 'content-type': 'application/json',
             },
             method: 'POST',
@@ -526,166 +508,6 @@ export declare namespace SessionFetchClient {
  */
 export function createSessionFetch(parameters: SessionFetchClient.Parameters): SessionFetchClient {
     return new SessionFetchClient(parameters);
-}
-
-/**
- * Creates a development-only opener that fabricates pull/push open proofs.
- *
- * This is useful for local gateways and demos. Production clients should pass an
- * opener that performs the real wallet approval or channel open transaction.
- * Delegated pull opens build real pre-signed multi-delegate transactions when a
- * `signer` and a recent blockhash are available; without them the opener
- * refuses to fabricate the delegation payloads.
- */
-export function createEphemeralSessionOpener(options: createEphemeralSessionOpener.Options = {}): SessionOpener {
-    return async ({ challenge }) => {
-        const signer = await generateKeyPairSigner();
-        const channel = await generateKeyPairSigner();
-        const modes = sessionRequestModes(challenge.request);
-        const requestedMode = options.mode ?? modes[0] ?? 'push';
-        // Downgrade an unsupported pull request to push instead of opening a
-        // mode the server never advertised.
-        const mode = requestedMode === 'pull' && !modes.includes('pull') ? 'push' : requestedMode;
-        const useDelegatedPull =
-            mode === 'pull' &&
-            (challenge.request.pullVoucherStrategy === 'operatedVoucher' ||
-                options.approvedAmount !== undefined ||
-                options.initMultiDelegateTx !== undefined ||
-                options.owner !== undefined ||
-                options.tokenAccount !== undefined ||
-                options.updateDelegationTx !== undefined ||
-                options.signer !== undefined);
-
-        const expiresAt = options.expiresAt ?? DEFAULT_SESSION_EXPIRES_AT;
-        const delegated = useDelegatedPull ? await prepareDelegatedPull(challenge, options, expiresAt) : undefined;
-        const session = new ActiveSession({
-            // Pull vouchers bind to the delegated token account, mirroring the
-            // Rust client which uses the token account pubkey as the channel id.
-            channelId: delegated?.tokenAccount ?? channel.address,
-            cumulative: options.cumulative ?? 0n,
-            expiresAt,
-            signer,
-        });
-        const payload = delegated
-            ? session.openPullAction({
-                  approvedAmount: delegated.approvedAmount,
-                  initMultiDelegateTx: delegated.initMultiDelegateTx,
-                  owner: delegated.owner,
-                  signature: options.signature ?? PENDING_SERVER_SIGNATURE,
-                  tokenAccount: delegated.tokenAccount,
-                  updateDelegationTx: delegated.updateDelegationTx,
-              })
-            : session.openAction(options.deposit ?? challenge.request.cap, options.signature ?? randomBase58(64), {
-                  mode,
-                  transaction: options.transaction,
-              });
-
-        return {
-            payload,
-            session,
-            source: options.source,
-        };
-    };
-}
-
-interface DelegatedPullArtifacts {
-    readonly approvedAmount: AmountLike;
-    readonly initMultiDelegateTx: string;
-    readonly owner: string;
-    readonly tokenAccount: string;
-    readonly updateDelegationTx: string | undefined;
-}
-
-async function prepareDelegatedPull(
-    challenge: SessionChallenge,
-    options: createEphemeralSessionOpener.Options,
-    expiresAt: AmountLike,
-): Promise<DelegatedPullArtifacts> {
-    const approvedAmount = options.approvedAmount ?? challenge.request.cap;
-    if (options.initMultiDelegateTx !== undefined) {
-        if (!options.owner || !options.tokenAccount) {
-            throw new Error(
-                'pull-mode session open with a caller-built initMultiDelegateTx requires owner and tokenAccount',
-            );
-        }
-        return {
-            approvedAmount,
-            initMultiDelegateTx: options.initMultiDelegateTx,
-            owner: options.owner,
-            tokenAccount: options.tokenAccount,
-            updateDelegationTx: options.updateDelegationTx,
-        };
-    }
-
-    const walletSigner = options.signer;
-    const recentBlockhash = options.recentBlockhash ?? challenge.request.recentBlockhash;
-    if (!walletSigner || !recentBlockhash) {
-        throw new Error(
-            'pull-mode session open requires a wallet signer and a recent blockhash to pre-sign the multi-delegate transactions (or an explicit initMultiDelegateTx)',
-        );
-    }
-
-    const network = challenge.request.network ?? 'mainnet';
-    const mint = resolveStablecoinMint(challenge.request.currency, network);
-    if (!mint) {
-        throw new Error('pull-mode session open requires an SPL token currency');
-    }
-    const tokenProgram = defaultTokenProgramForCurrency(challenge.request.currency, network);
-    const tokenAccount =
-        options.tokenAccount ??
-        (await deriveDelegatedTokenAccount({ mint, owner: walletSigner.address, tokenProgram }));
-    const txParameters = {
-        amount: approvedAmount,
-        expiryTs: expiresAt,
-        mint,
-        nonce: options.delegationNonce ?? 0n,
-        operator: challenge.request.operator,
-        recentBlockhash,
-        signer: walletSigner,
-        tokenProgram,
-    };
-    return {
-        approvedAmount,
-        initMultiDelegateTx: await buildInitMultiDelegateTx({ ...txParameters, userAta: tokenAccount }),
-        owner: options.owner ?? walletSigner.address,
-        tokenAccount,
-        updateDelegationTx: options.updateDelegationTx ?? (await buildUpdateDelegationTx(txParameters)),
-    };
-}
-
-export declare namespace createEphemeralSessionOpener {
-    interface Options {
-        /** Pull: delegated amount to approve, in base units. Defaults to the challenge cap. */
-        readonly approvedAmount?: AmountLike | undefined;
-        /** Cumulative already authorized when resuming, in base units. Defaults to 0. */
-        readonly cumulative?: AmountLike | undefined;
-        /** Pull: nonce for the delegation PDA derivation. Defaults to 0. */
-        readonly delegationNonce?: AmountLike | undefined;
-        /** Push: channel deposit, in base units. Defaults to the challenge cap. */
-        readonly deposit?: AmountLike | undefined;
-        /** Voucher expiry as a unix timestamp (seconds). */
-        readonly expiresAt?: AmountLike | undefined;
-        /** Pull: pre-built multi-delegate init transaction (base64), overriding the built one. */
-        readonly initMultiDelegateTx?: string | undefined;
-        /** Funding mode. Defaults to the first server-advertised mode. */
-        readonly mode?: SessionMode | undefined;
-        /** Pull: wallet that owns the delegated token account (base58). Defaults to the signer. */
-        readonly owner?: string | undefined;
-        /** Recent blockhash used to pre-sign delegation transactions. */
-        readonly recentBlockhash?: string | undefined;
-        /** Open transaction signature. Defaults to a fabricated one (push) or a pending marker (pull). */
-        readonly signature?: string | undefined;
-        /** User wallet used to pre-sign the multi-delegate transactions for delegated pull opens. */
-        readonly signer?: TransactionSigner | undefined;
-        /** Optional client identifier serialized into credentials. */
-        readonly source?: string | undefined;
-        /** Pull: delegated token account override (base58). */
-        readonly tokenAccount?: string | undefined;
-        /** Push: base64 signed open transaction for server-side submission. */
-        readonly transaction?: string | undefined;
-        /** Pull: pre-built delegation update transaction (base64), overriding the built one. */
-        readonly updateDelegationTx?: string | undefined;
-    }
 }
 
 /**

@@ -104,6 +104,9 @@ export interface VerifyVoucherArgs {
 export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<VoucherVerifyResult> {
     const { state, signed, deposit } = args;
     const { data } = signed;
+    if (signed.signatureType !== 'ed25519' || signed.signer !== state.authorizedSigner) {
+        return reject('invalid-signature', 'voucher signer does not match the channel authorized signer');
+    }
 
     // 1. Parse new_cumulative from payload
     let newCumulative: bigint;
@@ -132,7 +135,11 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
         // the same so a replay of a forged voucher can't slip through.
         const ok = await safeVerifySignature(signed, state.authorizedSigner);
         if (!ok.ok) return ok.reject;
-        const expiryReject = checkExpiry(toBigInt(data.expiresAt), currentTime(args.nowSeconds), args.settlementWindow);
+        const expiryReject = checkExpiry(
+            toBigInt(data.expiresAt ?? 0),
+            currentTime(args.nowSeconds),
+            args.settlementWindow,
+        );
         if (expiryReject) return expiryReject;
         return { newCumulative, status: 'replayed' };
     }
@@ -162,7 +169,7 @@ export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<
     if (!sigCheck.ok) return sigCheck.reject;
 
     // 9. Expiry — caller may override `nowSeconds` for deterministic tests.
-    const expiresAt = toBigInt(data.expiresAt);
+    const expiresAt = toBigInt(data.expiresAt ?? 0);
     const expiryReject = checkExpiry(expiresAt, currentTime(args.nowSeconds), args.settlementWindow);
     if (expiryReject) return expiryReject;
 

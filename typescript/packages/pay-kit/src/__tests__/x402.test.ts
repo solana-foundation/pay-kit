@@ -15,7 +15,7 @@ expectTypeOf<Immutable<ExactSvmSchemeOptions>>().toEqualTypeOf<X402Options>();
 // (one getLatestBlockhash call); stub the RPC so the enriched requirement is
 // deterministic offline, and let tests flip `fail` to exercise the
 // no-bare-offer failure path.
-const rpcState = vi.hoisted(() => ({ fail: false }));
+const rpcState = vi.hoisted(() => ({ fail: false, slot: 314n }));
 const ctorCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@solana/kit', async importOriginal => {
     const actual = await importOriginal<typeof import('@solana/kit')>();
@@ -26,7 +26,7 @@ vi.mock('@solana/kit', async importOriginal => {
                 send: async () => {
                     if (rpcState.fail) throw new Error('rpc down');
                     return {
-                        context: { slot: 314n },
+                        context: { slot: rpcState.slot },
                         value: {
                             blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
                             lastValidBlockHeight: 100n,
@@ -51,6 +51,8 @@ vi.mock('@x402/svm/exact/facilitator', async importOriginal => {
         },
     };
 });
+
+import { encodePaymentSignatureHeader } from '@x402/core/http';
 
 import { createX402ExactAdapter } from '../adapters/x402.js';
 import { Charge, X402Upto } from '../adapters/x402-upto.js';
@@ -193,6 +195,61 @@ describe('x402 upto engine', () => {
         expect(upto.detect(new Request('http://localhost/u', { headers: { 'x-payment': 'abc' } }))).toBe(true);
         const headers = await upto.challengeHeaders(usd('1.00'), new Request('http://localhost/u'));
         expect(typeof headers['payment-required']).toBe('string');
+    });
+
+    // verifyOpen binds the authorization's openSlot to the challenged
+    // recentSlot BEFORE the facilitator broadcasts the open: the facilitator
+    // pins the open transaction's openArgs.openSlot to payload.openSlot, so
+    // rejecting the payload value here rejects the openArgs transitively.
+    async function verifyOpenRequestFor(openSlot: string): Promise<{ request: Request; upto: X402Upto }> {
+        const config = await testConfig();
+        const upto = new X402Upto(config);
+        const [accepted] = await upto.accepts(usd('1.00'));
+        const header = encodePaymentSignatureHeader({
+            accepted,
+            payload: { openSlot },
+            x402Version: 2,
+        } as never);
+        return { request: new Request('http://localhost/u', { headers: { 'x-payment': header } }), upto };
+    }
+
+    it('rejects an authorization whose openSlot is ahead of the challenged recentSlot', async () => {
+        const { request, upto } = await verifyOpenRequestFor('315');
+        await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow(
+            /openSlot 315 is ahead of the challenged recentSlot 314/,
+        );
+    });
+
+    it('rejects an authorization whose openSlot is stale beyond the 1500-slot window', async () => {
+        const { request, upto } = await verifyOpenRequestFor('10');
+        rpcState.slot = 5_000n;
+        try {
+            await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow(
+                /openSlot 10 is outside the 1500-slot freshness window of the challenged recentSlot 5000/,
+            );
+        } finally {
+            rpcState.slot = 314n;
+        }
+    });
+
+    it('rejects a payload without a decimal-string openSlot before any broadcast', async () => {
+        const { request, upto } = await verifyOpenRequestFor('not-a-slot');
+        await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow(
+            /payload.openSlot must be a u64 decimal string/,
+        );
+    });
+
+    it('skips the window check when the recentSlot re-fetch fails (program still enforces it)', async () => {
+        const { request, upto } = await verifyOpenRequestFor('315');
+        rpcState.fail = true;
+        try {
+            // The slot bind is skipped; verification proceeds and fails later
+            // in the facilitator on the (intentionally minimal) payload —
+            // proving no ahead-of-recentSlot rejection fired.
+            await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow(/unsupported_payload_type/);
+        } finally {
+            rpcState.fail = false;
+        }
     });
 });
 

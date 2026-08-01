@@ -21,7 +21,7 @@ import time
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
-from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
+from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, SignedVoucher, VoucherData
 from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
 from solana_pay_kit.protocols.mpp.server.session_routes import session_routes
 from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
@@ -33,11 +33,12 @@ def _config() -> SessionConfig:
     return SessionConfig(
         operator=SESSION_TEST_RECIPIENT,
         recipient=SESSION_TEST_RECIPIENT,
-        max_cap=10_000_000,
+        amount=100,
         currency="USDC",
         decimals=6,
         network="localnet",
-        modes=["push"],
+        channel_program=str(Keypair.from_seed(bytes([8] * 32)).pubkey()),
+        grace_period_seconds=900,
     )
 
 
@@ -49,8 +50,12 @@ class _Signer:
         return str(self._kp.pubkey())
 
     def sign_voucher(self, channel_id: str, cumulative: int, expires_at: int) -> SignedVoucher:
-        data = VoucherData(channel_id=channel_id, cumulative=str(cumulative), expires_at=expires_at)
-        return SignedVoucher(data=data, signature=str(self._kp.sign_message(data.message_bytes())))
+        data = VoucherData(channel_id=channel_id, cumulative_amount=str(cumulative), expires_at=expires_at)
+        return SignedVoucher(
+            data=data,
+            signer=self.address(),
+            signature=str(self._kp.sign_message(data.message_bytes())),
+        )
 
 
 def _far_future() -> int:
@@ -58,19 +63,47 @@ def _far_future() -> int:
 
 
 async def _open(server: SessionServer) -> tuple[_Signer, str]:
-    from solana_pay_kit.protocols.mpp.intents.session import OpenPayload
-
     signer = _Signer()
     channel_id = str(Keypair().pubkey())
+    # The opening challenge must carry the open-transaction context
+    # (recentBlockhash/recentSlot) the open payload's openSlot binds to.
     challenge = PaymentChallenge(
         id="challenge-1",
         realm="api.test",
         method="solana",
         intent="session",
-        request="",
+        request=PaymentChallenge.encode_request(
+            {
+                "amount": "100",
+                "currency": "USDC",
+                "recipient": SESSION_TEST_RECIPIENT,
+                "methodDetails": {
+                    "network": "localnet",
+                    "channelProgram": server.config.channel_program,
+                    "recentBlockhash": "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs",
+                    "recentSlot": "1",
+                },
+            }
+        ),
     )
+
+    async def verify(_: OpenPayload, __: object) -> None:
+        return None
+
+    server.config.verify_open_tx = verify
     await server.process_open(
-        OpenPayload.push(channel_id, "1000", signer.address(), "dummy_tx_sig"),
+        OpenPayload(
+            channel_id=channel_id,
+            payer=SESSION_TEST_RECIPIENT,
+            payee=SESSION_TEST_RECIPIENT,
+            mint=SESSION_TEST_RECIPIENT,
+            authorized_signer=signer.address(),
+            salt=1,
+            deposit_amount="1000",
+            grace_period_seconds=900,
+            open_slot=1,
+            transaction="transaction",
+        ),
         challenge,
     )
     return signer, channel_id

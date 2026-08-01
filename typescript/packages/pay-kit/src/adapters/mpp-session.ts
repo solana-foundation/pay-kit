@@ -12,7 +12,7 @@
  */
 import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
-import { createMemorySessionStore, Mppx, session } from '@solana/mpp/server';
+import { createMemorySessionStore, Mppx, PAYMENT_CHANNELS_PROGRAM_ID, session } from '@solana/mpp/server';
 
 import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
@@ -66,23 +66,28 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
 
     const signer = config.operator.signer.signer;
     const store = createMemorySessionStore();
+    // New-channel 402s carry methodDetails.recentBlockhash/recentSlot from one
+    // getLatestBlockhash on `rpc` (the session method fetches them; wire a
+    // `blockhashCache` into `params` to share a host-refreshed cache instead).
+    // When the fetch fails, the challenge fails - the engine never advertises
+    // a degraded session offer, matching the x402 upto adapter.
+    const idleTimeoutSeconds =
+        gate.session.closeDelayMs === undefined ? 300 : Math.max(1, Math.ceil(gate.session.closeDelayMs / 1_000));
     const params = {
-        cap: gate.amount.baseUnits(),
-        ...(gate.session.closeDelayMs !== undefined ? { closeDelayMs: gate.session.closeDelayMs } : {}),
+        amount: gate.session.unitPrice,
+        channelProgram: PAYMENT_CHANNELS_PROGRAM_ID,
         currency: mint,
         decimals: 6,
-        modes: ['pull'] as const,
+        feePayer: true,
+        feePayerSigner: signer,
+        gracePeriodSeconds: 900,
+        idleTimeoutSeconds,
         network,
-        openTxSubmitter: 'server' as const,
-        operator: config.operator.signer.pubkey,
-        paymentChannelPayerSigner: signer,
-        pricing: { perDelivery: gate.session.unitPrice },
-        pullVoucherStrategy: 'clientVoucher' as const,
         recipient: gate.payTo,
         rpc: createSolanaRpc(config.rpcUrl),
-        rpcUrl: config.rpcUrl,
         signer,
         store,
+        suggestedDeposit: gate.amount.baseUnits(),
     };
 
     const mppx = Mppx.create({
@@ -91,9 +96,14 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
         secretKey: config.mpp.challengeBindingSecret,
     });
     const handler = mppx.session({
-        cap: params.cap.toString(),
+        amount: params.amount.toString(),
         currency: mint,
         description: gate.description ?? 'Metered session',
+        methodDetails: {
+            channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            network,
+        },
+        recipient: gate.payTo,
     });
     const routes = session.routes(params);
 

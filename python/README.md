@@ -283,8 +283,7 @@ broadcasts the open), the reserve/commit metering side channel
 (`session_routes`), the shared channel store, the idle-close watchdog, and
 on-chain settle-at-close (when a signer and RPC are configured, a closed
 channel's `settledSignature` carries the real on-chain signature; without them
-the close is a state-flip and the signature stays `null`). Not yet ported:
-pull/operatedVoucher (multi-delegate) opens.
+the close is a state-flip and the signature stays `null`).
 
 The MPP server owns the full lifecycle: it issues signed challenges with a
 fresh `recentBlockhash`, parses and validates the `Authorization: Payment`

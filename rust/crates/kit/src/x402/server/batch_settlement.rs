@@ -489,9 +489,16 @@ impl X402BatchSettlement {
                     close_requested_at: None,
                     // Persisted for PDA re-derivation and the reclaim gate.
                     open_slot: Some(open_slot),
-                    // Stash the payer here so settlement/distribute can refund it
-                    // without an extra account fetch.
-                    operator: Some(pc::pubkey_string(&payer)),
+                    payer: pc::pubkey_string(&payer),
+                    rent_payer: pc::pubkey_string(&self.operator),
+                    opening_challenge_id: String::new(),
+                    authentication: None,
+                    voucher_signer: "client".to_string(),
+                    idle_timeout_seconds: None,
+                    last_activity_at: 0,
+                    spent_amount: 0,
+                    settled_on_chain: 0,
+                    processed_uses: vec![],
                     next_delivery_sequence: 0,
                     pending_deliveries: vec![],
                     committed_deliveries: vec![],
@@ -796,13 +803,8 @@ impl X402BatchSettlement {
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?
             .ok_or_else(|| Error::Other(format!("Channel {channel_id} not found")))?;
-        let payer = Pubkey::from_str(
-            state
-                .operator
-                .as_deref()
-                .ok_or_else(|| Error::Other("channel payer unknown".into()))?,
-        )
-        .map_err(|e| Error::Other(format!("invalid payer: {e}")))?;
+        let payer = Pubkey::from_str(&state.payer)
+            .map_err(|e| Error::Other(format!("invalid payer: {e}")))?;
         let channel = Pubkey::from_str(&state.channel_id)
             .map_err(|e| Error::Other(format!("invalid channelId: {e}")))?;
         let payee = Pubkey::from_str(&self.config.recipient)
@@ -963,7 +965,16 @@ mod tests {
             highest_voucher_expires_at: None,
             close_requested_at: None,
             open_slot: None,
-            operator: None,
+            payer: String::new(),
+            rent_payer: String::new(),
+            opening_challenge_id: String::new(),
+            authentication: None,
+            voucher_signer: "client".to_string(),
+            idle_timeout_seconds: None,
+            last_activity_at: 0,
+            spent_amount: 0,
+            settled_on_chain: 0,
+            processed_uses: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],

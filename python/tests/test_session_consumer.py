@@ -52,7 +52,7 @@ class _RecordingTransport:
                 cumulative=prior,
                 status="replayed",
             )
-        cumulative = payload.voucher.data.cumulative
+        cumulative = payload.voucher.data.cumulative_amount
         self._settled[directive.delivery_id] = cumulative
         self.commits.append(payload)
         return CommitReceipt(
@@ -255,4 +255,4 @@ def test_fresh_delivery_advances_after_prior() -> None:
     consumer.commit_directive(_directive(consumer.session.channel_id_string, 100, delivery_id="a"))
     consumer.commit_directive(_directive(consumer.session.channel_id_string, 30, delivery_id="b"))
     assert consumer.session.cumulative == 130
-    assert [c.voucher.data.cumulative for c in transport.commits] == ["100", "130"]
+    assert [c.voucher.data.cumulative_amount for c in transport.commits] == ["100", "130"]

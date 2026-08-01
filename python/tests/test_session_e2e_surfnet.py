@@ -21,9 +21,7 @@ from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.rpc import SolanaRpc
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
-from solana_pay_kit.protocols.mpp.client.payment_channels import (
-    create_payment_channel_session_opener,
-)
+from solana_pay_kit.protocols.mpp.client.payment_channels import create_payment_channel_session_opener
 from solana_pay_kit.protocols.mpp.intents.session import ClosePayload, SessionRequest, VoucherPayload
 from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
 from solana_pay_kit.signer import LocalSigner
@@ -84,45 +82,37 @@ async def test_session_lifecycle_settles_on_chain() -> None:
             SessionOptions(
                 operator=str(operator.pubkey()),
                 recipient=str(operator.pubkey()),
-                cap=1_000_000,
+                amount=250,
                 currency="USDC",
                 decimals=6,
                 network="localnet",
                 secret_key="session-e2e-secret-key-32-bytes-min!!",
-                modes=["pull"],
-                pull_voucher_strategy="clientVoucher",
-                open_tx_submitter="server",
+                suggested_deposit=1_000_000,
+                fee_payer=True,
                 signer=LocalSigner.from_keypair(operator),
                 rpc=rpc,
             )
         )
 
-        latest = await rpc.get_latest_blockhash()
-        blockhash = latest.value.blockhash
-        # recentSlot rides the same getLatestBlockhash response context; the
-        # client takes the channel openSlot from the challenge, never from RPC.
-        recent_slot = latest.context.slot if latest.context is not None else None
-        assert recent_slot is not None
-        request = SessionRequest(
-            cap="1000000",
-            currency="USDC",
-            operator=str(operator.pubkey()),
-            recipient=str(operator.pubkey()),
-            decimals=6,
-            network="localnet",
-            modes=["pull"],
-            pull_voucher_strategy="clientVoucher",
-            recent_blockhash=blockhash,
-            recent_slot=recent_slot,
-        )
+        challenge = await session.challenge()
+        request = SessionRequest.from_dict(challenge.decode_request())
+        # The challenge advertises the open-transaction context
+        # (recentBlockhash/recentSlot); the client never fetches its own — the
+        # open transaction and openSlot default to the challenged values.
+        assert request.method_details.recent_blockhash
+        assert request.method_details.recent_slot is not None
         # The client builds the open and partial-signs as the payer; the server
         # completes the operator fee-payer signature and broadcasts.
-        opener = create_payment_channel_session_opener(request, payer, Keypair(), blockhash)
+        opener = create_payment_channel_session_opener(
+            request,
+            payer,
+            Keypair(),
+        )
         payload = opener.action.open
         assert payload is not None
 
-        # 1. Server-broadcast open (openTxSubmitter=server): co-sign + broadcast.
-        open_signature = await session._handle_open(payload)
+        # 1. The server co-signs, broadcasts, confirms, and verifies the exact open.
+        open_signature = await session._handle_open(payload, challenge)
         Signature.from_string(open_signature)  # valid on-chain signature
         channel_id = opener.open.channel_id
         state = await session._core.store().get_channel(str(channel_id))

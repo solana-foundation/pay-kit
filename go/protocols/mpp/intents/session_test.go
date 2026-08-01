@@ -315,9 +315,7 @@ func TestOpenPayloadPullFields(t *testing.T) {
 
 func TestOpenPayloadPaymentChannelAndTxHelpers(t *testing.T) {
 	p := OpenPayloadPaymentChannel("chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 321_654_987, "signer1", "txsig").
-		WithTransaction("open-tx").
-		WithInitTx("init-tx").
-		WithUpdateTx("update-tx")
+		WithTransaction("open-tx")
 
 	if p.Mode != SessionModePush {
 		t.Fatalf("mode: %q", p.Mode)
@@ -350,12 +348,6 @@ func TestOpenPayloadPaymentChannelAndTxHelpers(t *testing.T) {
 	}
 	if p.Transaction == nil || *p.Transaction != "open-tx" {
 		t.Fatalf("transaction: %v", p.Transaction)
-	}
-	if p.InitMultiDelegateTx == nil || *p.InitMultiDelegateTx != "init-tx" {
-		t.Fatalf("init: %v", p.InitMultiDelegateTx)
-	}
-	if p.UpdateDelegationTx == nil || *p.UpdateDelegationTx != "update-tx" {
-		t.Fatalf("update: %v", p.UpdateDelegationTx)
 	}
 }
 

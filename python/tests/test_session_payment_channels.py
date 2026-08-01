@@ -1,13 +1,4 @@
-"""Tests for the challenge-driven payment-channel open layer.
-
-Mirrors the ``#[cfg(test)] mod tests`` in
-``rust/crates/mpp/src/client/payment_channels.rs``: challenge-derived defaults
-(deposit from cap, grace 900, mint and token program from the currency,
-splits), explicit option overrides, invalid challenge values, the partially
-signed open transaction (fee payer = operator with an empty signature slot),
-and the pull/clientVoucher session openers with the pending-server-signature
-placeholder.
-"""
+"""Tests for challenge-driven payment-channel session opens."""
 
 from __future__ import annotations
 
@@ -16,432 +7,243 @@ import base64
 import pytest
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
-from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
-from solana_pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
-from solana_pay_kit.protocols.mpp._paymentchannels import (
-    ED25519_PROGRAM_ID,
-    PROGRAM_ID,
-    Distribution,
-    build_ed25519_verify_instruction,
-    find_channel_pda,
-)
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID, find_channel_pda
 from solana_pay_kit.protocols.mpp.client.payment_channels import (
-    DEFAULT_GRACE_PERIOD_SECONDS,
-    PENDING_SERVER_SIGNATURE,
     PaymentChannelOpenOptions,
     PaymentChannelSessionOpenOptions,
-    ServerOpenedPaymentChannelSessionOpenOptions,
     build_open_payment_channel_transaction,
     create_payment_channel_session_opener,
-    create_server_opened_payment_channel_session_opener,
     derive_payment_channel_open,
     generate_authorized_signer,
     unique_salt,
 )
-from solana_pay_kit.protocols.mpp.intents.session import SessionRequest, SessionSplit
-
-_USDC_MAINNET = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-_PYUSD_MAINNET = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
-_U64_MAX = 2**64 - 1
+from solana_pay_kit.protocols.mpp.intents.session import SessionMethodDetails, SessionRequest, SessionSplit
 
 
 def _kp(seed: int) -> Keypair:
     return Keypair.from_seed(bytes([seed] * 32))
 
 
-def _pk(seed: int) -> Pubkey:
-    return _kp(seed).pubkey()
-
-
-def _request(operator: Pubkey, recipient: Pubkey, currency: str = "USDC") -> SessionRequest:
-    return SessionRequest(
-        cap="1000",
-        currency=currency,
-        operator=str(operator),
-        recipient=str(recipient),
-        decimals=6,
+def _request(*, fee_payer: Keypair | None = None, operator: Keypair | None = None) -> SessionRequest:
+    details = SessionMethodDetails(
         network="localnet",
-        modes=["pull"],
-        pull_voucher_strategy="clientVoucher",
-        recent_slot=777,
+        channel_program=str(PROGRAM_ID),
+        decimals=6,
+        token_program=TOKEN_PROGRAM,
+        fee_payer=fee_payer is not None,
+        fee_payer_key=str(fee_payer.pubkey()) if fee_payer else None,
+        voucher_signer="operator" if operator else "client",
+        operator=str(operator.pubkey()) if operator else None,
+        grace_period_seconds=120,
+        idle_timeout_options_seconds=[30, 300],
+        distribution_splits=[SessionSplit(str(_kp(9).pubkey()), 100)],
+    )
+    return SessionRequest(
+        amount="25",
+        currency="USDC",
+        recipient=str(_kp(2).pubkey()),
+        suggested_deposit="1000",
+        method_details=details,
     )
 
 
-def _decode_tx(encoded: str) -> Transaction:
-    return Transaction.from_bytes(base64.b64decode(encoded, validate=True))
-
-
-# -- derive_payment_channel_open ---------------------------------------------
-
-
-def test_derive_uses_challenge_defaults_and_splits() -> None:
-    split_recipient = _pk(3)
-    request = _request(_pk(1), _pk(2))
-    request.splits.append(SessionSplit(recipient=str(split_recipient), bps=10))
-
-    payer = _pk(4)
-    authorized_signer = _pk(5)
-    open_ = derive_payment_channel_open(
+def test_derive_uses_final_nested_challenge_fields() -> None:
+    request = _request()
+    payer = _kp(3).pubkey()
+    authorized = _kp(4).pubkey()
+    derived = derive_payment_channel_open(
         request,
         payer,
-        authorized_signer,
-        PaymentChannelOpenOptions(salt=42),
+        authorized,
+        PaymentChannelOpenOptions(salt=7, open_slot=42),
     )
-
-    assert open_.payer == payer
-    assert open_.payee == _pk(2)
-    assert open_.authorized_signer == authorized_signer
-    assert open_.deposit == 1000  # deposit defaults to the cap
-    assert open_.grace_period == DEFAULT_GRACE_PERIOD_SECONDS
-    assert open_.salt == 42
-    assert open_.open_slot == 777  # openSlot defaults to the challenge recentSlot
-    assert open_.recipients == [Distribution(recipient=split_recipient, bps=10)]
-    # localnet resolves to the mainnet mint (Surfpool clones mainnet state).
-    assert str(open_.mint) == _USDC_MAINNET
-    assert str(open_.token_program) == TOKEN_PROGRAM
-    assert open_.program_id == PROGRAM_ID
-    expected_channel, _ = find_channel_pda(payer, _pk(2), open_.mint, authorized_signer, 42, 777, PROGRAM_ID)
-    assert open_.channel_id == expected_channel
+    expected, _ = find_channel_pda(payer, _kp(2).pubkey(), derived.mint, authorized, 7, 42, PROGRAM_ID)
+    assert derived.channel_id == expected
+    assert derived.deposit == 1000
+    assert derived.grace_period == 120
+    assert derived.open_slot == 42
+    assert derived.program_id == PROGRAM_ID
+    assert derived.recipients[0].bps == 100
 
 
-def test_derive_resolves_token_2022_from_currency() -> None:
-    open_ = derive_payment_channel_open(
-        _request(_pk(1), _pk(2), currency="PYUSD"),
-        _pk(4),
-        _pk(5),
-        PaymentChannelOpenOptions(salt=7),
+def test_derive_requires_deposit_and_open_slot() -> None:
+    request = _request()
+    request.suggested_deposit = None
+    with pytest.raises(ValueError, match="suggestedDeposit or minimumDeposit"):
+        derive_payment_channel_open(request, _kp(3).pubkey(), _kp(4).pubkey(), PaymentChannelOpenOptions(open_slot=1))
+    request.suggested_deposit = "1000"
+    # A new-channel challenge without recentSlot cannot derive an open when no
+    # explicit openSlot override is given.
+    with pytest.raises(ValueError, match="missing recentSlot"):
+        derive_payment_channel_open(request, _kp(3).pubkey(), _kp(4).pubkey())
+
+
+def test_derive_open_slot_defaults_to_challenged_recent_slot() -> None:
+    request = _request()
+    request.method_details.recent_slot = 42
+    derived = derive_payment_channel_open(request, _kp(3).pubkey(), _kp(4).pubkey(), PaymentChannelOpenOptions(salt=7))
+    assert derived.open_slot == 42
+    # An override may be earlier than the challenged recentSlot, never later.
+    earlier = derive_payment_channel_open(
+        request, _kp(3).pubkey(), _kp(4).pubkey(), PaymentChannelOpenOptions(salt=7, open_slot=41)
     )
-    assert str(open_.mint) == _PYUSD_MAINNET
-    assert str(open_.token_program) == TOKEN_2022_PROGRAM
-
-
-def test_derive_honors_explicit_options() -> None:
-    program_id = _pk(9)
-    split_recipient = _pk(3)
-    token_program = Pubkey.from_string(TOKEN_2022_PROGRAM)
-    request = _request(_pk(1), _pk(2))
-    request.cap = "not-a-number"
-    request.splits.append(SessionSplit(recipient="not-a-pubkey", bps=999))
-
-    open_ = derive_payment_channel_open(
-        request,
-        _pk(4),
-        _pk(5),
-        PaymentChannelOpenOptions(
-            deposit=55,
-            grace_period=12,
-            open_slot=888,
-            program_id=program_id,
-            recipients=[Distribution(recipient=split_recipient, bps=25)],
-            salt=7,
-            token_program=token_program,
-        ),
-    )
-
-    assert open_.deposit == 55
-    assert open_.grace_period == 12
-    assert open_.open_slot == 888  # explicit option beats the challenge recentSlot
-    assert open_.program_id == program_id
-    assert open_.token_program == token_program
-    assert open_.recipients == [Distribution(recipient=split_recipient, bps=25)]
-    assert open_.open_channel_params().program_id == program_id
-
-
-def test_derive_rejects_invalid_challenge_values() -> None:
-    payer, signer = _pk(4), _pk(5)
-
-    request = _request(_pk(1), _pk(2))
-    request.currency = "SOL"
-    with pytest.raises(ValueError, match="SPL token"):
-        derive_payment_channel_open(request, payer, signer)
-
-    request = _request(_pk(1), _pk(2))
-    request.cap = "not-a-number"
-    with pytest.raises(ValueError, match="session cap"):
-        derive_payment_channel_open(request, payer, signer)
-
-    request = _request(_pk(1), _pk(2))
-    request.recipient = "not-a-pubkey"
-    with pytest.raises(ValueError, match="recipient"):
-        derive_payment_channel_open(request, payer, signer)
-
-    request = _request(_pk(1), _pk(2))
-    request.program_id = "not-a-program"
-    with pytest.raises(ValueError, match="programId"):
-        derive_payment_channel_open(request, payer, signer)
-
-    request = _request(_pk(1), _pk(2))
-    request.splits.append(SessionSplit(recipient="not-a-pubkey", bps=10))
-    with pytest.raises(ValueError, match="split recipient"):
-        derive_payment_channel_open(request, payer, signer)
-
-    # The slot is server-provided: a challenge without recentSlot (and no
-    # explicit open_slot override) cannot derive the channel PDA.
-    request = _request(_pk(1), _pk(2))
-    request.recent_slot = None
-    with pytest.raises(ValueError, match="recentSlot"):
-        derive_payment_channel_open(request, payer, signer)
-
-
-# -- build_open_payment_channel_transaction -----------------------------------
-
-
-def test_build_open_transaction_partially_signs_for_operator_broadcast() -> None:
-    operator = _pk(1)
-    request = _request(operator, _pk(2))
-    payer_signer = _kp(7)
-    authorized_signer = _pk(8)
-
-    built = build_open_payment_channel_transaction(
-        request,
-        payer_signer,
-        authorized_signer,
-        Hash.default(),
-        options=PaymentChannelOpenOptions(salt=99),
-    )
-    expected = derive_payment_channel_open(
-        request,
-        payer_signer.pubkey(),
-        authorized_signer,
-        PaymentChannelOpenOptions(salt=99),
-    )
-    assert built.channel_id == expected.channel_id
-
-    tx = _decode_tx(built.transaction)
-    account_keys = list(tx.message.account_keys)
-    assert account_keys[0] == operator  # fee payer = challenge operator
-    assert len(tx.message.instructions) == 1
-    # The operator slot is left unsigned; the payer slot carries a real
-    # signature over the message bytes.
-    payer_index = account_keys.index(payer_signer.pubkey())
-    assert tx.signatures[0] == Signature.default()
-    assert tx.signatures[payer_index] != Signature.default()
-    assert tx.signatures[payer_index].verify(payer_signer.pubkey(), bytes(tx.message))
-
-
-def test_build_open_transaction_accepts_duck_typed_signer() -> None:
-    class _BytesSigner:
-        def __init__(self, kp: Keypair) -> None:
-            self._kp = kp
-
-        def pubkey(self) -> str:
-            return str(self._kp.pubkey())
-
-        def sign(self, message: bytes) -> bytes:
-            return bytes(self._kp.sign_message(message))
-
-    kp = _kp(11)
-    built = build_open_payment_channel_transaction(
-        _request(_pk(1), _pk(2)),
-        _BytesSigner(kp),
-        _pk(8),
-        Hash.default(),
-        options=PaymentChannelOpenOptions(salt=99),
-    )
-    tx = _decode_tx(built.transaction)
-    payer_index = list(tx.message.account_keys).index(kp.pubkey())
-    assert tx.signatures[payer_index].verify(kp.pubkey(), bytes(tx.message))
-
-
-def test_build_open_transaction_accepts_explicit_operator_fee_payer() -> None:
-    operator = _pk(1)
-    built = build_open_payment_channel_transaction(
-        _request(operator, _pk(2)),
-        _kp(15),
-        _pk(16),
-        Hash.default(),
-        fee_payer=operator,
-        options=PaymentChannelOpenOptions(salt=123),
-    )
-    tx = _decode_tx(built.transaction)
-    assert list(tx.message.account_keys)[0] == operator
-
-
-def test_build_open_transaction_rejects_non_operator_fee_payer() -> None:
-    operator = _pk(1)
-    non_operator_fee_payer = _pk(6)
-    with pytest.raises(ValueError, match="fee_payer must equal the challenge operator"):
-        build_open_payment_channel_transaction(
-            _request(operator, _pk(2)),
-            _kp(15),
-            _pk(16),
-            Hash.default(),
-            fee_payer=non_operator_fee_payer,
-            options=PaymentChannelOpenOptions(salt=123),
+    assert earlier.open_slot == 41
+    with pytest.raises(ValueError, match="ahead of the challenged recentSlot"):
+        derive_payment_channel_open(
+            request, _kp(3).pubkey(), _kp(4).pubkey(), PaymentChannelOpenOptions(salt=7, open_slot=43)
         )
 
 
-# -- session openers -----------------------------------------------------------
+def test_build_open_transaction_is_payer_signed() -> None:
+    payer = _kp(3)
+    built = build_open_payment_channel_transaction(
+        _request(),
+        payer,
+        _kp(4).pubkey(),
+        Hash.default(),
+        options=PaymentChannelOpenOptions(salt=7, open_slot=42),
+    )
+    transaction = Transaction.from_bytes(base64.b64decode(built.transaction, validate=True))
+    assert transaction.message.account_keys[0] == payer.pubkey()
+    assert transaction.signatures[0] != Signature.default()
 
 
-def test_opener_builds_pull_client_voucher_action() -> None:
-    request = _request(_pk(1), _pk(2))
-    payer_signer = _kp(9)
-    session_signer = _kp(10)
+def test_sponsored_open_leaves_only_fee_payer_signature_empty() -> None:
+    payer = _kp(3)
+    sponsor = _kp(5)
+    transaction = build_open_payment_channel_transaction(
+        _request(fee_payer=sponsor),
+        payer,
+        _kp(4).pubkey(),
+        Hash.default(),
+        options=PaymentChannelOpenOptions(salt=7, open_slot=42),
+    )
+    decoded = Transaction.from_bytes(base64.b64decode(transaction.transaction, validate=True))
+    assert decoded.message.account_keys[0] == sponsor.pubkey()
+    assert decoded.signatures[0] == Signature.default()
+    assert decoded.signatures[1] != Signature.default()
 
+
+def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
+    # No explicit blockhash: the challenged recentBlockhash is used, and the
+    # derived openSlot defaults to the challenged recentSlot.
+    challenged = Hash.new_unique()
+    request = _request()
+    request.method_details.recent_blockhash = str(challenged)
+    request.method_details.recent_slot = 42
+    payer = _kp(3)
+    built = build_open_payment_channel_transaction(
+        request,
+        payer,
+        _kp(4).pubkey(),
+        options=PaymentChannelOpenOptions(salt=7),
+    )
+    decoded = Transaction.from_bytes(base64.b64decode(built.transaction, validate=True))
+    assert decoded.message.recent_blockhash == challenged
+
+    # An explicit override still wins.
+    override = Hash.new_unique()
+    overridden = build_open_payment_channel_transaction(
+        request,
+        payer,
+        _kp(4).pubkey(),
+        override,
+        options=PaymentChannelOpenOptions(salt=7),
+    )
+    decoded = Transaction.from_bytes(base64.b64decode(overridden.transaction, validate=True))
+    assert decoded.message.recent_blockhash == override
+
+
+def test_build_open_transaction_requires_challenged_blockhash() -> None:
+    # A new-channel challenge without recentBlockhash cannot build the open
+    # transaction when no explicit override is given.
+    request = _request()
+    request.method_details.recent_slot = 42
+    with pytest.raises(ValueError, match="missing recentBlockhash"):
+        build_open_payment_channel_transaction(
+            request,
+            _kp(3),
+            _kp(4).pubkey(),
+            options=PaymentChannelOpenOptions(salt=7),
+        )
+    request.method_details.recent_blockhash = "not-a-blockhash"
+    with pytest.raises(ValueError, match="invalid challenged recentBlockhash"):
+        build_open_payment_channel_transaction(
+            request,
+            _kp(3),
+            _kp(4).pubkey(),
+            options=PaymentChannelOpenOptions(salt=7),
+        )
+
+
+def test_session_opener_defaults_to_challenged_context() -> None:
+    challenged = Hash.new_unique()
+    request = _request()
+    request.method_details.recent_blockhash = str(challenged)
+    request.method_details.recent_slot = 42
     opened = create_payment_channel_session_opener(
         request,
-        payer_signer,
-        session_signer,
-        Hash.default(),
-        PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=11)),
+        _kp(3),
+        _kp(4),
+        options=PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=7)),
     )
-
-    assert opened.session.channel_id == opened.open.channel_id
+    assert opened.open.open_slot == 42
     payload = opened.action.open
     assert payload is not None
-    assert payload.mode == "pull"
-    assert payload.channel_id == str(opened.open.channel_id)
-    assert payload.payer == str(payer_signer.pubkey())
-    assert payload.authorized_signer == str(session_signer.pubkey())
-    assert payload.signature == PENDING_SERVER_SIGNATURE
-    assert payload.transaction is not None
-    assert payload.token_account is None
-    assert payload.approved_amount is None
-    assert payload.init_multi_delegate_tx is None
-    assert payload.update_delegation_tx is None
+    decoded = Transaction.from_bytes(base64.b64decode(payload.transaction, validate=True))
+    assert decoded.message.recent_blockhash == challenged
 
-
-def test_opener_applies_session_options() -> None:
-    opened = create_payment_channel_session_opener(
-        _request(_pk(1), _pk(2)),
-        _kp(17),
-        _kp(18),
-        Hash.default(),
-        PaymentChannelSessionOpenOptions(
-            open=PaymentChannelOpenOptions(salt=19),
-            signature="operator-will-fill",
-            cumulative=20,
-            expires_at=1234,
-        ),
-    )
-    payload = opened.action.open
-    assert payload is not None
-    assert payload.signature == "operator-will-fill"
-    voucher = opened.session.prepare_increment(5)
-    assert voucher.data.cumulative == "25"
-    assert voucher.data.expires_at == 1234
-
-
-def test_server_opened_opener_uses_operator_payer_without_transaction() -> None:
-    operator = _pk(1)
-    request = _request(operator, _pk(2))
-    session_signer = _kp(12)
-
-    opened = create_server_opened_payment_channel_session_opener(
-        request,
-        session_signer,
-        ServerOpenedPaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=13)),
-    )
-
-    assert opened.open.payer == operator
-    payload = opened.action.open
-    assert payload is not None
-    assert payload.mode == "pull"
-    assert payload.payer == str(operator)
-    assert payload.authorized_signer == str(session_signer.pubkey())
-    assert payload.signature == PENDING_SERVER_SIGNATURE
-    assert payload.transaction is None
-    assert payload.token_account is None
-    assert payload.approved_amount is None
-
-
-def test_server_opened_opener_defaults_open_slot_without_challenge_slot() -> None:
-    """A trust-mode (offline) server issues no recentSlot; the server-opened
-    opener defaults the open slot to 0 (the server constructs any real open
-    itself), while the transaction-building opener stays strict."""
-    request = _request(_pk(1), _pk(2))
-    request.recent_slot = None
-
-    opened = create_server_opened_payment_channel_session_opener(
-        request,
-        _kp(12),
-        ServerOpenedPaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=13)),
-    )
-    assert opened.open.open_slot == 0
-    payload = opened.action.open
-    assert payload is not None
-    assert payload.recent_slot == 0
-
-    with pytest.raises(ValueError, match="recentSlot"):
+    request.method_details.recent_blockhash = None
+    with pytest.raises(ValueError, match="missing recentBlockhash"):
         create_payment_channel_session_opener(
             request,
-            _kp(9),
-            _kp(10),
-            Hash.default(),
-            PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=11)),
+            _kp(3),
+            _kp(4),
+            options=PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=7)),
         )
 
 
-def test_opener_rejects_non_pull_challenge() -> None:
-    request = _request(_pk(1), _pk(2))
-    request.modes = ["push"]
-    request.pull_voucher_strategy = None
-    with pytest.raises(ValueError, match="pull mode"):
-        create_server_opened_payment_channel_session_opener(request, _kp(20))
-
-
-def test_opener_rejects_operated_voucher_pull_challenge() -> None:
-    request = _request(_pk(1), _pk(2))
-    request.pull_voucher_strategy = "operatedVoucher"
-    with pytest.raises(ValueError, match="pull \\+ clientVoucher"):
-        create_server_opened_payment_channel_session_opener(request, _kp(14))
-
-
-# -- helpers -------------------------------------------------------------------
-
-
-def test_unique_salt_is_a_u64() -> None:
-    salts = {unique_salt() for _ in range(8)}
-    assert all(0 <= salt <= _U64_MAX for salt in salts)
-    assert len(salts) > 1  # eight CSPRNG draws collide with negligible odds
-
-
-def test_generate_authorized_signer_returns_usable_session_keypair() -> None:
-    signer = generate_authorized_signer()
-    assert isinstance(signer, Keypair)
-    opened = create_server_opened_payment_channel_session_opener(
-        _request(_pk(1), _pk(2)),
-        signer,
-        ServerOpenedPaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=21)),
+def test_session_opener_emits_exact_open_action() -> None:
+    payer = _kp(3)
+    session_signer = _kp(4)
+    opened = create_payment_channel_session_opener(
+        _request(),
+        payer,
+        session_signer,
+        Hash.default(),
+        PaymentChannelSessionOpenOptions(
+            open=PaymentChannelOpenOptions(salt=7, open_slot=42),
+            idle_timeout_seconds=30,
+        ),
     )
-    assert opened.session.authorized_signer == str(signer.pubkey())
-    voucher = opened.session.sign_increment(5)
-    sig = Signature.from_string(voucher.signature)
-    assert sig.verify(signer.pubkey(), voucher.data.message_bytes())
+    wire = opened.action.to_dict()
+    assert wire["action"] == "open"
+    assert wire["channelId"] == str(opened.open.channel_id)
+    assert wire["depositAmount"] == "1000"
+    assert wire["openSlot"] == "42"
+    assert wire["transaction"]
+    assert "mode" not in wire
+    assert opened.session.channel_id == opened.open.channel_id
 
 
-# -- build_ed25519_verify_instruction (settle precompile) ---------------------
+def test_operator_opener_requires_and_uses_operator_authority() -> None:
+    payer = _kp(3)
+    operator = _kp(6)
+    with pytest.raises(ValueError, match="authentication"):
+        create_payment_channel_session_opener(
+            _request(operator=operator),
+            payer,
+            _kp(4),
+            Hash.default(),
+            PaymentChannelSessionOpenOptions(open=PaymentChannelOpenOptions(salt=7, open_slot=42)),
+        )
 
 
-def test_ed25519_verify_instruction_golden_layout() -> None:
-    """The Ed25519 precompile data layout must match the Rust/Go builders:
-    one signature, all three offsets pointing into this instruction's own data
-    (pubkey@16, signature@48, message@112), 0xffff = current-instruction."""
-    import struct
-
-    signer = _pk(7)
-    signature = bytes(range(64))
-    message = bytes([0xAB] * 50)  # voucher preimage is 50 bytes (magic-prefixed)
-
-    ix = build_ed25519_verify_instruction(signer, signature, message)
-
-    assert str(ix.program_id) == ED25519_PROGRAM_ID
-    assert ix.accounts == []
-    data = bytes(ix.data)
-    assert len(data) == 112 + len(message)
-    assert data[0] == 1  # num_signatures
-    assert data[1] == 0  # padding
-    # offset header: sig=48, 0xffff, pubkey=16, 0xffff, msg=112, msg_len, 0xffff
-    assert struct.unpack_from("<7H", data, 2) == (48, 0xFFFF, 16, 0xFFFF, 112, len(message), 0xFFFF)
-    assert data[16:48] == bytes(signer)
-    assert data[48:112] == signature
-    assert data[112:] == message
-
-
-def test_ed25519_verify_instruction_rejects_bad_signature_length() -> None:
-    with pytest.raises(ValueError, match="64 bytes"):
-        build_ed25519_verify_instruction(_pk(1), b"\x00" * 63, b"msg")
+def test_unique_salt_and_generated_signer() -> None:
+    assert 0 <= unique_salt() <= 2**64 - 1
+    signer = generate_authorized_signer()
+    assert len(bytes(signer.pubkey())) == 32

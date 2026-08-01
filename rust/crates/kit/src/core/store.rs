@@ -231,12 +231,45 @@ pub struct ChannelState {
     #[serde(default)]
     pub open_slot: Option<u64>,
 
-    /// Pull-mode only: the client's wallet pubkey (base58).
-    ///
-    /// `Some` for pull sessions (SPL delegation); `None` for push sessions.
-    /// Stored at open time so the batch processor can derive the MultiDelegate
-    /// PDA and build `TransferFixed` instruction data at settlement.
-    pub operator: Option<String>,
+    /// Original channel payer and refund destination.
+    #[serde(default)]
+    pub payer: String,
+
+    /// Account that funded channel and escrow rent.
+    #[serde(default)]
+    pub rent_payer: String,
+
+    /// Challenge identifier that was current when the channel was opened.
+    #[serde(default)]
+    pub opening_challenge_id: String,
+
+    /// Canonical JSON for the reusable payer proof bound at open.
+    #[serde(default)]
+    pub authentication: Option<String>,
+
+    /// `client` or `operator`, as negotiated by the opening challenge.
+    #[serde(default)]
+    pub voucher_signer: String,
+
+    /// Effective negotiated idle timeout in seconds.
+    #[serde(default)]
+    pub idle_timeout_seconds: Option<u32>,
+
+    /// Unix milliseconds of the most recent accepted activity.
+    #[serde(default)]
+    pub last_activity_at: u64,
+
+    /// Cumulative amount charged for delivered service.
+    #[serde(default)]
+    pub spent_amount: u64,
+
+    /// Highest cumulative amount confirmed settled on-chain.
+    #[serde(default)]
+    pub settled_on_chain: u64,
+
+    /// Exactly-once operator-use results keyed by HTTP idempotency key.
+    #[serde(default)]
+    pub processed_uses: Vec<ProcessedUse>,
 
     /// Next server-side metered delivery sequence.
     #[serde(default)]
@@ -256,6 +289,15 @@ pub struct ChannelState {
     /// Adding this public field is an intentional pre-1.0 Rust API change.
     #[serde(default)]
     pub lifecycle: Option<ChannelLifecycle>,
+}
+
+/// Cached result for one operator-signed `use` request.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProcessedUse {
+    pub challenge_id: String,
+    pub idempotency_key: String,
+    pub cumulative: u64,
+    pub voucher_signature: String,
 }
 
 /// Async store for channel state with compare-and-swap watermark advancement.
@@ -1087,7 +1129,16 @@ mod tests {
             highest_voucher_expires_at: None,
             close_requested_at: None,
             open_slot: None,
-            operator: None,
+            payer: String::new(),
+            rent_payer: String::new(),
+            opening_challenge_id: String::new(),
+            authentication: None,
+            voucher_signer: "client".to_string(),
+            idle_timeout_seconds: None,
+            last_activity_at: 0,
+            spent_amount: 0,
+            settled_on_chain: 0,
+            processed_uses: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],

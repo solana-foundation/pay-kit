@@ -433,8 +433,7 @@ func TestCreatePaymentChannelSessionOpenerBuildsPullClientVoucherAction(t *testi
 	if payload.Transaction == nil {
 		t.Fatal("transaction missing; want payer-signed open tx attached")
 	}
-	if payload.TokenAccount != nil || payload.ApprovedAmount != nil ||
-		payload.InitMultiDelegateTx != nil || payload.UpdateDelegationTx != nil {
+	if payload.TokenAccount != nil || payload.ApprovedAmount != nil {
 		t.Fatal("pull SPL-delegation fields must be unset for payment-channel opens")
 	}
 	tx := decodeOpenTransaction(t, *payload.Transaction)

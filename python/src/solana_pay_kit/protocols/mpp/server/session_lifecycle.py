@@ -30,7 +30,7 @@ class SessionLifecycle:
     it, and :meth:`shutdown` cancels everything.
     """
 
-    def __init__(self, close_on_idle: CloseOnIdle, close_delay: float) -> None:
+    def __init__(self, close_on_idle: CloseOnIdle) -> None:
         """Create an idle-close watchdog.
 
         ``close_delay`` <= 0 disables the timer entirely (all operations become
@@ -45,21 +45,18 @@ class SessionLifecycle:
         self._lock = threading.Lock()
         # _timers holds the armed single-shot idle timer handle per channel id.
         self._timers: dict[str, asyncio.TimerHandle] = {}
-        # _close_delay is the idle duration before a channel is auto-closed;
-        # <= 0 disables the watchdog entirely.
-        self._close_delay = close_delay
         # _close_on_idle is awaited with the channel id when its timer fires.
         self._close_on_idle = close_on_idle
         # _shutdown, once True, turns every later touch into a no-op and stops
         # already-fired timers from invoking close_on_idle.
         self._shutdown = False
 
-    def touch(self, channel_id: str) -> None:
+    def touch(self, channel_id: str, close_delay: float | None) -> None:
         """Reset the idle timer for ``channel_id``.
 
         No-op when the close delay is disabled or the lifecycle is shut down.
         """
-        if self._close_delay <= 0:
+        if close_delay is None or close_delay <= 0:
             return
         loop = asyncio.get_running_loop()
         with self._lock:
@@ -67,7 +64,7 @@ class SessionLifecycle:
                 return
             self._cancel_locked(channel_id)
             self._timers[channel_id] = loop.call_later(
-                self._close_delay,
+                close_delay,
                 self._fire,
                 channel_id,
             )

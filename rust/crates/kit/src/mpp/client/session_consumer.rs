@@ -158,7 +158,7 @@ mod tests {
                 if self.fail {
                     return Err(Error::Other("commit failed".to_string()));
                 }
-                let cumulative = payload.voucher.data.cumulative.clone();
+                let cumulative = payload.voucher.data.cumulative_amount.clone();
                 self.commits.lock().unwrap().push(payload);
                 Ok(CommitReceipt {
                     delivery_id: directive.delivery_id.clone(),
@@ -240,7 +240,7 @@ mod tests {
                 .voucher
                 .data
                 .expires_at,
-            1234
+            Some(1234)
         );
 
         let envelope = MeteredEnvelope {

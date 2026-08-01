@@ -120,8 +120,6 @@ data class OpenPayload(
     val tokenAccount: String? = null,
     val approvedAmount: String? = null,
     val owner: String? = null,
-    val initMultiDelegateTx: String? = null,
-    val updateDelegationTx: String? = null,
     val authorizedSigner: String,
     val signature: String,
 ) {

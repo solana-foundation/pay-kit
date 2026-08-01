@@ -2,6 +2,7 @@ import { createSolanaRpc, getBase58Decoder } from '@solana/kit';
 import {
     buildAndSignWireTransaction,
     encodeVoucherMessageBytes,
+    OPEN_SLOT_WINDOW,
     submitSettleAndDistribute,
     waitForSignatureConfirmation,
 } from '@solana/mpp/server';
@@ -168,12 +169,61 @@ export class X402Upto {
             throw new InvalidProofError('invalid_x402_payment_header', errorMessage(error));
         }
 
+        // Bind the authorization's openSlot to the challenged recentSlot
+        // BEFORE the facilitator broadcasts the open: the facilitator already
+        // pins the open transaction's `openArgs.openSlot` to
+        // `payload.openSlot`, so window-checking the payload value here binds
+        // the openArgs transitively. Mirrors the Rust
+        // `X402Upto::validate_open_transaction` recentSlot check.
+        await this.#assertOpenSlotBoundToChallenge(payload);
+
         const requirements = this.#requirements(maxPrice);
         const verification = await this.#facilitator.verify(payload, requirements);
         if (!verification.isValid) {
             throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
         }
         return { maxBaseUnits: BigInt(requirements.amount), payer: verification.payer ?? '', payload, requirements };
+    }
+
+    /**
+     * Enforce `openSlot <= recentSlot` and `recentSlot - openSlot <=
+     * OPEN_SLOT_WINDOW` against the challenged recentSlot at verify time
+     * (x402 is stateless, so it is re-observed via one `getLatestBlockhash`,
+     * exactly how the challenge minted it). A failed re-fetch skips the
+     * window check - the facilitator's channel-PDA bind still holds and the
+     * program enforces the window at broadcast.
+     *
+     * @throws {InvalidProofError} when the openSlot was not built against a
+     *   fresh challenge.
+     */
+    async #assertOpenSlotBoundToChallenge(payload: PaymentPayload): Promise<void> {
+        const raw = payload.payload as { openSlot?: unknown } | undefined;
+        if (!raw || typeof raw.openSlot !== 'string' || !/^\d+$/.test(raw.openSlot)) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_channel_seed',
+                'payload.openSlot must be a u64 decimal string',
+            );
+        }
+        const openSlot = BigInt(raw.openSlot);
+        let recentSlot: bigint;
+        try {
+            const { context } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
+            recentSlot = BigInt(context.slot);
+        } catch {
+            return;
+        }
+        if (openSlot > recentSlot) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_open_slot',
+                `open openSlot ${openSlot} is ahead of the challenged recentSlot ${recentSlot}`,
+            );
+        }
+        if (recentSlot - openSlot > OPEN_SLOT_WINDOW) {
+            throw new InvalidProofError(
+                'invalid_upto_svm_payload_open_slot',
+                `open openSlot ${openSlot} is outside the ${OPEN_SLOT_WINDOW}-slot freshness window of the challenged recentSlot ${recentSlot}`,
+            );
+        }
     }
 
     /**
@@ -201,6 +251,8 @@ export class X402Upto {
                               expiresAt: payload.expiresAt,
                           },
                           signature: await this.#signVoucher(payload.channelId, actual, BigInt(payload.expiresAt)),
+                          signatureType: 'ed25519' as const,
+                          signer: this.#receiverAuthorizer,
                       }
                     : undefined;
             const result = await submitSettleAndDistribute({

@@ -96,6 +96,17 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                     mppx.subscription({
                         amount: totalAmount(gate).toString(),
                         currency: mint,
+                        methodDetails: {
+                            decimals: 6,
+                            mint,
+                            network,
+                            planId,
+                            puller,
+                            tokenProgram: TOKEN_PROGRAM,
+                        },
+                        periodCount: String(periodCount),
+                        periodUnit,
+                        recipient: gate.payTo,
                         ...(gate.description ? { description: gate.description } : {}),
                         ...(gate.externalId ? { externalId: gate.externalId } : {}),
                     })(request);

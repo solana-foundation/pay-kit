@@ -12,23 +12,21 @@ channel lifecycle management.
    :meth:`SessionServer.process_close`; on-chain settlement is driven by the
    host once the close-pending state is recorded.
 
-On-chain verification is a seam in this layer: when
-:attr:`SessionConfig.verify_open_tx` / :attr:`SessionConfig.verify_top_up_tx`
-are set, :meth:`process_open` (push mode) and :meth:`process_top_up` invoke
-them before persisting channel state, binding the payload to the attached
-transaction and confirming the signature on-chain. When ``None``, the
-transaction signature and deposit amount are trusted as provided, which is
-suitable only for unit tests or deployments that verify transactions out of
-band.
+On-chain verification fails closed. ``process_open`` and ``process_top_up``
+require their configured RPC verifiers, which decode the attached transaction,
+bind every economically significant field, submit it, confirm it, and verify
+the resulting channel account before state is persisted.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, TypeVar
 
+from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
@@ -38,12 +36,14 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     CommitStatus,
     MeteringDirective,
     OpenPayload,
-    SessionMode,
-    SessionPullVoucherStrategy,
+    SessionMethodDetails,
     SessionRequest,
     SessionSplit,
     SessionVoucherSigner,
+    SignedVoucher,
     TopUpPayload,
+    UsePayload,
+    VoucherData,
     VoucherPayload,
     resolve_idle_timeout_seconds,
     validate_idle_timeout_options,
@@ -54,6 +54,7 @@ from solana_pay_kit.protocols.mpp.server.session_store import (
     ChannelStore,
     CommittedDelivery,
     PendingDelivery,
+    ProcessedUse,
 )
 from solana_pay_kit.protocols.mpp.server.session_voucher import (
     ChannelState as VoucherChannelState,
@@ -67,7 +68,10 @@ from solana_pay_kit.protocols.mpp.server.session_voucher import (
 
 __all__ = [
     "Split",
+    "SessionOpenContext",
     "SessionTxVerifier",
+    "SessionOpenTxVerifier",
+    "BlockhashProvider",
     "SessionConfig",
     "DeliveryRequest",
     "SessionServer",
@@ -83,6 +87,41 @@ _P = TypeVar("_P")
 # signature on-chain. This is the seam the on-chain layer plugs into; ``None``
 # skips verification. Raising signals a verification failure.
 SessionTxVerifier = Callable[[_P], Awaitable[None]]
+
+# BlockhashProvider returns the host's cached ``(recentBlockhash, recentSlot)``
+# pair from one ``getLatestBlockhash`` refresh, or ``None`` when the cache is
+# empty/stale (the challenge builder then falls back to a direct RPC fetch).
+# Same provider shape as the x402 ``upto`` ``recent_state_provider``.
+BlockhashProvider = Callable[[], "tuple[str, int] | None"]
+
+
+@dataclass(frozen=True)
+class SessionOpenContext:
+    """Verified outer-challenge facts required while opening a session.
+
+    Mirrors the Rust ``SessionOpenContext``: the challenged
+    ``methodDetails.recentBlockhash``/``recentSlot`` flow from the 402
+    challenge into open verification so the open transaction is provably
+    built against the specific challenge that authorized it.
+    """
+
+    # ID of the challenge echoed by the opening credential.
+    challenge_id: str
+    # Standard challenge expiry from the ``expires`` auth-param ("" = none).
+    expires: str
+    # The challenged ``methodDetails.recentBlockhash`` (base58). The open
+    # transaction's compiled message MUST use exactly this blockhash.
+    recent_blockhash: str
+    # The challenged ``methodDetails.recentSlot``. The payload's ``openSlot``
+    # MUST be no later than it and within ``OPEN_SLOT_WINDOW``.
+    recent_slot: int
+
+
+# SessionOpenTxVerifier is the open-specific verifier seam: unlike the generic
+# SessionTxVerifier it also receives the SessionOpenContext so the challenged
+# recentBlockhash can be enforced against the decoded transaction before it is
+# broadcast.
+SessionOpenTxVerifier = Callable[[OpenPayload, SessionOpenContext], Awaitable[None]]
 
 
 @dataclass
@@ -108,9 +147,8 @@ class SessionConfig:
     # Recipient is the primary payment recipient (base58).
     recipient: str = ""
 
-    # MaxCap is the maximum cap the server will offer per session (base units).
-    # Clients may request a lower cap but not a higher one.
-    max_cap: int = 0
+    # Price charged by each voucher/use action, in base units.
+    amount: int = 0
 
     # Currency identifier (e.g. "USDC", mint address).
     currency: str = ""
@@ -124,9 +162,15 @@ class SessionConfig:
     # Splits are optional splits routed to specific recipients at close.
     splits: list[Split] = field(default_factory=list)
 
-    # ProgramID is the payment-channel program ID. None defaults to the
-    # canonical program.
-    program_id: str | None = None
+    # Exact payment-channel program advertised under methodDetails.
+    channel_program: str = ""
+
+    token_program: str | None = None
+    suggested_deposit: int | None = None
+    minimum_deposit: int | None = None
+    grace_period_seconds: int | None = None
+    fee_payer: bool = False
+    fee_payer_key: str | None = None
 
     # MinVoucherDelta is the minimum voucher increment (base units). 0 = no
     # minimum.
@@ -142,17 +186,11 @@ class SessionConfig:
     # leaving only the ``expires_at <= now`` rejection for non-zero expiries.
     settlement_window: int = 0
 
-    # Modes are the session modes this server accepts, advertised to clients in
-    # the 402 challenge. An empty list or [push] means only the payment-channel
-    # push mode is supported.
-    modes: list[SessionMode] = field(default_factory=list)
-
-    # PullVoucherStrategy is the voucher authority used for pull sessions.
-    # Required when modes includes pull.
-    pull_voucher_strategy: SessionPullVoucherStrategy | None = None
-
     # Voucher signing authority advertised to clients.
     voucher_signer: SessionVoucherSigner = "client"
+
+    # Signing key used to issue cumulative vouchers for operator-mode use.
+    operator_signer: Any | None = None
 
     # Inactivity thresholds offered for a new channel.
     idle_timeout_options_seconds: list[int] | None = None
@@ -161,8 +199,10 @@ class SessionConfig:
     idle_timeout_seconds: int = 300
 
     # VerifyOpenTx, when set, confirms the open transaction on-chain (push
-    # mode) before process_open persists channel state.
-    verify_open_tx: SessionTxVerifier[OpenPayload] | None = None
+    # mode) before process_open persists channel state. It receives the
+    # SessionOpenContext so the challenged recentBlockhash is checked against
+    # the decoded transaction before broadcast.
+    verify_open_tx: SessionOpenTxVerifier | None = None
 
     # VerifyTopUpTx, when set, confirms the top-up transaction on-chain before
     # process_top_up raises the deposit.
@@ -255,12 +295,44 @@ class SessionServer:
     in-memory testing and production persistence backends.
     """
 
-    def __init__(self, config: SessionConfig, store: ChannelStore) -> None:
+    def __init__(self, config: SessionConfig, store: ChannelStore, *, rpc: Any | None = None) -> None:
         # config is the immutable server configuration captured at construction.
         self._config = config
         # store persists per-channel state; every mutation goes through its
         # atomic update_channel so voucher watermarks stay double-spend safe.
         self._store = store
+        # rpc (duck-typed against the session_onchain RpcClient seam) is the
+        # fallback source of the challenge's recentBlockhash/recentSlot when
+        # no blockhash cache is shared via with_blockhash_cache.
+        self._rpc = rpc
+        # blockhash_cache, when set, serves the challenge open-transaction
+        # context from the host's shared cache instead of a per-402 RPC call.
+        self._blockhash_cache: BlockhashProvider | None = None
+        # Transaction verification includes network I/O and therefore cannot
+        # run inside the store's synchronous mutator. Serialize the complete
+        # verify-and-persist sequence per channel so concurrent open/topUp
+        # requests cannot broadcast or apply the same funding operation twice.
+        self._channel_locks: dict[str, asyncio.Lock] = {}
+
+    def with_blockhash_cache(self, cache: BlockhashProvider) -> SessionServer:
+        """Share the host's recent-blockhash cache with challenge issuance, so
+        the challenge's ``recentBlockhash``/``recentSlot`` come from one cached
+        ``getLatestBlockhash`` instead of a blocking RPC round-trip per 402.
+
+        ``cache`` returns ``(blockhash, slot)`` from a single
+        ``getLatestBlockhash`` refresh, or ``None`` when empty/stale (the
+        builder then falls back to a direct RPC fetch). Returns ``self`` for
+        chaining, mirroring the Rust ``SessionServer::with_blockhash_cache``.
+        """
+        self._blockhash_cache = cache
+        return self
+
+    def _channel_lock(self, channel_id: str) -> asyncio.Lock:
+        lock = self._channel_locks.get(channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._channel_locks[channel_id] = lock
+        return lock
 
     @property
     def config(self) -> SessionConfig:
@@ -276,85 +348,149 @@ class SessionServer:
         with metering side channels."""
         return self._store
 
-    def build_challenge_request(self, cap: int) -> SessionRequest:
-        """Build the ``SessionRequest`` to embed in a 402 challenge.
+    async def build_challenge_request(self) -> SessionRequest:
+        """Build the ``SessionRequest`` to embed in a new-channel 402 challenge.
 
-        ``cap`` is the maximum this session will allow, clamped to
-        ``SessionConfig.max_cap``. ``min_voucher_delta`` is included only when
-        positive, ``modes`` is omitted when push-only, and
-        ``pull_voucher_strategy`` is included only when pull is offered.
+        The result follows the exact session request schema in PR #309.
+
+        Fails loudly (retryable) rather than issuing a challenge without
+        ``recentBlockhash``/``recentSlot``: both are REQUIRED for a
+        new-channel challenge — the client derives the channel PDA from
+        ``recentSlot`` and MUST use the challenged blockhash — so a silent
+        omission would surface as a non-retryable payment failure at open
+        time.
         """
-        effective_cap = min(cap, self._config.max_cap)
-
-        request = SessionRequest(
-            cap=str(effective_cap),
-            currency=self._config.currency,
-            operator=self._config.operator,
-            recipient=self._config.recipient,
+        blockhash, slot = await self._challenge_open_transaction_context()
+        details = SessionMethodDetails(
+            network=self._config.network,
+            channel_program=self._config.channel_program,
+            recent_blockhash=blockhash,
+            recent_slot=slot,
             decimals=self._config.decimals,
-            idle_timeout_options_seconds=self._config.idle_timeout_options_seconds,
+            token_program=self._config.token_program,
+            fee_payer=self._config.fee_payer or None,
+            fee_payer_key=self._config.fee_payer_key,
             voucher_signer=self._config.voucher_signer,
+            operator=self._config.operator or None,
+            min_voucher_delta=(str(self._config.min_voucher_delta) if self._config.min_voucher_delta else None),
+            idle_timeout_options_seconds=self._config.idle_timeout_options_seconds,
+            grace_period_seconds=self._config.grace_period_seconds,
+            distribution_splits=[
+                SessionSplit(recipient=split.recipient, share_bps=split.bps) for split in self._config.splits
+            ],
         )
-        if self._config.network != "":
-            request.network = self._config.network
-        for split in self._config.splits:
-            request.splits.append(SessionSplit(recipient=split.recipient, bps=split.bps))
-        if self._config.program_id is not None:
-            request.program_id = self._config.program_id
-        if self._config.min_voucher_delta > 0:
-            request.min_voucher_delta = str(self._config.min_voucher_delta)
-        # Omit modes when only push is supported; clients assume push when modes
-        # is absent.
-        if not self._push_only():
-            request.modes = list(self._config.modes)
-        if self._supports_mode("pull") and self._config.pull_voucher_strategy is not None:
-            request.pull_voucher_strategy = self._config.pull_voucher_strategy
-        return request
+        return SessionRequest(
+            amount=str(self._config.amount),
+            currency=self._config.currency,
+            recipient=self._config.recipient,
+            method_details=details,
+            minimum_deposit=(str(self._config.minimum_deposit) if self._config.minimum_deposit is not None else None),
+            suggested_deposit=(
+                str(self._config.suggested_deposit) if self._config.suggested_deposit is not None else None
+            ),
+        )
 
-    def _push_only(self) -> bool:
-        """Report whether the configured modes reduce to push-only."""
-        modes = self._config.modes
-        return len(modes) == 0 or (len(modes) == 1 and modes[0] == "push")
+    async def _challenge_open_transaction_context(self) -> tuple[str, int]:
+        """Fetch the open-transaction context (``recentBlockhash`` +
+        ``recentSlot``) for a new-channel challenge.
 
-    def _supports_mode(self, mode: SessionMode) -> bool:
-        """Report whether the server accepts ``mode``. Empty configured modes
-        mean push-only."""
-        modes = self._config.modes
-        if len(modes) == 0:
-            return mode == "push"
-        return mode in modes
+        Prefers the shared cache (refreshed out of band) to avoid an RPC
+        round-trip per challenge; falls back to one direct
+        ``getLatestBlockhash`` call, whose response carries both the blockhash
+        and the context slot (with a ``getSlot`` fallback only for
+        non-compliant endpoints that omit the context slot).
+        """
+        if self._blockhash_cache is not None:
+            cached = self._blockhash_cache()
+            if cached is not None:
+                return cached
+        if self._rpc is not None:
+            try:
+                response = await self._rpc.get_latest_blockhash()
+                blockhash = response.value.blockhash
+                slot = response.context.slot if response.context is not None else None
+                if slot is None:
+                    slot = await self._rpc.get_slot()
+            except Exception as exc:
+                raise ValueError(f"failed to fetch recentBlockhash/recentSlot for session challenge: {exc}") from exc
+            return str(blockhash), int(slot)
+        raise ValueError(
+            "session challenge requires recentBlockhash/recentSlot; configure a blockhash cache or an RPC client"
+        )
+
+    @staticmethod
+    def _open_context(challenge: PaymentChallenge) -> SessionOpenContext:
+        """Project the HMAC-verified opening challenge onto the
+        :class:`SessionOpenContext` open verification enforces.
+
+        The challenged ``recentBlockhash``/``recentSlot`` live in the
+        challenge's encoded request; a new-channel challenge without them
+        cannot bind the open transaction, so the open is rejected.
+        """
+        try:
+            details = SessionRequest.from_dict(challenge.decode_request()).method_details
+        except Exception as exc:
+            raise ValueError(f"decode session challenge request: {exc}") from exc
+        if not details.recent_blockhash or details.recent_slot is None:
+            raise ValueError(
+                "session challenge is missing recentBlockhash/recentSlot; a new-channel challenge must provide them"
+            )
+        return SessionOpenContext(
+            challenge_id=challenge.id,
+            expires=challenge.expires,
+            recent_blockhash=details.recent_blockhash,
+            recent_slot=details.recent_slot,
+        )
 
     async def process_open(self, payload: OpenPayload, challenge: PaymentChallenge) -> ChannelState:
         """Process an open action and persist the channel state.
 
-        The channel is keyed by ``OpenPayload.session_id`` (channelId first,
-        then tokenAccount for pull opens). Replayed opens are idempotent: when a
+        The channel is keyed by ``OpenPayload.channel_id``. Replayed opens are idempotent: when a
         channel already exists for the session id with the same authorized
         signer, the existing state is returned unchanged and the voucher
         watermark is never reset. Opens for an existing channel are rejected
         when the channel is sealed or when the payload's authorized signer
         differs from the stored one.
         """
+        async with self._channel_lock(payload.channel_id):
+            return await self._process_open_locked(payload, challenge)
+
+    async def _process_open_locked(self, payload: OpenPayload, challenge: PaymentChallenge) -> ChannelState:
+        """Verify and persist an open while holding its channel lock."""
         if challenge.is_expired():
             raise ValueError(f"challenge expired at {challenge.expires}")
-        if not self._supports_mode(payload.mode):
-            raise ValueError(f"session mode {payload.mode!r} is not supported by this challenge")
-
+        context = self._open_context(challenge)
         session_id = payload.session_id()
-        deposit = payload.deposit_amount()
+        deposit = payload.deposit_base_units()
         if deposit == 0:
             raise ValueError("deposit must be greater than zero")
-        if deposit > self._config.max_cap:
-            raise ValueError(f"deposit {deposit} exceeds max cap {self._config.max_cap}")
+        if self._config.minimum_deposit is not None and deposit < self._config.minimum_deposit:
+            raise ValueError(f"deposit {deposit} is below minimumDeposit {self._config.minimum_deposit}")
+        if payload.payee != self._config.recipient:
+            raise ValueError("open payee does not match challenge recipient")
+        if (
+            self._config.grace_period_seconds is None
+            or payload.grace_period_seconds != self._config.grace_period_seconds
+        ):
+            raise ValueError("open gracePeriodSeconds does not match the challenge")
+
+        # Bind the open to the specific challenge that authorized it: the
+        # client takes ``openSlot`` from the challenged ``recentSlot`` (an
+        # earlier slot is allowed, a later one never is), so a payload outside
+        # this window was not built against this challenge.
+        if payload.open_slot > context.recent_slot:
+            raise ValueError(
+                f"open openSlot {payload.open_slot} is ahead of the challenged recentSlot {context.recent_slot}"
+            )
+        if context.recent_slot - payload.open_slot > OPEN_SLOT_WINDOW:
+            raise ValueError(
+                f"open openSlot {payload.open_slot} is outside the {OPEN_SLOT_WINDOW}-slot freshness "
+                f"window of the challenged recentSlot {context.recent_slot}"
+            )
 
         if self._config.voucher_signer == "operator" and payload.authorized_signer != self._config.operator:
             raise ValueError("operator voucher signing requires authorizedSigner to match the operator")
 
-        resolve_idle_timeout_seconds(
-            self._config.idle_timeout_seconds,
-            self._config.idle_timeout_options_seconds,
-            payload.idle_timeout_seconds,
-        )
         if self._config.idle_timeout_options_seconds is not None:
             validate_idle_timeout_options(self._config.idle_timeout_options_seconds)
         if self._config.voucher_signer == "client" and payload.authentication is not None:
@@ -364,34 +500,52 @@ class SessionServer:
                 raise ValueError("operator voucher signing requires authentication")
             if payload.authentication.challenge_id != challenge.id:
                 raise ValueError("session authentication challengeId does not match the opening challenge")
-            expected_payer = payload.owner or payload.payer
-            if expected_payer is not None and payload.authentication.payer != expected_payer:
+            if payload.authentication.payer != payload.payer:
                 raise ValueError("session authentication payer does not match the channel payer")
             if not verify_session_authentication(payload.authentication, session_id):
                 raise ValueError("invalid session authentication signature")
 
-        # On-chain verification seam (push mode only; pull-mode host
-        # integrations submit server-broadcast transactions or validate
-        # delegated-token state before invoking this lower-level store method).
-        if payload.mode == "push" and self._config.verify_open_tx is not None:
-            try:
-                await self._config.verify_open_tx(payload)
-            except Exception as exc:
-                raise _wrap("open tx verification failed", exc) from exc
+        authentication = payload.authentication.to_dict() if payload.authentication is not None else None
+        existing = await self._store.get_channel(session_id)
+        if existing is not None:
+            if existing.sealed:
+                raise ValueError(f"channel {session_id} is already sealed")
+            if (
+                existing.authorized_signer != payload.authorized_signer
+                or existing.payer != payload.payer
+                or existing.deposit != deposit
+                or existing.open_slot != payload.open_slot
+                or existing.opening_challenge_id != challenge.id
+                or existing.authentication != authentication
+            ):
+                raise ValueError(f"open replay does not match existing channel {session_id}")
+            return existing
 
-        operator = payload.owner
-        if operator is None:
-            operator = payload.payer
+        if self._config.verify_open_tx is None:
+            raise ValueError("open transaction verification requires a configured RPC verifier")
+        try:
+            await self._config.verify_open_tx(payload, context)
+        except Exception as exc:
+            raise _wrap("open tx verification failed", exc) from exc
+
+        effective_idle_timeout = resolve_idle_timeout_seconds(
+            self._config.idle_timeout_seconds,
+            self._config.idle_timeout_options_seconds,
+            payload.idle_timeout_seconds,
+        )
+        now_ms = int(time.time() * 1000)
         fresh = ChannelState(
             channel_id=session_id,
             authorized_signer=payload.authorized_signer,
             deposit=deposit,
-            operator=operator,
-            # The payload's recentSlot is the channel openSlot (a channel PDA
-            # seed); persist it so the channel address can be re-derived and
-            # the rent reclaimed later. Zero when the payload does not carry
-            # one (pull opens, trusted opens).
-            open_slot=payload.recent_slot or 0,
+            open_slot=payload.open_slot,
+            payer=payload.payer,
+            rent_payer=(self._config.fee_payer_key or "") if self._config.fee_payer else payload.payer,
+            opening_challenge_id=challenge.id,
+            authentication=authentication,
+            voucher_signer=self._config.voucher_signer,
+            idle_timeout_seconds=effective_idle_timeout,
+            last_activity_at=now_ms,
         )
 
         def mutator(existing: ChannelState | None) -> ChannelState:
@@ -402,13 +556,104 @@ class SessionServer:
             if existing is not None:
                 if existing.sealed:
                     raise ValueError(f"channel {session_id} is already sealed")
-                if existing.authorized_signer != payload.authorized_signer:
-                    raise ValueError(f"channel {session_id} already exists with a different authorized signer")
+                if (
+                    existing.authorized_signer != payload.authorized_signer
+                    or existing.payer != payload.payer
+                    or existing.deposit != deposit
+                    or existing.open_slot != payload.open_slot
+                    or existing.opening_challenge_id != challenge.id
+                    or existing.authentication != fresh.authentication
+                ):
+                    raise ValueError(f"open replay does not match existing channel {session_id}")
                 # Idempotent replay: keep existing state untouched.
                 return existing
             return fresh
 
         return await self._store.update_channel(session_id, mutator)
+
+    async def process_use(
+        self,
+        payload: UsePayload,
+        challenge_id: str,
+        idempotency_key: str,
+        amount: int | None = None,
+    ) -> SignedVoucher:
+        """Charge one operator-signed use exactly once for an HTTP idempotency key."""
+        if self._config.voucher_signer != "operator" or self._config.operator_signer is None:
+            raise ValueError("use is only valid for an operator-signed channel")
+        if not idempotency_key:
+            raise ValueError("operator-signed use requires an Idempotency-Key header")
+        if not verify_session_authentication(payload.authentication, payload.channel_id):
+            raise ValueError("invalid session authentication signature")
+        price = self._config.amount if amount is None else amount
+        if price <= 0 or price > _U64_MAX:
+            raise ValueError("use amount must be a positive u64")
+
+        result: list[SignedVoucher] = []
+
+        def mutator(current: ChannelState | None) -> ChannelState:
+            if current is None:
+                raise ValueError(f"channel {payload.channel_id} not found")
+            if current.sealed or current.close_requested_at is not None:
+                raise ValueError("channel is closed or close is pending")
+            if current.voucher_signer != "operator" or current.authentication is None:
+                raise ValueError("use is only valid for an operator-signed channel")
+            if payload.authentication.to_dict() != current.authentication:
+                raise ValueError("session authentication does not match the proof bound at open")
+            replay = next(
+                (use for use in current.processed_uses if use.idempotency_key == idempotency_key),
+                None,
+            )
+            if replay is not None:
+                result.append(
+                    SignedVoucher(
+                        data=VoucherData(
+                            channel_id=current.channel_id,
+                            cumulative_amount=str(replay.cumulative),
+                            expires_at=DEFAULT_SESSION_EXPIRES_AT,
+                        ),
+                        signer=current.authorized_signer,
+                        signature=replay.voucher_signature,
+                    )
+                )
+                return current
+            if price > _U64_MAX - current.cumulative:
+                raise ValueError("use cumulative overflows u64")
+            cumulative = current.cumulative + price
+            if cumulative > current.deposit:
+                raise ValueError("insufficient channel availability")
+            data = VoucherData(
+                channel_id=current.channel_id,
+                cumulative_amount=str(cumulative),
+                expires_at=DEFAULT_SESSION_EXPIRES_AT,
+            )
+            signer = self._config.operator_signer
+            assert signer is not None
+            signature = str(signer.sign_message(data.message_bytes()))
+            voucher = SignedVoucher(
+                data=data,
+                signer=current.authorized_signer,
+                signature=signature,
+            )
+            nxt = current.clone()
+            nxt.cumulative = cumulative
+            nxt.spent_amount += price
+            nxt.highest_voucher_signature = signature
+            nxt.highest_voucher_expires_at = DEFAULT_SESSION_EXPIRES_AT
+            nxt.last_activity_at = int(time.time() * 1000)
+            nxt.processed_uses.append(
+                ProcessedUse(
+                    challenge_id=challenge_id,
+                    idempotency_key=idempotency_key,
+                    cumulative=cumulative,
+                    voucher_signature=signature,
+                )
+            )
+            result.append(voucher)
+            return nxt
+
+        await self._store.update_channel(payload.channel_id, mutator)
+        return result[0]
 
     async def verify_voucher(self, payload: VoucherPayload) -> int:
         """Verify a voucher, advance the watermark, and return the new
@@ -425,6 +670,8 @@ class SessionServer:
         state = await self._store.get_channel(channel_id)
         if state is None:
             raise ValueError(f"channel {channel_id} not found")
+        if state.voucher_signer != "client":
+            raise ValueError("voucher is only valid for a client-signed channel")
 
         # Preflight outside the lock (expensive signature check happens before
         # touching the store).
@@ -471,6 +718,7 @@ class SessionServer:
             nxt.cumulative = new_cumulative
             nxt.highest_voucher_signature = new_signature
             nxt.highest_voucher_expires_at = new_expires_at
+            nxt.last_activity_at = int(time.time() * 1000)
             return nxt
 
         new_state = await self._store.update_channel(channel_id, mutator)
@@ -479,23 +727,30 @@ class SessionServer:
     async def process_top_up(self, payload: TopUpPayload) -> ChannelState:
         """Process a topUp action: atomically raise the channel's deposit cap.
 
-        The new deposit must exceed the current deposit and must not exceed the
-        configured max cap. Top-ups are rejected once the channel is sealed
+        The additional amount must be positive and must not overflow the
+        channel deposit. Top-ups are rejected once the channel is sealed
         or a close has been requested.
         """
+        async with self._channel_lock(payload.channel_id):
+            return await self._process_top_up_locked(payload)
+
+    async def _process_top_up_locked(self, payload: TopUpPayload) -> ChannelState:
+        """Verify and apply a top-up while holding its channel lock."""
         try:
-            new_deposit = _parse_u64(payload.new_deposit)
+            additional_amount = _parse_u64(payload.additional_amount)
         except ValueError as exc:
-            raise ValueError(f"invalid newDeposit: {payload.new_deposit}") from exc
+            raise ValueError(f"invalid additionalAmount: {payload.additional_amount}") from exc
+        if additional_amount == 0:
+            raise ValueError("additionalAmount must be greater than zero")
 
         # On-chain verification seam (same shape as process_open).
-        if self._config.verify_top_up_tx is not None:
-            try:
-                await self._config.verify_top_up_tx(payload)
-            except Exception as exc:
-                raise _wrap("top-up tx verification failed", exc) from exc
+        if self._config.verify_top_up_tx is None:
+            raise ValueError("top-up transaction verification requires a configured RPC verifier")
+        try:
+            await self._config.verify_top_up_tx(payload)
+        except Exception as exc:
+            raise _wrap("top-up tx verification failed", exc) from exc
 
-        max_cap = self._config.max_cap
         channel_id = payload.channel_id
 
         def mutator(current: ChannelState | None) -> ChannelState:
@@ -505,12 +760,11 @@ class SessionServer:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further top-ups accepted")
-            if new_deposit <= current.deposit:
-                raise ValueError(f"new deposit {new_deposit} must exceed current deposit {current.deposit}")
-            if new_deposit > max_cap:
-                raise ValueError(f"new deposit {new_deposit} exceeds max cap {max_cap}")
+            if additional_amount > _U64_MAX - current.deposit:
+                raise ValueError("top-up deposit overflows u64")
             nxt = current.clone()
-            nxt.deposit = new_deposit
+            nxt.deposit = current.deposit + additional_amount
+            nxt.last_activity_at = int(time.time() * 1000)
             return nxt
 
         return await self._store.update_channel(channel_id, mutator)
@@ -597,9 +851,9 @@ class SessionServer:
         """
         channel_id = payload.voucher.data.channel_id
         try:
-            new_cumulative = _parse_u64(payload.voucher.data.cumulative)
+            new_cumulative = _parse_u64(payload.voucher.data.cumulative_amount)
         except ValueError as exc:
-            raise ValueError(f"invalid cumulative in commit voucher: {payload.voucher.data.cumulative}") from exc
+            raise ValueError(f"invalid cumulative in commit voucher: {payload.voucher.data.cumulative_amount}") from exc
 
         state = await self._store.get_channel(channel_id)
         if state is None:
@@ -708,12 +962,27 @@ class SessionServer:
             if current.close_requested_at is not None:
                 raise ValueError("close already requested")
 
+            if current.voucher_signer == "operator":
+                if voucher is not None:
+                    raise ValueError("operator close must use authentication, not a client voucher")
+                if payload.authentication is None or current.authentication is None:
+                    raise ValueError("operator close requires authentication")
+                if payload.authentication.to_dict() != current.authentication:
+                    raise ValueError("session authentication does not match the proof bound at open")
+                if not verify_session_authentication(payload.authentication, channel_id):
+                    raise ValueError("invalid session authentication signature")
+            else:
+                if payload.authentication is not None:
+                    raise ValueError("client close must use a final voucher, not authentication")
+                if voucher is None:
+                    raise ValueError("client close requires a final voucher")
+
             nxt = current.clone()
             if voucher is not None:
                 try:
-                    cumulative = _parse_u64(voucher.data.cumulative)
+                    cumulative = _parse_u64(voucher.data.cumulative_amount)
                 except ValueError as exc:
-                    raise ValueError(f"invalid cumulative in final voucher: {voucher.data.cumulative}") from exc
+                    raise ValueError(f"invalid cumulative in final voucher: {voucher.data.cumulative_amount}") from exc
                 if cumulative <= current.cumulative:
                     # Idempotent replay of the current highest voucher is
                     # allowed; any other non-monotonic final voucher is a hard
@@ -745,6 +1014,7 @@ class SessionServer:
                     nxt.highest_voucher_signature = voucher.signature
                     nxt.highest_voucher_expires_at = voucher.data.expires_at
             nxt.close_requested_at = now
+            nxt.last_activity_at = int(time.time() * 1000)
             return nxt
 
         return await self._store.update_channel(channel_id, mutator)

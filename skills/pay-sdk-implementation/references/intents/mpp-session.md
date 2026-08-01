@@ -1,410 +1,269 @@
 # `mpp/session`
 
-**Session intent**: open a payment channel between a client and server so
-the client can pay incrementally with off-chain signed vouchers, settled
-on-chain only at open / top-up / close. Backed by the on-chain
-payment-channels program and, for operated pull-mode, the multi-delegate
-program.
+**Session intent**: open a Solana payment channel, authorize incremental
+off-chain usage, and settle on-chain only at open, top-up, and close.
 
-Spec: `mpp-specs` repo, **branch `feat/solana-sessions`**,
-`specs/methods/solana/draft-solana-session-00.md`. The draft is not on
-`main` yet — fetch the branch before reading.
+Spec: `mpp-specs/specs/methods/solana/session.md` on the branch containing
+PR #309. Treat that specification as the wire-format authority. Do not add
+aliases for fields from earlier drafts.
 
-Reference implementations (cite both when porting):
+Reference implementations:
 
-- **Rust (canonical)** — `rust/crates/mpp/src/protocol/intents/session.rs`
-  (types), `rust/crates/mpp/src/server/session.rs`,
-  `rust/crates/mpp/src/client/{session,session_consumer,payment_channels,multi_delegate,http_stream}.rs`,
-  `rust/crates/mpp/src/program/payment_channels.rs` (voucher bytes, PDA).
-- **TypeScript (second reference)** —
-  `typescript/packages/mpp/src/shared/{session-types,voucher}.ts`,
-  `typescript/packages/mpp/src/server/Session.ts` +
-  `server/session/{store,voucher,on-chain,wire-tx,lifecycle}.ts`,
-  `typescript/packages/mpp/src/client/{Session,SessionFetch,PaymentChannels,SessionConsumer,HttpStream,ChallengeSelection}.ts`,
-  generated payment-channels client under
-  `typescript/packages/mpp/src/generated/`.
+- Rust: `rust/crates/kit/src/mpp/protocol/intents/session.rs`,
+  `rust/crates/kit/src/mpp/server/session.rs`, and the session modules under
+  `rust/crates/kit/src/mpp/client/`.
+- TypeScript: `typescript/packages/mpp/src/Methods.ts`,
+  `typescript/packages/mpp/src/server/Session.ts`, and the session modules
+  under `typescript/packages/mpp/src/{client,server/session,shared}/`.
+- Python: `python/src/solana_pay_kit/protocols/mpp/intents/session.py` and the
+  session modules under `python/src/solana_pay_kit/protocols/mpp/{client,server}/`.
 
-> **Spec vs wire truth.** The shipped Rust and TS wire format deliberately
-> diverges from the draft spec in known ways (see "Spec divergences"
-> below). The Rust crate is the wire truth for harness; do **not**
-> "fix" a port toward the draft unilaterally — that breaks harness with
-> every shipped SDK. Raise spec mismatches on the mpp-specs branch
-> instead.
+## Required components
 
-## When to implement
+### Shared protocol layer
 
-Session is **optional** for a new SDK. Implement it only when:
+1. Exact challenge and action types.
+2. Canonical voucher-byte encoder shared by client and server.
+3. Generated payment-channels program client and PDA helpers.
+4. Reusable payer-authentication proof helpers for operator voucher mode.
 
-- The user explicitly asks for `mpp/session` support.
-- You can generate a payment-channels program client via Codama (see
-  `references/codegen.md` and
-  `codegen/generate-payment-channels-client.ts` next to this skill) —
-  do not hand-write the instruction encoders.
-- You have an HTTP transport that supports streaming
-  (`rust/crates/mpp/src/client/http_stream.rs` and
-  `typescript/packages/mpp/src/client/HttpStream.ts` are the SSE/chunked
-  references).
+### Client
 
-If any of these is missing, leave session unimplemented and put `—` in
-the README matrix.
+1. Generate or load the session signer.
+2. Fetch a confirmed slot and recent blockhash, derive the channel PDA, build
+   the exact open instruction, and sign the transaction.
+3. In operator voucher mode, sign the reusable authentication proof before
+   opening and attach the same proof to later `use` and operator `close`
+   actions.
+4. In client voucher mode, prepare a cumulative voucher, send it, and only
+   advance the local watermark after acceptance.
+5. Handle metering directives and idempotent delivery commits.
+6. Keep all local state scoped by channel ID; reopening a channel must not
+   inherit another channel's cumulative watermark.
 
-## Component inventory — everything a port needs
+### Server
 
-The TS port is the template for what actually has to be built. Plan all
-of these before starting; each maps to a concrete Rust + TS file pair.
-
-**Shared / protocol layer**
-
-1. Session wire types: `SessionRequest`, `SessionAction` tagged union,
-   `OpenPayload`, `VoucherPayload`, `CommitPayload`, `TopUpPayload`,
-   `ClosePayload`, `SignedVoucher`/`VoucherData`, `MeteringDirective`,
-   `CommitReceipt` (Rust `protocol/intents/session.rs`; TS spreads them
-   across `shared/session-types.ts`, `client/Session.ts`, `Methods.ts`
-   schemas).
-2. Voucher byte encoder: the 50-byte signed payload (see "Voucher
-   signing"). Keep it in one shared module
-   (`typescript/.../shared/voucher.ts`) — the TS port ended up with a
-   duplicate in `server/session/on-chain.ts`; avoid that.
-3. Codama-generated payment-channels client (instruction builders,
-   PDA helpers). Add a `payment-channels-generate-<lang>` recipe.
-
-**Client side**
-
-4. Challenge parsing + mode selection (push vs pull,
-   `pullVoucherStrategy` gating, `modes` defaulting — empty/omitted
-   means push-only).
-5. Ephemeral `authorizedSigner` keypair generation.
-6. Push open builder: `OpenChannel` instruction + transaction assembly
-   (fee payer = challenge `operator`, payer partial-signs, pending
-   server signature placeholder = 64 ones, random u64 salt, grace
-   default 900 s, deposit defaults to `cap`, the program's `openSlot`
-   taken from the challenge's `recentSlot` — it is both an `open` arg
-   and the last channel-PDA seed, and the program rejects it outside
-   `[clock.slot - 1500, clock.slot]`; the client never fetches it via
-   RPC). Rust `client/payment_channels.rs`; TS
-   `client/PaymentChannels.ts`.
-7. Pull open builders (operated voucher): `InitMultiDelegate` +
-   `CreateFixedDelegation` transactions pre-signed against the
-   server-provided `recentBlockhash`. Rust `client/multi_delegate.rs`;
-   TS `client/MultiDelegate.ts` (golden-bytes-tested against the Rust
-   layouts). Include these or explicitly scope pull out.
-8. Session state object with a **prepare/record split**: build the
-   voucher for `watermark + amount` first, advance the local watermark
-   only after the server accepts. This is what makes failed commits
-   retryable with the same cumulative. Rust `client/session.rs`; TS
-   `client/Session.ts` (`ActiveSession`).
-9. Metered consumer: parse `MeteringDirective`, sign voucher, send
-   `commit` with the directive's `deliveryId`, handle `replayed`.
-   Rust `client/session_consumer.rs`; TS `client/SessionConsumer.ts`.
-10. Streaming consumption: SSE event names `mpp.metering`/`metering`,
-    `mpp.usage`/`usage`, `done`, `[DONE]`; validate that a usage
-    event's `deliveryId` matches the live directive and let usage
-    override only the amount, never the deliveryId (both references
-    enforce this).
-11. Fetch/request wrapper that handles 402 → open → retry and queues
-    voucher commits (`SessionFetch.ts`). If you build one, keep the
-    commit watermark **per channel** and reset it when a re-open swaps
-    the session underneath — carrying an absolute cumulative from an
-    old channel onto a new one over-authorizes spend. A failed commit
-    must stay retryable (do not advance the queued watermark before
-    the commit succeeds, and do not latch a permanent failure).
-
-**Server side**
-
-12. Challenge issuance: `cap` (clamped), `currency`, `decimals`,
-    `network`, `operator`, `recipient`, `splits`, `programId`,
-    `minVoucherDelta` (only when > 0), `modes` (omit when push-only),
-    `pullVoucherStrategy` (only when pull offered), optional
-    `recentBlockhash` pre-fetch so clients can pre-sign transactions,
-    and `recentSlot` (server-fetched via `getSlot` at challenge time,
-    same pattern as the blockhash pre-fetch — clients must not fetch
-    it themselves; it becomes the program's `openSlot`).
-13. Channel store with **atomic read-modify-write** per channel
-    (Rust mutex `update_channel`; TS per-channel promise-chain lock in
-    `server/session/store.ts`). State: deposit, cumulative high-water
-    mark, highest voucher signature + expiry, authorized signer,
-    pending/committed deliveries, next sequence, closeRequestedAt,
-    sealed, openSlot (needed to re-derive the channel PDA and for
-    `reclaim`).
-14. Open handler: mode advertised check, deposit > 0 and ≤ cap; for
-    push with a `transaction`, decode and validate it (see "Open
-    transaction validation"); store keyed by `session_id()` —
-    **`channelId` first, falling back to `tokenAccount`** (both
-    references agree; an open carrying both fields must key the same
-    way everywhere). Open MUST be idempotent — see "Things to pay
-    attention to".
-15. Voucher handler: the exact check sequence under "Server
-    obligations" — order and operators matter for harness tests.
-16. Metered delivery: reservation (`cumulative + pendingTotal + amount
-    <= deposit`), sequence assignment, default
-    `deliveryId = "<sessionId>:<sequence>"`, directive expiry, commit
-    idempotency on `deliveryId` (`replayed` returns the cached
-    receipt).
-17. Top-up handler: `newDeposit > current` and ≤ cap, raise stored
-    deposit.
-18. Close handler: apply final voucher, block further
-    vouchers/deliveries once `closeRequestedAt` is set, settle
-    on-chain (settle_and_seal + ed25519 precompile instruction
-    immediately preceding it, distribute bundled in the same tx),
-    mark sealed. A non-monotonic final voucher is a **hard error**
-    (Rust behavior) — do not silently fall back to the watermark.
-19. On-chain helpers: open-tx decode/verify, settle/seal builders,
-    ed25519 precompile encoder (offsets 16/48/112, `0xffff`
-    current-instruction markers). Rust `program/payment_channels.rs` +
-    `server/session.rs`; TS `server/session/on-chain.ts`.
-20. Optional host wiring: HTTP routes for the reserve/commit side
-    channel (`/__402/session/deliveries` + commit endpoint) — this is
-    a TS-server extension, not in the spec or the Rust crate; ship it
-    if your fetch wrapper depends on it, and document the mount path.
+1. Issue exact challenges and HMAC-bind every challenge field.
+2. Enforce challenge expiry when processing `open`.
+3. Decode, submit, confirm, and verify the exact open and top-up transactions
+   before mutating local state. Missing RPC configuration fails closed.
+4. Persist the opening challenge binding, payer, voucher signer, reusable
+   authentication proof, negotiated idle timeout, and verified on-chain facts.
+5. Make `open`, operator `use`, and delivery commit idempotent.
+6. Verify client vouchers atomically against the cumulative watermark and
+   deposit.
+7. Authenticate operator-mode `close` with the stored proof.
+8. Recheck activity atomically before idle close, and reconstruct timers from
+   persistent state after restart.
+9. Settle and distribute the highest accepted voucher on close.
 
 ## Wire format
 
-### Challenge — `SessionRequest`
+### Challenge request
 
 ```json
 {
-  "cap": "10000000",
-  "currency": "USDC|<mint>",
-  "decimals": 6,
-  "network": "mainnet|devnet|localnet",
-  "operator": "<base58>",
+  "amount": "1000",
+  "currency": "USDC",
   "recipient": "<base58>",
-  "splits": [{"recipient": "<base58>", "bps": 1000}],
-  "programId": "<base58>",
+  "unitType": "request",
+  "suggestedDeposit": "10000000",
+  "minimumDeposit": "1000000",
   "description": "...",
   "externalId": "...",
-  "minVoucherDelta": "1000",
-  "modes": ["push", "pull"],
-  "pullVoucherStrategy": "clientVoucher|operatedVoucher",
-  "recentBlockhash": "<base58>",
-  "recentSlot": "<u64 as string>"
+  "methodDetails": {
+    "network": "mainnet|devnet|localnet",
+    "channelProgram": "<base58>",
+    "channelId": "<base58>",
+    "recentBlockhash": "<base58>",
+    "recentSlot": "<u64 decimal>",
+    "decimals": 6,
+    "tokenProgram": "<base58>",
+    "feePayer": true,
+    "feePayerKey": "<base58>",
+    "voucherSigner": "client|operator",
+    "operator": "<base58>",
+    "minVoucherDelta": "1000",
+    "ttlSeconds": 300,
+    "idleTimeoutOptionsSeconds": [60, 300, 900],
+    "idleTimeoutSeconds": 300,
+    "gracePeriodSeconds": 900,
+    "distributionSplits": [
+      { "recipient": "<base58>", "shareBps": 1000 }
+    ]
+  }
 }
 ```
 
-See `rust/crates/mpp/src/protocol/intents/session.rs:102` and the zod
-schema in `typescript/packages/mpp/src/client/Session.ts`.
+Required fields are `amount`, `currency`, `recipient`, and
+`methodDetails.{network,channelProgram}`. Every other field shown above is
+optional and must be omitted when unset, with one conditional pair:
+`methodDetails.{recentBlockhash,recentSlot}` are REQUIRED when `channelId`
+is absent (a new-channel challenge) and MUST be absent when resuming an
+existing channel. Both come from one `getLatestBlockhash` call —
+`recentBlockhash` from `result.value`, `recentSlot` from
+`result.context.slot` — and the server MUST fail the challenge rather than
+issue one without them. The client MUST use the challenged
+`recentBlockhash` as the open transaction's blockhash and defaults
+`openSlot = recentSlot` (an earlier `openSlot` is allowed, a later one is
+rejected). At open time the server MUST verify `openSlot <= recentSlot`,
+`recentSlot - openSlot <= OPEN_SLOT_WINDOW` (1500 slots), and that the
+compiled open transaction uses the challenged `recentBlockhash`.
 
-### Client `Authorization` — `SessionAction` (tagged)
+### Credential actions
 
-Discriminated by `"action": "open" | "voucher" | "commit" | "topUp" |
-"close"` (note the camelCase `topUp`).
+The action discriminator is exactly `open`, `voucher`, `use`, `topUp`, or
+`close`.
 
-- `open` — `OpenPayload`. Shape varies by required `mode`:
-  - **Push (payment channel)** — `channelId`, `deposit`, `payer`,
-    `payee`, `mint`, `salt`, `gracePeriod`, `recentSlot`,
-    `authorizedSigner`, `signature`. Optional `transaction` for
-    operator-broadcast. `recentSlot` follows the same
-    u64-as-string convention as `salt` (serialize string, accept
-    string or number) and carries the program's `openSlot` value.
-  - **Pull (operated voucher)** — `tokenAccount`, `approvedAmount`,
-    `owner`, `authorizedSigner`, `signature`, optional
-    `initMultiDelegateTx` + `updateDelegationTx`.
-- `voucher` — `VoucherPayload { voucher: SignedVoucher }`.
-- `commit` — `CommitPayload { deliveryId, voucher }`.
-- `topUp` — `TopUpPayload { channelId, newDeposit, signature }`
-  (`newDeposit` is the new **total**, not a delta).
-- `close` — `ClosePayload { channelId, voucher? }`.
+`open`:
 
-See `rust/crates/mpp/src/protocol/intents/session.rs:187`.
+```json
+{
+  "action": "open",
+  "channelId": "<base58>",
+  "payer": "<base58>",
+  "payee": "<base58>",
+  "mint": "<base58>",
+  "authorizedSigner": "<base58>",
+  "salt": "<u64 decimal>",
+  "depositAmount": "<u64 decimal>",
+  "gracePeriodSeconds": 900,
+  "idleTimeoutSeconds": 300,
+  "openSlot": "<u64 decimal>",
+  "distributionSplits": [
+    { "recipient": "<base58>", "shareBps": 1000 }
+  ],
+  "authentication": {
+    "type": "proof",
+    "challengeId": "<opening challenge id>",
+    "payer": "<base58>",
+    "signature": "<base58>"
+  },
+  "transaction": "<base64 signed transaction>"
+}
+```
+
+`authentication` is required when `voucherSigner` is `operator` and omitted
+when it is `client`. `idleTimeoutSeconds`, `distributionSplits`,
+`authorizationPolicy`, and `capabilities` are optional. The transaction is
+always required.
+
+The remaining actions are:
+
+```json
+{ "action": "voucher", "voucher": { "data": {}, "signer": "<base58>", "signature": "<base58>", "signatureType": "ed25519" } }
+{ "action": "use", "channelId": "<base58>", "authentication": { "type": "proof", "challengeId": "<opening challenge id>", "payer": "<base58>", "signature": "<base58>" } }
+{ "action": "topUp", "channelId": "<base58>", "additionalAmount": "<u64 decimal>", "transaction": "<base64 signed transaction>" }
+{ "action": "close", "channelId": "<base58>", "voucher": {}, "authentication": {} }
+```
+
+For `close`, a client-signed channel may include a final `voucher`; an
+operator-signed channel must include `authentication`. Do not accept an
+unauthenticated operator close.
 
 ### Voucher signing
 
-`SignedVoucher` is `{ data, signature }`; `signature` is **Ed25519**
-over the on-chain `VoucherArgs` byte layout: `magic ([0x56, 0x01],
-2 bytes, constant) || channel_id (32 bytes, base58-decoded) ||
-cumulative_amount (u64 LE) || expires_at (i64 LE)` — 50 bytes, no
-other prefix or domain separator. The magic (voucher tag `0x56` +
-version `0x01`) lives only in the signed bytes — the wire JSON does
-**not** carry it. See
-`VoucherData::message_bytes`
-(`rust/crates/mpp/src/protocol/intents/session.rs:693`) which delegates
-to `program::payment_channels::voucher_message_bytes`
-(`program/payment_channels.rs:182`); TS equivalent
-`shared/voucher.ts`. The wire JSON carries `channelId` as base58,
-`cumulativeAmount` as a base-units **string**, and `expiresAt` as a
-Unix-timestamp number (i64 in Rust).
+`SignedVoucher` contains `data`, `signer`, `signature`, and
+`signatureType: "ed25519"`. `data` contains `channelId`,
+`cumulativeAmount`, and optional `expiresAt`.
 
-## Server obligations
+The Ed25519 signature covers exactly:
 
-Mirror `rust/crates/mpp/src/server/session.rs` and
-`typescript/packages/mpp/src/server/Session.ts`:
+```text
+[0x56, 0x01]
+|| channel_id (32 bytes)
+|| cumulative_amount (u64 little-endian)
+|| expires_at (i64 little-endian; zero when omitted)
+```
 
-1. **Issue session challenge** (item 12 above).
-2. **Open handler** (item 14). Open MUST NOT carry an initial voucher.
-3. **Voucher handler.** Exact sequence (order and operators are
-   harness-tested): parse u64 → reject if sealed → reject if close
-   pending → idempotent replay (same cumulative AND same signature,
-   signature re-verified) → `cumulative > watermark` strictly →
-   `cumulative <= deposit` → `cumulative - watermark >=
-   minVoucherDelta` → Ed25519 verify against stored
-   `authorizedSigner` → `expiresAt > now`. Preflight outside the
-   store lock, then re-check everything inside the atomic mutator.
-4. **Metered delivery flow** (item 16).
-5. **Top-up** (item 17), **Close** (item 18).
+This is 50 bytes. The magic/version prefix is part of the signed bytes, not
+the JSON. `cumulativeAmount` is a decimal string. `expiresAt` is a JSON number
+and JavaScript implementations must reject values outside the safe-integer
+range rather than rounding them.
 
-### Open transaction validation
+### Authentication proof
 
-When a push open carries `transaction`, decode it and check, against
-the challenge: open discriminator, payee == recipient, mint,
-authorizedSigner, deposit > 0 and ≤ cap, channel PDA re-derivation
-from seeds — `["channel", payer, payee, mint, authorizedSigner,
-salt u64 LE, openSlot u64 LE]`. Bind the submitted confirmation `signature` to the
-decoded transaction's actual fee-payer signature before trusting it
-(the TS server does; never accept an arbitrary confirmed signature
-paired with an unrelated transaction). The spec additionally
-requires (neither reference fully implements these yet — a new port
-should): escrow ATA derivation, gracePeriod ≥ challenge policy,
-distribution-splits preimage vs the challenged splits, and no
-unrelated instructions. Accept **both legacy and v0** transaction
-encodings — the Rust client emits legacy, the TS client emits v0.
+The reusable proof signs canonical JSON containing:
 
-## Client obligations
+```json
+{
+  "channelId": "<base58>",
+  "domain": "mpp-session-auth-v1",
+  "payer": "<base58>",
+  "sessionChallengeId": "<opening challenge id>"
+}
+```
 
-Items 4–11 above; the canonical flow:
+The proof is bound to the opening challenge and channel. Store the verified
+proof at open and compare later credentials to the stored values; never trust
+a proof's self-declared challenge ID without checking the opening challenge.
 
-1. Receive the session challenge (402).
-2. Generate an ephemeral `authorizedSigner` keypair.
-3. Build and send `SessionAction::Open` (push: client or operator
-   broadcasts the open tx; pull operated: attach the pre-signed
-   delegation txs built against the server's `recentBlockhash`).
-4. For each metered call: receive `MeteringDirective`, sign a voucher
-   for `watermark + directive.amount` (prepare), send
-   `commit` with the directive's `deliveryId`, record the watermark on
-   success only.
-5. On done: `SessionAction::Close` with the final voucher (omit when
-   nothing was metered).
+The proof has no separate expiry field. The standard challenge `expires`
+limits opening the channel. Once the channel is open, the stored proof remains
+valid until idle timeout or channel closure. Framework integrations must not
+apply the opening challenge's expiry to `voucher`, `use`, `topUp`, or `close`.
 
-## Things to pay attention to
+## Exact transaction verification
 
-- **`salt` and `recentSlot` are `u64`s serialized as strings.** The
-  deserializer must accept both string and number; the serializer
-  always emits a string. Rust: `serialize_optional_u64_as_string`
-  adapters (`protocol/intents/session.rs:15`); TS: zod
-  `z.union([z.string(), z.number()])`.
-- **`openSlot` is per-incarnation identity, and it flows from the
-  challenge as `recentSlot`.** It is the last channel PDA seed, so
-  re-opening with the same payer/payee/mint/signer/salt at a different
-  slot yields a *different* address. The server fetches it (`getSlot`)
-  at challenge time and puts it in the challenge as `recentSlot`; the
-  client uses it for PDA derivation + openArgs and echoes it in the
-  OpenPayload `recentSlot`; the server persists it with the channel
-  state — it is required to re-derive the PDA and to run `reclaim`
-  (allowed only when status = distributed and
-  `clock.slot > openSlot + 1500`). Clients never call `getSlot`.
-  Naming rule: the field is `recentSlot` wherever it crosses HTTP,
-  `openSlot`/`open_slot` wherever it names the program concept.
-- **`DEFAULT_SESSION_EXPIRES_AT == 4_102_444_800`** (2100-01-01 UTC),
-  deliberately below `Number.MAX_SAFE_INTEGER`. Same default in every
-  SDK. But `expiresAt` is an **i64** on the wire — in languages with
-  double-only JSON numbers, values above 2^53 will not round-trip;
-  reject them explicitly rather than rounding (a rounded value breaks
-  the Ed25519 signature, which covers `expires_at`).
-- **`cumulativeAmount` is serde-renamed with an alias.** Rust field
-  `cumulative` serializes as `cumulativeAmount` and accepts **both**
-  names on deserialize. A port must accept the `cumulative` alias on
-  every inbound voucher path and serialize only `cumulativeAmount`
-  (both references do; harness tests exercise the alias).
-- **Cumulative, not incremental.** Each voucher carries the
-  monotonically-increasing total; the server computes deltas.
-- **Token program comes from the currency.** PYUSD/USDG/CASH are
-  Token-2022 mints; resolve the token program from the challenge
-  currency (Rust `default_token_program_for_currency`) when deriving
-  ATAs and building the open instruction. Hardcoding SPL Token breaks
-  Token-2022 sessions on-chain (the channel PDA itself is unaffected —
-  token program is not a seed).
-- **`pullVoucherStrategy` separates "how the session opens" from "who
-  signs vouchers".** `clientVoucher`: client signs vouchers.
-  `operatedVoucher`: operator signs after metering; multi-delegate
-  setup required. See `protocol/intents/session.rs:91`.
-- **`modes` omitted or empty means push-only.** Handle the explicit
-  `[]` case, not just `undefined`/missing.
-- **`MeteringDirective.deliveryId` is the idempotency key.** Duplicate
-  `commit` returns `replayed` with the cached receipt. Harness tests
-  exercise duplicate sends.
-- **Open is idempotent; replay must not reset the watermark.** The
-  spec forbids replays changing channel state. Both references
-  implement these exact semantics — mirror them: if the session id
-  already exists and is sealed → error; if the payload's
-  `authorizedSigner` differs from the stored one → error; otherwise
-  return success without mutating state (watermark, highest voucher
-  signature, and deposit all preserved). Do the check-and-insert
-  atomically inside the store lock.
-- **Top-up is gated like open.** Reject top-up on sealed or
-  close-pending channels, and when an RPC endpoint is configured,
-  verify the top-up `signature` is a confirmed transaction before
-  raising the deposit (both references do; without RPC the deposit is
-  trusted and the trust assumption is documented). Full spec
-  conformance additionally wants the on-chain deposit increase
-  confirmed — neither reference decodes the top-up transaction yet.
-- **Encoding boundaries.** Credential envelope and `request` field:
-  canonical JSON (RFC 8785) → base64url no-pad. Transactions
-  (`transaction`, `initMultiDelegateTx`, `updateDelegationTx`):
-  standard-alphabet base64 **with** padding. Signatures, pubkeys,
-  blockhashes: base58.
-- **Streaming requires real async.** SSE / chunked transfer for
-  metered streams; validate usage `deliveryId` against the directive.
+For an open transaction, verify all of the following before persistence:
 
-## Spec divergences (shipped wire ≠ draft spec)
+- exactly one payment-channels open instruction, with only explicitly allowed
+  compute-budget instructions alongside it;
+- transaction fee-payer policy and every required signature;
+- channel program, payer, rent payer, payee, mint, authorized signer, token
+  program, token accounts, and channel PDA;
+- salt, deposit amount, grace period, open slot, and distribution splits;
+- deposit is positive and satisfies the advertised minimum;
+- submitted signature is the transaction's actual fee-payer signature;
+- confirmation succeeded; and
+- the resulting channel account matches the expected state.
 
-Known, deliberate divergences shared by Rust and TS. Match the
-implementations, and track the spec branch for convergence:
+Reject address lookup tables unless every loaded address is resolved and
+verified. A verifier that only sees static account keys must fail closed.
 
-- Challenge schema: implementations use flat
-  `cap`/`operator`/`programId`/`modes`/`pullVoucherStrategy`/`recentBlockhash`;
-  the draft specifies
-  `amount`/`suggestedDeposit`/`minimumDeposit`/`channelProgram`/`feePayer`/`gracePeriodSeconds`
-  under `methodDetails`.
-- `SignedVoucher` is `{data, signature}`; draft requires
-  `{voucher, signer, signature, signatureType}`.
-- Open payload: `deposit`/`gracePeriod`/required `mode`+`signature`;
-  draft: `depositAmount`/`gracePeriodSeconds`/required `transaction`.
-- `topUp`: `newDeposit` (new total) vs draft `additionalAmount`
-  (delta) + transaction bytes.
-- The `commit` action, `MeteringDirective`, and the reserve/commit
-  side channel are implementation extensions absent from the draft.
-- Network value: implementations emit `"mainnet"`; draft says
-  `"mainnet-beta"`. Accept both on input.
-- Voucher `expiresAt`: required and `0` = already expired in the
-  implementations; optional and `0` = no expiry in the draft.
+For top-up, bind the transaction to `channelId` and `additionalAmount`, require
+an actual increase, confirm it, and verify the resulting on-chain deposit is at
+least `previousDeposit + additionalAmount` before updating local state.
+
+## State and atomicity
+
+Store at least:
+
+- verified channel identities and deposit;
+- cumulative high-water mark and highest voucher;
+- payer, voucher signer, opening challenge ID, and authentication proof;
+- negotiated idle timeout and last activity time;
+- pending/committed deliveries;
+- processed HTTP idempotency keys and cached operator-use results;
+- close/seal/settlement state; and
+- open slot and rent payer needed for settlement/reclaim.
+
+All state transitions are per-channel atomic read-modify-write operations.
+Open replay must not reset a watermark. A repeated operator `use` with the same
+non-empty `Idempotency-Key` returns the cached result without incrementing the
+cumulative amount again. Empty idempotency keys are rejected for operator use.
+
+Voucher checks must be repeated inside the atomic mutation: channel open,
+monotonic cumulative amount, deposit bound, minimum delta, exact signer,
+signature validity, and optional voucher expiry.
+
+Idle timers are advisory wakeups. When a timer fires, atomically re-read the
+stored channel and compare `lastActivityAt + idleTimeoutSeconds` before
+closing. Recreate timers for persisted open channels on startup.
 
 ## Test plan
 
-Unit tests (mirror `rust/crates/mpp/src/protocol/intents/session.rs::tests`
-and `typescript/packages/mpp/src/__tests__/session-*.test.ts`):
-
-- `SessionMode` / `SessionPullVoucherStrategy` serde roundtrips.
-- `SessionRequest` omits empty splits/modes/None fields.
-- `OpenPayload` builders; `session_id()` returns channelId first,
-  tokenAccount fallback.
-- `salt` serializes as string, deserializes from string and number.
-- `VoucherData` byte encoding round-trips against
-  `voucher_message_bytes`; Ed25519 verify against `authorizedSigner`.
-- Voucher check sequence: monotonicity (`<=` rejects), deposit cap,
-  min-delta, expiry, replay (same cumulative + same signature →
-  replayed; same cumulative + different signature → rejected).
-- Metering idempotency: duplicate `deliveryId` → `replayed` with the
-  cached receipt; reservation math against deposit.
-- Store concurrency: parallel `updateChannel` mutations serialize; a
-  throwing mutator leaves state unchanged (see
-  `session-store.test.ts`).
-- **Golden instruction bytes**: assert the generated open instruction
-  is byte-identical to the Rust builder output (see
-  `payment-channels-open-ix.test.ts` — copy the golden hex).
-- Close: blocks vouchers/deliveries after `closeRequestedAt`;
-  non-monotonic final voucher errors; double-close rejected.
-
-Integration:
-
-- Surfpool-backed session lifecycle: open → vouchers → topUp → more
-  vouchers → close; final on-chain settlement matches the cumulative.
-  Keep e2e files out of the default vitest config (exclude
-  `**/*-e2e.test.ts`; include them in the surfpool config) and make
-  unreachable-sandbox a **skip**, not a silent pass.
-
-Harness:
-
-- The harness does not ship session scenarios yet. Add one to
-  `harness/src/contracts.ts` (intent `session`) before enabling the
-  cell. Pattern after `charge-basic`; reuse the Surfpool fixtures.
-  Exercise: duplicate commit, voucher with `cumulative` alias,
-  legacy- and v0-encoded open transactions, Token-2022 currency.
+- Exact challenge serialization and rejection of every removed draft field.
+- Exact action parsing for all five actions.
+- Challenge expiry rejects open but not later authenticated actions.
+- Authentication proof binding, signature validation, and operator close.
+- Open and top-up fail closed without RPC.
+- Transaction/account verification for payer, payee, mint, signer, program,
+  token accounts, amount, slots, splits, signatures, confirmation, and
+  resulting account state.
+- Voucher signer metadata and 50-byte golden message vectors.
+- Open, use, and delivery-commit idempotency.
+- Concurrent voucher/use/top-up/close mutations.
+- Idle timeout activity races and timer reconstruction after restart.
+- Full lifecycle: open, vouchers or uses, top-up, more usage, close, settle,
+  distribute, and reclaim.

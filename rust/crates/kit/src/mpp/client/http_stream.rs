@@ -424,7 +424,7 @@ mod tests {
             payload: CommitPayload,
         ) -> Pin<Box<dyn Future<Output = Result<CommitReceipt>> + Send + 'a>> {
             Box::pin(async move {
-                let cumulative = payload.voucher.data.cumulative.clone();
+                let cumulative = payload.voucher.data.cumulative_amount.clone();
                 self.commits.lock().unwrap().push(payload);
                 Ok(CommitReceipt {
                     delivery_id: directive.delivery_id.clone(),
@@ -498,8 +498,8 @@ mod tests {
         let receipt = CommitReceipt {
             delivery_id: payload.delivery_id.clone(),
             session_id: payload.voucher.data.channel_id.clone(),
-            amount: payload.voucher.data.cumulative.clone(),
-            cumulative: payload.voucher.data.cumulative.clone(),
+            amount: payload.voucher.data.cumulative_amount.clone(),
+            cumulative: payload.voucher.data.cumulative_amount.clone(),
             status: CommitStatus::Committed,
         };
         state.commits.lock().unwrap().push(payload);

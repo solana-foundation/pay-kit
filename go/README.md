@@ -193,9 +193,8 @@ over the rust `SessionServer` core):
   payload claims are trusted as provided, matching rust with `rpc_url`
   unset.
 
-Out of scope: pull/operatedVoucher (multi-delegate program builders) on
-both sides, including the `initMultiDelegateTx` submission seam in the
-TypeScript open handler, the SPL `approve` delegation transaction for
+Out of scope: pull sessions on both sides, including the SPL `approve`
+delegation transaction for
 non-channel pull opens (the on-chain delegation happens out of band),
 and a `SessionFetch`-style drop-in fetch wrapper. The TypeScript
 `SessionFetchClient` semantics that wrapper would own (per-channel

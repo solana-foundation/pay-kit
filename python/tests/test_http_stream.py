@@ -49,7 +49,7 @@ class _RecordingTransport:
             delivery_id=directive.delivery_id,
             session_id=directive.session_id,
             amount=directive.amount,
-            cumulative=payload.voucher.data.cumulative,
+            cumulative=payload.voucher.data.cumulative_amount,
             status="committed",
         )
 

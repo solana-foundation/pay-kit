@@ -80,7 +80,7 @@ describe('SessionConsumer', () => {
         expect(transport.commits).toHaveLength(1);
         expect(transport.commits[0]).toMatchObject({
             deliveryId: 'delivery-1',
-            voucher: { data: { cumulativeAmount: '250', nonce: 1 } },
+            voucher: { data: { cumulativeAmount: '250' } },
         });
     });
 
@@ -167,6 +167,8 @@ describe('HttpCommitTransport', () => {
                         expiresAt: DEFAULT_SESSION_EXPIRES_AT,
                     },
                     signature: 'sig',
+                    signatureType: 'ed25519',
+                    signer: 'session-signer',
                 },
             },
         });
@@ -203,6 +205,8 @@ describe('HttpCommitTransport', () => {
                             expiresAt: DEFAULT_SESSION_EXPIRES_AT,
                         },
                         signature: 'sig',
+                        signatureType: 'ed25519',
+                        signer: 'session-signer',
                     },
                 },
             }),
@@ -220,6 +224,8 @@ describe('HttpCommitTransport', () => {
                             expiresAt: DEFAULT_SESSION_EXPIRES_AT,
                         },
                         signature: 'sig',
+                        signatureType: 'ed25519',
+                        signer: 'session-signer',
                     },
                 },
             }),
@@ -241,6 +247,8 @@ describe('HttpCommitTransport', () => {
                             expiresAt: DEFAULT_SESSION_EXPIRES_AT,
                         },
                         signature: 'sig',
+                        signatureType: 'ed25519',
+                        signer: 'session-signer',
                     },
                 },
             }),

@@ -14,16 +14,9 @@
 //!    [`SessionServer::seal_params`] to get the parameters needed to
 //!    submit on-chain seal + distribute transactions.
 //!
-//! # Note on on-chain verification
-//!
-//! When `SessionConfig::rpc_url` is set, `process_open` (push mode) and
-//! `process_topup` confirm the provided transaction signature on-chain via
-//! `getSignatureStatuses` before persisting channel state. When `rpc_url` is
-//! `None`, the transaction signature and deposit amount are trusted as
-//! provided — suitable only for unit tests or deployments that verify
-//! transactions out of band. Even with `rpc_url` set, the deposit amount is
-//! taken from the payload; for full trustlessness, wire up RPC account
-//! verification before persisting channel state.
+//! Open and top-up credentials are accepted only after their submitted
+//! transactions are decoded, bound to the challenge and persisted channel,
+//! broadcast, confirmed, and checked against the resulting on-chain state.
 //!
 //! Replayed `open` payloads for an existing channel are idempotent: they
 //! never reset the voucher watermark or any other channel state.
@@ -36,13 +29,13 @@ use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
 use crate::mpp::protocol::intents::session::{
     resolve_idle_timeout_seconds, validate_idle_timeout_options, ClosePayload, CommitPayload,
-    CommitReceipt, CommitStatus, MeteringDirective, OpenPayload, SessionMode,
-    SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher, TopUpPayload,
-    VoucherPayload,
+    CommitReceipt, CommitStatus, MeteringDirective, OpenPayload, SessionMethodDetails,
+    SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, UsePayload, VoucherData,
+    VoucherPayload, VoucherSignatureType,
 };
 use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 use crate::mpp::store::{
-    ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError,
+    ChannelLifecycle, ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError,
 };
 
 // ── Configuration ──
@@ -54,6 +47,12 @@ pub struct SessionOpenContext<'a> {
     pub challenge_id: &'a str,
     /// Standard challenge expiry from the `expires` auth-param.
     pub expires: Option<&'a str>,
+    /// The challenged `methodDetails.recentBlockhash` (base58). The open
+    /// transaction's compiled message MUST use exactly this blockhash.
+    pub recent_blockhash: &'a str,
+    /// The challenged `methodDetails.recentSlot`. The payload's `openSlot`
+    /// MUST be no later than it and within [`payment_channels::OPEN_SLOT_WINDOW`].
+    pub recent_slot: u64,
 }
 
 impl SessionOpenContext<'_> {
@@ -71,23 +70,18 @@ impl SessionOpenContext<'_> {
 }
 
 /// A payment split committed at channel open; distributed at close.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Split {
     pub recipient: Pubkey,
     /// Share in basis points.
     pub bps: u16,
 }
 
-/// Who signs the channel's vouchers — the settlement authority model.
-///
-/// The simpler successor to the removed `multi_delegator` path. Both settle
-/// through the same batched worker; the difference is only who holds the
-/// channel's `authorized_signer`.
+/// Who signs the channel's vouchers.
 pub use crate::mpp::protocol::intents::session::SessionVoucherSigner as VoucherSigner;
 
 impl VoucherSigner {
-    /// The channel `authorized_signer` to open with under this mode: the
-    /// operator (`Operator`) or the client's own ephemeral key (`Client`).
+    /// Resolve the authorized voucher signer for the selected mode.
     pub fn authorized_signer(self, operator: Pubkey, client: Pubkey) -> Pubkey {
         match self {
             Self::Operator => operator,
@@ -101,12 +95,18 @@ impl VoucherSigner {
 pub struct OpenAcceptance {
     /// Persisted channel state after processing the open.
     pub state: ChannelState,
-
     /// Whether the channel already existed and the open was an idempotent replay.
     pub replay: bool,
 }
 
-/// Server configuration for the session intent.
+/// Result of accepting an operator-signed use action.
+#[derive(Debug, Clone)]
+pub struct UseAcceptance {
+    /// Operator-signed cumulative voucher covering the use.
+    pub voucher: SignedVoucher,
+    /// Whether the idempotency key had already been processed.
+    pub replay: bool,
+}
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     /// Operator public key (base58). Shown to clients in the challenge.
@@ -118,9 +118,14 @@ pub struct SessionConfig {
     /// Optional splits routed to specific recipients at close.
     pub splits: Vec<Split>,
 
-    /// Maximum cap the server will offer per session (base units).
-    /// Clients may request a lower cap but not a higher one.
-    pub max_cap: u64,
+    /// Price per unit of service (base units).
+    pub amount: u64,
+
+    /// Suggested initial channel deposit.
+    pub suggested_deposit: Option<u64>,
+
+    /// Minimum accepted initial channel deposit.
+    pub minimum_deposit: Option<u64>,
 
     /// Currency identifier (e.g., "USDC", mint address).
     pub currency: String,
@@ -132,13 +137,19 @@ pub struct SessionConfig {
     pub network: String,
 
     /// Payment-channel program ID. `None` defaults to the canonical program.
-    pub program_id: Option<Pubkey>,
+    pub channel_program: Option<Pubkey>,
+
+    /// SPL token program override.
+    pub token_program: Option<Pubkey>,
 
     /// Minimum voucher increment (base units). 0 = no minimum.
     pub min_voucher_delta: u64,
 
     /// Voucher signing authority, independent of transaction submission mode.
     pub voucher_signer: VoucherSigner,
+
+    /// Ed25519 key used to issue vouchers in operator mode.
+    pub operator_signing_key: Option<ed25519_dalek::SigningKey>,
 
     /// Inactivity thresholds offered for a new channel.
     pub idle_timeout_options_seconds: Option<Vec<u32>>,
@@ -152,22 +163,10 @@ pub struct SessionConfig {
     /// forced-close delay. Mirrors the channel's on-chain grace period.
     pub grace_period_seconds: u32,
 
-    /// Session modes this server accepts.
-    ///
-    /// Advertised to clients in the 402 challenge. An empty list or
-    /// `[Push]` means only the payment-channel push mode is supported.
-    pub modes: Vec<SessionMode>,
-
-    /// Voucher authority used for pull sessions.
-    ///
-    /// Required when `modes` includes [`SessionMode::Pull`].
-    pub pull_voucher_strategy: Option<SessionPullVoucherStrategy>,
-
     /// Solana RPC URL for on-chain open-transaction verification.
     ///
-    /// When set, `process_open` calls `getSignatureStatuses` to confirm the
-    /// open transaction was accepted by the network before persisting channel
-    /// state. Leave `None` in unit tests or when you want to skip verification.
+    /// Required by open and top-up processing. Missing RPC configuration is a
+    /// hard error; funding is never inferred from payload claims.
     pub rpc_url: Option<String>,
 }
 
@@ -177,18 +176,20 @@ impl Default for SessionConfig {
             operator: String::new(),
             recipient: String::new(),
             splits: vec![],
-            max_cap: 10_000_000, // 10 USDC
+            amount: 1,
+            suggested_deposit: Some(10_000_000),
+            minimum_deposit: None,
             currency: "USDC".to_string(),
             decimals: 6,
             network: "mainnet".to_string(),
-            program_id: None,
+            channel_program: None,
+            token_program: None,
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
+            operator_signing_key: None,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
-            modes: vec![SessionMode::Push],
-            pull_voucher_strategy: None,
             rpc_url: None,
         }
     }
@@ -323,90 +324,113 @@ impl DeliveryRequest {
 pub struct SessionServer<S: ChannelStore> {
     config: SessionConfig,
     store: S,
+    blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
 }
 
 impl<S: ChannelStore> SessionServer<S> {
     pub fn new(config: SessionConfig, store: S) -> Self {
-        Self { config, store }
-    }
-
-    /// Build the `SessionRequest` to embed in a 402 challenge.
-    ///
-    /// `cap` is the maximum this session will allow; clamped to `config.max_cap`.
-    ///
-    /// When `config.rpc_url` is set (and the `server` feature is enabled), the
-    /// current slot is pre-fetched and advertised as `recentSlot` (analogous to
-    /// `recentBlockhash`) — the slot clients MUST use as the program's
-    /// `openSlot` for PDA derivation and `open` (the program only accepts a
-    /// recent slot, and clients never fetch their own). Best-effort, mirroring
-    /// the subscription challenge's blockhash pre-fetch: if the RPC is down the
-    /// challenge still goes out and the client surfaces a clear "challenge
-    /// missing recentSlot" error at open time.
-    pub fn build_challenge_request(&self, cap: u64) -> SessionRequest {
-        let effective_cap = cap.min(self.config.max_cap);
-        SessionRequest {
-            cap: effective_cap.to_string(),
-            currency: self.config.currency.clone(),
-            decimals: Some(self.config.decimals),
-            network: Some(self.config.network.clone()),
-            operator: self.config.operator.clone(),
-            recipient: self.config.recipient.clone(),
-            splits: self
-                .config
-                .splits
-                .iter()
-                .map(|s| SessionSplit {
-                    recipient: bs58::encode(s.recipient.as_ref()).into_string(),
-                    bps: s.bps,
-                })
-                .collect(),
-            program_id: self
-                .config
-                .program_id
-                .map(|p| bs58::encode(p.as_ref()).into_string()),
-            description: None,
-            external_id: None,
-            min_voucher_delta: if self.config.min_voucher_delta > 0 {
-                Some(self.config.min_voucher_delta.to_string())
-            } else {
-                None
-            },
-            voucher_signer: self.config.voucher_signer,
-            idle_timeout_options_seconds: self.config.idle_timeout_options_seconds.clone(),
-            idle_timeout_seconds: None,
-            // Omit if only Push — clients assume Push when modes is absent.
-            modes: if self.config.modes == [SessionMode::Push] {
-                vec![]
-            } else {
-                self.config.modes.clone()
-            },
-            pull_voucher_strategy: if self.config.modes.contains(&SessionMode::Pull) {
-                self.config.pull_voucher_strategy.clone()
-            } else {
-                None
-            },
-            recent_blockhash: None,
-            recent_slot: self.challenge_recent_slot(),
+        Self {
+            config,
+            store,
+            blockhash_cache: None,
         }
     }
 
-    /// Best-effort pre-fetch of the current slot for the challenge's
-    /// `recentSlot` (see [`Self::build_challenge_request`]). `None` when no
-    /// `rpc_url` is configured, when the fetch fails, or without the `server`
-    /// feature.
-    fn challenge_recent_slot(&self) -> Option<u64> {
+    /// Share the host's recent-blockhash cache with challenge issuance, so
+    /// the challenge's `recentBlockhash`/`recentSlot` come from one cached
+    /// `getLatestBlockhash` instead of a blocking RPC round-trip per 402.
+    pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
+        self.blockhash_cache = Some(cache);
+        self
+    }
+
+    /// Build the exact `SessionRequest` embedded in a new-channel 402
+    /// challenge.
+    ///
+    /// Fails loudly (retryable) rather than issuing a challenge without
+    /// `recentBlockhash`/`recentSlot`: both are REQUIRED for a new-channel
+    /// challenge — the client derives the channel PDA from `recentSlot` and
+    /// MUST use the challenged blockhash — so a silent omission would surface
+    /// as a non-retryable payment failure at open time.
+    pub fn build_challenge_request(&self) -> Result<SessionRequest> {
+        let hint = self.challenge_open_transaction_context()?;
+        let channel_program = self
+            .config
+            .channel_program
+            .unwrap_or_else(payment_channels::default_program_id);
+        Ok(SessionRequest {
+            amount: self.config.amount.to_string(),
+            currency: self.config.currency.clone(),
+            recipient: self.config.recipient.clone(),
+            description: None,
+            external_id: None,
+            minimum_deposit: self.config.minimum_deposit.map(|value| value.to_string()),
+            suggested_deposit: self.config.suggested_deposit.map(|value| value.to_string()),
+            unit_type: None,
+            method_details: SessionMethodDetails {
+                network: self.config.network.clone(),
+                channel_program: payment_channels::pubkey_string(&channel_program),
+                channel_id: None,
+                recent_blockhash: Some(hint.blockhash),
+                recent_slot: Some(hint.slot),
+                decimals: Some(self.config.decimals),
+                token_program: self
+                    .config
+                    .token_program
+                    .map(|key| payment_channels::pubkey_string(&key)),
+                fee_payer: None,
+                fee_payer_key: None,
+                voucher_signer: Some(self.config.voucher_signer),
+                operator: (self.config.voucher_signer == VoucherSigner::Operator)
+                    .then(|| self.config.operator.clone()),
+                min_voucher_delta: (self.config.min_voucher_delta > 0)
+                    .then(|| self.config.min_voucher_delta.to_string()),
+                ttl_seconds: None,
+                idle_timeout_options_seconds: self.config.idle_timeout_options_seconds.clone(),
+                idle_timeout_seconds: None,
+                grace_period_seconds: Some(self.config.grace_period_seconds),
+                distribution_splits: self
+                    .config
+                    .splits
+                    .iter()
+                    .map(|split| SessionSplit {
+                        recipient: payment_channels::pubkey_string(&split.recipient),
+                        share_bps: split.bps,
+                    })
+                    .collect(),
+            },
+        })
+    }
+
+    /// Fetch the open-transaction context (`recentBlockhash` + `recentSlot`)
+    /// for a new-channel challenge.
+    ///
+    /// Prefers the shared cache (refreshed out of band) to avoid a blocking
+    /// RPC round-trip per challenge; falls back to one direct
+    /// `getLatestBlockhash` call, whose response carries both the blockhash
+    /// and the context slot.
+    fn challenge_open_transaction_context(
+        &self,
+    ) -> Result<crate::core::blockhash::CachedBlockhash> {
+        if let Some(cached) = self.blockhash_cache.as_ref().and_then(|cache| cache.get()) {
+            return Ok(cached);
+        }
         #[cfg(feature = "server")]
         if let Some(ref rpc_url) = self.config.rpc_url {
             use solana_rpc_client::rpc_client::RpcClient;
-            return RpcClient::new(rpc_url.clone())
-                .get_slot()
+            let rpc = RpcClient::new(rpc_url.clone());
+            return crate::core::blockhash::fetch_blockhash_with_slot(&rpc, rpc.commitment())
                 .map_err(|e| {
-                    tracing::warn!(%e, "recentSlot pre-fetch failed; challenge omits it");
-                    e
-                })
-                .ok();
+                    Error::Rpc(format!(
+                        "failed to fetch recentBlockhash/recentSlot for session challenge: {e}"
+                    ))
+                });
         }
-        None
+        Err(Error::Other(
+            "session challenge requires recentBlockhash/recentSlot; configure a blockhash cache \
+             or an rpc_url"
+                .to_string(),
+        ))
     }
 
     /// Build and validate payment-channel open parameters from an `open` payload.
@@ -418,48 +442,38 @@ impl<S: ChannelStore> SessionServer<S> {
         &self,
         payload: &OpenPayload,
     ) -> Result<payment_channels::OpenChannelParams> {
-        let payer = parse_payload_pubkey(payload.payer.as_deref(), "payer")?;
-        let payee = parse_payload_pubkey(payload.payee.as_deref(), "payee")?;
-        let mint = parse_payload_pubkey(payload.mint.as_deref(), "mint")?;
+        let payer = parse_pubkey_field(&payload.payer, "payer")?;
+        let payee = parse_pubkey_field(&payload.payee, "payee")?;
+        let mint = parse_pubkey_field(&payload.mint, "mint")?;
         let authorized_signer = parse_pubkey_field(&payload.authorized_signer, "authorizedSigner")?;
-        let salt = payload
-            .salt
-            .ok_or_else(|| Error::Other("payment-channel open missing salt".to_string()))?;
-        let grace_period = payload
-            .grace_period
-            .ok_or_else(|| Error::Other("payment-channel open missing gracePeriod".to_string()))?;
-        // The payload's recentSlot is the program's openSlot — a channel-PDA
-        // seed since the epoch-addressed program update — so the server cannot
-        // re-derive (and thus verify) the channel address without it.
-        let open_slot = payload
-            .recent_slot
-            .ok_or_else(|| Error::Other("payment-channel open missing recentSlot".to_string()))?;
+        let salt = payload.salt;
+        let grace_period = payload.grace_period_seconds;
+        let open_slot = payload.open_slot;
         let deposit = payload.deposit_amount()?;
-        let token_program = parse_pubkey_field(
-            default_token_program_for_currency(
-                &self.config.currency,
-                Some(self.config.network.as_str()),
-            ),
-            "token program",
-        )?;
+        let token_program = match self.config.token_program {
+            Some(program) => program,
+            None => parse_pubkey_field(
+                default_token_program_for_currency(
+                    &self.config.currency,
+                    Some(self.config.network.as_str()),
+                ),
+                "token program",
+            )?,
+        };
         let program_id = self
             .config
-            .program_id
+            .channel_program
             .unwrap_or_else(payment_channels::default_program_id);
         let expected_payee = parse_pubkey_field(&self.config.recipient, "recipient")?;
         let expected_mint = expected_payment_channel_mint(&self.config)?;
-        // The configured operator IS the expected rentPayer (slot 1): the
-        // operator / fee-payer pubkey that funds the channel PDA + escrow-ATA
-        // rent while gasless. It is a security boundary, so it is REQUIRED — a
-        // missing/empty operator must hard-fail rather than silently skip the
-        // rentPayer pin. rentPayer is pinned to it below (slot-1 == operator).
-        let operator = parse_required_operator(&self.config.operator)?;
-
-        if self.config.voucher_signer == VoucherSigner::Operator && authorized_signer != operator {
-            return Err(Error::Other(
-                "operator voucher signing requires authorizedSigner to match the operator"
-                    .to_string(),
-            ));
+        if self.config.voucher_signer == VoucherSigner::Operator {
+            let operator = parse_required_operator(&self.config.operator)?;
+            if authorized_signer != operator {
+                return Err(Error::Other(
+                    "operator voucher signing requires authorizedSigner to match the operator"
+                        .to_string(),
+                ));
+            }
         }
 
         if payee != expected_payee {
@@ -470,6 +484,36 @@ impl<S: ChannelStore> SessionServer<S> {
         if mint != expected_mint {
             return Err(Error::Other(
                 "payment-channel open mint does not match challenge currency".to_string(),
+            ));
+        }
+        if grace_period != self.config.grace_period_seconds {
+            return Err(Error::Other(
+                "payment-channel open gracePeriodSeconds does not match challenge".to_string(),
+            ));
+        }
+        if self
+            .config
+            .minimum_deposit
+            .is_some_and(|minimum| deposit < minimum)
+        {
+            return Err(Error::Other(
+                "payment-channel open depositAmount is below minimumDeposit".to_string(),
+            ));
+        }
+
+        let payload_splits: Vec<Split> = payload
+            .distribution_splits
+            .iter()
+            .map(|split| {
+                Ok(Split {
+                    recipient: parse_pubkey_field(&split.recipient, "distribution recipient")?,
+                    bps: split.share_bps,
+                })
+            })
+            .collect::<Result<_>>()?;
+        if payload_splits != self.config.splits {
+            return Err(Error::Other(
+                "payment-channel open distributionSplits do not match challenge".to_string(),
             ));
         }
 
@@ -484,7 +528,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .collect();
         let params = payment_channels::OpenChannelParams {
             payer,
-            rent_payer: operator,
+            rent_payer: payer,
             payee,
             mint,
             authorized_signer,
@@ -498,7 +542,7 @@ impl<S: ChannelStore> SessionServer<S> {
         };
 
         let expected_channel = payment_channels::derive_channel_addresses(&params).channel;
-        let channel = parse_payload_pubkey(payload.channel_id.as_deref(), "channelId")?;
+        let channel = parse_pubkey_field(&payload.channel_id, "channelId")?;
         if channel != expected_channel {
             return Err(Error::Other(
                 "payment-channel open channelId does not match derived channel PDA".to_string(),
@@ -513,7 +557,8 @@ impl<S: ChannelStore> SessionServer<S> {
         &self,
         payload: &OpenPayload,
     ) -> Result<solana_instruction::Instruction> {
-        // rentPayer is pinned to the operator inside `payment_channel_open_params`.
+        // The transaction verifier binds every open-instruction account to
+        // these payload and challenge values before the channel is persisted.
         let params = self.payment_channel_open_params(payload)?;
         Ok(payment_channels::build_open_instruction(&params))
     }
@@ -549,58 +594,18 @@ impl<S: ChannelStore> SessionServer<S> {
         payload: &OpenPayload,
         context: SessionOpenContext<'_>,
     ) -> Result<OpenAcceptance> {
-        self.process_open_inner(payload, context, true).await
-    }
-
-    /// Process an `open` action whose transaction the host already verified.
-    ///
-    /// This performs every payload, challenge, replay, and store validation in
-    /// [`Self::process_open`], but skips the RPC signature lookup. It is only
-    /// safe for host integrations that have independently validated the exact
-    /// open transaction, submitted it, and observed a successful on-chain
-    /// status before calling this method.
-    pub async fn process_preverified_open(
-        &self,
-        payload: &OpenPayload,
-        context: SessionOpenContext<'_>,
-    ) -> Result<ChannelState> {
-        Ok(self
-            .process_preverified_open_with_outcome(payload, context)
-            .await?
-            .state)
-    }
-
-    /// Process a host-verified `open` and report whether it created channel state.
-    pub async fn process_preverified_open_with_outcome(
-        &self,
-        payload: &OpenPayload,
-        context: SessionOpenContext<'_>,
-    ) -> Result<OpenAcceptance> {
-        self.process_open_inner(payload, context, false).await
+        self.process_open_inner(payload, context).await
     }
 
     async fn process_open_inner(
         &self,
         payload: &OpenPayload,
         context: SessionOpenContext<'_>,
-        verify_on_chain: bool,
     ) -> Result<OpenAcceptance> {
         context.ensure_not_expired()?;
-        let supports_mode = if self.config.modes.is_empty() {
-            payload.mode == SessionMode::Push
-        } else {
-            self.config.modes.contains(&payload.mode)
-        };
-        if !supports_mode {
-            return Err(Error::Other(format!(
-                "Session mode {:?} is not supported by this challenge",
-                payload.mode
-            )));
-        }
-
-        let session_id = payload.session_id()?;
+        let session_id = payload.session_id();
         let deposit = payload.deposit_amount()?;
-        let _effective_idle_timeout = resolve_idle_timeout_seconds(
+        let effective_idle_timeout = resolve_idle_timeout_seconds(
             self.config.idle_timeout_seconds,
             self.config.idle_timeout_options_seconds.as_deref(),
             payload.idle_timeout_seconds,
@@ -615,10 +620,25 @@ impl<S: ChannelStore> SessionServer<S> {
             ));
         }
 
-        if deposit > self.config.max_cap {
+        let params = self.payment_channel_open_params(payload)?;
+
+        // Bind the open to the specific challenge that authorized it: the
+        // client takes `openSlot` from the challenged `recentSlot` (an earlier
+        // slot is allowed, a later one never is), so a payload outside this
+        // window was not built against this challenge.
+        if payload.open_slot > context.recent_slot {
             return Err(Error::Other(format!(
-                "Deposit {deposit} exceeds max cap {}",
-                self.config.max_cap
+                "open openSlot {} is ahead of the challenged recentSlot {}",
+                payload.open_slot, context.recent_slot
+            )));
+        }
+        if context.recent_slot - payload.open_slot > payment_channels::OPEN_SLOT_WINDOW {
+            return Err(Error::Other(format!(
+                "open openSlot {} is outside the {}-slot freshness window of the challenged \
+                 recentSlot {}",
+                payload.open_slot,
+                payment_channels::OPEN_SLOT_WINDOW,
+                context.recent_slot
             )));
         }
 
@@ -641,8 +661,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         .to_string(),
                 ));
             }
-            let expected_payer = payload.owner.as_ref().or(payload.payer.as_ref());
-            if expected_payer.is_some_and(|payer| authentication.payer != *payer) {
+            if authentication.payer != payload.payer {
                 return Err(Error::Other(
                     "session authentication payer does not match the channel payer".to_string(),
                 ));
@@ -658,24 +677,21 @@ impl<S: ChannelStore> SessionServer<S> {
             ));
         }
 
-        // On-chain verification: confirm the open transaction was accepted.
-        //
-        // Pull mode: host integrations submit server-broadcast transactions or
-        // validate delegated-token state before invoking this lower-level store
-        // method. Skip tx-sig verification here.
-        //
-        // Push mode: verify the payment-channel open tx is confirmed before persisting.
-        if verify_on_chain && payload.mode == SessionMode::Push {
-            if let Some(ref rpc_url) = self.config.rpc_url {
-                verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open)
-                    .await
-                    .map_err(|e| {
-                        tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
-                        e
-                    })?;
-                tracing::debug!(signature = %payload.signature, "open tx confirmed on-chain");
-            }
-        }
+        verify_submit_and_fetch_open(
+            payload,
+            &params,
+            context.recent_blockhash,
+            self.config.rpc_url.as_deref(),
+        )
+        .await?;
+
+        let authentication = payload
+            .authentication
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| Error::Other(format!("serialize authentication: {error}")))?;
+        let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
 
         let fresh_state = ChannelState {
             channel_id: session_id.to_string(),
@@ -687,15 +703,29 @@ impl<S: ChannelStore> SessionServer<S> {
             highest_voucher_expires_at: None,
             close_requested_at: None,
             // Persisted so the channel PDA can be re-derived and the reclaim
-            // gate evaluated later (the payload's `recentSlot` is the
-            // program's openSlot). `None` for opens that don't carry it
-            // (pull/legacy payloads).
-            open_slot: payload.recent_slot,
-            operator: payload.owner.clone().or_else(|| payload.payer.clone()),
+            // gate evaluated later.
+            open_slot: Some(payload.open_slot),
+            payer: payload.payer.clone(),
+            rent_payer: payload.payer.clone(),
+            opening_challenge_id: context.challenge_id.to_string(),
+            authentication,
+            voucher_signer: match self.config.voucher_signer {
+                VoucherSigner::Client => "client",
+                VoucherSigner::Operator => "operator",
+            }
+            .to_string(),
+            idle_timeout_seconds: Some(effective_idle_timeout),
+            last_activity_at: now_ms,
+            spent_amount: 0,
+            settled_on_chain: 0,
+            processed_uses: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
-            lifecycle: None,
+            lifecycle: Some(ChannelLifecycle {
+                owner: self.config.operator.clone(),
+                close_after: now_ms.saturating_add(u64::from(effective_idle_timeout) * 1_000),
+            }),
         };
 
         // Atomic check-and-insert: a replayed open re-passes all checks above
@@ -704,6 +734,9 @@ impl<S: ChannelStore> SessionServer<S> {
         // accepted vouchers before close.
         let session_id_owned = session_id.to_string();
         let authorized_signer = payload.authorized_signer.clone();
+        let payer = payload.payer.clone();
+        let opening_challenge_id = context.challenge_id.to_string();
+        let authentication = payload.authentication.clone();
         let replay = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let replay_out = std::sync::Arc::clone(&replay);
         let state = self
@@ -720,6 +753,19 @@ impl<S: ChannelStore> SessionServer<S> {
                         if existing.authorized_signer != authorized_signer {
                             return Err(StoreError::Internal(format!(
                                 "Channel {session_id_owned} already exists with a different authorized signer"
+                            )));
+                        }
+                        if existing.payer != payer
+                            || existing.opening_challenge_id != opening_challenge_id
+                            || existing.authentication
+                                != authentication
+                                    .as_ref()
+                                    .map(serde_json::to_string)
+                                    .transpose()
+                                    .map_err(|error| StoreError::Internal(error.to_string()))?
+                        {
+                            return Err(StoreError::Internal(format!(
+                                "Channel {session_id_owned} open replay does not match stored state"
                             )));
                         }
                         // Idempotent replay: keep existing state untouched.
@@ -755,9 +801,22 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
     pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
+        let state = self
+            .store
+            .get_channel(&voucher.data.channel_id)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| {
+                Error::Other(format!("Channel {} not found", voucher.data.channel_id))
+            })?;
+        if voucher.signer != state.authorized_signer {
+            return Err(Error::Other(
+                "voucher signer does not match the channel authorized signer".to_string(),
+            ));
+        }
         let new_cumulative: u64 = voucher
             .data
-            .cumulative
+            .cumulative_amount
             .parse()
             .map_err(|_| Error::Other("Invalid cumulative in voucher".to_string()))?;
 
@@ -767,51 +826,232 @@ impl<S: ChannelStore> SessionServer<S> {
         // channel's forced-close grace period: a non-zero voucher expiry must
         // outlast it so the operator can still redeem on-chain after the async
         // forced-close delay.
-        crate::core::session::accept_voucher(
+        let acceptance = crate::core::session::accept_voucher(
             &self.store,
             &voucher.data.channel_id,
             new_cumulative,
-            voucher.data.expires_at,
+            voucher.data.expires_at.unwrap_or(0),
             &voucher.signature,
             now_unix_secs(),
             self.config.min_voucher_delta,
             self.config.grace_period_seconds as i64,
         )
         .await
-        .map_err(Into::into)
+        .map_err(Error::from)?;
+        let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
+        let owner = self.config.operator.clone();
+        self.store
+            .update_channel(
+                &voucher.data.channel_id,
+                Box::new(move |state_opt| {
+                    let mut state = state_opt.ok_or_else(|| {
+                        StoreError::Internal(
+                            "Channel disappeared after voucher acceptance".to_string(),
+                        )
+                    })?;
+                    state.last_activity_at = now_ms;
+                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
+                        owner,
+                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
+                    });
+                    Ok(state)
+                }),
+            )
+            .await
+            .map_err(store_err)?;
+        Ok(acceptance)
+    }
+
+    /// Meter one operator-signed request exactly once.
+    pub async fn process_use(
+        &self,
+        payload: &UsePayload,
+        challenge_id: &str,
+        idempotency_key: &str,
+    ) -> Result<UseAcceptance> {
+        use ed25519_dalek::Signer;
+
+        if idempotency_key.is_empty() {
+            return Err(Error::Other(
+                "operator-signed use requires an Idempotency-Key".to_string(),
+            ));
+        }
+        if self.config.voucher_signer != VoucherSigner::Operator {
+            return Err(Error::Other(
+                "use is only valid for operator-signed sessions".to_string(),
+            ));
+        }
+        let signing_key =
+            self.config.operator_signing_key.clone().ok_or_else(|| {
+                Error::Other("operator signing key is required for use".to_string())
+            })?;
+        let signer = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
+        if signer != self.config.operator {
+            return Err(Error::Other(
+                "operator signing key does not match configured operator".to_string(),
+            ));
+        }
+        let authentication = serde_json::to_string(&payload.authentication)
+            .map_err(|error| Error::Other(format!("serialize authentication: {error}")))?;
+        let channel_id = payload.channel_id.clone();
+        let channel_id_for_update = channel_id.clone();
+        let proof = payload.authentication.clone();
+        let challenge_id = challenge_id.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        let price = self.config.amount;
+        let lifecycle_owner = self.config.operator.clone();
+        let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let result_out = std::sync::Arc::clone(&result);
+        self.store
+            .update_channel(
+                &channel_id,
+                Box::new(move |state_opt| {
+                    let mut state = state_opt.ok_or_else(|| {
+                        StoreError::Internal(format!("Channel {channel_id_for_update} not found"))
+                    })?;
+                    if state.sealed || state.close_requested_at.is_some() {
+                        return Err(StoreError::Internal(
+                            "Channel is closed or close is pending".to_string(),
+                        ));
+                    }
+                    if state.voucher_signer != "operator"
+                        || state.authentication.as_deref() != Some(authentication.as_str())
+                        || proof.challenge_id != state.opening_challenge_id
+                        || proof.payer != state.payer
+                        || !proof
+                            .verify(&state.channel_id)
+                            .map_err(|error| StoreError::Internal(error.to_string()))?
+                    {
+                        return Err(StoreError::Internal(
+                            "use authentication does not match the proof bound at open".to_string(),
+                        ));
+                    }
+                    if let Some(replay) = state
+                        .processed_uses
+                        .iter()
+                        .find(|entry| entry.idempotency_key == idempotency_key)
+                    {
+                        let voucher = SignedVoucher {
+                            data: VoucherData {
+                                channel_id: state.channel_id.clone(),
+                                cumulative_amount: replay.cumulative.to_string(),
+                                expires_at: None,
+                            },
+                            signer: signer.clone(),
+                            signature: replay.voucher_signature.clone(),
+                            signature_type: VoucherSignatureType::Ed25519,
+                        };
+                        *result_out.lock().unwrap() = Some(UseAcceptance {
+                            voucher,
+                            replay: true,
+                        });
+                        return Ok(state);
+                    }
+                    let cumulative = state.cumulative.checked_add(price).ok_or_else(|| {
+                        StoreError::Internal("session cumulative overflow".to_string())
+                    })?;
+                    if cumulative > state.deposit {
+                        return Err(StoreError::Internal(
+                            "insufficient channel availability".to_string(),
+                        ));
+                    }
+                    let data = VoucherData {
+                        channel_id: state.channel_id.clone(),
+                        cumulative_amount: cumulative.to_string(),
+                        expires_at: None,
+                    };
+                    let signature = bs58::encode(
+                        signing_key
+                            .sign(
+                                &data
+                                    .message_bytes()
+                                    .map_err(|error| StoreError::Internal(error.to_string()))?,
+                            )
+                            .to_bytes(),
+                    )
+                    .into_string();
+                    state.cumulative = cumulative;
+                    state.spent_amount =
+                        state.spent_amount.checked_add(price).ok_or_else(|| {
+                            StoreError::Internal("session spent amount overflow".to_string())
+                        })?;
+                    state.highest_voucher_signature = Some(signature.clone());
+                    state.highest_voucher_expires_at = Some(0);
+                    let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
+                    state.last_activity_at = now_ms;
+                    state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
+                        owner: lifecycle_owner.clone(),
+                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
+                    });
+                    state.processed_uses.push(crate::core::store::ProcessedUse {
+                        challenge_id: challenge_id.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                        cumulative,
+                        voucher_signature: signature.clone(),
+                    });
+                    let voucher = SignedVoucher {
+                        data,
+                        signer: signer.clone(),
+                        signature,
+                        signature_type: VoucherSignatureType::Ed25519,
+                    };
+                    *result_out.lock().unwrap() = Some(UseAcceptance {
+                        voucher,
+                        replay: false,
+                    });
+                    Ok(state)
+                }),
+            )
+            .await
+            .map_err(store_err)?;
+        let acceptance = result
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| Error::Other("use did not produce a voucher".to_string()))?;
+        Ok(acceptance)
     }
 
     /// Process a `topup` action: atomically update the channel's deposit cap.
     ///
-    /// The new deposit must be greater than the current deposit and must not
-    /// exceed the configured max cap. Top-ups are rejected once the channel is
+    /// The additional amount must be positive and must not overflow the
+    /// channel deposit. Top-ups are rejected once the channel is
     /// sealed or a close has been requested.
     ///
-    /// When `config.rpc_url` is set, confirms the top-up transaction is
-    /// finalized on-chain before raising the deposit — rejects the top-up if
-    /// the tx is unknown or failed. When `rpc_url` is `None`, the provided
-    /// signature and deposit amount are trusted as-is; only use that mode in
-    /// unit tests or when the caller verifies the transaction out of band.
+    /// The top-up transaction is decoded, broadcast, confirmed, and checked
+    /// against the resulting channel account before the deposit is raised.
+    /// Missing RPC configuration is a hard error.
     pub async fn process_topup(&self, payload: &TopUpPayload) -> Result<ChannelState> {
-        let new_deposit: u64 = payload
-            .new_deposit
+        let additional_amount: u64 = payload
+            .additional_amount
             .parse()
-            .map_err(|_| Error::Other("Invalid new_deposit".to_string()))?;
-
-        // On-chain verification: confirm the top-up transaction was accepted
-        // (same RPC path as process_open).
-        if let Some(ref rpc_url) = self.config.rpc_url {
-            verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::TopUp)
-                .await
-                .map_err(|e| {
-                    tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
-                    e
-                })?;
-            tracing::debug!(signature = %payload.signature, "top-up tx confirmed on-chain");
+            .map_err(|_| Error::Other("invalid additionalAmount".to_string()))?;
+        if additional_amount == 0 {
+            return Err(Error::Other(
+                "additionalAmount must be positive".to_string(),
+            ));
         }
+        let existing = self
+            .store
+            .get_channel(&payload.channel_id)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(|| Error::Other(format!("Channel {} not found", payload.channel_id)))?;
+        if existing.sealed || existing.close_requested_at.is_some() {
+            return Err(Error::Other(
+                "Channel is closed or close is pending".to_string(),
+            ));
+        }
+        verify_submit_and_fetch_topup(
+            payload,
+            &existing,
+            &self.config,
+            self.config.rpc_url.as_deref(),
+        )
+        .await?;
 
-        let max_cap = self.config.max_cap;
         let cid = payload.channel_id.clone();
+        let lifecycle_owner = self.config.operator.clone();
         self.store
             .update_channel(
                 &payload.channel_id,
@@ -828,19 +1068,22 @@ impl<S: ChannelStore> SessionServer<S> {
                             "Channel close is pending — no further top-ups accepted".to_string(),
                         ));
                     }
-                    if new_deposit <= state.deposit {
-                        return Err(StoreError::Internal(format!(
-                            "New deposit {new_deposit} must exceed current deposit {}",
-                            state.deposit
-                        )));
-                    }
-                    if new_deposit > max_cap {
-                        return Err(StoreError::Internal(format!(
-                            "New deposit {new_deposit} exceeds max cap {max_cap}"
-                        )));
-                    }
+                    let new_deposit =
+                        state
+                            .deposit
+                            .checked_add(additional_amount)
+                            .ok_or_else(|| {
+                                StoreError::Internal("top-up deposit overflow".to_string())
+                            })?;
+                    let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
+                    let lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
+                        owner: lifecycle_owner.clone(),
+                        close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
+                    });
                     Ok(ChannelState {
                         deposit: new_deposit,
+                        last_activity_at: now_ms,
+                        lifecycle,
                         ..state
                     })
                 }),
@@ -958,7 +1201,7 @@ impl<S: ChannelStore> SessionServer<S> {
         let new_cumulative: u64 = payload
             .voucher
             .data
-            .cumulative
+            .cumulative_amount
             .parse()
             .map_err(|_| Error::Other("Invalid cumulative in commit voucher".to_string()))?;
 
@@ -1023,7 +1266,7 @@ impl<S: ChannelStore> SessionServer<S> {
 
         let delivery_id = payload.delivery_id.clone();
         let signature = payload.voucher.signature.clone();
-        let expires_at = payload.voucher.data.expires_at;
+        let expires_at = payload.voucher.data.expires_at.unwrap_or(0);
         let commit_outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
         let _new_state = self
             .store
@@ -1133,6 +1376,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .unwrap_or_default()
             .as_secs();
         let voucher_opt = payload.voucher.clone();
+        let authentication_opt = payload.authentication.clone();
         let settlement_window = self.config.grace_period_seconds as i64;
 
         self.store
@@ -1151,11 +1395,49 @@ impl<S: ChannelStore> SessionServer<S> {
                         return Err(StoreError::Internal("Close already requested".to_string()));
                     }
 
+                    if state.voucher_signer == "operator" {
+                        if voucher_opt.is_some() {
+                            return Err(StoreError::Internal(
+                                "operator close must not include a voucher".to_string(),
+                            ));
+                        }
+                        let authentication = authentication_opt.as_ref().ok_or_else(|| {
+                            StoreError::Internal(
+                                "operator close requires the proof bound at open".to_string(),
+                            )
+                        })?;
+                        let encoded = serde_json::to_string(authentication)
+                            .map_err(|error| StoreError::Internal(error.to_string()))?;
+                        if state.authentication.as_deref() != Some(encoded.as_str())
+                            || authentication.challenge_id != state.opening_challenge_id
+                            || authentication.payer != state.payer
+                            || !authentication
+                                .verify(&state.channel_id)
+                                .map_err(|error| StoreError::Internal(error.to_string()))?
+                        {
+                            return Err(StoreError::Internal(
+                                "close authentication does not match the proof bound at open"
+                                    .to_string(),
+                            ));
+                        }
+                    } else {
+                        if authentication_opt.is_some() {
+                            return Err(StoreError::Internal(
+                                "client close must not include authentication".to_string(),
+                            ));
+                        }
+                        if voucher_opt.is_none() {
+                            return Err(StoreError::Internal(
+                                "client close requires a final voucher".to_string(),
+                            ));
+                        }
+                    }
+
                     let (new_cumulative, new_sig, new_expires_at) =
                         if let Some(ref voucher) = voucher_opt {
                         let cumulative: u64 = voucher
                             .data
-                            .cumulative
+                            .cumulative_amount
                             .parse()
                             .map_err(|_| StoreError::Internal("Invalid cumulative".to_string()))?;
                         if cumulative <= state.cumulative {
@@ -1173,7 +1455,7 @@ impl<S: ChannelStore> SessionServer<S> {
                                 (
                                     state.cumulative,
                                     state.highest_voucher_signature.clone(),
-                                    state.highest_voucher_expires_at.or(Some(voucher.data.expires_at)),
+                                    state.highest_voucher_expires_at.or(Some(voucher.data.expires_at.unwrap_or(0))),
                                 )
                             } else {
                                 return Err(StoreError::Internal(format!(
@@ -1192,7 +1474,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             (
                                 cumulative,
                                 Some(voucher.signature.clone()),
-                                Some(voucher.data.expires_at),
+                                Some(voucher.data.expires_at.unwrap_or(0)),
                             )
                         }
                     } else {
@@ -1230,14 +1512,11 @@ impl<S: ChannelStore> SessionServer<S> {
         let channel_pubkey = parse_pubkey(channel_id)?;
         let recipient_pubkey = parse_pubkey(&self.config.recipient)?;
         let authorized_signer = parse_pubkey(&state.authorized_signer).ok();
-        let payer = state
-            .operator
-            .as_deref()
-            .and_then(|payer| parse_pubkey(payer).ok());
+        let payer = parse_pubkey(&state.payer).ok();
         let mint = expected_payment_channel_mint(&self.config).ok();
         let program_id = self
             .config
-            .program_id
+            .channel_program
             .unwrap_or_else(payment_channels::default_program_id);
 
         let splits_with_pubkeys: Vec<payment_channels::Distribution> = self
@@ -1286,91 +1565,252 @@ fn unix_now_i64() -> i64 {
         .as_secs() as i64
 }
 
-/// Which transaction a signature check is verifying — names the tx in
-/// error messages. The spellings are mirrored by the TypeScript port's
-/// error strings; add variants rather than passing free-form labels.
 #[cfg(feature = "server")]
-#[derive(Clone, Copy, Debug)]
-enum VerifiedTx {
-    Open,
-    TopUp,
-}
-
-#[cfg(feature = "server")]
-const TRANSACTION_STATUS_MAX_ATTEMPTS: usize = 60;
-#[cfg(feature = "server")]
-const TRANSACTION_STATUS_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-
-#[cfg(feature = "server")]
-impl std::fmt::Display for VerifiedTx {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Open => "open",
-            Self::TopUp => "top-up",
-        })
-    }
-}
-
-/// Confirm that `sig_str` is a successful transaction on-chain.
-///
-/// `tx` names the transaction in error messages (see [`VerifiedTx`]).
-/// Retries temporarily missing statuses because RPC providers may route
-/// consecutive requests to replicas with different visibility. Returns an
-/// error if the signature is malformed, the tx was rejected, or it remains
-/// unavailable after the bounded retry window.
-#[cfg(feature = "server")]
-async fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) -> Result<()> {
-    verify_transaction_signature_with_policy(
-        sig_str,
-        rpc_url,
-        tx,
-        TRANSACTION_STATUS_MAX_ATTEMPTS,
-        TRANSACTION_STATUS_RETRY_DELAY,
-    )
-    .await
-}
-
-#[cfg(feature = "server")]
-async fn verify_transaction_signature_with_policy(
-    sig_str: &str,
-    rpc_url: &str,
-    tx: VerifiedTx,
-    max_attempts: usize,
-    retry_delay: std::time::Duration,
+async fn verify_submit_and_fetch_open(
+    payload: &OpenPayload,
+    params: &payment_channels::OpenChannelParams,
+    challenged_blockhash: &str,
+    rpc_url: Option<&str>,
 ) -> Result<()> {
-    use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-    use solana_signature::Signature;
-    use std::str::FromStr;
+    use solana_rpc_client::rpc_client::RpcClient;
 
-    let sig = Signature::from_str(sig_str)
-        .map_err(|e| Error::Other(format!("invalid {tx} tx signature '{sig_str}': {e}")))?;
+    let rpc_url = rpc_url.ok_or_else(|| {
+        Error::Other(
+            "session open requires an RPC client; funding verification cannot be skipped"
+                .to_string(),
+        )
+    })?;
+    let tx = payment_channels::decode_transaction(&payload.transaction)?;
+    if tx
+        .message
+        .address_table_lookups()
+        .is_some_and(|lookups| !lookups.is_empty())
+    {
+        return Err(Error::Other(
+            "open transaction must not use address lookup tables".to_string(),
+        ));
+    }
+    // The compiled message must use the challenged `recentBlockhash`: it
+    // proves the transaction was built for this challenge, not replayed from
+    // an older one the server never authorized.
+    if tx.message.recent_blockhash().to_string() != challenged_blockhash {
+        return Err(Error::Other(
+            "open transaction does not use the challenged recentBlockhash".to_string(),
+        ));
+    }
+    let keys = tx.message.static_account_keys();
+    if keys.first() != Some(&params.payer) {
+        return Err(Error::Other(
+            "open transaction fee payer must equal the channel payer".to_string(),
+        ));
+    }
+    let expected = payment_channels::build_open_instruction(params);
+    let compute_budget = parse_pubkey("ComputeBudget111111111111111111111111111111")?;
+    let mut found_open = false;
+    for ix in tx.message.instructions() {
+        let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
+            Error::Other("open instruction program index out of range".to_string())
+        })?;
+        if *program == compute_budget {
+            continue;
+        }
+        if found_open || *program != expected.program_id || ix.data != expected.data {
+            return Err(Error::Other(
+                "open transaction contains an unexpected instruction".to_string(),
+            ));
+        }
+        let accounts = ix
+            .accounts
+            .iter()
+            .map(|index| {
+                keys.get(*index as usize)
+                    .copied()
+                    .ok_or_else(|| Error::Other("open account index out of range".to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let expected_accounts = expected
+            .accounts
+            .iter()
+            .map(|account| account.pubkey)
+            .collect::<Vec<_>>();
+        if accounts != expected_accounts {
+            return Err(Error::Other(
+                "open transaction accounts do not match the declared channel".to_string(),
+            ));
+        }
+        found_open = true;
+    }
+    if !found_open {
+        return Err(Error::Other(
+            "open transaction does not contain the expected open instruction".to_string(),
+        ));
+    }
 
     let rpc = RpcClient::new(rpc_url.to_string());
-    let max_attempts = max_attempts.max(1);
-
-    for attempt in 1..=max_attempts {
-        match rpc.get_signature_status(&sig).await {
-            Ok(Some(Ok(()))) => return Ok(()),
-            Ok(Some(Err(e))) => {
-                return Err(Error::Other(format!("{tx} tx was rejected on-chain: {e}")));
-            }
-            Ok(None) if attempt < max_attempts => tokio::time::sleep(retry_delay).await,
-            Ok(None) => break,
-            Err(error) if attempt < max_attempts => {
-                tracing::debug!(%error, attempt, "RPC error verifying {tx} tx, retrying");
-                tokio::time::sleep(retry_delay).await;
-            }
-            Err(error) => {
-                return Err(Error::Other(format!(
-                    "RPC error verifying {tx} tx: {error}"
-                )));
-            }
-        }
+    rpc.send_and_confirm_transaction(&tx)
+        .map_err(|error| Error::Rpc(format!("open broadcast failed: {error}")))?;
+    let channel_address = payment_channels::derive_channel_addresses(params).channel;
+    let account = rpc
+        .get_account(&channel_address)
+        .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?;
+    let channel =
+        payment_channels::generated::generated::accounts::Channel::from_bytes(&account.data)
+            .map_err(|error| Error::Other(format!("decode confirmed channel: {error}")))?;
+    if channel.status != 0
+        || channel.deposit != params.deposit
+        || channel.salt != params.salt
+        || channel.open_slot != params.open_slot
+        || channel.grace_period != params.grace_period
+        || payment_channels::from_address(&channel.payer) != params.payer
+        || payment_channels::from_address(&channel.rent_payer) != params.rent_payer
+        || payment_channels::from_address(&channel.payee) != params.payee
+        || payment_channels::from_address(&channel.mint) != params.mint
+        || payment_channels::from_address(&channel.authorized_signer) != params.authorized_signer
+        || channel.distribution_hash != payment_channels::distribution_hash(&params.recipients)
+    {
+        return Err(Error::Other(
+            "confirmed channel state does not match the verified open transaction".to_string(),
+        ));
     }
+    Ok(())
+}
 
-    Err(Error::Other(format!(
-        "{tx} tx '{sig_str}' not found — not yet confirmed or does not exist"
-    )))
+#[cfg(feature = "server")]
+async fn verify_submit_and_fetch_topup(
+    payload: &TopUpPayload,
+    state: &ChannelState,
+    config: &SessionConfig,
+    rpc_url: Option<&str>,
+) -> Result<()> {
+    use solana_rpc_client::rpc_client::RpcClient;
+
+    let rpc_url = rpc_url.ok_or_else(|| {
+        Error::Other(
+            "session top-up requires an RPC client; funding verification cannot be skipped"
+                .to_string(),
+        )
+    })?;
+    let amount = payload
+        .additional_amount
+        .parse::<u64>()
+        .map_err(|_| Error::Other("invalid additionalAmount".to_string()))?;
+    let payer = parse_pubkey_field(&state.payer, "payer")?;
+    let channel = parse_pubkey_field(&payload.channel_id, "channelId")?;
+    let mint = expected_payment_channel_mint(config)?;
+    let token_program = match config.token_program {
+        Some(program) => program,
+        None => parse_pubkey_field(
+            default_token_program_for_currency(&config.currency, Some(config.network.as_str())),
+            "token program",
+        )?,
+    };
+    let program_id = config
+        .channel_program
+        .unwrap_or_else(payment_channels::default_program_id);
+    let expected = payment_channels::build_top_up_instruction(
+        &payer,
+        &channel,
+        &mint,
+        amount,
+        &token_program,
+        &program_id,
+    );
+    let tx = payment_channels::decode_transaction(&payload.transaction)?;
+    if tx
+        .message
+        .address_table_lookups()
+        .is_some_and(|lookups| !lookups.is_empty())
+    {
+        return Err(Error::Other(
+            "top-up transaction must not use address lookup tables".to_string(),
+        ));
+    }
+    let keys = tx.message.static_account_keys();
+    if keys.first() != Some(&payer) {
+        return Err(Error::Other(
+            "top-up transaction fee payer must equal the channel payer".to_string(),
+        ));
+    }
+    let compute_budget = parse_pubkey("ComputeBudget111111111111111111111111111111")?;
+    let mut found = false;
+    for ix in tx.message.instructions() {
+        let program = keys
+            .get(ix.program_id_index as usize)
+            .ok_or_else(|| Error::Other("top-up program index out of range".to_string()))?;
+        if *program == compute_budget {
+            continue;
+        }
+        let accounts = ix
+            .accounts
+            .iter()
+            .map(|index| {
+                keys.get(*index as usize)
+                    .copied()
+                    .ok_or_else(|| Error::Other("top-up account index out of range".to_string()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let expected_accounts = expected
+            .accounts
+            .iter()
+            .map(|account| account.pubkey)
+            .collect::<Vec<_>>();
+        if found
+            || *program != expected.program_id
+            || ix.data != expected.data
+            || accounts != expected_accounts
+        {
+            return Err(Error::Other(
+                "top-up transaction does not match channel and additionalAmount".to_string(),
+            ));
+        }
+        found = true;
+    }
+    if !found {
+        return Err(Error::Other("top-up instruction not found".to_string()));
+    }
+    let rpc = RpcClient::new(rpc_url.to_string());
+    rpc.send_and_confirm_transaction(&tx)
+        .map_err(|error| Error::Rpc(format!("top-up broadcast failed: {error}")))?;
+    let account = rpc
+        .get_account(&channel)
+        .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?;
+    let channel_state =
+        payment_channels::generated::generated::accounts::Channel::from_bytes(&account.data)
+            .map_err(|error| Error::Other(format!("decode topped-up channel: {error}")))?;
+    let minimum = state
+        .deposit
+        .checked_add(amount)
+        .ok_or_else(|| Error::Other("top-up deposit overflow".to_string()))?;
+    if channel_state.status != 0 || channel_state.deposit < minimum {
+        return Err(Error::Other(
+            "confirmed channel state does not reflect the submitted top-up".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "server"))]
+async fn verify_submit_and_fetch_topup(
+    _payload: &TopUpPayload,
+    _state: &ChannelState,
+    _config: &SessionConfig,
+    _rpc_url: Option<&str>,
+) -> Result<()> {
+    Err(Error::Other(
+        "session top-up verification requires the `server` feature".to_string(),
+    ))
+}
+
+#[cfg(not(feature = "server"))]
+async fn verify_submit_and_fetch_open(
+    _payload: &OpenPayload,
+    _params: &payment_channels::OpenChannelParams,
+    _challenged_blockhash: &str,
+    _rpc_url: Option<&str>,
+) -> Result<()> {
+    Err(Error::Other(
+        "session open verification requires the `server` feature".to_string(),
+    ))
 }
 
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
@@ -1383,26 +1823,15 @@ fn parse_pubkey(s: &str) -> Result<Pubkey> {
     Ok(Pubkey::from(arr))
 }
 
-fn parse_payload_pubkey(value: Option<&str>, field: &str) -> Result<Pubkey> {
-    let value =
-        value.ok_or_else(|| Error::Other(format!("payment-channel open missing {field}")))?;
-    parse_pubkey_field(value, field)
-}
-
 fn parse_pubkey_field(value: &str, field: &str) -> Result<Pubkey> {
     parse_pubkey(value).map_err(|e| Error::Other(format!("invalid payment-channel {field}: {e}")))
 }
 
-/// Parse the configured operator pubkey, which is the expected `rentPayer`
-/// (slot 1) of the open: the operator / fee payer that funds the channel rent
-/// while gasless. The rentPayer slot is a security boundary, so the operator is
-/// REQUIRED — an empty/missing value hard-fails rather than letting the
-/// rentPayer pin be skipped.
+/// Parse the configured operator pubkey used for operator-signed vouchers.
 fn parse_required_operator(operator: &str) -> Result<Pubkey> {
     if operator.trim().is_empty() {
         return Err(Error::Other(
-            "payment-channel open requires a configured operator (the expected rentPayer)"
-                .to_string(),
+            "payment-channel open requires a configured operator signer".to_string(),
         ));
     }
     parse_pubkey_field(operator, "operator")
@@ -1435,15 +1864,20 @@ fn verify_signature(
     authorized_signer: &str,
     settlement_window: i64,
 ) -> Result<()> {
+    if voucher.signer != authorized_signer {
+        return Err(Error::Other(
+            "voucher signer does not match the channel authorized signer".to_string(),
+        ));
+    }
     let cumulative: u64 = voucher
         .data
-        .cumulative
+        .cumulative_amount
         .parse()
         .map_err(|_| Error::Other("Invalid cumulative in voucher".to_string()))?;
     crate::core::voucher::verify_voucher_signature(
         &voucher.data.channel_id,
         cumulative,
-        voucher.data.expires_at,
+        voucher.data.expires_at.unwrap_or(0),
         &voucher.signature,
         authorized_signer,
         now_unix_secs(),
@@ -1470,1728 +1904,1187 @@ pub fn compute_distribution_hash(_recipient: &Pubkey, splits: &[(Pubkey, u16)]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mpp::client::session::ActiveSession;
     use crate::mpp::protocol::intents::session::{
-        ClosePayload, CommitPayload, CommitStatus, OpenPayload, SessionMode,
-        SessionPullVoucherStrategy, VoucherData, VoucherPayload,
+        SessionAuthentication, SessionSplit, VoucherSignatureType,
     };
+    use crate::mpp::protocol::solana::{mints, programs};
     use crate::mpp::store::MemoryChannelStore;
+    use solana_keychain::MemorySigner;
+    use std::str::FromStr;
 
-    const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+    fn key(seed: u8) -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+    }
 
-    fn open_context() -> SessionOpenContext<'static> {
-        SessionOpenContext {
-            challenge_id: "challenge-1",
-            expires: None,
+    fn signer(seed: u8) -> Box<dyn solana_keychain::SolanaSigner> {
+        let key = key(seed);
+        let mut bytes = [0_u8; 64];
+        bytes[..32].copy_from_slice(key.as_bytes());
+        bytes[32..].copy_from_slice(key.verifying_key().as_bytes());
+        Box::new(MemorySigner::from_bytes(&bytes).unwrap())
+    }
+
+    fn signer_address(seed: u8) -> String {
+        bs58::encode(key(seed).verifying_key().as_bytes()).into_string()
+    }
+
+    /// The `recentSlot` every test challenge advertises; matches the
+    /// `open_slot` used by `valid_open`/`signed_open`.
+    const CHALLENGED_SLOT: u64 = 42;
+
+    /// The `recentBlockhash` every test challenge advertises; `signed_open`
+    /// builds its transaction with the same hash so full-path opens verify.
+    fn test_blockhash() -> solana_hash::Hash {
+        solana_hash::Hash::new_from_array([7; 32])
+    }
+
+    fn config(voucher_signer: VoucherSigner) -> SessionConfig {
+        let operator_key = key(9);
+        SessionConfig {
+            operator: bs58::encode(operator_key.verifying_key().as_bytes()).into_string(),
+            recipient: Pubkey::new_unique().to_string(),
+            amount: 25,
+            suggested_deposit: Some(1_000),
+            minimum_deposit: Some(100),
+            network: "mainnet".into(),
+            voucher_signer,
+            operator_signing_key: (voucher_signer == VoucherSigner::Operator)
+                .then_some(operator_key),
+            idle_timeout_options_seconds: Some(vec![60, 300]),
+            idle_timeout_seconds: 300,
+            ..SessionConfig::default()
         }
     }
 
-    fn make_server() -> SessionServer<MemoryChannelStore> {
-        SessionServer::new(
-            SessionConfig {
-                operator: RECIPIENT.to_string(),
-                recipient: RECIPIENT.to_string(),
-                splits: vec![],
-                max_cap: 10_000_000,
-                currency: "USDC".to_string(),
-                decimals: 6,
-                network: "localnet".to_string(),
-                program_id: None,
-                min_voucher_delta: 0,
-                voucher_signer: VoucherSigner::Client,
-                idle_timeout_options_seconds: None,
-                idle_timeout_seconds: 300,
-                grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
-                modes: vec![SessionMode::Push],
-                pull_voucher_strategy: None,
-                rpc_url: None,
-            },
-            MemoryChannelStore::new(),
-        )
+    fn state(channel_id: String, authorized_signer: String) -> ChannelState {
+        ChannelState {
+            channel_id,
+            authorized_signer,
+            deposit: 1_000,
+            cumulative: 0,
+            sealed: false,
+            highest_voucher_signature: None,
+            highest_voucher_expires_at: None,
+            close_requested_at: None,
+            open_slot: Some(42),
+            payer: Pubkey::new_unique().to_string(),
+            rent_payer: Pubkey::new_unique().to_string(),
+            opening_challenge_id: "opening".into(),
+            authentication: None,
+            voucher_signer: "client".into(),
+            idle_timeout_seconds: Some(60),
+            last_activity_at: 1,
+            spent_amount: 0,
+            settled_on_chain: 0,
+            processed_uses: vec![],
+            next_delivery_sequence: 0,
+            pending_deliveries: vec![],
+            committed_deliveries: vec![],
+            lifecycle: None,
+        }
     }
 
-    fn make_server_with_min_delta(min_delta: u64) -> SessionServer<MemoryChannelStore> {
-        SessionServer::new(
-            SessionConfig {
-                operator: RECIPIENT.to_string(),
-                recipient: RECIPIENT.to_string(),
-                splits: vec![],
-                max_cap: 10_000_000,
-                currency: "USDC".to_string(),
-                decimals: 6,
-                network: "localnet".to_string(),
-                program_id: None,
-                min_voucher_delta: min_delta,
-                voucher_signer: VoucherSigner::Client,
-                idle_timeout_options_seconds: None,
-                idle_timeout_seconds: 300,
-                grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
-                modes: vec![SessionMode::Push],
-                pull_voucher_strategy: None,
-                rpc_url: None,
-            },
-            MemoryChannelStore::new(),
-        )
-    }
-
-    fn open_payload(channel_id: &str, deposit: u64, signer: &str) -> OpenPayload {
-        OpenPayload::push(
-            channel_id.to_string(),
-            deposit.to_string(),
-            signer.to_string(),
-            "dummy_tx_sig".to_string(),
-        )
-    }
-
-    // ── E2E helpers ──────────────────────────────────────────────────────────
-
-    /// Build a deterministic MemorySigner + ActiveSession from a fixed seed.
-    /// Returns (session, authorized_signer_b58, channel_id_b58).
-    #[cfg(feature = "client")]
-    fn make_e2e_session() -> (
-        crate::mpp::client::session::ActiveSession,
-        String, // authorized_signer
-        String, // channel_id (base58)
-        Pubkey, // channel Pubkey
-    ) {
-        use solana_keychain::MemorySigner;
-        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
-        let vk = sk.verifying_key();
-        let mut kp = [0u8; 64];
-        kp[..32].copy_from_slice(sk.as_bytes());
-        kp[32..].copy_from_slice(vk.as_bytes());
-        let signer: Box<dyn solana_keychain::SolanaSigner> =
-            Box::new(MemorySigner::from_bytes(&kp).expect("valid keypair"));
-        let auth_signer = bs58::encode(vk.as_bytes()).into_string();
+    async fn client_server() -> (SessionServer<MemoryChannelStore>, ActiveSession, String) {
         let channel = Pubkey::new_unique();
-        let chan_str = bs58::encode(channel.as_ref()).into_string();
-        let session = crate::mpp::client::session::ActiveSession::new(channel, signer);
-        (session, auth_signer, chan_str, channel)
-    }
-
-    // ── process_open ─────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn process_open_stores_state() {
-        let server = make_server();
-        let acceptance = server
-            .process_open_with_outcome(&open_payload("chan1", 1_000_000, "signer1"), open_context())
+        let channel_id = channel.to_string();
+        let session = ActiveSession::new(channel, signer(1));
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel(&channel_id, state(channel_id.clone(), signer_address(1)))
             .await
             .unwrap();
-        let state = acceptance.state;
-        assert!(!acceptance.replay);
-        assert_eq!(state.deposit, 1_000_000);
-        assert_eq!(state.cumulative, 0);
-        assert!(!state.sealed);
-        assert_eq!(state.authorized_signer, "signer1");
+        (
+            SessionServer::new(config(VoucherSigner::Client), store),
+            session,
+            channel_id,
+        )
     }
 
-    #[tokio::test]
-    async fn process_preverified_open_skips_rpc_lookup() {
-        let server = SessionServer::new(
-            SessionConfig {
-                rpc_url: Some("http://127.0.0.1:1".to_string()),
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-
-        let state = server
-            .process_preverified_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-
-        assert_eq!(state.channel_id, "chan1");
-        assert_eq!(state.deposit, 1_000_000);
-    }
-
-    #[tokio::test]
-    async fn operator_open_rejects_non_operator_authorized_signer() {
-        let server = SessionServer::new(
-            SessionConfig {
-                voucher_signer: VoucherSigner::Operator,
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-        let payload = open_payload("chan1", 1_000_000, &Pubkey::new_unique().to_string());
-
-        let err = server
-            .process_preverified_open(&payload, open_context())
-            .await
-            .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("operator voucher signing requires authorizedSigner to match the operator"));
-    }
-
-    #[tokio::test]
-    async fn operator_open_binds_authentication_to_opening_challenge() {
-        let operator = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-        let payer = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
-        let operator_address = bs58::encode(operator.verifying_key().as_bytes()).into_string();
-        let mut payload = open_payload("chan1", 1_000_000, &operator_address);
-        payload.payer = Some(bs58::encode(payer.verifying_key().as_bytes()).into_string());
-        payload.authentication = Some(
-            crate::mpp::SessionAuthentication::sign("different-challenge", "chan1", &payer)
-                .unwrap(),
-        );
-        let server = SessionServer::new(
-            SessionConfig {
-                operator: operator_address,
-                voucher_signer: VoucherSigner::Operator,
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-
-        let error = server
-            .process_preverified_open(&payload, open_context())
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("challengeId does not match"));
-    }
-
-    #[tokio::test]
-    async fn process_open_rejects_expired_opening_challenge() {
-        let server = make_server();
-        let context = SessionOpenContext {
-            challenge_id: "challenge-1",
-            expires: Some("2000-01-01T00:00:00Z"),
+    fn valid_open(server: &SessionServer<MemoryChannelStore>) -> OpenPayload {
+        let payer = Pubkey::new_unique();
+        let payee = Pubkey::from_str(&server.config.recipient).unwrap();
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+        let authorized_signer = match server.config.voucher_signer {
+            VoucherSigner::Client => Pubkey::new_unique(),
+            VoucherSigner::Operator => Pubkey::from_str(&server.config.operator).unwrap(),
         };
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            rent_payer: payer,
+            payee,
+            mint,
+            authorized_signer,
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: server.config.grace_period_seconds,
+            recipients: vec![],
+            token_program: Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap(),
+            program_id: payment_channels::default_program_id(),
+        };
+        OpenPayload::payment_channel(
+            payment_channels::derive_channel_addresses(&params)
+                .channel
+                .to_string(),
+            "1000".into(),
+            payer.to_string(),
+            payee.to_string(),
+            mint.to_string(),
+            7,
+            server.config.grace_period_seconds,
+            42,
+            authorized_signer.to_string(),
+            "transaction".into(),
+        )
+    }
 
-        let error = server
-            .process_preverified_open(&open_payload("chan1", 1_000_000, "signer1"), context)
+    #[cfg(feature = "server")]
+    async fn rpc_for_channel(
+        channel: payment_channels::generated::generated::accounts::Channel,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use base64::Engine;
+        use serde_json::{json, Value};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let account_data = borsh::to_vec(&channel).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let account_data = account_data.clone();
+                tokio::spawn(async move {
+                    let mut bytes = Vec::new();
+                    let body_start = loop {
+                        let mut chunk = [0_u8; 4096];
+                        let read = stream.read(&mut chunk).await.unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        bytes.extend_from_slice(&chunk[..read]);
+                        if let Some(index) =
+                            bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break index + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&bytes[..body_start]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(str::trim)
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .unwrap();
+                    while bytes.len() < body_start + content_length {
+                        let mut chunk = [0_u8; 4096];
+                        let read = stream.read(&mut chunk).await.unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        bytes.extend_from_slice(&chunk[..read]);
+                    }
+                    let request: Value =
+                        serde_json::from_slice(&bytes[body_start..body_start + content_length])
+                            .unwrap();
+                    let result = match request["method"].as_str().unwrap_or_default() {
+                        "sendTransaction" => json!(payment_channels::decode_transaction(
+                            request["params"][0].as_str().unwrap(),
+                        )
+                        .unwrap()
+                        .signatures[0]
+                            .to_string()),
+                        "getSignatureStatuses" => json!({
+                            "context": { "slot": 43 },
+                            "value": [{
+                                "slot": 43,
+                                "confirmations": null,
+                                "err": null,
+                                "confirmationStatus": "finalized",
+                                "status": { "Ok": null }
+                            }]
+                        }),
+                        "getAccountInfo" => json!({
+                            "context": { "slot": 43 },
+                            "value": {
+                                "data": [
+                                    base64::engine::general_purpose::STANDARD.encode(account_data),
+                                    "base64"
+                                ],
+                                "executable": false,
+                                "lamports": 1,
+                                "owner": payment_channels::PAYMENT_CHANNELS_PROGRAM_ID,
+                                "rentEpoch": 0,
+                                "space": 256
+                            }
+                        }),
+                        method => panic!("unexpected RPC method {method}"),
+                    };
+                    let body = serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0",
+                        "id": request["id"].clone(),
+                        "result": result
+                    }))
+                    .unwrap();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(&body).await.unwrap();
+                });
+            }
+        });
+        (url, handle)
+    }
+
+    #[cfg(feature = "server")]
+    async fn signed_open(
+        server: &SessionServer<MemoryChannelStore>,
+        payer_seed: u8,
+    ) -> (OpenPayload, payment_channels::OpenChannelParams) {
+        let payer = signer(payer_seed);
+        let payee = Pubkey::from_str(&server.config.recipient).unwrap();
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+        let authorized_signer = match server.config.voucher_signer {
+            VoucherSigner::Client => signer_address(1).parse().unwrap(),
+            VoucherSigner::Operator => server.config.operator.parse().unwrap(),
+        };
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let program_id = payment_channels::default_program_id();
+        let params = payment_channels::OpenChannelParams {
+            payer: payer.pubkey(),
+            rent_payer: payer.pubkey(),
+            payee,
+            mint,
+            authorized_signer,
+            salt: 7,
+            open_slot: 42,
+            deposit: 1_000,
+            grace_period: server.config.grace_period_seconds,
+            recipients: vec![],
+            token_program,
+            program_id,
+        };
+        let tx = payment_channels::build_open_payment_channel_tx(
+            payer.as_ref(),
+            &payee,
+            &mint,
+            &authorized_signer,
+            7,
+            42,
+            1_000,
+            server.config.grace_period_seconds,
+            vec![],
+            &token_program,
+            &program_id,
+            &payer.pubkey(),
+            test_blockhash(),
+        )
+        .await
+        .unwrap();
+        (
+            OpenPayload::payment_channel(
+                tx.channel_id.to_string(),
+                "1000".into(),
+                payer.pubkey().to_string(),
+                payee.to_string(),
+                mint.to_string(),
+                7,
+                server.config.grace_period_seconds,
+                42,
+                authorized_signer.to_string(),
+                tx.transaction,
+            ),
+            params,
+        )
+    }
+
+    #[test]
+    fn challenge_and_open_params_use_the_exact_contract() {
+        let split = Split {
+            recipient: Pubkey::new_unique(),
+            bps: 250,
+        };
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.splits.push(split.clone());
+        cfg.min_voucher_delta = 5;
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        cache.set(test_blockhash().to_string(), 314, CHALLENGED_SLOT);
+        let server = SessionServer::new(cfg, MemoryChannelStore::new()).with_blockhash_cache(cache);
+        let request = server.build_challenge_request().unwrap();
+        assert_eq!(request.amount, "25");
+        assert_eq!(request.minimum_deposit.as_deref(), Some("100"));
+        assert_eq!(request.method_details.channel_id, None);
+        // Both open-transaction context fields come from the one cached
+        // `getLatestBlockhash` entry — never from a per-challenge RPC call.
+        let challenged_blockhash = test_blockhash().to_string();
+        assert_eq!(
+            request.method_details.recent_blockhash.as_deref(),
+            Some(challenged_blockhash.as_str())
+        );
+        assert_eq!(request.method_details.recent_slot, Some(CHALLENGED_SLOT));
+        assert_eq!(
+            request.method_details.min_voucher_delta.as_deref(),
+            Some("5")
+        );
+        assert_eq!(request.method_details.distribution_splits[0].share_bps, 250);
+
+        let mut open = valid_open(&server);
+        open.distribution_splits = vec![SessionSplit {
+            recipient: split.recipient.to_string(),
+            share_bps: split.bps,
+        }];
+        let params = server.payment_channel_open_params(&open).unwrap();
+        assert_eq!(params.deposit, 1_000);
+        assert_eq!(params.open_slot, 42);
+        assert_eq!(
+            server
+                .payment_channel_open_instruction(&open)
+                .unwrap()
+                .program_id,
+            params.program_id
+        );
+
+        let mut invalid = open.clone();
+        invalid.payee = Pubkey::new_unique().to_string();
+        assert!(server.payment_channel_open_params(&invalid).is_err());
+        invalid = open.clone();
+        invalid.mint = Pubkey::new_unique().to_string();
+        assert!(server.payment_channel_open_params(&invalid).is_err());
+        invalid = open.clone();
+        invalid.grace_period_seconds += 1;
+        assert!(server.payment_channel_open_params(&invalid).is_err());
+        invalid = open.clone();
+        invalid.deposit_amount = "1".into();
+        assert!(server.payment_channel_open_params(&invalid).is_err());
+        invalid = open.clone();
+        invalid.channel_id = Pubkey::new_unique().to_string();
+        assert!(server.payment_channel_open_params(&invalid).is_err());
+        invalid = open;
+        invalid.distribution_splits.clear();
+        assert!(server.payment_channel_open_params(&invalid).is_err());
+    }
+
+    #[test]
+    fn challenge_fails_without_open_transaction_context() {
+        // A new-channel challenge REQUIRES recentBlockhash/recentSlot, so a
+        // server with neither a blockhash cache nor an rpc_url must fail the
+        // challenge (retryable) instead of degrading to a hint-less 402 the
+        // client cannot open against.
+        let server = SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
+        let err = server.build_challenge_request().unwrap_err();
+        assert!(err.to_string().contains("recentBlockhash"));
+    }
+
+    #[tokio::test]
+    async fn open_enforces_expiry_authentication_and_rpc_verification() {
+        let client = SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
+        let open = valid_open(&client);
+        let expired = client
+            .process_open(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: Some("2000-01-01T00:00:00Z"),
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
             .await
             .unwrap_err();
-
-        assert!(matches!(error, Error::ChallengeExpired(_)));
-    }
-
-    #[tokio::test]
-    async fn process_open_zero_deposit_rejected() {
-        let server = make_server();
-        assert!(server
-            .process_open(&open_payload("chan1", 0, "signer1"), open_context())
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn process_open_exceeds_cap_rejected() {
-        let server = make_server();
-        assert!(server
+        assert!(expired.to_string().contains("expired"));
+        let missing_rpc = client
             .process_open(
-                &open_payload("chan1", 20_000_000, "signer1"),
-                open_context(),
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(missing_rpc.to_string().contains("RPC client"));
+
+        // The open is bound to the challenged `recentSlot`: an `openSlot`
+        // ahead of it, or stale beyond OPEN_SLOT_WINDOW, was not built
+        // against this challenge.
+        let ahead = client
+            .process_open(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: 41,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(ahead
+            .to_string()
+            .contains("ahead of the challenged recentSlot"));
+        let stale = client
+            .process_open(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: 42 + payment_channels::OPEN_SLOT_WINDOW + 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(stale.to_string().contains("freshness window"));
+
+        let operator =
+            SessionServer::new(config(VoucherSigner::Operator), MemoryChannelStore::new());
+        let mut operated = valid_open(&operator);
+        let payer_key = key(2);
+        operated.payer = signer_address(2);
+        operated.authentication =
+            Some(SessionAuthentication::sign("wrong", &operated.channel_id, &payer_key).unwrap());
+        assert!(operator
+            .process_open(
+                &operated,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
+                },
             )
             .await
             .is_err());
     }
 
-    #[tokio::test]
-    async fn process_open_rejects_unadvertised_pull_mode() {
-        let server = make_server();
-        let payload = OpenPayload::payment_channel_with_mode(
-            SessionMode::Pull,
-            "chan1".to_string(),
-            "1000000".to_string(),
-            "payer".to_string(),
-            RECIPIENT.to_string(),
-            "mint".to_string(),
-            1,
-            900,
-            314,
-            "signer1".to_string(),
-            "pending".to_string(),
-        );
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_open_is_persisted_and_replays_without_reset() {
+        use payment_channels::generated::generated::types::SettlementWatermarks;
 
-        let err = server
-            .process_open(&payload, open_context())
+        let mut server =
+            SessionServer::new(config(VoucherSigner::Operator), MemoryChannelStore::new());
+        let (mut open, params) = signed_open(&server, 4).await;
+        open.authentication =
+            Some(SessionAuthentication::sign("opening", &open.channel_id, &key(4)).unwrap());
+        let channel = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: params.salt,
+            deposit: params.deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: params.grace_period,
+            distribution_hash: payment_channels::distribution_hash(&params.recipients),
+            payer: payment_channels::to_address(&params.payer),
+            payee: payment_channels::to_address(&params.payee),
+            authorized_signer: payment_channels::to_address(&params.authorized_signer),
+            mint: payment_channels::to_address(&params.mint),
+            rent_payer: payment_channels::to_address(&params.rent_payer),
+            open_slot: params.open_slot,
+        };
+        let (url, rpc) = rpc_for_channel(channel).await;
+        server.config.rpc_url = Some(url);
+        let challenged_blockhash = test_blockhash().to_string();
+        // A transaction built against some other blockhash was not built for
+        // this challenge — rejected before broadcast.
+        let wrong_blockhash = solana_hash::Hash::new_unique().to_string();
+        let mismatch = server
+            .process_open(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: &wrong_blockhash,
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("not supported"));
-    }
-
-    #[tokio::test]
-    async fn process_open_accepts_advertised_pull_client_voucher_channel() {
-        let server = SessionServer::new(
-            SessionConfig {
-                modes: vec![SessionMode::Pull],
-                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-        let payload = OpenPayload::payment_channel_with_mode(
-            SessionMode::Pull,
-            "chan1".to_string(),
-            "1000000".to_string(),
-            "payer".to_string(),
-            RECIPIENT.to_string(),
-            "mint".to_string(),
-            1,
-            900,
-            314,
-            "signer1".to_string(),
-            "pending".to_string(),
-        );
-
-        let state = server.process_open(&payload, open_context()).await.unwrap();
-        assert_eq!(state.channel_id, "chan1");
-        assert_eq!(state.deposit, 1_000_000);
-    }
-
-    #[test]
-    fn payment_channel_open_params_validate_challenge_fields() {
-        use crate::mpp::protocol::solana::{mints, programs};
-        use std::str::FromStr;
-
-        let payer = Pubkey::new_unique();
-        let authorized_signer = Pubkey::new_unique();
-        let split_recipient = Pubkey::new_unique();
-        let recipient = Pubkey::from_str(RECIPIENT).expect("valid recipient");
-        let mint = Pubkey::from_str(mints::USDC_MAINNET).expect("valid USDC mint");
-        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).expect("valid token program");
-        let server = SessionServer::new(
-            SessionConfig {
-                splits: vec![Split {
-                    recipient: split_recipient,
-                    bps: 10,
-                }],
-                modes: vec![SessionMode::Pull],
-                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-        let expected = payment_channels::OpenChannelParams {
-            payer,
-            // rentPayer is pinned to the operator (config operator == RECIPIENT).
-            rent_payer: recipient,
-            payee: recipient,
-            mint,
-            authorized_signer,
-            salt: 77,
-            open_slot: 4_242,
-            deposit: 1_000_000,
-            grace_period: 900,
-            recipients: vec![payment_channels::Distribution {
-                recipient: split_recipient,
-                bps: 10,
-            }],
-            token_program,
-            program_id: payment_channels::default_program_id(),
+        assert!(mismatch.to_string().contains("challenged recentBlockhash"));
+        let context = SessionOpenContext {
+            challenge_id: "opening",
+            expires: None,
+            recent_blockhash: &challenged_blockhash,
+            recent_slot: CHALLENGED_SLOT,
         };
-        let channel = payment_channels::derive_channel_addresses(&expected).channel;
-        let payload = OpenPayload::payment_channel_with_mode(
-            SessionMode::Pull,
-            payment_channels::pubkey_string(&channel),
-            expected.deposit.to_string(),
-            payment_channels::pubkey_string(&payer),
-            RECIPIENT.to_string(),
-            mints::USDC_MAINNET.to_string(),
-            expected.salt,
-            expected.grace_period,
-            expected.open_slot,
-            payment_channels::pubkey_string(&authorized_signer),
-            "pending".to_string(),
-        );
-
-        let params = server.payment_channel_open_params(&payload).unwrap();
-        assert_eq!(params.payer, expected.payer);
-        assert_eq!(params.payee, expected.payee);
-        assert_eq!(params.mint, expected.mint);
-        assert_eq!(params.authorized_signer, expected.authorized_signer);
-        assert_eq!(params.recipients, expected.recipients);
-        assert_eq!(
-            server
-                .payment_channel_open_instruction(&payload)
-                .unwrap()
-                .program_id,
-            payment_channels::to_address(&expected.program_id)
-        );
-
-        let delegated_server = SessionServer::new(
-            SessionConfig {
-                voucher_signer: VoucherSigner::Operator,
-                ..server.config.clone()
-            },
-            MemoryChannelStore::new(),
-        );
-        let err = delegated_server
-            .payment_channel_open_params(&payload)
-            .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("authorizedSigner to match the operator"));
-
-        let mut wrong_payee = payload.clone();
-        wrong_payee.payee = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
-        let err = server
-            .payment_channel_open_params(&wrong_payee)
-            .unwrap_err();
-        assert!(err.to_string().contains("payee does not match"));
-
-        let mut wrong_mint = payload.clone();
-        wrong_mint.mint = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
-        let err = server.payment_channel_open_params(&wrong_mint).unwrap_err();
-        assert!(err.to_string().contains("mint does not match"));
-
-        let mut missing_payer = payload.clone();
-        missing_payer.payer = None;
-        let err = server
-            .payment_channel_open_params(&missing_payer)
-            .unwrap_err();
-        assert!(err.to_string().contains("missing payer"));
-
-        let mut missing_salt = payload.clone();
-        missing_salt.salt = None;
-        let err = server
-            .payment_channel_open_params(&missing_salt)
-            .unwrap_err();
-        assert!(err.to_string().contains("missing salt"));
-
-        let mut missing_grace_period = payload.clone();
-        missing_grace_period.grace_period = None;
-        let err = server
-            .payment_channel_open_params(&missing_grace_period)
-            .unwrap_err();
-        assert!(err.to_string().contains("missing gracePeriod"));
-
-        let mut missing_recent_slot = payload.clone();
-        missing_recent_slot.recent_slot = None;
-        let err = server
-            .payment_channel_open_params(&missing_recent_slot)
-            .unwrap_err();
-        assert!(err.to_string().contains("missing recentSlot"));
-
-        // A different recentSlot derives a different (per-incarnation) PDA, so
-        // the payload's channelId no longer matches.
-        let mut wrong_recent_slot = payload.clone();
-        wrong_recent_slot.recent_slot = Some(expected.open_slot + 1);
-        let err = server
-            .payment_channel_open_params(&wrong_recent_slot)
-            .unwrap_err();
-        assert!(err.to_string().contains("channelId does not match"));
-
-        let mut invalid_authorized_signer = payload.clone();
-        invalid_authorized_signer.authorized_signer = "not-a-pubkey".to_string();
-        let err = server
-            .payment_channel_open_params(&invalid_authorized_signer)
-            .unwrap_err();
-        assert!(err.to_string().contains("authorizedSigner"));
-
-        let sol_server = SessionServer::new(
-            SessionConfig {
-                currency: "SOL".to_string(),
-                modes: vec![SessionMode::Pull],
-                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-        let err = sol_server
-            .payment_channel_open_params(&payload)
-            .unwrap_err();
-        assert!(err.to_string().contains("SPL token"));
-
-        let mut wrong_channel = payload.clone();
-        wrong_channel.channel_id = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
-        let err = server
-            .payment_channel_open_params(&wrong_channel)
-            .unwrap_err();
-        assert!(err.to_string().contains("channelId does not match"));
-
-        // FIX C: the operator (expected rentPayer / slot 1) is REQUIRED. An
-        // empty operator must hard-fail rather than silently skipping the
-        // rentPayer pin.
-        let no_operator_server = SessionServer::new(
-            SessionConfig {
-                operator: String::new(),
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-        let err = no_operator_server
-            .payment_channel_open_params(&payload)
-            .unwrap_err();
-        assert!(err.to_string().contains("requires a configured operator"));
-    }
-
-    #[test]
-    fn payment_channel_open_params_resolves_token_2022_stablecoin_symbols() {
-        use crate::mpp::protocol::solana::{mints, programs};
-        use std::str::FromStr;
-
-        let payer = Pubkey::new_unique();
-        let authorized_signer = Pubkey::new_unique();
-        let payee = Pubkey::from_str(RECIPIENT).expect("valid recipient");
-        let mint = Pubkey::from_str(mints::PYUSD_DEVNET).expect("valid PYUSD mint");
-        let token_program =
-            Pubkey::from_str(programs::TOKEN_2022_PROGRAM).expect("valid token-2022 program");
-        let server = SessionServer::new(
-            SessionConfig {
-                currency: "PYUSD".to_string(),
-                network: "devnet".to_string(),
-                modes: vec![SessionMode::Pull],
-                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
-                ..make_server().config
-            },
-            MemoryChannelStore::new(),
-        );
-        let expected = payment_channels::OpenChannelParams {
-            payer,
-            // rentPayer is pinned to the operator (config operator == RECIPIENT == payee).
-            rent_payer: payee,
-            payee,
-            mint,
-            authorized_signer,
-            salt: 88,
-            open_slot: 4_243,
-            deposit: 1_000_000,
-            grace_period: 901,
-            recipients: vec![],
-            token_program,
-            program_id: payment_channels::default_program_id(),
-        };
-        let channel = payment_channels::derive_channel_addresses(&expected).channel;
-        let payload = OpenPayload::payment_channel_with_mode(
-            SessionMode::Pull,
-            payment_channels::pubkey_string(&channel),
-            expected.deposit.to_string(),
-            payment_channels::pubkey_string(&payer),
-            RECIPIENT.to_string(),
-            mints::PYUSD_DEVNET.to_string(),
-            expected.salt,
-            expected.grace_period,
-            expected.open_slot,
-            payment_channels::pubkey_string(&authorized_signer),
-            "pending".to_string(),
-        );
-
-        let params = server.payment_channel_open_params(&payload).unwrap();
-        assert_eq!(params.mint, mint);
-        assert_eq!(params.token_program, token_program);
-        assert_eq!(params.grace_period, 901);
-    }
-
-    #[tokio::test]
-    async fn process_open_exactly_at_cap_accepted() {
-        let server = make_server();
-        let state = server
-            .process_open(&open_payload("chan1", 10_000_000, "s"), open_context())
+        let accepted = server
+            .process_open_with_outcome(&open, context)
             .await
             .unwrap();
-        assert_eq!(state.deposit, 10_000_000);
+        assert!(!accepted.replay);
+        assert_eq!(accepted.state.opening_challenge_id, "opening");
+        assert_eq!(accepted.state.idle_timeout_seconds, Some(300));
+        let replay = server
+            .process_open_with_outcome(&open, context)
+            .await
+            .unwrap();
+        assert!(replay.replay);
+
+        server.store.mark_sealed(&open.channel_id).await.unwrap();
+        assert!(server.process_open(&open, context).await.is_err());
+        rpc.abort();
     }
 
-    #[tokio::test]
-    async fn process_open_replay_does_not_reset_watermark() {
-        let server = make_server();
-        let payload = open_payload("chan1", 1_000_000, "signer1");
-        server.process_open(&payload, open_context()).await.unwrap();
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_topup_adds_only_the_declared_amount() {
+        use base64::Engine;
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+        use solana_message::Message;
+        use solana_transaction::Transaction;
 
-        // Simulate accepted vouchers advancing the watermark.
+        let (mut server, _session, channel_id) = client_server().await;
+        let payer = signer(5);
         server
             .store
             .update_channel(
-                "chan1",
-                Box::new(|state_opt| {
-                    let state = state_opt.unwrap();
-                    Ok(ChannelState {
-                        cumulative: 750_000,
-                        highest_voucher_signature: Some("voucher_sig".to_string()),
-                        highest_voucher_expires_at: Some(i64::MAX),
-                        ..state
-                    })
+                &channel_id,
+                Box::new({
+                    let payer = payer.pubkey().to_string();
+                    move |state| {
+                        let mut state = state.unwrap();
+                        state.payer = payer;
+                        Ok(state)
+                    }
                 }),
             )
             .await
             .unwrap();
-
-        // Replayed open (re-passes all open checks) must not mutate state.
-        let acceptance = server
-            .process_open_with_outcome(&payload, open_context())
-            .await
-            .unwrap();
-        let state = acceptance.state;
-        assert!(acceptance.replay);
-        assert_eq!(state.cumulative, 750_000);
-        assert_eq!(
-            state.highest_voucher_signature.as_deref(),
-            Some("voucher_sig")
+        let channel = Pubkey::from_str(&channel_id).unwrap();
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let program_id = payment_channels::default_program_id();
+        let ix = payment_channels::build_top_up_instruction(
+            &payer.pubkey(),
+            &channel,
+            &mint,
+            100,
+            &token_program,
+            &program_id,
         );
-
-        let stored = server.store.get_channel("chan1").await.unwrap().unwrap();
-        assert_eq!(stored.cumulative, 750_000);
-        assert_eq!(
-            stored.highest_voucher_signature.as_deref(),
-            Some("voucher_sig")
+        let message = Message::new_with_blockhash(
+            &[ix],
+            Some(&payer.pubkey()),
+            &solana_hash::Hash::new_unique(),
         );
-        assert_eq!(stored.deposit, 1_000_000);
-    }
-
-    #[tokio::test]
-    async fn process_open_existing_channel_mismatched_signer_rejected() {
-        let server = make_server();
-        server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-
-        let err = server
-            .process_open(&open_payload("chan1", 1_000_000, "signer2"), open_context())
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("different authorized signer"),
-            "Expected mismatched signer error, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn process_open_on_sealed_channel_rejected() {
-        let server = make_server();
-        let payload = open_payload("chan1", 1_000_000, "signer1");
-        server.process_open(&payload, open_context()).await.unwrap();
-        server.mark_sealed("chan1").await.unwrap();
-
-        let err = server
-            .process_open(&payload, open_context())
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("sealed"),
-            "Expected sealed error, got: {err}"
-        );
-    }
-
-    // ── metered deliveries ──────────────────────────────────────────────────
-
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    async fn begin_delivery_reserves_capacity() {
-        let server = make_server();
-        let (_session, authorized_signer, channel_id, _channel) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&channel_id, 1_000, &authorized_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-
-        let directive = server
-            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 100))
-            .await
-            .unwrap();
-        assert_eq!(directive.session_id, channel_id);
-        assert_eq!(directive.amount, "100");
-        assert_eq!(directive.sequence, 1);
-
-        let state = server
-            .store
-            .get_channel(&directive.session_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(state.pending_deliveries.len(), 1);
-        assert_eq!(
-            state.pending_deliveries[0].delivery_id,
-            directive.delivery_id
-        );
-
-        let err = server
-            .begin_delivery(DeliveryRequest::new(directive.session_id, 901))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("exceeds available deposit"));
-    }
-
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    async fn process_commit_accepts_delivery_and_replays_idempotently() {
-        let server = make_server();
-        let (mut session, authorized_signer, channel_id, _channel) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&channel_id, 1_000, &authorized_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-        let directive = server
-            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 125))
-            .await
-            .unwrap();
-        let voucher = session.sign_increment(125).await.unwrap();
-        let payload = CommitPayload {
-            delivery_id: directive.delivery_id.clone(),
-            voucher,
+        let mut tx = Transaction::new_unsigned(message);
+        payer.sign_transaction(&mut tx).await.unwrap();
+        let transaction =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+        let account = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: 7,
+            deposit: 1_100,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: server.config.grace_period_seconds,
+            distribution_hash: [0; 32],
+            payer: payment_channels::to_address(&payer.pubkey()),
+            payee: payment_channels::to_address(
+                &Pubkey::from_str(&server.config.recipient).unwrap(),
+            ),
+            authorized_signer: payment_channels::to_address(&signer(1).pubkey()),
+            mint: payment_channels::to_address(&mint),
+            rent_payer: payment_channels::to_address(&payer.pubkey()),
+            open_slot: 42,
         };
+        let (url, rpc) = rpc_for_channel(account).await;
+        server.config.rpc_url = Some(url);
+        let updated = server
+            .process_topup(&TopUpPayload {
+                channel_id,
+                additional_amount: "100".into(),
+                transaction,
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated.deposit, 1_100);
+        assert!(updated.lifecycle.is_some());
+        rpc.abort();
+    }
 
-        let receipt = server.process_commit(&payload).await.unwrap();
-        assert_eq!(receipt.delivery_id, directive.delivery_id);
-        assert_eq!(receipt.amount, "125");
-        assert_eq!(receipt.cumulative, "125");
-        assert_eq!(receipt.status, CommitStatus::Committed);
-
-        let replay = server.process_commit(&payload).await.unwrap();
-        assert_eq!(replay.status, CommitStatus::Replayed);
-
-        let state = server
+    #[tokio::test]
+    async fn vouchers_advance_refresh_lifecycle_and_replay_once() {
+        let (server, mut session, channel_id) = client_server().await;
+        let voucher = session.sign_increment(100).await.unwrap();
+        let accepted = server
+            .verify_voucher(&VoucherPayload {
+                voucher: voucher.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.charged, 100);
+        assert!(!accepted.replay);
+        let replay = server
+            .verify_voucher(&VoucherPayload {
+                voucher: voucher.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(replay.charged, 0);
+        assert!(replay.replay);
+        let stored = server
             .store
             .get_channel(&channel_id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(state.pending_deliveries.len(), 0);
-        assert_eq!(state.committed_deliveries.len(), 1);
-        assert_eq!(state.cumulative, 125);
+        assert!(stored.lifecycle.is_some());
+        assert!(stored.last_activity_at > 1);
+
+        let mut wrong = voucher;
+        wrong.signer = Pubkey::new_unique().to_string();
+        assert!(server
+            .verify_voucher(&VoucherPayload { voucher: wrong })
+            .await
+            .is_err());
+        assert!(server
+            .verify_voucher(&VoucherPayload {
+                voucher: SignedVoucher {
+                    data: VoucherData {
+                        channel_id: Pubkey::new_unique().to_string(),
+                        cumulative_amount: "1".into(),
+                        expires_at: None,
+                    },
+                    signer: signer_address(1),
+                    signature: "bad".into(),
+                    signature_type: VoucherSignatureType::Ed25519,
+                },
+            })
+            .await
+            .is_err());
     }
 
-    #[cfg(feature = "client")]
     #[tokio::test]
-    async fn process_commit_accepts_partial_stream_usage() {
-        let server = make_server();
-        let (mut session, authorized_signer, channel_id, _channel) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&channel_id, 1_000, &authorized_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-        let directive = server
-            .begin_delivery(DeliveryRequest::new(channel_id, 125))
-            .await
-            .unwrap();
-        let voucher = session.sign_increment(75).await.unwrap();
-        let payload = CommitPayload {
-            delivery_id: directive.delivery_id.clone(),
-            voucher,
+    async fn deliveries_commit_partially_and_are_idempotent() {
+        let (server, mut session, channel_id) = client_server().await;
+        let mut request = DeliveryRequest::new(channel_id.clone(), 125);
+        request.delivery_id = Some("delivery-1".into());
+        request.commit_url = Some("/commit".into());
+        request.proof = Some("proof".into());
+        let directive = server.begin_delivery(request).await.unwrap();
+        assert_eq!(directive.amount_base_units().unwrap(), 125);
+        assert_eq!(directive.sequence, 1);
+        let duplicate = DeliveryRequest {
+            session_id: channel_id.clone(),
+            amount: 1,
+            delivery_id: Some("delivery-1".into()),
+            commit_url: None,
+            proof: None,
+            expires_at: None,
         };
+        assert!(server.begin_delivery(duplicate).await.is_err());
 
-        let receipt = server.process_commit(&payload).await.unwrap();
-        assert_eq!(receipt.delivery_id, directive.delivery_id);
-        assert_eq!(receipt.amount, "75");
-        assert_eq!(receipt.cumulative, "75");
-    }
-
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    async fn process_commit_rejects_over_reserved_cumulative() {
-        let server = make_server();
-        let (mut session, authorized_signer, channel_id, _channel) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&channel_id, 1_000, &authorized_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-        let directive = server
-            .begin_delivery(DeliveryRequest::new(channel_id, 125))
-            .await
-            .unwrap();
-        let voucher = session.sign_increment(200).await.unwrap();
         let payload = CommitPayload {
             delivery_id: directive.delivery_id,
-            voucher,
+            voucher: session.sign_increment(75).await.unwrap(),
         };
-
-        let err = server.process_commit(&payload).await.unwrap_err();
-        assert!(err.to_string().contains("exceeds reserved amount"));
-    }
-
-    // ── build_challenge_request ───────────────────────────────────────────────
-
-    #[test]
-    fn build_challenge_request_clamps_cap() {
-        let server = make_server();
-        let req = server.build_challenge_request(50_000_000);
-        assert_eq!(req.cap, "10000000");
-    }
-
-    #[test]
-    fn build_challenge_request_below_cap() {
-        let server = make_server();
-        let req = server.build_challenge_request(5_000_000);
-        assert_eq!(req.cap, "5000000");
-    }
-
-    #[test]
-    fn build_challenge_request_includes_fields() {
-        let server = make_server();
-        let req = server.build_challenge_request(1_000_000);
-        assert_eq!(req.operator, RECIPIENT);
-        assert_eq!(req.recipient, RECIPIENT);
-        assert_eq!(req.currency, "USDC");
-        assert_eq!(req.decimals, Some(6));
-        assert_eq!(req.network.as_deref(), Some("localnet"));
-        assert!(req.splits.is_empty());
-    }
-
-    #[test]
-    fn build_challenge_request_with_splits() {
-        let split_pk = Pubkey::new_unique();
-        let config = SessionConfig {
-            operator: RECIPIENT.to_string(),
-            recipient: RECIPIENT.to_string(),
-            splits: vec![Split {
-                recipient: split_pk,
-                bps: 1_000,
-            }],
-            max_cap: 10_000_000,
-            currency: "USDC".to_string(),
-            decimals: 6,
-            network: "mainnet".to_string(),
-            program_id: None,
-            min_voucher_delta: 0,
-            voucher_signer: VoucherSigner::Client,
-            idle_timeout_options_seconds: None,
-            idle_timeout_seconds: 300,
-            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
-            modes: vec![SessionMode::Push],
-            pull_voucher_strategy: None,
-            rpc_url: None,
-        };
-        let server = SessionServer::new(config, MemoryChannelStore::new());
-        let req = server.build_challenge_request(5_000_000);
-        assert_eq!(req.splits.len(), 1);
-        assert_eq!(req.splits[0].bps, 1_000);
-    }
-
-    #[test]
-    fn build_challenge_request_min_voucher_delta() {
-        let config = SessionConfig {
-            operator: RECIPIENT.to_string(),
-            recipient: RECIPIENT.to_string(),
-            splits: vec![],
-            max_cap: 10_000_000,
-            currency: "USDC".to_string(),
-            decimals: 6,
-            network: "localnet".to_string(),
-            program_id: None,
-            min_voucher_delta: 500,
-            voucher_signer: VoucherSigner::Client,
-            idle_timeout_options_seconds: None,
-            idle_timeout_seconds: 300,
-            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
-            modes: vec![SessionMode::Push],
-            pull_voucher_strategy: None,
-            rpc_url: None,
-        };
-        let server = SessionServer::new(config, MemoryChannelStore::new());
-        let req = server.build_challenge_request(5_000_000);
-        assert_eq!(req.min_voucher_delta.as_deref(), Some("500"));
-    }
-
-    #[test]
-    fn build_challenge_request_omits_modes_when_push_only() {
-        let server = make_server(); // modes: [Push]
-        let req = server.build_challenge_request(1_000_000);
-        assert!(req.modes.is_empty(), "Push-only should omit modes field");
-    }
-
-    #[test]
-    fn build_challenge_request_includes_modes_when_pull_supported() {
-        let config = SessionConfig {
-            operator: RECIPIENT.to_string(),
-            recipient: RECIPIENT.to_string(),
-            splits: vec![],
-            max_cap: 10_000_000,
-            currency: "USDC".to_string(),
-            decimals: 6,
-            network: "localnet".to_string(),
-            program_id: None,
-            min_voucher_delta: 0,
-            voucher_signer: VoucherSigner::Client,
-            idle_timeout_options_seconds: None,
-            idle_timeout_seconds: 300,
-            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
-            modes: vec![SessionMode::Push, SessionMode::Pull],
-            pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
-            rpc_url: None,
-        };
-        let server = SessionServer::new(config, MemoryChannelStore::new());
-        let req = server.build_challenge_request(1_000_000);
-        assert_eq!(req.modes.len(), 2);
-        assert!(req.modes.contains(&SessionMode::Push));
-        assert!(req.modes.contains(&SessionMode::Pull));
+        let receipt = server.process_commit(&payload).await.unwrap();
+        assert_eq!(receipt.amount, "75");
+        assert_eq!(receipt.status, CommitStatus::Committed);
         assert_eq!(
-            req.pull_voucher_strategy,
-            Some(SessionPullVoucherStrategy::ClientVoucher)
+            server.process_commit(&payload).await.unwrap().status,
+            CommitStatus::Replayed
         );
+        assert!(server
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 0))
+            .await
+            .is_err());
+        assert!(server
+            .begin_delivery(DeliveryRequest::new(channel_id, 1_000))
+            .await
+            .is_err());
     }
 
-    // ── verify_voucher ────────────────────────────────────────────────────────
-
     #[tokio::test]
-    async fn verify_voucher_unknown_channel() {
-        let server = make_server();
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "unknown".to_string(),
-                cumulative: "100".to_string(),
-                expires_at: i64::MAX,
-                nonce: Some(1),
-            },
-            signature: "AAAA".to_string(),
+    async fn operator_use_and_close_require_the_opening_proof() {
+        let cfg = config(VoucherSigner::Operator);
+        let channel_id = Pubkey::new_unique().to_string();
+        let payer = key(3);
+        let proof = SessionAuthentication::sign("opening", &channel_id, &payer).unwrap();
+        let mut stored = state(channel_id.clone(), cfg.operator.clone());
+        stored.payer = proof.payer.clone();
+        stored.authentication = Some(serde_json::to_string(&proof).unwrap());
+        stored.voucher_signer = "operator".into();
+        let store = MemoryChannelStore::new();
+        store.put_channel(&channel_id, stored).await.unwrap();
+        let server = SessionServer::new(cfg, store);
+        let payload = UsePayload {
+            channel_id: channel_id.clone(),
+            authentication: proof.clone(),
         };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await;
-        assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("not found"));
-    }
-
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    async fn verify_voucher_valid_end_to_end() {
-        let server = make_server();
-        let (mut session, auth_signer, chan_str, _) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&chan_str, 5_000_000, &auth_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-
-        let voucher = session.sign_increment(1_000_000).await.unwrap();
-        let result = server.verify_voucher(&VoucherPayload { voucher }).await;
-        let accepted = result.unwrap();
-        assert_eq!(accepted.cumulative, 1_000_000);
-        assert_eq!(accepted.charged, 1_000_000);
-        assert!(!accepted.replay);
-    }
-
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    async fn verify_voucher_advances_watermark() {
-        let server = make_server();
-        let (mut session, auth_signer, chan_str, _) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&chan_str, 5_000_000, &auth_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-
-        // First voucher succeeds: a fresh charge, not a replay.
-        let v1 = session.sign_increment(500_000).await.unwrap();
         let first = server
-            .verify_voucher(&VoucherPayload {
-                voucher: v1.clone(),
-            })
+            .process_use(&payload, "use-1", "request-1")
             .await
             .unwrap();
-        assert_eq!(first.cumulative, 500_000);
-        assert_eq!(first.charged, 500_000);
+        assert_eq!(first.voucher.data.cumulative_amount, "25");
         assert!(!first.replay);
-
-        // Idempotent replay of exact same voucher (same cumulative + same
-        // signature) succeeds as a no-charge no-op — never a fresh paid serve.
-        let v1_replay = v1.clone();
         let replay = server
-            .verify_voucher(&VoucherPayload { voucher: v1_replay })
+            .process_use(&payload, "use-2", "request-1")
             .await
             .unwrap();
-        assert_eq!(
-            replay.cumulative, 500_000,
-            "Idempotent replay should return same cumulative"
-        );
-        assert_eq!(replay.charged, 0, "replay must not charge again");
-        assert!(replay.replay, "replay must be flagged");
-
-        // Next voucher with higher cumulative succeeds and charges the delta.
-        let v2 = session.sign_increment(500_000).await.unwrap();
-        let result = server.verify_voucher(&VoucherPayload { voucher: v2 }).await;
-        let advanced = result.unwrap();
-        assert_eq!(advanced.cumulative, 1_000_000);
-        assert_eq!(advanced.charged, 500_000);
-        assert!(!advanced.replay);
-    }
-
-    #[tokio::test]
-    async fn verify_voucher_stale_cumulative_rejected() {
-        let server = make_server();
-        server
-            .process_open(&open_payload("chan1", 5_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-
-        // Manually advance watermark via store
-        server
-            .store
-            .advance_cumulative("chan1", 0, 500_000)
-            .await
-            .unwrap();
-
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "chan1".to_string(),
-                cumulative: "100".to_string(), // below watermark
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "AAAA".to_string(),
-        };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await;
-        assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("watermark"));
-    }
-
-    #[tokio::test]
-    async fn verify_voucher_exceeds_deposit_rejected() {
-        let server = make_server();
-        server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "chan1".to_string(),
-                cumulative: "2000000".to_string(), // > deposit
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "AAAA".to_string(),
-        };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await;
-        assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("deposit"));
-    }
-
-    #[tokio::test]
-    async fn verify_voucher_bad_cumulative_format_rejected() {
-        let server = make_server();
-        server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "chan1".to_string(),
-                cumulative: "not_a_number".to_string(),
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "AAAA".to_string(),
-        };
-        assert!(server
-            .verify_voucher(&VoucherPayload { voucher })
-            .await
-            .is_err());
-    }
-
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    async fn verify_voucher_bad_signature_rejected() {
-        let server = make_server();
-        let (mut session, auth_signer, chan_str, _) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&chan_str, 5_000_000, &auth_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-
-        let mut voucher = session.sign_increment(1_000_000).await.unwrap();
-        // Tamper with the signature
-        voucher.signature = bs58::encode([0u8; 64]).into_string();
-
-        assert!(server
-            .verify_voucher(&VoucherPayload { voucher })
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn verify_voucher_on_sealed_channel_rejected() {
-        let server = make_server();
-        server
-            .process_open(&open_payload("chan1", 1_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-        server.mark_sealed("chan1").await.unwrap();
-
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "chan1".to_string(),
-                cumulative: "500000".to_string(),
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "AAAA".to_string(),
-        };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await;
-        assert!(err.is_err());
-        assert!(err.unwrap_err().to_string().contains("sealed"));
-    }
-
-    // ── process_topup ─────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn process_topup_valid() {
-        let server = make_server();
-        let chan = "chan1";
-        server
-            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        let state = server
-            .process_topup(&TopUpPayload {
-                channel_id: chan.to_string(),
-                new_deposit: "5000000".to_string(),
-                signature: "topup_sig".to_string(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(state.deposit, 5_000_000);
-    }
-
-    #[tokio::test]
-    async fn process_topup_lower_deposit_rejected() {
-        let server = make_server();
-        let chan = "chan1";
-        server
-            .process_open(&open_payload(chan, 3_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        assert!(server
-            .process_topup(&TopUpPayload {
-                channel_id: chan.to_string(),
-                new_deposit: "2000000".to_string(),
-                signature: "sig".to_string(),
-            })
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn process_topup_exceeds_cap_rejected() {
-        let server = make_server();
-        let chan = "chan1";
-        server
-            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        assert!(server
-            .process_topup(&TopUpPayload {
-                channel_id: chan.to_string(),
-                new_deposit: "20000000".to_string(), // > max_cap
-                signature: "sig".to_string(),
-            })
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn process_topup_bad_amount_format_rejected() {
-        let server = make_server();
-        let chan = "chan1";
-        server
-            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        assert!(server
-            .process_topup(&TopUpPayload {
-                channel_id: chan.to_string(),
-                new_deposit: "not_a_number".to_string(),
-                signature: "sig".to_string(),
-            })
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn process_topup_unknown_channel_rejected() {
-        let server = make_server();
-        assert!(server
-            .process_topup(&TopUpPayload {
-                channel_id: "ghost".to_string(),
-                new_deposit: "5000000".to_string(),
-                signature: "sig".to_string(),
-            })
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn process_topup_close_pending_rejected() {
-        let server = make_server();
-        let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server
-            .process_open(&open_payload(&chan, 1_000_000, "s"), open_context())
-            .await
-            .unwrap();
-        server
-            .process_close(&ClosePayload {
-                channel_id: chan.clone(),
-                authentication: None,
-                voucher: None,
-            })
-            .await
-            .unwrap();
-
-        let err = server
-            .process_topup(&TopUpPayload {
-                channel_id: chan,
-                new_deposit: "5000000".to_string(),
-                signature: "sig".to_string(),
-            })
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("close is pending"),
-            "Expected close-pending error, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn process_topup_sealed_rejected() {
-        let server = make_server();
-        let chan = "chan1";
-        server
-            .process_open(&open_payload(chan, 1_000_000, "s"), open_context())
-            .await
-            .unwrap();
-        server.mark_sealed(chan).await.unwrap();
-
-        let err = server
-            .process_topup(&TopUpPayload {
-                channel_id: chan.to_string(),
-                new_deposit: "5000000".to_string(),
-                signature: "sig".to_string(),
-            })
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("sealed"),
-            "Expected sealed error, got: {err}"
-        );
-    }
-
-    // ── process_close ─────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn process_close_no_voucher() {
-        let server = make_server();
-        let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server
-            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
-            .await
-            .unwrap();
+        assert_eq!(replay.voucher.data.cumulative_amount, "25");
+        assert!(replay.replay);
+        assert!(server.process_use(&payload, "use-3", "").await.is_err());
 
         let params = server
             .process_close(&ClosePayload {
-                channel_id: chan.clone(),
-                authentication: None,
+                channel_id: channel_id.clone(),
+                authentication: Some(proof),
                 voucher: None,
             })
             .await
             .unwrap();
-        assert_eq!(params.settled, 0);
+        assert_eq!(params.channel_id.to_string(), channel_id);
+        assert!(server
+            .process_close(&ClosePayload {
+                channel_id,
+                authentication: None,
+                voucher: None,
+            })
+            .await
+            .is_err());
     }
 
-    #[cfg(feature = "client")]
     #[tokio::test]
-    async fn process_close_with_voucher() {
-        let server = make_server();
-        let (mut session, auth_signer, chan_str, _) = make_e2e_session();
-        server
-            .process_open(
-                &open_payload(&chan_str, 5_000_000, &auth_signer),
-                open_context(),
-            )
-            .await
-            .unwrap();
-
-        // Consume 500k first
-        let v1 = session.sign_increment(500_000).await.unwrap();
-        server
-            .verify_voucher(&VoucherPayload { voucher: v1 })
-            .await
-            .unwrap();
-
-        // Close with a final 200k voucher
-        let final_voucher = session.sign_increment(200_000).await.unwrap();
+    async fn client_close_seal_and_store_lifecycle_are_consistent() {
+        let (server, mut session, channel_id) = client_server().await;
+        let voucher = session.sign_increment(100).await.unwrap();
         let params = server
             .process_close(&ClosePayload {
-                channel_id: chan_str,
+                channel_id: channel_id.clone(),
                 authentication: None,
-                voucher: Some(final_voucher),
+                voucher: Some(voucher),
             })
             .await
             .unwrap();
-        assert_eq!(params.settled, 700_000);
+        assert_eq!(params.settled, 100);
+        assert_eq!(
+            params
+                .settle_instructions(&Pubkey::from_str(&server.config.operator).unwrap())
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(server
+            .process_topup(&TopUpPayload {
+                channel_id: channel_id.clone(),
+                additional_amount: "1".into(),
+                transaction: "tx".into(),
+            })
+            .await
+            .is_err());
+        server.mark_sealed(&channel_id).await.unwrap();
+        assert!(
+            server
+                .store
+                .get_channel(&channel_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .sealed
+        );
+        assert!(server.seal_params("missing").await.is_err());
+        assert!(server.mark_sealed("missing").await.is_err());
+    }
+
+    async fn seeded_server(
+        cfg: SessionConfig,
+        stored: ChannelState,
+    ) -> SessionServer<MemoryChannelStore> {
+        let store = MemoryChannelStore::new();
+        store
+            .put_channel(&stored.channel_id.clone(), stored)
+            .await
+            .unwrap();
+        SessionServer::new(cfg, store)
+    }
+
+    fn unsigned_voucher(channel_id: &str, cumulative: &str) -> SignedVoucher {
+        SignedVoucher {
+            data: VoucherData {
+                channel_id: channel_id.into(),
+                cumulative_amount: cumulative.into(),
+                expires_at: None,
+            },
+            signer: signer_address(1),
+            signature: "invalid".into(),
+            signature_type: VoucherSignatureType::Ed25519,
+        }
     }
 
     #[tokio::test]
-    async fn process_close_unknown_channel_rejected() {
-        let server = make_server();
-        let err = server
+    async fn use_delivery_commit_and_close_error_paths_fail_closed() {
+        let channel_id = Pubkey::new_unique().to_string();
+        let payer = key(3);
+        let proof = SessionAuthentication::sign("opening", &channel_id, &payer).unwrap();
+        let use_payload = UsePayload {
+            channel_id: channel_id.clone(),
+            authentication: proof.clone(),
+        };
+
+        let client = seeded_server(
+            config(VoucherSigner::Client),
+            state(channel_id.clone(), signer_address(1)),
+        )
+        .await;
+        assert!(client
+            .process_use(&use_payload, "use", "key")
+            .await
+            .is_err());
+
+        let mut cfg = config(VoucherSigner::Operator);
+        cfg.operator_signing_key = None;
+        assert!(seeded_server(
+            cfg,
+            state(channel_id.clone(), config(VoucherSigner::Operator).operator),
+        )
+        .await
+        .process_use(&use_payload, "use", "key")
+        .await
+        .is_err());
+        let mut cfg = config(VoucherSigner::Operator);
+        cfg.operator = Pubkey::new_unique().to_string();
+        assert!(
+            seeded_server(cfg, state(channel_id.clone(), signer_address(9)))
+                .await
+                .process_use(&use_payload, "use", "key")
+                .await
+                .is_err()
+        );
+        assert!(
+            SessionServer::new(config(VoucherSigner::Operator), MemoryChannelStore::new(),)
+                .process_use(&use_payload, "use", "key")
+                .await
+                .is_err()
+        );
+
+        let cfg = config(VoucherSigner::Operator);
+        let mut stored = state(channel_id.clone(), cfg.operator.clone());
+        stored.payer = proof.payer.clone();
+        stored.authentication = Some(serde_json::to_string(&proof).unwrap());
+        stored.voucher_signer = "operator".into();
+        stored.sealed = true;
+        assert!(seeded_server(cfg.clone(), stored)
+            .await
+            .process_use(&use_payload, "use", "key")
+            .await
+            .is_err());
+        let mut stored = state(channel_id.clone(), cfg.operator.clone());
+        stored.payer = proof.payer.clone();
+        stored.authentication = Some(serde_json::to_string(&proof).unwrap());
+        stored.voucher_signer = "operator".into();
+        stored.deposit = 1;
+        assert!(seeded_server(cfg, stored)
+            .await
+            .process_use(&use_payload, "use", "key")
+            .await
+            .is_err());
+
+        let mut sealed = state(channel_id.clone(), signer_address(1));
+        sealed.sealed = true;
+        assert!(seeded_server(config(VoucherSigner::Client), sealed)
+            .await
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 1))
+            .await
+            .is_err());
+        let mut closing = state(channel_id.clone(), signer_address(1));
+        closing.close_requested_at = Some(1);
+        assert!(seeded_server(config(VoucherSigner::Client), closing)
+            .await
+            .begin_delivery(DeliveryRequest::new(channel_id.clone(), 1))
+            .await
+            .is_err());
+
+        let commit = CommitPayload {
+            delivery_id: "missing".into(),
+            voucher: unsigned_voucher(&channel_id, "bad"),
+        };
+        assert!(client.process_commit(&commit).await.is_err());
+        let commit = CommitPayload {
+            delivery_id: "missing".into(),
+            voucher: unsigned_voucher(&channel_id, "1"),
+        };
+        assert!(client.process_commit(&commit).await.is_err());
+
+        let mut expired = state(channel_id.clone(), signer_address(1));
+        expired.pending_deliveries.push(PendingDelivery {
+            delivery_id: "expired".into(),
+            amount: 10,
+            sequence: 1,
+            expires_at: 1,
+        });
+        let expired_server = seeded_server(config(VoucherSigner::Client), expired).await;
+        assert!(expired_server
+            .process_commit(&CommitPayload {
+                delivery_id: "expired".into(),
+                voucher: unsigned_voucher(&channel_id, "1"),
+            })
+            .await
+            .is_err());
+
+        let mut closed = state(channel_id.clone(), signer_address(1));
+        closed.sealed = true;
+        let closed_server = seeded_server(config(VoucherSigner::Client), closed).await;
+        assert!(closed_server
             .process_close(&ClosePayload {
-                channel_id: bs58::encode(Pubkey::new_unique().as_ref()).into_string(),
+                channel_id: channel_id.clone(),
+                authentication: None,
+                voucher: Some(unsigned_voucher(&channel_id, "1")),
+            })
+            .await
+            .is_err());
+        assert!(client
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
+                authentication: Some(proof),
+                voucher: None,
+            })
+            .await
+            .is_err());
+        assert!(client
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
                 authentication: None,
                 voucher: None,
             })
-            .await;
-        assert!(err.is_err());
-    }
-
-    // ── seal_params ───────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn seal_params_correct() {
-        let server = make_server();
-        let channel = Pubkey::new_unique();
-        let chan_str = bs58::encode(channel.as_ref()).into_string();
-        server
-            .process_open(&open_payload(&chan_str, 5_000_000, "s"), open_context())
             .await
-            .unwrap();
-
-        let params = server.seal_params(&chan_str).await.unwrap();
-        assert_eq!(params.channel_id, channel);
-        assert_eq!(params.settled, 0);
-        assert_eq!(
-            params.mint,
-            Some(expected_payment_channel_mint(&server.config).unwrap())
-        );
-        assert!(params.splits.is_empty());
-        // Hash with no splits should be deterministic
-        let recipient = parse_pubkey(RECIPIENT).unwrap();
-        let expected_hash = compute_distribution_hash(&recipient, &[]);
-        assert_eq!(params.distribution_hash, expected_hash);
-    }
-
-    #[tokio::test]
-    async fn seal_params_unknown_channel_rejected() {
-        let server = make_server();
-        let err = server
-            .seal_params(&bs58::encode(Pubkey::new_unique().as_ref()).into_string())
-            .await;
-        assert!(err.is_err());
-    }
-
-    // ── mark_sealed ───────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn mark_sealed_sets_flag() {
-        let server = make_server();
-        server
-            .process_open(&open_payload("chan1", 1_000_000, "s"), open_context())
+            .is_err());
+        assert!(client
+            .process_close(&ClosePayload {
+                channel_id,
+                authentication: None,
+                voucher: Some(unsigned_voucher("bad", "not-a-number")),
+            })
             .await
-            .unwrap();
-        server.mark_sealed("chan1").await.unwrap();
-
-        let state = server.store.get_channel("chan1").await.unwrap().unwrap();
-        assert!(state.sealed);
+            .is_err());
     }
 
+    #[cfg(feature = "server")]
     #[tokio::test]
-    async fn mark_sealed_unknown_channel_errors() {
-        let server = make_server();
-        assert!(server.mark_sealed("ghost").await.is_err());
-    }
-
-    // ── distribution_hash ─────────────────────────────────────────────────────
-
-    #[test]
-    fn distribution_hash_deterministic() {
-        let r = Pubkey::new_unique();
-        let s1 = Pubkey::new_unique();
-        let h1 = compute_distribution_hash(&r, &[(s1, 5_000)]);
-        let h2 = compute_distribution_hash(&r, &[(s1, 5_000)]);
-        assert_eq!(h1, h2);
-    }
-
-    #[test]
-    fn distribution_hash_empty_splits() {
-        let r = Pubkey::new_unique();
-        let h = compute_distribution_hash(&r, &[]);
-        assert_eq!(h.len(), 32);
-    }
-
-    #[test]
-    fn distribution_hash_changes_with_amount() {
-        let r = Pubkey::new_unique();
-        let s = Pubkey::new_unique();
-        assert_ne!(
-            compute_distribution_hash(&r, &[(s, 100)]),
-            compute_distribution_hash(&r, &[(s, 200)]),
-        );
-    }
-
-    #[test]
-    fn distribution_hash_empty_splits_ignores_implicit_payee() {
-        let r1 = Pubkey::new_unique();
-        let r2 = Pubkey::new_unique();
-        assert_eq!(
-            compute_distribution_hash(&r1, &[]),
-            compute_distribution_hash(&r2, &[]),
-        );
-    }
-
-    #[test]
-    fn distribution_hash_changes_with_split_recipient() {
-        let r = Pubkey::new_unique();
-        let s1 = Pubkey::new_unique();
-        let s2 = Pubkey::new_unique();
-        assert_ne!(
-            compute_distribution_hash(&r, &[(s1, 100)]),
-            compute_distribution_hash(&r, &[(s2, 100)]),
-        );
-    }
-
-    // ── parse_pubkey helper ───────────────────────────────────────────────────
-
-    #[test]
-    fn parse_pubkey_valid() {
-        let pk = Pubkey::new_unique();
-        let s = bs58::encode(pk.as_ref()).into_string();
-        assert_eq!(parse_pubkey(&s).unwrap(), pk);
-    }
-
-    #[test]
-    fn parse_pubkey_invalid_base58() {
-        assert!(parse_pubkey("not!!valid").is_err());
-    }
-
-    #[test]
-    fn parse_pubkey_wrong_length() {
-        // Valid base58 but only 10 bytes
-        let s = bs58::encode(&[1u8; 10]).into_string();
-        assert!(parse_pubkey(&s).is_err());
-    }
-
-    // ── verify_voucher: idempotent replay ────────────────────────────────────
-
-    #[tokio::test]
-    async fn verify_voucher_idempotent_replay() {
-        let server = make_server();
-        // Manually set up a channel with a known highest_voucher_signature
-        use crate::mpp::store::ChannelState;
-        server
-            .store
-            .put_channel(
-                "chan1",
-                ChannelState {
-                    channel_id: "chan1".to_string(),
-                    authorized_signer: "signer1".to_string(),
-                    deposit: 5_000_000,
-                    cumulative: 1_000_000,
-                    sealed: false,
-                    highest_voucher_signature: Some("replay_sig".to_string()),
-                    highest_voucher_expires_at: None,
-                    close_requested_at: None,
-                    open_slot: None,
-                    operator: None,
-                    next_delivery_sequence: 0,
-                    pending_deliveries: vec![],
-                    committed_deliveries: vec![],
-                    lifecycle: None,
+    async fn open_and_close_reject_every_invalid_binding() {
+        let client = SessionServer::new(config(VoucherSigner::Client), MemoryChannelStore::new());
+        let open = valid_open(&client);
+        assert!(client
+            .process_open(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: Some("not-a-date"),
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
                 },
             )
             .await
-            .unwrap();
+            .is_err());
+        let mut invalid = open.clone();
+        invalid.idle_timeout_seconds = Some(99);
+        assert!(client
+            .process_open(
+                &invalid,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .is_err());
+        invalid = open.clone();
+        invalid.deposit_amount = "0".into();
+        assert!(client
+            .process_open(
+                &invalid,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .is_err());
+        invalid = open;
+        invalid.authentication =
+            Some(SessionAuthentication::sign("opening", &invalid.channel_id, &key(2)).unwrap());
+        assert!(client
+            .process_open(
+                &invalid,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: "hash",
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .is_err());
 
-        // A voucher with same cumulative AND same signature is idempotent replay
-        // (signature verify will fail since it's fake, but let's test the path up to sig verify)
-        // We just need to confirm it does NOT fail with "must exceed watermark"
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "chan1".to_string(),
-                cumulative: "1000000".to_string(),
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "replay_sig".to_string(),
+        let operator =
+            SessionServer::new(config(VoucherSigner::Operator), MemoryChannelStore::new());
+        let (mut operated, _) = signed_open(&operator, 4).await;
+        let challenged_blockhash = test_blockhash().to_string();
+        let context = SessionOpenContext {
+            challenge_id: "opening",
+            expires: None,
+            recent_blockhash: &challenged_blockhash,
+            recent_slot: CHALLENGED_SLOT,
         };
-        let err = server
-            .verify_voucher(&VoucherPayload { voucher })
-            .await
-            .unwrap_err();
-        // Should fail at signature verification, not watermark check
-        let msg = err.to_string();
-        assert!(!msg.contains("watermark"), "Expected sig error, got: {msg}");
-        // The error is from crypto validation (bad encoding, wrong length, bad key, etc.)
-        // Any error other than "watermark" means idempotent replay path was taken correctly
-        assert!(
-            msg.contains("signature")
-                || msg.contains("encoding")
-                || msg.contains("Invalid")
-                || msg.contains("bytes")
-                || msg.contains("key")
-                || msg.contains("channelId"),
-            "Expected signature-related error, got: {msg}"
-        );
-    }
+        assert!(operator.process_open(&operated, context).await.is_err());
+        operated.authentication =
+            Some(SessionAuthentication::sign("other", &operated.channel_id, &key(4)).unwrap());
+        assert!(operator.process_open(&operated, context).await.is_err());
+        operated.authentication =
+            Some(SessionAuthentication::sign("opening", &operated.channel_id, &key(5)).unwrap());
+        assert!(operator.process_open(&operated, context).await.is_err());
+        let mut bad_signature =
+            SessionAuthentication::sign("opening", &operated.channel_id, &key(4)).unwrap();
+        bad_signature.signature = bs58::encode([0_u8; 64]).into_string();
+        operated.authentication = Some(bad_signature);
+        assert!(operator.process_open(&operated, context).await.is_err());
 
-    // ── verify_voucher: min_delta enforcement ────────────────────────────────
-
-    #[tokio::test]
-    async fn verify_voucher_min_delta_enforced() {
-        let server = make_server_with_min_delta(500_000);
-        server
-            .process_open(&open_payload("chan1", 5_000_000, "signer1"), open_context())
-            .await
-            .unwrap();
-
-        // delta = 100_000, min = 500_000 → should be rejected
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: "chan1".to_string(),
-                cumulative: "100000".to_string(),
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "AAAA".to_string(),
-        };
-        let err = server
-            .verify_voucher(&VoucherPayload { voucher })
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("below minimum"),
-            "Expected min delta error, got: {err}"
-        );
-    }
-
-    // ── verify_voucher: close-pending rejection ──────────────────────────────
-
-    #[tokio::test]
-    async fn verify_voucher_close_pending_rejected() {
-        let server = make_server();
-        let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server
-            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        // Close the channel first
-        server
+        let channel_id = Pubkey::new_unique().to_string();
+        let payer = key(3);
+        let proof = SessionAuthentication::sign("opening", &channel_id, &payer).unwrap();
+        let cfg = config(VoucherSigner::Operator);
+        let mut operated_state = state(channel_id.clone(), cfg.operator.clone());
+        operated_state.payer = proof.payer.clone();
+        operated_state.authentication = Some(serde_json::to_string(&proof).unwrap());
+        operated_state.voucher_signer = "operator".into();
+        let operated_server = seeded_server(cfg, operated_state.clone()).await;
+        assert!(operated_server
             .process_close(&ClosePayload {
-                channel_id: chan.clone(),
+                channel_id: channel_id.clone(),
+                authentication: Some(proof.clone()),
+                voucher: Some(unsigned_voucher(&channel_id, "1")),
+            })
+            .await
+            .is_err());
+        assert!(operated_server
+            .process_close(&ClosePayload {
+                channel_id: channel_id.clone(),
                 authentication: None,
                 voucher: None,
             })
             .await
-            .unwrap();
-
-        // Now try to submit a voucher — should be rejected
-        let voucher = SignedVoucher {
-            data: VoucherData {
-                channel_id: chan.clone(),
-                cumulative: "100000".to_string(),
-                expires_at: i64::MAX,
-                nonce: None,
-            },
-            signature: "AAAA".to_string(),
-        };
-        let err = server
-            .verify_voucher(&VoucherPayload { voucher })
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("close is pending"),
-            "Expected close-pending error, got: {err}"
-        );
-    }
-
-    // ── process_close: sets close_requested_at ───────────────────────────────
-
-    #[tokio::test]
-    async fn process_close_sets_close_pending() {
-        let server = make_server();
-        let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server
-            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        server
+            .is_err());
+        let wrong = SessionAuthentication::sign("wrong", &channel_id, &payer).unwrap();
+        assert!(operated_server
             .process_close(&ClosePayload {
-                channel_id: chan.clone(),
-                authentication: None,
+                channel_id: channel_id.clone(),
+                authentication: Some(wrong),
                 voucher: None,
             })
             .await
-            .unwrap();
+            .is_err());
 
-        let state = server.store.get_channel(&chan).await.unwrap().unwrap();
-        assert!(
-            state.close_requested_at.is_some(),
-            "Expected close_requested_at to be set"
-        );
-    }
-
-    // ── process_close: prevents double-close ─────────────────────────────────
-
-    #[tokio::test]
-    async fn process_close_prevents_double_close() {
-        let server = make_server();
-        let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server
-            .process_open(&open_payload(&chan, 5_000_000, "s"), open_context())
-            .await
-            .unwrap();
-
-        // First close succeeds
-        server
+        let session_signer = signer(1);
+        let mut active = ActiveSession::new(Pubkey::from_str(&channel_id).unwrap(), session_signer);
+        let mut stale_state = state(channel_id.clone(), signer_address(1));
+        stale_state.cumulative = 100;
+        stale_state.highest_voucher_signature = Some("different".into());
+        let stale_server = seeded_server(config(VoucherSigner::Client), stale_state).await;
+        assert!(stale_server
             .process_close(&ClosePayload {
-                channel_id: chan.clone(),
+                channel_id: channel_id.clone(),
                 authentication: None,
-                voucher: None,
+                voucher: Some(active.sign_increment(100).await.unwrap()),
             })
             .await
-            .unwrap();
-
-        // Second close should fail
-        let err = server
+            .is_err());
+        let mut low_deposit = state(channel_id.clone(), signer_address(1));
+        low_deposit.deposit = 1;
+        let low_server = seeded_server(config(VoucherSigner::Client), low_deposit).await;
+        assert!(low_server
             .process_close(&ClosePayload {
-                channel_id: chan.clone(),
+                channel_id: channel_id.clone(),
                 authentication: None,
-                voucher: None,
+                voucher: Some(active.sign_increment(1).await.unwrap()),
             })
             .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("Close already requested")
-                || err.to_string().contains("close"),
-            "Expected double-close error, got: {err}"
-        );
-    }
-
-    #[cfg(feature = "server")]
-    #[tokio::test]
-    async fn transaction_verification_retries_until_status_is_visible() {
-        use axum::{extract::State, routing::post, Json, Router};
-        use serde_json::{json, Value};
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        };
-
-        async fn signature_status(
-            State(calls): State<Arc<AtomicUsize>>,
-            Json(request): Json<Value>,
-        ) -> Json<Value> {
-            let status = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                Value::Null
-            } else {
-                json!({
-                    "slot": 1,
-                    "confirmations": null,
-                    "err": null,
-                    "confirmationStatus": "finalized",
-                    "status": { "Ok": null }
-                })
-            };
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "context": { "slot": 1 },
-                    "value": [status]
-                }
-            }))
-        }
-
-        let calls = Arc::new(AtomicUsize::new(0));
-        let app = Router::new()
-            .route("/", post(signature_status))
-            .with_state(Arc::clone(&calls));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let signature = solana_signature::Signature::from([7_u8; 64]).to_string();
-
-        verify_transaction_signature_with_policy(
-            &signature,
-            &rpc_url,
-            VerifiedTx::Open,
-            2,
-            std::time::Duration::ZERO,
+            .is_err());
+        assert!(seeded_server(
+            config(VoucherSigner::Client),
+            state(channel_id.clone(), signer_address(1)),
         )
         .await
-        .unwrap();
-
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        server.abort();
+        .process_close(&ClosePayload {
+            channel_id,
+            authentication: None,
+            voucher: Some(unsigned_voucher("bad", "1")),
+        })
+        .await
+        .is_err());
     }
 
-    #[cfg(feature = "server")]
-    #[tokio::test]
-    async fn transaction_verification_retries_after_rpc_error() {
-        use axum::{extract::State, routing::post, Json, Router};
-        use serde_json::{json, Value};
-        use std::sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
+    #[test]
+    fn helpers_reject_invalid_values_and_hash_deterministically() {
+        let operator = Pubkey::new_unique();
+        let client = Pubkey::new_unique();
+        assert_eq!(
+            VoucherSigner::Operator.authorized_signer(operator, client),
+            operator
+        );
+        assert_eq!(
+            VoucherSigner::Client.authorized_signer(operator, client),
+            client
+        );
+        assert!(parse_pubkey("invalid").is_err());
+        assert!(parse_required_operator("").is_err());
+        let recipient = Pubkey::new_unique();
+        let split = Pubkey::new_unique();
+        assert_eq!(
+            compute_distribution_hash(&recipient, &[]),
+            compute_distribution_hash(&split, &[])
+        );
+        assert_ne!(
+            compute_distribution_hash(&recipient, &[]),
+            compute_distribution_hash(&recipient, &[(split, 10)])
+        );
+
+        let base = SealParams {
+            channel_id: Pubkey::new_unique(),
+            authorized_signer: None,
+            payer: None,
+            mint: None,
+            program_id: payment_channels::default_program_id(),
+            settled: 1,
+            voucher_signature: None,
+            voucher_expires_at: None,
+            recipient,
+            splits: vec![],
+            distribution_hash: [0; 32],
         };
-
-        async fn signature_status(
-            State(calls): State<Arc<AtomicUsize>>,
-            Json(request): Json<Value>,
-        ) -> Json<Value> {
-            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                return Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": request["id"].clone(),
-                    "error": {
-                        "code": -32005,
-                        "message": "Node is unhealthy"
-                    }
-                }));
-            }
-
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": request["id"].clone(),
-                "result": {
-                    "context": { "slot": 1 },
-                    "value": [{
-                        "slot": 1,
-                        "confirmations": null,
-                        "err": null,
-                        "confirmationStatus": "finalized",
-                        "status": { "Ok": null }
-                    }]
-                }
-            }))
-        }
-
-        let calls = Arc::new(AtomicUsize::new(0));
-        let app = Router::new()
-            .route("/", post(signature_status))
-            .with_state(Arc::clone(&calls));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let signature = solana_signature::Signature::from([7_u8; 64]).to_string();
-
-        verify_transaction_signature_with_policy(
-            &signature,
-            &rpc_url,
-            VerifiedTx::Open,
-            2,
-            std::time::Duration::ZERO,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        server.abort();
+        assert!(base.settle_instructions(&operator).is_err());
+        let mut invalid = base;
+        invalid.authorized_signer = Some(client);
+        invalid.voucher_signature = Some("invalid".into());
+        assert!(invalid.settle_instructions(&operator).is_err());
+        invalid.voucher_signature = Some(bs58::encode([0_u8; 63]).into_string());
+        assert!(invalid.settle_instructions(&operator).is_err());
+        invalid.voucher_signature = Some(bs58::encode([0_u8; 64]).into_string());
+        assert!(invalid.settle_instructions(&operator).is_err());
     }
 }

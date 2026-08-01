@@ -1,7 +1,5 @@
 import { Method, z } from 'mppx';
 
-const sessionMode = z.enum(['push', 'pull']);
-const sessionPullVoucherStrategy = z.enum(['clientVoucher', 'operatedVoucher']);
 const sessionVoucherSigner = z.enum(['client', 'operator']);
 const sessionAuthentication = z.object({
     challengeId: z.string(),
@@ -25,27 +23,23 @@ const voucherExpiresAt = z
     );
 
 const signedVoucher = z.object({
-    data: z
-        .object({
-            /** Channel/session ID the voucher is bound to. */
-            channelId: z.string(),
-            /** Legacy wire alias for cumulativeAmount (the Rust mirror accepts both). */
-            cumulative: z.optional(z.string()),
-            /** Cumulative amount authorized in base units. */
-            cumulativeAmount: z.optional(z.string()),
-            /** Unix timestamp at which this voucher expires. */
-            expiresAt: voucherExpiresAt,
-            /** Optional client-side voucher counter. Not included in signed bytes. */
-            nonce: z.optional(z.number()),
-        })
-        .check(
-            z.refine(
-                data => data.cumulativeAmount !== undefined || data.cumulative !== undefined,
-                'cumulativeAmount is required (legacy wire alias: cumulative)',
-            ),
-        ),
+    data: z.object({
+        /** Channel/session ID the voucher is bound to. */
+        channelId: z.string(),
+        /** Cumulative amount authorized in base units. */
+        cumulativeAmount: z.string(),
+        /** Unix timestamp at which this voucher expires. */
+        expiresAt: z.optional(voucherExpiresAt),
+    }),
+
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
     signature: z.string(),
+
+    /** Voucher signature algorithm. */
+    signatureType: z.literal('ed25519'),
+
+    /** Base58 public key that signed the voucher. */
+    signer: z.string(),
 });
 
 /**
@@ -203,8 +197,8 @@ export const subscription = Method.from({
 /**
  * Solana session method — shared schema used by both server and client.
  *
- * A session opens a payment channel or delegation once, then pays for later
- * deliveries with cumulative off-chain vouchers.
+ * A session opens a payment channel once, then pays for later deliveries with
+ * cumulative off-chain vouchers.
  */
 export const session = Method.from({
     intent: 'session',
@@ -213,53 +207,24 @@ export const session = Method.from({
         credential: {
             payload: z.discriminatedUnion('action', [
                 z.object({
-                    /** Session lifecycle action. */
                     action: z.literal('open'),
-
-                    /** SPL approved amount for pull mode. */
-                    approvedAmount: z.optional(z.string()),
-
-                    /** Reusable payer proof required for operator-signed vouchers. */
                     authentication: z.optional(sessionAuthentication),
-
-                    /** Public key authorized to sign vouchers for this session. */
+                    /** Opaque server-scoped authorization policy echoed on the wire. */
+                    authorizationPolicy: z.optional(z.record(z.string(), z.unknown())),
                     authorizedSigner: z.string(),
-                    /** Payment-channel address for push mode. */
-                    channelId: z.optional(z.string()),
-                    /** Deposit locked by the channel open, in base units. */
-                    deposit: z.optional(z.string()),
-                    /** Grace period used by the payment-channels close path. */
-                    gracePeriod: z.optional(z.number()),
-
-                    /** Negotiated inactivity threshold in seconds. */
+                    /** Opaque capability map echoed on the wire. */
+                    capabilities: z.optional(z.record(z.string(), z.unknown())),
+                    channelId: z.string(),
+                    depositAmount: z.string(),
+                    distributionSplits: z.optional(z.array(z.object({ recipient: z.string(), shareBps: z.number() }))),
+                    gracePeriodSeconds: z.number(),
                     idleTimeoutSeconds: z.optional(z.number()),
-
-                    /** Pre-signed pull-mode initialization transaction. */
-                    initMultiDelegateTx: z.optional(z.string()),
-                    /** SPL mint locked in the channel. */
-                    mint: z.optional(z.string()),
-                    /** Session funding mode. */
-                    mode: sessionMode,
-                    /** Client wallet owner for pull mode. */
-                    owner: z.optional(z.string()),
-
-                    /** Primary channel payee. */
-                    payee: z.optional(z.string()),
-
-                    /** Client wallet funding the push-mode channel. */
-                    payer: z.optional(z.string()),
-                    /** Slot the push-mode open was built against (the channel `openSlot` PDA seed). */
-                    recentSlot: z.optional(z.union([z.string(), z.number()])),
-                    /** PDA salt used for the payment-channel address. */
-                    salt: z.optional(z.union([z.string(), z.number()])),
-                    /** On-chain transaction signature proving the open. */
-                    signature: z.string(),
-                    /** SPL token account used as the pull-mode session identifier. */
-                    tokenAccount: z.optional(z.string()),
-                    /** Signed transaction for operator/server broadcast. */
-                    transaction: z.optional(z.string()),
-                    /** Pre-signed pull-mode delegation cap update transaction. */
-                    updateDelegationTx: z.optional(z.string()),
+                    mint: z.string(),
+                    openSlot: z.string(),
+                    payee: z.string(),
+                    payer: z.string(),
+                    salt: z.string(),
+                    transaction: z.string(),
                 }),
                 z.object({
                     action: z.literal('voucher'),
@@ -271,15 +236,10 @@ export const session = Method.from({
                     channelId: z.string(),
                 }),
                 z.object({
-                    action: z.literal('commit'),
-                    deliveryId: z.string(),
-                    voucher: signedVoucher,
-                }),
-                z.object({
                     action: z.literal('topUp'),
+                    additionalAmount: z.string(),
                     channelId: z.string(),
-                    newDeposit: z.string(),
-                    signature: z.string(),
+                    transaction: z.string(),
                 }),
                 z.object({
                     action: z.literal('close'),
@@ -290,57 +250,42 @@ export const session = Method.from({
             ]),
         },
         request: z.object({
-            /** Maximum total amount the client may spend in this session, in base units. */
-            cap: z.string(),
-
-            /** Currency or SPL mint identifier. */
+            /** Price per unit of service, in base units. */
+            amount: z.string(),
             currency: z.string(),
-
-            /** Token decimals. Defaults to USDC-like 6 decimals server-side. */
-            decimals: z.optional(z.number()),
-
-            /** Human-readable memo for the session. */
             description: z.optional(z.string()),
-
-            /** Merchant/session reference. */
             externalId: z.optional(z.string()),
-
-            /** Inactivity thresholds offered for a new channel. */
-            idleTimeoutOptionsSeconds: z.optional(z.array(z.number())),
-
-            /** Effective inactivity threshold for a resumed channel. */
-            idleTimeoutSeconds: z.optional(z.number()),
-            /** Minimum voucher increment, in base units. */
-            minVoucherDelta: z.optional(z.string()),
-            /** Supported funding modes. Omitted means push mode only. */
-            modes: z.optional(z.array(sessionMode)),
-            /** Solana network: mainnet, devnet, or localnet. */
-            network: z.optional(z.string()),
-            /** Operator/server public key. */
-            operator: z.string(),
-            /** Payment-channels program ID. */
-            programId: z.optional(z.string()),
-            /** Voucher authority for pull-mode sessions. */
-            pullVoucherStrategy: z.optional(sessionPullVoucherStrategy),
-            /** Server-provided recent blockhash. */
-            recentBlockhash: z.optional(z.string()),
-            /** Server-provided current slot used as the channel `openSlot` PDA seed. */
-            recentSlot: z.optional(z.union([z.string(), z.number()])),
-            /** Primary recipient for channel proceeds. */
+            methodDetails: z.object({
+                channelId: z.optional(z.string()),
+                channelProgram: z.string(),
+                decimals: z.optional(z.number()),
+                distributionSplits: z.optional(z.array(z.object({ recipient: z.string(), shareBps: z.number() }))),
+                feePayer: z.optional(z.boolean()),
+                feePayerKey: z.optional(z.string()),
+                gracePeriodSeconds: z.optional(z.number()),
+                idleTimeoutOptionsSeconds: z.optional(z.array(z.number())),
+                idleTimeoutSeconds: z.optional(z.number()),
+                minVoucherDelta: z.optional(z.string()),
+                network: z.string(),
+                operator: z.optional(z.string()),
+                /**
+                 * Base58 blockhash the client MUST use as the open
+                 * transaction's recent blockhash, and the RPC context slot
+                 * from the same `getLatestBlockhash` response — the client's
+                 * default `openSlot`, a u64 decimal string on the wire.
+                 * Conditionally REQUIRED when `channelId` is absent (new
+                 * channel); MUST be absent when resuming an existing channel.
+                 */
+                recentBlockhash: z.optional(z.string()),
+                recentSlot: z.optional(z.string()),
+                tokenProgram: z.optional(z.string()),
+                ttlSeconds: z.optional(z.number()),
+                voucherSigner: z.optional(sessionVoucherSigner),
+            }),
+            minimumDeposit: z.optional(z.string()),
             recipient: z.string(),
-            /** Optional basis-point splits distributed at close. */
-            splits: z.optional(
-                z.array(
-                    z.object({
-                        /** Share in basis points. */
-                        bps: z.number(),
-                        /** Split recipient public key. */
-                        recipient: z.string(),
-                    }),
-                ),
-            ),
-            /** Party that signs cumulative vouchers; absent defaults to client. */
-            voucherSigner: z.optional(sessionVoucherSigner),
+            suggestedDeposit: z.optional(z.string()),
+            unitType: z.optional(z.string()),
         }),
     },
 });

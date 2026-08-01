@@ -191,8 +191,6 @@ public struct OpenPayload: Codable, Equatable, Sendable {
     public var tokenAccount: String?
     public var approvedAmount: String?
     public var owner: String?
-    public var initMultiDelegateTx: String?
-    public var updateDelegationTx: String?
     public var authorizedSigner: String
     public var signature: String
 
@@ -210,8 +208,6 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         tokenAccount: String? = nil,
         approvedAmount: String? = nil,
         owner: String? = nil,
-        initMultiDelegateTx: String? = nil,
-        updateDelegationTx: String? = nil,
         authorizedSigner: String,
         signature: String
     ) {
@@ -228,8 +224,6 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         self.tokenAccount = tokenAccount
         self.approvedAmount = approvedAmount
         self.owner = owner
-        self.initMultiDelegateTx = initMultiDelegateTx
-        self.updateDelegationTx = updateDelegationTx
         self.authorizedSigner = authorizedSigner
         self.signature = signature
     }
@@ -301,7 +295,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case mode, channelId, deposit, payer, payee, mint, salt, gracePeriod, recentSlot
         case transaction, tokenAccount, approvedAmount, owner
-        case initMultiDelegateTx, updateDelegationTx, authorizedSigner, signature
+        case authorizedSigner, signature
     }
 
     public init(from decoder: Decoder) throws {
@@ -319,8 +313,6 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         tokenAccount = try c.decodeIfPresent(String.self, forKey: .tokenAccount)
         approvedAmount = try c.decodeIfPresent(String.self, forKey: .approvedAmount)
         owner = try c.decodeIfPresent(String.self, forKey: .owner)
-        initMultiDelegateTx = try c.decodeIfPresent(String.self, forKey: .initMultiDelegateTx)
-        updateDelegationTx = try c.decodeIfPresent(String.self, forKey: .updateDelegationTx)
         authorizedSigner = try c.decode(String.self, forKey: .authorizedSigner)
         signature = try c.decode(String.self, forKey: .signature)
     }
@@ -341,8 +333,6 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         try c.encodeIfPresent(tokenAccount, forKey: .tokenAccount)
         try c.encodeIfPresent(approvedAmount, forKey: .approvedAmount)
         try c.encodeIfPresent(owner, forKey: .owner)
-        try c.encodeIfPresent(initMultiDelegateTx, forKey: .initMultiDelegateTx)
-        try c.encodeIfPresent(updateDelegationTx, forKey: .updateDelegationTx)
         try c.encode(authorizedSigner, forKey: .authorizedSigner)
         try c.encode(signature, forKey: .signature)
     }

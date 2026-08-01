@@ -3,8 +3,8 @@
 This is the challenge-driven layer above the raw instruction builders in
 :mod:`solana_pay_kit.protocols.mpp._paymentchannels`: it derives the full channel open
 from a :class:`~solana_pay_kit.protocols.mpp.intents.session.SessionRequest`
-challenge (mint from the currency, deposit from the cap, token program from the
-currency, splits, salt, open slot from the challenge ``recentSlot``) and
+challenge (mint from the currency, deposit from its advertised deposit hints,
+token program from the currency, splits, salt, and the opening slot) and
 assembles the partially signed open transaction the operator broadcasts.
 
 Encoding boundary: the open transaction travels as standard-alphabet base64
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import base64
 import secrets
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
@@ -29,7 +29,6 @@ from solders.transaction import Transaction  # type: ignore[import-untyped]
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.solana import default_token_program_for_currency
 from solana_pay_kit.protocols.mpp._paymentchannels import (
-    PROGRAM_ID,
     Distribution,
     OpenChannelParams,
     build_open_instruction,
@@ -40,23 +39,21 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     OpenPayload,
     SessionAction,
-    SessionMode,
+    SessionAuthentication,
     SessionRequest,
+    SessionSplit,
     _parse_base_units,
 )
 
 __all__ = [
     "DEFAULT_GRACE_PERIOD_SECONDS",
-    "PENDING_SERVER_SIGNATURE",
     "PaymentChannelOpen",
     "PaymentChannelOpenTransaction",
     "PaymentChannelOpenOptions",
     "PaymentChannelSessionOpen",
     "PaymentChannelSessionOpenOptions",
-    "ServerOpenedPaymentChannelSessionOpenOptions",
     "build_open_payment_channel_transaction",
     "create_payment_channel_session_opener",
-    "create_server_opened_payment_channel_session_opener",
     "derive_payment_channel_open",
     "generate_authorized_signer",
     "unique_salt",
@@ -65,12 +62,6 @@ __all__ = [
 #: Default payment-channel close grace period, in seconds, applied to a derived
 #: open when the caller does not override it.
 DEFAULT_GRACE_PERIOD_SECONDS = 900
-
-#: Placeholder signature carried by an open action while the operator still
-#: needs to submit the server-broadcast open transaction. The all-ones base58
-#: value is the default (zero) Solana signature, used as a sentinel until the
-#: real on-chain signature is known.
-PENDING_SERVER_SIGNATURE = "1111111111111111111111111111111111111111111111111111111111111111"
 
 _U64_MAX = 2**64 - 1
 
@@ -152,25 +143,35 @@ class PaymentChannelOpen:
             program_id=self.program_id,
         )
 
-    def open_payload(self, mode: SessionMode, signature: str) -> OpenPayload:
+    def open_payload(
+        self,
+        transaction: str,
+        *,
+        authentication: SessionAuthentication | None = None,
+        idle_timeout_seconds: int | None = None,
+    ) -> OpenPayload:
         """Build the open action payload carrying the full channel parameters.
 
         Serializes the channel's addresses, deposit, salt, grace period, and
         authorized signer into the ``open`` payload sent to the operator,
-        tagged with the session ``mode`` and the open-transaction ``signature``.
+        along with the signed transaction the server must verify and submit.
         """
-        return OpenPayload.payment_channel_with_mode(
-            mode,
-            str(self.channel_id),
-            str(self.deposit),
-            str(self.payer),
-            str(self.payee),
-            str(self.mint),
-            self.salt,
-            self.grace_period,
-            self.open_slot,
-            str(self.authorized_signer),
-            signature,
+        return OpenPayload(
+            channel_id=str(self.channel_id),
+            payer=str(self.payer),
+            payee=str(self.payee),
+            mint=str(self.mint),
+            authorized_signer=str(self.authorized_signer),
+            salt=self.salt,
+            deposit_amount=str(self.deposit),
+            grace_period_seconds=self.grace_period,
+            idle_timeout_seconds=idle_timeout_seconds,
+            open_slot=self.open_slot,
+            distribution_splits=[
+                SessionSplit(recipient=str(split.recipient), share_bps=split.bps) for split in self.recipients
+            ],
+            authentication=authentication,
+            transaction=transaction,
         )
 
 
@@ -189,23 +190,26 @@ class PaymentChannelOpenOptions:
     """Optional overrides for deriving a payment-channel open.
 
     Every field falls back to a challenge-derived default: ``deposit`` to the
-    challenge ``cap``, ``grace_period`` to
-    :data:`DEFAULT_GRACE_PERIOD_SECONDS`, ``program_id`` to the challenge
-    ``programId`` (else the production program), ``recipients`` to the
-    challenge ``splits``, ``salt`` to :func:`unique_salt`, and
+    challenge ``suggestedDeposit`` or ``minimumDeposit``, ``grace_period`` to
+    :data:`DEFAULT_GRACE_PERIOD_SECONDS`, ``program_id`` to nested
+    ``methodDetails.channelProgram``, ``recipients`` to the nested
+    ``distributionSplits``, ``salt`` to :func:`unique_salt`, and
     ``token_program`` to the program resolved from the challenge currency
-    (Token-2022 for PYUSD/USDG/CASH), and ``open_slot`` to the challenge
-    ``recentSlot`` (there is no further fallback: the server provides the
-    slot, clients never fetch it).
+    (Token-2022 for PYUSD/USDG/CASH). ``open_slot`` defaults to the
+    challenge's ``methodDetails.recentSlot``.
     """
 
-    #: Deposit in token base units; defaults to the challenge cap.
+    #: Deposit in token base units; defaults to the challenge's deposit hint.
     deposit: int | None = None
     #: Close grace period in seconds; defaults to :data:`DEFAULT_GRACE_PERIOD_SECONDS`.
     grace_period: int | None = None
-    #: Channel open slot; defaults to the challenge ``recentSlot`` (required there).
+    #: Override for the channel's open slot (the program's ``openSlot``).
+    #: Defaults to the challenge's ``recentSlot``. An override MAY be earlier
+    #: (shortening the operator's post-close rent float) but never later —
+    #: the server rejects an ``openSlot`` ahead of its challenged
+    #: ``recentSlot``.
     open_slot: int | None = None
-    #: Owning program; defaults to the challenge ``programId`` or the production program.
+    #: Owning program; defaults to ``methodDetails.channelProgram``.
     program_id: Pubkey | None = None
     #: Payout split recipients; defaults to the challenge ``splits``.
     recipients: list[Distribution] | None = None
@@ -233,24 +237,10 @@ class PaymentChannelSessionOpenOptions:
 
     #: Overrides for deriving the channel open.
     open: PaymentChannelOpenOptions = field(default_factory=PaymentChannelOpenOptions)
-    #: Open-action signature; defaults to :data:`PENDING_SERVER_SIGNATURE`.
-    signature: str | None = None
-    #: Initial cumulative spent amount for the session; defaults to 0.
-    cumulative: int | None = None
-    #: Session expiry as a Unix timestamp; defaults to the session default.
-    expires_at: int | None = None
-
-
-@dataclass
-class ServerOpenedPaymentChannelSessionOpenOptions:
-    """Options for :func:`create_server_opened_payment_channel_session_opener`."""
-
-    #: Overrides for deriving the channel open.
-    open: PaymentChannelOpenOptions = field(default_factory=PaymentChannelOpenOptions)
-    #: Channel payer; defaults to the challenge ``operator`` (server-funded).
-    payer: Pubkey | None = None
-    #: Open-action signature; defaults to :data:`PENDING_SERVER_SIGNATURE`.
-    signature: str | None = None
+    #: Payer proof required when the operator signs vouchers.
+    authentication: SessionAuthentication | None = None
+    #: Idle timeout selected from the challenge's advertised options.
+    idle_timeout_seconds: int | None = None
     #: Initial cumulative spent amount for the session; defaults to 0.
     cumulative: int | None = None
     #: Session expiry as a Unix timestamp; defaults to the session default.
@@ -265,50 +255,63 @@ def derive_payment_channel_open(
 ) -> PaymentChannelOpen:
     """Derive the full channel open from a session challenge.
 
-    Resolves the mint from the challenge currency (localnet falls back to the
-    mainnet mint), the deposit from the cap when no explicit deposit is given,
-    the token program from the currency, the recipients from the challenge
-    splits, the open slot from the challenge ``recentSlot`` (server-provided;
-    clients never fetch it), and a random salt; then derives the channel PDA.
-    Any field set on ``options`` overrides the corresponding challenge-derived
-    default. Raises ``ValueError`` when neither the challenge nor the options
-    supply an open slot.
+    Resolves the mint, deposit policy, token program, distributions, channel
+    program, open slot, and salt before deriving the exact channel PDA. Any
+    field set on ``options`` overrides the corresponding challenge policy.
+    ``open_slot`` defaults to the challenge's ``methodDetails.recentSlot``; an
+    explicit earlier override is allowed, a later one is rejected (the server
+    enforces the same bound).
     """
     options = options if options is not None else PaymentChannelOpenOptions()
-    network = request.network if request.network is not None else "mainnet"
+    details = request.method_details
+    network = details.network
     resolved_mint = resolve_stablecoin_mint(request.currency, network)
     if resolved_mint is None:
         raise ValueError("session payment channels require an SPL token")
     mint = _parse_pubkey(resolved_mint, "mint")
     payee = _parse_pubkey(request.recipient, "recipient")
-    deposit = options.deposit if options.deposit is not None else _parse_u64_string(request.cap, "session cap")
-    grace_period = options.grace_period if options.grace_period is not None else DEFAULT_GRACE_PERIOD_SECONDS
+    requested_deposit = request.suggested_deposit or request.minimum_deposit
+    if options.deposit is None and requested_deposit is None:
+        raise ValueError("session challenge does not provide suggestedDeposit or minimumDeposit")
+    deposit = (
+        options.deposit if options.deposit is not None else _parse_u64_string(cast("str", requested_deposit), "deposit")
+    )
+    grace_period = (
+        options.grace_period
+        if options.grace_period is not None
+        else details.grace_period_seconds or DEFAULT_GRACE_PERIOD_SECONDS
+    )
     if options.program_id is not None:
         program_id = options.program_id
-    elif request.program_id is not None:
-        program_id = _parse_pubkey(request.program_id, "programId")
     else:
-        program_id = PROGRAM_ID
+        program_id = _parse_pubkey(details.channel_program, "channelProgram")
     if options.token_program is not None:
         token_program = options.token_program
     else:
         token_program = _parse_pubkey(
-            default_token_program_for_currency(request.currency, network),
+            details.token_program or default_token_program_for_currency(request.currency, network),
             "token program",
         )
     if options.recipients is not None:
         recipients = list(options.recipients)
     else:
         recipients = [
-            Distribution(recipient=_parse_pubkey(split.recipient, "split recipient"), bps=split.bps)
-            for split in request.splits
+            Distribution(recipient=_parse_pubkey(split.recipient, "split recipient"), bps=split.share_bps)
+            for split in details.distribution_splits
         ]
     salt = options.salt if options.salt is not None else unique_salt()
-    # The open slot comes from the challenge recentSlot (the server fetched it
-    # at challenge time); clients never fetch the slot themselves.
-    open_slot = options.open_slot if options.open_slot is not None else request.recent_slot
-    if open_slot is None:
-        raise ValueError("session challenge does not provide recentSlot (required to derive the channel)")
+    open_slot = options.open_slot
+    if open_slot is not None:
+        # An override MAY be earlier than the challenged recentSlot, never
+        # later: the server rejects an openSlot ahead of its challenge.
+        if details.recent_slot is not None and open_slot > details.recent_slot:
+            raise ValueError(
+                f"openSlot override {open_slot} is ahead of the challenged recentSlot {details.recent_slot}"
+            )
+    else:
+        if details.recent_slot is None:
+            raise ValueError("session challenge is missing recentSlot; a new-channel challenge must provide it")
+        open_slot = details.recent_slot
     channel_id, _ = find_channel_pda(payer, payee, mint, authorized_signer, salt, open_slot, program_id)
 
     return PaymentChannelOpen(
@@ -327,94 +330,115 @@ def derive_payment_channel_open(
     )
 
 
+def _resolve_open_blockhash(override: Hash | str | None, request: SessionRequest) -> Hash:
+    """Resolve the open transaction's blockhash: an explicit override wins,
+    otherwise the challenged ``recentBlockhash`` is required — the client
+    never fetches its own (the server requires the compiled message to use
+    the challenged value).
+    """
+    if override is not None:
+        return override if isinstance(override, Hash) else Hash.from_string(override)
+    challenged = request.method_details.recent_blockhash
+    if not challenged:
+        raise ValueError("session challenge is missing recentBlockhash; a new-channel challenge must provide it")
+    try:
+        return Hash.from_string(challenged)
+    except Exception as exc:  # noqa: BLE001 - solders raises its own parse error type
+        raise ValueError(f"invalid challenged recentBlockhash: {exc}") from exc
+
+
 def build_open_payment_channel_transaction(
     request: SessionRequest,
     signer: VoucherSigner | Any,
     authorized_signer: Pubkey,
-    recent_blockhash: Hash | str,
+    recent_blockhash: Hash | str | None = None,
     fee_payer: Pubkey | None = None,
     options: PaymentChannelOpenOptions | None = None,
 ) -> PaymentChannelOpenTransaction:
     """Build the payer-signed open transaction for operator broadcast.
 
-    The fee payer defaults to the challenge ``operator`` and its signature slot
-    is intentionally left empty: the payer partial-signs only its own slot and
-    the server completes the fee-payer signature before broadcasting.
+    ``recent_blockhash`` left ``None`` (the default) takes the challenge's
+    ``methodDetails.recentBlockhash``, which the server requires the compiled
+    message to use; an explicit override is for tests and custom flows that
+    re-issue their own challenge binding.
+
+    When the challenge advertises fee sponsorship, the transaction uses its
+    ``feePayerKey`` and leaves that signature slot empty for the server.
+    Otherwise the payer is also the fee payer.
     """
-    operator = _parse_pubkey(request.operator, "operator")
+    payer = _signer_pubkey(signer)
+    details = request.method_details
+    advertised_fee_payer = (
+        _parse_pubkey(_require_string(details.fee_payer_key, "feePayerKey"), "feePayerKey")
+        if details.fee_payer
+        else payer
+    )
     if fee_payer is None:
-        fee_payer = operator
-    elif fee_payer != operator:
-        raise ValueError(
-            "fee_payer must equal the challenge operator: the gasless server "
-            "records rentPayer == operator and rejects any other fee payer"
-        )
+        fee_payer = advertised_fee_payer
+    elif fee_payer != advertised_fee_payer:
+        raise ValueError("fee_payer does not match the challenge fee-payer policy")
     open_ = derive_payment_channel_open(
         request,
-        _signer_pubkey(signer),
+        payer,
         authorized_signer,
         options,
     )
-    return _build_open_payment_channel_tx(signer, open_, fee_payer, recent_blockhash)
+    return _build_open_payment_channel_tx(signer, open_, fee_payer, _resolve_open_blockhash(recent_blockhash, request))
 
 
 def create_payment_channel_session_opener(
     request: SessionRequest,
     payer_signer: VoucherSigner | Any,
     session_signer: VoucherSigner | Any,
-    recent_blockhash: Hash | str,
+    recent_blockhash: Hash | str | None = None,
     options: PaymentChannelSessionOpenOptions | None = None,
 ) -> PaymentChannelSessionOpen:
-    """Open a pull/clientVoucher session with a client-built open transaction.
+    """Build a strict session open action and its signed open transaction.
 
-    Requires the challenge to advertise pull + clientVoucher; builds the
-    partially signed open transaction (fee payer = operator), attaches it to
-    the open action, and returns the :class:`ActiveSession` keyed to the
-    derived channel. The action signature defaults to
-    :data:`PENDING_SERVER_SIGNATURE` until the operator broadcasts.
+    ``recent_blockhash`` left ``None`` (the default) takes the challenge's
+    ``methodDetails.recentBlockhash``; the derived ``openSlot`` likewise
+    defaults to the challenged ``recentSlot`` (see
+    :class:`PaymentChannelOpenOptions`).
     """
     options = options if options is not None else PaymentChannelSessionOpenOptions()
-    _ensure_client_voucher_pull(request)
-    authorized_signer = _signer_pubkey(session_signer)
-    fee_payer = _parse_pubkey(request.operator, "operator")
+    if request.method_details.voucher_signer == "operator" and options.authentication is None:
+        raise ValueError("operator voucher signing requires authentication")
+    if options.idle_timeout_seconds is not None:
+        from solana_pay_kit.protocols.mpp.intents.session import resolve_idle_timeout_seconds
+
+        resolve_idle_timeout_seconds(
+            request.method_details.idle_timeout_seconds or 300,
+            request.method_details.idle_timeout_options_seconds,
+            options.idle_timeout_seconds,
+        )
+    authorized_signer = (
+        _parse_pubkey(_require_string(request.method_details.operator, "operator"), "operator")
+        if request.method_details.voucher_signer == "operator"
+        else _signer_pubkey(session_signer)
+    )
+    payer = _signer_pubkey(payer_signer)
+    details = request.method_details
+    fee_payer = (
+        _parse_pubkey(_require_string(details.fee_payer_key, "feePayerKey"), "feePayerKey")
+        if details.fee_payer
+        else payer
+    )
     open_ = derive_payment_channel_open(
         request,
         _signer_pubkey(payer_signer),
         authorized_signer,
         options.open,
     )
-    tx = _build_open_payment_channel_tx(payer_signer, open_, fee_payer, recent_blockhash)
+    blockhash = _resolve_open_blockhash(recent_blockhash, request)
+    tx = _build_open_payment_channel_tx(payer_signer, open_, fee_payer, blockhash)
     session = _configured_session(open_.channel_id, session_signer, options.cumulative, options.expires_at)
-    signature = options.signature if options.signature is not None else PENDING_SERVER_SIGNATURE
-    action = SessionAction.open_action(open_.open_payload("pull", signature).with_transaction(tx.transaction))
-    return PaymentChannelSessionOpen(open=open_, session=session, action=action)
-
-
-def create_server_opened_payment_channel_session_opener(
-    request: SessionRequest,
-    session_signer: VoucherSigner | Any,
-    options: ServerOpenedPaymentChannelSessionOpenOptions | None = None,
-) -> PaymentChannelSessionOpen:
-    """Open a pull/clientVoucher session whose channel the operator funds.
-
-    No transaction is built: the payer defaults to the challenge ``operator``
-    and the server constructs, funds, and broadcasts the open itself. Because
-    the client never builds the on-chain open here, a challenge without a
-    ``recentSlot`` (an offline / trust-mode server) is accepted: the open slot
-    defaults to 0 and the derived channel id serves as the session key the
-    server trusts or replaces with its own on-chain open.
-    """
-    options = options if options is not None else ServerOpenedPaymentChannelSessionOpenOptions()
-    _ensure_client_voucher_pull(request)
-    payer = options.payer if options.payer is not None else _parse_pubkey(request.operator, "operator")
-    authorized_signer = _signer_pubkey(session_signer)
-    open_options = options.open
-    if open_options.open_slot is None and request.recent_slot is None:
-        open_options = replace(open_options, open_slot=0)
-    open_ = derive_payment_channel_open(request, payer, authorized_signer, open_options)
-    session = _configured_session(open_.channel_id, session_signer, options.cumulative, options.expires_at)
-    signature = options.signature if options.signature is not None else PENDING_SERVER_SIGNATURE
-    action = SessionAction.open_action(open_.open_payload("pull", signature))
+    action = SessionAction.open_action(
+        open_.open_payload(
+            tx.transaction,
+            authentication=options.authentication,
+            idle_timeout_seconds=options.idle_timeout_seconds,
+        )
+    )
     return PaymentChannelSessionOpen(open=open_, session=session, action=action)
 
 
@@ -451,18 +475,6 @@ def _build_open_payment_channel_tx(
     tx = Transaction.populate(message, signatures)
     encoded = base64.b64encode(bytes(tx)).decode("ascii")
     return PaymentChannelOpenTransaction(channel_id=open_.channel_id, transaction=encoded)
-
-
-def _ensure_client_voucher_pull(request: SessionRequest) -> None:
-    """Require the challenge to advertise pull mode with clientVoucher.
-
-    Raises ``ValueError`` if the challenge does not list ``pull`` among its
-    modes, or if its pull voucher strategy is not ``clientVoucher``.
-    """
-    if "pull" not in request.modes:
-        raise ValueError("session challenge does not advertise pull mode")
-    if request.pull_voucher_strategy != "clientVoucher":
-        raise ValueError("session challenge does not advertise pull + clientVoucher")
 
 
 def _configured_session(
@@ -513,3 +525,9 @@ def _parse_pubkey(value: str, label: str) -> Pubkey:
         return Pubkey.from_string(value)
     except (ValueError, TypeError) as exc:
         raise ValueError(f"invalid {label}: {value!r}") from exc
+
+
+def _require_string(value: str | None, label: str) -> str:
+    if not value:
+        raise ValueError(f"{label} is required")
+    return value

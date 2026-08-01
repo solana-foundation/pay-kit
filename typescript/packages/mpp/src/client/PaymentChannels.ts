@@ -5,7 +5,6 @@ import {
     type Base64EncodedWireTransaction,
     type Blockhash,
     createNoopSigner,
-    createSolanaRpc,
     createTransactionMessage,
     generateKeyPairSigner,
     getAddressEncoder,
@@ -23,7 +22,6 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 
 import {
     ASSOCIATED_TOKEN_PROGRAM,
-    DEFAULT_RPC_URLS,
     defaultTokenProgramForCurrency,
     normalizeNetwork,
     resolveStablecoinMint,
@@ -33,19 +31,20 @@ import {
     ActiveSession,
     type AmountLike,
     DEFAULT_SESSION_EXPIRES_AT,
+    resolveIdleTimeoutSeconds,
+    resolveOpenBlockhash,
+    resolveOpenSlot,
     type SessionRequest,
     type SessionSigner,
+    signSessionAuthentication,
 } from './Session.js';
 import type { SessionOpener } from './SessionFetch.js';
 
 const U64_MAX = (1n << 64n) - 1n;
-const PAYMENT_CHANNELS_PROGRAM = 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX';
 const RENT_SYSVAR = 'SysvarRent111111111111111111111111111111111';
 const DEFAULT_GRACE_PERIOD_SECONDS = 900;
 
 /** Placeholder signature used while the operator still needs to broadcast the open transaction. */
-export const PENDING_SERVER_SIGNATURE = '1111111111111111111111111111111111111111111111111111111111111111';
-
 /**
  * Payment-channel open fields shared by client-built and server-built open flows.
  */
@@ -91,7 +90,7 @@ export async function derivePaymentChannelOpen(
 }
 
 /**
- * Builds the payer-signed payment-channel open transaction for pull/client-voucher sessions.
+ * Builds the payer-signed payment-channel open transaction for a session.
  *
  * The transaction uses the operator from the session challenge as fee payer and
  * is intentionally left partially signed; the server adds the operator
@@ -101,7 +100,12 @@ export async function buildOpenPaymentChannelTransaction(
     parameters: buildOpenPaymentChannelTransaction.Parameters,
 ): Promise<PaymentChannelOpenTransaction> {
     const { request, signer } = parameters;
-    const network = normalizeNetwork(request.network ?? 'mainnet');
+    // The open transaction is bound to the challenge: the blockhash comes
+    // from the challenged `recentBlockhash` (an explicit override is for
+    // tests and custom flows) and `openSlot` defaults to the challenged
+    // `recentSlot` inside `preparePaymentChannelOpen` — the client never
+    // fetches either on its own.
+    const recentBlockhash = resolveOpenBlockhash(parameters.recentBlockhash, request);
     const open = await preparePaymentChannelOpen({
         ...parameters,
         payer: signer.address,
@@ -112,7 +116,11 @@ export async function buildOpenPaymentChannelTransaction(
     const payee = address(open.payee);
     const mintAddress = address(open.mint);
     const authorizedSigner = address(parameters.authorizedSigner);
-    const feePayer = address(request.operator);
+    const feePayer = address(
+        request.methodDetails.feePayer
+            ? requireString(request.methodDetails.feePayerKey, 'methodDetails.feePayerKey')
+            : signer.address,
+    );
     const [payerTokenAccount] = await findAssociatedTokenPda({
         mint: mintAddress,
         owner: payer,
@@ -159,21 +167,15 @@ export async function buildOpenPaymentChannelTransaction(
         },
         { programAddress },
     );
-    const latestBlockhash = request.recentBlockhash
-        ? {
-              blockhash: request.recentBlockhash as Blockhash,
-              lastValidBlockHeight: 0n,
-          }
-        : (
-              await createSolanaRpc(parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS.mainnet)
-                  .getLatestBlockhash()
-                  .send()
-          ).value;
+    // Only the blockhash is compiled into the message; the challenge does not
+    // carry a lastValidBlockHeight, so pin the lifetime with a sentinel — the
+    // server broadcasts (and the program enforces freshness), not this client.
+    const lifetime = { blockhash: recentBlockhash as Blockhash, lastValidBlockHeight: U64_MAX };
 
     const txMessage = pipe(
         createTransactionMessage({ version: 0 }),
         msg => setTransactionMessageFeePayer(feePayer, msg),
-        msg => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash(lifetime, msg),
         msg => appendTransactionMessageInstructions([instruction], msg),
     );
     const signedTx = await partiallySignTransactionMessageWithSigners(txMessage);
@@ -192,7 +194,7 @@ export async function buildOpenPaymentChannelTransaction(
 }
 
 /**
- * Creates a high-level opener for pull-mode sessions using client-signed vouchers.
+ * Creates a high-level payment-channel session opener.
  *
  * The opener turns a session 402 challenge into a payment-channel open action
  * with the signed transaction attached. The server/operator broadcasts that
@@ -203,20 +205,22 @@ export function createPaymentChannelSessionOpener(
     parameters: createPaymentChannelSessionOpener.Parameters,
 ): SessionOpener {
     return async ({ challenge }) => {
-        if (!challenge.request.modes?.includes('pull')) {
-            throw new Error('payment-channel session opener requires a pull-mode session challenge');
-        }
-        if (challenge.request.pullVoucherStrategy !== 'clientVoucher') {
-            throw new Error('payment-channel session opener requires pullVoucherStrategy=clientVoucher');
-        }
-
-        const sessionSigner = parameters.sessionSigner ?? (await generateKeyPairSigner());
+        const voucherSigner = challenge.request.methodDetails.voucherSigner ?? 'client';
+        const sessionSigner =
+            voucherSigner === 'operator'
+                ? parameters.signer
+                : (parameters.sessionSigner ?? (await generateKeyPairSigner()));
+        const authorizedSigner =
+            voucherSigner === 'operator'
+                ? requireString(challenge.request.methodDetails.operator, 'methodDetails.operator')
+                : sessionSigner.address;
         const open = await buildOpenPaymentChannelTransaction({
-            authorizedSigner: sessionSigner.address,
+            authorizedSigner,
             deposit: parameters.deposit,
             gracePeriod: parameters.gracePeriod,
             openSlot: parameters.openSlot,
             programAddress: parameters.programAddress,
+            recentBlockhash: parameters.recentBlockhash,
             recipients: parameters.recipients,
             request: challenge.request,
             rpcUrl: parameters.rpcUrl,
@@ -230,76 +234,29 @@ export function createPaymentChannelSessionOpener(
             expiresAt: parameters.expiresAt ?? DEFAULT_SESSION_EXPIRES_AT,
             signer: sessionSigner,
         });
+        const authentication =
+            voucherSigner === 'operator'
+                ? await signSessionAuthentication({
+                      challengeId: challenge.id,
+                      channelId: open.channelId,
+                      signer: parameters.signer,
+                  })
+                : undefined;
 
         return {
             payload: session.openPaymentChannelAction({
-                deposit: open.deposit,
-                gracePeriod: open.gracePeriod,
+                ...(authentication ? { authentication } : {}),
+                authorizedSigner,
+                depositAmount: open.deposit,
+                distributionSplits: challenge.request.methodDetails.distributionSplits,
+                gracePeriodSeconds: open.gracePeriod,
+                idleTimeoutSeconds: resolveIdleTimeoutSelection(challenge.request, parameters.idleTimeoutSeconds),
                 mint: open.mint,
-                mode: 'pull',
                 openSlot: open.openSlot,
                 payee: open.payee,
                 payer: open.payer,
                 salt: open.salt,
-                signature: parameters.signature ?? PENDING_SERVER_SIGNATURE,
                 transaction: open.transaction,
-            }),
-            session,
-            source: parameters.source,
-        };
-    };
-}
-
-/**
- * Creates an opener for pull/client-voucher sessions where the operator opens
- * the payment channel server-side.
- *
- * The payload contains the deterministic channel PDA and open fields, but no
- * transaction. The server validates those fields, opens the channel with its
- * configured signer, and then the client signs cumulative vouchers for the
- * derived channel.
- */
-export function createServerOpenedPaymentChannelSessionOpener(
-    parameters: createServerOpenedPaymentChannelSessionOpener.Parameters = {},
-): SessionOpener {
-    return async ({ challenge }) => {
-        if (!challenge.request.modes?.includes('pull')) {
-            throw new Error('server-opened payment-channel session opener requires a pull-mode session challenge');
-        }
-        if (challenge.request.pullVoucherStrategy !== 'clientVoucher') {
-            throw new Error('server-opened payment-channel session opener requires pullVoucherStrategy=clientVoucher');
-        }
-
-        const sessionSigner = parameters.sessionSigner ?? (await generateKeyPairSigner());
-        const open = await derivePaymentChannelOpen({
-            authorizedSigner: sessionSigner.address,
-            deposit: parameters.deposit,
-            gracePeriod: parameters.gracePeriod,
-            openSlot: parameters.openSlot,
-            payer: parameters.payer ?? challenge.request.operator,
-            programAddress: parameters.programAddress,
-            request: challenge.request,
-            salt: parameters.salt,
-            tokenProgram: parameters.tokenProgram,
-        });
-        const session = new ActiveSession({
-            channelId: open.channelId,
-            cumulative: parameters.cumulative ?? 0n,
-            expiresAt: parameters.expiresAt ?? DEFAULT_SESSION_EXPIRES_AT,
-            signer: sessionSigner,
-        });
-
-        return {
-            payload: session.openPaymentChannelAction({
-                deposit: open.deposit,
-                gracePeriod: open.gracePeriod,
-                mint: open.mint,
-                mode: 'pull',
-                openSlot: open.openSlot,
-                payee: open.payee,
-                payer: open.payer,
-                salt: open.salt,
-                signature: parameters.signature ?? PENDING_SERVER_SIGNATURE,
             }),
             session,
             source: parameters.source,
@@ -312,7 +269,11 @@ export declare namespace derivePaymentChannelOpen {
         readonly authorizedSigner: string;
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
+        /**
+         * Slot used as a channel PDA seed. Defaults to the challenged
+         * `methodDetails.recentSlot`; an override may be earlier than the
+         * challenged slot, never later.
+         */
         readonly openSlot?: AmountLike | undefined;
         readonly payer: string;
         readonly programAddress?: string | undefined;
@@ -328,11 +289,23 @@ export declare namespace buildOpenPaymentChannelTransaction {
         readonly authorizedSigner: string;
         readonly deposit?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
+        /**
+         * Slot used as a channel PDA seed. Defaults to the challenged
+         * `methodDetails.recentSlot`; an override may be earlier than the
+         * challenged slot, never later.
+         */
         readonly openSlot?: AmountLike | undefined;
         readonly programAddress?: string | undefined;
+        /**
+         * Blockhash for the open transaction. Defaults to the challenged
+         * `methodDetails.recentBlockhash`, which the server requires the
+         * compiled message to use; an explicit override is for tests and
+         * custom flows that re-issue their own challenge binding.
+         */
+        readonly recentBlockhash?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
         readonly request: SessionRequest;
+        /** Unused: the open now derives its blockhash and slot from the challenge, never from RPC. */
         readonly rpcUrl?: string | undefined;
         readonly salt?: AmountLike | undefined;
         readonly signer: TransactionSigner;
@@ -346,36 +319,37 @@ export declare namespace createPaymentChannelSessionOpener {
         readonly deposit?: AmountLike | undefined;
         readonly expiresAt?: AmountLike | undefined;
         readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
+        /** Selected inactivity threshold; must be one of the challenge's offered values. */
+        readonly idleTimeoutSeconds?: number | undefined;
+        /**
+         * Slot used as a channel PDA seed. Defaults to the challenged
+         * `methodDetails.recentSlot`; an override may be earlier than the
+         * challenged slot, never later.
+         */
         readonly openSlot?: AmountLike | undefined;
         readonly programAddress?: string | undefined;
+        /** Blockhash override for the open transaction. Defaults to the challenged `recentBlockhash`. */
+        readonly recentBlockhash?: string | undefined;
         readonly recipients?: readonly { readonly bps: number; readonly recipient: string }[] | undefined;
+        /** Unused: the open now derives its blockhash and slot from the challenge, never from RPC. */
         readonly rpcUrl?: string | undefined;
         readonly salt?: AmountLike | undefined;
         readonly sessionSigner?: SessionSigner | undefined;
         readonly signature?: string | undefined;
-        readonly signer: TransactionSigner;
+        readonly signer: SessionSigner & TransactionSigner;
         readonly source?: string | undefined;
         readonly tokenProgram?: string | undefined;
     }
 }
 
-export declare namespace createServerOpenedPaymentChannelSessionOpener {
-    interface Parameters {
-        readonly cumulative?: AmountLike | undefined;
-        readonly deposit?: AmountLike | undefined;
-        readonly expiresAt?: AmountLike | undefined;
-        readonly gracePeriod?: number | undefined;
-        /** Overrides the challenge-provided `request.recentSlot` (a channel PDA seed). */
-        readonly openSlot?: AmountLike | undefined;
-        readonly payer?: string | undefined;
-        readonly programAddress?: string | undefined;
-        readonly salt?: AmountLike | undefined;
-        readonly sessionSigner?: SessionSigner | undefined;
-        readonly signature?: string | undefined;
-        readonly source?: string | undefined;
-        readonly tokenProgram?: string | undefined;
-    }
+function resolveIdleTimeoutSelection(request: SessionRequest, selected?: number): number | undefined {
+    const details = request.methodDetails;
+    if (!details.idleTimeoutOptionsSeconds) return undefined;
+    return resolveIdleTimeoutSeconds({
+        defaultSeconds: details.idleTimeoutSeconds ?? 300,
+        options: details.idleTimeoutOptionsSeconds,
+        selected,
+    });
 }
 
 interface PreparedPaymentChannelOpen {
@@ -406,13 +380,13 @@ async function preparePaymentChannelOpen(
     parameters: derivePaymentChannelOpen.Parameters,
 ): Promise<PreparedPaymentChannelOpen> {
     const { request } = parameters;
-    const network = normalizeNetwork(request.network ?? 'mainnet');
+    const network = normalizeNetwork(request.methodDetails.network);
     const mint = resolveStablecoinMint(request.currency, network);
     if (!mint) {
         throw new Error('payment-channel sessions require an SPL token currency');
     }
 
-    const programAddress = address(parameters.programAddress ?? request.programId ?? PAYMENT_CHANNELS_PROGRAM);
+    const programAddress = address(parameters.programAddress ?? request.methodDetails.channelProgram);
     // Mirror the Rust client: the token program defaults from the challenge
     // currency (PYUSD/USDG/CASH are Token-2022 mints).
     const tokenProgram = address(parameters.tokenProgram ?? defaultTokenProgramForCurrency(request.currency, network));
@@ -420,23 +394,27 @@ async function preparePaymentChannelOpen(
     const payee = address(request.recipient);
     const mintAddress = address(mint);
     const authorizedSigner = address(parameters.authorizedSigner);
-    const deposit = parseU64(parameters.deposit ?? request.cap, 'deposit');
+    const deposit = parseU64(
+        requireValue(parameters.deposit ?? request.suggestedDeposit ?? request.minimumDeposit, 'deposit'),
+        'deposit',
+    );
     const salt = parseU64(parameters.salt ?? randomU64(), 'salt');
-    // The open slot is a channel PDA seed the program only accepts within a
-    // 1500-slot freshness window. It comes from the 402 challenge's
-    // `recentSlot` (the server pre-fetches it, like `recentBlockhash`)
-    // unless the caller pins one.
-    const openSlotSource = parameters.openSlot ?? request.recentSlot;
-    if (openSlotSource === undefined) {
-        throw new Error(
-            'openSlot required: the session challenge did not provide recentSlot and no override was given',
-        );
-    }
-    const openSlot = parseU64(openSlotSource, 'openSlot');
-    const gracePeriod = parameters.gracePeriod ?? DEFAULT_GRACE_PERIOD_SECONDS;
+    // The challenged `recentSlot` is the default `openSlot`; an explicit
+    // override may only rewind (the server rejects an openSlot ahead of its
+    // challenge). A new-channel challenge without `recentSlot` cannot derive
+    // an open unless the caller supplies the slot explicitly.
+    const openSlot = resolveOpenSlot({
+        challengedRecentSlot: request.methodDetails.recentSlot,
+        override: parameters.openSlot,
+    });
+    const gracePeriod =
+        parameters.gracePeriod ?? request.methodDetails.gracePeriodSeconds ?? DEFAULT_GRACE_PERIOD_SECONDS;
     const recipients =
         parameters.recipients?.map(split => ({ bps: split.bps, recipient: address(split.recipient) })) ??
-        request.splits?.map(split => ({ bps: split.bps, recipient: address(split.recipient) })) ??
+        request.methodDetails.distributionSplits?.map(split => ({
+            bps: split.shareBps,
+            recipient: address(split.recipient),
+        })) ??
         [];
 
     const [channelId] = await findPaymentChannelPda({
@@ -496,6 +474,16 @@ function parseU64(value: AmountLike, name: string): bigint {
         throw new Error(`${name} must fit in u64`);
     }
     return parsed;
+}
+
+function requireString(value: string | undefined, name: string): string {
+    if (!value) throw new Error(`${name} required`);
+    return value;
+}
+
+function requireValue<Value>(value: Value | undefined, name: string): Value {
+    if (value === undefined) throw new Error(`${name} required`);
+    return value;
 }
 
 function randomU64(): bigint {

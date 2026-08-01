@@ -403,14 +403,6 @@ type OpenPayload struct {
 	// Owner is the client wallet pubkey (base58). Required for pull mode.
 	Owner *string `json:"owner,omitempty"`
 
-	// InitMultiDelegateTx is a pre-signed transaction (base64) that creates
-	// the MultiDelegate PDA and an initial FixedDelegation.
-	InitMultiDelegateTx *string `json:"initMultiDelegateTx,omitempty"`
-
-	// UpdateDelegationTx is a pre-signed transaction (base64) that creates or
-	// raises the FixedDelegation cap.
-	UpdateDelegationTx *string `json:"updateDelegationTx,omitempty"`
-
 	// ── Shared ──
 
 	// AuthorizedSigner is the public key authorized to sign vouchers for this
@@ -426,43 +418,39 @@ type OpenPayload struct {
 // json.RawMessage so it can be encoded as a string and decoded from
 // string-or-number.
 type openPayloadJSON struct {
-	Mode                SessionMode     `json:"mode"`                          // funding mode discriminant ("push" or "pull")
-	ChannelID           *string         `json:"channelId,omitempty"`           // payment-channel address (base58); push mode
-	Deposit             *string         `json:"deposit,omitempty"`             // on-chain escrow deposit (base units); push mode
-	Payer               *string         `json:"payer,omitempty"`               // funding client wallet (base58)
-	Payee               *string         `json:"payee,omitempty"`               // primary channel payee (base58)
-	Mint                *string         `json:"mint,omitempty"`                // SPL mint locked in the channel (base58)
-	Salt                json.RawMessage `json:"salt,omitempty"`                // PDA-seed salt; encoded as decimal string, decoded string-or-number
-	GracePeriod         *uint32         `json:"gracePeriod,omitempty"`         // on-chain close grace period
-	RecentSlot          json.RawMessage `json:"recentSlot,omitempty"`          // challenge slot echo (the channel open_slot); encoded as decimal string, decoded string-or-number
-	Transaction         *string         `json:"transaction,omitempty"`         // signed channel-open tx (base64) for server broadcast
-	TokenAccount        *string         `json:"tokenAccount,omitempty"`        // delegated SPL token account (base58); pull mode
-	ApprovedAmount      *string         `json:"approvedAmount,omitempty"`      // operator delegation cap (base units); pull mode
-	Owner               *string         `json:"owner,omitempty"`               // client wallet pubkey (base58); pull mode
-	InitMultiDelegateTx *string         `json:"initMultiDelegateTx,omitempty"` // pre-signed MultiDelegate init tx (base64)
-	UpdateDelegationTx  *string         `json:"updateDelegationTx,omitempty"`  // pre-signed delegation cap-update tx (base64)
-	AuthorizedSigner    string          `json:"authorizedSigner"`              // voucher-signing session pubkey (base58)
-	Signature           string          `json:"signature"`                     // on-chain proof tx signature (base58)
+	Mode             SessionMode     `json:"mode"`                     // funding mode discriminant ("push" or "pull")
+	ChannelID        *string         `json:"channelId,omitempty"`      // payment-channel address (base58); push mode
+	Deposit          *string         `json:"deposit,omitempty"`        // on-chain escrow deposit (base units); push mode
+	Payer            *string         `json:"payer,omitempty"`          // funding client wallet (base58)
+	Payee            *string         `json:"payee,omitempty"`          // primary channel payee (base58)
+	Mint             *string         `json:"mint,omitempty"`           // SPL mint locked in the channel (base58)
+	Salt             json.RawMessage `json:"salt,omitempty"`           // PDA-seed salt; encoded as decimal string, decoded string-or-number
+	GracePeriod      *uint32         `json:"gracePeriod,omitempty"`    // on-chain close grace period
+	RecentSlot       json.RawMessage `json:"recentSlot,omitempty"`     // challenge slot echo (the channel open_slot); encoded as decimal string, decoded string-or-number
+	Transaction      *string         `json:"transaction,omitempty"`    // signed channel-open tx (base64) for server broadcast
+	TokenAccount     *string         `json:"tokenAccount,omitempty"`   // delegated SPL token account (base58); pull mode
+	ApprovedAmount   *string         `json:"approvedAmount,omitempty"` // operator delegation cap (base units); pull mode
+	Owner            *string         `json:"owner,omitempty"`          // client wallet pubkey (base58); pull mode
+	AuthorizedSigner string          `json:"authorizedSigner"`         // voucher-signing session pubkey (base58)
+	Signature        string          `json:"signature"`                // on-chain proof tx signature (base58)
 }
 
 // MarshalJSON serializes Salt and RecentSlot as decimal strings.
 func (p OpenPayload) MarshalJSON() ([]byte, error) {
 	wire := openPayloadJSON{
-		Mode:                p.Mode,
-		ChannelID:           p.ChannelID,
-		Deposit:             p.Deposit,
-		Payer:               p.Payer,
-		Payee:               p.Payee,
-		Mint:                p.Mint,
-		GracePeriod:         p.GracePeriod,
-		Transaction:         p.Transaction,
-		TokenAccount:        p.TokenAccount,
-		ApprovedAmount:      p.ApprovedAmount,
-		Owner:               p.Owner,
-		InitMultiDelegateTx: p.InitMultiDelegateTx,
-		UpdateDelegationTx:  p.UpdateDelegationTx,
-		AuthorizedSigner:    p.AuthorizedSigner,
-		Signature:           p.Signature,
+		Mode:             p.Mode,
+		ChannelID:        p.ChannelID,
+		Deposit:          p.Deposit,
+		Payer:            p.Payer,
+		Payee:            p.Payee,
+		Mint:             p.Mint,
+		GracePeriod:      p.GracePeriod,
+		Transaction:      p.Transaction,
+		TokenAccount:     p.TokenAccount,
+		ApprovedAmount:   p.ApprovedAmount,
+		Owner:            p.Owner,
+		AuthorizedSigner: p.AuthorizedSigner,
+		Signature:        p.Signature,
 	}
 	if p.Salt != nil {
 		raw, err := json.Marshal(strconv.FormatUint(*p.Salt, 10))
@@ -493,21 +481,19 @@ func (p *OpenPayload) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode open payload: %w", err)
 	}
 	*p = OpenPayload{
-		Mode:                wire.Mode,
-		ChannelID:           wire.ChannelID,
-		Deposit:             wire.Deposit,
-		Payer:               wire.Payer,
-		Payee:               wire.Payee,
-		Mint:                wire.Mint,
-		GracePeriod:         wire.GracePeriod,
-		Transaction:         wire.Transaction,
-		TokenAccount:        wire.TokenAccount,
-		ApprovedAmount:      wire.ApprovedAmount,
-		Owner:               wire.Owner,
-		InitMultiDelegateTx: wire.InitMultiDelegateTx,
-		UpdateDelegationTx:  wire.UpdateDelegationTx,
-		AuthorizedSigner:    wire.AuthorizedSigner,
-		Signature:           wire.Signature,
+		Mode:             wire.Mode,
+		ChannelID:        wire.ChannelID,
+		Deposit:          wire.Deposit,
+		Payer:            wire.Payer,
+		Payee:            wire.Payee,
+		Mint:             wire.Mint,
+		GracePeriod:      wire.GracePeriod,
+		Transaction:      wire.Transaction,
+		TokenAccount:     wire.TokenAccount,
+		ApprovedAmount:   wire.ApprovedAmount,
+		Owner:            wire.Owner,
+		AuthorizedSigner: wire.AuthorizedSigner,
+		Signature:        wire.Signature,
 	}
 	if p.Mode == "" {
 		return fmt.Errorf("open payload: missing mode")
@@ -623,20 +609,6 @@ func OpenPayloadPull(tokenAccount, approvedAmount, owner, authorizedSigner, sign
 // broadcast.
 func (p OpenPayload) WithTransaction(txBase64 string) OpenPayload {
 	p.Transaction = &txBase64
-	return p
-}
-
-// WithInitTx attaches a pre-signed InitMultiDelegate + CreateFixedDelegation
-// transaction.
-func (p OpenPayload) WithInitTx(txBase64 string) OpenPayload {
-	p.InitMultiDelegateTx = &txBase64
-	return p
-}
-
-// WithUpdateTx attaches a pre-signed CreateFixedDelegation (cap update)
-// transaction.
-func (p OpenPayload) WithUpdateTx(txBase64 string) OpenPayload {
-	p.UpdateDelegationTx = &txBase64
 	return p
 }
 

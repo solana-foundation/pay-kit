@@ -36,32 +36,27 @@ from solana_pay_kit.protocols.mpp.server import (
 
 router = APIRouter()
 
-# One session method, built from the shared solana_pay_kit config. cap is the 1.00 USDC
-# ceiling the server offers in a challenge; pull mode + clientVoucher is the
-# metered-billing flavour. The operator signer + RPC + server-side open submitter
-# make the channel settle on-chain (so the receipt poll returns a real signature),
-# and close_delay arms the idle-close watchdog that settles after the last
-# delivery — mirroring the TypeScript playground's session config.
+# One session method, built from the shared solana_pay_kit config. Each use costs
+# 100 base units and the challenge suggests a 1.00 USDC channel deposit. The
+# operator signer and RPC verify funding and settle the channel on-chain.
 _cfg = solana_pay_kit.config()
 session = new_session(
     SessionOptions(
         operator=_cfg.operator.signer.pubkey(),
         recipient=_cfg.effective_recipient(),
-        cap=1_000_000,
+        amount=100,
         currency=resolve_mint("USDC", "mainnet"),
         decimals=stablecoin_decimals("USDC"),
         network=_cfg.network.value,
         secret_key=_cfg.mpp.challenge_binding_secret or "",
-        modes=["pull"],
-        pull_voucher_strategy="clientVoucher",
+        suggested_deposit=1_000_000,
         signer=_cfg.operator.signer,
         rpc=SolanaRpc(_cfg.effective_rpc_url()),
-        open_tx_submitter="server",
-        close_delay=2.0,
+        idle_timeout_seconds=2,
     )
 )
 
-_challenge = SessionChallengeOptions(cap="1000000", description="Metered token stream")
+_challenge = SessionChallengeOptions(description="Metered token stream")
 
 # The session 402 gate, now shipped by the SDK: verify an Authorization
 # credential (returning the receipt headers) or answer 402 with a fresh

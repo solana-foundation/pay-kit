@@ -1,33 +1,19 @@
-"""Tests for the session intent wire types.
-
-Mirrors the ``#[cfg(test)] mod tests`` in
-``rust/crates/mpp/src/protocol/intents/session.rs`` and the parity-verified Go
-port. Asserts mode/strategy serde, ``SessionRequest`` omit-empty parity,
-``SessionAction`` round-trips for all five actions (including the ``"topUp"``
-camelCase tag), salt decimal-string out / string-or-number in, the
-``cumulative`` decode alias, push/pull discrimination, the missing-mode error,
-and the 48-byte voucher message layout.
-"""
+"""Tests for the final MPP session wire contract."""
 
 from __future__ import annotations
 
 import struct
 
 import pytest
+from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
-    CommitPayload,
-    CommitReceipt,
-    MeteredEnvelope,
-    MeteringDirective,
-    MeteringUsage,
     OpenPayload,
     SessionAction,
     SessionAuthentication,
-    SessionMode,
-    SessionPullVoucherStrategy,
+    SessionMethodDetails,
     SessionRequest,
     SessionSplit,
     SignedVoucher,
@@ -37,678 +23,197 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     VoucherPayload,
     resolve_idle_timeout_seconds,
     sign_session_authentication,
-    validate_idle_timeout_options,
     verify_session_authentication,
 )
 
 
-def test_session_authentication_message_and_use_roundtrip():
-    authentication = SessionAuthentication(
-        challenge_id="challenge-1", payer="payer-1", signature="signature-1"
-    )
-    assert authentication.message_bytes("channel-1") == (
-        b'{"channelId":"channel-1","domain":"mpp-session-auth-v1",'
-        b'"payer":"payer-1","sessionChallengeId":"challenge-1"}'
-    )
-    action = SessionAction.use_action(UsePayload("channel-1", authentication))
-    assert SessionAction.from_dict(action.to_dict()) == action
-
-
-def test_idle_timeout_negotiation():
-    assert resolve_idle_timeout_seconds(600, [30, 600, 86_400], 86_400) == 86_400
-    with pytest.raises(ValueError, match="not one of the advertised options"):
-        resolve_idle_timeout_seconds(600, [30, 600, 86_400], 60)
-    with pytest.raises(ValueError, match="strictly increasing"):
-        validate_idle_timeout_options([30, 30])
-
-
-def test_session_request_uses_new_voucher_signer_and_idle_fields_only():
-    request = SessionRequest(
-        cap="1000",
-        currency="USDC",
-        operator="operator",
-        recipient="recipient",
-        voucher_signer="operator",
-        idle_timeout_options_seconds=[30, 600],
-    )
-    wire = request.to_dict()
-    assert wire["voucherSigner"] == "operator"
-    assert wire["idleTimeoutOptionsSeconds"] == [30, 600]
-    assert "settlementAuthority" not in wire
-
-
-def test_session_authentication_signs_and_verifies_channel_binding():
-    from solders.keypair import Keypair
-
-    authentication = sign_session_authentication("challenge-1", "channel-1", Keypair())
-    assert verify_session_authentication(authentication, "channel-1")
-    assert not verify_session_authentication(authentication, "channel-2")
-
-
-def _voucher(channel_id: str = "chan1", cumulative: str = "500000", nonce: int | None = 3) -> SignedVoucher:
-    return SignedVoucher(
-        data=VoucherData(
-            channel_id=channel_id,
-            cumulative=cumulative,
-            expires_at=DEFAULT_SESSION_EXPIRES_AT,
-            nonce=nonce,
-        ),
-        signature="sig_here",
-    )
-
-
-# ── Constants ──
-
-
-def test_default_session_expires_at():
-    assert DEFAULT_SESSION_EXPIRES_AT == 4_102_444_800
-
-
-# ── SessionMode / SessionPullVoucherStrategy serde ──
-
-
-@pytest.mark.parametrize("mode", ["push", "pull"])
-def test_session_mode_roundtrips_on_request(mode: SessionMode):
-    req = SessionRequest(cap="1", currency="USDC", operator="op", recipient="rec", modes=[mode])
-    assert req.to_dict()["modes"] == [mode]
-    assert SessionRequest.from_dict(req.to_dict()).modes == [mode]
-
-
-@pytest.mark.parametrize("strategy", ["clientVoucher", "operatedVoucher"])
-def test_pull_voucher_strategy_roundtrips(strategy: SessionPullVoucherStrategy):
-    req = SessionRequest(
-        cap="1",
-        currency="USDC",
-        operator="op",
-        recipient="rec",
-        modes=["pull"],
-        pull_voucher_strategy=strategy,
-    )
-    d = req.to_dict()
-    assert d["pullVoucherStrategy"] == strategy
-    assert SessionRequest.from_dict(d).pull_voucher_strategy == strategy
-
-
-# ── SessionRequest ──
-
-
-def test_session_request_full_roundtrip():
-    req = SessionRequest(
-        cap="10000000",
-        currency="USDC",
-        operator="CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        recipient="CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+def _details() -> SessionMethodDetails:
+    return SessionMethodDetails(
+        network="devnet",
+        channel_program="program",
         decimals=6,
-        network="mainnet",
-        description="API session",
-        modes=["push"],
+        token_program="token-program",
+        voucher_signer="operator",
+        operator="operator",
+        grace_period_seconds=900,
+        idle_timeout_options_seconds=[30, 300],
+        distribution_splits=[SessionSplit("split", 100)],
     )
-    back = SessionRequest.from_dict(req.to_dict())
-    assert back.cap == "10000000"
-    assert back.currency == "USDC"
-    assert back.description == "API session"
-    assert back.decimals == 6
-    assert back.modes == ["push"]
 
 
-def test_session_request_omits_empty_optionals():
-    req = SessionRequest(cap="1000", currency="USDC", operator="op", recipient="rec")
-    d = req.to_dict()
-    for key in (
-        "splits",
-        "modes",
-        "decimals",
-        "network",
-        "description",
-        "externalId",
-        "programId",
-        "minVoucherDelta",
-        "pullVoucherStrategy",
-        "recentBlockhash",
-    ):
-        assert key not in d
-    # Required fields are always present.
-    assert d["cap"] == "1000"
-    assert d["operator"] == "op"
-    assert d["recipient"] == "rec"
+def _open() -> OpenPayload:
+    return OpenPayload(
+        channel_id="channel",
+        payer="payer",
+        payee="payee",
+        mint="mint",
+        authorized_signer="signer",
+        salt=7,
+        deposit_amount="1000",
+        grace_period_seconds=900,
+        idle_timeout_seconds=30,
+        open_slot=42,
+        transaction="transaction",
+    )
 
 
-def test_session_request_with_modes_push_and_pull():
-    req = SessionRequest(
-        cap="1000",
+def _voucher() -> SignedVoucher:
+    signer = Keypair.from_seed(bytes([7] * 32))
+    data = VoucherData(
+        channel_id=str(signer.pubkey()),
+        cumulative_amount="500",
+        expires_at=DEFAULT_SESSION_EXPIRES_AT,
+    )
+    return SignedVoucher(
+        data=data, signer=str(signer.pubkey()), signature=str(signer.sign_message(data.message_bytes()))
+    )
+
+
+def test_session_request_exact_nested_shape_roundtrips() -> None:
+    request = SessionRequest(
+        amount="25",
         currency="USDC",
-        operator="op",
-        recipient="rec",
-        modes=["push", "pull"],
-        pull_voucher_strategy="clientVoucher",
+        recipient="recipient",
+        method_details=_details(),
+        description="metered API",
+        external_id="order-1",
+        minimum_deposit="100",
+        suggested_deposit="1000",
+        unit_type="request",
     )
-    d = req.to_dict()
-    assert d["modes"] == ["push", "pull"]
-    assert d["pullVoucherStrategy"] == "clientVoucher"
-    back = SessionRequest.from_dict(d)
-    assert back.modes == ["push", "pull"]
-    assert back.pull_voucher_strategy == "clientVoucher"
 
-
-def test_session_request_with_splits_and_ids():
-    req = SessionRequest(
-        cap="1000",
-        currency="USDC",
-        operator="op",
-        recipient="rec",
-        splits=[SessionSplit("s1", 100), SessionSplit("s2", 200)],
-        program_id="prog123",
-        external_id="ref-1",
-    )
-    d = req.to_dict()
-    assert d["splits"] == [{"recipient": "s1", "bps": 100}, {"recipient": "s2", "bps": 200}]
-    back = SessionRequest.from_dict(d)
-    assert len(back.splits) == 2
-    assert back.splits[0].bps == 100
-    assert back.program_id == "prog123"
-    assert back.external_id == "ref-1"
-
-
-def test_session_request_min_voucher_delta_present_and_omitted():
-    with_delta = SessionRequest(
-        cap="1", currency="USDC", operator="op", recipient="rec", min_voucher_delta="500"
-    ).to_dict()
-    assert with_delta["minVoucherDelta"] == "500"
-
-    without = SessionRequest(cap="1", currency="USDC", operator="op", recipient="rec").to_dict()
-    assert "minVoucherDelta" not in without
-
-
-# ── OpenPayload constructors ──
-
-
-def test_open_payload_push_fields():
-    p = OpenPayload.push("chan1", "1000000", "signer1", "txsig")
-    assert p.mode == "push"
-    assert p.channel_id == "chan1"
-    assert p.deposit == "1000000"
-    assert p.token_account is None
-    assert p.approved_amount is None
-    assert p.authorized_signer == "signer1"
-    assert p.signature == "txsig"
-
-
-def test_open_payload_pull_fields():
-    p = OpenPayload.pull("tokacct", "5000000", "wallet1", "signer1", "approvesig")
-    assert p.mode == "pull"
-    assert p.channel_id is None
-    assert p.deposit is None
-    assert p.token_account == "tokacct"
-    assert p.approved_amount == "5000000"
-    assert p.owner == "wallet1"
-
-
-def test_open_payload_payment_channel_and_tx_helpers():
-    p = (
-        OpenPayload.payment_channel("chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 777, "signer1", "txsig")
-        .with_transaction("open-tx")
-        .with_init_tx("init-tx")
-        .with_update_tx("update-tx")
-    )
-    assert p.mode == "push"
-    assert p.session_id() == "chan1"
-    assert p.deposit_amount() == 1_000_000
-    assert p.payer == "payer1"
-    assert p.payee == "payee1"
-    assert p.mint == "mint1"
-    assert p.salt == 99
-    assert p.grace_period == 45
-    assert p.recent_slot == 777
-    assert p.transaction == "open-tx"
-    assert p.init_multi_delegate_tx == "init-tx"
-    assert p.update_delegation_tx == "update-tx"
-
-
-def test_deposit_amount_rejects_non_u64_values() -> None:
-    # Negative, fractional, non-digit, and over-u64 deposits must be rejected
-    # like the rust/Go typed u64 parsers, not silently coerced.
-    for bad in ("-1", "1.5", "0x10", " 10", "", str(2**64)):
-        p = OpenPayload.push("chan1", bad, "signer1", "txsig")
-        with pytest.raises(ValueError):
-            p.deposit_amount()
-
-
-def test_open_payload_pull_payment_channel_uses_channel_id_and_deposit():
-    p = OpenPayload.payment_channel_with_mode(
-        "pull", "chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, 777, "signer1", "pending"
-    ).with_transaction("open-tx")
-    assert p.mode == "pull"
-    assert p.session_id() == "chan1"
-    assert p.deposit_amount() == 1_000_000
-    assert p.channel_id == "chan1"
-    assert p.deposit == "1000000"
-    assert p.token_account is None
-    assert p.approved_amount is None
-    assert p.transaction == "open-tx"
-
-
-def test_open_payload_push_session_id_and_deposit():
-    p = OpenPayload.push("chan1", "2000000", "s", "sig")
-    assert p.session_id() == "chan1"
-    assert p.deposit_amount() == 2_000_000
-
-
-def test_open_payload_pull_session_id_and_deposit():
-    p = OpenPayload.pull("tokacct", "3000000", "wallet1", "s", "sig")
-    assert p.session_id() == "tokacct"
-    assert p.deposit_amount() == 3_000_000
-
-
-def test_open_payload_missing_required_fields_and_invalid_deposit_error():
-    push = OpenPayload.push("chan1", "bad", "s", "sig")
-    with pytest.raises(ValueError, match="invalid deposit amount"):
-        push.deposit_amount()
-    push.deposit = None
-    with pytest.raises(ValueError, match="push open missing deposit"):
-        push.deposit_amount()
-    push.channel_id = None
-    with pytest.raises(ValueError, match="push open missing channelId"):
-        push.session_id()
-
-    pull = OpenPayload.pull("tokacct", "bad", "wallet", "s", "sig")
-    with pytest.raises(ValueError, match="invalid deposit amount"):
-        pull.deposit_amount()
-    pull.approved_amount = None
-    with pytest.raises(ValueError, match="pull open missing deposit or approvedAmount"):
-        pull.deposit_amount()
-    pull.token_account = None
-    with pytest.raises(ValueError, match="pull open missing channelId or tokenAccount"):
-        pull.session_id()
-
-
-# ── OpenPayload serde ──
-
-
-def test_open_payload_push_roundtrip_dict():
-    p = OpenPayload.push("chan1", "1000000", "signer1", "txsig")
-    d = p.to_dict()
-    assert d["mode"] == "push"
-    assert d["channelId"] == "chan1"
-    assert "tokenAccount" not in d
-    back = OpenPayload.from_dict(d)
-    assert back.mode == "push"
-    assert back.channel_id == "chan1"
-
-
-def test_open_payload_pull_roundtrip_dict():
-    p = OpenPayload.pull("tokacct", "5000000", "wallet1", "signer1", "approvesig")
-    d = p.to_dict()
-    assert d["mode"] == "pull"
-    assert d["tokenAccount"] == "tokacct"
-    assert d["owner"] == "wallet1"
-    assert "channelId" not in d
-    back = OpenPayload.from_dict(d)
-    assert back.mode == "pull"
-    assert back.token_account == "tokacct"
-    assert back.owner == "wallet1"
-
-
-def test_salt_serializes_as_string_and_accepts_number_and_huge_u64():
-    salt = 2**64 - 8  # u64::MAX - 7
-    recent_slot = 2**64 - 3
-    p = OpenPayload.payment_channel(
-        "chan1", "1000000", "payer1", "payee1", "mint1", salt, 900, recent_slot, "signer1", "txsig"
-    )
-    d = p.to_dict()
-    assert d["salt"] == str(salt)
-    assert isinstance(d["salt"], str)
-    # recentSlot uses the same u64-as-string codec as salt.
-    assert d["recentSlot"] == str(recent_slot)
-    assert isinstance(d["recentSlot"], str)
-    back = OpenPayload.from_dict(d)
-    assert back.salt == salt
-    assert back.recent_slot == recent_slot
-
-    # Legacy numeric salt: no float precision loss for a huge u64 because the
-    # dict carries a Python int (mirrors rust's number branch).
-    legacy = {
-        "mode": "push",
-        "channelId": "chan1",
-        "deposit": "1000000",
-        "salt": salt,
-        "authorizedSigner": "signer1",
-        "signature": "txsig",
+    wire = request.to_dict()
+    assert wire == {
+        "amount": "25",
+        "currency": "USDC",
+        "recipient": "recipient",
+        "description": "metered API",
+        "externalId": "order-1",
+        "minimumDeposit": "100",
+        "suggestedDeposit": "1000",
+        "unitType": "request",
+        "methodDetails": {
+            "network": "devnet",
+            "channelProgram": "program",
+            "decimals": 6,
+            "tokenProgram": "token-program",
+            "voucherSigner": "operator",
+            "operator": "operator",
+            "idleTimeoutOptionsSeconds": [30, 300],
+            "gracePeriodSeconds": 900,
+            "distributionSplits": [{"recipient": "split", "shareBps": 100}],
+        },
     }
-    assert OpenPayload.from_dict(legacy).salt == salt
-    assert OpenPayload.from_dict({**legacy, "salt": 42}).salt == 42
-    # recentSlot also accepts a JSON number inbound, and absent decodes to None.
-    assert OpenPayload.from_dict({**legacy, "recentSlot": 123}).recent_slot == 123
-    assert OpenPayload.from_dict(legacy).recent_slot is None
+    assert SessionRequest.from_dict(wire) == request
+    for stale in ("cap", "programId", "deposit", "recentSlot", "gracePeriod"):
+        assert stale not in wire
 
 
-def test_salt_absent_is_none():
-    d = {"mode": "push", "channelId": "c", "authorizedSigner": "s", "signature": "sig"}
-    assert OpenPayload.from_dict(d).salt is None
-    # And a None salt is omitted from the wire dict.
-    assert "salt" not in OpenPayload.push("c", "1", "s", "sig").to_dict()
+@pytest.mark.parametrize("missing", ["amount", "currency", "recipient", "methodDetails"])
+def test_session_request_rejects_missing_required_fields(missing: str) -> None:
+    # The wire parser must refuse a request lacking a required field instead
+    # of defaulting it — a pre-e702dd8 draft request (cap/programId, no
+    # amount/methodDetails) must fail the parse, matching the Rust spine.
+    wire = SessionRequest(
+        amount="25", currency="USDC", recipient="recipient", method_details=_details()
+    ).to_dict()
+    del wire[missing]
+    with pytest.raises(ValueError):
+        SessionRequest.from_dict(wire)
 
 
-def test_salt_rejects_non_numeric_string_and_bad_type():
-    base = {"mode": "push", "channelId": "c", "authorizedSigner": "s", "signature": "sig"}
-    with pytest.raises(ValueError, match="salt must be a decimal string"):
-        OpenPayload.from_dict({**base, "salt": "not-a-number"})
-    with pytest.raises(ValueError, match="salt must be a decimal string or unsigned"):
-        OpenPayload.from_dict({**base, "salt": [1, 2]})
-    with pytest.raises(ValueError, match="salt must be a decimal string or unsigned"):
-        OpenPayload.from_dict({**base, "salt": True})
+@pytest.mark.parametrize("missing", ["network", "channelProgram"])
+def test_method_details_rejects_missing_required_fields(missing: str) -> None:
+    wire = _details().to_dict()
+    del wire[missing]
+    with pytest.raises(ValueError):
+        SessionMethodDetails.from_dict(wire)
 
 
-def test_open_payload_missing_mode_raises():
-    d = {"channelId": "chan1", "deposit": "1000", "authorizedSigner": "s", "signature": "sig"}
-    with pytest.raises(ValueError, match="missing mode"):
-        OpenPayload.from_dict(d)
+def test_method_details_new_channel_context_is_decimal_string_on_the_wire() -> None:
+    # A new-channel challenge (no channelId) carries the open-transaction
+    # context: recentBlockhash as base58, recentSlot as a u64 decimal string.
+    details = _details()
+    details.recent_blockhash = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
+    details.recent_slot = 42
+    wire = details.to_dict()
+    assert wire["recentBlockhash"] == "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
+    assert wire["recentSlot"] == "42"
+    assert SessionMethodDetails.from_dict(wire) == details
 
 
-def test_open_payload_unknown_mode_raises():
-    # rust serde rejects unknown SessionMode variants at decode.
-    d = {"mode": "stream", "channelId": "chan1", "authorizedSigner": "s", "signature": "sig"}
-    with pytest.raises(ValueError, match="unknown mode"):
-        OpenPayload.from_dict(d)
+def test_method_details_resume_challenge_omits_open_transaction_context() -> None:
+    # A resume challenge (channelId present) MUST NOT carry
+    # recentBlockhash/recentSlot; unset fields stay off the wire.
+    details = _details()
+    details.channel_id = "channel"
+    wire = details.to_dict()
+    assert wire["channelId"] == "channel"
+    assert "recentBlockhash" not in wire
+    assert "recentSlot" not in wire
+    parsed = SessionMethodDetails.from_dict(wire)
+    assert parsed.recent_blockhash is None
+    assert parsed.recent_slot is None
 
 
-def test_session_request_unknown_mode_and_strategy_raise():
-    base = {"cap": "1", "currency": "USDC", "operator": "op", "recipient": "rec"}
-    with pytest.raises(ValueError, match="unknown mode"):
-        SessionRequest.from_dict({**base, "modes": ["push", "stream"]})
-    with pytest.raises(ValueError, match="unknown pullVoucherStrategy"):
-        SessionRequest.from_dict({**base, "pullVoucherStrategy": "serverVoucher"})
+def test_open_payload_uses_exact_string_amount_and_slot_fields() -> None:
+    payload = _open()
+    wire = payload.to_dict()
+    assert wire["depositAmount"] == "1000"
+    assert wire["salt"] == "7"
+    assert wire["openSlot"] == "42"
+    assert wire["gracePeriodSeconds"] == 900
+    assert OpenPayload.from_dict(wire) == payload
+    for stale in ("deposit", "recentSlot", "programId", "mode"):
+        assert stale not in wire
 
 
-# ── SessionAction round-trips for all five actions ──
+@pytest.mark.parametrize("field", ["depositAmount", "salt", "openSlot", "transaction"])
+def test_open_payload_rejects_non_string_wire_fields(field: str) -> None:
+    wire = _open().to_dict()
+    wire[field] = 1
+    with pytest.raises(ValueError):
+        OpenPayload.from_dict(wire)
 
 
-def test_session_action_open_push_roundtrip():
-    action = SessionAction.open_action(OpenPayload.push("chan123", "5000000", "signer123", "sig456"))
-    d = action.to_dict()
-    assert d["action"] == "open"
-    assert d["mode"] == "push"
-    back = SessionAction.from_dict(d)
-    assert back.open is not None
-    assert back.open.mode == "push"
-    assert back.open.session_id() == "chan123"
-    assert back.open.deposit_amount() == 5_000_000
-    assert back.open.authorized_signer == "signer123"
-
-
-def test_session_action_open_pull_roundtrip():
-    action = SessionAction.open_action(OpenPayload.pull("tokacct", "3000000", "wallet1", "signer1", "approvesig"))
-    d = action.to_dict()
-    assert d["action"] == "open"
-    assert d["mode"] == "pull"
-    assert "tokenAccount" in d
-    back = SessionAction.from_dict(d)
-    assert back.open is not None
-    assert back.open.mode == "pull"
-    assert back.open.session_id() == "tokacct"
-    assert back.open.deposit_amount() == 3_000_000
-
-
-def test_session_action_voucher_roundtrip():
-    action = SessionAction.voucher_action(VoucherPayload(voucher=_voucher()))
-    d = action.to_dict()
-    assert d["action"] == "voucher"
-    back = SessionAction.from_dict(d)
-    assert back.voucher is not None
-    assert back.voucher.voucher.data.cumulative == "500000"
-    assert back.voucher.voucher.data.nonce == 3
-
-
-def test_session_action_commit_roundtrip():
-    action = SessionAction.commit_action(CommitPayload(delivery_id="delivery-1", voucher=_voucher()))
-    d = action.to_dict()
-    assert d["action"] == "commit"
-    assert d["deliveryId"] == "delivery-1"
-    back = SessionAction.from_dict(d)
-    assert back.commit is not None
-    assert back.commit.delivery_id == "delivery-1"
-    assert back.commit.voucher.data.cumulative == "500000"
-
-
-def test_session_action_topup_roundtrip_uses_camelcase_tag():
-    action = SessionAction.top_up_action(TopUpPayload(channel_id="chan1", new_deposit="9000000", signature="txsig"))
-    d = action.to_dict()
-    assert d["action"] == "topUp"  # camelCase, not "topup"
-    back = SessionAction.from_dict(d)
-    assert back.top_up is not None
-    assert back.top_up.new_deposit == "9000000"
-    assert back.top_up.signature == "txsig"
-
-
-def test_session_action_close_no_voucher_roundtrip():
-    action = SessionAction.close_action(ClosePayload(channel_id="chan1"))
-    d = action.to_dict()
-    assert d["action"] == "close"
-    assert "voucher" not in d
-    back = SessionAction.from_dict(d)
-    assert back.close is not None
-    assert back.close.voucher is None
-
-
-def test_session_action_close_with_voucher_roundtrip():
-    action = SessionAction.close_action(
-        ClosePayload(channel_id="chan1", voucher=_voucher(cumulative="700000", nonce=7))
-    )
-    d = action.to_dict()
-    assert d["action"] == "close"
-    back = SessionAction.from_dict(d)
-    assert back.close is not None
-    assert back.close.voucher is not None
-    assert back.close.voucher.data.cumulative == "700000"
-
-
-@pytest.mark.parametrize(
-    ("action", "expected_tag"),
-    [
-        (SessionAction.open_action(OpenPayload.push("c", "1", "s", "sig")), "open"),
-        (SessionAction.voucher_action(VoucherPayload(voucher=_voucher())), "voucher"),
-        (SessionAction.commit_action(CommitPayload("d", _voucher())), "commit"),
-        (SessionAction.top_up_action(TopUpPayload("c", "1", "sig")), "topUp"),
-        (SessionAction.close_action(ClosePayload("c")), "close"),
-    ],
-)
-def test_session_action_tags(action: SessionAction, expected_tag: str):
-    assert action.to_dict()["action"] == expected_tag
-
-
-def test_session_action_no_variant_raises():
-    with pytest.raises(ValueError, match="no variant set"):
-        SessionAction().to_dict()
-
-
-def test_session_action_multiple_variants_raises():
-    bad = SessionAction(
-        open=OpenPayload.push("c", "1", "s", "sig"),
-        close=ClosePayload("c"),
-    )
-    with pytest.raises(ValueError, match="multiple variants set"):
-        bad.to_dict()
-
-
-def test_session_action_missing_discriminator_raises():
-    with pytest.raises(ValueError, match="missing action discriminator"):
-        SessionAction.from_dict({"channelId": "c"})
-
-
-def test_session_action_unknown_discriminator_raises():
+def test_action_union_contains_only_final_actions() -> None:
+    authentication = SessionAuthentication("challenge", "payer", "signature")
+    voucher = _voucher()
+    actions = [
+        SessionAction.open_action(_open()),
+        SessionAction.voucher_action(VoucherPayload(voucher)),
+        SessionAction.use_action(UsePayload("channel", authentication)),
+        SessionAction.top_up_action(TopUpPayload("channel", "10", "transaction")),
+        SessionAction.close_action(ClosePayload("channel", voucher=voucher)),
+    ]
+    assert [action.to_dict()["action"] for action in actions] == ["open", "voucher", "use", "topUp", "close"]
+    assert [SessionAction.from_dict(action.to_dict()) for action in actions] == actions
     with pytest.raises(ValueError, match="unknown action"):
-        SessionAction.from_dict({"action": "settle"})
+        SessionAction.from_dict({"action": "commit"})
 
 
-# ── VoucherData ──
+def test_voucher_wire_and_message_layout() -> None:
+    voucher = _voucher()
+    wire = voucher.to_dict()
+    assert wire["signatureType"] == "ed25519"
+    assert wire["data"]["cumulativeAmount"] == "500"
+    assert "cumulative" not in wire["data"]
+    message = voucher.data.message_bytes()
+    assert len(message) == 50
+    assert message[:2] == bytes([0x56, 0x01])
+    assert struct.unpack("<Q", message[34:42])[0] == 500
+    assert SignedVoucher.from_dict(wire) == voucher
 
 
-def test_voucher_data_cumulative_alias_decode():
-    # Primary wire field.
-    primary = VoucherData.from_dict({"channelId": "c", "cumulativeAmount": "100", "expiresAt": 42})
-    assert primary.cumulative == "100"
-    # Legacy "cumulative" alias.
-    alias = VoucherData.from_dict({"channelId": "c", "cumulative": "200", "expiresAt": 42})
-    assert alias.cumulative == "200"
-    # Emits the canonical "cumulativeAmount" wire field.
-    assert primary.to_dict()["cumulativeAmount"] == "100"
-    assert "cumulative" not in primary.to_dict()
+def test_authentication_is_bound_to_opening_challenge_and_channel() -> None:
+    signer = Keypair.from_seed(bytes([3] * 32))
+    authentication = sign_session_authentication("opening-challenge", "channel", signer)
+    assert authentication.to_dict()["type"] == "proof"
+    assert verify_session_authentication(authentication, "channel")
+    assert not verify_session_authentication(authentication, "different-channel")
 
 
-def test_voucher_data_nonce_omitted_when_none():
-    d = VoucherData(channel_id="c", cumulative="1", expires_at=1).to_dict()
-    assert "nonce" not in d
-    d2 = VoucherData(channel_id="c", cumulative="1", expires_at=1, nonce=9).to_dict()
-    assert d2["nonce"] == 9
-
-
-@pytest.mark.parametrize("nonce", [None, 1, 5])
-def test_voucher_message_bytes_layout(nonce: int | None):
-    channel_bytes = bytes([3] * 32)
-    from solders.pubkey import Pubkey
-
-    channel_id = str(Pubkey.from_bytes(channel_bytes))
-    data = VoucherData(channel_id=channel_id, cumulative="1000", expires_at=42, nonce=nonce)
-    out = data.message_bytes()
-    assert len(out) == 50
-    assert out[:2] == bytes([0x56, 0x01])
-    assert out[2:34] == channel_bytes
-    assert out[34:42] == struct.pack("<Q", 1000)
-    assert out[42:50] == struct.pack("<q", 42)
-    # Deterministic.
-    assert data.message_bytes() == data.message_bytes()
-
-
-def test_voucher_message_bytes_differs_by_cumulative():
-    from solders.pubkey import Pubkey
-
-    channel_id = str(Pubkey.from_bytes(bytes([6] * 32)))
-    a = VoucherData(channel_id=channel_id, cumulative="100", expires_at=42)
-    b = VoucherData(channel_id=channel_id, cumulative="200", expires_at=42)
-    assert a.message_bytes() != b.message_bytes()
-
-
-def test_voucher_message_bytes_negative_expires_at():
-    from solders.pubkey import Pubkey
-
-    channel_id = str(Pubkey.from_bytes(bytes([7] * 32)))
-    data = VoucherData(channel_id=channel_id, cumulative="1", expires_at=-5)
-    out = data.message_bytes()
-    assert out[42:50] == struct.pack("<q", -5)
-
-
-def test_voucher_message_bytes_invalid_channel_and_cumulative():
-    with pytest.raises(ValueError, match="invalid channelId"):
-        VoucherData(channel_id="not-base58-!!!", cumulative="1", expires_at=1).message_bytes()
-
-    from solders.pubkey import Pubkey
-
-    channel_id = str(Pubkey.from_bytes(bytes([8] * 32)))
-    with pytest.raises(ValueError, match="invalid voucher cumulative"):
-        VoucherData(channel_id=channel_id, cumulative="nope", expires_at=1).message_bytes()
-
-
-def test_signed_voucher_roundtrip():
-    v = _voucher(cumulative="100", nonce=None)
-    d = v.to_dict()
-    back = SignedVoucher.from_dict(d)
-    assert back.data.cumulative == "100"
-    assert back.signature == "sig_here"
-    assert back.data.nonce is None
-
-
-# ── Metering types ──
-
-
-def test_metering_directive_roundtrip_and_amount_parse():
-    directive = MeteringDirective(
-        delivery_id="d1",
-        session_id="chan1",
-        amount="125",
-        currency="USDC",
-        sequence=7,
-        expires_at=DEFAULT_SESSION_EXPIRES_AT,
-        commit_url="https://example.test/commit",
-    )
-    assert directive.amount_base_units() == 125
-    d = directive.to_dict()
-    assert d["deliveryId"] == "d1"
-    assert d["commitUrl"] == "https://example.test/commit"
-    assert "proof" not in d
-    back = MeteringDirective.from_dict(d)
-    assert back.sequence == 7
-    assert back.commit_url == "https://example.test/commit"
-
-
-def test_metering_directive_invalid_amount():
-    directive = MeteringDirective(
-        delivery_id="d1",
-        session_id="chan1",
-        amount="not-a-number",
-        currency="USDC",
-        sequence=1,
-        expires_at=DEFAULT_SESSION_EXPIRES_AT,
-        proof="proof",
-    )
-    with pytest.raises(ValueError, match="invalid metering amount"):
-        directive.amount_base_units()
-    assert directive.to_dict()["proof"] == "proof"
-
-
-def test_metering_usage_roundtrip_and_invalid():
-    usage = MeteringUsage(delivery_id="d1", amount="42")
-    d = usage.to_dict()
-    assert d["deliveryId"] == "d1"
-    back = MeteringUsage.from_dict(d)
-    assert back.amount_base_units() == 42
-    with pytest.raises(ValueError, match="invalid metering usage amount"):
-        MeteringUsage(delivery_id="d1", amount="bad").amount_base_units()
-
-
-def test_metered_envelope_roundtrip():
-    directive = MeteringDirective(
-        delivery_id="d1",
-        session_id="chan1",
-        amount="125",
-        currency="USDC",
-        sequence=7,
-        expires_at=DEFAULT_SESSION_EXPIRES_AT,
-    )
-    envelope = MeteredEnvelope(payload={"ok": True}, metering=directive)
-    d = envelope.to_dict()
-    assert d["metering"]["deliveryId"] == "d1"
-    assert d["payload"] == {"ok": True}
-    back = MeteredEnvelope.from_dict(d)
-    assert back.metering.sequence == 7
-    assert back.payload["ok"] is True
-
-
-def test_commit_receipt_roundtrip_and_parsers():
-    receipt = CommitReceipt(
-        delivery_id="d1",
-        session_id="chan1",
-        amount="125",
-        cumulative="500",
-        status="committed",
-    )
-    d = receipt.to_dict()
-    assert d["status"] == "committed"
-    back = CommitReceipt.from_dict(d)
-    assert back.amount_base_units() == 125
-    assert back.cumulative_base_units() == 500
-    assert back.status == "committed"
-
-    replayed = CommitReceipt.from_dict({**d, "status": "replayed"})
-    assert replayed.status == "replayed"
-
-    # rust deserializes status as the CommitStatus enum: missing or unknown
-    # statuses fail at decode and can never advance client state.
-    with pytest.raises(ValueError, match="unknown status"):
-        CommitReceipt.from_dict({**d, "status": "settled"})
-    missing = {k: v for k, v in d.items() if k != "status"}
-    with pytest.raises(ValueError, match="unknown status"):
-        CommitReceipt.from_dict(missing)
-
-    with pytest.raises(ValueError, match="invalid commit receipt amount"):
-        CommitReceipt("d", "s", "bad", "1", "committed").amount_base_units()
-    with pytest.raises(ValueError, match="invalid commit receipt cumulative"):
-        CommitReceipt("d", "s", "1", "bad", "committed").cumulative_base_units()
+def test_idle_timeout_selection_must_be_advertised() -> None:
+    assert resolve_idle_timeout_seconds(300, [30, 300], 30) == 30
+    with pytest.raises(ValueError, match="advertised options"):
+        resolve_idle_timeout_seconds(300, [30, 300], 60)

@@ -4,36 +4,27 @@ A :class:`Session` issues HMAC-bound 402 challenges carrying a
 :class:`~solana_pay_kit.protocols.mpp.intents.session.SessionRequest`
 (:meth:`Session.challenge`), verifies Authorization credentials whose payload is
 one of the five session actions (:meth:`Session.verify_credential` dispatching
-to open / voucher / commit / topUp / close), and drives the channel lifecycle by
+to open / voucher / use / topUp / close), and drives the channel lifecycle by
 composing the lower-level building blocks: the :class:`SessionServer` core, the
 :class:`ChannelStore`, the voucher verifier, the on-chain verifier seams, and
 the idle-close watchdog.
 
-Trust model / on-chain seam: the RPC client is optional. With no RPC client the
-transaction signature and deposit amount are trusted as provided (offline
-core); with an RPC client an open's confirmation signature is checked on-chain
-before the channel is persisted, and a top-up signature is confirmed before the
-deposit is raised. The on-chain check is wired through the
+Trust model / on-chain seam: an RPC client is required. Opens and top-ups are
+decoded and bound to the credential, submitted, confirmed, and checked against
+the resulting on-chain account before local state changes. The checks are wired
+through the
 :class:`SessionServer` config seams
 (:func:`~solana_pay_kit.protocols.mpp.server.session_onchain.new_open_tx_verifier` /
 :func:`~solana_pay_kit.protocols.mpp.server.session_onchain.new_top_up_tx_verifier`).
 
 On-chain settlement at close (settle_and_seal + distribute, populating
-``settledSignature``) runs when both a signer and an RPC client are configured;
-without them, close is a pure state-flip. The idle-close watchdog settles the
-same way. The server-broadcast open path (``openTxSubmitter=server``) runs only
-when an open carries an attached transaction (push opens and clientVoucher pull
-opens whose deposit lives in an on-chain payment channel): the server completes
-the fee-payer signature and broadcasts the open. A pull open with no
-transaction skips the server-broadcast path and trusts the channel id / deposit
-even when ``openTxSubmitter=server`` is configured, mirroring the TS open
-dispatch.
+``settledSignature``) runs when a signer is configured. The idle-close watchdog
+uses the same settlement path.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,6 +37,7 @@ from solana_pay_kit._paycore.errors import (
     payment_required_response,
 )
 from solana_pay_kit._paycore.solana import MAX_SPLITS
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
     PAYMENT_RECEIPT_HEADER,
@@ -56,12 +48,10 @@ from solana_pay_kit.protocols.mpp.core.headers import (
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
-    CommitPayload,
     OpenPayload,
     SessionAction,
-    SessionMode,
-    SessionPullVoucherStrategy,
     TopUpPayload,
+    UsePayload,
     VoucherPayload,
 )
 from solana_pay_kit.protocols.mpp.server.defaults import detect_realm
@@ -69,11 +59,9 @@ from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionSe
 from solana_pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecycle
 from solana_pay_kit.protocols.mpp.server.session_onchain import (
     RpcClient,
-    VerifyOpenTxExpected,
-    confirm_transaction_signature,
-    cosign_and_broadcast_open,
+    new_open_tx_verifier,
+    new_top_up_tx_verifier,
     settle_and_seal_channel,
-    verify_open_tx,
 )
 from solana_pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
 from solana_pay_kit.signer import LocalSigner
@@ -99,26 +87,12 @@ class _AlreadySettling(Exception):
 
 
 __all__ = [
-    "OpenTxSubmitter",
     "SessionOptions",
     "SessionChallengeOptions",
     "SessionGateResult",
     "Session",
     "new_session",
 ]
-
-
-# OpenTxSubmitter selects who broadcasts a push-mode payment-channel open
-# transaction.
-OpenTxSubmitter = str
-
-# The client broadcasts the open transaction itself and the server only verifies
-# it. Default.
-OPEN_TX_SUBMITTER_CLIENT: OpenTxSubmitter = "client"
-
-# The server completes the fee-payer signature, broadcasts the client-built open
-# transaction, and waits for confirmation before persisting channel state.
-OPEN_TX_SUBMITTER_SERVER: OpenTxSubmitter = "server"
 
 
 @dataclass
@@ -129,9 +103,8 @@ class SessionOptions:
     operator: str = ""
     # Recipient is the primary payment recipient (base58). Required.
     recipient: str = ""
-    # Cap is the maximum session cap the server will offer (base units).
-    # Required, must be positive.
-    cap: int = 0
+    # Amount charged per use/voucher action. Required, must be positive.
+    amount: int = 0
     # Currency identifier (e.g. "USDC" or an SPL mint address). Default USDC.
     currency: str = ""
     # Decimals is the token decimals. Default 6.
@@ -142,37 +115,25 @@ class SessionOptions:
     secret_key: str = ""
     # Realm is the challenge realm. Defaults to detect_realm().
     realm: str = ""
-    # ProgramID overrides the payment-channels program id. None defaults to the
-    # canonical program.
-    program_id: Pubkey | None = None
+    # Payment-channel program advertised under methodDetails.channelProgram.
+    channel_program: Pubkey | None = None
+    token_program: str | None = None
+    suggested_deposit: int | None = None
+    minimum_deposit: int | None = None
+    grace_period_seconds: int = 900
+    fee_payer: bool = False
+    voucher_signer: str = "client"
+    idle_timeout_options_seconds: list[int] | None = None
+    idle_timeout_seconds: int = 300
     # MinVoucherDelta is the minimum voucher increment (base units). 0 = no
     # minimum.
     min_voucher_delta: int = 0
-    # Modes are the funding modes advertised to clients. Empty means push only.
-    modes: list[SessionMode] = field(default_factory=list)
-    # PullVoucherStrategy is the voucher authority for pull-mode sessions.
-    # Required when modes includes pull.
-    pull_voucher_strategy: SessionPullVoucherStrategy | None = None
     # Splits are optional basis-point splits distributed at close. Max 8.
     splits: list[Split] = field(default_factory=list)
-    # CloseDelay arms the idle-close watchdog (seconds); zero disables it.
-    close_delay: float = 0
-    # OpenTxSubmitter selects who broadcasts push-mode open transactions.
-    # Default "client".
-    open_tx_submitter: OpenTxSubmitter = ""
     # Store is the pluggable channel store. Defaults to in-memory.
     store: ChannelStore | None = None
-    # RPC is the optional RPC client used for on-chain checks. None skips every
-    # on-chain check and trusts payload claims as provided.
+    # RPC is required: session funding verification always fails closed.
     rpc: RpcClient | None = None
-    # RecentStateProvider pre-fetches ``(recentBlockhash, recentSlot)`` for
-    # challenge issuance from a single ``getLatestBlockhash`` call (the
-    # response context carries the slot), WITHOUT granting the method an RPC
-    # client — on-chain open verification and settle-at-close stay off, so
-    # payload claims are trusted exactly as with ``rpc=None``. When set it
-    # wins over ``rpc`` at challenge time. Mirrors
-    # ``X402Upto(recent_state_provider=...)``.
-    recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None
     # Signer is the operator/merchant local signer that funds and signs the
     # on-chain settle-at-close (and the server-broadcast open) transactions.
     # None (or no RPC) leaves close a pure state-flip with settledSignature unset.
@@ -183,9 +144,8 @@ class SessionOptions:
 class SessionChallengeOptions:
     """Customize a single 402 session challenge."""
 
-    # Cap is the requested session cap (base units, decimal string). Empty uses
-    # the server maximum; larger requests are clamped to it.
-    cap: str = ""
+    # Amount overrides the configured price for this challenge.
+    amount: str = ""
     # Description is a human-readable challenge description.
     description: str = ""
     # ExternalID is a merchant reference id echoed on the receipt.
@@ -226,53 +186,6 @@ def _parse_session_u64(value: str, name: str) -> int:
     return parsed
 
 
-async def _try_recent_blockhash_and_slot(rpc: Any) -> tuple[str | None, int | None]:
-    """Best-effort fetch of a recent blockhash plus the current slot from the
-    injected RPC client, in one ``getLatestBlockhash`` call.
-
-    The response envelope already carries the current slot in its context, so
-    the challenge's ``recentSlot`` comes from the same response as the
-    blockhash rather than a separate ``getSlot`` round-trip (a duck-typed RPC
-    whose response lacks ``context.slot`` falls back to ``get_slot`` when it
-    has one). Returns ``(None, None)`` on any error/absence; the prefetch is
-    non-fatal because the client fetches its own blockhash when the challenge
-    omits one — but never the slot, so a push open without a challenge
-    ``recentSlot`` fails client-side.
-    """
-    getter: Any = getattr(rpc, "get_latest_blockhash", None)
-    if not callable(getter):
-        return None, None
-    try:
-        pending: Any = getter("confirmed")
-        out = await pending
-    except Exception:
-        return None, None
-    value: Any = getattr(out, "value", None)
-    blockhash: Any = getattr(value, "blockhash", None)
-    if not isinstance(blockhash, str) or not blockhash:
-        blockhash = None
-    slot: Any = getattr(getattr(out, "context", None), "slot", None)
-    if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
-        slot = await _try_current_slot(rpc)
-    return blockhash, slot
-
-
-async def _try_current_slot(rpc: Any) -> int | None:
-    """Best-effort ``getSlot`` fallback for RPC clients whose
-    ``get_latest_blockhash`` response does not expose ``context.slot``."""
-    getter: Any = getattr(rpc, "get_slot", None)
-    if not callable(getter):
-        return None
-    try:
-        pending: Any = getter("confirmed")
-        out = await pending
-    except Exception:
-        return None
-    if isinstance(out, bool):
-        return None
-    return out if isinstance(out, int) and out >= 0 else None
-
-
 def _success_receipt(reference: str, challenge_id: str, external_id: str) -> Receipt:
     """Build a success receipt for a session action."""
     return Receipt.success(
@@ -292,39 +205,30 @@ class Session:
         core: SessionServer,
         secret_key: str,
         realm: str,
-        cap: int,
+        amount: int,
         currency: str,
         recipient: str,
         network: str,
-        open_tx_submitter: OpenTxSubmitter,
         rpc: RpcClient | None,
         lifecycle: SessionLifecycle | None,
         signer: LocalSigner | None = None,
-        recent_state_provider: Callable[[], tuple[str | None, int | None] | None] | None = None,
     ) -> None:
         # core is the lower-level SessionServer dispatching open / voucher /
         # commit / topUp / close against the channel store.
         self._core = core
         self._secret_key = secret_key
         self._realm = realm
-        # cap is the maximum session cap offered in challenges (base units);
-        # per-challenge requested caps are clamped to it.
-        self._cap = cap
+        self._amount = amount
         self._currency = currency
         self._recipient = recipient
         self._network = network
-        self._open_tx_submitter = open_tx_submitter
-        # rpc is the optional RPC client for on-chain checks; None trusts payload
-        # claims as provided.
         self._rpc = rpc
-        # recent_state_provider stamps challenge (recentBlockhash, recentSlot)
-        # without an RPC client; wins over rpc at challenge time.
-        self._recent_state_provider = recent_state_provider
         # lifecycle is the idle-close watchdog; None when close_delay is zero.
         self._lifecycle = lifecycle
         # signer settles the channel on-chain at close (and broadcasts server
         # opens); None or no rpc leaves close a state-flip with no settlement.
         self._signer = signer
+        self._lifecycle_reconciled = False
 
     def core(self) -> SessionServer:
         """Return the underlying :class:`SessionServer` so hosts can reach the
@@ -337,68 +241,32 @@ class Session:
         if self._lifecycle is not None:
             self._lifecycle.shutdown()
 
-    def _touch(self, channel_id: str) -> None:
+    async def _touch(self, channel_id: str) -> None:
         """Reset the idle-close timer for ``channel_id`` when the watchdog is
         armed."""
         if self._lifecycle is not None:
-            self._lifecycle.touch(channel_id)
-
-    def _supports_mode(self, mode: SessionMode) -> bool:
-        """Report whether the configured modes accept ``mode``; empty modes mean
-        push-only. Checked before resolving the channel facts in an open."""
-        modes = self._core.config.modes
-        if not modes:
-            return mode == "push"
-        return mode in modes
+            state = await self._core.store().get_channel(channel_id)
+            self._lifecycle.touch(channel_id, state.idle_timeout_seconds if state else None)
 
     async def challenge(self, options: SessionChallengeOptions | None = None) -> PaymentChallenge:
         """Build the HMAC-bound 402 challenge embedding a ``SessionRequest``.
 
-        The requested cap is clamped to the server maximum, ``min_voucher_delta``
-        is included only when positive, ``modes`` are omitted when push-only,
-        ``pull_voucher_strategy`` is included only when pull is offered, and a
-        recent blockhash plus the current slot (``recentSlot``, the channel
-        ``openSlot``) are prefetched (non-fatally) when a recent-state
-        provider or an RPC client is configured.
+        The request follows the exact PR #309 session schema.
         """
         if options is None:
             options = SessionChallengeOptions()
-        cap_value = self._cap
-        if options.cap != "":
+        await self._reconcile_lifecycle()
+        request = await self._core.build_challenge_request()
+        if options.amount != "":
             try:
-                cap_value = _parse_session_u64(options.cap, "cap")
+                _parse_session_u64(options.amount, "amount")
             except ValueError as exc:
-                raise PaymentError(f"invalid requested cap: {exc}", code="invalid-payload") from exc
-        request = self._core.build_challenge_request(cap_value)
+                raise PaymentError(f"invalid requested amount: {exc}", code="invalid-payload") from exc
+            request.amount = options.amount
         if options.description != "":
             request.description = options.description
         if options.external_id != "":
             request.external_id = options.external_id
-        # Non-fatal: the client fetches its own blockhash when absent (recentSlot
-        # is server-provided — the client derives the channel PDA from it and
-        # never fetches the slot itself; both come from the same
-        # getLatestBlockhash response). The provider wins over the RPC client so
-        # hosts can stamp challenge state without enabling on-chain checks.
-        blockhash: str | None = None
-        recent_slot: int | None = None
-        if self._recent_state_provider is not None:
-            try:
-                value = self._recent_state_provider()
-            except Exception:  # noqa: BLE001 - provider failures are non-fatal at challenge time
-                value = None
-            if value is not None:
-                blockhash, recent_slot = value
-                if not isinstance(blockhash, str) or blockhash == "":
-                    blockhash = None
-                if isinstance(recent_slot, bool) or not isinstance(recent_slot, int) or recent_slot < 0:
-                    recent_slot = None
-        elif self._rpc is not None:
-            blockhash, recent_slot = await _try_recent_blockhash_and_slot(self._rpc)
-        if blockhash:
-            request.recent_blockhash = blockhash
-        if recent_slot is not None:
-            request.recent_slot = recent_slot
-
         expires = options.expires or minutes(5)
         return PaymentChallenge.with_secret_key(
             secret_key=self._secret_key,
@@ -410,11 +278,13 @@ class Session:
             description=options.description,
         )
 
-    async def verify_credential(self, credential: PaymentCredential) -> Receipt:
-        """Verify a session Authorization credential: Tier-1 HMAC and expiry, the
-        Tier-2 pinned-field backstop, then dispatch on the payload action (open /
-        voucher / commit / topUp / close).
+    async def verify_credential(self, credential: PaymentCredential, *, idempotency_key: str = "") -> Receipt:
+        """Verify a session Authorization credential: Tier-1 HMAC, the Tier-2
+        pinned-field backstop, then dispatch on the payload action. Challenge
+        expiry gates ``open`` only; an opened channel's stored authentication
+        proof remains valid until idle timeout or closure.
         """
+        await self._reconcile_lifecycle()
         challenge = PaymentChallenge(
             id=credential.challenge.id,
             realm=credential.challenge.realm,
@@ -440,29 +310,11 @@ class Session:
         if action.open is not None:
             if challenge.is_expired():
                 raise ChallengeExpiredError(f"challenge expired at {challenge.expires}")
-            # Challenge-bound recentSlot sanity check: the server stamped the
-            # challenge's recentSlot, so an open that claims a different one is
-            # rejected here alongside the other pinned-field checks (the
-            # attached transaction's own openSlot is bound in verify_open_tx).
-            if (
-                request.recent_slot is not None
-                and action.open.recent_slot is not None
-                and action.open.recent_slot != request.recent_slot
-            ):
-                raise PaymentError(
-                    f"open payload recentSlot {action.open.recent_slot} does not match "
-                    f"the challenge recentSlot {request.recent_slot}",
-                    code="invalid-payload",
-                )
-            reference = await self._handle_open(
-                action.open,
-                challenge=challenge,
-                challenge_recent_slot=request.recent_slot,
-            )
+            reference = await self._handle_open(action.open, challenge=challenge)
+        elif action.use is not None:
+            reference = await self._handle_use(action.use, challenge.id, idempotency_key, int(request.amount))
         elif action.voucher is not None:
             reference = await self._handle_voucher(action.voucher)
-        elif action.commit is not None:
-            reference = await self._handle_commit(action.commit)
         elif action.top_up is not None:
             reference = await self._handle_top_up(action.top_up)
         elif action.close is not None:
@@ -473,7 +325,13 @@ class Session:
         external_id = request.external_id or ""
         return _success_receipt(reference, credential.challenge.id, external_id)
 
-    async def handle(self, authorization: str | None, challenge_options: SessionChallengeOptions) -> SessionGateResult:
+    async def handle(
+        self,
+        authorization: str | None,
+        challenge_options: SessionChallengeOptions,
+        *,
+        idempotency_key: str = "",
+    ) -> SessionGateResult:
         """Framework-agnostic 402 session gate: verify an Authorization credential
         or answer 402 with a fresh challenge.
 
@@ -487,7 +345,9 @@ class Session:
         error: PaymentError | None = None
         if authorization:
             try:
-                receipt = await self.verify_credential(parse_authorization(authorization))
+                receipt = await self.verify_credential(
+                    parse_authorization(authorization), idempotency_key=idempotency_key
+                )
                 return SessionGateResult(
                     ok=True,
                     status=200,
@@ -546,160 +406,33 @@ class Session:
                 code="recipient-mismatch",
             )
 
-    def _open_tx_expected(self, payload: OpenPayload, challenge_recent_slot: int | None = None) -> VerifyOpenTxExpected:
-        """Build the on-chain open verification facts for a transaction-carrying
-        open. Only the paths that attach a transaction call this, keeping the
-        ``program_id`` pubkey parse (and its failure surface) off the
-        trust-the-channel-id paths. ``challenge_recent_slot`` is the recentSlot
-        the verified challenge was issued with; when present the attached
-        transaction's own openSlot must equal it.
-        """
-        return VerifyOpenTxExpected(
-            authorized_signer=payload.authorized_signer,
-            currency=self._currency,
-            recipient=self._recipient,
-            network=self._network,
-            max_cap=self._core.config.max_cap,
-            operator=self._core.config.operator,
-            program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
-            recent_slot=challenge_recent_slot,
-        )
-
     async def _handle_open(
         self,
         payload: OpenPayload,
         challenge: PaymentChallenge,
-        challenge_recent_slot: int | None = None,
     ) -> str:
-        """Process an open action: resolve the channel facts, enforce the deposit
-        invariants, and insert the channel state atomically and idempotently.
-
-        Three submitter paths, selected by transaction presence then submitter:
-
-        - a ``transaction`` is attached with ``openTxSubmitter=server``: the
-          server completes the fee-payer signature and broadcasts the open
-          (requires a signer + RPC), then persists.
-        - a ``transaction`` is attached with ``openTxSubmitter=client``: it is
-          validated against the challenge (structural always; on-chain liveness
-          when an RPC client is configured) before persisting.
-        - no ``transaction`` is attached: the client asserts a previously
-          broadcast open (push) or a server-opened pull channel; the open
-          signature is confirmed on-chain when an RPC is present (push only),
-          otherwise the channel id / token account and deposit are trusted as
-          provided. The server-broadcast path is skipped even when
-          ``openTxSubmitter=server`` is configured, so a pull open with no
-          transaction is never hard-rejected for a missing transaction.
-
-        The receipt reference is the open signature when one exists, else the
-        channel id.
-        """
-        mode = payload.mode
-        if not self._supports_mode(mode):
-            raise PaymentError(f"session mode {mode!r} is not supported by this challenge", code="invalid-payload")
-        if mode == "pull" and self._core.config.pull_voucher_strategy is None:
-            raise PaymentError(
-                "pull-mode open requires a pullVoucherStrategy on the server config",
-                code="invalid-config",
-            )
-
-        # Empty strings count as missing.
-        has_transaction = payload.transaction is not None and payload.transaction != ""
-        has_channel_id = payload.channel_id is not None and payload.channel_id != ""
-
-        # A push open must carry a transaction or a channel id. A pull open may
-        # carry a transaction (a clientVoucher payment-channel open, server- or
-        # client-broadcast) or carry only the channel id / token account (a
-        # server-opened pull). This mirrors the TS open dispatch
-        # ``if (payload.transaction) { ... } else if (mode === 'push') { ... } else
-        # { ... }``: the server-broadcast path is entered only when a transaction
-        # is attached, so a pull open with no transaction falls through to the
-        # trust-the-channel-id path instead of being hard-rejected by
-        # verify_open_tx's transaction requirement (which would make every
-        # pull-mode open against an ``openTxSubmitter=server`` server fail).
-        if mode == "push" and not has_transaction and not has_channel_id:
-            raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
-
-        if has_transaction and self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
-            if self._signer is None or self._rpc is None:
-                raise PaymentError(
-                    "openTxSubmitter=server requires a signer and an RPC client",
-                    code="invalid-config",
-                )
-            # Idempotent replay guard: the store check-and-insert is the final
-            # source of truth (process_open below), but a replayed open must
-            # NOT re-broadcast the (already-landed) open transaction. TS
-            # checks the store before submitOpenTx; we mirror that here so a
-            # replay short-circuits the broadcast instead of sending it
-            # again and then no-opping in process_open.
-            session_id = payload.session_id()
-            existing = await self._core.store().get_channel(session_id)
-            if existing is not None:
-                if existing.sealed:
-                    raise PaymentError(f"channel {session_id} is already sealed", code="invalid-payload")
-                if existing.authorized_signer != payload.authorized_signer:
-                    raise PaymentError(
-                        f"channel {session_id} already exists with a different authorized signer",
-                        code="invalid-payload",
-                    )
-            else:
-                # Built lazily: only the transaction-carrying paths verify
-                # the open on-chain, so the on-chain expected facts (and the
-                # program_id pubkey parse) stay off the trust-the-channel-id
-                # paths.
-                expected = self._open_tx_expected(payload, challenge_recent_slot)
-                try:
-                    verified = await verify_open_tx(expected, payload, None)
-                    if not payload.payer:
-                        payload.payer = verified.payer
-                    payload.deposit = str(verified.deposit)
-                    # openSlot from the verified transaction is authoritative;
-                    # persist it so the channel PDA stays re-derivable.
-                    payload.recent_slot = verified.open_slot
-                    payload.signature = await cosign_and_broadcast_open(
-                        payload, fee_payer=self._signer.keypair, rpc=self._rpc
-                    )
-                except PaymentError:
-                    raise
-                except Exception as exc:
-                    raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
-        elif has_transaction:
-            expected = self._open_tx_expected(payload, challenge_recent_slot)
-            try:
-                verified = await verify_open_tx(expected, payload, self._rpc)
-            except PaymentError:
-                raise
-            except Exception as exc:
-                raise PaymentError(f"open transaction verification failed: {exc}", code="invalid-payload") from exc
-            # Propagate the on-chain payer (open account slot 0) so process_open
-            # records state.operator when the attached transaction is the source
-            # of truth. Without it, settle-at-close refunds the unspent balance
-            # to the recipient's ATA instead of the channel opener's. The
-            # verified openSlot is propagated the same way so it is persisted.
-            if not payload.payer:
-                payload.payer = verified.payer
-            payload.deposit = str(verified.deposit)
-            payload.recent_slot = verified.open_slot
-        elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
-            raise PaymentError(
-                "push open requires payer or transaction when settle-at-close is configured",
-                code="invalid-payload",
-            )
-        elif mode == "push" and self._rpc is not None:
-            await confirm_transaction_signature(self._rpc, payload.signature, "open")
-        # else: no transaction is attached. Reachable by a pull open (the channel
-        # id / token account and deposit are trusted as provided, mirroring the TS
-        # `else` branch) or by a push open with a channel id and no RPC (trusted
-        # as previously broadcast). The server-broadcast path is skipped even when
-        # openTxSubmitter=server is configured.
-
+        """Verify, submit, confirm, and persist an exact channel open."""
         try:
             state = await self._core.process_open(payload, challenge)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
-        self._touch(state.channel_id)
-        if payload.signature != "":
-            return payload.signature
+        await self._touch(state.channel_id)
         return state.channel_id
+
+    async def _handle_use(
+        self,
+        payload: UsePayload,
+        challenge_id: str,
+        idempotency_key: str,
+        amount: int,
+    ) -> str:
+        """Charge an authenticated operator-mode request exactly once."""
+        try:
+            voucher = await self._core.process_use(payload, challenge_id, idempotency_key, amount)
+        except ValueError as exc:
+            raise PaymentError(str(exc), code="invalid-payload") from exc
+        await self._touch(payload.channel_id)
+        return f"{payload.channel_id}:{voucher.data.cumulative_amount}:{voucher.signature}"
 
     async def _handle_voucher(self, payload: VoucherPayload) -> str:
         """Verify a cumulative voucher and advance the watermark. The receipt
@@ -709,49 +442,17 @@ class Session:
             cumulative = await self._core.verify_voucher(payload)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
-        self._touch(channel_id)
+        await self._touch(channel_id)
         return f"{channel_id}:{cumulative}"
 
-    async def _handle_commit(self, payload: CommitPayload) -> str:
-        """Commit a reserved metered delivery. The receipt reference is
-        "<sessionId>:<deliveryId>:<cumulative>"."""
-        try:
-            receipt = await self._core.process_commit(payload)
-        except ValueError as exc:
-            raise PaymentError(str(exc), code="invalid-payload") from exc
-        self._touch(receipt.session_id)
-        return f"{receipt.session_id}:{receipt.delivery_id}:{receipt.cumulative}"
-
     async def _handle_top_up(self, payload: TopUpPayload) -> str:
-        """Raise a channel's deposit after optional on-chain confirmation of the
-        top-up signature. The receipt reference is the top-up transaction
-        signature."""
-        try:
-            new_deposit = _parse_session_u64(payload.new_deposit, "newDeposit")
-        except ValueError as exc:
-            raise PaymentError(str(exc), code="invalid-payload") from exc
-        if new_deposit > self._cap:
-            raise PaymentError(f"newDeposit {new_deposit} exceeds cap {self._cap}", code="invalid-payload")
-
-        # Cheap store pre-checks before touching the network.
-        existing = await self._core.store().get_channel(payload.channel_id)
-        if existing is None:
-            raise PaymentError(f"channel {payload.channel_id} not found", code="invalid-payload")
-        if existing.sealed:
-            raise PaymentError(f"channel {payload.channel_id} is already sealed", code="invalid-payload")
-        if existing.close_requested_at is not None:
-            raise PaymentError(
-                f"channel {payload.channel_id} close is pending; no further top-ups accepted",
-                code="invalid-payload",
-            )
-        if self._rpc is not None:
-            await confirm_transaction_signature(self._rpc, payload.signature, "topUp")
+        """Verify and apply an exact signed top-up transaction."""
         try:
             await self._core.process_top_up(payload)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
-        self._touch(payload.channel_id)
-        return payload.signature
+        await self._touch(payload.channel_id)
+        return payload.channel_id
 
     async def _handle_close(self, payload: ClosePayload) -> str:
         """Accept the optional final voucher and flip close-pending atomically.
@@ -767,73 +468,9 @@ class Session:
         hard-rejects with "close already requested". The fund-safety final
         voucher validation is unchanged from the core path.
         """
-        import time
-
-        from solana_pay_kit.protocols.mpp.server.session import _parse_u64
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
-        from solana_pay_kit.protocols.mpp.server.session_voucher import verify_session_voucher
-
         channel_id = payload.channel_id
-        now = int(time.time())
-        voucher = payload.voucher
-
-        def mutator(current: ChannelState | None) -> ChannelState:
-            if current is None:
-                raise ValueError(f"channel {channel_id} not found")
-            if current.sealed:
-                raise ValueError(f"channel {channel_id} is already sealed")
-            if current.close_requested_at is not None:
-                if current.settled_signature is None:
-                    # Re-drivable close: leave state untouched and let the
-                    # settlement retry proceed.
-                    return current.clone()
-                raise ValueError("close already requested")
-
-            nxt = current.clone()
-            if voucher is not None:
-                try:
-                    cumulative = _parse_u64(voucher.data.cumulative)
-                except ValueError as exc:
-                    raise ValueError(f"invalid cumulative in final voucher: {voucher.data.cumulative}") from exc
-                if cumulative <= current.cumulative:
-                    # Idempotent replay of the current highest voucher is
-                    # allowed; any other non-monotonic final voucher is a hard
-                    # error.
-                    replay = (
-                        cumulative == current.cumulative
-                        and current.highest_voucher_signature is not None
-                        and current.highest_voucher_signature == voucher.signature
-                    )
-                    if not replay:
-                        raise ValueError(
-                            f"final voucher cumulative {cumulative} must exceed watermark {current.cumulative}"
-                        )
-                    # Recheck expiry/window even on idempotent replay so the HTTP
-                    # close path doesn't record close-pending against a voucher that
-                    # no longer outlasts the settlement window (mirrors process_close).
-                    err = verify_session_voucher(
-                        voucher, current.authorized_signer, self._core.config.settlement_window
-                    )
-                    if err is not None:
-                        raise ValueError(err)
-                    if nxt.highest_voucher_expires_at is None:
-                        nxt.highest_voucher_expires_at = voucher.data.expires_at
-                else:
-                    if cumulative > current.deposit:
-                        raise ValueError("final voucher exceeds deposit")
-                    err = verify_session_voucher(
-                        voucher, current.authorized_signer, self._core.config.settlement_window
-                    )
-                    if err is not None:
-                        raise ValueError(err)
-                    nxt.cumulative = cumulative
-                    nxt.highest_voucher_signature = voucher.signature
-                    nxt.highest_voucher_expires_at = voucher.data.expires_at
-            nxt.close_requested_at = now
-            return nxt
-
         try:
-            await self._core.store().update_channel(channel_id, mutator)
+            await self._core.process_close(payload)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         if self._lifecycle is not None:
@@ -937,17 +574,60 @@ class Session:
         is swallowed (logged) so it cannot crash the timer, and the channel stays
         re-drivable with ``settledSignature`` unset.
         """
+        import time
+
+        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
+
+        due = False
+        remaining: float | None = None
+
+        def close_if_due(current: ChannelState | None) -> ChannelState:
+            nonlocal due, remaining
+            if current is None or current.sealed or current.close_requested_at is not None:
+                return current  # type: ignore[return-value]
+            timeout = current.idle_timeout_seconds
+            if timeout is None or timeout <= 0:
+                return current
+            now_ms = int(time.time() * 1000)
+            elapsed_ms = max(0, now_ms - current.last_activity_at)
+            timeout_ms = timeout * 1000
+            if elapsed_ms < timeout_ms:
+                remaining = (timeout_ms - elapsed_ms) / 1000
+                return current
+            nxt = current.clone()
+            nxt.close_requested_at = int(time.time())
+            due = True
+            return nxt
+
         try:
-            await self._handle_close(ClosePayload(channel_id=channel_id, voucher=None))
+            await self._core.store().update_channel(channel_id, close_if_due)
+            if remaining is not None and self._lifecycle is not None:
+                self._lifecycle.touch(channel_id, remaining)
+            if due:
+                await self._settle_channel(channel_id)
         except Exception:
             logging.getLogger(__name__).warning("idle-close settle failed for channel %s", channel_id, exc_info=True)
         return None
 
+    async def _reconcile_lifecycle(self) -> None:
+        """Restore idle timers from durable channel state once per process."""
+        if self._lifecycle is None or self._lifecycle_reconciled:
+            return
+        self._lifecycle_reconciled = True
+        import time
+
+        now_ms = int(time.time() * 1000)
+        for state in await self._core.store().list_channels():
+            if state.sealed or state.close_requested_at is not None or not state.idle_timeout_seconds:
+                continue
+            elapsed = max(0, now_ms - state.last_activity_at) / 1000
+            self._lifecycle.touch(state.channel_id, max(0.001, state.idle_timeout_seconds - elapsed))
+
 
 def new_session(options: SessionOptions) -> Session:
     """Create the server-side session method."""
-    if options.cap == 0:
-        raise PaymentError("cap must be positive", code="invalid-config")
+    if options.amount == 0:
+        raise PaymentError("amount must be positive", code="invalid-config")
     if options.recipient == "":
         raise PaymentError("recipient is required", code="invalid-config")
     try:
@@ -970,58 +650,64 @@ def new_session(options: SessionOptions) -> Session:
     network = options.network or "mainnet"
     realm = options.realm or detect_realm()
 
-    open_tx_submitter = options.open_tx_submitter
-    if open_tx_submitter == "":
-        open_tx_submitter = OPEN_TX_SUBMITTER_CLIENT
-    elif open_tx_submitter not in (OPEN_TX_SUBMITTER_CLIENT, OPEN_TX_SUBMITTER_SERVER):
-        raise PaymentError(
-            f"openTxSubmitter must be '{OPEN_TX_SUBMITTER_CLIENT}' or '{OPEN_TX_SUBMITTER_SERVER}', "
-            f"got '{open_tx_submitter}'",
-            code="invalid-config",
-        )
-
-    supports_pull = any(mode == "pull" for mode in options.modes)
-    if supports_pull and options.pull_voucher_strategy is None:
-        raise PaymentError(
-            "pullVoucherStrategy is required when modes includes pull",
-            code="invalid-config",
-        )
+    if options.rpc is None:
+        raise PaymentError("session requires an RPC client for funding verification", code="invalid-config")
+    if options.voucher_signer not in ("client", "operator"):
+        raise PaymentError("voucherSigner must be 'client' or 'operator'", code="invalid-config")
+    if options.voucher_signer == "operator" and options.signer is None:
+        raise PaymentError("operator voucher signing requires signer", code="invalid-config")
+    if options.fee_payer and options.signer is None:
+        raise PaymentError("fee payer mode requires signer", code="invalid-config")
 
     store = options.store if options.store is not None else MemoryChannelStore()
 
+    channel_program = options.channel_program or PROGRAM_ID
+    operator = options.operator
+    if not operator and options.signer is not None:
+        operator = str(options.signer.pubkey())
     config = SessionConfig(
-        operator=options.operator,
+        operator=operator,
         recipient=options.recipient,
         splits=options.splits,
-        max_cap=options.cap,
+        amount=options.amount,
         currency=currency,
         decimals=decimals,
         network=network,
-        program_id=None if options.program_id is None else str(options.program_id),
+        channel_program=str(channel_program),
+        token_program=options.token_program,
+        suggested_deposit=options.suggested_deposit,
+        minimum_deposit=options.minimum_deposit,
+        grace_period_seconds=options.grace_period_seconds,
+        fee_payer=options.fee_payer,
+        fee_payer_key=(str(options.signer.pubkey()) if options.fee_payer and options.signer is not None else None),
         min_voucher_delta=options.min_voucher_delta,
-        modes=options.modes,
-        pull_voucher_strategy=options.pull_voucher_strategy,
+        voucher_signer=options.voucher_signer,  # type: ignore[arg-type]
+        operator_signer=(options.signer.keypair if options.voucher_signer == "operator" and options.signer else None),
+        idle_timeout_options_seconds=options.idle_timeout_options_seconds,
+        idle_timeout_seconds=options.idle_timeout_seconds,
     )
-    # The method layer performs the optional on-chain liveness confirm inline in
-    # its open / topUp handlers, leaving the core SessionConfig verifier seams
-    # unset and confirming in the method, so the core is left to trust payload
-    # claims; the seam stays available for hosts that drive the lower-level
-    # SessionServer directly.
-    core = SessionServer(config, store)
+    config.verify_open_tx = new_open_tx_verifier(
+        config,
+        options.rpc,
+        fee_payer_signer=(options.signer.keypair if options.fee_payer and options.signer else None),
+    )
+    config.verify_top_up_tx = new_top_up_tx_verifier(config, store, options.rpc)
+    # The RPC doubles as the fallback source of the challenge's
+    # recentBlockhash/recentSlot; hosts can avoid the per-402 round-trip by
+    # sharing a cache via ``session.core().with_blockhash_cache(...)``.
+    core = SessionServer(config, store, rpc=options.rpc)
     session = Session(
         core=core,
         secret_key=secret_key,
         realm=realm,
-        cap=options.cap,
+        amount=options.amount,
         currency=currency,
         recipient=options.recipient,
         network=network,
-        open_tx_submitter=open_tx_submitter,
         rpc=options.rpc,
         lifecycle=None,
         signer=options.signer,
-        recent_state_provider=options.recent_state_provider,
     )
-    if options.close_delay > 0:
-        session._lifecycle = SessionLifecycle(session._close_on_idle, options.close_delay)
+    if options.idle_timeout_seconds > 0:
+        session._lifecycle = SessionLifecycle(session._close_on_idle)
     return session

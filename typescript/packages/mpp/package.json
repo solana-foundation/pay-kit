@@ -35,7 +35,7 @@
     "@solana-program/system": "^0.12.0",
     "@solana-program/token": "^0.11.0",
     "@solana/program-client-core": "^6.10.0",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@solana/kit": ">=6.10.0",
@@ -45,7 +45,7 @@
     "@solana/kit": "^6.10.0",
     "@solana/kit-client-rpc": "^0.8.0",
     "@types/node": "^25.5.0",
-    "mppx": "^0.5.5",
+    "mppx": "^0.8.15",
     "surfpool-sdk": "^1.2.0",
     "tsx": "^4.19.0"
   }

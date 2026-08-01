@@ -6,13 +6,10 @@ on-chain Borsh voucher layout used by the payment-channels program, so the same
 bytes the server verifies on the HTTP credential are the bytes the on-chain
 settle instruction consumes.
 
-Scope is client-only PUSH (payment channel) plus pull/clientVoucher: the client
-signs cumulative vouchers off-chain. The challenge-driven open layer (deriving
-the channel from a challenge and assembling the partially signed open
-transaction) lives in :mod:`solana_pay_kit.protocols.mpp.client.payment_channels`.
-Pull/operatedVoucher (the multi-delegator program) and the server verification
-path are out of scope, but the wire fields stay present so the action union
-round-trips.
+The challenge-driven open layer derives the channel from the final session
+request and assembles the payer-signed transaction the server verifies,
+broadcasts, and confirms. Client-signed channels issue cumulative vouchers;
+operator-signed channels attach their reusable payer proof to ``use`` actions.
 
 Voucher signatures and credentials are byte-deterministic: the signed preimage
 and the JCS-canonicalized credential are fully specified by the MPP session
@@ -38,10 +35,11 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
     OpenPayload,
     SessionAction,
-    SessionMode,
+    SessionAuthentication,
     SessionRequest,
     SignedVoucher,
     TopUpPayload,
+    UsePayload,
     VoucherData,
     VoucherPayload,
     _parse_base_units,
@@ -53,7 +51,6 @@ __all__ = [
     "ActiveSession",
     "serialize_session_credential",
     "parse_session_challenge",
-    "session_request_modes",
 ]
 
 #: Default voucher expiry: 2100-01-01T00:00:00Z. Stays below JavaScript's max
@@ -147,7 +144,6 @@ class ActiveSession:
         self._signer = signer
         self._expires_at = expires_at
         self._cumulative = cumulative
-        self._nonce = 0
 
     @classmethod
     def at_expiry(cls, channel_id: Any, signer: VoucherSigner | Any, expires_at: int) -> ActiveSession:
@@ -158,11 +154,6 @@ class ActiveSession:
     def cumulative(self) -> int:
         """Current cumulative watermark (base units)."""
         return self._cumulative
-
-    @property
-    def nonce(self) -> int:
-        """Current voucher nonce counter."""
-        return self._nonce
 
     @property
     def expires_at(self) -> int:
@@ -201,17 +192,19 @@ class ActiveSession:
         if cumulative <= self._cumulative:
             raise ValueError(f"voucher cumulative {cumulative} must exceed current watermark {self._cumulative}")
 
-        nonce = self._nonce + 1
         data = VoucherData(
             channel_id=self.channel_id_string,
-            cumulative=str(cumulative),
+            cumulative_amount=str(cumulative),
             expires_at=self._expires_at,
-            nonce=nonce,
         )
 
         preimage = voucher_message_bytes(self._channel_id, cumulative, self._expires_at)
         signature = _sign_base58(self._signer, preimage)
-        return SignedVoucher(data=data, signature=signature)
+        return SignedVoucher(
+            data=data,
+            signer=self.authorized_signer,
+            signature=signature,
+        )
 
     def prepare_increment(self, amount: int) -> SignedVoucher:
         """Sign a voucher adding ``amount`` to the current cumulative without
@@ -223,23 +216,19 @@ class ActiveSession:
         """Advance the local watermark to a prepared voucher the server accepted.
 
         The voucher's channel MUST match this session and its cumulative MUST
-        strictly exceed the current watermark; the nonce advances to the larger
-        of the current nonce and the voucher nonce (current nonce + 1 when the
-        voucher carries none).
+        strictly exceed the current watermark.
         """
         if voucher.data.channel_id != self.channel_id_string:
             raise ValueError(
                 f"voucher channel {voucher.data.channel_id} does not match active session {self.channel_id_string}"
             )
         try:
-            cumulative = _parse_base_units(voucher.data.cumulative)
+            cumulative = _parse_base_units(voucher.data.cumulative_amount)
         except ValueError as exc:
             raise ValueError("invalid voucher cumulative") from exc
         if cumulative <= self._cumulative:
             raise ValueError(f"voucher cumulative {cumulative} must exceed current watermark {self._cumulative}")
         self._cumulative = cumulative
-        candidate = voucher.data.nonce if voucher.data.nonce is not None else self._nonce + 1
-        self._nonce = max(self._nonce, candidate)
 
     def reconcile_settled(self, settled: int) -> None:
         """Reconcile the watermark to a server-settled cumulative, e.g. the
@@ -247,14 +236,10 @@ class ActiveSession:
 
         Advances to ``settled`` only when it is ahead of the current watermark
         and never regresses, so retrying a delivery the server already accepted
-        (lost-response case) catches the client up without recording the freshly
-        prepared higher voucher. When it advances, the request nonce advances by
-        one too, so the next prepared voucher does not reuse the settled nonce.
-        Mirrors the Rust/Go ``reconcile_settled``.
+        catches the client up without recording a freshly prepared voucher.
         """
         if settled > self._cumulative:
             self._cumulative = settled
-            self._nonce += 1
 
     def sign_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher with an absolute cumulative amount and advance the
@@ -277,32 +262,25 @@ class ActiveSession:
         voucher = self.sign_increment(amount)
         return SessionAction.voucher_action(VoucherPayload(voucher=voucher))
 
-    def close_action(self, final_increment: int = 0) -> SessionAction:
+    def close_action(
+        self,
+        final_increment: int = 0,
+        *,
+        authentication: SessionAuthentication | None = None,
+    ) -> SessionAction:
         """Build a cooperative close action.
 
         When ``final_increment`` is greater than zero it signs one last voucher
         for the remaining balance before closing; otherwise the close carries no
         voucher.
         """
-        payload = ClosePayload(channel_id=self.channel_id_string)
+        payload = ClosePayload(
+            channel_id=self.channel_id_string,
+            authentication=authentication,
+        )
         if final_increment > 0:
             payload.voucher = self.sign_increment(final_increment)
         return SessionAction.close_action(payload)
-
-    def open_action(self, deposit: int, open_tx_signature: str) -> SessionAction:
-        """Build a push-mode open action.
-
-        Call this after the on-chain open transaction has confirmed; the session
-        channel ID MUST match the confirmed channel address.
-        """
-        return SessionAction.open_action(
-            OpenPayload.push(
-                self.channel_id_string,
-                str(deposit),
-                self.authorized_signer,
-                open_tx_signature,
-            )
-        )
 
     def open_payment_channel_action(
         self,
@@ -312,77 +290,46 @@ class ActiveSession:
         mint: str,
         salt: int,
         grace_period: int,
-        recent_slot: int,
-        open_tx_signature: str,
+        open_slot: int,
+        transaction: str,
+        *,
+        authentication: SessionAuthentication | None = None,
+        idle_timeout_seconds: int | None = None,
     ) -> SessionAction:
-        """Build a payment-channel push open action carrying the full channel
+        """Build a payment-channel open action carrying the full channel
         parameters.
 
-        ``recent_slot`` is the challenge-provided slot the channel was derived
+        ``open_slot`` is the slot the channel was derived
         and opened at (the channel ``openSlot``, a channel PDA seed).
         """
-        return self.open_payment_channel_action_with_mode(
-            "push", deposit, payer, payee, mint, salt, grace_period, recent_slot, open_tx_signature
-        )
-
-    def open_payment_channel_action_with_mode(
-        self,
-        mode: SessionMode,
-        deposit: int,
-        payer: str,
-        payee: str,
-        mint: str,
-        salt: int,
-        grace_period: int,
-        recent_slot: int,
-        open_tx_signature: str,
-    ) -> SessionAction:
-        """Build a payment-channel open action with an explicit submission mode."""
         return SessionAction.open_action(
-            OpenPayload.payment_channel_with_mode(
-                mode,
-                self.channel_id_string,
-                str(deposit),
-                payer,
-                payee,
-                mint,
-                salt,
-                grace_period,
-                recent_slot,
-                self.authorized_signer,
-                open_tx_signature,
+            OpenPayload(
+                channel_id=self.channel_id_string,
+                payer=payer,
+                payee=payee,
+                mint=mint,
+                authorized_signer=self.authorized_signer,
+                salt=salt,
+                deposit_amount=str(deposit),
+                grace_period_seconds=grace_period,
+                idle_timeout_seconds=idle_timeout_seconds,
+                open_slot=open_slot,
+                authentication=authentication,
+                transaction=transaction,
             )
         )
 
-    def open_pull_action(
-        self,
-        approved_amount: int,
-        owner: str,
-        approve_tx_signature: str,
-    ) -> SessionAction:
-        """Build a pull-mode (SPL delegation) open action.
+    def use_action(self, authentication: SessionAuthentication) -> SessionAction:
+        """Build an authenticated operator-mode use action."""
+        return SessionAction.use_action(UsePayload(channel_id=self.channel_id_string, authentication=authentication))
 
-        The session channel ID is used as the token account, so callers should
-        construct the :class:`ActiveSession` with the delegated token-account
-        pubkey as the channel ID.
-        """
-        return SessionAction.open_action(
-            OpenPayload.pull(
-                self.channel_id_string,
-                str(approved_amount),
-                owner,
-                self.authorized_signer,
-                approve_tx_signature,
-            )
-        )
-
-    def top_up_action(self, new_deposit: int, topup_tx_signature: str) -> SessionAction:
-        """Build a top-up action after a top-up transaction confirms."""
+    def top_up_action(self, additional_amount: int, transaction: str) -> SessionAction:
+        """Build a top-up action carrying a signed transaction."""
         return SessionAction.top_up_action(
             TopUpPayload(
                 channel_id=self.channel_id_string,
-                new_deposit=str(new_deposit),
-                signature=topup_tx_signature,
+                additional_amount=str(additional_amount),
+                transaction=transaction,
             )
         )
 
@@ -442,12 +389,3 @@ def parse_session_challenge(header: str) -> tuple[PaymentChallenge, SessionReque
         raise ValueError(f"challenge intent {challenge.intent!r} is not a session")
     request = SessionRequest.from_dict(decode_json(challenge.request))
     return challenge, request
-
-
-def session_request_modes(request: SessionRequest) -> list[SessionMode]:
-    """Return the funding modes advertised by a session challenge.
-
-    ``modes`` omitted or empty means push-only; an explicit ``[]`` therefore
-    decodes the same as a missing field, yielding ``["push"]``.
-    """
-    return list(request.modes) if request.modes else ["push"]

@@ -58,6 +58,7 @@ from solana_pay_kit.protocols.programs.paymentchannels.types.voucherArgs import 
 
 __all__ = [
     "ED25519_PROGRAM_ID",
+    "OPEN_SLOT_WINDOW",
     "PAYMENT_CHANNELS_PROGRAM_ID",
     "PROGRAM_ID",
     "SYSVAR_INSTRUCTIONS",
@@ -99,6 +100,12 @@ PAYMENT_CHANNELS_PROGRAM_ID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
 #: Parsed production program id used for derivation and instruction emission.
 PROGRAM_ID = Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID)
+
+#: The program's channel-open freshness window, in slots: an open is accepted
+#: only while ``openSlot <= clock.slot`` and ``clock.slot - openSlot <= 1500``
+#: (~10 minutes). Servers bind an open to its challenge with the same window:
+#: ``openSlot <= recentSlot`` and ``recentSlot - openSlot <= OPEN_SLOT_WINDOW``.
+OPEN_SLOT_WINDOW = 1500
 
 # Channel PDA seed prefix.
 _CHANNEL_SEED = b"channel"
@@ -193,6 +200,7 @@ class TopUpParams:
     mint: Pubkey
     amount: int
     token_program: Pubkey = field(default_factory=lambda: Pubkey.from_string(TOKEN_PROGRAM))
+    program_id: Pubkey = field(default_factory=lambda: PROGRAM_ID)
 
 
 def voucher_message_bytes(channel_id: Pubkey, cumulative: int, expires_at: int) -> bytes:
@@ -433,7 +441,7 @@ def build_top_up_instruction(params: TopUpParams) -> Instruction:
             "mint": params.mint,
             "tokenProgram": params.token_program,
         },
-        program_id=PROGRAM_ID,
+        program_id=params.program_id,
     )
 
 

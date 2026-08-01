@@ -14,9 +14,9 @@ pub use charge::ChargeRequest;
 pub use session::{
     resolve_idle_timeout_seconds, validate_idle_timeout_options, ClosePayload, CommitPayload,
     CommitReceipt, CommitStatus, MeteredEnvelope, MeteringDirective, MeteringUsage, OpenPayload,
-    SessionAction, SessionAuthentication, SessionAuthenticationType, SessionMode,
-    SessionPullVoucherStrategy, SessionRequest, SessionSplit, SessionVoucherSigner, SignedVoucher,
-    TopUpPayload, UsePayload, VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
+    SessionAction, SessionAuthentication, SessionAuthenticationType, SessionMethodDetails,
+    SessionRequest, SessionSplit, SessionVoucherSigner, SignedVoucher, TopUpPayload, UsePayload,
+    VoucherData, VoucherPayload, VoucherSignatureType, DEFAULT_SESSION_EXPIRES_AT,
     MAX_IDLE_TIMEOUT_SECONDS, SESSION_AUTHENTICATION_DOMAIN,
 };
 pub use subscription::{

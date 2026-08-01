@@ -133,7 +133,7 @@ the directory skeleton and CI from earlier ones.
   `~/Coding/x402-kit` (lives on their local machine; not in this
   container). Treat the scaffold as a placeholder until the reference
   lands.
-- Anything cross-cutting (the on-chain payment-channels program, the
-  multi-delegate program): treat those as out of scope. The Rust crate
+- Anything cross-cutting in the on-chain payment-channels program: treat
+  that as out of scope. The Rust crate
   re-exports the on-chain artifacts; the new SDK only needs to
   serialize/deserialize them.

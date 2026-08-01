@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from enum import StrEnum
 
-from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher
+from solana_pay_kit.protocols.mpp.intents.session import DEFAULT_SESSION_EXPIRES_AT, SignedVoucher
 
 
 class VoucherVerifyStatus(StrEnum):
@@ -192,11 +192,11 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
 
     # 1. Parse new cumulative from the payload.
     try:
-        new_cumulative = _parse_u64(signed.data.cumulative)
+        new_cumulative = _parse_u64(signed.data.cumulative_amount)
     except ValueError:
         return _voucher_reject(
             VoucherRejectReason.INVALID_CUMULATIVE,
-            f"invalid cumulative in voucher: {signed.data.cumulative}",
+            f"invalid cumulative in voucher: {signed.data.cumulative_amount}",
         )
 
     # 2. Channel must not be sealed.
@@ -269,7 +269,7 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
     return VoucherVerifyResult(
         status=VoucherVerifyStatus.ACCEPTED,
         new_cumulative=new_cumulative,
-        new_expires_at=signed.data.expires_at,
+        new_expires_at=_effective_expiry(signed.data.expires_at),
         new_signature=signed.signature,
     )
 
@@ -279,7 +279,11 @@ def _voucher_reject(reason: VoucherRejectReason, detail: str) -> VoucherVerifyRe
     return VoucherVerifyResult(status=VoucherVerifyStatus.REJECTED, reason=reason, detail=detail)
 
 
-def _check_voucher_expiry(expires_at: int, now: int, settlement_window: int) -> VoucherVerifyResult | None:
+def _effective_expiry(expires_at: int | None) -> int:
+    return DEFAULT_SESSION_EXPIRES_AT if expires_at is None else expires_at
+
+
+def _check_voucher_expiry(expires_at: int | None, now: int, settlement_window: int) -> VoucherVerifyResult | None:
     """Apply the on-chain-aligned voucher expiry policy.
 
     Returns a rejected :class:`VoucherVerifyResult` when the voucher is expired
@@ -296,6 +300,7 @@ def _check_voucher_expiry(expires_at: int, now: int, settlement_window: int) -> 
       close settlement lands -> ``EXPIRES_BEFORE_SETTLEMENT``. ``settlement_window``
       of 0 disables this guard.
     """
+    expires_at = _effective_expiry(expires_at)
     if expires_at == 0:
         return None
     if expires_at <= now:
@@ -342,6 +347,10 @@ def _verify_voucher_signature_bytes(signed: SignedVoucher, authorized_signer: st
     from solders.pubkey import Pubkey  # type: ignore[import-untyped]
     from solders.signature import Signature  # type: ignore[import-untyped]
 
+    if signed.signature_type != "ed25519":
+        return "unsupported voucher signature type"
+    if signed.signer != authorized_signer:
+        return "voucher signer does not match the channel authorized signer"
     try:
         message = signed.data.message_bytes()
     except ValueError as exc:

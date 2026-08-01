@@ -37,11 +37,11 @@ class _TestVoucherSigner:
     def sign_voucher(self, channel_id: str, cumulative: int, expires_at: int) -> SignedVoucher:
         data = VoucherData(
             channel_id=channel_id,
-            cumulative=str(cumulative),
+            cumulative_amount=str(cumulative),
             expires_at=expires_at,
         )
         signature = self._kp.sign_message(data.message_bytes())
-        return SignedVoucher(data=data, signature=str(signature))
+        return SignedVoucher(data=data, signer=self.address(), signature=str(signature))
 
 
 def _far_future() -> int:
@@ -222,9 +222,10 @@ def test_verify_voucher_for_channel_invalid_cumulative_rejected() -> None:
     tampered = SignedVoucher(
         data=VoucherData(
             channel_id=real.data.channel_id,
-            cumulative="not-a-number",
+            cumulative_amount="not-a-number",
             expires_at=real.data.expires_at,
         ),
+        signer=real.signer,
         signature=real.signature,
     )
     state = _voucher_test_state(signer.address())
@@ -245,9 +246,10 @@ def test_verify_voucher_for_channel_ordering_parse_beats_sealed() -> None:
     voucher = SignedVoucher(
         data=VoucherData(
             channel_id=state.channel_id,
-            cumulative="bogus",
+            cumulative_amount="bogus",
             expires_at=_far_future(),
         ),
+        signer=signer.address(),
         signature="sig",
     )
 
