@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,23 @@ func TestSeededVectorsConform(t *testing.T) {
 		} `json:"exactBytes"`
 	}
 
+	// expectedSkips is the exact set of vectors the Go SDK may declare
+	// out of scope. The session wire vectors are pending Go's migration to
+	// the final e702dd8 wire contract (tracked follow-up to PR #259) — Go
+	// still parses the superseded draft shape, so running them here would
+	// assert the wrong contract. Any unsupported-mode outcome outside this
+	// set is a regression and fails loudly, and once the migration lands
+	// the leftover-allowlist check below forces this set to be emptied.
+	expectedSkips := map[string]bool{
+		"session-wire-request-new-channel-frozen":         true,
+		"session-wire-request-resume-frozen":              true,
+		"session-wire-action-open-frozen":                 true,
+		"session-wire-request-superseded-draft-reject":    true,
+		"session-wire-action-open-draft-slot-echo-reject": true,
+		"session-wire-action-unknown-tag-reject":          true,
+	}
+	skippedIDs := map[string]bool{}
+
 	total := 0
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
@@ -66,6 +84,15 @@ func TestSeededVectorsConform(t *testing.T) {
 			expect := rawVectors[i].Expect
 			t.Run(vector.ID, func(t *testing.T) {
 				result := runVector(vector)
+				if result.Outcome == "unsupported-mode" ||
+					strings.HasPrefix(result.Error, "unsupported-mode") {
+					if !expectedSkips[vector.ID] {
+						t.Fatalf("%s: unexpected unsupported-mode skip (not in the expected-skip allowlist): %s",
+							vector.ID, result.Error)
+					}
+					skippedIDs[vector.ID] = true
+					t.Skip(result.Error)
+				}
 				if result.Outcome != expect.Outcome {
 					t.Fatalf("%s: outcome = %q, want %q (error: %s)",
 						vector.ID, result.Outcome, expect.Outcome, result.Error)
@@ -103,5 +130,15 @@ func TestSeededVectorsConform(t *testing.T) {
 
 	if total < 13 {
 		t.Fatalf("expected at least 13 seeded vectors, ran %d", total)
+	}
+
+	// Every allowlisted skip must have actually been exercised. When the Go
+	// session-wire migration lands, these vectors stop skipping and this
+	// check forces the allowlist to be deleted rather than lingering as a
+	// silent escape hatch.
+	for id := range expectedSkips {
+		if !skippedIDs[id] {
+			t.Errorf("expected-skip vector %s did not run or no longer skips; prune it from expectedSkips", id)
+		}
 	}
 }

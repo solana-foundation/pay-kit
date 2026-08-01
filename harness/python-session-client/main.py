@@ -23,7 +23,7 @@ if _python_src.is_dir():
 from solders.keypair import Keypair  # type: ignore[import-untyped]  # noqa: E402
 
 from solana_pay_kit.protocols.mpp.client.payment_channels import (  # noqa: E402
-    create_server_opened_payment_channel_session_opener,
+    create_payment_channel_session_opener,
 )
 from solana_pay_kit.protocols.mpp.client.session import serialize_session_credential  # noqa: E402
 from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate  # noqa: E402
@@ -91,8 +91,14 @@ def main() -> None:
     challenge = parse_www_authenticate(headers.get("www-authenticate", ""))
     request = SessionRequest.from_dict(challenge.decode_request())
 
+    # The final client API (mpp-specs e702dd8) replaced the draft
+    # server-opened opener with the strict open builder: the client signs its
+    # own open transaction against the challenged recentBlockhash/recentSlot
+    # and sends the wire in the open action (the harness server verifies the
+    # wire shape only; nothing is broadcast on-chain in this scenario).
+    payer_signer = Keypair()
     session_signer = Keypair()
-    opener = create_server_opened_payment_channel_session_opener(request, session_signer)
+    opener = create_payment_channel_session_opener(request, payer_signer, session_signer)
     open_auth = serialize_session_credential(challenge, opener.action)
     status, headers, raw = _request("GET", target, auth=open_auth)
     if status != 200:

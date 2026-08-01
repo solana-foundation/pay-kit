@@ -71,10 +71,13 @@ from solana_pay_kit._paycore.store import MemoryStore  # noqa: E402
 from solana_pay_kit.errors import InvalidProofError  # noqa: E402
 from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID as PAYMENT_CHANNELS_PROGRAM_ID  # noqa: E402
 from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
+    MemoryChannelStore,
+    Session,
     SessionChallengeOptions,
-    SessionOptions,
-    new_session,
+    SessionConfig,
+    SessionServer,
     session_routes,
 )
 from solana_pay_kit.protocols.mpp.server.charge import (  # noqa: E402
@@ -344,34 +347,67 @@ class _Adapter:
         self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()
         fee_payer_raw = require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
         signer = Signer.json(fee_payer_raw)
-        self.session_method = new_session(
-            SessionOptions(
-                operator=signer.pubkey(),
-                recipient=pay_to,
-                cap=int(amount_units),
-                currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
-                decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
-                network=network_raw,
-                secret_key=secret,
-                realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
-                modes=["pull"],
-                pull_voucher_strategy="clientVoucher",
-                open_tx_submitter="client",
-                # The session challenge must carry recentBlockhash + recentSlot
-                # (the client derives the channel PDA from the challenge slot
-                # and never fetches it), but this scenario's surfnet runs no
-                # payment-channels program, so the wire-level trust model must
-                # stay intact: rpc=None keeps open verification / broadcast /
-                # settle-at-close off, and the recent-state provider stamps the
-                # challenge fields from one blocking getLatestBlockhash call
-                # (the slot rides in its context).
-                signer=None,
-                rpc=None,
-                recent_state_provider=lambda: _fetch_recent_state_sync(self.rpc_url),
-            )
+        # The final session API (mpp-specs e702dd8) drops the draft
+        # cap/modes/pullVoucherStrategy/openTxSubmitter options: the per-action
+        # price is ``amount``, the pull + clientVoucher pair collapsed into
+        # voucher_signer="client", and the challenge's recentBlockhash /
+        # recentSlot come from a shared blockhash cache instead of a
+        # recent_state_provider hook. ``new_session`` also now fails closed
+        # without an RPC client, but this scenario's surfnet runs no
+        # payment-channels program, so the wire-level trust model must stay
+        # intact: the harness composes the lower-level SessionServer directly
+        # with accept-all tx verifiers (open verification / broadcast /
+        # settle-at-close stay off, exactly like the draft-era rpc=None mode)
+        # and stamps challenge fields from one blocking getLatestBlockhash
+        # call (the slot rides in its context).
+        config = SessionConfig(
+            operator=str(signer.pubkey()),
+            recipient=pay_to,
+            amount=int(amount_units),
+            currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
+            decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
+            network=network_raw,
+            channel_program=os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or str(PAYMENT_CHANNELS_PROGRAM_ID),
+            # The final client derives its channel deposit from the challenge
+            # (suggestedDeposit, falling back to minimumDeposit) and refuses a
+            # challenge advertising neither.
+            suggested_deposit=int(optional_env("MPP_HARNESS_SESSION_DEPOSIT", str(int(amount_units) * 10))),
+            grace_period_seconds=900,
+            voucher_signer="client",
+            idle_timeout_seconds=300,
         )
-        self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)
-        self.session_challenge = SessionChallengeOptions(cap=amount_units, description="Harness session")
+
+        async def _accept_wire_only(*_: object) -> None:
+            return None
+
+        config.verify_open_tx = _accept_wire_only
+        config.verify_top_up_tx = _accept_wire_only
+
+        def _blockhash_cache() -> tuple[str, int] | None:
+            blockhash, slot = _fetch_recent_state_sync(self.rpc_url)
+            if blockhash is None or slot is None:
+                return None
+            return (blockhash, slot)
+
+        core = SessionServer(config, MemoryChannelStore()).with_blockhash_cache(_blockhash_cache)
+        self.session_method = Session(
+            core=core,
+            secret_key=secret,
+            realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
+            amount=int(amount_units),
+            currency=config.currency,
+            recipient=pay_to,
+            network=network_raw,
+            rpc=None,
+            lifecycle=None,
+            signer=None,
+        )
+        # No touch hook: the harness Session runs without an idle-close
+        # lifecycle (lifecycle=None), and session_routes expects a *sync*
+        # TouchFn — passing the async Session._touch would leave un-awaited
+        # coroutines behind.
+        self.session_routes = session_routes(core)
+        self.session_challenge = SessionChallengeOptions(amount=amount_units, description="Harness session")
         decimals = int(optional_env("MPP_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
         self.replay_path = ""
