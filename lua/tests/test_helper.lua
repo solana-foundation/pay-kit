@@ -69,21 +69,6 @@ local SKIP = {
   ['challenge_to_html escapes HTML in description'] = true,
 }
 
--- Under luacov instrumentation the LuaJIT trace recorder is disabled, so
--- the pure-Lua modular-arithmetic on-curve check in mpp/methods/solana/ata
--- becomes ~100x slower. Skip only the heaviest ATA spec (which derives
--- twice). The verifier specs that internally call ata.derive still run
--- under coverage, because letting them in gives us branch coverage for
--- the SPL transferChecked / ATA-allowlist code paths.
-local SLOW_UNDER_COVER = {
-  ['ata.derive matches the Ruby reference for the USDC Token-2022 ATA'] = true,
-}
-if package.loaded['luacov'] then
-  for name, _ in pairs(SLOW_UNDER_COVER) do
-    SKIP[name] = true
-  end
-end
-
 function M.run()
   local passed = 0
   local failed = 0
