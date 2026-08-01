@@ -1544,7 +1544,7 @@ wheels = [
 
 [[package]]
 name = "solana-pay-kit"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "anchorpy" },
