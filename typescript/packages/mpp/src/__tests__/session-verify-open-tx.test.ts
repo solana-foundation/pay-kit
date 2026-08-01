@@ -534,6 +534,58 @@ describe('submitOpenTx confirmation gating', () => {
         expect(rpc.accountLookups).toEqual([open.channelId]);
     });
 
+    test('a preflight-rejected duplicate whose open landed is rescued by the confirmed account', async () => {
+        // First submission landed but the response (or the persist after it)
+        // was lost; the retry dies at preflight like mainnet. The confirmed
+        // channel account matches the verified open params only if this
+        // exact open succeeded, so the retry must succeed.
+        const { expected, open, openPayload, payer, sessionSigner } = await verifiedOpenFixture();
+        const rpc = submitRpc(
+            [{ confirmationStatus: 'confirmed', err: null }],
+            channelAccountData({
+                authorizedSigner: sessionSigner.address,
+                deposit: 5_000n,
+                mint: USDC_DEVNET_MINT,
+                payee: open.payee,
+                payer: payer.address,
+                rentPayer: payer.address,
+            }),
+        );
+        rpc.sendTransaction = () => ({
+            send: async () => {
+                throw new Error('Transaction simulation failed: This transaction has already been processed');
+            },
+        });
+
+        const result = await submitOpenTx({
+            confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+            expected,
+            openPayload,
+            rpc: rpc as never,
+        });
+        expect(result.channelId).toBe(open.channelId);
+        expect(rpc.accountLookups).toEqual([open.channelId]);
+    });
+
+    test('a preflight-rejected open without a matching confirmed account keeps the broadcast error', async () => {
+        const { expected, openPayload } = await verifiedOpenFixture();
+        const rpc = submitRpc([{ confirmationStatus: 'confirmed', err: null }]);
+        rpc.sendTransaction = () => ({
+            send: async () => {
+                throw new Error('Transaction simulation failed: This transaction has already been processed');
+            },
+        });
+
+        await expect(
+            submitOpenTx({
+                confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },
+                expected,
+                openPayload,
+                rpc: rpc as never,
+            }),
+        ).rejects.toThrow(/already been processed/);
+    });
+
     test('throws when confirmation never arrives within the timeout', async () => {
         const { expected, openPayload } = await verifiedOpenFixture();
         const rpc = submitRpc([null]);

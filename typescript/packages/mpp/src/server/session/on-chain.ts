@@ -913,35 +913,56 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
             wire = await coSignBase64Transaction(args.payerSigner, wire);
         }
     }
-    const signature = await args.rpc.sendTransaction(wire, { encoding: 'base64', skipPreflight: false }).send();
-    await waitForSignatureConfirmation({
-        context: 'submitOpenTx',
-        options: args.confirm,
-        rpc: args.rpc,
-        signature,
-    });
-    const account = await fetchChannel(args.rpc as never, address(verified.channelId), {
-        commitment: 'confirmed',
-    });
-    const channel = account.data;
-    const expectedMint =
-        args.expected.mint ??
-        resolveStablecoinMint(args.expected.currency, args.expected.network ?? 'mainnet') ??
-        args.expected.currency;
-    if (
-        channel.status !== Number(ChannelStatus.Open) ||
-        channel.deposit !== verified.deposit ||
-        channel.salt !== verified.salt ||
-        channel.openSlot !== verified.openSlot ||
-        channel.gracePeriod !== verified.gracePeriod ||
-        channel.payer !== verified.payer ||
-        channel.payee !== args.expected.recipient ||
-        channel.mint !== expectedMint ||
-        channel.authorizedSigner !== args.expected.authorizedSigner ||
-        channel.rentPayer !== args.expected.rentPayer
-    ) {
-        throw new Error('submitOpenTx: confirmed channel state does not match the verified open transaction');
+    const assertConfirmedChannelMatchesOpen = async (): Promise<void> => {
+        const account = await fetchChannel(args.rpc as never, address(verified.channelId), {
+            commitment: 'confirmed',
+        });
+        const channel = account.data;
+        const expectedMint =
+            args.expected.mint ??
+            resolveStablecoinMint(args.expected.currency, args.expected.network ?? 'mainnet') ??
+            args.expected.currency;
+        if (
+            channel.status !== Number(ChannelStatus.Open) ||
+            channel.deposit !== verified.deposit ||
+            channel.salt !== verified.salt ||
+            channel.openSlot !== verified.openSlot ||
+            channel.gracePeriod !== verified.gracePeriod ||
+            channel.payer !== verified.payer ||
+            channel.payee !== args.expected.recipient ||
+            channel.mint !== expectedMint ||
+            channel.authorizedSigner !== args.expected.authorizedSigner ||
+            channel.rentPayer !== args.expected.rentPayer
+        ) {
+            throw new Error('submitOpenTx: confirmed channel state does not match the verified open transaction');
+        }
+    };
+    let signature: Signature;
+    try {
+        signature = await args.rpc.sendTransaction(wire, { encoding: 'base64', skipPreflight: false }).send();
+        await waitForSignatureConfirmation({
+            context: 'submitOpenTx',
+            options: args.confirm,
+            rpc: args.rpc,
+            signature,
+        });
+    } catch (error) {
+        // A broadcast rejection is not authoritative: a retry of an open
+        // whose first submission landed (response lost, or the persist after
+        // it failed) dies at preflight with "already processed". The
+        // confirmed channel account matches the verified open params only if
+        // this exact open succeeded, so a full field match below is success;
+        // anything short of it keeps the broadcast failure authoritative.
+        // Mirrors the Rust open retry-idempotency fix.
+        signature = getSignatureFromTransaction(getTransactionDecoder().decode(getBase64Codec().encode(wire)));
+        try {
+            await assertConfirmedChannelMatchesOpen();
+        } catch {
+            throw error;
+        }
+        return { ...verified, signature };
     }
+    await assertConfirmedChannelMatchesOpen();
     return { ...verified, signature };
 }
 
