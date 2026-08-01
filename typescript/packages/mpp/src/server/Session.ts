@@ -253,6 +253,7 @@ export function session(parameters: session.Parameters) {
                     return await handleOpen({
                         challengeId: cred.challenge.id,
                         currency,
+                        distributionSplits,
                         externalId: cred.challenge.request.externalId,
                         feePayer,
                         feePayerSigner,
@@ -495,6 +496,8 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
 interface HandleOpenArgs {
     readonly challengeId: string | undefined;
     readonly currency: string;
+    /** Server-configured splits the challenge advertised; the open must encode exactly these. */
+    readonly distributionSplits: readonly SessionSplit[] | undefined;
     readonly externalId: string | undefined;
     readonly feePayer: boolean;
     readonly feePayerSigner: TransactionPartialSigner | undefined;
@@ -562,6 +565,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         recentBlockhash,
         recipient: args.recipient,
         rentPayer,
+        splits: args.distributionSplits ?? [],
         tokenProgram: args.tokenProgram,
     };
     const verified = await verifyOpenTx({ expected, openPayload: payload });

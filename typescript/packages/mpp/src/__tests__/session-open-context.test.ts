@@ -423,6 +423,7 @@ describe('verifyOpenTx enforces the challenged recentBlockhash', () => {
             recentBlockhash: CHALLENGED_BLOCKHASH,
             recipient: open.payee,
             rentPayer: payer.address,
+            splits: [],
             tokenProgram: TOKEN_PROGRAM,
         };
         return { expected, open, openPayload };
@@ -444,5 +445,79 @@ describe('verifyOpenTx enforces the challenged recentBlockhash', () => {
                 openPayload: openPayload as never,
             }),
         ).rejects.toThrow(/open transaction does not use the challenged recentBlockhash/);
+    });
+});
+
+describe('verifyOpenTx binds distributionSplits to the challenge', () => {
+    async function splitsFixture(openRecipients?: readonly { bps: number; recipient: string }[]) {
+        const { payer, request, sessionSigner } = await clientOpenFixture();
+        const platform = await generateKeyPairSigner();
+        const challengedSplits = [{ recipient: platform.address as string, shareBps: 500 }];
+        const challenged = {
+            ...request,
+            methodDetails: { ...request.methodDetails, distributionSplits: challengedSplits },
+        } as unknown as SessionRequest;
+        const open = await buildOpenPaymentChannelTransaction({
+            authorizedSigner: sessionSigner.address,
+            ...(openRecipients ? { recipients: openRecipients } : {}),
+            request: challenged,
+            salt: 7n,
+            signer: payer,
+        });
+        const declaredSplits = (openRecipients ?? challengedSplits.map(s => ({ bps: s.shareBps, recipient: s.recipient }))).map(
+            entry => ({ recipient: entry.recipient, shareBps: entry.bps }),
+        );
+        const openPayload = {
+            authorizedSigner: sessionSigner.address,
+            channelId: open.channelId,
+            depositAmount: open.deposit,
+            ...(declaredSplits.length ? { distributionSplits: declaredSplits } : {}),
+            gracePeriodSeconds: open.gracePeriod,
+            mint: open.mint,
+            openSlot: open.openSlot,
+            payee: open.payee,
+            payer: open.payer,
+            salt: open.salt,
+            transaction: open.transaction,
+        };
+        const expected = {
+            authorizedSigner: sessionSigner.address,
+            channelProgram: PAYMENT_CHANNELS_PROGRAM_ID.toString(),
+            currency: 'USDC',
+            feePayer: payer.address,
+            network: 'devnet',
+            openSlot: CHALLENGED_SLOT,
+            recentBlockhash: CHALLENGED_BLOCKHASH,
+            recipient: open.payee,
+            rentPayer: payer.address,
+            splits: challengedSplits,
+            tokenProgram: TOKEN_PROGRAM,
+        };
+        return { expected, open, openPayload };
+    }
+
+    test('accepts an open that encodes exactly the challenged splits', async () => {
+        const { expected, open, openPayload } = await splitsFixture();
+        const verified = await verifyOpenTx({ expected, openPayload: openPayload as never });
+        expect(verified.channelId).toBe(open.channelId);
+    });
+
+    test('rejects a self-consistent open that drops the challenged splits', async () => {
+        // The attack from the review: the client opens with NO splits (its
+        // payload and instruction agree with each other), stealing the
+        // platform share and making the server's settle-time distribute
+        // revert against the committed distributionHash.
+        const { expected, openPayload } = await splitsFixture([]);
+        await expect(verifyOpenTx({ expected, openPayload: openPayload as never })).rejects.toThrow(
+            /distributionSplits do not match the challenge/,
+        );
+    });
+
+    test('rejects a self-consistent open whose splits redirect the challenged share', async () => {
+        const attacker = await generateKeyPairSigner();
+        const { expected, openPayload } = await splitsFixture([{ bps: 500, recipient: attacker.address }]);
+        await expect(verifyOpenTx({ expected, openPayload: openPayload as never })).rejects.toThrow(
+            /distributionSplits do not match the challenge/,
+        );
     });
 });

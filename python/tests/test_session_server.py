@@ -16,6 +16,7 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     CommitPayload,
     OpenPayload,
     SessionAuthentication,
+    SessionSplit,
     SignedVoucher,
     TopUpPayload,
     UsePayload,
@@ -23,7 +24,7 @@ from solana_pay_kit.protocols.mpp.intents.session import (
     VoucherPayload,
     sign_session_authentication,
 )
-from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest, SessionConfig, SessionServer
+from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest, SessionConfig, SessionServer, Split
 from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
 PAYER = Keypair.from_seed(bytes([1] * 32))
@@ -549,3 +550,56 @@ async def test_client_close_final_voucher_rules_and_double_close() -> None:
     assert state.cumulative == 200 and state.close_requested_at is not None
     with pytest.raises(ValueError, match="already requested"):
         await server.process_close(ClosePayload(CHANNEL, voucher=_voucher(200)))
+
+
+async def test_process_open_binds_distribution_splits_to_the_challenge() -> None:
+    # The open must encode exactly the server-configured (challenged) splits:
+    # a client-substituted list would commit a different on-chain
+    # distributionHash than the distribute the server later builds from its
+    # config, stranding every voucher behind a reverting settle bundle.
+    platform = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
+    attacker = str(Keypair.from_seed(bytes([8] * 32)).pubkey())
+    config = _config()
+    config.splits = [Split(recipient=platform, bps=500)]
+
+    async def verify_open(_: OpenPayload, __: object) -> None:
+        return None
+
+    config.verify_open_tx = verify_open
+    challenge = await _challenge(config)
+
+    def open_with(splits: list[SessionSplit]) -> OpenPayload:
+        payload = _open(config, challenge)
+        payload.distribution_splits = splits
+        return payload
+
+    server = SessionServer(config, MemoryChannelStore())
+    # Dropping the challenged splits entirely is rejected.
+    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+        await server.process_open(open_with([]), challenge)
+    # Redirecting the challenged share is rejected.
+    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+        await server.process_open(open_with([SessionSplit(recipient=attacker, share_bps=500)]), challenge)
+    # Inflating the challenged share is rejected.
+    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+        await server.process_open(open_with([SessionSplit(recipient=platform, share_bps=1)]), challenge)
+    # The exact challenged splits are accepted.
+    state = await server.process_open(open_with([SessionSplit(recipient=platform, share_bps=500)]), challenge)
+    assert state.channel_id == CHANNEL
+
+
+async def test_process_open_rejects_unsolicited_splits() -> None:
+    # A challenge with no configured splits must refuse an open that smuggles
+    # some in.
+    config = _config()
+
+    async def verify_open(_: OpenPayload, __: object) -> None:
+        return None
+
+    config.verify_open_tx = verify_open
+    challenge = await _challenge(config)
+    payload = _open(config, challenge)
+    payload.distribution_splits = [SessionSplit(recipient=str(PAYER.pubkey()), share_bps=100)]
+    server = SessionServer(config, MemoryChannelStore())
+    with pytest.raises(ValueError, match="distributionSplits do not match the challenge"):
+        await server.process_open(payload, challenge)

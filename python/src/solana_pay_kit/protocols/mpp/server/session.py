@@ -474,6 +474,18 @@ class SessionServer:
         ):
             raise ValueError("open gracePeriodSeconds does not match the challenge")
 
+        # The open must encode the *challenged* splits, not merely splits that
+        # are self-consistent with its own transaction: the open commits the
+        # on-chain distributionHash, and distribute at settle is built from
+        # the server's config — a client-substituted list would strand every
+        # voucher behind a reverting settleAndSeal+distribute bundle. Mirrors
+        # ``payload_splits != self.config.splits`` in the Rust SessionServer.
+        payload_splits = [
+            Split(recipient=split.recipient, bps=split.share_bps) for split in payload.distribution_splits
+        ]
+        if payload_splits != self._config.splits:
+            raise ValueError("open distributionSplits do not match the challenge")
+
         # Bind the open to the specific challenge that authorized it: the
         # client takes ``openSlot`` from the challenged ``recentSlot`` (an
         # earlier slot is allowed, a later one never is), so a payload outside

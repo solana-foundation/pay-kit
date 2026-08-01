@@ -461,6 +461,17 @@ export interface VerifyOpenTxExpected {
      * rentPayer slot is a security boundary and is always checked.
      */
     readonly rentPayer: string;
+    /**
+     * Challenged distribution splits (the server's configured splits, echoed
+     * in the 402 challenge). The open instruction's recipients must equal
+     * exactly this list, in order: the open commits the on-chain
+     * `distributionHash`, and `distribute` at settle is built from the
+     * server's config — a client-substituted list would make the bundled
+     * settleAndSeal+distribute revert and strand every voucher. Mirrors the
+     * `payload_splits != self.config.splits` rejection in
+     * `rust/crates/kit/src/mpp/server/session.rs`.
+     */
+    readonly splits: readonly { readonly recipient: string; readonly shareBps: number }[];
     /** Optional explicit token program (otherwise derived from currency/network). */
     readonly tokenProgram?: string | undefined;
 }
@@ -683,6 +694,20 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         )
     ) {
         throw new Error('verifyOpenTx: distributionSplits do not match the open instruction');
+    }
+    // Bind the instruction's recipients to the *challenged* splits, not just
+    // the client's own payload: payload↔instruction self-consistency above
+    // proves nothing about whose splits they are.
+    const challengedSplits = expected.splits;
+    if (
+        recipients.length !== challengedSplits.length ||
+        recipients.some(
+            (entry, index) =>
+                entry.recipient !== challengedSplits[index]?.recipient ||
+                entry.bps !== challengedSplits[index]?.shareBps,
+        )
+    ) {
+        throw new Error('verifyOpenTx: distributionSplits do not match the challenge');
     }
 
     // Re-derive the channel PDA and assert it matches.
