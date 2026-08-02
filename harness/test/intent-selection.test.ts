@@ -84,7 +84,7 @@ describe("harness scenario selection", () => {
   it("returns session scenarios when explicitly requested", () => {
     expect(
       selectHarnessScenarios("session", undefined).map((scenario) => scenario.id),
-    ).toEqual(["session-basic"]);
+    ).toEqual(["session-basic", "session-multi-delivery"]);
   });
 
   it("returns x402-upto scenarios when explicitly requested", () => {

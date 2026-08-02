@@ -82,7 +82,13 @@ def main() -> None:
     reserve_url = target.rsplit("/", 1)[0] + "/__402/session/deliveries"
     commit_url = target.rsplit("/", 1)[0] + "/__402/session/commit"
     close_url = target.rsplit("/", 1)[0] + "/__402/session/close"
+    # Per-increment amount (base units). Multi-delivery scenarios set
+    # MPP_HARNESS_DELIVERY_COUNT > 1 so the cumulative watermark advances
+    # count * amount before a single close.
     amount = os.environ.get("MPP_HARNESS_AMOUNT", "700")
+    delivery_count = int(os.environ.get("MPP_HARNESS_DELIVERY_COUNT", "1"))
+    if delivery_count < 1:
+        raise SystemExit("MPP_HARNESS_DELIVERY_COUNT must be >= 1")
 
     status, headers, raw = _request("GET", target)
     if status != 402:
@@ -106,27 +112,33 @@ def main() -> None:
         return
 
     channel_id = opener.session.channel_id_string
-    status, reserve_headers, reserve_raw = _request(
-        "POST",
-        reserve_url,
-        {"sessionId": channel_id, "amount": amount},
-    )
-    reserve_body = _json(reserve_raw)
-    if status != 200 or not isinstance(reserve_body, dict):
-        _result(status, reserve_headers, reserve_body)
-        return
+    voucher = None
+    increment = int(amount)
+    for _ in range(delivery_count):
+        status, reserve_headers, reserve_raw = _request(
+            "POST",
+            reserve_url,
+            {"sessionId": channel_id, "amount": amount},
+        )
+        reserve_body = _json(reserve_raw)
+        if status != 200 or not isinstance(reserve_body, dict):
+            _result(status, reserve_headers, reserve_body)
+            return
 
-    voucher = opener.session.prepare_increment(int(amount))
-    status, commit_headers, commit_raw = _request(
-        "POST",
-        commit_url,
-        {"deliveryId": reserve_body["deliveryId"], "voucher": voucher.to_dict()},
-    )
-    commit_body = _json(commit_raw)
-    if status != 200:
-        _result(status, commit_headers, commit_body)
-        return
-    opener.session.record_voucher(voucher)
+        voucher = opener.session.prepare_increment(increment)
+        status, commit_headers, commit_raw = _request(
+            "POST",
+            commit_url,
+            {"deliveryId": reserve_body["deliveryId"], "voucher": voucher.to_dict()},
+        )
+        commit_body = _json(commit_raw)
+        if status != 200:
+            _result(status, commit_headers, commit_body)
+            return
+        opener.session.record_voucher(voucher)
+
+    if voucher is None:
+        raise SystemExit("no voucher produced")
 
     close_auth = serialize_session_credential(
         challenge,
