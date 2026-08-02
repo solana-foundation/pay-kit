@@ -200,6 +200,25 @@ export const clientImplementations: ImplementationDefinition[] = [
     intents: ["session"],
   },
   {
+    id: "typescript-session",
+    label: "TypeScript @solana/mpp session client",
+    role: "client",
+    // Mirrors python-session-client (open → deliveries → commit → close)
+    // against the wire-only Python session server. Opt in via
+    // MPP_HARNESS_CLIENTS=typescript-session.
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/typescript/session-client.ts",
+    ],
+    enabled: isEnabled("typescript-session", "MPP_HARNESS_CLIENTS", false),
+    intents: ["session"],
+    reportsAs: "typescript",
+  },
+  {
     id: "swift-x402",
     label: "Swift x402 exact client",
     role: "client",
