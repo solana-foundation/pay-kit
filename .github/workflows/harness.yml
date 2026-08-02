@@ -38,7 +38,114 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      go: ${{ steps.filter.outputs.go }}
+      python: ${{ steps.filter.outputs.python }}
+      ruby: ${{ steps.filter.outputs.ruby }}
+      lua: ${{ steps.filter.outputs.lua }}
+      php: ${{ steps.filter.outputs.php }}
+      swift: ${{ steps.filter.outputs.swift }}
+      kotlin: ${{ steps.filter.outputs.kotlin }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            go:
+              - 'go/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            python:
+              - 'python/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            ruby:
+              - 'ruby/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            lua:
+              - 'lua/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            php:
+              - 'php/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            swift:
+              - 'swift/**'
+              - 'Package.swift'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            kotlin:
+              - 'kotlin/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            any:
+              - 'go/**'
+              - 'python/**'
+              - 'ruby/**'
+              - 'lua/**'
+              - 'php/**'
+              - 'kotlin/**'
+              - 'swift/**'
+              - 'Package.swift'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   build:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.any == 'true'
     name: Build harness deps (once)
     runs-on: ubuntu-latest
     steps:
@@ -58,7 +165,8 @@ jobs:
 
   ts:
     name: "Harness: TypeScript (Rust client/server)"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.core == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -78,7 +186,8 @@ jobs:
 
   go:
     name: "Harness: Go (mpp charge + x402 exact)"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.go == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -103,7 +212,8 @@ jobs:
 
   python:
     name: "Harness: Python"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.python == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -159,7 +269,8 @@ jobs:
 
   ruby:
     name: "Harness: Ruby PayKit server (dual protocol)"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.ruby == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -181,7 +292,8 @@ jobs:
 
   lua:
     name: "Harness: Lua focused matrix"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.lua == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -235,7 +347,8 @@ jobs:
 
   php:
     name: "Harness: PHP"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.php == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -272,7 +385,8 @@ jobs:
 
   swift:
     name: "Harness: Swift client to TypeScript + Rust servers"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.swift == 'true') && needs['build'].result == 'success' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -306,7 +420,8 @@ jobs:
 
   swift-x402:
     name: "Harness: Swift x402 client to Rust x402 server"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.swift == 'true') && needs['build'].result == 'success' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -333,7 +448,8 @@ jobs:
 
   kotlin:
     name: "Harness: Kotlin client to TypeScript server"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.kotlin == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -365,7 +481,8 @@ jobs:
 
   kotlin-x402:
     name: "Harness: Kotlin x402 client to Rust x402 server"
-    needs: build
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.kotlin == 'true') && needs['build'].result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -395,6 +512,8 @@ jobs:
   # lands on-chain (the byte-shape harness above cannot). Needs @solana/pay-kit
   # built (the on-chain suite imports it) and a mainnet RPC to fork from.
   onchain:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.core == 'true'
     name: "Harness: on-chain settlement (mainnet fork)"
     runs-on: ubuntu-latest
     steps:
