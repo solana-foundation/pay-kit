@@ -8,6 +8,9 @@ use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
 use PayKit\PayCore\PaymentChannels;
+use PayKit\PayCore\Rpc\RpcGateway;
+use PayKit\PayCore\Rpc\SolanaRpcGateway;
+use SolanaPhpSdk\Keypair\Keypair;
 use PayKit\PayCore\Solana\Mints;
 use Psr\Http\Message\ServerRequestInterface;
 use SolanaPhpSdk\Keypair\PublicKey;
@@ -18,14 +21,11 @@ use Throwable;
 /**
  * x402 `upto` (Solana) server engine — payment-channel profile.
  *
- * Two-phase flow (mirrors Rust/Go/Python):
+ * Flow (mirrors Rust/Go/Python):
  *   1. {@see challengeHeaders}/{@see acceptsEntry} — advertise the ceiling.
  *   2. {@see verifyOpenPayload} — validate payload + open instruction shape.
- *   3. settle_and_seal broadcast — follow-up once instruction builders land.
- *
- * This first slice ships challenge generation and pure open-path validation.
- * Full cosign + settle_and_seal broadcast lands next (Ruby #192 / Python
- * settle path as reference).
+ *   3. {@see verifyOpenAndBroadcast} — cosign as fee payer, broadcast open, confirm.
+ *   4. settle_and_seal + distribute — later slice after open is live.
  */
 final class Engine
 {
@@ -43,6 +43,9 @@ final class Engine
     public function __construct(
         private readonly Config $config,
         ?\Closure $chainHintsProvider = null,
+        private ?RpcGateway $rpc = null,
+        private readonly int $confirmationAttempts = 40,
+        private readonly int $confirmationDelayMicros = 250_000,
     ) {
         $this->chainHintsProvider = $chainHintsProvider;
     }
@@ -242,16 +245,20 @@ final class Engine
         }
 
         $extra = is_array($requirements['extra'] ?? null) ? $requirements['extra'] : [];
-        $feePayer = new PublicKey((string) ($extra['feePayer'] ?? $receiverAuthorizer));
-        $receiver = new PublicKey($receiverAuthorizer);
-        $payer = new PublicKey((string) ($payload['from'] ?? ''));
+        $feePayer = $this->requirePubkey(
+            (string) ($extra['feePayer'] ?? $receiverAuthorizer),
+            'feePayer',
+        );
+        $receiver = $this->requirePubkey($receiverAuthorizer, 'receiverAuthorizer');
+        $payer = $this->requirePubkey((string) ($payload['from'] ?? ''), 'from');
         // Channel payee is the fee payer (zero-share lifecycle seat) for upto.
         $payee = $feePayer;
-        $mint = new PublicKey((string) ($requirements['asset'] ?? ''));
-        $tokenProgram = new PublicKey(
+        $mint = $this->requirePubkey((string) ($requirements['asset'] ?? ''), 'asset');
+        $tokenProgram = $this->requirePubkey(
             (string) ($extra['tokenProgram'] ?? PaymentChannels::tokenProgramId()),
+            'tokenProgram',
         );
-        $channelId = new PublicKey((string) ($payload['channelId'] ?? ''));
+        $channelId = $this->requirePubkey((string) ($payload['channelId'] ?? ''), 'channelId');
         $maxAmount = Verify::parseBaseUnits((string) $requirements['amount'], 'amount');
         $withdrawDelay = (int) ($extra['withdrawDelay'] ?? Types::DEFAULT_WITHDRAW_DELAY_SECONDS);
         $recentSlot = isset($extra['recentSlot']) ? (int) $extra['recentSlot'] : null;
@@ -273,6 +280,164 @@ final class Engine
             (string) ($payload['openSlot'] ?? ''),
             $recentSlot,
         );
+
+        // Greptile P1: rentPayer on the open ix can match the operator while
+        // the tx fee payer (static account key 0) is someone else — cosign
+        // would then fail at broadcast. Bind fee payer here like Python.
+        if ($accountKeys === [] || $accountKeys[0] !== (string) $feePayer) {
+            throw new InvalidProofException(
+                'open transaction fee payer must be the advertised fee payer',
+            );
+        }
+    }
+
+
+    /**
+     * Validate open credential, cosign as fee payer, broadcast, and confirm.
+     *
+     * @param array<string,mixed> $requirements
+     * @return array{
+     *   payload: array<string,mixed>,
+     *   requirements: array<string,mixed>,
+     *   maxBaseUnits: int,
+     *   payer: string,
+     *   channelId: string,
+     *   openSignature: string
+     * }
+     *
+     * @throws InvalidProofException
+     */
+    public function verifyOpenAndBroadcast(ServerRequestInterface $request, array $requirements): array
+    {
+        $verified = $this->verifyOpenPayload($request, $requirements);
+        $openTx = (string) ($verified['payload']['openTransaction'] ?? '');
+        $sig = $this->cosignAndBroadcastOpenTransaction($openTx);
+        $verified['openSignature'] = $sig;
+
+        return $verified;
+    }
+
+    /**
+     * Cosign the client-built open as the advertised fee payer and broadcast.
+     *
+     * The client signed the payer slot; the operator (fee payer / rentPayer)
+     * completes the missing signature then sends the wire transaction.
+     *
+     * @throws InvalidProofException
+     */
+    public function cosignAndBroadcastOpenTransaction(string $transactionBase64): string
+    {
+        $signer = $this->config->effectiveX402Signer();
+        if ($signer === null) {
+            throw new InvalidProofException('upto cosign requires an x402 operator signer');
+        }
+
+        $raw = base64_decode($transactionBase64, true);
+        if ($raw === false || $raw === '') {
+            throw new InvalidProofException('invalid open transaction base64');
+        }
+        try {
+            $tx = VersionedTransaction::deserialize($raw);
+        } catch (Throwable $e) {
+            throw new InvalidProofException('invalid open transaction parse', 0, $e);
+        }
+
+        $feePayer = $this->requirePubkey($signer->pubkey(), 'feePayer');
+        $keys = $tx->message->staticAccountKeys;
+        if ($keys === [] || (string) $keys[0] !== (string) $feePayer) {
+            throw new InvalidProofException(
+                'open transaction fee payer must be the advertised fee payer',
+            );
+        }
+
+        try {
+            $kp = Keypair::fromSecretKey($signer->secretKey());
+            $tx->partialSign($kp);
+            $wire = $tx->serialize(verifySignatures: false);
+        } catch (Throwable $e) {
+            throw new InvalidProofException('upto cosign failed: ' . $e->getMessage(), 0, $e);
+        }
+
+        $rpc = $this->rpc();
+        try {
+            $sig = $rpc->sendRawTransaction($wire, [
+                'encoding'              => 'base64',
+                'skipPreflight'         => false,
+                'preflightCommitment'   => 'confirmed',
+            ]);
+        } catch (Throwable $e) {
+            throw new InvalidProofException(
+                'pay_kit: invalid proof: open broadcast failed: ' . $e->getMessage(),
+                0,
+                $e,
+            );
+        }
+        if (!is_string($sig) || $sig === '') {
+            throw new InvalidProofException('pay_kit: empty open broadcast result');
+        }
+
+        try {
+            $this->awaitConfirmation($sig);
+        } catch (Throwable $e) {
+            throw new InvalidProofException(
+                'pay_kit: invalid proof: open not confirmed: ' . $e->getMessage(),
+                0,
+                $e,
+            );
+        }
+
+        return $sig;
+    }
+
+    private function rpc(): RpcGateway
+    {
+        if ($this->rpc !== null) {
+            return $this->rpc;
+        }
+        if ($this->config->rpcUrl === '') {
+            throw new InvalidProofException('upto broadcast requires Config::$rpcUrl or an injected RpcGateway');
+        }
+
+        return $this->rpc = new SolanaRpcGateway(new RpcClient($this->config->rpcUrl));
+    }
+
+    /**
+     * @throws \RuntimeException
+     */
+    private function awaitConfirmation(string $signature): void
+    {
+        $rpc = $this->rpc();
+        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
+            $statuses = $rpc->getSignatureStatuses([$signature]);
+            $status = $statuses[0] ?? null;
+            if (is_array($status)) {
+                if (($status['err'] ?? null) !== null) {
+                    throw new \RuntimeException(
+                        "Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR),
+                    );
+                }
+                $confirmationStatus = $status['confirmationStatus'] ?? null;
+                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
+                    return;
+                }
+            }
+            if ($this->confirmationDelayMicros > 0 && $attempt + 1 < $this->confirmationAttempts) {
+                usleep($this->confirmationDelayMicros);
+            }
+        }
+        throw new \RuntimeException("Transaction $signature not confirmed after {$this->confirmationAttempts} attempts");
+    }
+
+    private function requirePubkey(string $value, string $label): PublicKey
+    {
+        if ($value === '') {
+            throw new InvalidProofException("invalid {$label} public key: empty");
+        }
+        try {
+            return new PublicKey($value);
+        } catch (Throwable $e) {
+            throw new InvalidProofException("invalid {$label} public key", 0, $e);
+        }
     }
 
     private function paymentHeader(ServerRequestInterface $request): ?string
