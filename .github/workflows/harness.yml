@@ -375,6 +375,49 @@ jobs:
           X402_HARNESS_SERVERS: rust-x402
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000
 
+
+  # x402 upto: TypeScript pay-kit client (UptoSvmScheme via createPayKitClient)
+  # against the canonical Rust upto server. Mirrors harness-kotlin-x402-upto /
+  # python focused upto legs. Needs payment-channels .so + pay-kit dist (the
+  # fixture is excluded from the base harness typecheck for that reason).
+  ts-x402-upto:
+    name: "Harness: TypeScript x402 upto client to Rust upto server"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "paykit-harness-bins:x402_harness_upto_client,x402_harness_upto_server"
+          cargo-cache-key: ts-x402-upto
+      # Fixture imports @solana/pay-kit/client; setup-harness only builds @solana/mpp.
+      - name: Build @solana/pay-kit
+        working-directory: typescript
+        run: pnpm --filter @solana/pay-kit build
+      - name: Typecheck TypeScript upto harness fixture
+        working-directory: harness
+        run: pnpm exec tsc --noEmit src/fixtures/typescript/upto-client.ts --esModuleInterop --module ESNext --moduleResolution Bundler --target ES2022 --strict --skipLibCheck --types node
+      # x402 upto settles on the canonical payment-channels program; the upto
+      # e2e runs this localnet SBF build on the embedded surfnet.
+      - name: Build payment channels program
+        id: payment-channels
+        uses: ./.github/actions/build-payment-channels
+      # Drive the TS createPayKitClient upto path (channel open) against the
+      # canonical Rust upto server (broadcast + voucher settle on embedded
+      # surfnet). Scenarios match kotlin/python: basic + zero-actual.
+      - name: Run TypeScript x402 upto client to Rust upto server harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-upto
+          MPP_HARNESS_SCENARIOS: x402-upto-basic,x402-upto-zero-actual
+          X402_HARNESS_CLIENTS: ts-x402-upto
+          X402_HARNESS_SERVERS: rust-x402-upto
+          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.payment-channels.outputs.program-so }}
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+
   # Real on-chain settlement gate: forks mainnet (surfpool 1.4) and executes the
   # deployed payment-channels program, so a green run proves settlement actually
   # lands on-chain (the byte-shape harness above cannot). Needs @solana/pay-kit
