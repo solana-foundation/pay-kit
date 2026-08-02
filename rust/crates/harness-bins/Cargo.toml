@@ -15,6 +15,8 @@ reqwest = { version = "0.12", features = ["json"] }
 # RPC and transaction types are imported by their own crate names.
 solana-rpc-client = { version = "4", default-features = false }
 solana-transaction = { version = "3", default-features = false }
+# Ephemeral session wallets (wire-only open; no funded key injection).
+solana-keypair = { version = "3.0" }
 
 [[bin]]
 name = "mpp_harness_client"
@@ -23,6 +25,10 @@ path = "src/bin/mpp_harness_client.rs"
 [[bin]]
 name = "mpp_harness_server"
 path = "src/bin/mpp_harness_server.rs"
+
+[[bin]]
+name = "mpp_harness_session_client"
+path = "src/bin/mpp_harness_session_client.rs"
 
 [[bin]]
 name = "x402_harness_client"

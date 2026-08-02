@@ -14,7 +14,7 @@ export const sessionScenarios: readonly HarnessScenario[] = [
     // Phase 1a: multi-client against the wire-only Python session server.
     // TS/Rust high-level session() servers always submit open on-chain, so
     // they stay deferred until a Surfpool/program job (Phase 1a-server).
-    clientIds: ["python-session", "typescript-session"],
+    clientIds: ["python-session", "typescript-session", "rust-session"],
     serverIds: ["python"],
   },
 ] as const;

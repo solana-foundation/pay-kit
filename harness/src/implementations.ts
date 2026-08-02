@@ -219,6 +219,28 @@ export const clientImplementations: ImplementationDefinition[] = [
     reportsAs: "typescript",
   },
   {
+    id: "rust-session",
+    label: "Rust solana-pay-kit session client",
+    role: "client",
+    // Mirrors python-session-client / typescript-session (open → deliveries →
+    // commit → close) against the wire-only Python session server. Opt in via
+    // MPP_HARNESS_CLIENTS=rust-session.
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "paykit-harness-bins",
+      "--bin",
+      "mpp_harness_session_client",
+    ],
+    enabled: isEnabled("rust-session", "MPP_HARNESS_CLIENTS", false),
+    intents: ["session"],
+    reportsAs: "rust",
+  },
+  {
     id: "swift-x402",
     label: "Swift x402 exact client",
     role: "client",
