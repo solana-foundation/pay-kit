@@ -26,7 +26,62 @@ defaults:
     working-directory: typescript
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.filter.outputs.ts }}
+      rust: ${{ steps.filter.outputs.rust }}
+      linksdemo: ${{ steps.filter.outputs.linksdemo }}
+      linksrust: ${{ steps.filter.outputs.linksrust }}
+      harness: ${{ steps.filter.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ts:
+              - 'typescript/**'
+              - 'html/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            rust:
+              - 'rust/**'
+              - 'html/**'
+              - '.github/**'
+            linksdemo:
+              - 'html/**'
+              - 'typescript/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            linksrust:
+              - 'rust/**'
+              - 'html/**'
+              - 'typescript/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            harness:
+              - 'ruby/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   audit:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ts == 'true'
     name: Audit
     runs-on: ubuntu-latest
     steps:
@@ -60,6 +115,8 @@ jobs:
           fi
 
   lint:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ts == 'true'
     name: Lint & Format
     runs-on: ubuntu-latest
     steps:
@@ -81,7 +138,8 @@ jobs:
 
   typecheck:
     name: Typecheck
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -104,7 +162,8 @@ jobs:
 
   test-ts:
     name: TypeScript tests
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -183,7 +242,8 @@ jobs:
 
   test-rust:
     name: Rust tests
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       redis:
@@ -308,7 +368,8 @@ jobs:
 
   integration:
     name: Integration tests
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -348,7 +409,8 @@ jobs:
 
   test-payment-links-demo:
     name: "Payment links E2E: Playground (TypeScript)"
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.linksdemo == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -414,7 +476,8 @@ jobs:
 
   test-payment-links-rust:
     name: "Payment links E2E: Rust"
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.linksrust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -486,7 +549,8 @@ jobs:
 
   harness:
     name: "Harness: TypeScript harness"
-    needs: build-html
+    needs: [changes, build-html]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

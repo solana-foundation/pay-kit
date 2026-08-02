@@ -22,7 +22,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      ruby: ${{ steps.filter.outputs.ruby }}
+      harness: ${{ steps.filter.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ruby:
+              - 'ruby/**'
+              - '.github/**'
+            harness:
+              - 'ruby/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   test-ruby:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.ruby == 'true'
     name: Ruby tests
     runs-on: ubuntu-latest
     steps:
@@ -62,7 +94,8 @@ jobs:
 
   harness-ruby:
     name: "Harness: Ruby PayKit server (dual protocol)"
-    needs: test-ruby
+    needs: [changes, test-ruby]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true') && (needs['test-ruby'].result == 'success' || needs['test-ruby'].result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
