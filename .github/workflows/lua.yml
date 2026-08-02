@@ -42,9 +42,11 @@ jobs:
           filters: |
             lua:
               - 'lua/**'
+              - 'html/**'
               - '.github/**'
             harness:
               - 'lua/**'
+              - 'html/**'
               - 'harness/**'
               - 'typescript/**'
               - 'rust/**'

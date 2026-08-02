@@ -43,9 +43,11 @@ jobs:
           filters: |
             go:
               - 'go/**'
+              - 'html/**'
               - '.github/**'
             harness:
               - 'go/**'
+              - 'html/**'
               - 'harness/**'
               - 'typescript/**'
               - 'rust/**'

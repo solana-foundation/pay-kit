@@ -42,9 +42,11 @@ jobs:
           filters: |
             python:
               - 'python/**'
+              - 'html/**'
               - '.github/**'
             harness:
               - 'python/**'
+              - 'html/**'
               - 'harness/**'
               - 'typescript/**'
               - 'rust/**'
