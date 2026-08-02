@@ -19,8 +19,15 @@ use SolanaPhpSdk\Programs\SystemProgram;
  */
 final class Verify
 {
+    /** Unsigned 64-bit maximum as a decimal string. */
+    private const U64_MAX = '18446744073709551615';
+
     /**
-     * Parse a base-10 u64 amount string.
+     * Parse a base-10 u64 amount string into a PHP int.
+     *
+     * Rejects non-digit input, values above u64 max, and values above
+     * {@see PHP_INT_MAX} so the cast cannot saturate/truncate (values in
+     * (PHP_INT_MAX, u64_max] would otherwise lose their wire value).
      *
      * @throws InvalidProofException
      */
@@ -29,16 +36,76 @@ final class Verify
         if ($value === '' || !preg_match('/^[0-9]+$/', $value)) {
             throw new InvalidProofException("invalid upto {$label} " . var_export($value, true));
         }
-        // Reject values that overflow PHP platform int or u64.
-        if (strlen($value) > 20 || (strlen($value) === 20 && $value > '18446744073709551615')) {
+        // Strip leading zeros for length/lexicographic compare (keep "0").
+        $normalized = ltrim($value, '0');
+        if ($normalized === '') {
+            $normalized = '0';
+        }
+        if (self::decimalGreaterThan($normalized, self::U64_MAX)) {
             throw new InvalidProofException("upto {$label} {$value} does not fit in u64");
         }
-        $parsed = (int) $value;
-        if ($parsed < 0) {
-            throw new InvalidProofException("upto {$label} {$parsed} does not fit in u64");
+        $maxPlatform = (string) PHP_INT_MAX;
+        if (self::decimalGreaterThan($normalized, $maxPlatform)) {
+            throw new InvalidProofException(
+                "upto {$label} {$value} does not fit in platform int (PHP_INT_MAX)",
+            );
         }
 
-        return $parsed;
+        return (int) $normalized;
+    }
+
+    /**
+     * Parse a strict base-10 integer (optional leading `-`) into a PHP int.
+     *
+     * Used for authorization timestamps so `"123abc"` cannot silently become
+     * `123` via a cast. Rejects values outside [PHP_INT_MIN, PHP_INT_MAX].
+     *
+     * @param mixed $value
+     *
+     * @throws InvalidProofException
+     */
+    public static function parseStrictInt(mixed $value, string $label): int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+        if (!is_string($value) || $value === '' || !preg_match('/^-?[0-9]+$/', $value)) {
+            throw new InvalidProofException(
+                "invalid upto {$label} " . var_export($value, true),
+            );
+        }
+        // Exact platform min string (e.g. "-9223372036854775808") before
+        // magnitude checks so we do not reject PHP_INT_MIN as > PHP_INT_MAX.
+        if ($value === (string) PHP_INT_MIN) {
+            return PHP_INT_MIN;
+        }
+        $negative = $value[0] === '-';
+        $digits = $negative ? substr($value, 1) : $value;
+        $normalized = ltrim($digits, '0');
+        if ($normalized === '') {
+            return 0;
+        }
+        if (self::decimalGreaterThan($normalized, (string) PHP_INT_MAX)) {
+            throw new InvalidProofException(
+                "upto {$label} {$value} does not fit in platform int",
+            );
+        }
+
+        return $negative ? -((int) $normalized) : (int) $normalized;
+    }
+
+    /**
+     * Lexicographic compare of non-negative decimal digit strings (no leading zeros).
+     */
+    private static function decimalGreaterThan(string $a, string $b): bool
+    {
+        $la = strlen($a);
+        $lb = strlen($b);
+        if ($la !== $lb) {
+            return $la > $lb;
+        }
+
+        return $a > $b;
     }
 
     /**
@@ -70,8 +137,8 @@ final class Verify
             );
         }
 
-        $validAfter = (int) ($payload['validAfter'] ?? 0);
-        $expiresAt = (int) ($payload['expiresAt'] ?? 0);
+        $validAfter = self::parseStrictInt($payload['validAfter'] ?? 0, 'validAfter');
+        $expiresAt = self::parseStrictInt($payload['expiresAt'] ?? 0, 'expiresAt');
         if ($now < $validAfter) {
             throw new InvalidProofException(
                 "authorization not yet active (validAfter {$validAfter} > now {$now})",
@@ -150,6 +217,11 @@ final class Verify
         }
 
         $indices = $ix['accounts'];
+        if (count($indices) !== 14) {
+            throw new InvalidProofException(
+                'open instruction must reference exactly 14 accounts, found ' . count($indices),
+            );
+        }
 
         $accountAt = static function (int $pos, string $label) use ($indices, $accountKeys): string {
             if ($pos >= count($indices) || $indices[$pos] >= count($accountKeys)) {

@@ -162,15 +162,20 @@ final class Engine
 
         Verify::verifyUptoPayload($payload, $requirements, $receiverAuthorizer, time());
 
+        // payment-channel profile requires a pull-style open transaction; push
+        // (signature-only) is not accepted by this engine.
         $openTx = (string) ($payload['openTransaction'] ?? '');
-        if ($openTx !== '') {
-            $this->validateOpenTransaction(
-                $openTx,
-                $payload,
-                $requirements,
-                $receiverAuthorizer,
+        if ($openTx === '') {
+            throw new InvalidProofException(
+                'upto payment-channel payload missing openTransaction',
             );
         }
+        $this->validateOpenTransaction(
+            $openTx,
+            $payload,
+            $requirements,
+            $receiverAuthorizer,
+        );
 
         $maxBaseUnits = Verify::parseBaseUnits((string) $requirements['amount'], 'amount');
 
@@ -216,6 +221,13 @@ final class Engine
         }
 
         $message = $tx->message;
+        // Match SolanaChargeTransactionVerifier: open must not pull accounts
+        // from address lookup tables (static keys only).
+        if (($message->addressTableLookups ?? []) !== []) {
+            throw new InvalidProofException(
+                'v0 address lookup tables are not supported on upto open transactions',
+            );
+        }
         $accountKeys = array_map(
             static fn (PublicKey $k): string => (string) $k,
             $message->staticAccountKeys,

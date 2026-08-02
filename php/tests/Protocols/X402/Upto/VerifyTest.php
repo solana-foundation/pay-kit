@@ -39,7 +39,78 @@ final class VerifyTest extends TestCase
         yield 'alpha' => ['abc'];
         yield 'negative' => ['-1'];
         yield 'decimal' => ['1.5'];
-        yield 'overflow' => [(string) (2 ** 64)];
+        // Explicit decimal: u64_max+1 (not (string)(2**64) which is scientific).
+        yield 'u64_overflow' => ['18446744073709551616'];
+        // Above PHP_INT_MAX on 64-bit (still within u64) must not saturate.
+        yield 'platform_overflow' => ['9223372036854775808'];
+    }
+
+    public function testParseStrictIntRejectsNonCanonical(): void
+    {
+        $this->expectException(InvalidProofException::class);
+        Verify::parseStrictInt('123abc', 'validAfter');
+    }
+
+    public function testParseStrictIntAcceptsIntAndDigitString(): void
+    {
+        self::assertSame(42, Verify::parseStrictInt(42, 'validAfter'));
+        self::assertSame(42, Verify::parseStrictInt('42', 'validAfter'));
+        self::assertSame(-5, Verify::parseStrictInt('-5', 'expiresAt'));
+    }
+
+    public function testDecodeOpenArgsRejectsTrailingBytes(): void
+    {
+        $data = PaymentChannels::encodeOpenInstructionData(7, self::MAX, 900, 4242);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('trailing bytes');
+        PaymentChannels::decodeOpenArgs($data . "\x00");
+    }
+
+    public function testDecodeOpenArgsRejectsNonEmptyRecipients(): void
+    {
+        // Build open data with recipients_len = 1 and no body → too short for
+        // entries, but decode rejects non-zero len before reading entries.
+        $base = PaymentChannels::encodeOpenInstructionData(7, self::MAX, 900, 4242);
+        // Last 4 bytes are recipients_len=0; rewrite to 1.
+        $data = substr($base, 0, 29) . "\x01\x00\x00\x00";
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('recipients length must be 0');
+        PaymentChannels::decodeOpenArgs($data);
+    }
+
+    public function testValidateOpenInstructionRequiresExactly14Accounts(): void
+    {
+        $this->expectException(InvalidProofException::class);
+        $this->expectExceptionMessage('exactly 14 accounts');
+        $program = new PublicKey(PaymentChannels::PROGRAM_ID);
+        // 13 dummy static keys + program id at the end (programIdIndex = 13).
+        $keys = [];
+        for ($i = 1; $i <= 13; $i++) {
+            $keys[] = (string) new PublicKey(str_repeat(chr($i), 32));
+        }
+        $keys[] = (string) $program;
+        // Only 13 account metas — triggers the fixed-layout check.
+        Verify::validateUptoOpenInstruction(
+            $keys,
+            [[
+                'programIdIndex' => 13,
+                'accounts'       => range(0, 12),
+                'data'           => PaymentChannels::encodeOpenInstructionData(1, self::MAX, 900, 1),
+            ]],
+            $program,
+            new PublicKey($keys[1]),
+            new PublicKey($keys[4]),
+            new PublicKey($keys[0]),
+            new PublicKey($keys[2]),
+            new PublicKey($keys[3]),
+            new PublicKey($keys[8]),
+            new PublicKey($keys[5]),
+            self::MAX,
+            900,
+            '1',
+            '1',
+            null,
+        );
     }
 
     public function testVerifyUptoPayloadOk(): void

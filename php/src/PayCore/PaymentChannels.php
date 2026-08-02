@@ -154,20 +154,39 @@ final class PaymentChannels
     }
 
     /**
-     * Decode open instruction data after the discriminator byte.
+     * Decode open instruction data (discriminator + openArgs).
+     *
+     * Pins the empty-recipients layout used by SVM `upto`:
+     *   disc(1) + salt(8) + deposit(8) + grace(4) + openSlot(8) + recipients_len(4)=0
+     * Total length must be exactly 33. Non-empty recipients or trailing bytes
+     * are rejected so the open args stay byte-for-byte with the challenge path.
      *
      * @return array{salt: int, deposit: int, gracePeriod: int, openSlot: int}
      */
     public static function decodeOpenArgs(string $data): array
     {
-        // disc(1) + salt(8) + deposit(8) + grace(4) + openSlot(8) = 29 minimum
-        if (strlen($data) < 1 + 8 + 8 + 4 + 8) {
+        // disc(1) + salt(8) + deposit(8) + grace(4) + openSlot(8) + vec_len(4) = 33
+        $expectedLen = 1 + 8 + 8 + 4 + 8 + 4;
+        if (strlen($data) < $expectedLen) {
             throw new InvalidArgumentException(
                 'open instruction data too short (' . strlen($data) . ' bytes)',
             );
         }
         if (ord($data[0]) !== self::OPEN_INSTRUCTION_DISCRIMINATOR) {
             throw new InvalidArgumentException('open transaction is not a channel-open instruction');
+        }
+
+        $recipientsLen = self::unpackU32Le(substr($data, 29, 4));
+        if ($recipientsLen !== 0) {
+            throw new InvalidArgumentException(
+                "open instruction recipients length must be 0 for upto, got {$recipientsLen}",
+            );
+        }
+        if (strlen($data) !== $expectedLen) {
+            throw new InvalidArgumentException(
+                'open instruction data has trailing bytes after empty recipients '
+                . '(' . strlen($data) . ' bytes, expected ' . $expectedLen . ')',
+            );
         }
 
         return [
