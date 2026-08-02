@@ -15,6 +15,8 @@ use PayKit\PayCore\Solana\Mints;
 use Psr\Http\Message\ServerRequestInterface;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Rpc\RpcClient;
+use SolanaPhpSdk\Transaction\MessageV0;
+use SolanaPhpSdk\Transaction\TransactionInstruction;
 use SolanaPhpSdk\Transaction\VersionedTransaction;
 use Throwable;
 
@@ -25,7 +27,7 @@ use Throwable;
  *   1. {@see challengeHeaders}/{@see acceptsEntry} — advertise the ceiling.
  *   2. {@see verifyOpenPayload} — validate payload + open instruction shape.
  *   3. {@see verifyOpenAndBroadcast} — cosign as fee payer, broadcast open, confirm.
- *   4. settle_and_seal + distribute — later slice after open is live.
+ *   4. {@see settleAndSealAndBroadcast} / {@see distributeAndBroadcast} — post-usage.
  */
 final class Engine
 {
@@ -192,13 +194,216 @@ final class Engine
     }
 
     /**
-     * Enforce actual ≤ max. Full settle_and_seal broadcast is the next slice.
+     * Enforce actual ≤ max at settlement.
      *
      * @throws InvalidProofException
      */
     public function assertSettlementAmount(int $actualBaseUnits, int $maxBaseUnits): void
     {
         Verify::assertSettlementWithinCeiling($actualBaseUnits, $maxBaseUnits);
+    }
+
+    /**
+     * Settle the metered actual against an open channel and broadcast.
+     *
+     * - actual == 0 → voucherless settle_and_seal (1 instruction).
+     * - actual  > 0 → operator signs voucher preimage, then ed25519 + settle_and_seal
+     *   (2 instructions). Ceiling enforced via {@see Verify::assertSettlementWithinCeiling}.
+     *
+     * Payee seat is the operator fee payer (zero-share lifecycle authority), matching
+     * the open path. Returns the base58 settlement signature.
+     *
+     * @param ?string $recentBlockhash Optional test/RPC-free blockhash override.
+     *
+     * @throws InvalidProofException
+     */
+    public function settleAndSealAndBroadcast(
+        string $channelId,
+        int $actualBaseUnits,
+        int $maxBaseUnits,
+        int $expiresAt,
+        ?string $recentBlockhash = null,
+    ): string {
+        Verify::assertSettlementWithinCeiling($actualBaseUnits, $maxBaseUnits);
+
+        $signer = $this->config->effectiveX402Signer();
+        if ($signer === null) {
+            throw new InvalidProofException('upto settle requires an x402 operator signer');
+        }
+
+        $feePayer = $this->requirePubkey($signer->pubkey(), 'feePayer');
+        $channel = $this->requirePubkey($channelId, 'channelId');
+        // Operator holds both seats: payee (lifecycle) + receiver authorizer (voucher).
+        $payee = $feePayer;
+        $authorizedSigner = $feePayer;
+
+        $voucherSig = null;
+        if ($actualBaseUnits > 0) {
+            $message = PaymentChannels::voucherMessageBytes($channel, $actualBaseUnits, $expiresAt);
+            $voucherSig = $signer->sign($message);
+            if (strlen($voucherSig) !== 64) {
+                throw new InvalidProofException(
+                    'voucher signature length ' . strlen($voucherSig) . ', want 64',
+                );
+            }
+        }
+
+        $instructions = PaymentChannels::buildSettleAndSealInstructions(
+            $payee,
+            $channel,
+            $authorizedSigner,
+            $voucherSig,
+            $actualBaseUnits,
+            $expiresAt,
+        );
+
+        return $this->signInstructionsAndBroadcast(
+            $instructions,
+            $feePayer,
+            $recentBlockhash,
+            'settle',
+        );
+    }
+
+    /**
+     * Build, sign, and broadcast a `distribute` for a sealed channel.
+     *
+     * Account order matches Go/Python builders. Operator is fee payer + rentPayer.
+     * `$payee` defaults to the operator (upto zero-share payee seat).
+     *
+     * @param list<array{recipient: string, bps: int}> $recipients base58 recipient + bps
+     * @param ?string $recentBlockhash Optional test/RPC-free blockhash override.
+     *
+     * @throws InvalidProofException
+     */
+    public function distributeAndBroadcast(
+        string $channelId,
+        string $payer,
+        string $mint,
+        string $tokenProgram,
+        array $recipients = [],
+        ?string $payee = null,
+        ?string $recentBlockhash = null,
+    ): string {
+        $signer = $this->config->effectiveX402Signer();
+        if ($signer === null) {
+            throw new InvalidProofException('upto distribute requires an x402 operator signer');
+        }
+
+        $feePayer = $this->requirePubkey($signer->pubkey(), 'feePayer');
+        $channel = $this->requirePubkey($channelId, 'channelId');
+        $payerPk = $this->requirePubkey($payer, 'payer');
+        $mintPk = $this->requirePubkey($mint, 'mint');
+        $tokenProgramPk = $this->requirePubkey($tokenProgram, 'tokenProgram');
+        $payeePk = $this->requirePubkey($payee ?? $signer->pubkey(), 'payee');
+
+        $split = [];
+        foreach ($recipients as $i => $entry) {
+            if (!is_array($entry) || !isset($entry['recipient'], $entry['bps'])) {
+                throw new InvalidProofException("invalid distribute recipients[{$i}]");
+            }
+            $split[] = [
+                'recipient' => $this->requirePubkey((string) $entry['recipient'], "recipients[{$i}].recipient"),
+                'bps'       => (int) $entry['bps'],
+            ];
+        }
+
+        $ix = PaymentChannels::buildDistributeInstruction(
+            $channel,
+            $payerPk,
+            $feePayer, // rentPayer
+            $payeePk,
+            $mintPk,
+            $tokenProgramPk,
+            $split,
+        );
+
+        return $this->signInstructionsAndBroadcast(
+            [$ix],
+            $feePayer,
+            $recentBlockhash,
+            'distribute',
+        );
+    }
+
+    /**
+     * Compile, fee-payer-sign, broadcast, and confirm a list of instructions.
+     *
+     * @param list<TransactionInstruction> $instructions
+     *
+     * @throws InvalidProofException
+     */
+    private function signInstructionsAndBroadcast(
+        array $instructions,
+        PublicKey $feePayer,
+        ?string $recentBlockhash,
+        string $label,
+    ): string {
+        $signer = $this->config->effectiveX402Signer();
+        if ($signer === null) {
+            throw new InvalidProofException("upto {$label} requires an x402 operator signer");
+        }
+
+        $blockhash = $recentBlockhash;
+        if ($blockhash === null || $blockhash === '') {
+            $hints = $this->fetchChainHints();
+            $blockhash = is_array($hints) ? ($hints['blockhash'] ?? null) : null;
+        }
+        if ($blockhash === null || $blockhash === '') {
+            throw new InvalidProofException("upto {$label} requires a recent blockhash");
+        }
+
+        try {
+            $message = MessageV0::compile($feePayer, $instructions, $blockhash);
+            $tx = new VersionedTransaction($message);
+            $kp = Keypair::fromSecretKey($signer->secretKey());
+            $tx->sign($kp);
+            $wire = $tx->serialize(verifySignatures: false);
+        } catch (Throwable $e) {
+            throw new InvalidProofException(
+                "upto {$label} sign failed: " . $e->getMessage(),
+                0,
+                $e,
+            );
+        }
+
+        return $this->sendAndConfirmWire($wire, $label);
+    }
+
+    /**
+     * @throws InvalidProofException
+     */
+    private function sendAndConfirmWire(string $wire, string $label): string
+    {
+        $rpc = $this->rpc();
+        try {
+            $sig = $rpc->sendRawTransaction($wire, [
+                'encoding'            => 'base64',
+                'skipPreflight'       => false,
+                'preflightCommitment' => 'confirmed',
+            ]);
+        } catch (Throwable $e) {
+            throw new InvalidProofException(
+                "pay_kit: invalid proof: {$label} broadcast failed: " . $e->getMessage(),
+                0,
+                $e,
+            );
+        }
+        if (!is_string($sig) || $sig === '') {
+            throw new InvalidProofException("pay_kit: empty {$label} broadcast result");
+        }
+
+        try {
+            $this->awaitConfirmation($sig);
+        } catch (Throwable $e) {
+            throw new InvalidProofException(
+                "pay_kit: invalid proof: {$label} not confirmed: " . $e->getMessage(),
+                0,
+                $e,
+            );
+        }
+
+        return $sig;
     }
 
     /**
@@ -358,35 +563,7 @@ final class Engine
             throw new InvalidProofException('upto cosign failed: ' . $e->getMessage(), 0, $e);
         }
 
-        $rpc = $this->rpc();
-        try {
-            $sig = $rpc->sendRawTransaction($wire, [
-                'encoding'              => 'base64',
-                'skipPreflight'         => false,
-                'preflightCommitment'   => 'confirmed',
-            ]);
-        } catch (Throwable $e) {
-            throw new InvalidProofException(
-                'pay_kit: invalid proof: open broadcast failed: ' . $e->getMessage(),
-                0,
-                $e,
-            );
-        }
-        if (!is_string($sig) || $sig === '') {
-            throw new InvalidProofException('pay_kit: empty open broadcast result');
-        }
-
-        try {
-            $this->awaitConfirmation($sig);
-        } catch (Throwable $e) {
-            throw new InvalidProofException(
-                'pay_kit: invalid proof: open not confirmed: ' . $e->getMessage(),
-                0,
-                $e,
-            );
-        }
-
-        return $sig;
+        return $this->sendAndConfirmWire($wire, 'open');
     }
 
     private function rpc(): RpcGateway
