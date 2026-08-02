@@ -115,7 +115,7 @@ jobs:
         working-directory: harness
         env:
           MPP_HARNESS_INTENTS: session
-          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_SCENARIOS: session-basic,session-multi-delivery
           MPP_HARNESS_CLIENTS: python-session
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts

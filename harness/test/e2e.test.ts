@@ -914,6 +914,13 @@ function environmentForScenario(
     }
   } else if (scenario.intent === "session") {
     env.PAY_KIT_HARNESS_PROTOCOL = "session";
+    // Multi-delivery cumulative watermark: three increments of amount before
+    // a single close. session-basic (and any other session scenario) leave
+    // the default MPP_HARNESS_DELIVERY_COUNT=1 so one reserve/commit remains.
+    if (scenario.id === "session-multi-delivery") {
+      env.MPP_HARNESS_DELIVERY_COUNT = "3";
+      env.MPP_HARNESS_AMOUNT = "700";
+    }
   } else {
     env.PAY_KIT_HARNESS_PROTOCOL = "mpp";
   }
