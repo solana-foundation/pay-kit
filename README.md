@@ -125,3 +125,5 @@ pnpm dev   # server on :3000, web app on :5173
 ## License
 
 MIT
+
+<!-- CI changes-filter verification: docs-only change, every job except the changes filters should skip. Throwaway PR, will be closed. -->
