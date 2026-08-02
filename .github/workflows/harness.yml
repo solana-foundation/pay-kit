@@ -119,23 +119,22 @@ jobs:
           MPP_HARNESS_CLIENTS: python-session
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
-      # Phase 1a: TS session client against the wire-only Python session server
-      # (open → deliveries → commit → close). Unpins session-basic from
-      # Python-client-only isolation without requiring on-chain open submit.
+      # Phase 1a + multi-delivery: TS session client against the wire-only
+      # Python session server (open → N×(reserve/commit) → close).
       - name: Focused TypeScript session client → Python session server
         working-directory: harness
         env:
           MPP_HARNESS_INTENTS: session
-          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_SCENARIOS: session-basic,session-multi-delivery
           MPP_HARNESS_CLIENTS: typescript-session
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
-      # Phase 1a: Rust session client against the same wire-only Python server.
+      # Phase 1a + multi-delivery: Rust session client against the same server.
       - name: Focused Rust session client → Python session server
         working-directory: harness
         env:
           MPP_HARNESS_INTENTS: session
-          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_SCENARIOS: session-basic,session-multi-delivery
           MPP_HARNESS_CLIENTS: rust-session
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

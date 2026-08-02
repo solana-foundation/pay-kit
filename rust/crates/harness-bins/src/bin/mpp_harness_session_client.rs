@@ -10,7 +10,8 @@
 //!   POST /__402/session/close → settlement reference
 //!
 //! Status is **402 Payment Required**, not 401. Authorization scheme is
-//! `Payment <base64url>` (not `MPP credential=`). Env: `MPP_HARNESS_*`.
+//! `Payment <base64url>` (not `MPP credential=`). Env: `MPP_HARNESS_*`,
+//! including `MPP_HARNESS_DELIVERY_COUNT` (default 1; multi-delivery sets 3).
 
 use std::{
     collections::HashMap,
@@ -103,6 +104,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or_else(|_| "700".into())
         .parse()
         .map_err(|_| "MPP_HARNESS_AMOUNT must be a u64".to_string())?;
+    let delivery_count: usize = env::var("MPP_HARNESS_DELIVERY_COUNT")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .map_err(|_| "MPP_HARNESS_DELIVERY_COUNT must be a usize".to_string())?;
+    if delivery_count < 1 {
+        return Err("MPP_HARNESS_DELIVERY_COUNT must be >= 1".into());
+    }
     let settlement_header = env::var("MPP_HARNESS_SETTLEMENT_HEADER")
         .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string());
 
@@ -195,64 +203,69 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut session = opened.session;
     let channel_id = session.channel_id_str();
 
-    // ── 3) Reserve delivery ────────────────────────────────────────────────
-    let reserve_resp = http
-        .post(&reserve_url)
-        .json(&json!({ "sessionId": channel_id, "amount": amount.to_string() }))
-        .send()
-        .await?;
-    let reserve_status = reserve_resp.status().as_u16();
-    let reserve_headers = headers_to_map(response_headers(reserve_resp.headers())?);
-    let reserve_body = parse_body(&reserve_resp.text().await?);
-    let delivery_id = reserve_body
-        .get("deliveryId")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    if !(200..300).contains(&reserve_status) || delivery_id.is_none() {
-        emit_result(
-            false,
-            reserve_status,
-            reserve_headers,
-            reserve_body,
-            None,
-            Some("session delivery reserve failed".into()),
-        );
-        return Ok(());
-    }
-    let delivery_id = delivery_id.unwrap();
+    // ── 3–4) Reserve + commit N times (cumulative watermark) ───────────────
+    // session-basic: DELIVERY_COUNT=1. session-multi-delivery: 3 × amount.
+    let mut last_voucher = None;
+    for _ in 0..delivery_count {
+        let reserve_resp = http
+            .post(&reserve_url)
+            .json(&json!({ "sessionId": channel_id, "amount": amount.to_string() }))
+            .send()
+            .await?;
+        let reserve_status = reserve_resp.status().as_u16();
+        let reserve_headers = headers_to_map(response_headers(reserve_resp.headers())?);
+        let reserve_body = parse_body(&reserve_resp.text().await?);
+        let delivery_id = reserve_body
+            .get("deliveryId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if !(200..300).contains(&reserve_status) || delivery_id.is_none() {
+            emit_result(
+                false,
+                reserve_status,
+                reserve_headers,
+                reserve_body,
+                None,
+                Some("session delivery reserve failed".into()),
+            );
+            return Ok(());
+        }
+        let delivery_id = delivery_id.unwrap();
 
-    // ── 4) Commit voucher ──────────────────────────────────────────────────
-    let voucher = session
-        .prepare_increment(amount)
-        .await
-        .map_err(|e| format!("prepare_increment: {e}"))?;
-    let commit_resp = http
-        .post(&commit_url)
-        .json(&json!({
-            "deliveryId": delivery_id,
-            "voucher": voucher,
-        }))
-        .send()
-        .await?;
-    let commit_status = commit_resp.status().as_u16();
-    let commit_headers = headers_to_map(response_headers(commit_resp.headers())?);
-    let commit_body = parse_body(&commit_resp.text().await?);
-    if !(200..300).contains(&commit_status) {
-        emit_result(
-            false,
-            commit_status,
-            commit_headers,
-            commit_body,
-            None,
-            Some("session commit failed".into()),
-        );
-        return Ok(());
+        let voucher = session
+            .prepare_increment(amount)
+            .await
+            .map_err(|e| format!("prepare_increment: {e}"))?;
+        let commit_resp = http
+            .post(&commit_url)
+            .json(&json!({
+                "deliveryId": delivery_id,
+                "voucher": voucher,
+            }))
+            .send()
+            .await?;
+        let commit_status = commit_resp.status().as_u16();
+        let commit_headers = headers_to_map(response_headers(commit_resp.headers())?);
+        let commit_body = parse_body(&commit_resp.text().await?);
+        if !(200..300).contains(&commit_status) {
+            emit_result(
+                false,
+                commit_status,
+                commit_headers,
+                commit_body,
+                None,
+                Some("session commit failed".into()),
+            );
+            return Ok(());
+        }
+        session
+            .record_voucher(&voucher)
+            .map_err(|e| format!("record_voucher: {e}"))?;
+        last_voucher = Some(voucher);
     }
-    session
-        .record_voucher(&voucher)
-        .map_err(|e| format!("record_voucher: {e}"))?;
+    let voucher = last_voucher.ok_or("no voucher produced")?;
 
-    // ── 5) Close with the committed voucher ────────────────────────────────
+    // ── 5) Close with the last committed (highest-watermark) voucher ───────
     let close_action = SessionAction::Close(ClosePayload {
         channel_id: channel_id.clone(),
         authentication: None,

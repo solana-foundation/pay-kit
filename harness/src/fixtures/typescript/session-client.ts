@@ -10,6 +10,7 @@
 //
 // Uses @solana/mpp client helpers only — no protocol reinvention.
 // Env: MPP_HARNESS_TARGET_URL (injected by harness), MPP_HARNESS_AMOUNT,
+// MPP_HARNESS_DELIVERY_COUNT (default 1; multi-delivery sets 3),
 // optional MPP_HARNESS_RPC_URL (unused for challenge-bound open blockhash).
 
 import { generateKeyPairSigner } from "@solana/kit";
@@ -69,6 +70,13 @@ async function main(): Promise<void> {
     throw new Error("MPP_HARNESS_TARGET_URL is required");
   }
   const amount = process.env.MPP_HARNESS_AMOUNT ?? "700";
+  const deliveryCount = Number.parseInt(
+    process.env.MPP_HARNESS_DELIVERY_COUNT ?? "1",
+    10,
+  );
+  if (!Number.isFinite(deliveryCount) || deliveryCount < 1) {
+    throw new Error("MPP_HARNESS_DELIVERY_COUNT must be an integer >= 1");
+  }
   const base = baseUrlFromTarget(targetUrl);
   const reserveUrl = `${base}/__402/session/deliveries`;
   const commitUrl = `${base}/__402/session/commit`;
@@ -129,47 +137,58 @@ async function main(): Promise<void> {
   }
 
   const channelId = opened.session.channelId;
-  const reserveResponse = await fetch(reserveUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId: channelId, amount }),
-  });
-  const reserveBody = await readJson(reserveResponse);
-  if (
-    !reserveResponse.ok ||
-    typeof reserveBody !== "object" ||
-    reserveBody === null ||
-    !("deliveryId" in reserveBody)
-  ) {
-    emitResult({
-      ok: false,
-      status: reserveResponse.status,
-      responseHeaders: headersRecord(reserveResponse),
-      responseBody: reserveBody,
-      error: "session delivery reserve failed",
+  // Cumulative watermark: each reserve/commit advances by `amount`.
+  // session-basic leaves DELIVERY_COUNT=1; session-multi-delivery sets 3.
+  let voucher: SignedVoucher | undefined;
+  for (let i = 0; i < deliveryCount; i++) {
+    const reserveResponse = await fetch(reserveUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: channelId, amount }),
     });
-    return;
+    const reserveBody = await readJson(reserveResponse);
+    if (
+      !reserveResponse.ok ||
+      typeof reserveBody !== "object" ||
+      reserveBody === null ||
+      !("deliveryId" in reserveBody)
+    ) {
+      emitResult({
+        ok: false,
+        status: reserveResponse.status,
+        responseHeaders: headersRecord(reserveResponse),
+        responseBody: reserveBody,
+        error: "session delivery reserve failed",
+      });
+      return;
+    }
+
+    const deliveryId = String(
+      (reserveBody as { deliveryId: unknown }).deliveryId,
+    );
+    voucher = await opened.session.prepareIncrement(amount);
+    const commitResponse = await fetch(commitUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deliveryId, voucher }),
+    });
+    const commitBody = await readJson(commitResponse);
+    if (!commitResponse.ok) {
+      emitResult({
+        ok: false,
+        status: commitResponse.status,
+        responseHeaders: headersRecord(commitResponse),
+        responseBody: commitBody,
+        error: "session commit failed",
+      });
+      return;
+    }
+    opened.session.recordVoucher(voucher);
   }
 
-  const deliveryId = String((reserveBody as { deliveryId: unknown }).deliveryId);
-  const voucher: SignedVoucher = await opened.session.prepareIncrement(amount);
-  const commitResponse = await fetch(commitUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ deliveryId, voucher }),
-  });
-  const commitBody = await readJson(commitResponse);
-  if (!commitResponse.ok) {
-    emitResult({
-      ok: false,
-      status: commitResponse.status,
-      responseHeaders: headersRecord(commitResponse),
-      responseBody: commitBody,
-      error: "session commit failed",
-    });
-    return;
+  if (!voucher) {
+    throw new Error("no voucher produced");
   }
-  opened.session.recordVoucher(voucher);
 
   const closeAuth = serializeSessionCredential({
     challenge,
