@@ -22,7 +22,47 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      harness: ${{ steps.filter.outputs.harness }}
+      playground: ${{ steps.filter.outputs.playground }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            go:
+              - 'go/**'
+              - '.github/**'
+            harness:
+              - 'go/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+            playground:
+              - 'go/**'
+              - 'html/**'
+              - 'typescript/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   test-go:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.go == 'true'
     name: Go tests
     runs-on: ubuntu-latest
     steps:
@@ -69,6 +109,8 @@ jobs:
           path: go/coverage.out
 
   lint-go:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.go == 'true'
     name: Go lint
     runs-on: ubuntu-latest
     steps:
@@ -96,7 +138,8 @@ jobs:
 
   harness-go:
     name: Go PayKit harness (mpp charge + x402 exact + x402 upto)
-    needs: test-go
+    needs: [changes, test-go]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true') && (needs['test-go'].result == 'success' || needs['test-go'].result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -150,7 +193,8 @@ jobs:
 
   playground-go:
     name: "Payment links E2E: Playground (Go)"
-    needs: test-go
+    needs: [changes, test-go]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.playground == 'true') && (needs['test-go'].result == 'success' || needs['test-go'].result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
