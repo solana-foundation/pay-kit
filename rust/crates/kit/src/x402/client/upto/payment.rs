@@ -14,6 +14,7 @@ use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 
+use crate::core::blockhash::fetch_blockhash_with_slot;
 use crate::core::payment_channels as pc;
 
 use crate::x402::error::Error;
@@ -76,9 +77,7 @@ pub async fn build_upto_payload(
     let (blockhash_str, open_slot) = match (hint_blockhash, hint_slot) {
         (Some(blockhash), Some(slot)) => (blockhash.to_string(), parse_open_slot(slot)?),
         _ => {
-            let fetched =
-                crate::core::blockhash::fetch_blockhash_with_slot(rpc, rpc.commitment())
-                    .map_err(Error::Rpc)?;
+            let fetched = fetch_blockhash_with_slot(rpc, rpc.commitment()).map_err(Error::Rpc)?;
             let blockhash = hint_blockhash
                 .map(str::to_string)
                 .unwrap_or(fetched.blockhash);
