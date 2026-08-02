@@ -9,15 +9,16 @@ use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
+use SolanaPhpSdk\Transaction\AccountMeta;
+use SolanaPhpSdk\Transaction\TransactionInstruction;
 
 /**
  * Hand-written on-chain glue for the payment-channels program.
  *
  * Mirrors Go `paycore/paymentchannels` and Python `_paycore.paymentchannels`:
  * production program id, channel / event-authority PDA derivation, ATA
- * derivation, and the 50-byte voucher preimage. Instruction builders that
- * require the full Codama-generated client land in follow-up commits; this
- * module is the pure shared foundation for x402 `upto` verify + settle.
+ * derivation, 50-byte voucher preimage, and instruction builders
+ * (open / settle_and_seal / distribute / ed25519) for x402 `upto`.
  *
  * Layout and seeds MUST stay byte-identical across language SDKs so the
  * on-chain program accepts them.
@@ -211,6 +212,237 @@ final class PaymentChannels
     {
         return AssociatedTokenProgram::PROGRAM_ID;
     }
+
+
+    public const SETTLE_AND_SEAL_DISCRIMINATOR = 4;
+    public const DISTRIBUTE_DISCRIMINATOR = 7;
+
+    /** Treasury owner baked into the deployed (mainnet-build) program. */
+    public const TREASURY_OWNER = 'Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP';
+
+    /**
+     * Build the `open` instruction (14 accounts, disc=1 + openArgs).
+     *
+     * Account order and flags match Go `BuildOpenInstruction` /
+     * Python `build_open_instruction`. Derives channel PDA, payer/channel ATAs,
+     * and event-authority PDA. Empty recipients only (upto path).
+     *
+     * @return TransactionInstruction
+     */
+    public static function buildOpenInstruction(
+        PublicKey $payer,
+        PublicKey $rentPayer,
+        PublicKey $payee,
+        PublicKey $mint,
+        PublicKey $authorizedSigner,
+        int $salt,
+        int $deposit,
+        int $gracePeriod,
+        int $openSlot,
+        PublicKey $tokenProgram,
+        ?PublicKey $programId = null,
+    ): TransactionInstruction {
+        $program = $programId ?? new PublicKey(self::PROGRAM_ID);
+        [$channel] = self::findChannelPda(
+            $payer,
+            $payee,
+            $mint,
+            $authorizedSigner,
+            $salt,
+            $openSlot,
+            $program,
+        );
+        [$payerToken] = self::findAssociatedTokenAddress($payer, $mint, $tokenProgram);
+        [$channelToken] = self::findAssociatedTokenAddress($channel, $mint, $tokenProgram);
+        [$eventAuthority] = self::findEventAuthorityPda($program);
+
+        $accounts = [
+            AccountMeta::signerWritable($payer),
+            AccountMeta::signerWritable($rentPayer),
+            AccountMeta::readonly($payee),
+            AccountMeta::readonly($mint),
+            AccountMeta::readonly($authorizedSigner),
+            AccountMeta::writable($channel),
+            AccountMeta::writable($payerToken),
+            AccountMeta::writable($channelToken),
+            AccountMeta::readonly($tokenProgram),
+            AccountMeta::readonly(new PublicKey(self::systemProgramId())),
+            AccountMeta::readonly(new PublicKey(self::RENT_SYSVAR_ID)),
+            AccountMeta::readonly(new PublicKey(self::associatedTokenProgramId())),
+            AccountMeta::readonly($eventAuthority),
+            AccountMeta::readonly($program),
+        ];
+
+        $data = self::encodeOpenInstructionData($salt, $deposit, $gracePeriod, $openSlot);
+
+        return new TransactionInstruction($program, $accounts, $data);
+    }
+
+    /**
+     * Ed25519 precompile that verifies a voucher signature (sibling of settle).
+     *
+     * Layout mirrors Go/Python: pubkey @16, signature @48, message @112.
+     */
+    public static function buildEd25519VerifyInstruction(
+        PublicKey $authorizedSigner,
+        string $signature,
+        string $message,
+    ): TransactionInstruction {
+        if (strlen($signature) !== 64) {
+            throw new InvalidArgumentException(
+                'ed25519 signature must be 64 bytes, got ' . strlen($signature),
+            );
+        }
+        if (strlen($message) > 0xFFFF) {
+            throw new InvalidArgumentException(
+                'voucher message too long: ' . strlen($message) . ' bytes',
+            );
+        }
+
+        $publicKeyOffset = 16;
+        $signatureOffset = 48;
+        $messageDataOffset = 112;
+        $currentInstruction = 0xFFFF;
+
+        $data = str_repeat("\x00", $messageDataOffset + strlen($message));
+        $data[0] = chr(1); // num_signatures
+        $data[1] = chr(0); // padding
+        $data = self::pokeU16Le($data, 2, $signatureOffset);
+        $data = self::pokeU16Le($data, 4, $currentInstruction);
+        $data = self::pokeU16Le($data, 6, $publicKeyOffset);
+        $data = self::pokeU16Le($data, 8, $currentInstruction);
+        $data = self::pokeU16Le($data, 10, $messageDataOffset);
+        $data = self::pokeU16Le($data, 12, strlen($message));
+        $data = self::pokeU16Le($data, 14, $currentInstruction);
+
+        $pk = $authorizedSigner->toBytes();
+        for ($i = 0; $i < 32; $i++) {
+            $data[$publicKeyOffset + $i] = $pk[$i];
+        }
+        for ($i = 0; $i < 64; $i++) {
+            $data[$signatureOffset + $i] = $signature[$i];
+        }
+        for ($i = 0, $n = strlen($message); $i < $n; $i++) {
+            $data[$messageDataOffset + $i] = $message[$i];
+        }
+
+        return new TransactionInstruction(
+            new PublicKey(self::ED25519_PROGRAM_ID),
+            [],
+            $data,
+        );
+    }
+
+    /**
+     * Build settle_and_seal sequence: optional Ed25519 precompile + settleAndSeal.
+     *
+     * @param string|null $signature 64-byte Ed25519 voucher signature, or null for voucherless
+     * @return list<TransactionInstruction>
+     */
+    public static function buildSettleAndSealInstructions(
+        PublicKey $payee,
+        PublicKey $channel,
+        PublicKey $authorizedSigner,
+        ?string $signature,
+        int $cumulativeAmount,
+        int $expiresAt,
+        ?PublicKey $programId = null,
+    ): array {
+        $program = $programId ?? new PublicKey(self::PROGRAM_ID);
+        $instructions = [];
+        $hasVoucher = 0;
+
+        if ($signature !== null) {
+            $message = self::voucherMessageBytes($channel, $cumulativeAmount, $expiresAt);
+            $instructions[] = self::buildEd25519VerifyInstruction(
+                $authorizedSigner,
+                $signature,
+                $message,
+            );
+            $hasVoucher = 1;
+        }
+
+        $accounts = [
+            AccountMeta::signerReadonly($payee),
+            AccountMeta::writable($channel),
+            AccountMeta::readonly(new PublicKey(self::SYSVAR_INSTRUCTIONS)),
+        ];
+        $data = chr(self::SETTLE_AND_SEAL_DISCRIMINATOR) . chr($hasVoucher);
+        $instructions[] = new TransactionInstruction($program, $accounts, $data);
+
+        return $instructions;
+    }
+
+    /**
+     * Build distribute (11 fixed accounts + one writable recipient ATA per split).
+     *
+     * @param list<array{recipient: PublicKey, bps: int}> $recipients
+     */
+    public static function buildDistributeInstruction(
+        PublicKey $channel,
+        PublicKey $payer,
+        PublicKey $rentPayer,
+        PublicKey $payee,
+        PublicKey $mint,
+        PublicKey $tokenProgram,
+        array $recipients = [],
+        ?PublicKey $treasury = null,
+        ?PublicKey $programId = null,
+    ): TransactionInstruction {
+        $program = $programId ?? new PublicKey(self::PROGRAM_ID);
+        $treasuryOwner = $treasury ?? new PublicKey(self::TREASURY_OWNER);
+
+        [$channelToken] = self::findAssociatedTokenAddress($channel, $mint, $tokenProgram);
+        [$payerToken] = self::findAssociatedTokenAddress($payer, $mint, $tokenProgram);
+        [$payeeToken] = self::findAssociatedTokenAddress($payee, $mint, $tokenProgram);
+        [$treasuryToken] = self::findAssociatedTokenAddress($treasuryOwner, $mint, $tokenProgram);
+        [$eventAuthority] = self::findEventAuthorityPda($program);
+
+        $accounts = [
+            AccountMeta::writable($channel),
+            AccountMeta::writable($payer),
+            AccountMeta::writable($rentPayer),
+            AccountMeta::writable($channelToken),
+            AccountMeta::writable($payerToken),
+            AccountMeta::writable($payeeToken),
+            AccountMeta::writable($treasuryToken),
+            AccountMeta::readonly($mint),
+            AccountMeta::readonly($tokenProgram),
+            AccountMeta::readonly($eventAuthority),
+            AccountMeta::readonly($program),
+        ];
+
+        $data = chr(self::DISTRIBUTE_DISCRIMINATOR) . self::packU32Le(count($recipients));
+        foreach ($recipients as $entry) {
+            $recipient = $entry['recipient'];
+            $bps = $entry['bps'];
+            if (!$recipient instanceof PublicKey) {
+                throw new InvalidArgumentException('recipient must be a PublicKey');
+            }
+            if ($bps < 0 || $bps > 0xFFFF) {
+                throw new InvalidArgumentException("recipient bps {$bps} does not fit in u16");
+            }
+            [$recipientToken] = self::findAssociatedTokenAddress($recipient, $mint, $tokenProgram);
+            $accounts[] = AccountMeta::writable($recipientToken);
+            $data .= $recipient->toBytes() . self::packU16Le($bps);
+        }
+
+        return new TransactionInstruction($program, $accounts, $data);
+    }
+
+    private static function pokeU16Le(string $data, int $offset, int $value): string
+    {
+        $data[$offset] = chr($value & 0xFF);
+        $data[$offset + 1] = chr(($value >> 8) & 0xFF);
+
+        return $data;
+    }
+
+    private static function packU16Le(int $value): string
+    {
+        return chr($value & 0xFF) . chr(($value >> 8) & 0xFF);
+    }
+
 
     private static function packU64Le(int $value): string
     {
