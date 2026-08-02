@@ -12,6 +12,7 @@ use std::str::FromStr;
 use solana_hash::Hash;
 use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
 
 use crate::core::payment_channels as pc;
 
@@ -24,13 +25,16 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 /// Build an `upto` payload for a `payment-channel` requirement.
 ///
 /// `expires_at` is the voucher/authorization deadline (Unix seconds); `nonce`
-/// uniquely identifies this authorization. The requirement MUST carry
-/// `extra.recentBlockhash` AND `extra.recentSlot` (the operator provides both
-/// in the 402 challenge): the slot feeds the program's `openSlot`, a
-/// channel-PDA seed the program only accepts within a recent window, and it
-/// comes from the challenge — never from a client-side RPC fetch.
+/// uniquely identifies this authorization. The requirement SHOULD carry
+/// `extra.recentBlockhash` and `extra.recentSlot` (the operator embeds both in
+/// the 402 challenge so the client skips an RPC round-trip): the slot feeds
+/// the program's `openSlot`, a channel-PDA seed the program only accepts
+/// within a recent window. Both hints are optional per the upto spec — when
+/// either is absent, a single `getLatestBlockhash` call against `rpc`
+/// supplies the missing value(s); `rpc` is untouched when both are present.
 pub async fn build_upto_payload(
     payer_signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
     requirements: &UptoRequirements,
     expires_at: i64,
     _nonce: impl Into<String>,
@@ -63,20 +67,30 @@ pub async fn build_upto_payload(
         None => Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
             .expect("valid token program"),
     };
-    let recent_blockhash = requirements
-        .extra
-        .recent_blockhash
-        .as_deref()
-        .ok_or_else(|| Error::Other("requirement missing extra.recentBlockhash".to_string()))?;
-    let blockhash = Hash::from_str(recent_blockhash)
+    // Prefer the challenge-embedded hints (no RPC round-trip, and the operator
+    // controls how fresh the `openSlot` seed is). Both are optional per the
+    // upto spec, so fall back to one `getLatestBlockhash` call when either is
+    // absent — its response context carries the current slot, covering both.
+    let hint_blockhash = requirements.extra.recent_blockhash.as_deref();
+    let hint_slot = requirements.extra.recent_slot.as_deref();
+    let (blockhash_str, open_slot) = match (hint_blockhash, hint_slot) {
+        (Some(blockhash), Some(slot)) => (blockhash.to_string(), parse_open_slot(slot)?),
+        _ => {
+            let fetched =
+                crate::core::blockhash::fetch_blockhash_with_slot(rpc, rpc.commitment())
+                    .map_err(Error::Rpc)?;
+            let blockhash = hint_blockhash
+                .map(str::to_string)
+                .unwrap_or(fetched.blockhash);
+            let open_slot = match hint_slot {
+                Some(slot) => parse_open_slot(slot)?,
+                None => fetched.slot,
+            };
+            (blockhash, open_slot)
+        }
+    };
+    let blockhash = Hash::from_str(&blockhash_str)
         .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
-    let open_slot: u64 = requirements
-        .extra
-        .recent_slot
-        .as_deref()
-        .ok_or_else(|| Error::Other("requirement missing extra.recentSlot".to_string()))?
-        .parse()
-        .map_err(|e| Error::Other(format!("invalid recentSlot: {e}")))?;
 
     let salt = pc::random_salt();
     let open = pc::build_open_payment_channel_tx(
@@ -111,6 +125,12 @@ pub async fn build_upto_payload(
     })
 }
 
+fn parse_open_slot(value: &str) -> Result<u64, Error> {
+    value
+        .parse()
+        .map_err(|e| Error::Other(format!("invalid recentSlot: {e}")))
+}
+
 /// Wrap a payload in a `PAYMENT-SIGNATURE` envelope and base64-encode it.
 pub fn encode_upto_header(
     requirements: &UptoRequirements,
@@ -136,11 +156,12 @@ pub fn encode_upto_header(
 /// Build the full `PAYMENT-SIGNATURE` header value for an `upto` payment.
 pub async fn build_upto_header(
     payer_signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
     requirements: &UptoRequirements,
     expires_at: i64,
     nonce: impl Into<String>,
 ) -> Result<String, Error> {
-    let payload = build_upto_payload(payer_signer, requirements, expires_at, nonce).await?;
+    let payload = build_upto_payload(payer_signer, rpc, requirements, expires_at, nonce).await?;
     encode_upto_header(requirements, payload)
 }
 
@@ -188,6 +209,21 @@ mod tests {
     use crate::x402::protocol::schemes::upto::UptoExtra;
 
     const RECEIVER_AUTHORIZER: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+
+    fn make_signer() -> Box<dyn SolanaSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    fn requirements_without_hints() -> UptoRequirements {
+        let mut req = requirements();
+        req.extra.recent_blockhash = None;
+        req.extra.recent_slot = None;
+        req
+    }
 
     fn requirements() -> UptoRequirements {
         UptoRequirements {
@@ -263,5 +299,64 @@ mod tests {
     #[test]
     fn parse_challenge_returns_none_without_upto_offer() {
         assert!(parse_upto_challenge(&[], None).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_payload_uses_challenge_hints_without_rpc() {
+        let signer = make_signer();
+        // A "fails" mock makes any RPC hit error loudly: with both hints
+        // embedded, the build must succeed without touching RPC at all.
+        let rpc = RpcClient::new_mock("fails".to_string());
+        let payload = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1")
+            .await
+            .expect("payload from embedded hints");
+        assert_eq!(payload.open_slot, "314");
+        assert!(payload.open_transaction.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_payload_falls_back_to_rpc_when_hints_absent() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let payload = build_upto_payload(
+            &*signer,
+            &rpc,
+            &requirements_without_hints(),
+            4_102_444_800,
+            "n-1",
+        )
+        .await
+        .expect("payload from RPC fallback");
+        // MockSender's getLatestBlockhash reports context slot 1.
+        assert_eq!(payload.open_slot, "1");
+        assert!(payload.open_transaction.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_payload_fetches_missing_slot_keeping_hinted_blockhash() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let mut req = requirements();
+        req.extra.recent_slot = None;
+        let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1")
+            .await
+            .expect("payload with fetched slot");
+        assert_eq!(payload.open_slot, "1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_payload_errors_when_hints_absent_and_rpc_unavailable() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("fails".to_string());
+        let err = build_upto_payload(
+            &*signer,
+            &rpc,
+            &requirements_without_hints(),
+            4_102_444_800,
+            "n-1",
+        )
+        .await
+        .expect_err("no hints and no RPC must fail");
+        assert!(matches!(err, Error::Rpc(_)));
     }
 }

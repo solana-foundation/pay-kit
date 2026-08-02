@@ -40,12 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let requirements = parse_upto_challenge(&first_headers, Some(&first_body))
         .ok_or_else(|| "server did not return a supported x402 upto challenge".to_string())?;
 
-    let _rpc = RpcClient::new(rpc_url);
+    let rpc = RpcClient::new(rpc_url);
     let expires_at = now_unix() + 3600;
     let nonce = format!("upto-{}", now_unix());
-    // `openSlot` (like `recentBlockhash`) rides in the challenge requirements;
-    // the client never fetches its own slot.
-    let payment_header = build_upto_header(&signer, &requirements, expires_at, nonce).await?;
+    // `openSlot` (like `recentBlockhash`) normally rides in the challenge
+    // requirements; the RPC client only fills in whichever hint is absent.
+    let payment_header = build_upto_header(&signer, &rpc, &requirements, expires_at, nonce).await?;
 
     let paid_response = http
         .get(&target_url)
