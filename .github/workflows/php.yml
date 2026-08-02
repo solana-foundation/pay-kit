@@ -84,3 +84,41 @@ jobs:
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000
+
+  # x402 upto: PHP PayKit server (channel open + voucher settle + distribute)
+  # against the Rust upto client. Mirrors harness-kotlin-x402-upto / python
+  # focused upto legs. Needs payment-channels .so on embedded surfnet.
+  # x402-upto-basic only — zero-actual stays on rust-x402-upto (serverIds pin).
+  harness-php-x402-upto:
+    name: "Harness: PHP x402 upto server (rust client)"
+    needs: test-php
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: gmp
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "paykit-harness-bins:x402_harness_upto_client,x402_harness_upto_server"
+          cargo-cache-key: php-x402-upto
+      - name: Install PHP harness dependencies
+        working-directory: php
+        run: composer install --no-interaction --no-progress
+      - name: Build payment channels program
+        id: payment-channels
+        uses: ./.github/actions/build-payment-channels
+      - name: Run rust-x402-upto client to PHP x402 upto server
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-upto
+          MPP_HARNESS_SCENARIOS: x402-upto-basic
+          X402_HARNESS_CLIENTS: rust-x402-upto
+          X402_HARNESS_SERVERS: php-x402-upto
+          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.payment-channels.outputs.program-so }}
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

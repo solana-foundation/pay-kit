@@ -515,4 +515,16 @@ export const serverImplementations: ImplementationDefinition[] = [
     intents: ["x402-upto"],
     reportsAs: "python",
   },
+  {
+    id: "php-x402-upto",
+    label: "PHP PayKit x402 upto server",
+    role: "server",
+    // Same dual-protocol php-server binary; PAY_KIT_HARNESS_PROTOCOL=x402-upto
+    // mounts Upto\Engine (open cosign + settle_and_seal + distribute). Opt in
+    // via X402_HARNESS_SERVERS=php-x402-upto. Zero-actual stays on rust only.
+    command: ["php", "php-server/server.php"],
+    enabled: isEnabled("php-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "php",
+  },
 ];

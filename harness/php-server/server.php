@@ -38,6 +38,7 @@ use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Protocols\X402\Adapter as X402Adapter;
+use PayKit\Protocols\X402\Upto\Engine as X402UptoEngine;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
 use PayKit\Store\FileStore;
@@ -78,13 +79,16 @@ function secret_key_from_json(string $raw): string
 }
 
 // ── Detect intent ───────────────────────────────────────────────────────────
+// Modes: exact | upto | mpp. Mirrors harness/python-server protocol picker.
 
 $explicit = strtolower(optional_env('PAY_KIT_HARNESS_PROTOCOL', ''));
-$x402Active = false;
-if ($explicit === 'x402') {
-    $x402Active = true;
+$mode = 'mpp';
+if ($explicit === 'x402-upto' || $explicit === 'upto') {
+    $mode = 'upto';
+} elseif ($explicit === 'x402' || $explicit === 'x402-exact' || $explicit === 'exact') {
+    $mode = 'exact';
 } elseif ($explicit === 'mpp' || $explicit === 'charge') {
-    $x402Active = false;
+    $mode = 'mpp';
 } else {
     $x402Set = (getenv('X402_HARNESS_RPC_URL') ?: '') !== '';
     $mppSet  = (getenv('MPP_HARNESS_RPC_URL') ?: '') !== '';
@@ -92,20 +96,35 @@ if ($explicit === 'x402') {
         fwrite(STDERR, "set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL\n");
         exit(2);
     }
-    $x402Active = $x402Set;
+    $mode = $x402Set ? 'exact' : 'mpp';
 }
+$x402Active = $mode === 'exact' || $mode === 'upto';
+$uptoActive = $mode === 'upto';
 
 // ── Per-protocol env read ───────────────────────────────────────────────────
 
 if ($x402Active) {
     $rpcUrl       = require_env('X402_HARNESS_RPC_URL');
     $payTo        = require_env('X402_HARNESS_PAY_TO');
-    $facilitatorSecretJson = require_env('X402_HARNESS_FACILITATOR_SECRET_KEY');
+    // Prefer fee-payer key for upto (rent/fee seat); fall back to facilitator.
+    $feePayerEnv = getenv('X402_HARNESS_FEE_PAYER_SECRET_KEY');
+    $facilitatorSecretJson = (is_string($feePayerEnv) && $feePayerEnv !== '')
+        ? $feePayerEnv
+        : require_env('X402_HARNESS_FACILITATOR_SECRET_KEY');
     $amountUnits  = optional_env('X402_HARNESS_AMOUNT', '1000');
     $mint         = optional_env('X402_HARNESS_MINT', 'USDC');
     $networkRaw   = optional_env('X402_HARNESS_NETWORK', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1');
-    $resourcePath = optional_env('X402_HARNESS_RESOURCE_PATH', '/paid');
-    $settlementHeader = optional_env('X402_HARNESS_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
+    $resourcePath = optional_env(
+        'X402_HARNESS_RESOURCE_PATH',
+        $uptoActive ? '/usage' : '/paid',
+    );
+    $settlementHeader = optional_env(
+        'X402_HARNESS_SETTLEMENT_HEADER',
+        'x-payment-settlement-signature',
+    );
+    $priceHuman = optional_env('X402_HARNESS_PRICE', '0.10');
+    // Metered actual after open (base units). zero-actual matrix stays on rust.
+    $actualAmount = (int) optional_env('X402_HARNESS_ACTUAL_AMOUNT', '0');
 } else {
     $rpcUrl       = require_env('MPP_HARNESS_RPC_URL');
     $payTo        = require_env('MPP_HARNESS_PAY_TO');
@@ -127,9 +146,29 @@ if ($x402Active) {
 
 // ── Boot the SDK ────────────────────────────────────────────────────────────
 
-if ($x402Active) {
-    // x402 mode: build the umbrella PayKit + X402 Adapter with the
-    // facilitator key as the operator's signer.
+/** @var X402Adapter|null $adapter */
+$adapter = null;
+/** @var X402UptoEngine|null $uptoEngine */
+$uptoEngine = null;
+/** @var Gate|null $gate */
+$gate = null;
+
+if ($uptoActive) {
+    // x402 upto: payment-channel open + voucher settle via Upto\Engine.
+    $signer = Signer::json($facilitatorSecretJson);
+    $config = new Config(
+        network:     resolve_network($networkRaw),
+        accept:      [Protocol::X402],
+        stablecoins: [Stablecoin::Usdc],
+        rpcUrl:      $rpcUrl,
+        operator:    new Operator(recipient: $payTo, signer: $signer, feePayer: true),
+        mpp:         new MppConfig(challengeBindingSecret: 'unused-x402-upto'),
+        preflight:   false,
+    );
+    $uptoEngine = new X402UptoEngine($config);
+    $gate = new Gate(amount: Price::usd($priceHuman), payTo: $payTo);
+} elseif ($x402Active) {
+    // x402 exact: umbrella PayKit + X402 Adapter with facilitator as operator.
     $signer = Signer::json($facilitatorSecretJson);
     $client = new PayKit(new Config(
         network:     resolve_network($networkRaw),
@@ -307,12 +346,17 @@ if (!is_string($name)) {
 }
 $port = (int) substr($name, strrpos($name, ':') + 1);
 
+$capability = match ($mode) {
+    'upto'  => 'upto',
+    'exact' => 'exact',
+    default => 'charge',
+};
 fwrite(STDOUT, json_encode([
     'type'           => 'ready',
     'implementation' => 'php',
     'role'           => 'server',
     'port'           => $port,
-    'capabilities'   => [$x402Active ? 'exact' : 'charge'],
+    'capabilities'   => [$capability],
 ], JSON_THROW_ON_ERROR) . "\n");
 fflush(STDOUT);
 
@@ -353,8 +397,68 @@ while (is_resource($listener)) {
             continue;
         }
 
-        if ($x402Active) {
-            // x402 path through the umbrella adapter.
+        if ($uptoActive) {
+            // x402 upto: challenge → open (cosign+broadcast) → settle → distribute.
+            assert($uptoEngine instanceof X402UptoEngine && $gate instanceof Gate);
+            $psrReq = psr7_from_socket($req);
+            $sig = $req['headers']['payment-signature'] ?? '';
+            $requirements = $uptoEngine->acceptsEntry($gate, $psrReq);
+            if ($sig === '') {
+                $challengeHeaders = $uptoEngine->challengeHeaders($gate, $psrReq);
+                write_response($conn, 402, array_merge(['content-type' => 'application/json'], $challengeHeaders), [
+                    'error'    => 'payment_required',
+                    'resource' => $req['path'],
+                    'accepts'  => [$requirements],
+                ]);
+            } else {
+                try {
+                    $verified = $uptoEngine->verifyOpenAndBroadcast($psrReq, $requirements);
+                    $expiresAt = (int) ($verified['payload']['expiresAt'] ?? (time() + 300));
+                    $settleSig = $uptoEngine->settleAndSealAndBroadcast(
+                        $verified['channelId'],
+                        $actualAmount,
+                        $verified['maxBaseUnits'],
+                        $expiresAt,
+                    );
+                    $extra = is_array($requirements['extra'] ?? null) ? $requirements['extra'] : [];
+                    $tokenProgram = (string) ($extra['tokenProgram'] ?? \PayKit\PayCore\PaymentChannels::tokenProgramId());
+                    $uptoEngine->distributeAndBroadcast(
+                        $verified['channelId'],
+                        $verified['payer'],
+                        (string) $requirements['asset'],
+                        $tokenProgram,
+                    );
+                    $settlementBody = [
+                        'success'     => true,
+                        'transaction' => $settleSig,
+                        'network'     => (string) ($requirements['network'] ?? ''),
+                        'amount'      => (string) $actualAmount,
+                        'payer'       => $verified['payer'],
+                    ];
+                    $headers = [
+                        'content-type'     => 'application/json',
+                        'payment-response' => base64_encode(
+                            json_encode($settlementBody, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                        ),
+                        $settlementHeader  => $settleSig,
+                    ];
+                    write_response($conn, 200, $headers, [
+                        'ok'          => true,
+                        'paid'        => true,
+                        'protocol'    => 'x402-upto',
+                        'transaction' => $settleSig,
+                    ]);
+                } catch (Throwable $e) {
+                    fwrite(STDERR, 'harness php upto error: ' . $e->getMessage() . "\n");
+                    write_response($conn, 402, ['content-type' => 'application/json'], [
+                        'error'   => 'invalid_proof',
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
+        } elseif ($x402Active) {
+            // x402 exact path through the umbrella adapter.
+            assert($adapter instanceof X402Adapter && $gate instanceof Gate);
             $psrReq = psr7_from_socket($req);
             $sig = $req['headers']['payment-signature'] ?? '';
             if ($sig === '') {
