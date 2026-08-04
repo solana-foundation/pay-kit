@@ -667,6 +667,78 @@ test('schema transform: rejects amount with too many decimal places', () => {
     })).toThrow();
 });
 
+test('schema transform: rejects negative amounts', () => {
+    const schema = chargeMethod.schema.request as any;
+    expect(() => schema.parse({
+        amount: '-1.5',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    })).toThrow(/non-negative/);
+});
+
+test('schema transform: rejects non-numeric amount strings', () => {
+    const schema = chargeMethod.schema.request as any;
+    expect(() => schema.parse({
+        amount: 'abc',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    })).toThrow(/non-negative/);
+});
+
+test('schema transform: rejects empty string amount', () => {
+    const schema = chargeMethod.schema.request as any;
+    expect(() => schema.parse({
+        amount: '',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    })).toThrow(/non-negative/);
+});
+
+test('schema transform: rejects malformed amounts with multiple dots', () => {
+    const schema = chargeMethod.schema.request as any;
+    expect(() => schema.parse({
+        amount: '1.2.3',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    })).toThrow(/non-negative/);
+});
+
+test('schema transform: handles decimals=0 correctly', () => {
+    const schema = chargeMethod.schema.request as any;
+    const result = schema.parse({
+        amount: '42',
+        decimals: 0,
+        currency: 'sol',
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    });
+
+    // With 0 decimals, amount is already in atomic units
+    expect(result.amount).toBe('42');
+});
+
+test('schema transform: handles large amounts without precision loss', () => {
+    const schema = chargeMethod.schema.request as any;
+    const result = schema.parse({
+        amount: '999999999999.999999',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    });
+
+    // 999999999999.999999 * 10^6 = 999999999999999999
+    expect(result.amount).toBe('999999999999999999');
+});
+
 // ══════════════════════════════════════════════════════════════════════
 // Push mode (type="signature")
 // ══════════════════════════════════════════════════════════════════════

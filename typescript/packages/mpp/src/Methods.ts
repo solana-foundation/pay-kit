@@ -4,13 +4,24 @@ import { Method, z } from 'mppx';
  * Converts a display-unit amount string to its atomic-unit string representation.
  * Used by the schema transform to convert amounts at the input boundary.
  *
+ * Validates that the input is a well-formed non-negative decimal number.
+ * Rejects negative values, non-numeric strings, and malformed input.
+ *
  * @example parseUnits('0.01', 6) → '10000'
  * @example parseUnits('1.5', 9) → '1500000000'
+ * @example parseUnits('100', 6) → '100000000'
  */
 function parseUnits(value: string, decimals: number): string {
-    const [integer = '0', fraction = ''] = value.split('.');
+    if (!/^[0-9]+(?:\.[0-9]+)?$/.test(value)) {
+        throw new Error(
+            `Invalid amount "${value}": must be a non-negative decimal number (e.g., "0.01", "100")`,
+        );
+    }
+    const [integer, fraction = ''] = value.split('.');
     if (fraction.length > decimals) {
-        throw new Error(`Amount "${value}" has more decimal places than allowed (${decimals})`);
+        throw new Error(
+            `Amount "${value}" has more decimal places than allowed (${decimals})`,
+        );
     }
     const paddedFraction = fraction.padEnd(decimals, '0');
     // Strip leading zeros to produce a clean numeric string.
