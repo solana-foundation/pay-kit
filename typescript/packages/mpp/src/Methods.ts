@@ -1,5 +1,23 @@
 import { Method, z } from 'mppx';
 
+/**
+ * Converts a display-unit amount string to its atomic-unit string representation.
+ * Used by the schema transform to convert amounts at the input boundary.
+ *
+ * @example parseUnits('0.01', 6) → '10000'
+ * @example parseUnits('1.5', 9) → '1500000000'
+ */
+function parseUnits(value: string, decimals: number): string {
+    const [integer = '0', fraction = ''] = value.split('.');
+    if (fraction.length > decimals) {
+        throw new Error(`Amount "${value}" has more decimal places than allowed (${decimals})`);
+    }
+    const paddedFraction = fraction.padEnd(decimals, '0');
+    // Strip leading zeros to produce a clean numeric string.
+    const raw = (integer + paddedFraction).replace(/^0+/, '') || '0';
+    return raw;
+}
+
 const sessionVoucherSigner = z.enum(['client', 'operator']);
 const sessionAuthentication = z.object({
     challengeId: z.string(),
@@ -72,47 +90,79 @@ export const charge = Method.from({
                 type: z.string(),
             }),
         },
-        request: z.object({
-            /** Amount in smallest unit (lamports for SOL, base units for SPL tokens). */
-            amount: z.string(),
-            /** Identifies the unit for amount. "sol" (lowercase) for native SOL, or the token mint address for SPL tokens. */
-            currency: z.string(),
-            /** Human-readable memo describing the resource or service being paid for. */
-            description: z.optional(z.string()),
-            /** Merchant's reference (e.g., order ID, invoice number) for reconciliation. */
-            externalId: z.optional(z.string()),
-            methodDetails: z.object({
-                /** Token decimals (required for SPL token transfers). */
+        request: z.pipe(
+            z.object({
+                /**
+                 * Payment amount. When `decimals` is present, this is in display units
+                 * (e.g., "0.01" for 1 cent of a 6-decimal token) and is converted to
+                 * atomic units internally. When `decimals` is absent, this is treated
+                 * as atomic units directly (backward-compatible legacy behavior).
+                 */
+                amount: z.string(),
+                /** Identifies the unit for amount. "sol" (lowercase) for native SOL, or the token mint address for SPL tokens. */
+                currency: z.string(),
+                /**
+                 * Token decimals (e.g., 9 for SOL, 6 for USDC). When present, `amount`
+                 * and split amounts are interpreted as display units and converted to
+                 * atomic at the schema boundary (like tempo/evm methods). When absent,
+                 * amounts pass through as-is for backward compatibility.
+                 */
                 decimals: z.optional(z.number()),
-                /** If true, server pays transaction fees. Client must use the server's feePayerKey. */
-                feePayer: z.optional(z.boolean()),
-                /** Server's base58-encoded public key for fee payment. Present when feePayer is true. */
-                feePayerKey: z.optional(z.string()),
-                /** Solana network: mainnet, devnet, or localnet. */
-                network: z.optional(z.string()),
-                /** Server-provided base58-encoded recent blockhash. Saves the client an RPC round-trip. */
-                recentBlockhash: z.optional(z.string()),
-                /** Additional payment splits (max 8). Same asset as primary payment. */
-                splits: z.optional(
-                    z.array(
-                        z.object({
-                            /** Amount in base units (same asset as primary). */
-                            amount: z.string(),
-                            /** If true, the split recipient ATA must be created idempotently before payment. */
-                            ataCreationRequired: z.optional(z.boolean()),
-                            /** Optional memo for this split (max 566 bytes). */
-                            memo: z.optional(z.string()),
-                            /** Base58-encoded recipient of this split. */
-                            recipient: z.string(),
-                        }),
+                /** Human-readable memo describing the resource or service being paid for. */
+                description: z.optional(z.string()),
+                /** Merchant's reference (e.g., order ID, invoice number) for reconciliation. */
+                externalId: z.optional(z.string()),
+                methodDetails: z.object({
+                    /** Token decimals (required for SPL token transfers). */
+                    decimals: z.optional(z.number()),
+                    /** If true, server pays transaction fees. Client must use the server's feePayerKey. */
+                    feePayer: z.optional(z.boolean()),
+                    /** Server's base58-encoded public key for fee payment. Present when feePayer is true. */
+                    feePayerKey: z.optional(z.string()),
+                    /** Solana network: mainnet, devnet, or localnet. */
+                    network: z.optional(z.string()),
+                    /** Server-provided base58-encoded recent blockhash. Saves the client an RPC round-trip. */
+                    recentBlockhash: z.optional(z.string()),
+                    /** Additional payment splits (max 8). Same asset as primary payment. */
+                    splits: z.optional(
+                        z.array(
+                            z.object({
+                                /** Amount in same unit as top-level `amount` (display when decimals present, atomic otherwise). */
+                                amount: z.string(),
+                                /** If true, the split recipient ATA must be created idempotently before payment. */
+                                ataCreationRequired: z.optional(z.boolean()),
+                                /** Optional memo for this split (max 566 bytes). */
+                                memo: z.optional(z.string()),
+                                /** Base58-encoded recipient of this split. */
+                                recipient: z.string(),
+                            }),
+                        ),
                     ),
-                ),
-                /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from the currency mint. */
-                tokenProgram: z.optional(z.string()),
+                    /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from the currency mint. */
+                    tokenProgram: z.optional(z.string()),
+                }),
+                /** Base58-encoded recipient public key. */
+                recipient: z.string(),
             }),
-            /** Base58-encoded recipient public key. */
-            recipient: z.string(),
-        }),
+            z.transform(({ amount, decimals, methodDetails, ...rest }) => ({
+                ...rest,
+                // Convert display units to atomic when decimals is provided;
+                // pass through as-is for backward-compatible atomic amounts.
+                amount: decimals !== undefined ? parseUnits(amount, decimals) : amount,
+                methodDetails: {
+                    ...methodDetails,
+                    // Ensure splits are also converted when decimals is present.
+                    ...(methodDetails.splits && decimals !== undefined
+                        ? {
+                              splits: methodDetails.splits.map(split => ({
+                                  ...split,
+                                  amount: parseUnits(split.amount, decimals),
+                              })),
+                          }
+                        : {}),
+                },
+            })),
+        ),
     },
 });
 
