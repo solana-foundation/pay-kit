@@ -30,6 +30,7 @@ import {
     type Blockhash,
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
+import { charge as chargeMethod } from '../Methods.js';
 import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
@@ -551,6 +552,119 @@ test('request() returns the challenge request when credential is present', async
     });
 
     expect(result).toEqual(challengeRequest);
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// Display-unit amount conversion (decimals field — schema transform)
+// ══════════════════════════════════════════════════════════════════════
+
+test('schema transform: converts display-unit amount to atomic when decimals is provided', () => {
+    const schema = chargeMethod.schema.request as any;
+    const result = schema.parse({
+        amount: '0.01',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    });
+
+    // 0.01 * 10^6 = 10000
+    expect(result.amount).toBe('10000');
+});
+
+test('schema transform: passes through atomic amount when decimals is absent', () => {
+    const schema = chargeMethod.schema.request as any;
+    const result = schema.parse({
+        amount: '1000000',
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    });
+
+    // No decimals — amount passes through unchanged (backward compat)
+    expect(result.amount).toBe('1000000');
+});
+
+test('schema transform: converts whole-number display amounts', () => {
+    const schema = chargeMethod.schema.request as any;
+    const result = schema.parse({
+        amount: '100',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    });
+
+    // 100 * 10^6 = 100000000
+    expect(result.amount).toBe('100000000');
+});
+
+test('schema transform: converts native SOL display amounts (decimals=9)', () => {
+    const schema = chargeMethod.schema.request as any;
+    const result = schema.parse({
+        amount: '1.5',
+        decimals: 9,
+        currency: 'sol',
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    });
+
+    // 1.5 SOL = 1_500_000_000 lamports
+    expect(result.amount).toBe('1500000000');
+});
+
+test('schema transform: converts split amounts when decimals is present', () => {
+    const schema = chargeMethod.schema.request as any;
+    const PLATFORM = 'BZu7Jjt4Z3Ek6bQZUoiNfoDyTrXJmVmMY4gSvQS2hhJ';
+    const result = schema.parse({
+        amount: '1.5',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: {
+            network: 'devnet',
+            splits: [
+                { recipient: PLATFORM, amount: '0.5' },
+            ],
+        },
+    });
+
+    // Top-level: 1.5 * 10^6 = 1500000
+    expect(result.amount).toBe('1500000');
+    // Split: 0.5 * 10^6 = 500000
+    expect(result.methodDetails.splits[0].amount).toBe('500000');
+    expect(result.methodDetails.splits[0].recipient).toBe(PLATFORM);
+});
+
+test('schema transform: does not convert splits when decimals is absent', () => {
+    const schema = chargeMethod.schema.request as any;
+    const PLATFORM = 'BZu7Jjt4Z3Ek6bQZUoiNfoDyTrXJmVmMY4gSvQS2hhJ';
+    const result = schema.parse({
+        amount: '1500000',
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: {
+            network: 'devnet',
+            splits: [
+                { recipient: PLATFORM, amount: '500000' },
+            ],
+        },
+    });
+
+    // No decimals — both pass through unchanged
+    expect(result.amount).toBe('1500000');
+    expect(result.methodDetails.splits[0].amount).toBe('500000');
+});
+
+test('schema transform: rejects amount with too many decimal places', () => {
+    const schema = chargeMethod.schema.request as any;
+    expect(() => schema.parse({
+        amount: '0.0000001',
+        decimals: 6,
+        currency: USDC_MINT,
+        recipient: RECIPIENT,
+        methodDetails: { network: 'devnet' },
+    })).toThrow();
 });
 
 // ══════════════════════════════════════════════════════════════════════
