@@ -430,9 +430,11 @@ export function collectProtocolCases(): ProtocolCase[] {
 // end-to-end against the TypeScript reference adapter by
 // `test/protocol-conformance.test.ts`, and no adapter implements
 // `expires.parse` yet — folding these in would add 116 red cases to a green
-// suite. Per-language `expires` tests call this collector directly; when the
-// adapters implement the op, absorbing it is a one-line spread into `cases`
-// above.
+// suite. Nothing calls this collector today: each SDK's `expires` test loads
+// the corpus JSON itself and applies this same `applies_to == "date-time"`
+// filter independently. The collector is the TypeScript side of that contract,
+// kept for the day an adapter implements `expires.parse` — at which point
+// absorbing it is a one-line spread into `cases` above.
 export function collectExpiresCases(): ProtocolCase[] {
   const cases: ProtocolCase[] = [];
 

@@ -25,6 +25,11 @@ import {
 } from "../src/conformance/contract-schema";
 import { discoverRunners } from "../src/conformance/runners";
 import { parseLanguageAllowlist } from "../src/conformance/select";
+import {
+  EXPIRES_APPLIES_TO,
+  collectExpiresCases,
+  loadExpiresRfc3339,
+} from "../src/protocol/vectors";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -359,4 +364,103 @@ describe("cross-SDK conformance vectors", () => {
       }
     });
   }
+});
+
+// ── RFC 3339 `expires` corpus collector (issue #111) ──
+//
+// `collectExpiresCases()` (harness/src/protocol/vectors.ts) is the TypeScript
+// side of the cross-SDK `expires` contract. No adapter implements
+// `expires.parse` yet, so its cases sit deliberately outside
+// `collectProtocolCases()` — folding them into the protocol driver would add
+// one red case per date-time vector to a green suite. That also means nothing
+// dispatches the collector, so its `applies_to` filter and its ACCEPT/REJECT
+// mapping would regress silently. They are asserted directly here instead.
+//
+// This block spawns no runner and contributes no vector to the driver above.
+// It reads the vendored corpus and checks the collector's output against it.
+// Every count is derived at runtime — from the scenario list and from the
+// corpus's own `counts` block — so a corpus edit moves the expectation with it
+// rather than turning this red for the wrong reason.
+describe("mpp-protocol RFC 3339 expires corpus collector", () => {
+  const corpus = loadExpiresRfc3339();
+  const scenarios = corpus.scenarios;
+  const dateTime = scenarios.filter(
+    (scenario) => scenario.applies_to === EXPIRES_APPLIES_TO,
+  );
+  const cases = collectExpiresCases();
+
+  // The corpus states its own tally; cross-check the filter against both that
+  // and a recount, so a scenario added without updating `counts` is caught too.
+  const declared = (
+    corpus as unknown as {
+      counts: {
+        scenarios_total: number;
+        by_applies_to: Record<string, number>;
+      };
+    }
+  ).counts;
+
+  it("admits exactly the date-time slice", () => {
+    expect(scenarios).toHaveLength(declared.scenarios_total);
+    expect(dateTime).toHaveLength(declared.by_applies_to[EXPIRES_APPLIES_TO]);
+    expect(cases).toHaveLength(dateTime.length);
+    expect(cases.map((testCase) => testCase.scenario).sort()).toEqual(
+      dateTime.map((scenario) => scenario.name).sort(),
+    );
+  });
+
+  it("admits strictly fewer than the whole corpus", () => {
+    // A filter that silently degrades to pass-everything fails here, before it
+    // can feed `full-date` / `full-time` verdicts to an `expires` parser.
+    expect(cases.length).toBeGreaterThan(0);
+    expect(cases.length).toBeLessThan(scenarios.length);
+  });
+
+  it("tags every admitted case with the expires.parse op", () => {
+    for (const testCase of cases) {
+      expect(testCase.op, testCase.scenario).toBe("expires.parse");
+    }
+  });
+
+  it("maps every ACCEPT and REJECT verdict faithfully", () => {
+    const byScenario = new Map(cases.map((testCase) => [testCase.scenario, testCase]));
+
+    let accepts = 0;
+    let rejects = 0;
+    for (const scenario of dateTime) {
+      const testCase = byScenario.get(scenario.name);
+      expect(testCase, `no case emitted for ${scenario.name}`).toBeDefined();
+      if (!testCase) continue;
+
+      const parse = scenario.tests.parse;
+      if (parse === true) {
+        accepts += 1;
+        expect(testCase.expectSuccess, scenario.name).toBe(true);
+        if (testCase.expectSuccess) {
+          expect(testCase.golden, scenario.name).toEqual({ valid: true });
+        }
+        expect(testCase.input, scenario.name).toEqual({ expires: scenario.input });
+        continue;
+      }
+
+      expect(
+        typeof parse === "object" && parse.success === false,
+        `${scenario.name}: unexpected tests.parse encoding`,
+      ).toBe(true);
+      if (typeof parse !== "object") continue;
+
+      rejects += 1;
+      expect(testCase.expectSuccess, scenario.name).toBe(false);
+      if (!testCase.expectSuccess) {
+        expect(testCase.errorType, scenario.name).toBe(parse.error_type);
+      }
+      expect(testCase.input, scenario.name).toEqual({ expires: scenario.input });
+    }
+
+    // Both verdicts must actually be represented: a mapping that collapsed one
+    // direction into the other would otherwise pass every assertion above.
+    expect(accepts).toBeGreaterThan(0);
+    expect(rejects).toBeGreaterThan(0);
+    expect(accepts + rejects).toBe(dateTime.length);
+  });
 });

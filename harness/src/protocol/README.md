@@ -69,8 +69,11 @@ only the 116 `applies_to == "date-time"` vectors, because `full-date` and
 
 No adapter implements `expires.parse` yet, so these cases are deliberately
 **not** in `collectProtocolCases()` — folding them in would turn the green
-reference suite red. Per-language `expires` tests call `collectExpiresCases()`
-directly.
+reference suite red. Nothing calls `collectExpiresCases()` today: each SDK's
+`expires` test loads the corpus JSON itself and applies the same
+`applies_to == "date-time"` filter independently. The collector is the
+TypeScript side of that contract, kept for the day an adapter implements the
+op.
 
 ## Running
 
