@@ -440,3 +440,90 @@ test('#10 createCredential rejects a network that does not match expectedNetwork
     });
     await expect(method.createCredential({ challenge })).rejects.toThrow(/does not match the expected network/);
 });
+
+// ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+//
+// Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
+// under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
+// REJECT verdict against the same vectors, so a divergence between two SDKs
+// shows up as a failing test in exactly one of them rather than as silence.
+//
+// Only the `applies_to == "date-time"` slice runs here. The corpus also carries
+// `full-date` and `full-time` scenarios, which answer a different question than
+// an `expires` field asks — `1963-06-19` is a valid RFC 3339 `full-date` and no
+// `date-time` parser should accept it. Selection is on the first-class
+// `applies_to` field, never on a name prefix or a description string.
+//
+// WHAT THIS ASSERTS, PRECISELY. This package has no RFC 3339 parser module.
+// The two expiry call sites delegate the whole parse to the JS engine:
+//
+//   client/Charge.ts:404   assertChallengeNotExpired
+//                            -> new Date(expires).getTime(); NaN => "malformed"
+//   server/Session.ts:347  assertChallengeOpenNotExpired
+//                            -> Date.parse(expires);          NaN => "must be an RFC3339 timestamp"
+//
+// Both guards are module-private and neither package exposes a public surface
+// that returns a parse verdict, so this test evaluates the same two engine
+// expressions those call sites evaluate. The verdict source is therefore the
+// *delegated* parser (the engine), not an SDK-owned parser — a real
+// distinction, and the reason `expires` conformance here is a property of the
+// Node/V8 version as much as of this SDK. If a parser is ever exported, repoint
+// `verdicts` at it and the vectors carry over unchanged.
+//
+// Both call sites are checked, because they are two different expressions and a
+// divergence between them would itself be a client/server protocol bug.
+
+import { readFileSync } from 'node:fs';
+
+interface ConformanceScenario {
+    name: string;
+    description: string;
+    applies_to: string;
+    input: string;
+    tests: { parse: true | { success: boolean } };
+}
+
+const CORPUS_URL = new URL(
+    '../../../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json',
+    import.meta.url,
+);
+
+const corpus = JSON.parse(readFileSync(CORPUS_URL, 'utf8')) as { scenarios: ConformanceScenario[] };
+const dateTimeVectors = corpus.scenarios.filter((scenario) => scenario.applies_to === 'date-time');
+
+// `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success": false, …}}` is
+// REJECT. Identical to the encoding the other vector files in the same
+// directory use.
+const expectsAccept = (scenario: ConformanceScenario) => scenario.tests.parse === true;
+
+// Guard the filter itself so a regression in it cannot go silent.
+test('RFC 3339 corpus admits only the date-time slice', () => {
+    expect(dateTimeVectors.length).toBe(
+        corpus.scenarios.filter((scenario) => scenario.applies_to === 'date-time').length,
+    );
+    expect(dateTimeVectors.length).toBeLessThan(corpus.scenarios.length);
+});
+
+for (const scenario of dateTimeVectors) {
+    test(`RFC 3339 corpus / charge call site / ${scenario.name}`, () => {
+        // client/Charge.ts:404
+        const accepted = !Number.isNaN(new Date(scenario.input).getTime());
+        expect(
+            accepted,
+            `${scenario.name} (${scenario.description}): input ${JSON.stringify(scenario.input)} — ` +
+                `corpus expects ${expectsAccept(scenario) ? 'ACCEPT' : 'REJECT'}, ` +
+                `new Date(...).getTime() reports ${accepted ? 'ACCEPT' : 'REJECT'}`,
+        ).toBe(expectsAccept(scenario));
+    });
+
+    test(`RFC 3339 corpus / session call site / ${scenario.name}`, () => {
+        // server/Session.ts:347
+        const accepted = !Number.isNaN(Date.parse(scenario.input));
+        expect(
+            accepted,
+            `${scenario.name} (${scenario.description}): input ${JSON.stringify(scenario.input)} — ` +
+                `corpus expects ${expectsAccept(scenario) ? 'ACCEPT' : 'REJECT'}, ` +
+                `Date.parse(...) reports ${accepted ? 'ACCEPT' : 'REJECT'}`,
+        ).toBe(expectsAccept(scenario));
+    });
+}

@@ -5,6 +5,7 @@
 # (canonical JSON) and RFC 3339 (expires) live in dedicated files.
 # Battle-tested vector imports are tracked separately (see follow-up
 # issue referenced on the same PR thread).
+require "json"
 require_relative "../test_helper"
 
 class ExpiresRfc3339Test < Minitest::Test
@@ -80,5 +81,60 @@ class ExpiresRfc3339Test < Minitest::Test
     # seconds = 61 stays rejected.
     c7 = PayKit::Protocols::Mpp::Protocol::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:00:61Z")
     assert c7.expired?
+  end
+end
+
+# ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+#
+# Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
+# under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
+# REJECT verdict against the same vectors, so a divergence between two SDKs
+# shows up as a failing test in exactly one of them rather than as silence.
+#
+# Only the `applies_to == "date-time"` slice runs here. The corpus also carries
+# `full-date` and `full-time` scenarios, which answer a different question than
+# an `expires` field asks — `1963-06-19` is a valid RFC 3339 `full-date` and no
+# `date-time` parser should accept it. Selection is on the first-class
+# `applies_to` field, never on a name prefix or a description string.
+#
+# The verdict comes straight out of `PayCore::Rfc3339Parser.parse`, which
+# returns a `Time` on success and `nil` on any parse failure. That is the
+# parser `Challenge#expired?` delegates to, so it is the grammar an `expires`
+# field is actually checked against.
+class ExpiresRfc3339CorpusTest < Minitest::Test
+  CORPUS_PATH = File.expand_path(
+    "../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json", __dir__
+  )
+
+  def self.date_time_vectors
+    corpus = JSON.parse(File.read(CORPUS_PATH))
+    corpus.fetch("scenarios").select { |scenario| scenario["applies_to"] == "date-time" }
+  end
+
+  DATE_TIME_VECTORS = date_time_vectors.freeze
+
+  # Guard the filter itself so a regression in it cannot go silent.
+  def test_corpus_admits_only_the_date_time_slice
+    all = JSON.parse(File.read(CORPUS_PATH)).fetch("scenarios")
+    assert_equal all.count { |s| s["applies_to"] == "date-time" }, DATE_TIME_VECTORS.length
+    assert_operator DATE_TIME_VECTORS.length, :<, all.length
+  end
+
+  DATE_TIME_VECTORS.each do |scenario|
+    # `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success": false, …}}`
+    # is REJECT. Identical to the encoding the other vector files in the same
+    # directory use.
+    expect_accept = scenario.dig("tests", "parse") == true
+
+    define_method(:"test_corpus_#{scenario.fetch("name")}") do
+      parsed = ::PayCore::Rfc3339Parser.parse(scenario.fetch("input"))
+      accepted = !parsed.nil?
+      assert_equal expect_accept, accepted,
+        format(
+          "%s (%s): input %p — corpus expects %s, Rfc3339Parser.parse reports %s",
+          scenario.fetch("name"), scenario.fetch("description"), scenario.fetch("input"),
+          expect_accept ? "ACCEPT" : "REJECT", accepted ? "ACCEPT" : "REJECT"
+        )
+    end
   end
 end
