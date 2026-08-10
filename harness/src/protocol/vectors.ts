@@ -15,6 +15,17 @@ export const VECTORS_DIR = join(here, "..", "..", "vectors", "mpp-protocol");
 
 // Canonical adapter-ABI operation identifiers. These match
 // `conformance/operations.json` in mpp-tools verbatim.
+//
+// DIVERGENCE (this PR): `expires.parse` is the one member below that is NOT
+// in upstream `conformance/operations.json`. It is proposed here, by this PR,
+// to give the RFC 3339 `expires` corpus (issue #111) an operation to hang
+// from; `operations.json` is not vendored in this repo (it lives upstream in
+// tempoxyz/mpp-tools), so nothing here can be checked against it. The
+// maintainer may want the operation added upstream, may want it named
+// differently, or may want it kept as a pay-kit-local extension — all three
+// are their call, and the name is trivially renameable (this union, the
+// OPERATION_COMPARISON entry below, and `collectExpiresCases`). The rest of
+// the union does still match upstream verbatim.
 export type ProtocolOperation =
   | "challenge.parse"
   | "challenge.format"
@@ -24,7 +35,8 @@ export type ProtocolOperation =
   | "receipt.format"
   | "base64url.encode"
   | "base64url.decode"
-  | "challenge.id";
+  | "challenge.id"
+  | "expires.parse";
 
 // Comparison discipline per operation, taken from operations.json:
 //   exact    -> result string/object must equal the golden byte-for-byte
@@ -42,6 +54,14 @@ export const OPERATION_COMPARISON: Record<ProtocolOperation, ComparisonMode> = {
   "base64url.encode": "exact",
   "base64url.decode": "exact",
   "challenge.id": "exact",
+  // `exact`: an `expires.parse` success result is the fixed literal
+  // `{ valid: true }` (see ExpiresScenario below) — there is no header
+  // whitespace, param order, or request encoding for `semantic` to
+  // neutralize. `semantic` in this file is also *implemented* via
+  // `reparseWith`, which needs a paired `*.format` op; `expires.parse` has
+  // no `expires.format` counterpart, so `semantic` is not mechanically
+  // available to it. Same shape as base64url / challenge.id above.
+  "expires.parse": "exact",
 };
 
 // ── Raw vector file shapes ──
@@ -132,6 +152,38 @@ export type ChallengeIdScenario = {
   expected: string;
 };
 
+// RFC 3339 `expires` scenario (issue #111). Same `{ name, description, tags,
+// tests }` spine as every other scenario in this directory; the input field is
+// named for its domain (`input`, a single untrusted string) the way header
+// scenarios name theirs `wire` and base64url names its `decoded` / `encoded`.
+//
+// `applies_to` is load-bearing and MUST be read before `tests.parse`. The
+// corpus carries vectors for three different RFC 3339 productions —
+// `date-time`, `full-date`, `full-time` — and a verdict only means what it
+// says inside its own production. MPP `expires` holds a `date-time`; a
+// `full-date` ACCEPT such as `1963-06-19` is a correct statement about a
+// different production and is NOT an instruction to accept that value as an
+// `expires`. `collectExpiresCases` filters on this field for exactly that
+// reason. See the corpus's own `scope` block.
+//
+// No `object` golden is carried for an ACCEPT: the corpus is deliberately a
+// verdict corpus, not an instant-normalization corpus (leap seconds have no
+// representable instant in most date libraries and sub-nanosecond precision
+// truncates differently per language). #111 asks for ACCEPT/REJECT parity
+// across SDKs and nothing more.
+export type ExpiresScenario = {
+  name: string;
+  description?: string;
+  tags?: string[];
+  // Which RFC 3339 production this scenario's verdict answers.
+  applies_to: "date-time" | "full-date" | "full-time";
+  // The single untrusted string under test.
+  input: string;
+  source?: string;
+  provenance?: Record<string, unknown>;
+  tests: TestFlags;
+};
+
 type VectorFile<S> = {
   version: string;
   spec_ref: string;
@@ -163,6 +215,14 @@ export function loadBase64Url(): VectorFile<Base64Scenario> {
 export function loadChallengeId(): VectorFile<ChallengeIdScenario> {
   return load<ChallengeIdScenario>("challenge-id.json");
 }
+
+export function loadExpiresRfc3339(): VectorFile<ExpiresScenario> {
+  return load<ExpiresScenario>("expires-rfc3339-corpus.json");
+}
+
+// The RFC 3339 production MPP `expires` holds. Everything else in the corpus
+// answers a different question than an `expires` field asks.
+export const EXPIRES_APPLIES_TO = "date-time";
 
 // A single dispatchable unit of work derived from a vector scenario: the
 // op to run, the adapter input envelope, and either the golden success
@@ -333,6 +393,71 @@ export function collectProtocolCases(): ProtocolCase[] {
       expectSuccess: true,
       golden: { id: s.expected },
     });
+  }
+
+  return cases;
+}
+
+// Expand the RFC 3339 `expires` corpus into `expires.parse` cases (issue
+// #111: assert ACCEPT and REJECT outcomes match across SDKs for each vector).
+//
+// FILTER. Only `applies_to === "date-time"` vectors are admitted. The corpus
+// ships 228 scenarios covering three RFC 3339 productions; 112 of them answer
+// `full-date` / `full-time` questions, and 29 of those carry ACCEPT for inputs
+// no `expires` parser may accept (`1963-06-19`, `08:30:06Z`, ...). Running the
+// unfiltered file against an `expires` parser produces failures that are not
+// defects. The filter is on the first-class `applies_to` field — never on a
+// name prefix, a description string, or any other heuristic.
+//
+// ABI shape, PROPOSED BY THIS PR — the maintainer should overrule any of it:
+//   input   : { expires: "<the untrusted string>" }
+//             (mirrors `{ header }` / `{ text }`: the field is named for what
+//             it holds)
+//   success : { valid: true }
+//             The corpus supplies no golden parsed value on purpose, so the
+//             success result carries the verdict itself rather than a
+//             normalized instant. Compared `exact` (see OPERATION_COMPARISON).
+//   failure : error_type "parse_error"
+//             NOT a new taxonomy: `parse_error` is the only `error_type` value
+//             that appears anywhere in this vectors directory (24/24
+//             occurrences), it is the documented vocabulary for `.parse` ops
+//             in `harness/src/protocol/README.md`, and the TypeScript
+//             reference runner already maps any `*.parse` throw to it
+//             (`runners/typescript.ts`, catch block). The corpus encodes it
+//             directly in each REJECT scenario's `tests.parse`.
+//
+// Deliberately NOT folded into `collectProtocolCases()`. That list is driven
+// end-to-end against the TypeScript reference adapter by
+// `test/protocol-conformance.test.ts`, and no adapter implements
+// `expires.parse` yet — folding these in would add 116 red cases to a green
+// suite. Per-language `expires` tests call this collector directly; when the
+// adapters implement the op, absorbing it is a one-line spread into `cases`
+// above.
+export function collectExpiresCases(): ProtocolCase[] {
+  const cases: ProtocolCase[] = [];
+
+  for (const s of loadExpiresRfc3339().scenarios) {
+    if (s.applies_to !== EXPIRES_APPLIES_TO) continue;
+
+    const input = { expires: s.input };
+    const parseErr = expectsError(s.tests.parse);
+    if (parseErr) {
+      cases.push({
+        op: "expires.parse",
+        scenario: s.name,
+        input,
+        expectSuccess: false,
+        errorType: parseErr,
+      });
+    } else if (expectsSuccess(s.tests.parse)) {
+      cases.push({
+        op: "expires.parse",
+        scenario: s.name,
+        input,
+        expectSuccess: true,
+        golden: { valid: true },
+      });
+    }
   }
 
   return cases;

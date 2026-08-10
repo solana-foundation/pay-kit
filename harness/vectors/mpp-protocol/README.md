@@ -1,5 +1,11 @@
 # MPP protocol conformance vectors (canonical)
 
+> **Two provenances live in this directory.** Every file except
+> `expires-rfc3339-corpus.json` is imported verbatim from `tempoxyz/mpp-tools`
+> and is described immediately below. `expires-rfc3339-corpus.json` is a
+> separate import with its own upstreams and its own licence files — see
+> [RFC 3339 `expires` corpus](#rfc-3339-expires-corpus).
+
 These JSON vector files are **imported verbatim** from
 [`tempoxyz/mpp-tools`](https://github.com/tempoxyz/mpp-tools)
 (`conformance/vectors/`), the canonical IETF-spec conformance suite for the
@@ -52,9 +58,69 @@ may carry:
 
 ## Source / attribution
 
+Applies to every file in this directory **except** `expires-rfc3339-corpus.json`.
+
 - Upstream: `tempoxyz/mpp-tools`, `conformance/vectors/`
 - Upstream commit: `b15fea4ee3f12da7ece735dc778ad84102af679c` (2026-06-08)
 - License: MIT, Copyright (c) 2026 Tempo — see `LICENSE.mpp-tools` in this directory.
 
 Do not hand-edit these files. To refresh, re-copy from the upstream repo and
 bump the commit reference above.
+
+## RFC 3339 `expires` corpus
+
+| File | Operation(s) | Spec reference |
+|------|--------------|----------------|
+| `expires-rfc3339-corpus.json` | `expires.parse` | RFC 3339 §5.6 (grammar), §5.7, §5.8, §4.2–§4.3, App. C, App. D |
+
+RFC 3339 date / time / date-time **parse** conformance vectors for the MPP
+`expires` field (issue #111). Read by `loadExpiresRfc3339()` /
+`collectExpiresCases()` in `harness/src/protocol/vectors.ts`. It uses the same
+`{ version, spec_ref, description, commands, scenarios }` file shape and the
+same `tests.parse` verdict encoding as the canonical files above:
+
+```
+"tests": { "parse": true }                                              // ACCEPT
+"tests": { "parse": { "success": false, "error_type": "parse_error" } } // REJECT
+```
+
+**Read `applies_to` before you read `tests.parse`.** The corpus holds vectors
+for three different RFC 3339 productions — `date-time` (116), `full-date` (74),
+`full-time` (38) — and a verdict only means what it says inside its own
+production. MPP `expires` holds a `date-time`. **Filter to
+`applies_to == "date-time"` before running anything against an `expires`
+parser**; 29 of the other 112 carry ACCEPT for inputs (`1963-06-19`,
+`08:30:06Z`, …) that an `expires` parser is *correct* to reject.
+`collectExpiresCases()` applies that filter. The corpus's own `scope` block
+states this at length.
+
+No `object` golden is supplied for ACCEPT scenarios — deliberately. #111 is a
+verdict-alignment problem, not an instant-normalisation problem.
+
+### Source / attribution (this file only)
+
+Three upstreams, none of them mpp-tools. The corpus's own top-level
+`attribution` object carries the full notices; the summary:
+
+- **RFC 3339** — Klyne & Newman, July 2002, retrieved 2026-08-07 from
+  `https://www.rfc-editor.org/rfc/rfc3339.txt`. Copyright (C) The Internet
+  Society (2002); reproduction permitted per the RFC's own notice, carried
+  verbatim in `attribution.rfc_3339.notice`.
+- **JSON Schema Test Suite** —
+  [`json-schema-org/JSON-Schema-Test-Suite`](https://github.com/json-schema-org/JSON-Schema-Test-Suite),
+  `tests/draft2020-12/optional/format/date-time.json`. Upstream commit
+  `15fe552d6cf76e29cc8165306fb6a72503fd360b` (2026-08-06). MIT, Copyright (c)
+  2012 Julian Berman — see `LICENSE.json-schema-test-suite` in this directory.
+- **Go standard library** — [`golang/go`](https://github.com/golang/go),
+  `src/time/format_test.go`. Upstream commit
+  `c19862e5f8415b4f24b189d065ed739517c548ba` (tag `go1.26.5`). BSD-3-Clause,
+  Copyright 2009 The Go Authors — see `LICENSE.go-stdlib` in this directory;
+  additional patent grant in `PATENTS.go-stdlib`.
+
+Every scenario additionally carries its own `provenance` object naming the
+source repo, commit sha, commit date, file, and (for extracted rows) the exact
+source line.
+
+Do not hand-edit this file. To refresh, re-run the import from the upstream
+repos and bump the commit references in the corpus's `attribution` block and
+above.

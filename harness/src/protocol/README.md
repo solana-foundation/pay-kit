@@ -14,7 +14,7 @@ base64url encode/decode, and the challenge-id HMAC.
 
 | File | Role |
 |------|------|
-| `vectors.ts` | Loads the vendored canonical vectors and flattens them into dispatchable `ProtocolCase`s (handles the `tests.<dir>: true \| {success:false,error_type}` shape, constructed `wire` shorthand, `adapters` allow-lists, and `maxDurationMs*` budgets). |
+| `vectors.ts` | Loads the vendored canonical vectors and flattens them into dispatchable `ProtocolCase`s (handles the `tests.<dir>: true \| {success:false,error_type}` shape, constructed `wire` shorthand, `adapters` allow-lists, and `maxDurationMs*` budgets). Also loads the RFC 3339 `expires` corpus via `collectExpiresCases()`, filtered to `applies_to == "date-time"`. |
 | `driver.ts` | Transport-agnostic case runner. `exact` compare for base64url / challenge.id; `semantic` compare for parse/format (re-parses both wires through the paired parse op, with credential request-encoding normalization) — mirrors the canonical runner's `compare_*_semantic`. Times the primary op and enforces the scenario's duration budget like `compare_duration`. |
 | `flow-driver.ts` | HTTP 402 FLOW orchestration: a TypeScript port of the normative mpp-tools `flow_runner.py`. Performs the initial request / 402 / credential retry / receipt exchange itself, routing only `challenge.parse` / `credential.format` / `receipt.parse` through a `ProtocolAdapter`, and compares recorded results against `harness/vectors/mpp-protocol-flows/golden-results.json` after the canonical normalization. |
 | `runners/typescript.ts` | TypeScript REFERENCE runner. In-process `ProtocolAdapter` over `mppx` (pay-kit's TS protocol core) + a stdin/stdout CLI speaking the canonical adapter ABI. |
@@ -46,6 +46,31 @@ Operations (canonical, from `mpp-tools/conformance/operations.json`):
 
 `error_type` vocabulary: `parse_error` (`.parse`), `format_error` (`.format`),
 `encoding_error` (base64url), `generation_error` (`challenge.id`).
+
+### `expires.parse` — proposed by this PR, NOT canonical
+
+| op | input | success result | compare |
+|----|-------|----------------|---------|
+| `expires.parse` | `{ expires }` | `{ valid: true }` | exact |
+
+RFC 3339 `expires` parse conformance (issue #111), driven by
+`harness/vectors/mpp-protocol/expires-rfc3339-corpus.json` through
+`collectExpiresCases()`. **This operation is not in upstream
+`mpp-tools/conformance/operations.json`** — it is proposed here so the corpus
+has an operation to hang from, and the name, the input/result shape, and the
+`exact` comparison are all the maintainer's to overrule. On rejection the
+`error_type` is `parse_error`, reusing the `.parse` vocabulary above rather
+than introducing a new one.
+
+The corpus covers three RFC 3339 productions; `collectExpiresCases()` admits
+only the 116 `applies_to == "date-time"` vectors, because `full-date` and
+`full-time` verdicts are correct statements about a different production and an
+`expires` parser is right to reject those inputs.
+
+No adapter implements `expires.parse` yet, so these cases are deliberately
+**not** in `collectProtocolCases()` — folding them in would turn the green
+reference suite red. Per-language `expires` tests call `collectExpiresCases()`
+directly.
 
 ## Running
 
