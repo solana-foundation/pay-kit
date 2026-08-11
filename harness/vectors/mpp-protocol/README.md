@@ -149,7 +149,7 @@ below, with the rule that excluded each one.
 
 #### Unresolved provenance (1)
 
-A vector whose verdict could not be tied to an RFC 3339 section by the S4 audit does not ship here. It travels in EVIDENCE.md as a finding about the specification, which is its entire purpose.
+A vector whose verdict could not be tied to an RFC 3339 section does not ship here. It travels in the RFC 3339 `expires` conformance results at [`docs/mpp-expires-rfc3339-conformance.md`](../../../docs/mpp-expires-rfc3339-conformance.md) as a finding about the specification, which is its entire purpose.
 
 - **`jsts_date_070`**, input `1582-10-10` (upstream ACCEPT) — UNRESOLVED-PROVENANCE. RFC 3339 does not decide whether a date inside the 1582 Julian-to-Gregorian reform gap is valid: §5.6 is purely syntactic, §5.7 constrains only the maximum mday, and neither §2 nor Appendix C qualifies "the Gregorian calendar" as proleptic or historical. The upstream suite asserts valid: true.
 
