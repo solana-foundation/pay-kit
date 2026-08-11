@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -36,6 +36,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
+from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.solana import MAX_SPLITS
 from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.expires import minutes
@@ -63,7 +64,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     new_top_up_tx_verifier,
     settle_and_seal_channel,
 )
-from solana_pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, ChannelStore, MemoryChannelStore
 from solana_pay_kit.signer import LocalSigner
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,12 @@ _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _U64_MAX = (1 << 64) - 1
 # Watchdog retry delay after a failed idle-close settle.
 _SETTLE_RETRY_SECONDS = 60.0
+
+
+class SessionRpcClient(RpcClient, Protocol):
+    """RPC surface required by session challenge and open validation."""
+
+    async def get_slot(self, commitment: str = ...) -> int: ...
 
 
 class _AlreadySealed(Exception):
@@ -110,7 +117,7 @@ class SessionOptions:
     # Currency identifier (e.g. "USDC" or an SPL mint address). Default USDC.
     currency: str = ""
     # Decimals is the token decimals. Default 6.
-    decimals: int = 0
+    decimals: int | None = None
     # Network is the Solana network. Default "mainnet".
     network: str = ""
     # SecretKey is the challenge HMAC secret. Defaults to MPP_SECRET_KEY.
@@ -135,7 +142,7 @@ class SessionOptions:
     # Store is the pluggable channel store. Defaults to in-memory.
     store: ChannelStore | None = None
     # RPC is required: session funding verification always fails closed.
-    rpc: RpcClient | None = None
+    rpc: SessionRpcClient | None = None
     # Signer is the operator/merchant local signer that funds and signs the
     # on-chain settle-at-close (and the server-broadcast open) transactions.
     # None (or no RPC) leaves close a pure state-flip with settledSignature unset.
@@ -188,14 +195,24 @@ def _parse_session_u64(value: str, name: str) -> int:
     return parsed
 
 
-def _success_receipt(reference: str, challenge_id: str, external_id: str) -> Receipt:
+def _success_receipt(state: ChannelState, challenge_id: str, external_id: str) -> Receipt:
     """Build a success receipt for a session action."""
-    return Receipt.success(
+    if state.idle_timeout_seconds is None:
+        raise ValueError(f"channel {state.channel_id} is missing its negotiated idle timeout")
+    receipt = Receipt.success(
         method="solana",
-        reference=reference,
+        reference=state.channel_id,
         challenge_id=challenge_id,
         external_id=external_id,
     )
+    receipt.intent = "session"
+    receipt.accepted_cumulative = str(state.cumulative)
+    receipt.spent = str(state.spent_amount)
+    receipt.idle_timeout_seconds = state.idle_timeout_seconds
+    receipt.tx_hash = state.settled_signature or ""
+    if state.sealed:
+        receipt.refunded = str(state.deposit - state.cumulative)
+    return receipt
 
 
 class Session:
@@ -221,7 +238,7 @@ class Session:
         self._secret_key = secret_key
         self._realm = realm
         self._amount = amount
-        self._currency = currency
+        self._currency = resolve_stablecoin_mint(currency, network) or currency
         self._recipient = recipient
         self._network = network
         self._rpc = rpc
@@ -312,20 +329,27 @@ class Session:
         if action.open is not None:
             if challenge.is_expired():
                 raise ChallengeExpiredError(f"challenge expired at {challenge.expires}")
-            reference = await self._handle_open(action.open, challenge=challenge)
+            channel_id = await self._handle_open(action.open, challenge=challenge)
         elif action.use is not None:
-            reference = await self._handle_use(action.use, challenge.id, idempotency_key, int(request.amount))
+            await self._handle_use(action.use, challenge.id, idempotency_key, int(request.amount))
+            channel_id = action.use.channel_id
         elif action.voucher is not None:
-            reference = await self._handle_voucher(action.voucher)
+            await self._handle_voucher(action.voucher, int(request.amount))
+            channel_id = action.voucher.channel_id
         elif action.top_up is not None:
-            reference = await self._handle_top_up(action.top_up)
+            await self._handle_top_up(action.top_up)
+            channel_id = action.top_up.channel_id
         elif action.close is not None:
-            reference = await self._handle_close(action.close)
+            await self._handle_close(action.close)
+            channel_id = action.close.channel_id
         else:
             raise PaymentError("unknown session action", code="invalid-payload")
 
         external_id = request.external_id or ""
-        return _success_receipt(reference, credential.challenge.id, external_id)
+        state = await self._core.store().get_channel(channel_id)
+        if state is None:
+            raise PaymentError(f"channel {channel_id} not found after session action", code="invalid-payload")
+        return _success_receipt(state, credential.challenge.id, external_id)
 
     async def handle(
         self,
@@ -436,12 +460,12 @@ class Session:
         await self._touch(payload.channel_id)
         return f"{payload.channel_id}:{voucher.data.cumulative_amount}:{voucher.signature}"
 
-    async def _handle_voucher(self, payload: VoucherPayload) -> str:
+    async def _handle_voucher(self, payload: VoucherPayload, amount: int | None = None) -> str:
         """Verify a cumulative voucher and advance the watermark. The receipt
         reference is "<channelId>:<cumulative>"."""
         channel_id = payload.voucher.data.channel_id
         try:
-            cumulative = await self._core.verify_voucher(payload)
+            cumulative = await self._core.verify_voucher(payload, self._amount if amount is None else amount)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         await self._touch(channel_id)
@@ -473,11 +497,19 @@ class Session:
         # The idle watchdog may only forget the channel once the settle
         # attempt is behind us: after a failed settle it is the sole actor
         # left that can re-drive the close.
-        if self._lifecycle is not None:
-            self._lifecycle.remove_channel(payload.channel_id)
+        await self._finish_settle_lifecycle(channel_id, settled)
         # On a successful settle the reference is the on-chain signature; without
         # a signer/RPC the close is a state-flip and the channel id stands in.
         return settled or payload.channel_id
+
+    async def _finish_settle_lifecycle(self, channel_id: str, settled: str | None) -> None:
+        if self._lifecycle is None:
+            return
+        state = await self._core.store().get_channel(channel_id)
+        if settled is not None or state is None or state.sealed or state.settled_signature is not None:
+            self._lifecycle.remove_channel(channel_id)
+        elif self._signer is not None and self._rpc is not None:
+            self._lifecycle.touch(channel_id, _SETTLE_RETRY_SECONDS)
 
     async def _settle_channel(self, channel_id: str) -> str | None:
         """Settle and seal the channel on-chain, returning the settlement
@@ -487,8 +519,6 @@ class Session:
         """
         if self._signer is None or self._rpc is None:
             return None
-
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 
         # Atomic settle-in-progress guard: claim the channel under the
         # per-channel store lock so a concurrent close retry or idle-watchdog
@@ -575,8 +605,6 @@ class Session:
         """
         import time
 
-        from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
-
         due = False
         remaining: float | None = None
 
@@ -608,7 +636,8 @@ class Session:
             if remaining is not None and self._lifecycle is not None:
                 self._lifecycle.touch(channel_id, remaining)
             if due:
-                await self._settle_channel(channel_id)
+                settled = await self._settle_channel(channel_id)
+                await self._finish_settle_lifecycle(channel_id, settled)
         except Exception:
             logging.getLogger(__name__).warning("idle-close settle failed for channel %s", channel_id, exc_info=True)
             # Re-arm the timer: after a failed settle the watchdog is the
@@ -661,12 +690,15 @@ def new_session(options: SessionOptions) -> Session:
         raise PaymentError("missing secret key", code="invalid-config")
 
     currency = options.currency or "USDC"
-    decimals = options.decimals or 6
+    decimals = 6 if options.decimals is None else options.decimals
+    if isinstance(decimals, bool) or not 0 <= decimals <= 9:
+        raise PaymentError("decimals must be an integer from 0 to 9", code="invalid-config")
     network = options.network or "mainnet"
     realm = options.realm or detect_realm()
 
     if options.rpc is None:
         raise PaymentError("session requires an RPC client for funding verification", code="invalid-config")
+    rpc = options.rpc
     if options.voucher_signer not in ("client", "operator"):
         raise PaymentError("voucherSigner must be 'client' or 'operator'", code="invalid-config")
     if options.voucher_signer == "operator" and options.signer is None:
@@ -700,26 +732,27 @@ def new_session(options: SessionOptions) -> Session:
         operator_signer=(options.signer.keypair if options.voucher_signer == "operator" and options.signer else None),
         idle_timeout_options_seconds=options.idle_timeout_options_seconds,
         idle_timeout_seconds=options.idle_timeout_seconds,
+        current_slot_provider=lambda: rpc.get_slot(),
     )
     config.verify_open_tx = new_open_tx_verifier(
         config,
-        options.rpc,
+        rpc,
         fee_payer_signer=(options.signer.keypair if options.fee_payer and options.signer else None),
     )
-    config.verify_top_up_tx = new_top_up_tx_verifier(config, store, options.rpc)
+    config.verify_top_up_tx = new_top_up_tx_verifier(config, store, rpc)
     # The RPC doubles as the fallback source of the challenge's
     # recentBlockhash/recentSlot; hosts can avoid the per-402 round-trip by
     # sharing a cache via ``session.core().with_blockhash_cache(...)``.
-    core = SessionServer(config, store, rpc=options.rpc)
+    core = SessionServer(config, store, rpc=rpc)
     session = Session(
         core=core,
         secret_key=secret_key,
         realm=realm,
         amount=options.amount,
-        currency=currency,
+        currency=(resolve_stablecoin_mint(currency, network) or currency),
         recipient=options.recipient,
         network=network,
-        rpc=options.rpc,
+        rpc=rpc,
         lifecycle=None,
         signer=options.signer,
     )

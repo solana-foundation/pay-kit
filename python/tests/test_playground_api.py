@@ -11,11 +11,13 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from examples.playground_api import sessions
 from examples.playground_api.app import app
 
 
 @pytest.fixture
 def client() -> TestClient:
+    sessions.session.core().with_blockhash_cache(lambda: ("4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs", 1))
     return TestClient(app)
 
 

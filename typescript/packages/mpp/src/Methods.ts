@@ -216,6 +216,8 @@ export const session = Method.from({
                     /** Opaque server-scoped authorization policy echoed on the wire. */
                     authorizationPolicy: z.optional(z.record(z.string(), z.unknown())),
                     authorizedSigner: z.string(),
+                    /** Clients MUST NOT send the derived PDA bump. */
+                    bump: z.optional(z.never()),
                     /** Opaque capability map echoed on the wire. */
                     capabilities: z.optional(z.record(z.string(), z.unknown())),
                     channelId: z.string(),

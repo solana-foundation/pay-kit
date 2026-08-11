@@ -360,14 +360,12 @@ impl Receipt {
 ///
 /// On the wire the variant is untagged — the JSON shape is the union of
 /// [`Receipt`]'s base fields plus any intent-specific extension fields.
-/// Deserialisation tries `Subscription` first (it carries the strict
-/// superset of fields) and falls back to `Charge` when extension fields
-/// are absent.
+/// Deserialisation tries the extension-bearing variants before falling back
+/// to `Charge` when intent-specific fields are absent.
 ///
-/// This enum is the breaking change from v0.6: every caller of
-/// [`super::parse_receipt`] / [`super::format_receipt`] now handles the
-/// variant explicitly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Callers of [`super::parse_receipt`] / [`super::format_receipt`] handle the
+/// intent variant explicitly.
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ReceiptKind {
     /// Subscription activation receipt — base receipt plus the
@@ -382,8 +380,75 @@ pub enum ReceiptKind {
         #[serde(flatten)]
         extensions: crate::mpp::protocol::intents::SubscriptionReceiptExtensions,
     },
+    /// Payment-channel session receipt — base receipt plus the fields required
+    /// by `draft-solana-session-00`.
+    Session {
+        #[serde(flatten)]
+        base: Receipt,
+        #[serde(flatten)]
+        extensions: crate::mpp::protocol::intents::SessionReceiptExtensions,
+    },
     /// One-shot charge receipt — the original `Receipt` shape.
     Charge(Receipt),
+}
+
+impl<'de> Deserialize<'de> for ReceiptKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SessionReceiptWire {
+            #[serde(flatten)]
+            base: Receipt,
+            #[serde(flatten)]
+            extensions: crate::mpp::protocol::intents::SessionReceiptExtensions,
+        }
+
+        #[derive(Deserialize)]
+        struct SubscriptionReceiptWire {
+            #[serde(flatten)]
+            base: Receipt,
+            #[serde(flatten)]
+            extensions: crate::mpp::protocol::intents::SubscriptionReceiptExtensions,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let is_session = value.get("intent").and_then(serde_json::Value::as_str) == Some("session")
+            || ["acceptedCumulative", "spent", "idleTimeoutSeconds"]
+                .iter()
+                .any(|field| value.get(field).is_some());
+        if is_session {
+            let wire: SessionReceiptWire =
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+            return Ok(Self::Session {
+                base: wire.base,
+                extensions: wire.extensions,
+            });
+        }
+
+        let is_subscription = [
+            "subscriptionId",
+            "planId",
+            "periodIndex",
+            "periodStartTs",
+            "periodEndTs",
+        ]
+        .iter()
+        .any(|field| value.get(field).is_some());
+        if is_subscription {
+            let wire: SubscriptionReceiptWire =
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+            return Ok(Self::Subscription {
+                base: wire.base,
+                extensions: wire.extensions,
+            });
+        }
+
+        serde_json::from_value(value)
+            .map(Self::Charge)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ReceiptKind {
@@ -392,6 +457,7 @@ impl ReceiptKind {
         match self {
             ReceiptKind::Charge(r) => r,
             ReceiptKind::Subscription { base, .. } => base,
+            ReceiptKind::Session { base, .. } => base,
         }
     }
 
@@ -403,7 +469,17 @@ impl ReceiptKind {
     ) -> Option<&crate::mpp::protocol::intents::SubscriptionReceiptExtensions> {
         match self {
             ReceiptKind::Subscription { extensions, .. } => Some(extensions),
-            ReceiptKind::Charge(_) => None,
+            ReceiptKind::Charge(_) | ReceiptKind::Session { .. } => None,
+        }
+    }
+
+    /// Return the session extensions when this is a session receipt.
+    pub fn session_extensions(
+        &self,
+    ) -> Option<&crate::mpp::protocol::intents::SessionReceiptExtensions> {
+        match self {
+            ReceiptKind::Session { extensions, .. } => Some(extensions),
+            ReceiptKind::Charge(_) | ReceiptKind::Subscription { .. } => None,
         }
     }
 

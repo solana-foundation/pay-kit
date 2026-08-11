@@ -20,6 +20,7 @@ import {
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
     getTransactionDecoder,
+    getProgramDerivedAddress,
 } from '@solana/kit';
 import { describe, expect, test, vi } from 'vitest';
 
@@ -34,7 +35,7 @@ const USDC_DEVNET_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const CHALLENGED_BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N';
 const CHALLENGED_SLOT = 314n;
 
-function blockhashRpc(options: { fail?: boolean; slot?: bigint } = {}) {
+function blockhashRpc(options: { currentSlot?: bigint; fail?: boolean; slot?: bigint } = {}) {
     const send = vi.fn(async () => {
         if (options.fail) throw new Error('rpc down');
         return {
@@ -43,7 +44,8 @@ function blockhashRpc(options: { fail?: boolean; slot?: bigint } = {}) {
         };
     });
     const getLatestBlockhash = vi.fn(() => ({ send }));
-    return { getLatestBlockhash, send };
+    const getSlot = vi.fn(() => ({ send: async () => options.currentSlot ?? options.slot ?? CHALLENGED_SLOT }));
+    return { getLatestBlockhash, getSlot, send };
 }
 
 function serverParams(recipient: string, overrides: Record<string, unknown> = {}) {
@@ -228,6 +230,50 @@ describe('server open verification binds to the challenged recentSlot', () => {
         const credential = openCredential(bare, await openPayloadFor(signer, '42'));
         await expect(method.verify({ credential, request: credential.challenge.request } as never)).rejects.toThrow(
             /open requires a challenge carrying recentBlockhash\/recentSlot/,
+        );
+    });
+
+    test('rejects an openSlot that aged out before verification', async () => {
+        const currentSlot = CHALLENGED_SLOT + OPEN_SLOT_WINDOW + 1n;
+        const { method, signer: merchant } = await methodFor({ rpc: blockhashRpc({ currentSlot }) });
+        const payer = await generateKeyPairSigner();
+        const sessionSigner = await generateKeyPairSigner();
+        const request = challengeRequest(merchant.address) as unknown as SessionRequest;
+        const open = await buildOpenPaymentChannelTransaction({
+            authorizedSigner: sessionSigner.address,
+            request,
+            salt: 7n,
+            signer: payer,
+        });
+        const credential = openCredential(request as unknown as Record<string, unknown>, {
+            authorizedSigner: sessionSigner.address,
+            channelId: open.channelId,
+            depositAmount: open.deposit,
+            gracePeriodSeconds: open.gracePeriod,
+            mint: open.mint,
+            openSlot: open.openSlot,
+            payee: open.payee,
+            payer: open.payer,
+            salt: open.salt,
+            transaction: open.transaction,
+        });
+        await expect(method.verify({ credential, request: credential.challenge.request } as never)).rejects.toThrow(
+            /outside the 1500-slot freshness window of the current cluster slot/,
+        );
+    });
+
+    test('rejects an off-curve authorizedSigner', async () => {
+        const { method, signer } = await methodFor({ rpc: blockhashRpc() });
+        const [offCurveSigner] = await getProgramDerivedAddress({
+            programAddress: PAYMENT_CHANNELS_PROGRAM_ID,
+            seeds: [new TextEncoder().encode('off-curve-signer')],
+        });
+        const credential = openCredential(challengeRequest(signer.address), {
+            ...(await openPayloadFor(signer, CHALLENGED_SLOT.toString())),
+            authorizedSigner: offCurveSigner,
+        });
+        await expect(method.verify({ credential, request: credential.challenge.request } as never)).rejects.toThrow(
+            /on-curve Ed25519 public key/,
         );
     });
 });

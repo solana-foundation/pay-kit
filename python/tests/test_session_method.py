@@ -59,10 +59,15 @@ class _Rpc:
 
         return _Resp()
 
+    async def get_slot(self, commitment: str = "confirmed") -> int:
+        del commitment
+        return CHALLENGED_SLOT
+
 
 def _core(config: SessionConfig, store: MemoryChannelStore | None = None) -> SessionServer:
     """A SessionServer whose challenges serve the pinned open-transaction
     context from a blockhash cache."""
+    config.current_slot_provider = config.current_slot_provider or (lambda: CHALLENGED_SLOT)
     return SessionServer(config, store if store is not None else MemoryChannelStore()).with_blockhash_cache(
         lambda: (CHALLENGED_BLOCKHASH, CHALLENGED_SLOT)
     )
@@ -222,6 +227,7 @@ async def test_operator_use_survives_challenge_expiry_and_is_idempotent() -> Non
             authorized_signer=str(operator.pubkey()),
             payer=str(payer.pubkey()),
             deposit=1_000,
+            idle_timeout_seconds=300,
             opening_challenge_id=challenge.id,
             authentication=authentication.to_dict(),
             voucher_signer="operator",
@@ -390,7 +396,11 @@ async def test_verify_dispatches_client_voucher_top_up_and_close() -> None:
             payload=SessionAction.voucher_action(_voucher_payload(voucher(100))).to_dict(),
         )
     )
-    assert voucher_receipt.reference == f"{RECIPIENT}:100"
+    assert voucher_receipt.reference == RECIPIENT
+    assert voucher_receipt.intent == "session"
+    assert voucher_receipt.accepted_cumulative == "100"
+    assert voucher_receipt.spent == "25"
+    assert voucher_receipt.idle_timeout_seconds == 300
     top_up_receipt = await session.verify_credential(
         PaymentCredential(
             challenge=challenge.to_echo(),
@@ -432,6 +442,7 @@ async def test_handle_accepts_valid_operator_use_header() -> None:
             authorized_signer=str(operator.pubkey()),
             payer=str(payer.pubkey()),
             deposit=1_000,
+            idle_timeout_seconds=300,
             opening_challenge_id=challenge.id,
             authentication=authentication.to_dict(),
             voucher_signer="operator",
@@ -637,3 +648,34 @@ async def test_idle_close_redrives_a_stranded_settle() -> None:
     session._lifecycle_reconciled = False
     await session._reconcile_lifecycle()
     assert settled_spy.touches == []
+
+
+async def test_idle_close_rearms_when_another_settle_is_in_flight() -> None:
+    store = MemoryChannelStore()
+    core = SessionServer(
+        SessionConfig(recipient=RECIPIENT, amount=25, currency="USDC", network="localnet"),
+        store,
+    )
+    await store.update_channel(
+        RECIPIENT,
+        lambda _: ChannelState(
+            channel_id=RECIPIENT,
+            authorized_signer=RECIPIENT,
+            payer=RECIPIENT,
+            deposit=1_000,
+            idle_timeout_seconds=60,
+            last_activity_at=0,
+            close_requested_at=1,
+            settling=True,
+        ),
+    )
+    session = _session(core)
+    session._signer = object()  # type: ignore[assignment]
+    session._rpc = object()  # type: ignore[assignment]
+    spy = _LifecycleSpy()
+    session._lifecycle = spy  # type: ignore[assignment]
+
+    await session._close_on_idle(RECIPIENT)
+
+    assert spy.removed == []
+    assert spy.touches == [(RECIPIENT, 60.0)]

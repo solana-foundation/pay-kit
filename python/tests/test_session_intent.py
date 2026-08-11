@@ -162,6 +162,9 @@ def test_open_payload_uses_exact_string_amount_and_slot_fields() -> None:
     assert wire["openSlot"] == "42"
     assert wire["gracePeriodSeconds"] == 900
     assert OpenPayload.from_dict(wire) == payload
+
+    with pytest.raises(ValueError, match="must not include bump"):
+        OpenPayload.from_dict({**wire, "bump": 255})
     for stale in ("deposit", "recentSlot", "programId", "mode"):
         assert stale not in wire
 

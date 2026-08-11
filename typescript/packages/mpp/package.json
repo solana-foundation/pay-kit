@@ -1,6 +1,6 @@
 {
   "name": "@solana/mpp",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Solana payment method for the MPP protocol",
   "repository": {
     "type": "git",
@@ -31,6 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@solana/addresses": "^6.10.0",
     "@solana-program/compute-budget": "^0.15.0",
     "@solana-program/system": "^0.12.0",
     "@solana-program/token": "^0.11.0",

@@ -7,7 +7,7 @@ import {
     type MessagePartialSigner,
     verifySignature,
 } from '@solana/kit';
-import type { Challenge as MppxChallenge } from 'mppx';
+import type { Challenge as MppxChallenge, Receipt as MppxReceipt } from 'mppx';
 import { Credential, Method, z } from 'mppx';
 
 import * as Methods from '../Methods.js';
@@ -29,6 +29,17 @@ export type AmountLike = bigint | number | string;
 
 /** Party that signs cumulative vouchers. */
 export type SessionVoucherSigner = 'client' | 'operator';
+
+/** Receipt extension required by the Solana session intent. */
+export interface SessionReceipt extends MppxReceipt.Receipt {
+    readonly acceptedCumulative: string;
+    readonly challengeId?: string | undefined;
+    readonly idleTimeoutSeconds: number;
+    readonly intent: 'session';
+    readonly refunded?: string | undefined;
+    readonly spent: string;
+    readonly txHash?: string | undefined;
+}
 
 /** Reusable payer proof for an operator-signed channel. */
 export interface SessionAuthentication {

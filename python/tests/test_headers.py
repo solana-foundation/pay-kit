@@ -294,6 +294,35 @@ class TestReceipt:
         with pytest.raises(ParseError):
             parse_receipt(bad)
 
+    def test_session_extension_roundtrip(self):
+        receipt = Receipt(
+            status="success",
+            method="solana",
+            timestamp="2024-01-01T00:00:00Z",
+            reference="channel-id",
+            intent="session",
+            accepted_cumulative="250",
+            spent="100",
+            idle_timeout_seconds=300,
+            tx_hash="settle-signature",
+            refunded="750",
+        )
+        parsed = parse_receipt(format_receipt(receipt))
+        assert parsed == receipt
+
+    def test_session_receipt_requires_extension_fields(self):
+        header = encode_json(
+            {
+                "intent": "session",
+                "method": "solana",
+                "reference": "channel-id",
+                "status": "success",
+                "timestamp": "2024-01-01T00:00:00Z",
+            }
+        )
+        with pytest.raises(ParseError, match="acceptedCumulative"):
+            parse_receipt(header)
+
 
 class TestCRLFRejection:
     """L11 lock: header parameter values MUST reject CR or LF.

@@ -8,7 +8,9 @@ from dataclasses import replace
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
+from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW
 from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -44,6 +46,7 @@ CHALLENGED_SLOT = 42
 def _core(config: SessionConfig) -> SessionServer:
     """A SessionServer whose challenges serve the pinned open-transaction
     context from a blockhash cache (no RPC round-trip)."""
+    config.current_slot_provider = config.current_slot_provider or (lambda: CHALLENGED_SLOT)
     return SessionServer(config, MemoryChannelStore()).with_blockhash_cache(
         lambda: (CHALLENGED_BLOCKHASH, CHALLENGED_SLOT)
     )
@@ -76,6 +79,7 @@ def _config(*, operator: bool = False) -> SessionConfig:
         operator_signer=OPERATOR if operator else None,
         idle_timeout_options_seconds=[30, 300],
         idle_timeout_seconds=300,
+        current_slot_provider=lambda: CHALLENGED_SLOT,
     )
 
 
@@ -219,8 +223,6 @@ async def test_open_binds_open_slot_to_challenged_recent_slot() -> None:
         await server.process_open(ahead, challenge)
 
     # An openSlot staler than the 1500-slot freshness window is rejected.
-    from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW
-
     stale_challenge_config = _config()
     stale_challenge_config.verify_open_tx = verify
     stale = PaymentChallenge.with_secret_key(
@@ -246,6 +248,26 @@ async def test_open_binds_open_slot_to_challenged_recent_slot() -> None:
     earlier.open_slot = CHALLENGED_SLOT - 1
     state = await server.process_open(earlier, challenge)
     assert state.open_slot == CHALLENGED_SLOT - 1
+
+
+async def test_open_checks_current_slot_and_authorized_signer_curve() -> None:
+    config = _config()
+
+    async def verify(_: OpenPayload, __: object) -> None:
+        return None
+
+    config.verify_open_tx = verify
+    challenge = await _challenge(config)
+    config.current_slot_provider = lambda: CHALLENGED_SLOT + OPEN_SLOT_WINDOW + 1
+    with pytest.raises(ValueError, match="freshness window of the current cluster slot"):
+        await SessionServer(config, MemoryChannelStore()).process_open(_open(config, challenge), challenge)
+
+    config.current_slot_provider = lambda: CHALLENGED_SLOT
+    off_curve, _ = Pubkey.find_program_address([b"session-test"], Pubkey.from_string(str(PROGRAM_ID)))
+    payload = _open(config, challenge)
+    payload.authorized_signer = str(off_curve)
+    with pytest.raises(ValueError, match="on-curve Ed25519"):
+        await SessionServer(config, MemoryChannelStore()).process_open(payload, challenge)
 
 
 async def test_open_rejects_challenge_without_open_transaction_context() -> None:
@@ -332,7 +354,7 @@ async def test_client_voucher_advances_watermark_and_replays_idempotently() -> N
     assert await server.verify_voucher(_voucher_payload(voucher)) == 100
     assert await server.verify_voucher(_voucher_payload(voucher)) == 100
     state = await server.store().get_channel(CHANNEL)
-    assert state is not None and state.cumulative == 100
+    assert state is not None and state.cumulative == 100 and state.spent_amount == 50
 
 
 async def test_voucher_action_channel_id_must_match_the_signed_voucher() -> None:

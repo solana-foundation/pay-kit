@@ -72,6 +72,23 @@ describe('final session wire contract', () => {
                 signature: 'legacy',
             }),
         ).toThrow();
+
+        expect(() =>
+            Methods.session.schema.credential.payload.parse({
+                action: 'open',
+                authorizedSigner: signer.address,
+                bump: 255,
+                channelId: channel.address,
+                depositAmount: '1000',
+                gracePeriodSeconds: 900,
+                mint: signer.address,
+                openSlot: '1',
+                payee: signer.address,
+                payer: signer.address,
+                salt: '1',
+                transaction: 'wire',
+            }),
+        ).toThrow();
     });
 
     test('binds reusable authentication to the opening challenge, payer, and channel', async () => {

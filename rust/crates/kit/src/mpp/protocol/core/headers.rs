@@ -238,8 +238,8 @@ pub fn format_authorization(credential: &PaymentCredential) -> Result<String, Er
 /// Parse a Payment-Receipt header into a [`ReceiptKind`].
 ///
 /// The wire shape is base64url-encoded JSON. The untagged enum is parsed
-/// with the more-specific `Subscription` variant tried first; falls back
-/// to `Charge` for receipts without subscription extension fields.
+/// with extension-bearing variants tried first; falls back to `Charge` for
+/// receipts without intent-specific fields.
 pub fn parse_receipt(header: &str) -> Result<ReceiptKind, Error> {
     let token = header.trim();
     if token.len() > MAX_TOKEN_LEN {
@@ -270,8 +270,8 @@ pub fn parse_receipt(header: &str) -> Result<ReceiptKind, Error> {
 ///
 /// Uses JCS (RFC 8785) canonicalization before base64url encoding
 /// as required by the spec. Both variants serialise as a flat JSON
-/// object — subscription receipts carry the union of base + extension
-/// fields side-by-side.
+/// object — subscription and session receipts carry the union of base plus
+/// extension fields side-by-side.
 pub fn format_receipt(receipt: &ReceiptKind) -> Result<String, Error> {
     let json = serde_json_canonicalizer::to_string(receipt)
         .map_err(|e| Error::Other(format!("JCS serialization failed: {e}")))?;
@@ -439,7 +439,9 @@ mod tests {
         let parsed = parse_receipt(&header).unwrap();
         match parsed {
             ReceiptKind::Charge(r) => assert_eq!(r.reference, "5UfDuX..."),
-            ReceiptKind::Subscription { .. } => panic!("expected Charge variant"),
+            ReceiptKind::Subscription { .. } | ReceiptKind::Session { .. } => {
+                panic!("expected Charge variant")
+            }
         }
     }
 
@@ -483,10 +485,66 @@ mod tests {
                     Some("2026-07-14T12:00:00Z")
                 );
             }
-            ReceiptKind::Charge(_) => {
+            ReceiptKind::Charge(_) | ReceiptKind::Session { .. } => {
                 panic!("untagged enum must prefer Subscription when extension fields are present")
             }
         }
+    }
+
+    #[test]
+    fn receipt_roundtrip_session_carries_required_extensions() {
+        use crate::mpp::protocol::intents::{SessionReceiptExtensions, SessionReceiptIntent};
+
+        let base = Receipt {
+            status: ReceiptStatus::Success,
+            method: "solana".into(),
+            timestamp: "2026-08-11T14:00:00Z".to_string(),
+            reference: "7Y5session".to_string(),
+            challenge_id: "ch-session".to_string(),
+        };
+        let header = format_receipt(&ReceiptKind::Session {
+            base,
+            extensions: SessionReceiptExtensions {
+                intent: SessionReceiptIntent::Session,
+                accepted_cumulative: 125,
+                spent: 100,
+                idle_timeout_seconds: 300,
+                tx_hash: Some("5settlement".to_string()),
+                refunded: Some(25),
+            },
+        })
+        .unwrap();
+
+        match parse_receipt(&header).unwrap() {
+            ReceiptKind::Session { base, extensions } => {
+                assert_eq!(base.reference, "7Y5session");
+                assert_eq!(extensions.intent, SessionReceiptIntent::Session);
+                assert_eq!(extensions.accepted_cumulative, 125);
+                assert_eq!(extensions.spent, 100);
+                assert_eq!(extensions.idle_timeout_seconds, 300);
+                assert_eq!(extensions.tx_hash.as_deref(), Some("5settlement"));
+                assert_eq!(extensions.refunded, Some(25));
+            }
+            ReceiptKind::Charge(_) | ReceiptKind::Subscription { .. } => {
+                panic!("expected Session variant")
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_parse_rejects_incomplete_session_extensions() {
+        let raw = r#"{
+            "status": "success",
+            "method": "solana",
+            "intent": "session",
+            "timestamp": "2026-08-11T14:00:00Z",
+            "reference": "7Y5session",
+            "acceptedCumulative": "125",
+            "spent": "100"
+        }"#;
+        use crate::mpp::protocol::core::base64url_encode;
+        let header = base64url_encode(raw.as_bytes());
+        assert!(parse_receipt(&header).is_err());
     }
 
     #[test]

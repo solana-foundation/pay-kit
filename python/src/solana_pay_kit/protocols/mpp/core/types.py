@@ -181,6 +181,12 @@ class Receipt:
     reference: str
     challenge_id: str = ""
     external_id: str = ""
+    intent: str = ""
+    accepted_cumulative: str = ""
+    spent: str = ""
+    idle_timeout_seconds: int | None = None
+    tx_hash: str = ""
+    refunded: str = ""
 
     def is_success(self) -> bool:
         """Return True if the receipt indicates success."""

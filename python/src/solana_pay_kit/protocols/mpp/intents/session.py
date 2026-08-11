@@ -431,6 +431,8 @@ class OpenPayload:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OpenPayload:
+        if "bump" in data:
+            raise ValueError("open payload must not include bump")
         salt = _u64_from_wire(data.get("salt"), "salt")
         open_slot = _u64_from_wire(data.get("openSlot"), "openSlot")
         if salt is None or open_slot is None:

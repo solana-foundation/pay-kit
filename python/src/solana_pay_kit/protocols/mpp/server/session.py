@@ -26,6 +26,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
+
+from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.paymentchannels import OPEN_SLOT_WINDOW
 from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 from solana_pay_kit.protocols.mpp.intents.session import (
@@ -208,6 +211,10 @@ class SessionConfig:
     # process_top_up raises the deposit.
     verify_top_up_tx: SessionTxVerifier[TopUpPayload] | None = None
 
+    # Current slot source used to reject opens that have aged out since the
+    # challenge was issued. It may return the slot directly or awaitably.
+    current_slot_provider: Callable[[], Awaitable[int] | int] | None = None
+
 
 @dataclass
 class DeliveryRequest:
@@ -381,7 +388,7 @@ class SessionServer:
         )
         return SessionRequest(
             amount=str(self._config.amount),
-            currency=self._config.currency,
+            currency=self._wire_currency(),
             recipient=self._config.recipient,
             method_details=details,
             minimum_deposit=(str(self._config.minimum_deposit) if self._config.minimum_deposit is not None else None),
@@ -417,6 +424,26 @@ class SessionServer:
         raise ValueError(
             "session challenge requires recentBlockhash/recentSlot; configure a blockhash cache or an RPC client"
         )
+
+    def _wire_currency(self) -> str:
+        mint = resolve_stablecoin_mint(self._config.currency, self._config.network)
+        if mint is None:
+            raise ValueError("session currency must be an SPL token mint; use wrapped SOL instead of SOL")
+        return mint
+
+    async def _current_cluster_slot(self) -> int:
+        provider = self._config.current_slot_provider
+        try:
+            if provider is not None:
+                value = provider()
+                if isinstance(value, Awaitable):
+                    return int(await value)
+                return int(value)
+            if self._rpc is not None:
+                return int(await self._rpc.get_slot())
+        except Exception as exc:
+            raise ValueError(f"failed to fetch current cluster slot for session open: {exc}") from exc
+        raise ValueError("open freshness validation requires an RPC current-slot provider")
 
     @staticmethod
     def _open_context(challenge: PaymentChallenge) -> SessionOpenContext:
@@ -500,6 +527,26 @@ class SessionServer:
                 f"window of the challenged recentSlot {context.recent_slot}"
             )
 
+        existing = await self._store.get_channel(session_id)
+        if existing is None:
+            current_slot = await self._current_cluster_slot()
+            if payload.open_slot > current_slot:
+                raise ValueError(
+                    f"open openSlot {payload.open_slot} is ahead of the current cluster slot {current_slot}"
+                )
+            if current_slot - payload.open_slot > OPEN_SLOT_WINDOW:
+                raise ValueError(
+                    f"open openSlot {payload.open_slot} is outside the {OPEN_SLOT_WINDOW}-slot freshness "
+                    f"window of the current cluster slot {current_slot}"
+                )
+
+        try:
+            authorized_signer = Pubkey.from_string(payload.authorized_signer)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"invalid authorizedSigner: {exc}") from exc
+        if not authorized_signer.is_on_curve():
+            raise ValueError("open authorizedSigner must be an on-curve Ed25519 public key")
+
         if self._config.voucher_signer == "operator" and payload.authorized_signer != self._config.operator:
             raise ValueError("operator voucher signing requires authorizedSigner to match the operator")
 
@@ -518,7 +565,6 @@ class SessionServer:
                 raise ValueError("invalid session authentication signature")
 
         authentication = payload.authentication.to_dict() if payload.authentication is not None else None
-        existing = await self._store.get_channel(session_id)
         if existing is not None:
             if existing.sealed:
                 raise ValueError(f"channel {session_id} is already sealed")
@@ -677,7 +723,7 @@ class SessionServer:
         await self._store.update_channel(payload.channel_id, mutator)
         return result[0]
 
-    async def verify_voucher(self, payload: VoucherPayload) -> int:
+    async def verify_voucher(self, payload: VoucherPayload, amount: int | None = None) -> int:
         """Verify a voucher, advance the watermark, and return the new
         cumulative.
 
@@ -697,6 +743,9 @@ class SessionServer:
                 f"channelId {voucher.data.channel_id!r}"
             )
         channel_id = voucher.data.channel_id
+        price = self._config.amount if amount is None else amount
+        if price <= 0 or price > _U64_MAX:
+            raise ValueError("voucher amount must be a positive u64")
 
         state = await self._store.get_channel(channel_id)
         if state is None:
@@ -719,9 +768,6 @@ class SessionServer:
             # Surface the stable reject tag ahead of the detail
             # ("<reason>: <detail>").
             raise ValueError(f"{result.reason}: {result.detail}")
-        if result.status == VoucherVerifyStatus.REPLAYED:
-            return result.new_cumulative
-
         new_cumulative = result.new_cumulative
         new_signature = result.new_signature
         new_expires_at = result.new_expires_at
@@ -735,20 +781,18 @@ class SessionServer:
                 raise ValueError(f"channel {channel_id} is already sealed")
             if current.close_requested_at is not None:
                 raise ValueError(f"channel {channel_id} close is pending; no further vouchers accepted")
-            # Idempotent replay inside the mutator.
-            if (
-                new_cumulative == current.cumulative
-                and current.highest_voucher_signature is not None
-                and current.highest_voucher_signature == new_signature
-            ):
-                return current
+            replayed = result.status == VoucherVerifyStatus.REPLAYED and new_cumulative == current.cumulative
             # Concurrent watermark advancement check.
-            if new_cumulative <= current.cumulative:
+            if not replayed and new_cumulative <= current.cumulative:
                 raise ValueError("concurrent update: watermark advanced")
+            if new_cumulative - current.spent_amount < price:
+                raise ValueError("insufficient authorized voucher availability")
             nxt = current.clone()
-            nxt.cumulative = new_cumulative
-            nxt.highest_voucher_signature = new_signature
-            nxt.highest_voucher_expires_at = new_expires_at
+            if not replayed:
+                nxt.cumulative = new_cumulative
+                nxt.highest_voucher_signature = new_signature
+                nxt.highest_voucher_expires_at = new_expires_at
+            nxt.spent_amount += price
             nxt.last_activity_at = int(time.time() * 1000)
             return nxt
 
@@ -876,7 +920,7 @@ class SessionServer:
                 delivery_id=delivery_id,
                 session_id=session_id,
                 amount=str(amount),
-                currency=self._config.currency,
+                currency=self._wire_currency(),
                 sequence=sequence,
                 expires_at=expires_at,
             )
@@ -981,6 +1025,7 @@ class SessionServer:
             # recheck (and the post-restart reconcile) closes a channel that is
             # actively paying through the metered-delivery flow.
             nxt.last_activity_at = int(time.time() * 1000)
+            nxt.spent_amount += actual_amount
             nxt.committed_deliveries.append(
                 CommittedDelivery(
                     delivery_id=delivery_id,

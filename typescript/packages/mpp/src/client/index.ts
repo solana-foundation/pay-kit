@@ -62,6 +62,7 @@ export type {
     SessionAuthentication,
     SessionVoucherSigner,
     SessionRequest,
+    SessionReceipt,
     SessionSigner,
     SessionSplit,
     SignedVoucher,

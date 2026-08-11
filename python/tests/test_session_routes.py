@@ -39,6 +39,7 @@ def _config() -> SessionConfig:
         network="localnet",
         channel_program=str(Keypair.from_seed(bytes([8] * 32)).pubkey()),
         grace_period_seconds=900,
+        current_slot_provider=lambda: 1,
     )
 
 
@@ -171,7 +172,7 @@ async def test_deliveries_reserves_and_shares_store() -> None:
     assert resp.status == 200
     assert resp.body["deliveryId"] == f"{channel_id}:1"
     assert resp.body["sequence"] == 1
-    assert resp.body["currency"] == "USDC"
+    assert resp.body["currency"] == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     assert resp.body["amount"] == "200"
 
 

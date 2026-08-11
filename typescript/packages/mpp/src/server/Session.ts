@@ -1,5 +1,7 @@
+import { isOffCurveAddress } from '@solana/addresses';
 import {
     type Address,
+    address,
     createSignableMessage,
     createSolanaRpc,
     getBase58Decoder,
@@ -17,7 +19,7 @@ import {
     validateIdleTimeoutOptions,
     verifySessionAuthentication,
 } from '../client/Session.js';
-import { defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
+import { defaultTokenProgramForCurrency, resolveStablecoinMint, stablecoinSymbolForCurrency } from '../constants.js';
 import * as Methods from '../Methods.js';
 import type {
     CommitReceipt,
@@ -25,6 +27,7 @@ import type {
     OpenPayload,
     SessionAction,
     SessionAuthentication,
+    SessionReceipt,
     SessionRequest,
     SessionSplit,
     SessionVoucherSigner,
@@ -146,7 +149,13 @@ export function session(parameters: session.Parameters) {
     const operator = operatorVoucherSigner?.address;
     const store = resolveSessionStore(parameters);
     const resolvedProgramId = (channelProgram ?? PAYMENT_CHANNELS_PROGRAM_ID) as Address;
-    const resolvedMint = resolveStablecoinMint(currency, network) ?? currency;
+    const resolvedMint = resolveStablecoinMint(currency, network);
+    if (!resolvedMint) throw new Error('session currency must be an SPL token mint; use wrapped SOL instead of SOL');
+    const resolvedDecimals = decimals ?? (stablecoinSymbolForCurrency(resolvedMint) ? 6 : undefined);
+    if (resolvedDecimals === undefined) throw new Error('decimals is required for a session SPL token mint');
+    if (!Number.isInteger(resolvedDecimals) || resolvedDecimals < 0 || resolvedDecimals > 9) {
+        throw new Error('decimals must be an integer from 0 to 9');
+    }
     const tokenProgram = parameters.tokenProgram ?? defaultTokenProgramForCurrency(currency, network);
     const lifecycleRef: { value: Lifecycle | undefined } = { value: undefined };
 
@@ -187,7 +196,7 @@ export function session(parameters: session.Parameters) {
     const method = Method.toServer(Methods.session, {
         defaults: {
             amount: amount.toString(),
-            currency,
+            currency: resolvedMint,
             methodDetails: {
                 channelProgram: resolvedProgramId.toString(),
                 network,
@@ -213,7 +222,7 @@ export function session(parameters: session.Parameters) {
 
             const challengeRequest: SessionRequest = {
                 amount: request.amount ?? amount.toString(),
-                currency,
+                currency: resolvedMint,
                 ...(request.description ? { description: request.description } : {}),
                 ...(request.externalId ? { externalId: request.externalId } : {}),
                 ...(minimumDeposit !== undefined ? { minimumDeposit: minimumDeposit.toString() } : {}),
@@ -223,7 +232,7 @@ export function session(parameters: session.Parameters) {
                 methodDetails: {
                     ...(resumeChannelId ? { channelId: resumeChannelId } : {}),
                     channelProgram: resolvedProgramId.toString(),
-                    ...(decimals !== undefined ? { decimals } : {}),
+                    decimals: resolvedDecimals,
                     ...(distributionSplits?.length ? { distributionSplits: [...distributionSplits] } : {}),
                     ...(feePayer ? { feePayer: true, feePayerKey: feePayerSigner?.address } : {}),
                     ...(gracePeriodSeconds !== undefined ? { gracePeriodSeconds } : {}),
@@ -254,7 +263,7 @@ export function session(parameters: session.Parameters) {
                     assertChallengeOpenNotExpired(cred.challenge.expires);
                     return await handleOpen({
                         challengeId: cred.challenge.id,
-                        currency,
+                        currency: resolvedMint,
                         distributionSplits,
                         externalId: cred.challenge.request.externalId,
                         feePayer,
@@ -301,6 +310,7 @@ export function session(parameters: session.Parameters) {
                         lifecycle: lifecycleRef.value,
                         minVoucherDelta,
                         payload: cred.payload,
+                        price: parseU64String(cred.challenge.request.amount, 'amount'),
                         settlementWindow: settlementWindowSeconds,
                         store,
                     });
@@ -318,7 +328,7 @@ export function session(parameters: session.Parameters) {
                     return await handleClose({
                         challengeId: cred.challenge.id,
                         currency,
-                        decimals,
+                        decimals: resolvedDecimals,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
                         merchantSigner: signer,
@@ -523,6 +533,10 @@ interface HandleOpenArgs {
 
 async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     const { payload } = args;
+    const authorizedSigner = address(payload.authorizedSigner);
+    if (isOffCurveAddress(authorizedSigner)) {
+        throw new Error('open authorizedSigner must be an on-curve Ed25519 public key');
+    }
     if (args.voucherSigner === 'operator' && (!args.operator || payload.authorizedSigner !== args.operator)) {
         throw new Error('operator voucher signing requires authorizedSigner to match the operator');
     }
@@ -571,6 +585,18 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         tokenProgram: args.tokenProgram,
     };
     const verified = await verifyOpenTx({ expected, openPayload: payload });
+    const existingChannel = await args.store.getChannel(verified.channelId);
+    if (!existingChannel) {
+        const currentSlot = await currentClusterSlot(args.rpc);
+        if (openSlot > currentSlot) {
+            throw new Error(`open openSlot ${openSlot.toString()} is ahead of the current cluster slot ${currentSlot}`);
+        }
+        if (currentSlot - openSlot > OPEN_SLOT_WINDOW) {
+            throw new Error(
+                `open openSlot ${openSlot.toString()} is outside the ${OPEN_SLOT_WINDOW.toString()}-slot freshness window of the current cluster slot ${currentSlot.toString()}`,
+            );
+        }
+    }
 
     const effectiveIdleTimeoutSeconds = resolveIdleTimeoutSeconds({
         defaultSeconds: args.idleTimeoutSeconds,
@@ -651,13 +677,10 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     });
     args.lifecycle?.touch(verified.channelId, persisted.idleTimeoutSeconds);
 
-    return Receipt.from({
-        method: 'solana',
-        ...(args.challengeId ? { challengeId: args.challengeId } : {}),
-        ...(args.externalId ? { externalId: args.externalId } : {}),
-        reference: signature ?? verified.channelId,
-        status: 'success',
-        timestamp: new Date().toISOString(),
+    return sessionReceipt(persisted, {
+        challengeId: args.challengeId,
+        externalId: args.externalId,
+        txHash: signature,
     });
 }
 
@@ -667,6 +690,7 @@ interface HandleVoucherArgs {
     readonly lifecycle: Lifecycle | undefined;
     readonly minVoucherDelta: bigint | undefined;
     readonly payload: { readonly action: 'voucher'; readonly channelId: string; readonly voucher: SignedVoucher };
+    readonly price: bigint;
     /** Forced-close grace period a non-zero voucher expiry must outlast. */
     readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
@@ -712,7 +736,7 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
     let voucherSignature = '';
     let cumulative = 0n;
     let idleTimeoutSeconds: number | undefined;
-    await args.store.updateChannel(args.payload.channelId, async current => {
+    const finalState = await args.store.updateChannel(args.payload.channelId, async current => {
         if (!current) throw new Error(`Channel ${args.payload.channelId} not found`);
         if (current.sealed || current.closeRequestedAt !== undefined) {
             throw new Error('Channel is closed or close is pending');
@@ -758,17 +782,14 @@ async function handleUse(args: HandleUseArgs): Promise<Receipt.Receipt> {
     });
     args.lifecycle?.touch(args.payload.channelId, idleTimeoutSeconds);
 
-    return Receipt.from({
-        method: 'solana',
-        ...(args.challengeId ? { challengeId: args.challengeId } : {}),
-        ...(args.externalId ? { externalId: args.externalId } : {}),
-        reference: `${args.payload.channelId}:${cumulative.toString()}:${voucherSignature}`,
-        status: 'success',
-        timestamp: new Date().toISOString(),
+    return sessionReceipt(finalState, {
+        challengeId: args.challengeId,
+        externalId: args.externalId,
     });
 }
 
 async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> {
+    if (args.price === 0n) throw new Error('session amount must be positive');
     const signed = normalizeSignedVoucher(args.payload.voucher);
     // The top-level channelId is the routing key; it must never diverge from
     // the signed voucher's inner channelId (spec: servers MUST reject the
@@ -793,8 +814,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
     rejectIfVoucherRejected(preflight);
 
     // Atomic re-check inside the lock (mirrors the Rust closure pattern).
-    let finalResult: VoucherVerifyResult = preflight;
-    await args.store.updateChannel(channelId, async current => {
+    const finalState = await args.store.updateChannel(channelId, async current => {
         if (!current) throw new Error(`Channel ${channelId} not found`);
         const result = await verifyVoucherForChannel({
             deposit: current.deposit,
@@ -803,34 +823,32 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
             signed,
             state: current,
         });
-        finalResult = result;
         if (result.status === 'rejected') {
             // Caller will translate; reuse the Rust convention of throwing.
             throw new Error(`${result.reason}: ${result.detail}`);
         }
-        if (result.status === 'replayed') return current;
+        const acceptedCumulative = result.newCumulative;
+        if (acceptedCumulative - current.spentAmount < args.price) {
+            throw new Error('insufficient authorized voucher availability');
+        }
         return {
             ...current,
-            cumulative: result.newCumulative,
-            highestVoucherExpiresAt: result.newExpiresAt,
-            highestVoucherSignature: result.newSignature,
+            ...(result.status === 'accepted'
+                ? {
+                      cumulative: result.newCumulative,
+                      highestVoucherExpiresAt: result.newExpiresAt,
+                      highestVoucherSignature: result.newSignature,
+                  }
+                : {}),
             lastActivityAt: Date.now(),
+            spentAmount: current.spentAmount + args.price,
         };
     });
-    if (finalResult.status === 'accepted') {
-        args.lifecycle?.touch(channelId, existing.idleTimeoutSeconds);
-    }
+    args.lifecycle?.touch(channelId, finalState.idleTimeoutSeconds);
 
-    const cumulative =
-        finalResult.status === 'accepted' || finalResult.status === 'replayed' ? finalResult.newCumulative : 0n;
-
-    return Receipt.from({
-        method: 'solana',
-        ...(args.challengeId ? { challengeId: args.challengeId } : {}),
-        ...(args.externalId ? { externalId: args.externalId } : {}),
-        reference: `${channelId}:${cumulative.toString()}`,
-        status: 'success',
-        timestamp: new Date().toISOString(),
+    return sessionReceipt(finalState, {
+        challengeId: args.challengeId,
+        externalId: args.externalId,
     });
 }
 
@@ -861,13 +879,10 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // transaction fails at preflight).
     const topUpSignature = transactionSignatureFromWire(args.payload.transaction) as unknown as string;
     if (existing.processedTopUpSignatures?.includes(topUpSignature)) {
-        return Receipt.from({
-            method: 'solana',
-            ...(args.challengeId ? { challengeId: args.challengeId } : {}),
-            ...(args.externalId ? { externalId: args.externalId } : {}),
-            reference: topUpSignature,
-            status: 'success',
-            timestamp: new Date().toISOString(),
+        return sessionReceipt(existing, {
+            challengeId: args.challengeId,
+            externalId: args.externalId,
+            txHash: topUpSignature,
         });
     }
     if (existing.sealed) throw new Error('Channel is already sealed');
@@ -905,13 +920,10 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     });
     args.lifecycle?.touch(result.channelId, result.idleTimeoutSeconds);
 
-    return Receipt.from({
-        method: 'solana',
-        ...(args.challengeId ? { challengeId: args.challengeId } : {}),
-        ...(args.externalId ? { externalId: args.externalId } : {}),
-        reference: signature as unknown as string,
-        status: 'success',
-        timestamp: new Date().toISOString(),
+    return sessionReceipt(result, {
+        challengeId: args.challengeId,
+        externalId: args.externalId,
+        txHash: signature as unknown as string,
     });
 }
 
@@ -1049,14 +1061,52 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
 
     args.lifecycle?.removeChannel(channelId);
 
-    return Receipt.from({
+    const finalState = await args.store.getChannel(channelId);
+    if (!finalState) throw new Error(`Channel ${channelId} not found after close`);
+    return sessionReceipt(finalState, {
+        challengeId: args.challengeId,
+        externalId: args.externalId,
+        refunded: finalState.deposit - finalState.cumulative,
+        txHash: onChainSignature,
+    });
+}
+
+interface SessionReceiptOptions {
+    readonly challengeId: string | undefined;
+    readonly externalId: string | undefined;
+    readonly refunded?: bigint | undefined;
+    readonly txHash?: string | undefined;
+}
+
+/** Build the receipt extension required by draft-solana-session-00. */
+function sessionReceipt(state: ChannelState, options: SessionReceiptOptions): SessionReceipt {
+    if (state.idleTimeoutSeconds === undefined) {
+        throw new Error(`Channel ${state.channelId} is missing its negotiated idle timeout`);
+    }
+    return {
+        acceptedCumulative: state.cumulative.toString(),
+        ...(options.challengeId ? { challengeId: options.challengeId } : {}),
+        ...(options.externalId ? { externalId: options.externalId } : {}),
+        idleTimeoutSeconds: state.idleTimeoutSeconds,
+        intent: 'session',
         method: 'solana',
-        ...(args.challengeId ? { challengeId: args.challengeId } : {}),
-        ...(args.externalId ? { externalId: args.externalId } : {}),
-        reference: onChainSignature ?? channelId,
+        reference: state.channelId,
+        ...(options.refunded !== undefined ? { refunded: options.refunded.toString() } : {}),
+        spent: state.spentAmount.toString(),
         status: 'success',
         timestamp: new Date().toISOString(),
-    });
+        ...(options.txHash ? { txHash: options.txHash } : {}),
+    };
+}
+
+async function currentClusterSlot(rpc: RpcLike): Promise<bigint> {
+    const getSlot = (rpc as { getSlot?: (config?: { commitment?: string }) => { send(): Promise<bigint> } }).getSlot;
+    if (!getSlot) throw new Error('open freshness validation requires an RPC getSlot method');
+    try {
+        return await getSlot.call(rpc, { commitment: 'confirmed' }).send();
+    } catch (error) {
+        throw new Error(`failed to fetch current cluster slot for session open: ${String(error)}`);
+    }
 }
 
 function sessionAuthenticationMatches(left: SessionAuthentication, right: SessionAuthentication): boolean {
@@ -1215,6 +1265,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
             highestVoucherSignature: signed.signature,
             lastActivityAt: Date.now(),
             pendingDeliveries: nextPending,
+            spentAmount: current.spentAmount + actualAmount,
         };
     });
 

@@ -229,14 +229,41 @@ def parse_receipt(header: str) -> Receipt:
     if not _ISO8601_RE.match(timestamp):
         raise ParseError(f"Invalid ISO-8601 timestamp in receipt: {timestamp!r}")
 
-    return Receipt(
+    idle_timeout_seconds = data.get("idleTimeoutSeconds")
+    if idle_timeout_seconds is not None and (
+        isinstance(idle_timeout_seconds, bool) or not isinstance(idle_timeout_seconds, int) or idle_timeout_seconds < 0
+    ):
+        raise ParseError("'idleTimeoutSeconds' in receipt must be a non-negative integer")
+
+    receipt = Receipt(
         status=str(data["status"]),
         method=str(data["method"]),
         timestamp=timestamp,
         reference=str(data["reference"]),
         challenge_id=str(data.get("challengeId", "")),
         external_id=str(data.get("externalId", "")),
+        intent=str(data.get("intent", "")),
+        accepted_cumulative=str(data.get("acceptedCumulative", "")),
+        spent=str(data.get("spent", "")),
+        idle_timeout_seconds=idle_timeout_seconds,
+        tx_hash=str(data.get("txHash", "")),
+        refunded=str(data.get("refunded", "")),
     )
+    if receipt.intent == "session":
+        for field, value in (
+            ("acceptedCumulative", receipt.accepted_cumulative),
+            ("spent", receipt.spent),
+            ("idleTimeoutSeconds", receipt.idle_timeout_seconds),
+        ):
+            if value is None or value == "":
+                raise ParseError(f"Missing '{field}' in session receipt")
+        for field, value in (
+            ("acceptedCumulative", receipt.accepted_cumulative),
+            ("spent", receipt.spent),
+        ):
+            if not value.isascii() or not value.isdigit():
+                raise ParseError(f"'{field}' in session receipt must be a decimal string")
+    return receipt
 
 
 def format_receipt(receipt: Receipt) -> str:
@@ -250,6 +277,18 @@ def format_receipt(receipt: Receipt) -> str:
     }
     if receipt.external_id:
         data["externalId"] = receipt.external_id
+    if receipt.intent:
+        data["intent"] = receipt.intent
+    if receipt.accepted_cumulative:
+        data["acceptedCumulative"] = receipt.accepted_cumulative
+    if receipt.spent:
+        data["spent"] = receipt.spent
+    if receipt.idle_timeout_seconds is not None:
+        data["idleTimeoutSeconds"] = receipt.idle_timeout_seconds
+    if receipt.tx_hash:
+        data["txHash"] = receipt.tx_hash
+    if receipt.refunded:
+        data["refunded"] = receipt.refunded
     return encode_json(data)
 
 

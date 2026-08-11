@@ -389,6 +389,14 @@ class _Adapter:
                 return None
             return (blockhash, slot)
 
+        def _current_slot() -> int:
+            _, slot = _fetch_recent_state_sync(self.rpc_url)
+            if slot is None:
+                raise ValueError("session harness RPC did not return a current slot")
+            return slot
+
+        config.current_slot_provider = _current_slot
+
         core = SessionServer(config, MemoryChannelStore()).with_blockhash_cache(_blockhash_cache)
         self.session_method = Session(
             core=core,

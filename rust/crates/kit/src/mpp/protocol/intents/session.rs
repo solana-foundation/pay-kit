@@ -263,7 +263,7 @@ pub enum SessionAction {
 
 /// Exact payment-channel `open` credential payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenPayload {
     pub channel_id: String,
     pub payer: String,
@@ -293,6 +293,47 @@ pub struct OpenPayload {
     pub transaction: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<serde_json::Value>,
+}
+
+/// Literal intent discriminator required on Solana session receipts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionReceiptIntent {
+    /// The receipt records a payment-channel session action.
+    #[serde(rename = "session")]
+    Session,
+}
+
+/// Fields added to the standard receipt for every session action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionReceiptExtensions {
+    /// Intent discriminator; always serializes as `"session"`.
+    pub intent: SessionReceiptIntent,
+    /// Highest cumulative voucher accepted by the server, in base units.
+    #[serde(
+        deserialize_with = "deserialize_u64_from_string",
+        serialize_with = "serialize_u64_as_string"
+    )]
+    pub accepted_cumulative: u64,
+    /// Total value already consumed by delivered work, in base units.
+    #[serde(
+        deserialize_with = "deserialize_u64_from_string",
+        serialize_with = "serialize_u64_as_string"
+    )]
+    pub spent: u64,
+    /// Effective inactivity threshold negotiated for the channel.
+    pub idle_timeout_seconds: u32,
+    /// Settlement transaction signature returned by a close action, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    /// Amount returned to the payer after distribution, when known.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_opt_u64_from_string",
+        serialize_with = "serialize_opt_u64_as_string"
+    )]
+    pub refunded: Option<u64>,
 }
 
 impl OpenPayload {
@@ -743,6 +784,29 @@ mod tests {
             let encoded = serde_json::to_string(&action).unwrap();
             let _: SessionAction = serde_json::from_str(&encoded).unwrap();
         }
+    }
+
+    #[test]
+    fn open_payload_rejects_wire_bump() {
+        let open = OpenPayload::payment_channel(
+            "channel".to_string(),
+            "100".to_string(),
+            "payer".to_string(),
+            "payee".to_string(),
+            "mint".to_string(),
+            7,
+            900,
+            42,
+            "signer".to_string(),
+            "transaction".to_string(),
+        );
+        let mut value = serde_json::to_value(open).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("bump".to_string(), serde_json::json!(255));
+        let error = serde_json::from_value::<OpenPayload>(value).unwrap_err();
+        assert!(error.to_string().contains("unknown field `bump`"));
     }
 
     #[test]
