@@ -137,6 +137,12 @@ def _receipt_to_canonical(rcpt: Receipt) -> dict[str, Any]:
         "reference": rcpt.reference,
         "challengeId": rcpt.challenge_id,
         "externalId": rcpt.external_id,
+        "intent": rcpt.intent,
+        "acceptedCumulative": rcpt.accepted_cumulative,
+        "spent": rcpt.spent,
+        "idleTimeoutSeconds": rcpt.idle_timeout_seconds,
+        "txHash": rcpt.tx_hash,
+        "refunded": rcpt.refunded,
     }
     return _drop_empty(out)
 
@@ -186,6 +192,9 @@ def _credential_from_canonical(obj: dict[str, Any]) -> PaymentCredential:
 
 
 def _receipt_from_canonical(obj: dict[str, Any]) -> Receipt:
+    idle_timeout_seconds = obj.get("idleTimeoutSeconds")
+    if isinstance(idle_timeout_seconds, bool) or not isinstance(idle_timeout_seconds, int):
+        idle_timeout_seconds = None
     return Receipt(
         status=str(obj.get("status", "")),
         method=str(obj.get("method", "")),
@@ -193,6 +202,12 @@ def _receipt_from_canonical(obj: dict[str, Any]) -> Receipt:
         reference=str(obj.get("reference", "")),
         challenge_id=str(obj.get("challengeId", "")),
         external_id=str(obj.get("externalId", "")),
+        intent=str(obj.get("intent", "")),
+        accepted_cumulative=str(obj.get("acceptedCumulative", "")),
+        spent=str(obj.get("spent", "")),
+        idle_timeout_seconds=idle_timeout_seconds,
+        tx_hash=str(obj.get("txHash", "")),
+        refunded=str(obj.get("refunded", "")),
     )
 
 
