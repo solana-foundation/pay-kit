@@ -443,16 +443,13 @@ test('#10 createCredential rejects a network that does not match expectedNetwork
 
 // ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
 //
-// Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
-// under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
-// REJECT verdict against the same vectors, so a divergence between two SDKs
-// shows up as a failing test in exactly one of them rather than as silence.
+// Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+// `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT verdict
+// against the same vectors, so a divergence between two SDKs shows up as a
+// failing test in exactly one of them rather than as silence.
 //
-// Only the `applies_to == "date-time"` slice runs here. The corpus also carries
-// `full-date` and `full-time` scenarios, which answer a different question than
-// an `expires` field asks — `1963-06-19` is a valid RFC 3339 `full-date` and no
-// `date-time` parser should accept it. Selection is on the first-class
-// `applies_to` field, never on a name prefix or a description string.
+// Every scenario in the file runs. There is no slice to select and no scenario
+// to skip.
 //
 // WHAT THIS ASSERTS, PRECISELY. This package has no RFC 3339 parser module.
 // The two expiry call sites delegate the whole parse to the JS engine:
@@ -478,33 +475,32 @@ import { readFileSync } from 'node:fs';
 interface ConformanceScenario {
     name: string;
     description: string;
-    applies_to: string;
     input: string;
     tests: { parse: true | { success: boolean } };
 }
 
 const CORPUS_URL = new URL(
-    '../../../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json',
+    '../../../../../harness/vectors/mpp-protocol/expires.json',
     import.meta.url,
 );
 
 const corpus = JSON.parse(readFileSync(CORPUS_URL, 'utf8')) as { scenarios: ConformanceScenario[] };
-const dateTimeVectors = corpus.scenarios.filter((scenario) => scenario.applies_to === 'date-time');
+const vectors = corpus.scenarios;
 
 // `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success": false, …}}` is
 // REJECT. Identical to the encoding the other vector files in the same
 // directory use.
 const expectsAccept = (scenario: ConformanceScenario) => scenario.tests.parse === true;
 
-// Guard the filter itself so a regression in it cannot go silent.
-test('RFC 3339 corpus admits only the date-time slice', () => {
-    expect(dateTimeVectors.length).toBe(
-        corpus.scenarios.filter((scenario) => scenario.applies_to === 'date-time').length,
-    );
-    expect(dateTimeVectors.length).toBeLessThan(corpus.scenarios.length);
+// Guard the loader so a regression in it cannot go silent: every scenario in
+// the file is exercised, and a truncated or empty read fails here rather than
+// passing quietly with nothing to run.
+test('every RFC 3339 corpus scenario is exercised', () => {
+    expect(vectors.length).toBe(corpus.scenarios.length);
+    expect(vectors.length).toBeGreaterThan(0);
 });
 
-for (const scenario of dateTimeVectors) {
+for (const scenario of vectors) {
     test(`RFC 3339 corpus / charge call site / ${scenario.name}`, () => {
         // client/Charge.ts:404
         const accepted = !Number.isNaN(new Date(scenario.input).getTime());

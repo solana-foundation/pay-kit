@@ -153,20 +153,11 @@ export type ChallengeIdScenario = {
 };
 
 // RFC 3339 `expires` scenario (issue #111). Same `{ name, description, tags,
-// tests }` spine as every other scenario in this directory; the input field is
-// named for its domain (`input`, a single untrusted string) the way header
+// …, tests }` spine as every other scenario in this directory; the input field
+// is named for its domain (`input`, a single untrusted string) the way header
 // scenarios name theirs `wire` and base64url names its `decoded` / `encoded`.
 //
-// `applies_to` is load-bearing and MUST be read before `tests.parse`. The
-// corpus carries vectors for three different RFC 3339 productions —
-// `date-time`, `full-date`, `full-time` — and a verdict only means what it
-// says inside its own production. MPP `expires` holds a `date-time`; a
-// `full-date` ACCEPT such as `1963-06-19` is a correct statement about a
-// different production and is NOT an instruction to accept that value as an
-// `expires`. `collectExpiresCases` filters on this field for exactly that
-// reason. See the corpus's own `scope` block.
-//
-// No `object` golden is carried for an ACCEPT: the corpus is deliberately a
+// No `object` golden is carried for an ACCEPT: the file is deliberately a
 // verdict corpus, not an instant-normalization corpus (leap seconds have no
 // representable instant in most date libraries and sub-nanosecond precision
 // truncates differently per language). #111 asks for ACCEPT/REJECT parity
@@ -175,12 +166,8 @@ export type ExpiresScenario = {
   name: string;
   description?: string;
   tags?: string[];
-  // Which RFC 3339 production this scenario's verdict answers.
-  applies_to: "date-time" | "full-date" | "full-time";
   // The single untrusted string under test.
   input: string;
-  source?: string;
-  provenance?: Record<string, unknown>;
   tests: TestFlags;
 };
 
@@ -216,13 +203,9 @@ export function loadChallengeId(): VectorFile<ChallengeIdScenario> {
   return load<ChallengeIdScenario>("challenge-id.json");
 }
 
-export function loadExpiresRfc3339(): VectorFile<ExpiresScenario> {
-  return load<ExpiresScenario>("expires-rfc3339-corpus.json");
+export function loadExpires(): VectorFile<ExpiresScenario> {
+  return load<ExpiresScenario>("expires.json");
 }
-
-// The RFC 3339 production MPP `expires` holds. Everything else in the corpus
-// answers a different question than an `expires` field asks.
-export const EXPIRES_APPLIES_TO = "date-time";
 
 // A single dispatchable unit of work derived from a vector scenario: the
 // op to run, the adapter input envelope, and either the golden success
@@ -401,13 +384,8 @@ export function collectProtocolCases(): ProtocolCase[] {
 // Expand the RFC 3339 `expires` corpus into `expires.parse` cases (issue
 // #111: assert ACCEPT and REJECT outcomes match across SDKs for each vector).
 //
-// FILTER. Only `applies_to === "date-time"` vectors are admitted. The corpus
-// ships 228 scenarios covering three RFC 3339 productions; 112 of them answer
-// `full-date` / `full-time` questions, and 29 of those carry ACCEPT for inputs
-// no `expires` parser may accept (`1963-06-19`, `08:30:06Z`, ...). Running the
-// unfiltered file against an `expires` parser produces failures that are not
-// defects. The filter is on the first-class `applies_to` field — never on a
-// name prefix, a description string, or any other heuristic.
+// Every scenario in the file is admitted. There is no slice to select: each row
+// carries an `expires` verdict and nothing else does.
 //
 // ABI shape, PROPOSED BY THIS PR — the maintainer should overrule any of it:
 //   input   : { expires: "<the untrusted string>" }
@@ -429,18 +407,15 @@ export function collectProtocolCases(): ProtocolCase[] {
 // Deliberately NOT folded into `collectProtocolCases()`. That list is driven
 // end-to-end against the TypeScript reference adapter by
 // `test/protocol-conformance.test.ts`, and no adapter implements
-// `expires.parse` yet — folding these in would add 116 red cases to a green
-// suite. Nothing calls this collector today: each SDK's `expires` test loads
-// the corpus JSON itself and applies this same `applies_to == "date-time"`
-// filter independently. The collector is the TypeScript side of that contract,
-// kept for the day an adapter implements `expires.parse` — at which point
-// absorbing it is a one-line spread into `cases` above.
+// `expires.parse` yet — folding these in would add one red case per vector to
+// a green suite. Nothing calls this collector today: each SDK's `expires` test
+// loads the vector JSON itself. The collector is the TypeScript side of that
+// contract, kept for the day an adapter implements `expires.parse` — at which
+// point absorbing it is a one-line spread into `cases` above.
 export function collectExpiresCases(): ProtocolCase[] {
   const cases: ProtocolCase[] = [];
 
-  for (const s of loadExpiresRfc3339().scenarios) {
-    if (s.applies_to !== EXPIRES_APPLIES_TO) continue;
-
+  for (const s of loadExpires().scenarios) {
     const input = { expires: s.input };
     const parseErr = expectsError(s.tests.parse);
     if (parseErr) {

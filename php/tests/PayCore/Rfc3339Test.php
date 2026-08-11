@@ -81,21 +81,18 @@ final class Rfc3339Test extends TestCase
 
     // ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
     //
-    // Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
-    // under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
-    // REJECT verdict against the same vectors, so a divergence between two SDKs
-    // shows up as a failing test in exactly one of them rather than as silence.
+    // Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+    // `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT
+    // verdict against the same vectors, so a divergence between two SDKs shows
+    // up as a failing test in exactly one of them rather than as silence.
 
-    private const CORPUS_PATH = __DIR__ . '/../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json';
+    private const CORPUS_PATH = __DIR__ . '/../../../harness/vectors/mpp-protocol/expires.json';
 
     /**
-     * The `applies_to == "date-time"` slice of the shared corpus.
+     * Every scenario in the shared corpus.
      *
-     * The corpus also carries `full-date` and `full-time` scenarios, which
-     * answer a different question than an `expires` field asks — `1963-06-19`
-     * is a valid RFC 3339 `full-date` and no `date-time` parser should accept
-     * it. Selection is on the first-class `applies_to` field, never on a name
-     * prefix or a description string.
+     * Every scenario in the file is an `expires` verdict; there is no slice to
+     * select and no scenario to skip.
      *
      * Verdict encoding, identical to the other vector files in the same
      * directory: `"tests": {"parse": true}` is ACCEPT, and
@@ -113,9 +110,6 @@ final class Rfc3339Test extends TestCase
 
         $vectors = [];
         foreach ($corpus['scenarios'] as $scenario) {
-            if ($scenario['applies_to'] !== 'date-time') {
-                continue;
-            }
             $vectors[$scenario['name']] = [
                 $scenario['name'],
                 $scenario['input'],
@@ -146,18 +140,16 @@ final class Rfc3339Test extends TestCase
         ));
     }
 
-    /** Guard the filter itself so a regression in it cannot go silent. */
-    public function testCorpusAdmitsOnlyTheDateTimeSlice(): void
+    /**
+     * Guard the loader so a regression in it cannot go silent: every scenario
+     * in the file is exercised, and a truncated or empty read fails here rather
+     * than passing quietly with nothing to run.
+     */
+    public function testEveryCorpusScenarioIsExercised(): void
     {
         $corpus = json_decode(file_get_contents(self::CORPUS_PATH), true, 512, JSON_THROW_ON_ERROR);
-        $expected = 0;
-        foreach ($corpus['scenarios'] as $scenario) {
-            if ($scenario['applies_to'] === 'date-time') {
-                $expected++;
-            }
-        }
 
-        $this->assertSame($expected, count(self::conformanceVectors()));
-        $this->assertLessThan(count($corpus['scenarios']), count(self::conformanceVectors()));
+        $this->assertSame(count($corpus['scenarios']), count(self::conformanceVectors()));
+        $this->assertGreaterThan(0, count(self::conformanceVectors()));
     }
 }

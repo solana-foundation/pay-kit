@@ -86,16 +86,13 @@ end
 
 # ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
 #
-# Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
-# under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
-# REJECT verdict against the same vectors, so a divergence between two SDKs
-# shows up as a failing test in exactly one of them rather than as silence.
+# Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+# `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT verdict
+# against the same vectors, so a divergence between two SDKs shows up as a
+# failing test in exactly one of them rather than as silence.
 #
-# Only the `applies_to == "date-time"` slice runs here. The corpus also carries
-# `full-date` and `full-time` scenarios, which answer a different question than
-# an `expires` field asks — `1963-06-19` is a valid RFC 3339 `full-date` and no
-# `date-time` parser should accept it. Selection is on the first-class
-# `applies_to` field, never on a name prefix or a description string.
+# Every scenario in the file runs. There is no slice to select and no scenario
+# to skip.
 #
 # The verdict comes straight out of `PayCore::Rfc3339Parser.parse`, which
 # returns a `Time` on success and `nil` on any parse failure. That is the
@@ -103,24 +100,25 @@ end
 # field is actually checked against.
 class ExpiresRfc3339CorpusTest < Minitest::Test
   CORPUS_PATH = File.expand_path(
-    "../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json", __dir__
+    "../../../harness/vectors/mpp-protocol/expires.json", __dir__
   )
 
-  def self.date_time_vectors
-    corpus = JSON.parse(File.read(CORPUS_PATH))
-    corpus.fetch("scenarios").select { |scenario| scenario["applies_to"] == "date-time" }
+  def self.vectors
+    JSON.parse(File.read(CORPUS_PATH)).fetch("scenarios")
   end
 
-  DATE_TIME_VECTORS = date_time_vectors.freeze
+  VECTORS = vectors.freeze
 
-  # Guard the filter itself so a regression in it cannot go silent.
-  def test_corpus_admits_only_the_date_time_slice
+  # Guard the loader so a regression in it cannot go silent: every scenario in
+  # the file is exercised, and a truncated or empty read fails here rather than
+  # passing quietly with nothing to run.
+  def test_every_corpus_scenario_is_exercised
     all = JSON.parse(File.read(CORPUS_PATH)).fetch("scenarios")
-    assert_equal all.count { |s| s["applies_to"] == "date-time" }, DATE_TIME_VECTORS.length
-    assert_operator DATE_TIME_VECTORS.length, :<, all.length
+    assert_equal all.length, VECTORS.length
+    assert_operator VECTORS.length, :>, 0
   end
 
-  DATE_TIME_VECTORS.each do |scenario|
+  VECTORS.each do |scenario|
     # `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success": false, …}}`
     # is REJECT. Identical to the encoding the other vector files in the same
     # directory use.

@@ -814,17 +814,13 @@ mod tests {
 
     // ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
     //
-    // Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
-    // under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
-    // REJECT verdict against the same vectors, so a divergence between two SDKs
-    // shows up as a failing test in exactly one of them rather than as silence.
+    // Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+    // `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT
+    // verdict against the same vectors, so a divergence between two SDKs shows
+    // up as a failing test in exactly one of them rather than as silence.
     //
-    // Only the `applies_to == "date-time"` slice runs here. The corpus also
-    // carries `full-date` and `full-time` scenarios, which answer a different
-    // question than an `expires` field asks — `1963-06-19` is a valid RFC 3339
-    // `full-date` and no `date-time` parser should accept it. Selection is on
-    // the first-class `applies_to` field, never on a name prefix or a
-    // description string.
+    // Every scenario in the file runs. There is no slice to select and no
+    // scenario to skip.
     //
     // WHY THE VERDICT IS READ OFF `OffsetDateTime::parse` AND NOT OFF
     // `is_expired`. `is_expired` (this file, `PaymentChallenge::is_expired`)
@@ -842,11 +838,11 @@ mod tests {
 
     const CONFORMANCE_CORPUS: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json"
+        "/../../../harness/vectors/mpp-protocol/expires.json"
     );
 
-    /// `(name, input, expect_accept, description)` for the `date-time` slice.
-    fn conformance_date_time_vectors() -> Vec<(String, String, bool, String)> {
+    /// `(name, input, expect_accept, description)` for every corpus scenario.
+    fn conformance_vectors() -> Vec<(String, String, bool, String)> {
         let raw = std::fs::read_to_string(CONFORMANCE_CORPUS)
             .unwrap_or_else(|e| panic!("conformance corpus unreadable at {CONFORMANCE_CORPUS}: {e}"));
         let corpus: serde_json::Value =
@@ -856,7 +852,6 @@ mod tests {
             .as_array()
             .expect("corpus must carry a `scenarios` array")
             .iter()
-            .filter(|scenario| scenario["applies_to"] == "date-time")
             .map(|scenario| {
                 // `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success":
                 // false, …}}` is REJECT. Identical to the encoding the other
@@ -874,11 +869,8 @@ mod tests {
 
     #[test]
     fn rfc3339_conformance_corpus() {
-        let vectors = conformance_date_time_vectors();
-        assert!(
-            !vectors.is_empty(),
-            "conformance corpus admitted zero date-time scenarios"
-        );
+        let vectors = conformance_vectors();
+        assert!(!vectors.is_empty(), "conformance corpus carried zero scenarios");
 
         let mut divergences = Vec::new();
         for (name, input, expect_accept, description) in &vectors {
@@ -899,7 +891,7 @@ mod tests {
 
         assert!(
             divergences.is_empty(),
-            "{} of {} date-time vectors diverge from the cross-SDK corpus:\n  {}",
+            "{} of {} vectors diverge from the cross-SDK corpus:\n  {}",
             divergences.len(),
             vectors.len(),
             divergences.join("\n  "),
@@ -911,7 +903,7 @@ mod tests {
         // Ties the corpus to the shipped surface. A REJECT vector must make
         // `is_expired()` true; a parse failure is the only route to that
         // outcome for an unparseable value, so this direction is unambiguous.
-        let vectors = conformance_date_time_vectors();
+        let vectors = conformance_vectors();
         let rejects: Vec<_> = vectors.iter().filter(|vector| !vector.2).collect();
         assert!(!rejects.is_empty(), "corpus admitted zero REJECT vectors");
 
@@ -938,13 +930,16 @@ mod tests {
         );
     }
 
-    /// Guard the filter itself so a regression in it cannot go silent.
+    /// Guard the loader so a regression in it cannot go silent: every scenario
+    /// in the file is exercised, and a truncated or empty read fails here
+    /// rather than passing quietly with nothing left to run.
     #[test]
-    fn rfc3339_conformance_corpus_admits_only_the_date_time_slice() {
+    fn rfc3339_conformance_corpus_exercises_every_scenario() {
         let raw = std::fs::read_to_string(CONFORMANCE_CORPUS).expect("corpus unreadable");
         let corpus: serde_json::Value = serde_json::from_str(&raw).expect("corpus must be JSON");
         let total = corpus["scenarios"].as_array().unwrap().len();
-        let admitted = conformance_date_time_vectors().len();
-        assert!(admitted < total, "date-time filter admitted every scenario");
+        let admitted = conformance_vectors().len();
+        assert!(total > 0, "corpus carried zero scenarios");
+        assert_eq!(admitted, total, "not every corpus scenario was exercised");
     }
 }

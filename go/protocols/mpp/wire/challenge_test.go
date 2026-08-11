@@ -166,17 +166,13 @@ func TestNewPaymentCredentialRejectsUnmarshalablePayload(t *testing.T) {
 
 // ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
 //
-// Vectors live in `harness/vectors/mpp-protocol/expires-rfc3339-corpus.json`
-// under the `expires.parse` operation. Every SDK asserts the same ACCEPT /
-// REJECT verdict against the same vectors, so a divergence between two SDKs
-// shows up as a failing test in exactly one of them rather than as silence.
+// Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+// `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT verdict
+// against the same vectors, so a divergence between two SDKs shows up as a
+// failing test in exactly one of them rather than as silence.
 //
-// Only the `applies_to == "date-time"` slice is run here. The corpus also
-// carries `full-date` and `full-time` scenarios, which answer a different
-// question than an `expires` field asks — `1963-06-19` is a valid RFC 3339
-// `full-date` and no `date-time` parser should accept it. Filtering is on the
-// first-class `applies_to` field, never on a name prefix or a description
-// string.
+// Every scenario in the file is run. There is no slice to select and no
+// scenario to skip.
 //
 // The verdict is read out of this package's own `PaymentChallenge.IsExpired`,
 // not out of a bare `time.Parse`. `IsExpired` fails closed — it returns true
@@ -186,7 +182,7 @@ func TestNewPaymentCredentialRejectsUnmarshalablePayload(t *testing.T) {
 // IsExpired then returns false for a parse success and true for a parse
 // failure, and the verdict comes from the shipped function.
 
-const conformanceCorpusPath = "../../../../harness/vectors/mpp-protocol/expires-rfc3339-corpus.json"
+const conformanceCorpusPath = "../../../../harness/vectors/mpp-protocol/expires.json"
 
 // rfc3339ConformanceReference is far enough in the past that every instant the
 // corpus can express sorts after it, so IsExpired's time comparison never fires
@@ -196,7 +192,6 @@ var rfc3339ConformanceReference = time.Date(-9999, time.January, 1, 0, 0, 0, 0, 
 type rfc3339Scenario struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
-	AppliesTo   string          `json:"applies_to"`
 	Input       string          `json:"input"`
 	Tests       json.RawMessage `json:"tests"`
 }
@@ -229,7 +224,10 @@ func (s rfc3339Scenario) wantsAccept(t *testing.T) bool {
 	return rejection.Success
 }
 
-func loadRFC3339DateTimeVectors(t *testing.T) []rfc3339Scenario {
+// loadRFC3339Vectors returns every scenario in the corpus. The zero-length
+// check guards the loader: a truncated or empty read fails here rather than
+// passing quietly with nothing left to run.
+func loadRFC3339Vectors(t *testing.T) []rfc3339Scenario {
 	t.Helper()
 	raw, err := os.ReadFile(conformanceCorpusPath)
 	if err != nil {
@@ -239,21 +237,15 @@ func loadRFC3339DateTimeVectors(t *testing.T) []rfc3339Scenario {
 	if err := json.Unmarshal(raw, &corpus); err != nil {
 		t.Fatalf("conformance corpus did not decode: %v", err)
 	}
-	var dateTime []rfc3339Scenario
-	for _, scenario := range corpus.Scenarios {
-		if scenario.AppliesTo == "date-time" {
-			dateTime = append(dateTime, scenario)
-		}
+	if len(corpus.Scenarios) == 0 {
+		t.Fatal("conformance corpus carried zero scenarios")
 	}
-	if len(dateTime) == 0 {
-		t.Fatal("conformance corpus admitted zero date-time scenarios")
-	}
-	return dateTime
+	return corpus.Scenarios
 }
 
 func TestRFC3339ConformanceCorpus(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range loadRFC3339DateTimeVectors(t) {
+	for _, scenario := range loadRFC3339Vectors(t) {
 		t.Run(scenario.Name, func(t *testing.T) {
 			t.Parallel()
 			challenge := PaymentChallenge{Expires: scenario.Input}

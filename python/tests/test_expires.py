@@ -143,19 +143,16 @@ _CORPUS_PATH = (
     / "harness"
     / "vectors"
     / "mpp-protocol"
-    / "expires-rfc3339-corpus.json"
+    / "expires.json"
 )
 
 
-def _load_date_time_vectors() -> list[tuple[str, str, bool, str]]:
-    """Return the ``applies_to == "date-time"`` slice of the shared corpus.
+def _load_vectors() -> list[tuple[str, str, bool, str]]:
+    """Return every scenario in the shared corpus.
 
-    Yields ``(name, input, expect_accept, description)``. The corpus also
-    carries ``full-date`` and ``full-time`` scenarios; those answer a different
-    question than an ``expires`` field asks — ``1963-06-19`` is a valid RFC 3339
-    ``full-date`` and no ``date-time`` parser should accept it. Selection is on
-    the first-class ``applies_to`` field, never on a name prefix or a
-    description string.
+    Yields ``(name, input, expect_accept, description)``. Every scenario in the
+    file is an ``expires`` verdict; there is no slice to select and no scenario
+    to skip.
 
     Verdict encoding, identical to the other vector files in the same
     directory: ``"tests": {"parse": true}`` is ACCEPT, and
@@ -164,8 +161,6 @@ def _load_date_time_vectors() -> list[tuple[str, str, bool, str]]:
     corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
     vectors: list[tuple[str, str, bool, str]] = []
     for scenario in corpus["scenarios"]:
-        if scenario["applies_to"] != "date-time":
-            continue
         expectation = scenario["tests"]["parse"]
         expect_accept = expectation is True
         vectors.append(
@@ -174,7 +169,7 @@ def _load_date_time_vectors() -> list[tuple[str, str, bool, str]]:
     return vectors
 
 
-_DATE_TIME_VECTORS = _load_date_time_vectors()
+_VECTORS = _load_vectors()
 
 
 class TestRFC3339ConformanceCorpus:
@@ -198,8 +193,8 @@ class TestRFC3339ConformanceCorpus:
 
     @pytest.mark.parametrize(
         ("name", "value", "expect_accept", "description"),
-        _DATE_TIME_VECTORS,
-        ids=[vector[0] for vector in _DATE_TIME_VECTORS],
+        _VECTORS,
+        ids=[vector[0] for vector in _VECTORS],
     )
     def test_vector(self, name: str, value: str, expect_accept: bool, description: str):
         from solana_pay_kit.protocols.mpp.core.types import _parse_rfc3339
@@ -216,10 +211,12 @@ class TestRFC3339ConformanceCorpus:
             f"_parse_rfc3339 reports {'ACCEPT' if accepted else 'REJECT'}"
         )
 
-    def test_corpus_admits_only_the_date_time_slice(self):
-        """Guard the filter itself: a loader regression must not go silent."""
+    def test_every_corpus_scenario_is_exercised(self):
+        """Guard the loader: a regression in it must not go silent.
+
+        A truncated or empty read fails here rather than passing quietly with
+        nothing left to run.
+        """
         corpus = json.loads(_CORPUS_PATH.read_text(encoding="utf-8"))
-        assert len(_DATE_TIME_VECTORS) == sum(
-            1 for scenario in corpus["scenarios"] if scenario["applies_to"] == "date-time"
-        )
-        assert len(_DATE_TIME_VECTORS) < len(corpus["scenarios"])
+        assert len(_VECTORS) == len(corpus["scenarios"])
+        assert len(_VECTORS) > 0
