@@ -144,7 +144,7 @@ pub fn default_token_program_for_currency(currency: &str, network: Option<&str>)
     }
 }
 
-// ── PayKit Slice 1: prepared-transaction bounds ──
+// ── Prepared-transaction bounds ──
 //
 // Shared numeric ceilings for the prepared charge/message builder in
 // `mpp::client::charge` (`ComputeBudgetOptions`, `check_transaction_packet_size`).

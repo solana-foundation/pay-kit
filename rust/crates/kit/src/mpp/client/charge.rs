@@ -69,7 +69,7 @@ pub struct BuildChargeTransactionOptions {
     /// auto-pay agent meant for one network from being lured into
     /// signing a transaction for another.
     pub expected_network: Option<String>,
-    /// PayKit Slice 1: bounded compute-unit price/limit for the prepared
+    /// Bounded compute-unit price/limit for the prepared
     /// transaction. Defaults match the historical hardcoded budget (1
     /// micro-lamport, 200,000 CU) — existing callers see no behavior change
     /// unless they opt into different values.
@@ -304,7 +304,7 @@ pub async fn build_prepared_charge(
         None
     };
 
-    // PayKit Slice 1: bounded compute-unit price/limit instead of the
+    // Bounded compute-unit price/limit instead of the
     // historical hardcoded 1 micro-lamport / 200,000 units.
     options.compute_budget.validate()?;
 
@@ -365,7 +365,7 @@ pub async fn build_prepared_charge(
     let message = Message::new_with_blockhash(&instructions, Some(&fee_payer), &blockhash);
     let transaction = Transaction::new_unsigned(message);
 
-    // PayKit Slice 1: reject an oversized unsigned transaction before it is
+    // Reject an oversized unsigned transaction before it is
     // ever handed to a signer.
     check_transaction_packet_size(&transaction)?;
 
@@ -464,7 +464,7 @@ pub async fn build_charge_transaction_with_options(
         }
     }
 
-    // PayKit Slice 1: build the unsigned prepared message, then sign it —
+    // Build the unsigned prepared message, then sign it —
     // this is the only place in the non-confidential path that calls
     // `signer.sign_transaction`.
     let signer_pubkey = signer.pubkey();
@@ -772,13 +772,13 @@ fn build_spl_instructions(
 
     let payer = fee_payer.copied().unwrap_or(*signer_pubkey);
 
-    // PayKit Slice 1: adapt the primary-transfer-plus-splits shape onto the
+    // Adapt the primary-transfer-plus-splits shape onto the
     // generic batch builder instead of constructing instructions here
     // directly, so both this (MPP charge) path and a future direct
     // `pay push` path share one instruction-building implementation. The
     // primary transfer is entry 0 and never auto-creates its own ATA (the
-    // charge builder has never created the primary recipient's ATA — see
-    // PayKit Slice 1 plan); each split becomes a subsequent entry carrying
+    // charge builder has never created the primary recipient's ATA); each
+    // split becomes a subsequent entry carrying
     // its own `ata_creation_required` flag and memo. This preserves the
     // exact instruction order the pre-refactor implementation produced:
     // primary transfer, then external_id memo, then per split [ATA-create
