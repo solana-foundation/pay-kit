@@ -456,7 +456,11 @@ type LatestBlockhashRpc = {
  */
 session.routes = function routes(parameters: session.Parameters): session.RoutesHandlers {
     const store = resolveSessionStore(parameters);
-    const currency = parameters.currency;
+    // Deliveries must advertise the same resolved mint challenges do
+    // (`currency: resolvedMint` in `session()`'s request/verify handlers),
+    // not the raw symbol a caller may have configured.
+    const currency = resolveStablecoinMint(parameters.currency, parameters.network ?? 'mainnet');
+    if (!currency) throw new Error('session currency must be an SPL token mint; use wrapped SOL instead of SOL');
 
     return {
         async commit(request) {
@@ -617,7 +621,6 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         }
     }
 
-    let signature: string | undefined;
     const newState: ChannelState = {
         authentication: payload.authentication,
         authorizedSigner: payload.authorizedSigner,
@@ -666,21 +669,22 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             // Idempotent replay: never reset the voucher watermark.
             return { ...current, lastActivityAt: Date.now() };
         }
-        const submitted = await submitOpenTx({
+        await submitOpenTx({
             expected,
             openPayload: payload,
             payerSigner: args.feePayer ? args.feePayerSigner : undefined,
             rpc: args.rpc as SubmitOpenRpc,
         });
-        signature = submitted.signature as unknown as string;
         return newState;
     });
     args.lifecycle?.touch(verified.channelId, persisted.idleTimeoutSeconds);
 
+    // txHash is reserved for the close receipt's settlement signature
+    // (draft-solana-session-00 receipt table); open does not settle on-chain
+    // funds, so it carries no txHash.
     return sessionReceipt(persisted, {
         challengeId: args.challengeId,
         externalId: args.externalId,
-        txHash: signature,
     });
 }
 
@@ -827,19 +831,20 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
             // Caller will translate; reuse the Rust convention of throwing.
             throw new Error(`${result.reason}: ${result.detail}`);
         }
-        const acceptedCumulative = result.newCumulative;
-        if (acceptedCumulative - current.spentAmount < args.price) {
+        if (result.status === 'replayed') {
+            // An idempotent replay of the already-accepted highest voucher
+            // must not deliver additional service or debit spentAmount
+            // again — the client already paid for it.
+            return { ...current, lastActivityAt: Date.now() };
+        }
+        if (result.newCumulative - current.spentAmount < args.price) {
             throw new Error('insufficient authorized voucher availability');
         }
         return {
             ...current,
-            ...(result.status === 'accepted'
-                ? {
-                      cumulative: result.newCumulative,
-                      highestVoucherExpiresAt: result.newExpiresAt,
-                      highestVoucherSignature: result.newSignature,
-                  }
-                : {}),
+            cumulative: result.newCumulative,
+            highestVoucherExpiresAt: result.newExpiresAt,
+            highestVoucherSignature: result.newSignature,
             lastActivityAt: Date.now(),
             spentAmount: current.spentAmount + args.price,
         };
@@ -879,10 +884,12 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     // transaction fails at preflight).
     const topUpSignature = transactionSignatureFromWire(args.payload.transaction) as unknown as string;
     if (existing.processedTopUpSignatures?.includes(topUpSignature)) {
+        // txHash is reserved for the close receipt's settlement signature
+        // (draft-solana-session-00 receipt table); a top-up does not settle
+        // on-chain funds itself, so it carries no txHash.
         return sessionReceipt(existing, {
             challengeId: args.challengeId,
             externalId: args.externalId,
-            txHash: topUpSignature,
         });
     }
     if (existing.sealed) throw new Error('Channel is already sealed');
@@ -890,7 +897,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         throw new Error('Channel close is pending — no further top-ups accepted');
     }
 
-    const signature = await submitTopUpTx({
+    await submitTopUpTx({
         additionalAmount,
         channelId: args.payload.channelId,
         channelProgram: args.channelProgram,
@@ -923,7 +930,6 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     return sessionReceipt(result, {
         challengeId: args.challengeId,
         externalId: args.externalId,
-        txHash: signature as unknown as string,
     });
 }
 

@@ -352,9 +352,11 @@ async def test_client_voucher_advances_watermark_and_replays_idempotently() -> N
     server, _, _ = await _server()
     voucher = _voucher(100)
     assert await server.verify_voucher(_voucher_payload(voucher)) == 100
+    # The replay must not double-debit: spent_amount reflects only the one
+    # fresh acceptance, not the replay that followed it.
     assert await server.verify_voucher(_voucher_payload(voucher)) == 100
     state = await server.store().get_channel(CHANNEL)
-    assert state is not None and state.cumulative == 100 and state.spent_amount == 50
+    assert state is not None and state.cumulative == 100 and state.spent_amount == 25
 
 
 async def test_voucher_action_channel_id_must_match_the_signed_voucher() -> None:

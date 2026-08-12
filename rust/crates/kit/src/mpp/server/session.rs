@@ -992,6 +992,10 @@ impl<S: ChannelStore> SessionServer<S> {
         .map_err(Error::from)?;
         let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
         let owner = self.config.operator.clone();
+        // `charged` is 0 for an idempotent replay of the highest voucher, so
+        // adding it unconditionally never double-debits a replay — it only
+        // advances `spent_amount` for a genuinely fresh acceptance.
+        let charged = acceptance.charged;
         self.store
             .update_channel(
                 &voucher.data.channel_id,
@@ -1001,6 +1005,10 @@ impl<S: ChannelStore> SessionServer<S> {
                             "Channel disappeared after voucher acceptance".to_string(),
                         )
                     })?;
+                    state.spent_amount =
+                        state.spent_amount.checked_add(charged).ok_or_else(|| {
+                            StoreError::Internal("session spent amount overflow".to_string())
+                        })?;
                     state.last_activity_at = now_ms;
                     state.lifecycle = state.idle_timeout_seconds.map(|seconds| ChannelLifecycle {
                         owner,
@@ -1533,6 +1541,12 @@ impl<S: ChannelStore> SessionServer<S> {
 
                         state.pending_deliveries.remove(pending_index);
                         state.cumulative = new_cumulative;
+                        state.spent_amount =
+                            state.spent_amount.checked_add(actual_amount).ok_or_else(|| {
+                                StoreError::Internal(
+                                    "session spent amount overflow".to_string(),
+                                )
+                            })?;
                         state.highest_voucher_signature = Some(signature.clone());
                         state.highest_voucher_expires_at = Some(expires_at);
                         // A committed delivery is channel activity: refresh the
@@ -3301,6 +3315,9 @@ mod tests {
             .unwrap();
         assert!(stored.lifecycle.is_some());
         assert!(stored.last_activity_at > 1);
+        // The replay must not double-debit: spent_amount reflects only the
+        // one fresh acceptance, not the replay that followed it.
+        assert_eq!(stored.spent_amount, 100);
 
         // The top-level routing key must match the signed voucher's inner
         // channelId — a divergent pair is rejected before any state lookup.
@@ -3423,13 +3440,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(stored.last_activity_at > 1);
+        // A committed delivery debits spent_amount by the delivered amount,
+        // matching the operator `use` and client `voucher` paths.
+        assert_eq!(stored.spent_amount, 50);
         let lifecycle = stored
             .lifecycle
             .expect("commit must re-arm the idle-close deadline");
         assert!(lifecycle.close_after > 1);
 
         // The idempotent replay is not fresh activity: it must not advance the
-        // watermark past what the committed path recorded.
+        // watermark past what the committed path recorded, and must not
+        // double-debit spent_amount.
         let before_replay = stored.last_activity_at;
         assert_eq!(
             server.process_commit(&payload).await.unwrap().status,
@@ -3442,6 +3463,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after_replay.last_activity_at, before_replay);
+        assert_eq!(after_replay.spent_amount, 50);
     }
 
     #[tokio::test]

@@ -785,13 +785,18 @@ class SessionServer:
             # Concurrent watermark advancement check.
             if not replayed and new_cumulative <= current.cumulative:
                 raise ValueError("concurrent update: watermark advanced")
+            nxt = current.clone()
+            if replayed:
+                # An idempotent replay of the already-accepted highest voucher
+                # must not deliver additional service or debit spent_amount
+                # again — the client already paid for it.
+                nxt.last_activity_at = int(time.time() * 1000)
+                return nxt
             if new_cumulative - current.spent_amount < price:
                 raise ValueError("insufficient authorized voucher availability")
-            nxt = current.clone()
-            if not replayed:
-                nxt.cumulative = new_cumulative
-                nxt.highest_voucher_signature = new_signature
-                nxt.highest_voucher_expires_at = new_expires_at
+            nxt.cumulative = new_cumulative
+            nxt.highest_voucher_signature = new_signature
+            nxt.highest_voucher_expires_at = new_expires_at
             nxt.spent_amount += price
             nxt.last_activity_at = int(time.time() * 1000)
             return nxt

@@ -241,13 +241,15 @@ describe('session() verify() topUp', () => {
 
         expect(receipt.status).toBe('success');
         expect(receipt.reference).toBe(f.channel.address);
+        // txHash is reserved for the close receipt's settlement signature
+        // (draft-solana-session-00 receipt table); a top-up carries none.
         expect(receipt).toMatchObject({
             acceptedCumulative: '0',
             idleTimeoutSeconds: 300,
             intent: 'session',
             spent: '0',
-            txHash: 'MockSig1',
         });
+        expect(receipt).not.toHaveProperty('txHash');
         expect(sent).toHaveLength(1);
         expect(statusCalls).toContain('MockSig1');
         const state = await f.store.getChannel(f.channel.address);
@@ -482,11 +484,16 @@ describe('session() verify() close monotonicity', () => {
         expect(state?.cumulative).toBe(250n);
         expect(state?.highestVoucherSignature).toBe(voucher.signature);
 
+        // An idempotent replay of the already-accepted highest voucher must
+        // not deliver additional service or debit `spent` again — repeated
+        // replays keep returning the same cached amount.
         const replay = await verify(method, makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher }));
-        expect(replay).toMatchObject({ acceptedCumulative: '250', spent: '200' });
-        await expect(
-            verify(method, makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher })),
-        ).rejects.toThrow(/insufficient authorized voucher availability/);
+        expect(replay).toMatchObject({ acceptedCumulative: '250', spent: '100' });
+        const replayAgain = await verify(
+            method,
+            makeCred(f, { action: 'voucher', channelId: f.channel.address, voucher }),
+        );
+        expect(replayAgain).toMatchObject({ acceptedCumulative: '250', spent: '100' });
     });
 
     test('a voucher action whose top-level channelId diverges from the signed voucher is rejected', async () => {
