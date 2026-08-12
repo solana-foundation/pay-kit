@@ -102,9 +102,14 @@ date-time.
 `Charge.ts:402` `assertChallengeNotExpired` evaluates `new Date(expires).getTime()` at `:404`;
 `Session.ts:346` `assertChallengeOpenNotExpired` evaluates `Date.parse(expires)` at `:348`. Both resolve
 at `16777d46`, are the same V8 algorithm, and return byte-identical verdicts on all 124 scenarios.
-**Every one of the 22 divergences at each call site is an over-acceptance, an input the corpus rejects
-that this path accepts; not one is a parse failure.** Rows 1-2 are direct probes, rows 3-5 the shipped
-vectors `jsts_date_time_010`, `jsts_date_time_013`, `jsts_date_time_016`.
+**16 of the 22 divergences at each call site are over-acceptances, an input the corpus rejects that this
+path accepts; the remaining 6 run the other way.** Those 6 are the leap-second `date-time`s —
+`jsts_date_time_005`, `jsts_date_time_006`, `leap_second_june_month_end`,
+`leap_second_offset_rolls_local_date_forward`, `rfc_5_8_example_leap_second_offset`,
+`rfc_5_8_example_leap_second_z` — all corpus ACCEPT under §5.7 and all rejected here, V8 having no
+representable 61st second; finding 6 reads one of them against its control. The over-acceptances follow.
+Rows 1-2 are direct probes, rows 3-5 the shipped vectors `jsts_date_time_010`, `jsts_date_time_013`,
+`jsts_date_time_016`.
 
 | input | `Date.parse` result | RFC 3339 |
 |---|---|---|
