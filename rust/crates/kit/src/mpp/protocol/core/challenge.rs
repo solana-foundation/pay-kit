@@ -843,8 +843,9 @@ mod tests {
 
     /// `(name, input, expect_accept, description)` for every corpus scenario.
     fn conformance_vectors() -> Vec<(String, String, bool, String)> {
-        let raw = std::fs::read_to_string(CONFORMANCE_CORPUS)
-            .unwrap_or_else(|e| panic!("conformance corpus unreadable at {CONFORMANCE_CORPUS}: {e}"));
+        let raw = std::fs::read_to_string(CONFORMANCE_CORPUS).unwrap_or_else(|e| {
+            panic!("conformance corpus unreadable at {CONFORMANCE_CORPUS}: {e}")
+        });
         let corpus: serde_json::Value =
             serde_json::from_str(&raw).expect("conformance corpus must be valid JSON");
 
@@ -861,7 +862,10 @@ mod tests {
                     scenario["name"].as_str().unwrap_or_default().to_string(),
                     scenario["input"].as_str().unwrap_or_default().to_string(),
                     expect_accept,
-                    scenario["description"].as_str().unwrap_or_default().to_string(),
+                    scenario["description"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
                 )
             })
             .collect()
@@ -870,15 +874,16 @@ mod tests {
     #[test]
     fn rfc3339_conformance_corpus() {
         let vectors = conformance_vectors();
-        assert!(!vectors.is_empty(), "conformance corpus carried zero scenarios");
+        assert!(
+            !vectors.is_empty(),
+            "conformance corpus carried zero scenarios"
+        );
 
         let mut divergences = Vec::new();
         for (name, input, expect_accept, description) in &vectors {
-            let accepted = time::OffsetDateTime::parse(
-                input,
-                &time::format_description::well_known::Rfc3339,
-            )
-            .is_ok();
+            let accepted =
+                time::OffsetDateTime::parse(input, &time::format_description::well_known::Rfc3339)
+                    .is_ok();
             if accepted != *expect_accept {
                 divergences.push(format!(
                     "{name} ({description}): input {input:?} — corpus expects {}, \

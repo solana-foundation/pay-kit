@@ -479,10 +479,7 @@ interface ConformanceScenario {
     tests: { parse: true | { success: boolean } };
 }
 
-const CORPUS_URL = new URL(
-    '../../../../../harness/vectors/mpp-protocol/expires.json',
-    import.meta.url,
-);
+const CORPUS_URL = new URL('../../../../../harness/vectors/mpp-protocol/expires.json', import.meta.url);
 
 const corpus = JSON.parse(readFileSync(CORPUS_URL, 'utf8')) as { scenarios: ConformanceScenario[] };
 const vectors = corpus.scenarios;
