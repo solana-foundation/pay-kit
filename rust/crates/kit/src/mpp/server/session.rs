@@ -992,10 +992,18 @@ impl<S: ChannelStore> SessionServer<S> {
         .map_err(Error::from)?;
         let now_ms = now_unix_secs().saturating_mul(1_000) as u64;
         let owner = self.config.operator.clone();
-        // `charged` is 0 for an idempotent replay of the highest voucher, so
-        // adding it unconditionally never double-debits a replay — it only
-        // advances `spent_amount` for a genuinely fresh acceptance.
-        let charged = acceptance.charged;
+        // Debit the fixed per-action price, not the voucher's own cumulative
+        // jump: the client may pre-fund a voucher for more than one action's
+        // worth of `cumulativeAmount`, and `spentAmount` tracks delivered
+        // service (draft-solana-session-00 `spentAmount += cost`), not the
+        // authorized credit line. This matches `process_use`'s debit and the
+        // TypeScript/Python session servers. 0 on an idempotent replay, since
+        // no additional service is delivered.
+        let debit = if acceptance.replay {
+            0
+        } else {
+            self.config.amount
+        };
         self.store
             .update_channel(
                 &voucher.data.channel_id,
@@ -1006,7 +1014,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         )
                     })?;
                     state.spent_amount =
-                        state.spent_amount.checked_add(charged).ok_or_else(|| {
+                        state.spent_amount.checked_add(debit).ok_or_else(|| {
                             StoreError::Internal("session spent amount overflow".to_string())
                         })?;
                     state.last_activity_at = now_ms;
@@ -3315,9 +3323,10 @@ mod tests {
             .unwrap();
         assert!(stored.lifecycle.is_some());
         assert!(stored.last_activity_at > 1);
-        // The replay must not double-debit: spent_amount reflects only the
-        // one fresh acceptance, not the replay that followed it.
-        assert_eq!(stored.spent_amount, 100);
+        // spent_amount debits the fixed per-action price (config.amount == 25
+        // here), not the voucher's own 100-unit cumulative jump — and the
+        // replay must not double-debit it.
+        assert_eq!(stored.spent_amount, 25);
 
         // The top-level routing key must match the signed voucher's inner
         // channelId — a divergent pair is rejected before any state lookup.
