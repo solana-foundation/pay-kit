@@ -14,7 +14,8 @@ use crate::mpp::protocol::core::{
 };
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{
-    programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
+    check_transaction_packet_size, programs, CredentialPayload, MethodDetails, Split,
+    MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS, MAX_MEMO_BYTES, SOLANA_MAX_COMPUTE_UNIT_LIMIT,
 };
 
 /// Build a charge transaction from challenge parameters.
@@ -68,6 +69,55 @@ pub struct BuildChargeTransactionOptions {
     /// auto-pay agent meant for one network from being lured into
     /// signing a transaction for another.
     pub expected_network: Option<String>,
+    /// PayKit Slice 1: bounded compute-unit price/limit for the prepared
+    /// transaction. Defaults match the historical hardcoded budget (1
+    /// micro-lamport, 200,000 CU) — existing callers see no behavior change
+    /// unless they opt into different values.
+    pub compute_budget: ComputeBudgetOptions,
+}
+
+/// Bounded compute-budget parameters for a prepared charge transaction.
+///
+/// Defaults match PayKit's historical hardcoded charge-transaction budget
+/// (1 micro-lamport price, 200,000 CU limit), so existing callers see no
+/// behavior change unless they opt into different values. See
+/// [`Self::validate`] for the bounds enforced on non-default values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComputeBudgetOptions {
+    /// `SetComputeUnitPrice`, in micro-lamports.
+    pub compute_unit_price_micro_lamports: u64,
+    /// `SetComputeUnitLimit`, in compute units.
+    pub compute_unit_limit: u32,
+}
+
+impl Default for ComputeBudgetOptions {
+    fn default() -> Self {
+        Self {
+            compute_unit_price_micro_lamports: 1,
+            compute_unit_limit: 200_000,
+        }
+    }
+}
+
+impl ComputeBudgetOptions {
+    /// Reject a compute-unit limit above Solana's real per-transaction
+    /// ceiling, and a compute-unit price above a generous client-side
+    /// sanity ceiling, before either is ever compiled into an instruction.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.compute_unit_limit > SOLANA_MAX_COMPUTE_UNIT_LIMIT {
+            return Err(Error::Other(format!(
+                "compute_unit_limit {} exceeds Solana's per-transaction ceiling of {SOLANA_MAX_COMPUTE_UNIT_LIMIT}",
+                self.compute_unit_limit
+            )));
+        }
+        if self.compute_unit_price_micro_lamports > MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS {
+            return Err(Error::Other(format!(
+                "compute_unit_price_micro_lamports {} exceeds the client-side sanity ceiling of {MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS}",
+                self.compute_unit_price_micro_lamports
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Options for selecting one Solana charge challenge from a challenge set.
@@ -112,6 +162,218 @@ fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<
             .map(|(hash, _last_valid_block_height)| hash)
             .map_err(|e| Error::Rpc(e.to_string()))
     }
+}
+
+/// An unsigned, fully-compiled charge transaction plus the metadata a
+/// caller needs to size-check and eventually sign it.
+///
+/// Returned by [`build_prepared_charge`]. `build_charge_transaction_with_options`
+/// signs the transaction inside this struct rather than duplicating the
+/// signing logic — see its implementation. Deliberately decoupled from
+/// `PaymentChallenge`/`ChargeRequest` (it takes plain, already-decoded
+/// parameters): a future direct `pay push` CSV batch path can reuse the
+/// same underlying instruction-building primitives
+/// ([`build_spl_transfer_batch_instructions`]) without depending on this
+/// crate's challenge/credential wire types.
+#[derive(Debug, Clone)]
+pub struct PreparedCharge {
+    /// The compiled, unsigned transaction. Its `signatures` vec is already
+    /// sized to `num_required_signatures` (all-zero placeholders), so its
+    /// serialized length equals the length after signing — see
+    /// [`check_transaction_packet_size`](crate::mpp::protocol::solana::check_transaction_packet_size).
+    pub transaction: Transaction,
+    /// The fee payer compiled into `transaction` — the signer's own pubkey
+    /// unless the challenge specified a server-side fee payer.
+    pub fee_payer: Pubkey,
+    /// The blockhash compiled into `transaction`.
+    pub blockhash: Hash,
+}
+
+/// One entry in an ordered SPL-token transfer batch: who receives it, how
+/// much (base units), whether its associated token account must be created
+/// (idempotently) before the transfer, and an optional memo emitted right
+/// after this entry's transfer.
+#[derive(Debug, Clone)]
+pub struct TransferEntry {
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub ata_creation_required: bool,
+    pub memo: Option<String>,
+}
+
+/// Build the idempotent-ATA-create + `transfer_checked` instructions for an
+/// ordered batch of SPL-token transfers, all funded from one source ATA
+/// under one authority.
+///
+/// This is the single place that constructs SPL-transfer-batch
+/// instructions: the MPP charge builder (`build_spl_instructions`) adapts
+/// its primary-transfer-plus-splits shape onto this, and a future direct
+/// `pay push` CSV batch path can call it directly (subject to the same
+/// packet-size limit — see
+/// [`check_transaction_packet_size`](crate::mpp::protocol::solana::check_transaction_packet_size)).
+///
+/// Does NOT include compute-budget instructions — callers that want a
+/// compute-budget preamble (like [`build_prepared_charge`]) push it
+/// themselves, since that is a whole-transaction concern, not a
+/// per-transfer-batch one.
+pub fn build_spl_transfer_batch_instructions(
+    authority: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    decimals: u8,
+    fee_payer: &Pubkey,
+    entries: &[TransferEntry],
+) -> Result<Vec<Instruction>, Error> {
+    let mut instructions = Vec::with_capacity(entries.len() * 3);
+    let source_ata = get_associated_token_address(authority, mint, token_program);
+
+    for entry in entries {
+        let dest_ata = get_associated_token_address(&entry.recipient, mint, token_program);
+
+        if entry.ata_creation_required {
+            instructions.push(create_associated_token_account_idempotent(
+                fee_payer,
+                &entry.recipient,
+                mint,
+                token_program,
+            ));
+        }
+
+        instructions.push(transfer_checked_ix(
+            token_program,
+            &source_ata,
+            mint,
+            &dest_ata,
+            authority,
+            entry.amount,
+            decimals,
+        ));
+
+        push_memo_instruction(&mut instructions, entry.memo.as_deref())?;
+    }
+
+    Ok(instructions)
+}
+
+/// Build the unsigned message for a non-confidential Solana charge: one
+/// primary transfer plus any validated splits, compiled against a resolved
+/// blockhash. This is the prepared-message half of
+/// `build_charge_transaction_with_options` — see [`PreparedCharge`].
+///
+/// Takes the signer's public key rather than a `SolanaSigner`: preparing
+/// and size-checking a charge message never needs to touch a wallet's
+/// secret key, only the eventual `sign_transaction` call does.
+///
+/// Confidential charges are NOT handled here — a confidential charge
+/// settles via a multi-transaction bundle, not a single prepared message.
+/// Callers must branch on `method_details.confidential` before calling this
+/// (see `build_charge_transaction_with_options` for the reference branch).
+pub async fn build_prepared_charge(
+    signer_pubkey: Pubkey,
+    rpc: &RpcClient,
+    total_amount: u64,
+    currency: &str,
+    recipient: &str,
+    method_details: &MethodDetails,
+    options: &BuildChargeTransactionOptions,
+) -> Result<PreparedCharge, Error> {
+    let splits = method_details.splits.as_deref().unwrap_or(&[]);
+    if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
+        return Err(Error::TooManySplits);
+    }
+
+    let splits_total = crate::mpp::protocol::solana::checked_sum_split_amounts(splits)
+        .ok_or(Error::SplitsExceedAmount)?;
+    let primary_amount = total_amount
+        .checked_sub(splits_total)
+        .ok_or(Error::SplitsExceedAmount)?;
+    if primary_amount == 0 {
+        return Err(Error::SplitsExceedAmount);
+    }
+
+    let recipient_pubkey =
+        Pubkey::from_str(recipient).map_err(|e| Error::Other(format!("Invalid recipient: {e}")))?;
+
+    let use_fee_payer =
+        method_details.fee_payer.unwrap_or(false) && method_details.fee_payer_key.is_some();
+
+    let fee_payer_pubkey = if use_fee_payer {
+        let key = method_details.fee_payer_key.as_ref().unwrap();
+        Some(Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?)
+    } else {
+        None
+    };
+
+    // PayKit Slice 1: bounded compute-unit price/limit instead of the
+    // historical hardcoded 1 micro-lamport / 200,000 units.
+    options.compute_budget.validate()?;
+
+    let mut instructions = Vec::new();
+    instructions.push(compute_unit_price_ix(
+        options.compute_budget.compute_unit_price_micro_lamports,
+    ));
+    instructions.push(compute_unit_limit_ix(
+        options.compute_budget.compute_unit_limit,
+    ));
+
+    let mint = resolve_mint(currency, method_details.network.as_deref());
+    let has_ata_creation_splits = splits
+        .iter()
+        .any(|split| split.ata_creation_required == Some(true));
+
+    if has_ata_creation_splits {
+        let Some(mint_str) = mint else {
+            return Err(Error::Other(
+                "ataCreationRequired requires an SPL token charge".into(),
+            ));
+        };
+        if mint_str != currency {
+            return Err(Error::Other(
+                "ataCreationRequired requires currency to be an SPL token mint address".into(),
+            ));
+        }
+    }
+
+    if let Some(mint_str) = mint {
+        build_spl_instructions(
+            &mut instructions,
+            &signer_pubkey,
+            &recipient_pubkey,
+            rpc,
+            mint_str,
+            method_details,
+            primary_amount,
+            options.external_id.as_deref(),
+            splits,
+            fee_payer_pubkey.as_ref(),
+            options.allow_unknown_token_2022,
+        )?;
+    } else {
+        build_sol_instructions(
+            &mut instructions,
+            &signer_pubkey,
+            &recipient_pubkey,
+            primary_amount,
+            options.external_id.as_deref(),
+            splits,
+        )?;
+    }
+
+    let blockhash = resolve_blockhash(rpc, method_details)?;
+
+    let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
+    let message = Message::new_with_blockhash(&instructions, Some(&fee_payer), &blockhash);
+    let transaction = Transaction::new_unsigned(message);
+
+    // PayKit Slice 1: reject an oversized unsigned transaction before it is
+    // ever handed to a signer.
+    check_transaction_packet_size(&transaction)?;
+
+    Ok(PreparedCharge {
+        transaction,
+        fee_payer,
+        blockhash,
+    })
 }
 
 pub async fn build_charge_transaction_with_options(
@@ -202,91 +464,22 @@ pub async fn build_charge_transaction_with_options(
         }
     }
 
-    let splits = method_details.splits.as_deref().unwrap_or(&[]);
-    if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
-        return Err(Error::TooManySplits);
-    }
-
-    let splits_total = crate::mpp::protocol::solana::checked_sum_split_amounts(splits)
-        .ok_or(Error::SplitsExceedAmount)?;
-    let primary_amount = total_amount
-        .checked_sub(splits_total)
-        .ok_or(Error::SplitsExceedAmount)?;
-    if primary_amount == 0 {
-        return Err(Error::SplitsExceedAmount);
-    }
-
+    // PayKit Slice 1: build the unsigned prepared message, then sign it —
+    // this is the only place in the non-confidential path that calls
+    // `signer.sign_transaction`.
     let signer_pubkey = signer.pubkey();
+    let prepared = build_prepared_charge(
+        signer_pubkey,
+        rpc,
+        total_amount,
+        currency,
+        recipient,
+        method_details,
+        &options,
+    )
+    .await?;
 
-    let recipient_pubkey =
-        Pubkey::from_str(recipient).map_err(|e| Error::Other(format!("Invalid recipient: {e}")))?;
-
-    let use_fee_payer =
-        method_details.fee_payer.unwrap_or(false) && method_details.fee_payer_key.is_some();
-
-    let fee_payer_pubkey = if use_fee_payer {
-        let key = method_details.fee_payer_key.as_ref().unwrap();
-        Some(Pubkey::from_str(key).map_err(|e| Error::Other(format!("Invalid fee payer: {e}")))?)
-    } else {
-        None
-    };
-
-    let mut instructions = Vec::new();
-
-    // Compute budget.
-    instructions.push(compute_unit_price_ix(1));
-    instructions.push(compute_unit_limit_ix(200_000));
-
-    let mint = resolve_mint(currency, method_details.network.as_deref());
-    let has_ata_creation_splits = splits
-        .iter()
-        .any(|split| split.ata_creation_required == Some(true));
-
-    if has_ata_creation_splits {
-        let Some(mint_str) = mint else {
-            return Err(Error::Other(
-                "ataCreationRequired requires an SPL token charge".into(),
-            ));
-        };
-        if mint_str != currency {
-            return Err(Error::Other(
-                "ataCreationRequired requires currency to be an SPL token mint address".into(),
-            ));
-        }
-    }
-
-    if let Some(mint_str) = mint {
-        build_spl_instructions(
-            &mut instructions,
-            &signer_pubkey,
-            &recipient_pubkey,
-            rpc,
-            mint_str,
-            method_details,
-            primary_amount,
-            options.external_id.as_deref(),
-            splits,
-            fee_payer_pubkey.as_ref(),
-            options.allow_unknown_token_2022,
-        )?;
-    } else {
-        build_sol_instructions(
-            &mut instructions,
-            &signer_pubkey,
-            &recipient_pubkey,
-            primary_amount,
-            options.external_id.as_deref(),
-            splits,
-        )?;
-    }
-
-    // Build and sign.
-    let blockhash = resolve_blockhash(rpc, method_details)?;
-
-    let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
-    let message = Message::new_with_blockhash(&instructions, Some(&actual_fee_payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-
+    let mut tx = prepared.transaction;
     signer
         .sign_transaction(&mut tx)
         .await
@@ -577,42 +770,26 @@ fn build_spl_instructions(
         Error::Other("methodDetails.decimals is required for SPL charges (spec §7.2)".into())
     })?;
 
-    let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
-
     let payer = fee_payer.copied().unwrap_or(*signer_pubkey);
 
-    let add_spl_transfer = |instructions: &mut Vec<Instruction>,
-                            dest_owner: &Pubkey,
-                            transfer_amount: u64,
-                            create_ata: bool|
-     -> Result<(), Error> {
-        let dest_ata = get_associated_token_address(dest_owner, &mint, &token_program);
-
-        if create_ata {
-            instructions.push(create_associated_token_account_idempotent(
-                &payer,
-                dest_owner,
-                &mint,
-                &token_program,
-            ));
-        }
-
-        instructions.push(transfer_checked_ix(
-            &token_program,
-            &source_ata,
-            &mint,
-            &dest_ata,
-            signer_pubkey,
-            transfer_amount,
-            decimals,
-        ));
-
-        Ok(())
-    };
-
-    add_spl_transfer(instructions, recipient, primary_amount, false)?;
-    push_memo_instruction(instructions, external_id)?;
-
+    // PayKit Slice 1: adapt the primary-transfer-plus-splits shape onto the
+    // generic batch builder instead of constructing instructions here
+    // directly, so both this (MPP charge) path and a future direct
+    // `pay push` path share one instruction-building implementation. The
+    // primary transfer is entry 0 and never auto-creates its own ATA (the
+    // charge builder has never created the primary recipient's ATA — see
+    // PayKit Slice 1 plan); each split becomes a subsequent entry carrying
+    // its own `ata_creation_required` flag and memo. This preserves the
+    // exact instruction order the pre-refactor implementation produced:
+    // primary transfer, then external_id memo, then per split [ATA-create
+    // if flagged, transfer, memo if present].
+    let mut entries = Vec::with_capacity(1 + splits.len());
+    entries.push(TransferEntry {
+        recipient: *recipient,
+        amount: primary_amount,
+        ata_creation_required: false,
+        memo: external_id.map(str::to_string),
+    });
     for split in splits {
         let split_recipient = Pubkey::from_str(&split.recipient)
             .map_err(|e| Error::Other(format!("Invalid split recipient: {e}")))?;
@@ -626,14 +803,23 @@ fn build_spl_instructions(
         // with N dust splits × ATA rent. Spec §7.2 says the client MUST
         // include the ATA-create ix when `ataCreationRequired` is true;
         // it does not authorize creation otherwise.
-        add_spl_transfer(
-            instructions,
-            &split_recipient,
-            split_amount,
-            split.ata_creation_required == Some(true),
-        )?;
-        push_memo_instruction(instructions, split.memo.as_deref())?;
+        entries.push(TransferEntry {
+            recipient: split_recipient,
+            amount: split_amount,
+            ata_creation_required: split.ata_creation_required == Some(true),
+            memo: split.memo.clone(),
+        });
     }
+
+    let batch = build_spl_transfer_batch_instructions(
+        signer_pubkey,
+        &mint,
+        &token_program,
+        decimals,
+        &payer,
+        &entries,
+    )?;
+    instructions.extend(batch);
 
     Ok(())
 }
@@ -1916,6 +2102,465 @@ mod tests {
         let err = resolve_token_program(&rpc, &mint, &md);
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Unsupported token program"));
+    }
+
+    // ── ComputeBudgetOptions ──
+
+    #[test]
+    fn compute_budget_options_default_matches_historical_hardcoded_values() {
+        let opts = ComputeBudgetOptions::default();
+        assert_eq!(opts.compute_unit_price_micro_lamports, 1);
+        assert_eq!(opts.compute_unit_limit, 200_000);
+        opts.validate().expect("default must be within bounds");
+    }
+
+    #[test]
+    fn compute_budget_options_rejects_limit_above_solana_ceiling() {
+        let opts = ComputeBudgetOptions {
+            compute_unit_price_micro_lamports: 1,
+            compute_unit_limit: SOLANA_MAX_COMPUTE_UNIT_LIMIT + 1,
+        };
+        let err = opts.validate().unwrap_err();
+        assert!(format!("{err}").contains("exceeds Solana's per-transaction ceiling"));
+    }
+
+    #[test]
+    fn compute_budget_options_rejects_price_above_client_sanity_ceiling() {
+        let opts = ComputeBudgetOptions {
+            compute_unit_price_micro_lamports: MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1,
+            compute_unit_limit: 200_000,
+        };
+        let err = opts.validate().unwrap_err();
+        assert!(format!("{err}").contains("exceeds the client-side sanity ceiling"));
+    }
+
+    #[test]
+    fn compute_budget_options_accepts_exact_ceilings() {
+        let opts = ComputeBudgetOptions {
+            compute_unit_price_micro_lamports: MAX_CLIENT_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+            compute_unit_limit: SOLANA_MAX_COMPUTE_UNIT_LIMIT,
+        };
+        opts.validate()
+            .expect("exact ceiling values must be accepted");
+    }
+
+    // ── build_spl_transfer_batch_instructions (generic SPL batch builder) ──
+
+    fn batch_test_fixture() -> (Pubkey, Pubkey, Pubkey, Pubkey) {
+        (
+            Pubkey::new_unique(),                               // authority
+            Pubkey::from_str(USDC_MINT).unwrap(),               // mint
+            Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap(), // token_program
+            Pubkey::new_unique(),                               // fee_payer
+        )
+    }
+
+    #[test]
+    fn spl_transfer_batch_empty_entries_is_empty() {
+        let (authority, mint, token_program, fee_payer) = batch_test_fixture();
+        let ixs = build_spl_transfer_batch_instructions(
+            &authority,
+            &mint,
+            &token_program,
+            6,
+            &fee_payer,
+            &[],
+        )
+        .unwrap();
+        assert!(ixs.is_empty());
+    }
+
+    #[test]
+    fn spl_transfer_batch_orders_ata_create_before_its_own_transfer_only_when_flagged() {
+        let (authority, mint, token_program, fee_payer) = batch_test_fixture();
+        let entries = vec![
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 100,
+                ata_creation_required: false,
+                memo: None,
+            },
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 200,
+                ata_creation_required: true,
+                memo: None,
+            },
+        ];
+        let ixs = build_spl_transfer_batch_instructions(
+            &authority,
+            &mint,
+            &token_program,
+            6,
+            &fee_payer,
+            &entries,
+        )
+        .unwrap();
+
+        // entry 0 (unflagged): transfer only.
+        // entry 1 (flagged): ATA-create immediately before its own transfer.
+        assert_eq!(ixs.len(), 3);
+        let token_program_id = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+        assert_eq!(ixs[0].program_id, token_program_id, "entry 0 transfer");
+        assert_eq!(ixs[1].program_id, ata_program, "entry 1 ata-create");
+        assert_eq!(ixs[2].program_id, token_program_id, "entry 1 transfer");
+    }
+
+    #[test]
+    fn spl_transfer_batch_emits_transfer_checked_per_entry_with_correct_amounts_and_decimals() {
+        let (authority, mint, token_program, fee_payer) = batch_test_fixture();
+        let entries = vec![
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 111,
+                ata_creation_required: false,
+                memo: None,
+            },
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 222,
+                ata_creation_required: false,
+                memo: None,
+            },
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 333,
+                ata_creation_required: false,
+                memo: None,
+            },
+        ];
+        let ixs = build_spl_transfer_batch_instructions(
+            &authority,
+            &mint,
+            &token_program,
+            9,
+            &fee_payer,
+            &entries,
+        )
+        .unwrap();
+        assert_eq!(ixs.len(), 3);
+        for (ix, entry) in ixs.iter().zip(entries.iter()) {
+            assert_eq!(ix.data[0], 12u8, "TransferChecked discriminator");
+            let amount = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
+            assert_eq!(amount, entry.amount);
+            assert_eq!(ix.data[9], 9, "decimals");
+        }
+    }
+
+    #[test]
+    fn spl_transfer_batch_emits_memo_only_when_present() {
+        let (authority, mint, token_program, fee_payer) = batch_test_fixture();
+        let entries = vec![
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 1,
+                ata_creation_required: false,
+                memo: Some("hi".to_string()),
+            },
+            TransferEntry {
+                recipient: Pubkey::new_unique(),
+                amount: 2,
+                ata_creation_required: false,
+                memo: None,
+            },
+        ];
+        let ixs = build_spl_transfer_batch_instructions(
+            &authority,
+            &mint,
+            &token_program,
+            6,
+            &fee_payer,
+            &entries,
+        )
+        .unwrap();
+        // entry 0: transfer + memo. entry 1: transfer only.
+        assert_eq!(ixs.len(), 3);
+        assert_eq!(
+            ixs[1].program_id,
+            Pubkey::from_str(programs::MEMO_PROGRAM).unwrap()
+        );
+        assert_eq!(ixs[1].data, b"hi");
+    }
+
+    #[test]
+    fn spl_transfer_batch_ata_create_is_paid_by_fee_payer_and_targets_entry_owner() {
+        let (authority, mint, token_program, fee_payer) = batch_test_fixture();
+        let recipient = Pubkey::new_unique();
+        let entries = vec![TransferEntry {
+            recipient,
+            amount: 1,
+            ata_creation_required: true,
+            memo: None,
+        }];
+        let ixs = build_spl_transfer_batch_instructions(
+            &authority,
+            &mint,
+            &token_program,
+            6,
+            &fee_payer,
+            &entries,
+        )
+        .unwrap();
+        assert_eq!(ixs.len(), 2);
+        assert_eq!(ixs[0].accounts[0].pubkey, fee_payer);
+        assert_eq!(ixs[0].accounts[2].pubkey, recipient);
+    }
+
+    #[test]
+    fn spl_transfer_batch_rejects_oversized_memo() {
+        let (authority, mint, token_program, fee_payer) = batch_test_fixture();
+        let entries = vec![TransferEntry {
+            recipient: Pubkey::new_unique(),
+            amount: 1,
+            ata_creation_required: false,
+            memo: Some("x".repeat(567)),
+        }];
+        let err = build_spl_transfer_batch_instructions(
+            &authority,
+            &mint,
+            &token_program,
+            6,
+            &fee_payer,
+            &entries,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("memo cannot exceed 566 bytes"));
+    }
+
+    // ── build_prepared_charge (deliverable 1: prepared unsigned message) ──
+
+    #[tokio::test]
+    async fn build_prepared_charge_returns_unsigned_transaction() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let prepared = build_prepared_charge(
+            signer_pk,
+            &rpc,
+            1_000_000,
+            "SOL",
+            RECIPIENT,
+            &md,
+            &BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.fee_payer, signer_pk);
+        // Every signature slot is present but unsigned (all-zero).
+        assert!(prepared
+            .transaction
+            .signatures
+            .iter()
+            .all(|sig| *sig == solana_signature::Signature::default()));
+    }
+
+    #[tokio::test]
+    async fn build_charge_transaction_signs_the_prepared_message() {
+        // Deliverable 4: the credential builder must sign the SAME message
+        // `build_prepared_charge` produces, not a separately constructed one.
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let prepared = build_prepared_charge(
+            signer.pubkey(),
+            &rpc,
+            1_000_000,
+            "SOL",
+            RECIPIENT,
+            &md,
+            &BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .unwrap();
+        let expected_message_bytes = prepared.transaction.message.serialize();
+
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await
+                .unwrap();
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected transaction payload");
+        };
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
+            .unwrap();
+        let signed_tx: Transaction = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(signed_tx.message.serialize(), expected_message_bytes);
+        assert_ne!(
+            signed_tx.signatures[0],
+            solana_signature::Signature::default(),
+            "the prepared message must actually get signed"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_prepared_charge_rejects_oversized_batch() {
+        // Deliverable 6 wired into deliverable 1: a batch large enough to
+        // exceed PACKET_DATA_SIZE must be rejected before signing.
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        // MAX_SPLITS (8) splits, each with a near-max-length memo, comfortably
+        // exceeds the 1232-byte packet limit.
+        let splits: Vec<Split> = (0..8)
+            .map(|_| Split {
+                recipient: Pubkey::new_unique().to_string(),
+                amount: "1".to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: Some("x".repeat(500)),
+            })
+            .collect();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            splits: Some(splits),
+            ..Default::default()
+        };
+        let err = build_prepared_charge(
+            signer_pk,
+            &rpc,
+            1_000_000_000,
+            USDC_MINT,
+            RECIPIENT,
+            &md,
+            &BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::mpp::Error::TransactionTooLarge { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_prepared_charge_uses_configured_compute_budget() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let options = BuildChargeTransactionOptions {
+            compute_budget: ComputeBudgetOptions {
+                compute_unit_price_micro_lamports: 12_345,
+                compute_unit_limit: 55_555,
+            },
+            ..Default::default()
+        };
+        let prepared =
+            build_prepared_charge(signer_pk, &rpc, 1_000_000, "SOL", RECIPIENT, &md, &options)
+                .await
+                .unwrap();
+
+        let price_ix = &prepared.transaction.message.instructions[0];
+        let limit_ix = &prepared.transaction.message.instructions[1];
+        let price = u64::from_le_bytes(price_ix.data[1..9].try_into().unwrap());
+        let limit = u32::from_le_bytes(limit_ix.data[1..5].try_into().unwrap());
+        assert_eq!(price, 12_345);
+        assert_eq!(limit, 55_555);
+    }
+
+    #[tokio::test]
+    async fn build_prepared_charge_rejects_out_of_bounds_compute_budget() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let options = BuildChargeTransactionOptions {
+            compute_budget: ComputeBudgetOptions {
+                compute_unit_price_micro_lamports: 1,
+                compute_unit_limit: SOLANA_MAX_COMPUTE_UNIT_LIMIT + 1,
+            },
+            ..Default::default()
+        };
+        let err =
+            build_prepared_charge(signer_pk, &rpc, 1_000_000, "SOL", RECIPIENT, &md, &options)
+                .await
+                .unwrap_err();
+        assert!(format!("{err}").contains("exceeds Solana's per-transaction ceiling"));
+    }
+
+    // ── MPP charge builder shape regression (deliverable 3) ──
+    //
+    // Proves the charge builder produces the exact same instruction shape
+    // after being adapted onto `build_spl_transfer_batch_instructions` as it
+    // did before: compute budget, primary transfer (no ATA create), ATA
+    // create only for the flagged split, split transfer, split memo — in
+    // that order.
+
+    #[tokio::test]
+    async fn build_charge_spl_with_fee_payer_and_split_ata_creation_produces_expected_shape() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: "50000".to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: Some("tip".to_string()),
+            }]),
+            ..Default::default()
+        };
+        let payload = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .unwrap();
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected transaction payload");
+        };
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
+            .unwrap();
+        let tx: Transaction = bincode::deserialize(&bytes).unwrap();
+
+        let program_id_of = |idx: usize| -> Pubkey {
+            let compiled = &tx.message.instructions[idx];
+            tx.message.account_keys[compiled.program_id_index as usize]
+        };
+
+        let compute_budget_program =
+            Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
+        let token_program_id = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+        let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM).unwrap();
+
+        assert_eq!(
+            tx.message.instructions.len(),
+            6,
+            "unexpected instruction count"
+        );
+        assert_eq!(program_id_of(0), compute_budget_program, "cu price");
+        assert_eq!(program_id_of(1), compute_budget_program, "cu limit");
+        assert_eq!(program_id_of(2), token_program_id, "primary transfer");
+        assert_eq!(program_id_of(3), ata_program, "split ata create");
+        assert_eq!(program_id_of(4), token_program_id, "split transfer");
+        assert_eq!(program_id_of(5), memo_program, "split memo");
+        assert_eq!(tx.message.instructions[5].data, b"tip");
     }
 
     // ── build_spl_instructions ──

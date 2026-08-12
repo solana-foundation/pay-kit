@@ -339,7 +339,16 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn sol_charge_replay_rejected() {
+async fn sol_charge_identical_retry_is_idempotent() {
+    // PayKit Slice 1 changed this test's expectation. Ed25519 signing is
+    // deterministic, so replaying an already-signed pull-mode credential
+    // reproduces the exact same on-chain signature. Before Slice 1's
+    // challenge-scoped `ChargeReplayStore`, that meant an identical retry —
+    // e.g. because the client never saw the first HTTP response — hit
+    // `consume_signature`'s "already consumed" error instead of returning
+    // the receipt it already earned: replay-safe, but not
+    // response-loss-idempotent. Slice 1 makes the identical retry succeed
+    // and return the SAME signature.
     let recipient = Keypair::new();
     let Some(surfnet) = start_surfnet_or_skip().await else {
         return;
@@ -369,7 +378,6 @@ async fn sol_charge_replay_rejected() {
         .await
         .unwrap();
 
-    // First: success.
     let expected = expected_charge(
         "1000000",
         "SOL",
@@ -378,30 +386,29 @@ async fn sol_charge_replay_rejected() {
         9,
         None,
     );
-    let receipt = mpp
+
+    // First presentation: settles on-chain.
+    let first = mpp
         .verify_credential_with_expected(
             &solana_pay_kit::mpp::parse_authorization(&auth).unwrap(),
             &expected,
         )
         .await
         .unwrap();
-    assert_eq!(receipt.status.to_string(), "success");
+    assert_eq!(first.status.to_string(), "success");
 
-    // Replay: rejected — either by the replay store (signature-consumed)
-    // or by the network itself (duplicate transaction).
-    let err = mpp
+    // Identical retry — must return the SAME receipt instead of erroring.
+    let second = mpp
         .verify_credential_with_expected(
             &solana_pay_kit::mpp::parse_authorization(&auth).unwrap(),
             &expected,
         )
         .await
-        .unwrap_err();
-    assert!(
-        err.message.contains("consumed")
-            || err.message.contains("already been processed")
-            || err.code == Some("signature-consumed"),
-        "Expected replay rejection, got: {}",
-        err.message
+        .unwrap();
+    assert_eq!(second.status.to_string(), "success");
+    assert_eq!(
+        second.reference, first.reference,
+        "identical retry must return the same settlement signature"
     );
 }
 

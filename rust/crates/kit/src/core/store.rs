@@ -9,7 +9,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-#[cfg(feature = "redis-store")]
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Default time to retain a finalized channel record for reconciliation,
@@ -133,6 +133,230 @@ impl Store for MemoryStore {
                 }
             }
         })
+    }
+}
+
+// ── Charge replay / idempotency store ──
+//
+// PayKit's original charge replay guard
+// (`solana-charge:consumed:<signature>`, see
+// `mpp::server::charge::Mpp::consume_signature`) is replay-safe — the same
+// final signature can never be reserved twice — but not
+// response-loss-idempotent: if a client's HTTP response is lost after a
+// successful settlement, retrying the identical credential recomputes the
+// same Ed25519 signature (signing is deterministic) and then fails at
+// `consume_signature` instead of returning the receipt it already earned.
+// `ChargeReplayStore` adds a second, challenge-scoped record that a retried
+// presentation of the SAME credential can look up and short-circuit on,
+// instead of erroring — see the PayKit Slice 1 plan's "pay-api safety and
+// idempotency" section.
+
+/// Default time a charge-settlement record is retained for idempotent
+/// replay once it reaches a terminal (`Confirmed`/`Failed`) state. Chosen to
+/// exceed Solana's transaction-history retention and typical client resume
+/// windows; a Redis-backed [`Store`] should set this as the key's TTL.
+pub const DEFAULT_CHARGE_RECORD_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long a charge record may sit in [`ChargeRecordState::Reserved`]
+/// before a fresh presentation of the same challenge id + digest is allowed
+/// to reclaim it.
+///
+/// Guards against a process that reserved a settlement and then crashed (or
+/// hung) before calling `mark_confirmed`/`mark_failed`: without this lease,
+/// that challenge id would be stuck returning `InProgress` forever.
+pub const CHARGE_RESERVATION_LEASE: Duration = Duration::from_secs(2 * 60);
+
+/// Settlement state of a [`ChargeRecord`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChargeRecordState {
+    /// A caller has claimed this challenge id and is (or was) attempting to
+    /// settle it. No final signature yet.
+    Reserved,
+    /// Settlement succeeded; `final_signature` is authoritative.
+    Confirmed,
+    /// Settlement failed terminally; `failure_reason` explains why.
+    Failed,
+}
+
+/// A durable record of one charge-settlement attempt, keyed by challenge id.
+///
+/// See the module-level "Charge replay / idempotency store" docs above.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChargeRecord {
+    pub challenge_id: String,
+    /// Digest over everything that must match for a retry to be considered
+    /// "the same" settlement attempt (in `mpp::server::charge`, this is
+    /// computed over the challenge id, the expected request, and the
+    /// presented credential payload). This module treats it as an opaque
+    /// caller-supplied string.
+    pub normalized_request_digest: String,
+    pub final_signature: Option<String>,
+    pub failure_reason: Option<String>,
+    pub state: ChargeRecordState,
+    pub updated_at: i64,
+    pub expires_at: i64,
+}
+
+/// Outcome of [`ChargeReplayStore::reserve`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChargeReservation {
+    /// First presentation of this challenge id + digest (or a prior
+    /// reservation's lease expired). The caller now owns this record and
+    /// MUST eventually call `mark_confirmed` or `mark_failed` — no other
+    /// concurrent caller can also receive `Reserved` for the same key.
+    Reserved,
+    /// An earlier presentation with the same digest already confirmed.
+    /// Return `final_signature` to the caller instead of re-settling.
+    AlreadyConfirmed { final_signature: String },
+    /// An earlier presentation with the same digest already failed
+    /// terminally.
+    AlreadyFailed { reason: String },
+    /// An earlier presentation with the same digest is still being settled
+    /// (or its owner crashed before the lease expired). The caller must NOT
+    /// settle again; it should ask the client to retry shortly.
+    InProgress,
+    /// The same challenge id was presented with a DIFFERENT digest — a
+    /// different request or credential is trying to reuse this challenge.
+    Conflict,
+}
+
+fn charge_record_key(challenge_id: &str) -> String {
+    format!("solana-charge:record:{challenge_id}")
+}
+
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// Idempotent charge-settlement ledger built on top of a plain [`Store`].
+///
+/// Only the caller that receives [`ChargeReservation::Reserved`] from
+/// [`Self::reserve`] may call [`Self::mark_confirmed`] or
+/// [`Self::mark_failed`] for that challenge id — every other concurrent
+/// caller is turned away with `InProgress` or `Conflict` before doing any
+/// settlement work. That invariant is what lets `mark_confirmed`/
+/// `mark_failed` use a plain read-then-write instead of a compare-and-swap:
+/// there is never more than one writer per key between a `Reserved` outcome
+/// and its matching `mark_*` call.
+#[derive(Clone)]
+pub struct ChargeReplayStore {
+    store: Arc<dyn Store>,
+}
+
+impl ChargeReplayStore {
+    pub fn new(store: Arc<dyn Store>) -> Self {
+        Self { store }
+    }
+
+    /// Reserve `challenge_id` for settlement, or classify an existing
+    /// record. See [`ChargeReservation`] for the possible outcomes.
+    pub async fn reserve(
+        &self,
+        challenge_id: &str,
+        normalized_request_digest: &str,
+        lease: Duration,
+    ) -> Result<ChargeReservation, StoreError> {
+        let key = charge_record_key(challenge_id);
+        let now = now_unix();
+        let fresh = ChargeRecord {
+            challenge_id: challenge_id.to_string(),
+            normalized_request_digest: normalized_request_digest.to_string(),
+            final_signature: None,
+            failure_reason: None,
+            state: ChargeRecordState::Reserved,
+            updated_at: now,
+            expires_at: now + lease.as_secs() as i64,
+        };
+        let fresh_value =
+            serde_json::to_value(&fresh).map_err(|e| StoreError::Serialization(e.to_string()))?;
+
+        if self.store.put_if_absent(&key, fresh_value.clone()).await? {
+            return Ok(ChargeReservation::Reserved);
+        }
+
+        let existing = self.store.get(&key).await?.ok_or_else(|| {
+            StoreError::Internal("charge record vanished after put_if_absent conflict".into())
+        })?;
+        let existing: ChargeRecord = serde_json::from_value(existing)
+            .map_err(|e| StoreError::Serialization(e.to_string()))?;
+
+        if existing.normalized_request_digest != normalized_request_digest {
+            return Ok(ChargeReservation::Conflict);
+        }
+
+        match existing.state {
+            ChargeRecordState::Confirmed => Ok(ChargeReservation::AlreadyConfirmed {
+                final_signature: existing.final_signature.unwrap_or_default(),
+            }),
+            ChargeRecordState::Failed => Ok(ChargeReservation::AlreadyFailed {
+                reason: existing.failure_reason.unwrap_or_default(),
+            }),
+            ChargeRecordState::Reserved if existing.expires_at <= now => {
+                // The prior reservation's lease expired — presumed abandoned
+                // (e.g. the process that reserved it crashed before
+                // confirming or failing). Reclaim it via `put` (not
+                // `put_if_absent`, which would fail since the key exists).
+                self.store.put(&key, fresh_value).await?;
+                Ok(ChargeReservation::Reserved)
+            }
+            ChargeRecordState::Reserved => Ok(ChargeReservation::InProgress),
+        }
+    }
+
+    /// Transition a reserved record to `Confirmed`. Only the caller that
+    /// received `Reserved` from `reserve` for this `challenge_id` may call
+    /// this — see struct docs.
+    pub async fn mark_confirmed(
+        &self,
+        challenge_id: &str,
+        final_signature: &str,
+    ) -> Result<(), StoreError> {
+        self.settle(
+            challenge_id,
+            ChargeRecordState::Confirmed,
+            Some(final_signature.to_string()),
+            None,
+        )
+        .await
+    }
+
+    /// Transition a reserved record to `Failed`. Only the caller that
+    /// received `Reserved` from `reserve` for this `challenge_id` may call
+    /// this — see struct docs.
+    pub async fn mark_failed(&self, challenge_id: &str, reason: &str) -> Result<(), StoreError> {
+        self.settle(
+            challenge_id,
+            ChargeRecordState::Failed,
+            None,
+            Some(reason.to_string()),
+        )
+        .await
+    }
+
+    async fn settle(
+        &self,
+        challenge_id: &str,
+        state: ChargeRecordState,
+        final_signature: Option<String>,
+        failure_reason: Option<String>,
+    ) -> Result<(), StoreError> {
+        let key = charge_record_key(challenge_id);
+        let existing = self.store.get(&key).await?.ok_or_else(|| {
+            StoreError::Internal(format!(
+                "cannot settle charge record `{challenge_id}`: no reservation found"
+            ))
+        })?;
+        let mut record: ChargeRecord = serde_json::from_value(existing)
+            .map_err(|e| StoreError::Serialization(e.to_string()))?;
+        record.state = state;
+        record.final_signature = final_signature;
+        record.failure_reason = failure_reason;
+        record.updated_at = now_unix();
+        record.expires_at = record.updated_at + DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64;
+        let value =
+            serde_json::to_value(&record).map_err(|e| StoreError::Serialization(e.to_string()))?;
+        self.store.put(&key, value).await
     }
 }
 
@@ -1160,6 +1384,178 @@ mod tests {
             .await
             .unwrap());
         assert_eq!(store.get("k").await.unwrap(), Some(v));
+    }
+
+    // ── ChargeReplayStore ──
+
+    fn replay_store() -> ChargeReplayStore {
+        ChargeReplayStore::new(Arc::new(MemoryStore::new()))
+    }
+
+    #[tokio::test]
+    async fn charge_replay_reserve_first_presentation_wins() {
+        let store = replay_store();
+        let outcome = store
+            .reserve("chal-1", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ChargeReservation::Reserved);
+    }
+
+    #[tokio::test]
+    async fn charge_replay_reserve_identical_retry_while_in_progress_does_not_settle_again() {
+        let store = replay_store();
+        store
+            .reserve("chal-2", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+
+        // Still reserved (not yet confirmed/failed) — a second identical
+        // presentation must not be allowed to settle again.
+        let outcome = store
+            .reserve("chal-2", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ChargeReservation::InProgress);
+    }
+
+    #[tokio::test]
+    async fn charge_replay_identical_retry_after_confirmation_returns_same_signature() {
+        let store = replay_store();
+        store
+            .reserve("chal-3", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        store.mark_confirmed("chal-3", "sig-abc").await.unwrap();
+
+        // Response-loss-idempotent: an identical retry after the first
+        // settled must return the SAME signature instead of erroring or
+        // re-settling.
+        let outcome = store
+            .reserve("chal-3", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ChargeReservation::AlreadyConfirmed {
+                final_signature: "sig-abc".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn charge_replay_identical_retry_after_failure_returns_same_reason() {
+        let store = replay_store();
+        store
+            .reserve("chal-4", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        store
+            .mark_failed("chal-4", "simulation failed")
+            .await
+            .unwrap();
+
+        let outcome = store
+            .reserve("chal-4", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ChargeReservation::AlreadyFailed {
+                reason: "simulation failed".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn charge_replay_conflicting_digest_under_same_challenge_id_errors() {
+        let store = replay_store();
+        store
+            .reserve("chal-5", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+
+        // A different request/credential trying to reuse the same
+        // challenge id must be rejected, whether the original is still
+        // in flight...
+        let outcome = store
+            .reserve("chal-5", "digest-b", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ChargeReservation::Conflict);
+
+        // ...or already confirmed.
+        store.mark_confirmed("chal-5", "sig-abc").await.unwrap();
+        let outcome = store
+            .reserve("chal-5", "digest-b", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ChargeReservation::Conflict);
+    }
+
+    #[tokio::test]
+    async fn charge_replay_expired_reservation_is_reclaimed() {
+        let store = replay_store();
+        // A lease of zero is immediately expired, simulating a process that
+        // reserved and then crashed before confirming or failing.
+        store
+            .reserve("chal-6", "digest-a", Duration::from_secs(0))
+            .await
+            .unwrap();
+
+        let outcome = store
+            .reserve("chal-6", "digest-a", CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ChargeReservation::Reserved);
+    }
+
+    #[tokio::test]
+    async fn charge_replay_mark_confirmed_without_reservation_errors() {
+        let store = replay_store();
+        let err = store
+            .mark_confirmed("never-reserved", "sig-abc")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Internal(_)));
+    }
+
+    // Concurrency regression: race N tasks reserving the SAME challenge
+    // id + digest together. Exactly one may win `Reserved`; every other
+    // task must observe `InProgress` — never a second `Reserved`, which
+    // would mean two callers both think they own the settlement and could
+    // double-broadcast.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn charge_replay_concurrent_identical_reserve_wins_exactly_once() {
+        const TASKS: usize = 16;
+        let store = Arc::new(replay_store());
+        let barrier = Arc::new(tokio::sync::Barrier::new(TASKS));
+
+        let mut handles = Vec::with_capacity(TASKS);
+        for _ in 0..TASKS {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .reserve("chal-concurrent", "digest-a", CHARGE_RESERVATION_LEASE)
+                    .await
+                    .unwrap()
+            }));
+        }
+
+        let mut reserved = 0usize;
+        let mut in_progress = 0usize;
+        for handle in handles {
+            match handle.await.expect("task panicked") {
+                ChargeReservation::Reserved => reserved += 1,
+                ChargeReservation::InProgress => in_progress += 1,
+                other => panic!("unexpected outcome: {other:?}"),
+            }
+        }
+
+        assert_eq!(reserved, 1, "exactly one task may reserve the challenge");
+        assert_eq!(in_progress, TASKS - 1, "every other task must back off");
     }
 
     #[test]

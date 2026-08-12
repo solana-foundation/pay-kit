@@ -58,6 +58,14 @@ pub enum Error {
     #[error("Challenge ID mismatch — not issued by this server")]
     ChallengeMismatch,
 
+    /// PayKit Slice 1: a prepared unsigned transaction's serialized size
+    /// exceeds Solana's packet limit
+    /// (`mpp::protocol::solana::PACKET_DATA_SIZE`). Raised by
+    /// `mpp::protocol::solana::check_transaction_packet_size` so callers can
+    /// reject an oversized transaction before ever signing it.
+    #[error("Prepared transaction is {size} bytes, exceeding Solana's {limit}-byte packet limit")]
+    TransactionTooLarge { size: usize, limit: usize },
+
     #[error("{0}")]
     Other(String),
 }
