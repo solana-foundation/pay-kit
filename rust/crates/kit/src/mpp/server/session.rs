@@ -1834,7 +1834,7 @@ async fn verify_submit_and_fetch_open(
     params: &payment_channels::OpenChannelParams,
     challenged_blockhash: &str,
     rpc_url: Option<&str>,
-    validate_current_slot: bool,
+    fresh_open: bool,
     fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
 ) -> Result<String> {
     use solana_rpc_client::rpc_client::RpcClient;
@@ -1927,7 +1927,7 @@ async fn verify_submit_and_fetch_open(
         .to_string();
 
     let rpc = RpcClient::new(rpc_url.to_string());
-    if validate_current_slot {
+    if fresh_open {
         let current_slot = rpc.get_slot().map_err(|error| {
             Error::Rpc(format!(
                 "failed to fetch current cluster slot for session open: {error}"
@@ -1946,6 +1946,14 @@ async fn verify_submit_and_fetch_open(
                 payment_channels::OPEN_SLOT_WINDOW
             )));
         }
+    } else if fetch_and_match_open_channel(&rpc, params).is_ok() {
+        // This open already exists in the store (a resubmit — e.g. the
+        // client never saw the first response), and the channel account
+        // confirmed on-chain already matches this exact open. Return the
+        // already-landed signature instead of resubmitting: co-signing and
+        // rebroadcasting an open that has nothing left to do would burn a
+        // sponsor fee on every duplicate open request, not just the first.
+        return Ok(transaction_signature);
     }
     // A broadcast rejection is not authoritative: a retry of an open whose
     // first submission landed (response lost, or the store write after it
@@ -2178,7 +2186,7 @@ async fn verify_submit_and_fetch_open(
     _params: &payment_channels::OpenChannelParams,
     _challenged_blockhash: &str,
     _rpc_url: Option<&str>,
-    _validate_current_slot: bool,
+    _fresh_open: bool,
     _fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
 ) -> Result<String> {
     Err(Error::Other(
@@ -2460,7 +2468,11 @@ mod tests {
     async fn rpc_for_channel(
         channel: payment_channels::generated::generated::accounts::Channel,
         current_slot: u64,
-    ) -> (String, tokio::task::JoinHandle<()>) {
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use base64::Engine;
         use serde_json::{json, Value};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2474,11 +2486,14 @@ mod tests {
         // signatures that actually landed.
         let landed: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
             std::sync::Arc::default();
+        let send_tx_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let send_tx_count_srv = std::sync::Arc::clone(&send_tx_count);
         let handle = tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let account_data = account_data.clone();
                 let landed = std::sync::Arc::clone(&landed);
+                let send_tx_count = std::sync::Arc::clone(&send_tx_count_srv);
                 tokio::spawn(async move {
                     let mut bytes = Vec::new();
                     let body_start = loop {
@@ -2518,6 +2533,7 @@ mod tests {
                     let result = match request["method"].as_str().unwrap_or_default() {
                         "getSlot" => Ok(json!(current_slot)),
                         "sendTransaction" => {
+                            send_tx_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let signature = payment_channels::decode_transaction(
                                 request["params"][0].as_str().unwrap(),
                             )
@@ -2602,7 +2618,7 @@ mod tests {
                 });
             }
         });
-        (url, handle)
+        (url, handle, send_tx_count)
     }
 
     #[cfg(feature = "server")]
@@ -2794,7 +2810,7 @@ mod tests {
             rent_payer: payment_channels::to_address(&params.rent_payer),
             open_slot: params.open_slot,
         };
-        let (url, rpc) = rpc_for_channel(channel, 43).await;
+        let (url, rpc, _send_tx_count) = rpc_for_channel(channel, 43).await;
         server.config.rpc_url = Some(url);
         let challenged_blockhash = test_blockhash().to_string();
         let acceptance = server
@@ -3017,7 +3033,8 @@ mod tests {
             rent_payer: payment_channels::to_address(&params.rent_payer),
             open_slot: params.open_slot,
         };
-        let (future_url, future_rpc) = rpc_for_channel(channel.clone(), params.open_slot - 1).await;
+        let (future_url, future_rpc, _send_tx_count) =
+            rpc_for_channel(channel.clone(), params.open_slot - 1).await;
         let mut future_server =
             SessionServer::new(server.config.clone(), MemoryChannelStore::new());
         future_server.config.rpc_url = Some(future_url);
@@ -3040,7 +3057,8 @@ mod tests {
         future_rpc.abort();
 
         let stale_slot = params.open_slot + payment_channels::OPEN_SLOT_WINDOW + 1;
-        let (stale_url, stale_rpc) = rpc_for_channel(channel.clone(), stale_slot).await;
+        let (stale_url, stale_rpc, _send_tx_count) =
+            rpc_for_channel(channel.clone(), stale_slot).await;
         let mut stale_server = SessionServer::new(server.config.clone(), MemoryChannelStore::new());
         stale_server.config.rpc_url = Some(stale_url);
         let stale = stale_server
@@ -3058,7 +3076,7 @@ mod tests {
         assert!(stale.to_string().contains("current cluster slot"));
         stale_rpc.abort();
 
-        let (url, rpc) = rpc_for_channel(channel, 43).await;
+        let (url, rpc, send_tx_count) = rpc_for_channel(channel, 43).await;
         server.config.rpc_url = Some(url);
         // A transaction built against some other blockhash was not built for
         // this challenge — rejected before broadcast.
@@ -3089,11 +3107,22 @@ mod tests {
         assert!(!accepted.replay);
         assert_eq!(accepted.state.opening_challenge_id, "opening");
         assert_eq!(accepted.state.idle_timeout_seconds, Some(300));
+        assert_eq!(
+            send_tx_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the fresh open must broadcast exactly once"
+        );
         let replay = server
             .process_open_with_outcome(&open, context)
             .await
             .unwrap();
         assert!(replay.replay);
+        assert_eq!(
+            send_tx_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a replayed open against an already-confirmed channel must not rebroadcast \
+             (and so must not burn a sponsor fee on the duplicate open)"
+        );
 
         server.store.mark_sealed(&open.channel_id).await.unwrap();
         assert!(server.process_open(&open, context).await.is_err());
@@ -3137,7 +3166,7 @@ mod tests {
             rent_payer: payment_channels::to_address(&params.rent_payer),
             open_slot: params.open_slot,
         };
-        let (url, rpc) = rpc_for_channel(channel, 43).await;
+        let (url, rpc, _send_tx_count) = rpc_for_channel(channel, 43).await;
         server.config.rpc_url = Some(url);
         let challenged_blockhash = test_blockhash().to_string();
         let context = SessionOpenContext {
@@ -3241,7 +3270,7 @@ mod tests {
             rent_payer: payment_channels::to_address(&sponsor.pubkey()),
             open_slot: 42,
         };
-        let (url, rpc) = rpc_for_channel(account, 43).await;
+        let (url, rpc, _send_tx_count) = rpc_for_channel(account, 43).await;
         server.config.rpc_url = Some(url);
         let payload = TopUpPayload {
             channel_id: channel_id.clone(),
