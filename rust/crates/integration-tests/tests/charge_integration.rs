@@ -339,16 +339,13 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn sol_charge_identical_retry_is_idempotent() {
-    // PayKit Slice 1 changed this test's expectation. Ed25519 signing is
-    // deterministic, so replaying an already-signed pull-mode credential
-    // reproduces the exact same on-chain signature. Before Slice 1's
-    // challenge-scoped `ChargeReplayStore`, that meant an identical retry —
-    // e.g. because the client never saw the first HTTP response — hit
-    // `consume_signature`'s "already consumed" error instead of returning
-    // the receipt it already earned: replay-safe, but not
-    // response-loss-idempotent. Slice 1 makes the identical retry succeed
-    // and return the SAME signature.
+async fn sol_charge_identical_retry_is_rejected() {
+    // Ed25519 signing is deterministic, so replaying an already-signed
+    // pull-mode credential reproduces the exact same on-chain signature.
+    // The challenge-scoped `ChargeReplayStore` recognizes that before
+    // `consume_signature` would otherwise surface a bare internal error,
+    // and rejects it with the canonical `signature_consumed` code instead —
+    // the same reject TypeScript and Ruby emit for a resettled credential.
     let recipient = Keypair::new();
     let Some(surfnet) = start_surfnet_or_skip().await else {
         return;
@@ -397,18 +394,20 @@ async fn sol_charge_identical_retry_is_idempotent() {
         .unwrap();
     assert_eq!(first.status.to_string(), "success");
 
-    // Identical retry — must return the SAME receipt instead of erroring.
-    let second = mpp
+    // Identical retry — must reject with the canonical signature-consumed
+    // code, not silently re-settle or succeed a second time.
+    let second_err = mpp
         .verify_credential_with_expected(
             &solana_pay_kit::mpp::parse_authorization(&auth).unwrap(),
             &expected,
         )
         .await
-        .unwrap();
-    assert_eq!(second.status.to_string(), "success");
-    assert_eq!(
-        second.reference, first.reference,
-        "identical retry must return the same settlement signature"
+        .unwrap_err();
+    assert_eq!(second_err.code, Some("signature-consumed"));
+    assert!(
+        second_err.message.contains(&first.reference),
+        "reject message should reference the already-settled signature, got: {}",
+        second_err.message
     );
 }
 

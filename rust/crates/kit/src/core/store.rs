@@ -141,15 +141,14 @@ impl Store for MemoryStore {
 // PayKit's original charge replay guard
 // (`solana-charge:consumed:<signature>`, see
 // `mpp::server::charge::Mpp::consume_signature`) is replay-safe — the same
-// final signature can never be reserved twice — but not
-// response-loss-idempotent: if a client's HTTP response is lost after a
-// successful settlement, retrying the identical credential recomputes the
-// same Ed25519 signature (signing is deterministic) and then fails at
-// `consume_signature` instead of returning the receipt it already earned.
-// `ChargeReplayStore` adds a second, challenge-scoped record that a retried
-// presentation of the SAME credential can look up and short-circuit on,
-// instead of erroring — see the PayKit Slice 1 plan's "pay-api safety and
-// idempotency" section.
+// final signature can never be reserved twice — but produces the wrong
+// error for a retry: Ed25519 signing is deterministic, so replaying an
+// already-signed credential recomputes the same final signature and hits
+// `consume_signature`'s generic internal error instead of the canonical
+// `signature_consumed` reject every SDK is supposed to emit for a resettled
+// credential. `ChargeReplayStore` adds a second, challenge-scoped record
+// that a retried presentation of the SAME credential can look up and
+// reject against directly, without attempting to resettle.
 
 /// Default time a charge-settlement record is retained for idempotent
 /// replay once it reaches a terminal (`Confirmed`/`Failed`) state. Chosen to

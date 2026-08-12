@@ -920,19 +920,20 @@ impl Mpp {
             ));
         }
 
-        // ── Idempotent replay (response-loss-idempotent, not just replay-safe) ──
+        // ── Idempotent replay guard ──
         //
         // `consume_signature` (used inside `settle_payload` below) prevents
-        // the same on-chain signature from ever being reserved twice, but it
-        // is not response-loss-idempotent: Ed25519 signing is deterministic,
-        // so a client retry of an already-signed pull-mode credential
-        // reproduces the exact same final signature and would simply fail
-        // `consume_signature` instead of returning the receipt it already
-        // earned. Reserve on the challenge id BEFORE doing any settlement
-        // work so an identical retry — including one whose original HTTP
-        // response never reached the client — returns the same result
-        // instead of erroring. See the PayKit Slice 1 plan's "pay-api
-        // safety and idempotency" section.
+        // the same on-chain signature from ever being reserved twice, but on
+        // its own it produces the wrong outcome for a pull-mode retry:
+        // Ed25519 signing is deterministic, so replaying an already-signed
+        // credential reproduces the exact same final signature and used to
+        // fail `consume_signature`'s "already consumed" check with a bare
+        // internal error instead of the canonical reject every other SDK
+        // emits. Reserve on the challenge id BEFORE doing any settlement
+        // work so a credential that was already settled is recognized here
+        // and rejected with the same `signature_consumed` code TypeScript
+        // and Ruby use — resubmitting a completed charge is a reject, not a
+        // silent success, per the cross-SDK harness contract.
         let challenge_id = credential.challenge.id.clone();
         let digest = normalized_request_digest(&challenge_id, request, &payload)?;
         let charge_store = self.charge_replay_store();
@@ -942,11 +943,9 @@ impl Mpp {
             .map_err(|e| VerificationError::new(format!("Store error: {e}")))?
         {
             ChargeReservation::AlreadyConfirmed { final_signature } => {
-                return Ok(Receipt::success(
-                    METHOD_NAME,
-                    &final_signature,
-                    challenge_id,
-                ));
+                return Err(VerificationError::signature_consumed(format!(
+                    "Challenge {challenge_id} was already settled (tx {final_signature})"
+                )));
             }
             ChargeReservation::AlreadyFailed { reason } => {
                 return Err(VerificationError::new(reason));
@@ -1807,7 +1806,7 @@ fn expected_ata_creation_policy(
     })
 }
 
-/// PayKit Slice 1: compute a stable digest over everything that must match
+/// Compute a stable digest over everything that must match
 /// for a retried credential to be treated as "the same" settlement attempt —
 /// the challenge id (so an unrelated challenge with coincidentally matching
 /// request fields can't collide), the caller-supplied expected request, and
@@ -3286,7 +3285,7 @@ impl VerificationError {
         )
     }
 
-    /// PayKit Slice 1: a different request or credential tried to reuse a
+    /// A different request or credential tried to reuse a
     /// challenge id that already has an in-flight or settled record with a
     /// different [normalized digest](normalized_request_digest).
     pub fn challenge_conflict(msg: impl Into<String>) -> Self {
@@ -3298,7 +3297,7 @@ impl VerificationError {
         )
     }
 
-    /// PayKit Slice 1: an identical credential is already being settled by
+    /// An identical credential is already being settled by
     /// another in-flight request (or its owner crashed before its
     /// reservation lease expired). Retryable — the caller should back off
     /// and retry; a settled result will then be returned idempotently.
@@ -6715,7 +6714,7 @@ mod tests {
         assert_eq!(after.unwrap_err().code, Some("signature-consumed"));
     }
 
-    // ── PayKit Slice 1: idempotent replay wired into verify() ──
+    // ── Idempotent replay wired into verify() ──
     //
     // These pre-seed the challenge-scoped `ChargeReplayStore` directly
     // (rather than driving a real broadcast, which needs live RPC) to prove
@@ -6726,7 +6725,7 @@ mod tests {
     // distinguishable error, so the test is self-validating.
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn verify_identical_retry_after_confirmation_short_circuits_without_resettling() {
+    async fn verify_identical_retry_after_confirmation_rejects_without_resettling() {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
@@ -6760,14 +6759,19 @@ mod tests {
             .await
             .unwrap();
 
-        // The retry must return the pre-confirmed signature without
-        // attempting real settlement.
-        let receipt = mpp
+        // The retry must reject with the canonical signature-consumed code,
+        // referencing the pre-confirmed signature, without attempting real
+        // settlement.
+        let err = mpp
             .verify_credential_with_expected(&cred, &expected)
             .await
-            .unwrap();
-        assert!(receipt.is_success());
-        assert_eq!(receipt.reference, "already-settled-signature");
+            .unwrap_err();
+        assert_eq!(err.code, Some("signature-consumed"));
+        assert!(
+            err.message.contains("already-settled-signature"),
+            "reject message should reference the already-settled signature, got: {}",
+            err.message
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
