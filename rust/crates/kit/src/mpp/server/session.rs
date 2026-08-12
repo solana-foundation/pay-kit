@@ -22,6 +22,7 @@
 //! never reset the voucher watermark or any other channel state.
 
 use solana_pubkey::Pubkey;
+use solana_signature::Signature;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
@@ -99,6 +100,19 @@ pub struct OpenAcceptance {
     pub state: ChannelState,
     /// Whether the channel already existed and the open was an idempotent replay.
     pub replay: bool,
+    /// Confirmed transaction signature after any server fee-payer co-signing.
+    pub transaction_signature: String,
+}
+
+/// Result of accepting a channel top-up action.
+#[derive(Debug, Clone)]
+pub struct TopUpAcceptance {
+    /// Persisted channel state after processing the top-up.
+    pub state: ChannelState,
+    /// Whether this exact confirmed transaction had already been credited.
+    pub replay: bool,
+    /// Confirmed transaction signature after any server fee-payer co-signing.
+    pub transaction_signature: String,
 }
 
 /// Result of accepting an operator-signed use action.
@@ -109,7 +123,7 @@ pub struct UseAcceptance {
     /// Whether the idempotency key had already been processed.
     pub replay: bool,
 }
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SessionConfig {
     /// Operator public key (base58). Shown to clients in the challenge.
     pub operator: String,
@@ -154,6 +168,12 @@ pub struct SessionConfig {
     /// Ed25519 key used to issue vouchers in operator mode.
     pub operator_signing_key: Option<ed25519_dalek::SigningKey>,
 
+    /// Optional operator signer that sponsors session transaction fees and
+    /// channel-account rent. When set, challenges advertise `feePayer: true`
+    /// and clients leave this signer's fee-payer slot empty for the server to
+    /// co-sign after validating the transaction.
+    pub fee_payer_signer: Option<std::sync::Arc<dyn solana_keychain::SolanaSigner>>,
+
     /// Inactivity thresholds offered for a new channel.
     pub idle_timeout_options_seconds: Option<Vec<u32>>,
 
@@ -173,6 +193,39 @@ pub struct SessionConfig {
     pub rpc_url: Option<String>,
 }
 
+impl std::fmt::Debug for SessionConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionConfig")
+            .field("operator", &self.operator)
+            .field("recipient", &self.recipient)
+            .field("splits", &self.splits)
+            .field("amount", &self.amount)
+            .field("suggested_deposit", &self.suggested_deposit)
+            .field("minimum_deposit", &self.minimum_deposit)
+            .field("currency", &self.currency)
+            .field("decimals", &self.decimals)
+            .field("network", &self.network)
+            .field("channel_program", &self.channel_program)
+            .field("token_program", &self.token_program)
+            .field("min_voucher_delta", &self.min_voucher_delta)
+            .field("voucher_signer", &self.voucher_signer)
+            .field("operator_signing_key", &self.operator_signing_key.is_some())
+            .field(
+                "fee_payer_signer",
+                &self.fee_payer_signer.as_ref().map(|signer| signer.pubkey()),
+            )
+            .field(
+                "idle_timeout_options_seconds",
+                &self.idle_timeout_options_seconds,
+            )
+            .field("idle_timeout_seconds", &self.idle_timeout_seconds)
+            .field("grace_period_seconds", &self.grace_period_seconds)
+            .field("rpc_url", &self.rpc_url.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -190,6 +243,7 @@ impl Default for SessionConfig {
             min_voucher_delta: 0,
             voucher_signer: VoucherSigner::Client,
             operator_signing_key: None,
+            fee_payer_signer: None,
             idle_timeout_options_seconds: None,
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
@@ -367,6 +421,11 @@ impl<S: ChannelStore> SessionServer<S> {
             .config
             .channel_program
             .unwrap_or_else(payment_channels::default_program_id);
+        let fee_payer_key = self
+            .config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| signer.pubkey().to_string());
         Ok(SessionRequest {
             amount: self.config.amount.to_string(),
             currency,
@@ -387,8 +446,8 @@ impl<S: ChannelStore> SessionServer<S> {
                     .config
                     .token_program
                     .map(|key| payment_channels::pubkey_string(&key)),
-                fee_payer: None,
-                fee_payer_key: None,
+                fee_payer: fee_payer_key.as_ref().map(|_| true),
+                fee_payer_key,
                 voucher_signer: Some(self.config.voucher_signer),
                 operator: (self.config.voucher_signer == VoucherSigner::Operator)
                     .then(|| self.config.operator.clone()),
@@ -541,9 +600,15 @@ impl<S: ChannelStore> SessionServer<S> {
                 bps: split.bps,
             })
             .collect();
+        let rent_payer = self
+            .config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| signer.pubkey())
+            .unwrap_or(payer);
         let params = payment_channels::OpenChannelParams {
             payer,
-            rent_payer: payer,
+            rent_payer,
             payee,
             mint,
             authorized_signer,
@@ -698,12 +763,13 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?
             .is_none();
-        verify_submit_and_fetch_open(
+        let transaction_signature = verify_submit_and_fetch_open(
             payload,
             &params,
             context.recent_blockhash,
             self.config.rpc_url.as_deref(),
             fresh_open,
+            self.config.fee_payer_signer.as_deref(),
         )
         .await?;
 
@@ -728,7 +794,7 @@ impl<S: ChannelStore> SessionServer<S> {
             // gate evaluated later.
             open_slot: Some(payload.open_slot),
             payer: payload.payer.clone(),
-            rent_payer: payload.payer.clone(),
+            rent_payer: params.rent_payer.to_string(),
             opening_challenge_id: context.challenge_id.to_string(),
             authentication,
             voucher_signer: match self.config.voucher_signer {
@@ -760,6 +826,7 @@ impl<S: ChannelStore> SessionServer<S> {
         let session_id_owned = session_id.to_string();
         let authorized_signer = payload.authorized_signer.clone();
         let payer = payload.payer.clone();
+        let rent_payer = params.rent_payer.to_string();
         let opening_challenge_id = context.challenge_id.to_string();
         let authentication = payload.authentication.clone();
         let replay = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -781,6 +848,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             )));
                         }
                         if existing.payer != payer
+                            || existing.rent_payer != rent_payer
                             || existing.opening_challenge_id != opening_challenge_id
                             || existing.authentication
                                 != authentication
@@ -804,7 +872,11 @@ impl<S: ChannelStore> SessionServer<S> {
             .map_err(store_err)?;
 
         let replay = replay.load(std::sync::atomic::Ordering::Relaxed);
-        Ok(OpenAcceptance { state, replay })
+        Ok(OpenAcceptance {
+            state,
+            replay,
+            transaction_signature,
+        })
     }
 
     /// Build the required receipt for a successful session action.
@@ -1113,6 +1185,14 @@ impl<S: ChannelStore> SessionServer<S> {
     /// against the resulting channel account before the deposit is raised.
     /// Missing RPC configuration is a hard error.
     pub async fn process_topup(&self, payload: &TopUpPayload) -> Result<ChannelState> {
+        Ok(self.process_topup_with_outcome(payload).await?.state)
+    }
+
+    /// Process a `topup` action and return its post-co-sign transaction ID.
+    pub async fn process_topup_with_outcome(
+        &self,
+        payload: &TopUpPayload,
+    ) -> Result<TopUpAcceptance> {
         let additional_amount: u64 = payload
             .additional_amount
             .parse()
@@ -1122,32 +1202,24 @@ impl<S: ChannelStore> SessionServer<S> {
                 "additionalAmount must be positive".to_string(),
             ));
         }
-        let topup_signature = payment_channels::decode_transaction(&payload.transaction)?
-            .signatures
-            .first()
-            .ok_or_else(|| Error::Other("top-up transaction is missing a signature".to_string()))?
-            .to_string();
         let existing = self
             .store
             .get_channel(&payload.channel_id)
             .await
             .map_err(store_err)?
             .ok_or_else(|| Error::Other(format!("Channel {} not found", payload.channel_id)))?;
-        // Idempotent replay: this exact transaction was already credited, so
-        // report the stored state without re-broadcasting (a re-broadcast of
-        // a landed transaction fails at preflight).
-        if existing
-            .processed_topup_signatures
-            .contains(&topup_signature)
-        {
-            return Ok(existing);
-        }
         if existing.sealed || existing.close_requested_at.is_some() {
             return Err(Error::Other(
                 "Channel is closed or close is pending".to_string(),
             ));
         }
-        verify_submit_and_fetch_topup(
+        // The transaction id is the fee-payer signature. In sponsored mode
+        // that slot is intentionally empty in the submitted payload, so only
+        // the server can derive the stable dedupe key after validation and
+        // co-signing. A replay may therefore reach RPC again; the confirmed
+        // signature status makes that path idempotent before this mutator
+        // credits the deposit.
+        let topup_signature = verify_submit_and_fetch_topup(
             payload,
             &existing,
             &self.config,
@@ -1157,7 +1229,11 @@ impl<S: ChannelStore> SessionServer<S> {
 
         let cid = payload.channel_id.clone();
         let lifecycle_owner = self.config.operator.clone();
-        self.store
+        let replay = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let replay_out = std::sync::Arc::clone(&replay);
+        let transaction_signature = topup_signature.clone();
+        let state = self
+            .store
             .update_channel(
                 &payload.channel_id,
                 Box::new(move |state_opt| {
@@ -1168,6 +1244,7 @@ impl<S: ChannelStore> SessionServer<S> {
                     // both confirm the same landed transaction, so only the
                     // first check-and-record may credit the deposit.
                     if state.processed_topup_signatures.contains(&topup_signature) {
+                        replay_out.store(true, std::sync::atomic::Ordering::Relaxed);
                         return Ok(state);
                     }
                     if state.sealed {
@@ -1201,7 +1278,12 @@ impl<S: ChannelStore> SessionServer<S> {
                 }),
             )
             .await
-            .map_err(store_err)
+            .map_err(store_err)?;
+        Ok(TopUpAcceptance {
+            state,
+            replay: replay.load(std::sync::atomic::Ordering::Relaxed),
+            transaction_signature,
+        })
     }
 
     /// Reserve capacity for a delivered message/response and return the
@@ -1731,7 +1813,8 @@ async fn verify_submit_and_fetch_open(
     challenged_blockhash: &str,
     rpc_url: Option<&str>,
     validate_current_slot: bool,
-) -> Result<()> {
+    fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
+) -> Result<String> {
     use solana_rpc_client::rpc_client::RpcClient;
 
     let rpc_url = rpc_url.ok_or_else(|| {
@@ -1740,7 +1823,7 @@ async fn verify_submit_and_fetch_open(
                 .to_string(),
         )
     })?;
-    let tx = payment_channels::decode_transaction(&payload.transaction)?;
+    let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     if tx
         .message
         .address_table_lookups()
@@ -1759,9 +1842,9 @@ async fn verify_submit_and_fetch_open(
         ));
     }
     let keys = tx.message.static_account_keys();
-    if keys.first() != Some(&params.payer) {
+    if keys.first() != Some(&params.rent_payer) {
         return Err(Error::Other(
-            "open transaction fee payer must equal the channel payer".to_string(),
+            "open transaction fee payer does not match the challenge policy".to_string(),
         ));
     }
     let expected = payment_channels::build_open_instruction(params);
@@ -1772,6 +1855,11 @@ async fn verify_submit_and_fetch_open(
             Error::Other("open instruction program index out of range".to_string())
         })?;
         if *program == compute_budget {
+            crate::mpp::server::charge::validate_compute_budget_instruction(
+                ix,
+                fee_payer_signer.is_some(),
+            )
+            .map_err(|error| Error::Other(error.to_string()))?;
             continue;
         }
         if found_open || *program != expected.program_id || ix.data != expected.data {
@@ -1805,6 +1893,16 @@ async fn verify_submit_and_fetch_open(
             "open transaction does not contain the expected open instruction".to_string(),
         ));
     }
+
+    verify_client_transaction_signatures(&tx, fee_payer_signer.map(|signer| signer.pubkey()))?;
+    if let Some(signer) = fee_payer_signer {
+        payment_channels::cosign_fee_payer(signer, &params.rent_payer, &mut tx).await?;
+    }
+    let transaction_signature = tx
+        .signatures
+        .first()
+        .ok_or_else(|| Error::Other("open transaction is missing its fee-payer signature".into()))?
+        .to_string();
 
     let rpc = RpcClient::new(rpc_url.to_string());
     if validate_current_slot {
@@ -1842,7 +1940,8 @@ async fn verify_submit_and_fetch_open(
         (None, confirmed) => confirmed,
         (Some(_), Ok(())) => Ok(()),
         (Some(broadcast_error), Err(_)) => Err(broadcast_error),
-    }
+    }?;
+    Ok(transaction_signature)
 }
 
 #[cfg(feature = "server")]
@@ -1882,7 +1981,7 @@ async fn verify_submit_and_fetch_topup(
     state: &ChannelState,
     config: &SessionConfig,
     rpc_url: Option<&str>,
-) -> Result<()> {
+) -> Result<String> {
     use solana_rpc_client::rpc_client::RpcClient;
 
     let rpc_url = rpc_url.ok_or_else(|| {
@@ -1916,7 +2015,7 @@ async fn verify_submit_and_fetch_topup(
         &token_program,
         &program_id,
     );
-    let tx = payment_channels::decode_transaction(&payload.transaction)?;
+    let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     if tx
         .message
         .address_table_lookups()
@@ -1927,9 +2026,28 @@ async fn verify_submit_and_fetch_topup(
         ));
     }
     let keys = tx.message.static_account_keys();
-    if keys.first() != Some(&payer) {
+    let stored_rent_payer = parse_pubkey_field(&state.rent_payer, "stored rentPayer")?;
+    let fee_payer_signer = match config.fee_payer_signer.as_deref() {
+        Some(signer) if signer.pubkey() == stored_rent_payer => Some(signer),
+        Some(_) if stored_rent_payer == payer => None,
+        Some(_) => {
+            return Err(Error::Other(
+                "configured session fee payer does not match the channel rentPayer".into(),
+            ));
+        }
+        None if stored_rent_payer == payer => None,
+        None => {
+            return Err(Error::Other(
+                "sponsored session top-up requires the channel fee-payer signer".into(),
+            ));
+        }
+    };
+    let expected_fee_payer = fee_payer_signer
+        .map(|signer| signer.pubkey())
+        .unwrap_or(payer);
+    if keys.first() != Some(&expected_fee_payer) {
         return Err(Error::Other(
-            "top-up transaction fee payer must equal the channel payer".to_string(),
+            "top-up transaction fee payer does not match the challenge policy".to_string(),
         ));
     }
     let compute_budget = parse_pubkey("ComputeBudget111111111111111111111111111111")?;
@@ -1939,6 +2057,11 @@ async fn verify_submit_and_fetch_topup(
             .get(ix.program_id_index as usize)
             .ok_or_else(|| Error::Other("top-up program index out of range".to_string()))?;
         if *program == compute_budget {
+            crate::mpp::server::charge::validate_compute_budget_instruction(
+                ix,
+                fee_payer_signer.is_some(),
+            )
+            .map_err(|error| Error::Other(error.to_string()))?;
             continue;
         }
         let accounts = ix
@@ -1968,6 +2091,18 @@ async fn verify_submit_and_fetch_topup(
     }
     if !found {
         return Err(Error::Other("top-up instruction not found".to_string()));
+    }
+    verify_client_transaction_signatures(&tx, fee_payer_signer.map(|signer| signer.pubkey()))?;
+    if let Some(signer) = fee_payer_signer {
+        payment_channels::cosign_fee_payer(signer, &expected_fee_payer, &mut tx).await?;
+    }
+    let signature = tx
+        .signatures
+        .first()
+        .ok_or_else(|| Error::Other("top-up transaction is missing a signature".to_string()))?
+        .to_string();
+    if state.processed_topup_signatures.contains(&signature) {
+        return Ok(signature);
     }
     let rpc = RpcClient::new(rpc_url.to_string());
     if let Err(error) = rpc.send_and_confirm_transaction(&tx) {
@@ -2000,7 +2135,7 @@ async fn verify_submit_and_fetch_topup(
             "confirmed channel state does not reflect the submitted top-up".to_string(),
         ));
     }
-    Ok(())
+    Ok(signature)
 }
 
 #[cfg(not(feature = "server"))]
@@ -2009,7 +2144,7 @@ async fn verify_submit_and_fetch_topup(
     _state: &ChannelState,
     _config: &SessionConfig,
     _rpc_url: Option<&str>,
-) -> Result<()> {
+) -> Result<String> {
     Err(Error::Other(
         "session top-up verification requires the `server` feature".to_string(),
     ))
@@ -2022,10 +2157,42 @@ async fn verify_submit_and_fetch_open(
     _challenged_blockhash: &str,
     _rpc_url: Option<&str>,
     _validate_current_slot: bool,
-) -> Result<()> {
+    _fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
+) -> Result<String> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
     ))
+}
+
+fn verify_client_transaction_signatures(
+    tx: &solana_transaction::versioned::VersionedTransaction,
+    server_fee_payer: Option<Pubkey>,
+) -> Result<()> {
+    let required = usize::from(tx.message.header().num_required_signatures);
+    let keys = tx.message.static_account_keys();
+    if tx.signatures.len() != required || keys.len() < required {
+        return Err(Error::Other(
+            "session transaction signature slots do not match its required signers".into(),
+        ));
+    }
+    let message = tx.message.serialize();
+    for (index, (signature, key)) in tx.signatures.iter().zip(keys).take(required).enumerate() {
+        if server_fee_payer == Some(*key) {
+            if index != 0 || *signature != Signature::default() {
+                return Err(Error::Other(
+                    "session fee-payer signature slot must be empty before server co-signing"
+                        .into(),
+                ));
+            }
+            continue;
+        }
+        if !signature.verify(key.as_ref(), &message) {
+            return Err(Error::Other(format!(
+                "invalid client transaction signature for required signer {key}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
@@ -2140,6 +2307,10 @@ mod tests {
         Box::new(MemorySigner::from_bytes(&bytes).unwrap())
     }
 
+    fn shared_signer(seed: u8) -> std::sync::Arc<dyn solana_keychain::SolanaSigner> {
+        std::sync::Arc::from(signer(seed))
+    }
+
     fn signer_address(seed: u8) -> String {
         bs58::encode(key(seed).verifying_key().as_bytes()).into_string()
     }
@@ -2227,9 +2398,15 @@ mod tests {
             VoucherSigner::Client => signer_address(1).parse().unwrap(),
             VoucherSigner::Operator => Pubkey::from_str(&server.config.operator).unwrap(),
         };
+        let rent_payer = server
+            .config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| signer.pubkey())
+            .unwrap_or(payer);
         let params = payment_channels::OpenChannelParams {
             payer,
-            rent_payer: payer,
+            rent_payer,
             payee,
             mint,
             authorized_signer,
@@ -2420,9 +2597,15 @@ mod tests {
         };
         let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
         let program_id = payment_channels::default_program_id();
+        let fee_payer = server
+            .config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| signer.pubkey())
+            .unwrap_or_else(|| payer.pubkey());
         let params = payment_channels::OpenChannelParams {
             payer: payer.pubkey(),
-            rent_payer: payer.pubkey(),
+            rent_payer: fee_payer,
             payee,
             mint,
             authorized_signer,
@@ -2446,7 +2629,7 @@ mod tests {
             vec![],
             &token_program,
             &program_id,
-            &payer.pubkey(),
+            &fee_payer,
             test_blockhash(),
         )
         .await
@@ -2538,6 +2721,99 @@ mod tests {
         invalid = open;
         invalid.distribution_splits.clear();
         assert!(server.payment_channel_open_params(&invalid).is_err());
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sponsored_open_advertises_cosigns_and_persists_rent_payer() {
+        use base64::Engine;
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+
+        let sponsor = shared_signer(8);
+        let mut cfg = config(VoucherSigner::Client);
+        cfg.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        cache.set(test_blockhash().to_string(), 314, CHALLENGED_SLOT);
+        let mut server =
+            SessionServer::new(cfg, MemoryChannelStore::new()).with_blockhash_cache(cache);
+        let request = server.build_challenge_request().unwrap();
+        let sponsor_key = sponsor.pubkey().to_string();
+        assert_eq!(request.method_details.fee_payer, Some(true));
+        assert_eq!(
+            request.method_details.fee_payer_key.as_deref(),
+            Some(sponsor_key.as_str())
+        );
+
+        let (open, params) = signed_open(&server, 6).await;
+        assert_eq!(params.rent_payer, sponsor.pubkey());
+        let submitted = payment_channels::decode_transaction(&open.transaction).unwrap();
+        assert_eq!(submitted.signatures[0], Signature::default());
+        verify_client_transaction_signatures(&submitted, Some(sponsor.pubkey())).unwrap();
+
+        let channel = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: params.salt,
+            deposit: params.deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: params.grace_period,
+            distribution_hash: payment_channels::distribution_hash(&params.recipients),
+            payer: payment_channels::to_address(&params.payer),
+            payee: payment_channels::to_address(&params.payee),
+            authorized_signer: payment_channels::to_address(&params.authorized_signer),
+            mint: payment_channels::to_address(&params.mint),
+            rent_payer: payment_channels::to_address(&params.rent_payer),
+            open_slot: params.open_slot,
+        };
+        let (url, rpc) = rpc_for_channel(channel, 43).await;
+        server.config.rpc_url = Some(url);
+        let challenged_blockhash = test_blockhash().to_string();
+        let acceptance = server
+            .process_open_with_outcome(
+                &open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: &challenged_blockhash,
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            acceptance.transaction_signature,
+            Signature::default().to_string()
+        );
+        assert_eq!(acceptance.state.rent_payer, sponsor.pubkey().to_string());
+
+        let mut tampered = submitted;
+        tampered.signatures[1] = Signature::default();
+        let mut invalid_open = open;
+        invalid_open.transaction = base64::engine::general_purpose::STANDARD
+            .encode(bincode::serialize(&tampered).unwrap());
+        let error = server
+            .process_open(
+                &invalid_open,
+                SessionOpenContext {
+                    challenge_id: "opening",
+                    expires: None,
+                    recent_blockhash: &challenged_blockhash,
+                    recent_slot: CHALLENGED_SLOT,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid client transaction signature"));
+        rpc.abort();
     }
 
     #[test]
@@ -2870,7 +3146,7 @@ mod tests {
 
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn confirmed_topup_adds_only_the_declared_amount() {
+    async fn confirmed_sponsored_topup_adds_only_the_declared_amount() {
         use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
         use solana_message::Message;
@@ -2878,15 +3154,19 @@ mod tests {
 
         let (mut server, _session, channel_id) = client_server().await;
         let payer = signer(5);
+        let sponsor = shared_signer(8);
+        server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
         server
             .store
             .update_channel(
                 &channel_id,
                 Box::new({
                     let payer = payer.pubkey().to_string();
+                    let rent_payer = sponsor.pubkey().to_string();
                     move |state| {
                         let mut state = state.unwrap();
                         state.payer = payer;
+                        state.rent_payer = rent_payer;
                         Ok(state)
                     }
                 }),
@@ -2907,11 +3187,12 @@ mod tests {
         );
         let message = Message::new_with_blockhash(
             &[ix],
-            Some(&payer.pubkey()),
+            Some(&sponsor.pubkey()),
             &solana_hash::Hash::new_unique(),
         );
         let mut tx = Transaction::new_unsigned(message);
         payer.sign_transaction(&mut tx).await.unwrap();
+        assert_eq!(tx.signatures[0], Signature::default());
         let transaction =
             base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
         let account = payment_channels::generated::generated::accounts::Channel {
@@ -2935,7 +3216,7 @@ mod tests {
             ),
             authorized_signer: payment_channels::to_address(&signer(1).pubkey()),
             mint: payment_channels::to_address(&mint),
-            rent_payer: payment_channels::to_address(&payer.pubkey()),
+            rent_payer: payment_channels::to_address(&sponsor.pubkey()),
             open_slot: 42,
         };
         let (url, rpc) = rpc_for_channel(account, 43).await;
@@ -2945,14 +3226,20 @@ mod tests {
             additional_amount: "100".into(),
             transaction,
         };
-        let updated = server.process_topup(&payload).await.unwrap();
-        assert_eq!(updated.deposit, 1_100);
-        assert!(updated.lifecycle.is_some());
+        let updated = server.process_topup_with_outcome(&payload).await.unwrap();
+        assert_eq!(updated.state.deposit, 1_100);
+        assert!(updated.state.lifecycle.is_some());
+        assert!(!updated.replay);
+        assert_ne!(
+            updated.transaction_signature,
+            Signature::default().to_string()
+        );
 
         // A plain retry replays from the recorded signature without
         // re-broadcasting — no second credit.
-        let replayed = server.process_topup(&payload).await.unwrap();
-        assert_eq!(replayed.deposit, 1_100);
+        let replayed = server.process_topup_with_outcome(&payload).await.unwrap();
+        assert_eq!(replayed.state.deposit, 1_100);
+        assert!(replayed.replay);
 
         // Broadcast landed but the credit was lost (crash between confirm
         // and store write): the retry's re-broadcast dies at preflight, the

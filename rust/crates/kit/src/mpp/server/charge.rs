@@ -2043,7 +2043,7 @@ pub(crate) fn decode_compute_budget_op(ix: &CompiledInstruction) -> Option<Compu
     }
 }
 
-fn validate_compute_budget_instruction(
+pub(crate) fn validate_compute_budget_instruction(
     ix: &CompiledInstruction,
     fee_sponsored: bool,
 ) -> Result<(), VerificationError> {
