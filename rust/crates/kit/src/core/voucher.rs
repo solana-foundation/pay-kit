@@ -174,7 +174,7 @@ fn parse_voucher_signature(
 #[cfg(feature = "server")]
 #[derive(Default)]
 pub struct VoucherBatchVerifier {
-    sender: tokio::sync::OnceCell<tokio::sync::mpsc::Sender<VerificationJob>>,
+    workers: std::sync::OnceLock<BatchThreads>,
 }
 
 #[cfg(feature = "server")]
@@ -204,15 +204,27 @@ impl VoucherBatchVerifier {
         // both checks from `verify_strict` before a request can enter a batch.
         parsed.ensure_batch_safe()?;
 
-        let sender = self
-            .sender
-            .get_or_init(|| async { start_batch_worker() })
-            .await;
+        let workers = self.workers.get_or_init(start_batch_threads);
         let (response, verified) = tokio::sync::oneshot::channel();
-        sender
-            .send(VerificationJob { parsed, response })
-            .await
-            .map_err(|_| Error::Other("voucher verification worker stopped".to_string()))?;
+        let mut pending = VerificationJob { parsed, response };
+        loop {
+            let index = workers
+                .next
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                % workers.senders.len();
+            match workers.senders[index].try_send(pending) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                    pending = returned;
+                    tokio::task::yield_now().await;
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    return Err(Error::Other(
+                        "voucher verification worker stopped".to_string(),
+                    ));
+                }
+            }
+        }
         verified
             .await
             .map_err(|_| Error::Other("voucher verification worker stopped".to_string()))?
@@ -227,109 +239,52 @@ struct VerificationJob {
 }
 
 #[cfg(feature = "server")]
-fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
-    const QUEUE_CAPACITY: usize = 16_384;
-    const BATCH_SIZE: usize = 128;
-
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<VerificationJob>(QUEUE_CAPACITY);
-    let parallel_batches = std::thread::available_parallelism()
-        .map(|cpus| (cpus.get() / 4).clamp(1, 32))
-        .unwrap_or(1);
-    let workers = start_batch_threads(parallel_batches);
-    tokio::spawn(async move {
-        let mut batch_count = 0_u64;
-        let mut verified_jobs = 0_u64;
-        let mut next_worker = 0_usize;
-        while let Some(first) = receiver.recv().await {
-            let mut jobs = Vec::with_capacity(BATCH_SIZE);
-            jobs.push(first);
-            // Give requests made runnable in the same scheduling turn a chance
-            // to join this batch, without adding a wall-clock latency timer.
-            tokio::task::yield_now().await;
-            while jobs.len() < BATCH_SIZE {
-                let Ok(job) = receiver.try_recv() else {
-                    break;
-                };
-                jobs.push(job);
-            }
-
-            // Cross-runtime senders can arrive just after the first drain.
-            // Once concurrency is proven, spend a tightly bounded interval
-            // collecting them instead of scheduling many tiny blocking jobs.
-            // The single-request path below never pays this spin cost.
-            if jobs.len() > 1 && jobs.len() < BATCH_SIZE {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_micros(200);
-                while jobs.len() < BATCH_SIZE && std::time::Instant::now() < deadline {
-                    match receiver.try_recv() {
-                        Ok(job) => jobs.push(job),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                            std::hint::spin_loop();
-                        }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
-                    }
-                }
-            }
-
-            batch_count += 1;
-            verified_jobs += jobs.len() as u64;
-            if batch_count <= 8 || batch_count.is_multiple_of(10_000) {
-                tracing::trace!(
-                    batch_count,
-                    verified_jobs,
-                    latest_batch_size = jobs.len(),
-                    mean_batch_size = verified_jobs as f64 / batch_count as f64,
-                    "voucher verification batch formed"
-                );
-            }
-
-            if jobs.len() == 1 {
-                let job = jobs.pop().expect("one verification job");
-                let result = job.parsed.verify_strict().map_err(|_| ());
-                let _ = job.response.send(result);
-                continue;
-            }
-
-            let mut pending = jobs;
-            loop {
-                match workers[next_worker].try_send(pending) {
-                    Ok(()) => {
-                        next_worker = (next_worker + 1) % workers.len();
-                        break;
-                    }
-                    Err(std::sync::mpsc::TrySendError::Full(returned)) => {
-                        pending = returned;
-                        next_worker = (next_worker + 1) % workers.len();
-                        tokio::task::yield_now().await;
-                    }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(returned)) => {
-                        for job in returned {
-                            let _ = job.response.send(Err(()));
-                        }
-                        return;
-                    }
-                }
-            }
-        }
-    });
-    sender
+struct BatchThreads {
+    senders: Vec<std::sync::mpsc::SyncSender<VerificationJob>>,
+    next: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(feature = "server")]
-fn start_batch_threads(count: usize) -> Vec<std::sync::mpsc::SyncSender<Vec<VerificationJob>>> {
-    (0..count)
+fn start_batch_threads() -> BatchThreads {
+    const QUEUE_CAPACITY_PER_WORKER: usize = 512;
+    const BATCH_SIZE: usize = 128;
+
+    let count = std::thread::available_parallelism()
+        .map(|cpus| (cpus.get() / 4).clamp(1, 32))
+        .unwrap_or(1);
+    let senders = (0..count)
         .map(|index| {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+            let (sender, receiver) =
+                std::sync::mpsc::sync_channel::<VerificationJob>(QUEUE_CAPACITY_PER_WORKER);
             std::thread::Builder::new()
                 .name(format!("voucher-verify-{index}"))
                 .spawn(move || {
-                    while let Ok(jobs) = receiver.recv() {
-                        verify_batch_jobs(jobs);
+                    while let Ok(first) = receiver.recv() {
+                        let mut jobs = Vec::with_capacity(BATCH_SIZE);
+                        jobs.push(first);
+                        while jobs.len() < BATCH_SIZE {
+                            let Ok(job) = receiver.try_recv() else {
+                                break;
+                            };
+                            jobs.push(job);
+                        }
+                        if jobs.len() == 1 {
+                            let job = jobs.pop().expect("one verification job");
+                            let result = job.parsed.verify_strict().map_err(|_| ());
+                            let _ = job.response.send(result);
+                        } else {
+                            verify_batch_jobs(jobs);
+                        }
                     }
                 })
                 .expect("voucher verification thread must start");
             sender
         })
-        .collect()
+        .collect();
+    BatchThreads {
+        senders,
+        next: std::sync::atomic::AtomicUsize::new(0),
+    }
 }
 
 #[cfg(feature = "server")]
