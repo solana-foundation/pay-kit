@@ -225,6 +225,23 @@ fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
                 jobs.push(job);
             }
 
+            // Cross-runtime senders can arrive just after the first drain.
+            // Once concurrency is proven, spend a tightly bounded interval
+            // collecting them instead of scheduling many tiny blocking jobs.
+            // The single-request path below never pays this spin cost.
+            if jobs.len() > 1 && jobs.len() < BATCH_SIZE {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_micros(200);
+                while jobs.len() < BATCH_SIZE && std::time::Instant::now() < deadline {
+                    match receiver.try_recv() {
+                        Ok(job) => jobs.push(job),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                            std::hint::spin_loop();
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+            }
+
             if jobs.len() == 1 {
                 let job = jobs.pop().expect("one verification job");
                 let result = job.parsed.verify_strict().map_err(|_| ());
