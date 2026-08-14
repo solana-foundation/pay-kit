@@ -278,6 +278,9 @@ fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
 
 #[cfg(feature = "server")]
 fn verify_batch_jobs(jobs: Vec<VerificationJob>) {
+    static BATCH_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static FAILED_BATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     let messages: Vec<&[u8]> = jobs
         .iter()
         .map(|job| job.parsed.message.as_slice())
@@ -286,6 +289,21 @@ fn verify_batch_jobs(jobs: Vec<VerificationJob>) {
     let verifying_keys: Vec<VerifyingKey> =
         jobs.iter().map(|job| job.parsed.verifying_key).collect();
     let batch_valid = ed25519_dalek::verify_batch(&messages, &signatures, &verifying_keys).is_ok();
+    let batch_run = BATCH_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let failed_batches = if batch_valid {
+        FAILED_BATCHES.load(std::sync::atomic::Ordering::Relaxed)
+    } else {
+        FAILED_BATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    };
+    if batch_run <= 8 || batch_run.is_multiple_of(10_000) {
+        tracing::trace!(
+            batch_run,
+            failed_batches,
+            batch_size = jobs.len(),
+            batch_valid,
+            "voucher verification batch completed"
+        );
+    }
 
     for job in jobs {
         let result = if batch_valid {
