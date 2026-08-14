@@ -935,7 +935,8 @@ impl Mpp {
         // and Ruby use — resubmitting a completed charge is a reject, not a
         // silent success, per the cross-SDK harness contract.
         let challenge_id = credential.challenge.id.clone();
-        let digest = normalized_request_digest(&challenge_id, request, &payload)?;
+        let digest =
+            normalized_request_digest(&challenge_id, credential.challenge.request.raw(), &payload)?;
         let charge_store = self.charge_replay_store();
         match charge_store
             .reserve(&challenge_id, &digest, CHARGE_RESERVATION_LEASE)
@@ -1809,27 +1810,41 @@ fn expected_ata_creation_policy(
 /// Compute a stable digest over everything that must match
 /// for a retried credential to be treated as "the same" settlement attempt —
 /// the challenge id (so an unrelated challenge with coincidentally matching
-/// request fields can't collide), the caller-supplied expected request, and
+/// request fields can't collide), the credential's own encoded request, and
 /// the credential payload actually presented.
 ///
+/// Hashes `credential.challenge.request.raw()` — the encoded request the
+/// credential itself carries and that was HMAC-bound at challenge issuance —
+/// not the caller-supplied `expected` `ChargeRequest`. A route handler is
+/// free to reconstruct `expected` fresh on every call (e.g. re-deriving a
+/// challenge to read off its `ChargeRequest` shape), and that reconstruction
+/// can legitimately embed a volatile field never covered by
+/// `compare_expected_to_request`'s payment-constraining comparison — a
+/// pre-fetched blockhash is the concrete case (see `charge_with_options`).
+/// Hashing that value directly turns "the same credential resubmitted twice
+/// in quick succession" into two different digests purely because the
+/// caller's derived `expected` drifted between calls, which then falsely
+/// rejects the retry as a conflicting request rather than recognizing it as
+/// identical. The credential's own raw request never changes between
+/// resubmits of the same credential, so it is deterministic where the
+/// caller-supplied `expected` value cannot be.
+///
 /// `serde_json::to_vec`'s field order is fixed by each type's struct
-/// definition, so this is deterministic for equal inputs across processes —
-/// sufficient for an idempotency key. It is not used for any cryptographic
-/// purpose: the HMAC challenge id already authenticates the challenge
-/// itself; this digest only distinguishes "identical retry" from
-/// "different request/credential reusing the same challenge id".
+/// definition, so hashing `payload` is deterministic for equal inputs across
+/// processes — sufficient for an idempotency key. None of this is used for
+/// any cryptographic purpose: the HMAC challenge id already authenticates
+/// the challenge itself; this digest only distinguishes "identical retry"
+/// from "different request/credential reusing the same challenge id".
 fn normalized_request_digest(
     challenge_id: &str,
-    request: &ChargeRequest,
+    encoded_request: &str,
     payload: &CredentialPayload,
 ) -> Result<String, VerificationError> {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     hasher.update(challenge_id.as_bytes());
-    hasher.update(serde_json::to_vec(request).map_err(|e| {
-        VerificationError::new(format!("Failed to hash request for idempotency check: {e}"))
-    })?);
+    hasher.update(encoded_request.as_bytes());
     hasher.update(serde_json::to_vec(payload).map_err(|e| {
         VerificationError::new(format!(
             "Failed to hash credential payload for idempotency check: {e}"
@@ -6748,7 +6763,9 @@ mod tests {
         // response-loss scenario: the first HTTP response never reached the
         // client, but the settlement itself already happened.
         let payload: CredentialPayload = serde_json::from_value(cred.payload.clone()).unwrap();
-        let digest = normalized_request_digest(&cred.challenge.id, &expected, &payload).unwrap();
+        let digest =
+            normalized_request_digest(&cred.challenge.id, cred.challenge.request.raw(), &payload)
+                .unwrap();
         let replay_store = ChargeReplayStore::new(store.clone());
         replay_store
             .reserve(&cred.challenge.id, &digest, CHARGE_RESERVATION_LEASE)
@@ -6819,30 +6836,94 @@ mod tests {
 
     #[test]
     fn normalized_request_digest_is_deterministic_and_input_sensitive() {
-        let request = ChargeRequest {
-            amount: "1000".to_string(),
-            currency: "USDC".to_string(),
-            recipient: Some(TEST_RECIPIENT.to_string()),
-            ..Default::default()
-        };
+        let encoded_request = "encoded-request-a";
         let payload = CredentialPayload::Signature {
             signature: "sig-a".to_string(),
         };
 
-        let d1 = normalized_request_digest("chal-1", &request, &payload).unwrap();
-        let d2 = normalized_request_digest("chal-1", &request, &payload).unwrap();
+        let d1 = normalized_request_digest("chal-1", encoded_request, &payload).unwrap();
+        let d2 = normalized_request_digest("chal-1", encoded_request, &payload).unwrap();
         assert_eq!(d1, d2, "same inputs must hash identically");
 
-        let d3 = normalized_request_digest("chal-2", &request, &payload).unwrap();
+        let d3 = normalized_request_digest("chal-2", encoded_request, &payload).unwrap();
         assert_ne!(d1, d3, "a different challenge id must change the digest");
 
         let other_payload = CredentialPayload::Signature {
             signature: "sig-b".to_string(),
         };
-        let d4 = normalized_request_digest("chal-1", &request, &other_payload).unwrap();
+        let d4 = normalized_request_digest("chal-1", encoded_request, &other_payload).unwrap();
         assert_ne!(
             d1, d4,
             "a different credential payload must change the digest"
+        );
+
+        let d5 = normalized_request_digest("chal-1", "encoded-request-b", &payload).unwrap();
+        assert_ne!(d1, d5, "a different encoded request must change the digest");
+    }
+
+    // Regression test for the bug this fix closes: a route handler that
+    // reconstructs its `expected` `ChargeRequest` fresh on every call (e.g.
+    // `charge_with_options` embedding a freshly pre-fetched blockhash in
+    // `methodDetails`) must not make an identical credential resubmit hash
+    // to a different digest just because the caller-supplied `expected`
+    // drifted between the two calls.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_identical_retry_is_stable_even_when_callers_expected_request_drifts() {
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            store: Some(store.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "not-a-real-signature"}),
+        };
+        let payload: CredentialPayload = serde_json::from_value(cred.payload.clone()).unwrap();
+        let digest =
+            normalized_request_digest(&cred.challenge.id, cred.challenge.request.raw(), &payload)
+                .unwrap();
+
+        // Pre-seed as if an earlier call already confirmed this credential
+        // on-chain.
+        let replay_store = ChargeReplayStore::new(store.clone());
+        replay_store
+            .reserve(&cred.challenge.id, &digest, CHARGE_RESERVATION_LEASE)
+            .await
+            .unwrap();
+        replay_store
+            .mark_confirmed(&cred.challenge.id, "already-settled-signature")
+            .await
+            .unwrap();
+
+        // A route handler that reconstructs `expected` fresh per call (e.g.
+        // re-deriving a challenge via `charge_with_options`, whose method
+        // details embed a freshly pre-fetched blockhash) can legitimately
+        // hand `verify_credential_with_expected` an `expected` that differs
+        // from the one used on the original call — `compare_expected_to_request`
+        // doesn't check `methodDetails.blockhash` for exactly this reason.
+        // The retry must still be recognized as the same settlement attempt.
+        let mut expected: ChargeRequest = challenge.request.decode().unwrap();
+        let mut details = expected
+            .method_details
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({}));
+        details["blockhash"] = serde_json::json!("a-different-blockhash-than-original-issuance");
+        expected.method_details = Some(details);
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            Some("signature-consumed"),
+            "a drifted `expected` must not turn an identical retry into a false conflict"
         );
     }
 
