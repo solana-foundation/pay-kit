@@ -16,7 +16,7 @@ default = ["mpp", "x402"]
 mpp = []
 x402 = []
 # Server-side verification helpers.
-server = ["ed25519-dalek/batch", "dep:curve25519-dalek"]
+server = ["ed25519-dalek/batch", "ed25519-dalek/fast", "dep:curve25519-dalek"]
 # Client-side transaction building + balance-aware `select` (needs serde_json
 # to decode MPP method details).
 client = ["dep:reqwest"]
