@@ -944,8 +944,15 @@ impl Mpp {
             .map_err(|e| VerificationError::new(format!("Store error: {e}")))?
         {
             ChargeReservation::AlreadyConfirmed { final_signature } => {
+                // "already consumed" is load-bearing: canonical-code
+                // classifiers (this harness's `classify_canonical_code` and
+                // its TS/Python/Ruby counterparts) pattern-match error text
+                // rather than reading `VerificationError::code` directly, so
+                // the wording has to agree with `consume_signature`'s
+                // "Transaction signature already consumed" message below.
                 return Err(VerificationError::signature_consumed(format!(
-                    "Challenge {challenge_id} was already settled (tx {final_signature})"
+                    "Transaction signature already consumed — challenge {challenge_id} was \
+                     already settled (tx {final_signature})"
                 )));
             }
             ChargeReservation::AlreadyFailed { reason } => {
