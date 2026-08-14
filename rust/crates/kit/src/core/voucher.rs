@@ -235,10 +235,11 @@ fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
     let parallel_batches = std::thread::available_parallelism()
         .map(|cpus| (cpus.get() / 4).clamp(1, 32))
         .unwrap_or(1);
-    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel_batches));
+    let workers = start_batch_threads(parallel_batches);
     tokio::spawn(async move {
         let mut batch_count = 0_u64;
         let mut verified_jobs = 0_u64;
+        let mut next_worker = 0_usize;
         while let Some(first) = receiver.recv().await {
             let mut jobs = Vec::with_capacity(BATCH_SIZE);
             jobs.push(first);
@@ -288,17 +289,47 @@ fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
                 continue;
             }
 
-            let permit = match std::sync::Arc::clone(&permits).acquire_owned().await {
-                Ok(permit) => permit,
-                Err(_) => break,
-            };
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                verify_batch_jobs(jobs);
-            });
+            let mut pending = jobs;
+            loop {
+                match workers[next_worker].try_send(pending) {
+                    Ok(()) => {
+                        next_worker = (next_worker + 1) % workers.len();
+                        break;
+                    }
+                    Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                        pending = returned;
+                        next_worker = (next_worker + 1) % workers.len();
+                        tokio::task::yield_now().await;
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(returned)) => {
+                        for job in returned {
+                            let _ = job.response.send(Err(()));
+                        }
+                        return;
+                    }
+                }
+            }
         }
     });
     sender
+}
+
+#[cfg(feature = "server")]
+fn start_batch_threads(count: usize) -> Vec<std::sync::mpsc::SyncSender<Vec<VerificationJob>>> {
+    (0..count)
+        .map(|index| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(2);
+            std::thread::Builder::new()
+                .name(format!("voucher-verify-{index}"))
+                .spawn(move || {
+                    while let Ok(jobs) = receiver.recv() {
+                        verify_batch_jobs(jobs);
+                    }
+                })
+                .expect("voucher verification thread must start");
+            sender
+        })
+        .collect()
 }
 
 #[cfg(feature = "server")]
