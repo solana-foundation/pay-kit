@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 use solana_pubkey::Pubkey;
 
-use crate::core::payment_channels::voucher_message_bytes;
+use crate::core::payment_channels::voucher_message_array;
 use crate::core::{Error, Result};
 
 /// Verify an Ed25519 voucher signature against the authorized signer and check
@@ -39,8 +39,6 @@ pub fn verify_voucher_signature(
     now: i64,
     settlement_window: i64,
 ) -> Result<()> {
-    use ed25519_dalek::{Signature, VerifyingKey};
-
     // `expires_at == 0` is never-expires (on-chain parity); skip all time checks.
     if expires_at != 0 {
         if expires_at <= now {
@@ -60,29 +58,19 @@ pub fn verify_voucher_signature(
 
     let channel = Pubkey::from_str(channel_id)
         .map_err(|e| Error::Other(format!("invalid channelId: {e}")))?;
-    let message = voucher_message_bytes(&channel, cumulative, expires_at)?;
-
-    let sig_bytes = bs58::decode(signature_b58)
-        .into_vec()
+    let message = voucher_message_array(&channel, cumulative, expires_at);
+    let signature = solana_signature::Signature::from_str(signature_b58)
         .map_err(|e| Error::Other(format!("Invalid signature encoding: {e}")))?;
-    let pubkey_bytes = bs58::decode(authorized_signer_b58)
-        .into_vec()
+    let authorized_signer = Pubkey::from_str(authorized_signer_b58)
         .map_err(|e| Error::Other(format!("Invalid authorized_signer: {e}")))?;
 
-    let key_arr: [u8; 32] = pubkey_bytes
-        .try_into()
-        .map_err(|_| Error::Other("Pubkey is not 32 bytes".to_string()))?;
-    let sig_arr: [u8; 64] = sig_bytes
-        .try_into()
-        .map_err(|_| Error::Other("Signature is not 64 bytes".to_string()))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&key_arr)
-        .map_err(|e| Error::Other(format!("Invalid authorized_signer key: {e}")))?;
-    let signature = Signature::from_bytes(&sig_arr);
-
-    verifying_key
-        .verify_strict(&message, &signature)
-        .map_err(|_| Error::Other("Voucher signature verification failed".to_string()))
+    if signature.verify(authorized_signer.as_ref(), &message) {
+        Ok(())
+    } else {
+        Err(Error::Other(
+            "Voucher signature verification failed".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -96,7 +84,7 @@ mod tests {
         expires_at: i64,
         sk: &SigningKey,
     ) -> (String, String) {
-        let msg = voucher_message_bytes(channel, cumulative, expires_at).unwrap();
+        let msg = voucher_message_array(channel, cumulative, expires_at);
         let sig = sk.sign(&msg);
         let signer = bs58::encode(sk.verifying_key().as_bytes()).into_string();
         (bs58::encode(sig.to_bytes()).into_string(), signer)

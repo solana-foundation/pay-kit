@@ -30,8 +30,10 @@ use crate::generated::payment_channels::generated::instructions::{
     DistributeBuilder, OpenBuilder, ReclaimBuilder, RequestCloseBuilder, SealBuilder,
     SettleAndSealBuilder, SettleBuilder, TopUpBuilder,
 };
+#[cfg(test)]
+use crate::generated::payment_channels::generated::types::VoucherArgs;
 use crate::generated::payment_channels::generated::types::{
-    DistributeArgs, DistributionEntry, OpenArgs, SettleAndSealArgs, TopUpArgs, VoucherArgs,
+    DistributeArgs, DistributionEntry, OpenArgs, SettleAndSealArgs, TopUpArgs,
 };
 
 /// Canonical payment-channels program ID deployed to Surfnet.
@@ -341,14 +343,21 @@ pub fn voucher_message_bytes(
     cumulative_amount: u64,
     expires_at: i64,
 ) -> Result<Vec<u8>> {
-    let voucher = VoucherArgs {
-        magic: VOUCHER_MAGIC,
-        channel_id: to_address(channel_id),
-        cumulative_amount,
-        expires_at,
-    };
-    borsh::to_vec(&voucher)
-        .map_err(|e| Error::Serialization(format!("voucher Borsh serialization failed: {e}")))
+    Ok(voucher_message_array(channel_id, cumulative_amount, expires_at).to_vec())
+}
+
+/// Build the fixed-width Borsh voucher preimage without a heap allocation.
+pub fn voucher_message_array(
+    channel_id: &Pubkey,
+    cumulative_amount: u64,
+    expires_at: i64,
+) -> [u8; 50] {
+    let mut message = [0u8; 50];
+    message[..2].copy_from_slice(&VOUCHER_MAGIC);
+    message[2..34].copy_from_slice(channel_id.as_ref());
+    message[34..42].copy_from_slice(&cumulative_amount.to_le_bytes());
+    message[42..].copy_from_slice(&expires_at.to_le_bytes());
+    message
 }
 
 /// Builds the `open` instruction.
@@ -686,10 +695,23 @@ mod tests {
 
     #[test]
     fn voucher_message_is_program_borsh_layout() {
-        let bytes = voucher_message_bytes(&pk(9), 42, 1234).unwrap();
+        let channel_id = pk(9);
+        let bytes = voucher_message_bytes(&channel_id, 42, 1234).unwrap();
+        let borsh_bytes = borsh::to_vec(&VoucherArgs {
+            magic: VOUCHER_MAGIC,
+            channel_id: to_address(&channel_id),
+            cumulative_amount: 42,
+            expires_at: 1234,
+        })
+        .unwrap();
+        assert_eq!(bytes, borsh_bytes);
+        assert_eq!(
+            voucher_message_array(&channel_id, 42, 1234).as_slice(),
+            bytes.as_slice()
+        );
         assert_eq!(bytes.len(), 50);
         assert_eq!(&bytes[..2], &VOUCHER_MAGIC);
-        assert_eq!(&bytes[2..34], pk(9).as_ref());
+        assert_eq!(&bytes[2..34], channel_id.as_ref());
         assert_eq!(&bytes[34..42], &42u64.to_le_bytes());
         assert_eq!(&bytes[42..50], &1234i64.to_le_bytes());
     }
