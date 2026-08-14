@@ -212,6 +212,8 @@ fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
         .unwrap_or(1);
     let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel_batches));
     tokio::spawn(async move {
+        let mut batch_count = 0_u64;
+        let mut verified_jobs = 0_u64;
         while let Some(first) = receiver.recv().await {
             let mut jobs = Vec::with_capacity(BATCH_SIZE);
             jobs.push(first);
@@ -240,6 +242,18 @@ fn start_batch_worker() -> tokio::sync::mpsc::Sender<VerificationJob> {
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
                     }
                 }
+            }
+
+            batch_count += 1;
+            verified_jobs += jobs.len() as u64;
+            if batch_count <= 8 || batch_count.is_multiple_of(10_000) {
+                tracing::trace!(
+                    batch_count,
+                    verified_jobs,
+                    latest_batch_size = jobs.len(),
+                    mean_batch_size = verified_jobs as f64 / batch_count as f64,
+                    "voucher verification batch formed"
+                );
             }
 
             if jobs.len() == 1 {
