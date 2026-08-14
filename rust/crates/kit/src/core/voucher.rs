@@ -248,6 +248,7 @@ struct BatchThreads {
 fn start_batch_threads() -> BatchThreads {
     const QUEUE_CAPACITY_PER_WORKER: usize = 512;
     const BATCH_SIZE: usize = 128;
+    const COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_micros(500);
 
     let count = std::thread::available_parallelism()
         .map(|cpus| (cpus.get() / 4).clamp(1, 32))
@@ -262,11 +263,18 @@ fn start_batch_threads() -> BatchThreads {
                     while let Ok(first) = receiver.recv() {
                         let mut jobs = Vec::with_capacity(BATCH_SIZE);
                         jobs.push(first);
+                        let deadline = std::time::Instant::now() + COALESCE_WINDOW;
                         while jobs.len() < BATCH_SIZE {
-                            let Ok(job) = receiver.try_recv() else {
+                            let Some(remaining) =
+                                deadline.checked_duration_since(std::time::Instant::now())
+                            else {
                                 break;
                             };
-                            jobs.push(job);
+                            match receiver.recv_timeout(remaining) {
+                                Ok(job) => jobs.push(job),
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
                         }
                         if jobs.len() == 1 {
                             let job = jobs.pop().expect("one verification job");
