@@ -733,15 +733,18 @@ where
     }
 }
 
-/// In-memory channel store backed by a Mutex.
+const MEMORY_CHANNEL_STORE_SHARDS: usize = 64;
+
+/// In-memory channel store backed by sharded mutexes.
 pub struct MemoryChannelStore {
-    data: std::sync::Mutex<std::collections::HashMap<String, ChannelState>>,
+    data: [std::sync::Mutex<std::collections::HashMap<String, ChannelState>>;
+        MEMORY_CHANNEL_STORE_SHARDS],
 }
 
 impl Default for MemoryChannelStore {
     fn default() -> Self {
         Self {
-            data: std::sync::Mutex::new(std::collections::HashMap::new()),
+            data: std::array::from_fn(|_| std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -750,13 +753,32 @@ impl MemoryChannelStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    fn shard(
+        &self,
+        channel_id: &str,
+    ) -> &std::sync::Mutex<std::collections::HashMap<String, ChannelState>> {
+        // Channel ids are uniformly distributed base58 public keys. FNV-1a is
+        // sufficient for stable in-process shard selection and cheaper than
+        // constructing a randomized hasher for every store operation.
+        let hash = channel_id
+            .as_bytes()
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+        &self.data[hash as usize & (MEMORY_CHANNEL_STORE_SHARDS - 1)]
+    }
 }
 
 impl ChannelStore for MemoryChannelStore {
     fn list_channels(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
-        let channels = self.data.lock().unwrap().values().cloned().collect();
+        let mut channels = Vec::new();
+        for shard in &self.data {
+            channels.extend(shard.lock().unwrap().values().cloned());
+        }
         Box::pin(async move { Ok(channels) })
     }
 
@@ -764,7 +786,12 @@ impl ChannelStore for MemoryChannelStore {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>> {
-        let result = self.data.lock().unwrap().get(channel_id).cloned();
+        let result = self
+            .shard(channel_id)
+            .lock()
+            .unwrap()
+            .get(channel_id)
+            .cloned();
         Box::pin(async move { Ok(result) })
     }
 
@@ -773,7 +800,12 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         state: ChannelState,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let result = match self.data.lock().unwrap().entry(channel_id.to_string()) {
+        let result = match self
+            .shard(channel_id)
+            .lock()
+            .unwrap()
+            .entry(channel_id.to_string())
+        {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(state);
                 Ok(())
@@ -789,7 +821,7 @@ impl ChannelStore for MemoryChannelStore {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        self.data.lock().unwrap().remove(channel_id);
+        self.shard(channel_id).lock().unwrap().remove(channel_id);
         Box::pin(async { Ok(()) })
     }
 
@@ -799,7 +831,7 @@ impl ChannelStore for MemoryChannelStore {
         updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
         let result = {
-            let mut data = self.data.lock().unwrap();
+            let mut data = self.shard(channel_id).lock().unwrap();
             let current = data.get(channel_id).cloned();
             let key = channel_id.to_string();
             match updater(current) {
@@ -819,7 +851,7 @@ impl ChannelStore for MemoryChannelStore {
         lifecycle: ChannelLifecycle,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
         let result = {
-            let mut data = self.data.lock().unwrap();
+            let mut data = self.shard(channel_id).lock().unwrap();
             let state = data
                 .get_mut(channel_id)
                 .ok_or_else(|| StoreError::Internal("Channel not found".to_string()));
@@ -845,7 +877,7 @@ impl ChannelStore for MemoryChannelStore {
         expected: u64,
         new: u64,
     ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.shard(channel_id).lock().unwrap();
         match data.get_mut(channel_id) {
             Some(state) if state.cumulative == expected => {
                 state.cumulative = new;
@@ -861,7 +893,7 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         new_deposit: u64,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.shard(channel_id).lock().unwrap();
         match data.get_mut(channel_id) {
             Some(state) => {
                 state.deposit = new_deposit;
@@ -875,7 +907,7 @@ impl ChannelStore for MemoryChannelStore {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let mut data = self.data.lock().unwrap();
+        let mut data = self.shard(channel_id).lock().unwrap();
         match data.get_mut(channel_id) {
             Some(state) => {
                 state.sealed = true;
