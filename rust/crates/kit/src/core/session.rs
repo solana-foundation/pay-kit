@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use crate::core::store::{ChannelState, ChannelStore, StoreError};
 use crate::core::voucher::verify_voucher_signature;
+#[cfg(feature = "server")]
+use crate::core::voucher::VoucherBatchVerifier;
 use crate::core::{Error, Result};
 
 fn store_err(e: StoreError) -> Error {
@@ -62,6 +64,106 @@ pub async fn accept_voucher(
     min_voucher_delta: u64,
     settlement_window: i64,
 ) -> Result<VoucherAcceptance> {
+    accept_voucher_with(
+        store,
+        channel_id,
+        new_cumulative,
+        expires_at,
+        signature_b58,
+        now,
+        min_voucher_delta,
+        settlement_window,
+        SignatureVerifier::Strict,
+    )
+    .await
+}
+
+/// Accept a cumulative voucher using the server's concurrent batch verifier.
+#[cfg(feature = "server")]
+#[allow(clippy::too_many_arguments)]
+pub async fn accept_voucher_batched(
+    store: &dyn ChannelStore,
+    channel_id: &str,
+    new_cumulative: u64,
+    expires_at: i64,
+    signature_b58: &str,
+    now: i64,
+    min_voucher_delta: u64,
+    settlement_window: i64,
+    verifier: &VoucherBatchVerifier,
+) -> Result<VoucherAcceptance> {
+    accept_voucher_with(
+        store,
+        channel_id,
+        new_cumulative,
+        expires_at,
+        signature_b58,
+        now,
+        min_voucher_delta,
+        settlement_window,
+        SignatureVerifier::Batched(verifier),
+    )
+    .await
+}
+
+enum SignatureVerifier<'a> {
+    Strict,
+    #[cfg(feature = "server")]
+    Batched(&'a VoucherBatchVerifier),
+}
+
+impl SignatureVerifier<'_> {
+    #[allow(clippy::too_many_arguments)]
+    async fn verify(
+        &self,
+        channel_id: &str,
+        cumulative: u64,
+        expires_at: i64,
+        signature_b58: &str,
+        authorized_signer_b58: &str,
+        now: i64,
+        settlement_window: i64,
+    ) -> Result<()> {
+        match self {
+            Self::Strict => verify_voucher_signature(
+                channel_id,
+                cumulative,
+                expires_at,
+                signature_b58,
+                authorized_signer_b58,
+                now,
+                settlement_window,
+            ),
+            #[cfg(feature = "server")]
+            Self::Batched(verifier) => {
+                verifier
+                    .verify(
+                        channel_id,
+                        cumulative,
+                        expires_at,
+                        signature_b58,
+                        authorized_signer_b58,
+                        now,
+                        settlement_window,
+                    )
+                    .await
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn accept_voucher_with(
+    store: &dyn ChannelStore,
+    channel_id: &str,
+    new_cumulative: u64,
+    expires_at: i64,
+    signature_b58: &str,
+    now: i64,
+    min_voucher_delta: u64,
+    settlement_window: i64,
+    verifier: SignatureVerifier<'_>,
+) -> Result<VoucherAcceptance> {
     // Read current state (for authorized_signer, watermark, deposit).
     let state = store
         .get_channel(channel_id)
@@ -84,15 +186,17 @@ pub async fn accept_voucher(
     if new_cumulative == state.cumulative
         && state.highest_voucher_signature.as_deref() == Some(signature_b58)
     {
-        verify_voucher_signature(
-            channel_id,
-            new_cumulative,
-            expires_at,
-            signature_b58,
-            &state.authorized_signer,
-            now,
-            settlement_window,
-        )?;
+        verifier
+            .verify(
+                channel_id,
+                new_cumulative,
+                expires_at,
+                signature_b58,
+                &state.authorized_signer,
+                now,
+                settlement_window,
+            )
+            .await?;
         return Ok(VoucherAcceptance {
             cumulative: new_cumulative,
             charged: 0,
@@ -121,15 +225,17 @@ pub async fn accept_voucher(
     }
 
     // Verify the signature (expensive) before touching the store.
-    verify_voucher_signature(
-        channel_id,
-        new_cumulative,
-        expires_at,
-        signature_b58,
-        &state.authorized_signer,
-        now,
-        settlement_window,
-    )?;
+    verifier
+        .verify(
+            channel_id,
+            new_cumulative,
+            expires_at,
+            signature_b58,
+            &state.authorized_signer,
+            now,
+            settlement_window,
+        )
+        .await?;
 
     let prior_cumulative = state.cumulative;
     let sig = signature_b58.to_string();

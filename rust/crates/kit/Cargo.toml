@@ -16,7 +16,7 @@ default = ["mpp", "x402"]
 mpp = []
 x402 = []
 # Server-side verification helpers.
-server = []
+server = ["ed25519-dalek/batch", "dep:curve25519-dalek"]
 # Client-side transaction building + balance-aware `select` (needs serde_json
 # to decode MPP method details).
 client = ["dep:reqwest"]
@@ -148,6 +148,7 @@ getrandom = "0.3"
 hmac = "0.12"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc"], optional = true }
 
 # Time (expiration, timestamps)
 time = { version = "0.3", features = ["formatting", "parsing"] }

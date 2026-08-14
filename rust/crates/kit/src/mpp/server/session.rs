@@ -26,6 +26,7 @@ use solana_signature::Signature;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::core::session::VoucherAcceptance;
+use crate::core::voucher::VoucherBatchVerifier;
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
 use crate::mpp::protocol::core::{Receipt, ReceiptKind};
@@ -382,6 +383,7 @@ pub struct SessionServer<S: ChannelStore> {
     config: SessionConfig,
     store: S,
     blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
+    voucher_verifier: VoucherBatchVerifier,
 }
 
 impl<S: ChannelStore> SessionServer<S> {
@@ -390,6 +392,7 @@ impl<S: ChannelStore> SessionServer<S> {
             config,
             store,
             blockhash_cache: None,
+            voucher_verifier: VoucherBatchVerifier::default(),
         }
     }
 
@@ -978,7 +981,7 @@ impl<S: ChannelStore> SessionServer<S> {
         // channel's forced-close grace period: a non-zero voucher expiry must
         // outlast it so the operator can still redeem on-chain after the async
         // forced-close delay.
-        let acceptance = crate::core::session::accept_voucher(
+        let acceptance = crate::core::session::accept_voucher_batched(
             &self.store,
             &voucher.data.channel_id,
             new_cumulative,
@@ -987,6 +990,7 @@ impl<S: ChannelStore> SessionServer<S> {
             now_unix_secs(),
             self.config.min_voucher_delta,
             self.config.grace_period_seconds as i64,
+            &self.voucher_verifier,
         )
         .await
         .map_err(Error::from)?;
