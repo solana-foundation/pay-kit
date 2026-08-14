@@ -1,4 +1,4 @@
-"""Backwards-compatible re-export of the payment-channels core.
+"""Backwards-compatible re-export of the tabs core.
 
 The implementation moved to :mod:`solana_pay_kit._paycore.paymentchannels` so the MPP
 session flow and the x402 ``upto`` scheme can share it without either protocol

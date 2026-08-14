@@ -2,9 +2,9 @@ package intents
 
 // Session intent request and voucher types.
 //
-// The session intent opens a payment channel between a client and server,
+// The session intent opens a tab between a client and server,
 // allowing incremental payments via off-chain signed vouchers backed by the
-// on-chain payment-channels program. The JSON wire format is identical across
+// on-chain tabs program. The JSON wire format is identical across
 // the language SDKs; the cross-language harness pins it.
 
 import (
@@ -31,7 +31,7 @@ const DefaultSessionExpiresAt int64 = 4_102_444_800
 type SessionMode string
 
 const (
-	// SessionModePush is a payment channel backed by an on-chain escrow
+	// SessionModePush is a tab backed by an on-chain escrow
 	// deposit (client-funded).
 	SessionModePush SessionMode = "push"
 
@@ -104,7 +104,7 @@ type SessionRequest struct {
 	Splits []SessionSplit `json:"splits,omitempty"`
 
 	// ProgramID is the channel program ID (base58). Defaults to the canonical
-	// payment-channels program.
+	// tabs program.
 	ProgramID *string `json:"programId,omitempty"`
 
 	// Description is a human-readable description.
@@ -359,14 +359,14 @@ type OpenPayload struct {
 
 	// ── Push mode ──
 
-	// ChannelID is the payment-channel address (base58). Required for push
+	// ChannelID is the tab address (base58). Required for push
 	// mode.
 	ChannelID *string `json:"channelId,omitempty"`
 
 	// Deposit locked on-chain (base units). Required for push mode.
 	Deposit *string `json:"deposit,omitempty"`
 
-	// Payer is the client wallet that funds the payment channel.
+	// Payer is the client wallet that funds the tab.
 	Payer *string `json:"payer,omitempty"`
 
 	// Payee is the primary channel payee.
@@ -386,7 +386,7 @@ type OpenPayload struct {
 	// Serialized as a decimal string.
 	RecentSlot *uint64 `json:"-"`
 
-	// Transaction is the signed payment-channel open transaction (base64),
+	// Transaction is the signed tab open transaction (base64),
 	// when the client wants the server/operator to broadcast it.
 	Transaction *string `json:"transaction,omitempty"`
 
@@ -419,7 +419,7 @@ type OpenPayload struct {
 // string-or-number.
 type openPayloadJSON struct {
 	Mode             SessionMode     `json:"mode"`                     // funding mode discriminant ("push" or "pull")
-	ChannelID        *string         `json:"channelId,omitempty"`      // payment-channel address (base58); push mode
+	ChannelID        *string         `json:"channelId,omitempty"`      // tab address (base58); push mode
 	Deposit          *string         `json:"deposit,omitempty"`        // on-chain escrow deposit (base units); push mode
 	Payer            *string         `json:"payer,omitempty"`          // funding client wallet (base58)
 	Payee            *string         `json:"payee,omitempty"`          // primary channel payee (base58)
@@ -542,7 +542,7 @@ func parseOptionalU64(raw json.RawMessage, field string) (*uint64, error) {
 	}
 }
 
-// OpenPayloadPush constructs a push payment-channel open payload.
+// OpenPayloadPush constructs a push tab open payload.
 func OpenPayloadPush(channelID, deposit, authorizedSigner, signature string) OpenPayload {
 	return OpenPayload{
 		Mode:             SessionModePush,
@@ -553,7 +553,7 @@ func OpenPayloadPush(channelID, deposit, authorizedSigner, signature string) Ope
 	}
 }
 
-// OpenPayloadPaymentChannel constructs a payment-channel push open payload.
+// OpenPayloadPaymentChannel constructs a tab push open payload.
 func OpenPayloadPaymentChannel(
 	channelID, deposit, payer, payee, mint string,
 	salt uint64,
@@ -568,7 +568,7 @@ func OpenPayloadPaymentChannel(
 	)
 }
 
-// OpenPayloadPaymentChannelWithMode constructs a payment-channel open payload
+// OpenPayloadPaymentChannelWithMode constructs a tab open payload
 // with an explicit submission mode.
 func OpenPayloadPaymentChannelWithMode(
 	mode SessionMode,
@@ -614,7 +614,7 @@ func (p OpenPayload) WithTransaction(txBase64 string) OpenPayload {
 
 // SessionID returns the session identifier used as the store key.
 //
-//   - Payment channel: ChannelID
+//   - Tab: ChannelID
 //   - Operated-voucher pull: TokenAccount
 func (p OpenPayload) SessionID() (string, error) {
 	if p.ChannelID != nil {
@@ -800,7 +800,7 @@ type SignedVoucher struct {
 	// Data is the voucher content.
 	Data VoucherData `json:"data"`
 
-	// Signature is the Ed25519 signature over the payment-channel Borsh
+	// Signature is the Ed25519 signature over the tab Borsh
 	// voucher bytes (base58).
 	Signature string `json:"signature"`
 }
@@ -813,7 +813,7 @@ type SignedVoucher struct {
 type VoucherData struct {
 	// ChannelID is the channel/session ID this voucher is bound to (base58).
 	//
-	// For push sessions: the payment-channel address.
+	// For push sessions: the tab address.
 	// For pull sessions: the SPL token account address.
 	ChannelID string `json:"channelId"`
 
@@ -867,7 +867,7 @@ func (v *VoucherData) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MessageBytes serializes the voucher to the payment-channels VoucherArgs bytes
+// MessageBytes serializes the voucher to the tabs VoucherArgs bytes
 // signed by Ed25519: magic [0x56, 0x01] (2) || channelId(32) ||
 // cumulativeAmount(LE u64) || expiresAt(LE i64), for a total of exactly 50
 // bytes. The magic prefix lives in the signed bytes only; the voucher wire

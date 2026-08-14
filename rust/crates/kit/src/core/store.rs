@@ -1,7 +1,7 @@
 //! Pluggable key-value and channel state stores, shared across the pay-kit
 //! crates.
 //!
-//! Holds replay-protection (`Store`) and payment-channel session state
+//! Holds replay-protection (`Store`) and tab session state
 //! (`ChannelStore`/`ChannelState`). Extracted from `solana-mpp` so both
 //! `solana-mpp` (the `session` intent) and `solana-x402` (the
 //! `batch-settlement` scheme) share one implementation. `solana-mpp` re-exports
@@ -159,7 +159,7 @@ pub struct CommittedDelivery {
     pub voucher_signature: String,
 }
 
-/// Durable lifecycle scheduling metadata for a payment channel.
+/// Durable lifecycle scheduling metadata for a tab.
 ///
 /// Request-serving processes only advance this deadline. A lifecycle worker
 /// reads it through [`ChannelStore::list_channels`] and owns the clock and
@@ -186,7 +186,7 @@ pub struct ChannelLifecycle {
 /// [`ChannelState::extra`] instead.
 pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 1;
 
-/// Persisted state of a payment channel, managed by the server.
+/// Persisted state of a tab, managed by the server.
 ///
 /// # Breaking change
 ///
@@ -197,7 +197,7 @@ pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 1;
 pub struct ChannelState {
     /// On-chain channel address (base58).
     ///
-    /// - Push sessions: payment-channel address.
+    /// - Push sessions: tab address.
     /// - Pull sessions: FixedDelegation PDA address.
     pub channel_id: String,
 
@@ -235,7 +235,7 @@ pub struct ChannelState {
     /// A channel-PDA seed since the epoch-addressed program update — persisted
     /// so the PDA can be re-derived and the `reclaim` gate
     /// (`clock.slot > open_slot + 1500`) evaluated later. `None` for pull
-    /// sessions (no payment-channel PDA) and for state stored before the
+    /// sessions (no tab PDA) and for state stored before the
     /// migration.
     #[serde(default)]
     pub open_slot: Option<u64>,
@@ -672,7 +672,7 @@ impl ChannelStore for MemoryChannelStore {
 
 // ── Redis channel store ──
 
-/// Durable Redis-backed payment-channel state.
+/// Durable Redis-backed tab state.
 ///
 /// Enabled by the `redis-store` feature. Read/modify/write operations use Lua
 /// scripts so multiple gateway instances cannot silently overwrite one

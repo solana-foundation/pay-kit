@@ -98,9 +98,9 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:x402_harness_upto_server"
           cargo-cache-key: swift-x402-upto
-      # x402 upto opens a real on-chain payment channel; the embedded surfnet
-      # needs the canonical payment-channels program as a localnet SBF build.
-      - name: Build payment channels program
+      # x402 upto opens a real on-chain tab; the embedded surfnet
+      # needs the canonical tabs program as a localnet SBF build.
+      - name: Build tabs program
         id: payment-channels
         uses: ./.github/actions/build-payment-channels
       - name: Build Swift x402 upto harness client

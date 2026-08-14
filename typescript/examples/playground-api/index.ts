@@ -98,11 +98,11 @@ const FORTUNES = [
 const HEADLINES = [
   { tag: 'engineering', title: 'Solana session validators hit a new throughput record' },
   { tag: 'macro', title: 'Stablecoin transfer volume crosses $4T on-chain quarterly' },
-  { tag: 'security', title: 'New payment-channel program audit lands' },
+  { tag: 'security', title: 'New tab program audit lands' },
   { tag: 'protocol', title: 'MPP v2 extensions ship to mainnet beta' },
 ]
 const TOKEN_CHUNKS = [
-  'A payment channel ',
+  'A tab ',
   'lets a client and server ',
   'authorize many small ',
   'off-chain debits ',
@@ -162,7 +162,7 @@ if (PLAN_ID) {
   })
 }
 
-// Session: open a payment channel, then stream metered deliveries (SSE). Each
+// Session: open a tab, then stream metered deliveries (SSE). Each
 // chunk costs 0.0001 USDC; settlement runs out-of-band when the channel
 // idle-closes (poll `/sessions/receipt/:channelId` for the settle signature).
 app.get('/api/v1/stream', pay.express('stream'), (_req: Request, res: Response) => {

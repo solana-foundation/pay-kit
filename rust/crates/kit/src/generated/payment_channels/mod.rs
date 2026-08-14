@@ -1,4 +1,4 @@
-//! Codama-generated Rust client for the Solana payment-channels program.
+//! Codama-generated Rust client for the Solana tabs program.
 //!
 //! All of [`generated`] is produced by `@codama/renderers-rust` from the
 //! `Moonsong-Labs/solana-payment-channels` IDL vendored at the repo root in

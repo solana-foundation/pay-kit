@@ -175,7 +175,7 @@ func TestDistributionHashMatchesProgramGolden(t *testing.T) {
 		{Recipient: solana.PublicKeyFromBytes(bytes.Repeat([]byte{2}, 32)), Bps: 2_500},
 	}
 
-	// Golden vector shared with Rust's payment-channel test and the on-chain
+	// Golden vector shared with Rust's tab test and the on-chain
 	// program preimage: SHA-256(count=2 u32 LE || pk(1) || 7500 u16 LE ||
 	// pk(2) || 2500 u16 LE).
 	expected := [32]byte{

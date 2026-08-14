@@ -1,6 +1,6 @@
 import Foundation
 
-/// MPP payment-channel session wire types.
+/// MPP tab session wire types.
 ///
 /// Mirrors the Rust spine (`rust/crates/mpp/src/protocol/intents/session.rs`)
 /// and the Go reference (`go/protocols/mpp/protocol/intents/session.go`)
@@ -228,7 +228,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         self.signature = signature
     }
 
-    /// Push payment-channel open with explicit deposit + channel parties.
+    /// Push tab open with explicit deposit + channel parties.
     public static func paymentChannel(
         mode: SessionMode,
         channelId: String,

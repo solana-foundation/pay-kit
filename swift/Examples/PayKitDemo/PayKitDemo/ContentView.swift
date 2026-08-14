@@ -239,7 +239,7 @@ struct ContentView: View {
     private func pay(_ endpoint: Endpoint) async {
         guard let signer else { return }
 
-        // Session endpoints run the real payment-channel flow (open -> stream
+        // Session endpoints run the real tab flow (open -> stream
         // SSE deliveries -> sign + commit a voucher -> settle), not the one-shot
         // 402 -> charge -> retry loop.
         if endpoint.intent == .session {
@@ -262,7 +262,7 @@ struct ContentView: View {
             return
         }
 
-        // x402 `upto` (usage): authorize a ceiling by opening a payment channel,
+        // x402 `upto` (usage): authorize a ceiling by opening a tab,
         // then the server meters actual usage and settles `actual <= max`,
         // refunding the rest. One tap drives the whole flow through the upto
         // client; the response body reports the metered amount billed.

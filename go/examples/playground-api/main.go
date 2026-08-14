@@ -58,7 +58,7 @@ type app struct {
 func main() {
 	network := envOr("NETWORK", "localnet")
 	// Default to the hosted Solana Payment Sandbox so the playground works
-	// zero-config: it has the payment-channels program preloaded and supports
+	// zero-config: it has the tabs program preloaded and supports
 	// the surfnet cheatcodes used by the faucet. Override RPC_URL to point at
 	// a local surfpool when you need offline iteration.
 	rpcURL := envOr("RPC_URL", "https://402.surfnet.dev:8899")

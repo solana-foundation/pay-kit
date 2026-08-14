@@ -84,7 +84,7 @@ class VoucherRejectReason(StrEnum):
 
 @dataclass
 class ChannelState:
-    """The persisted state of a single payment channel from the server's point
+    """The persisted state of a single tab from the server's point
     of view, as read by the voucher verifier.
 
     The voucher verifier only reads a subset of the full channel state; this

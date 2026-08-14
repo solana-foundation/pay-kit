@@ -75,7 +75,7 @@ function resolveSessionStore(parameters: session.Parameters): SessionStore {
 /**
  * Creates a Solana `session` MPP method for the server.
  *
- * A session opens a payment channel once, then
+ * A session opens a tab once, then
  * accepts off-chain cumulative vouchers for subsequent paid deliveries.
  * On close, the server settles the highest accepted voucher on-chain and
  * distributes proceeds to the configured splits.
@@ -1452,7 +1452,7 @@ export declare namespace session {
          * `getLatestBlockhash` fallback when issuing new-channel challenges.
          */
         readonly blockhashCache?: BlockhashCache;
-        /** Payment-channels program ID. */
+        /** Tabs program ID. */
         readonly channelProgram?: Address | string;
         /** Currency identifier (e.g. 'USDC' or an SPL mint address). */
         readonly currency: string;

@@ -76,7 +76,7 @@ pub async fn build_deposit(
         .any(|p| p == PROFILE_PAYMENT_CHANNEL)
     {
         return Err(Error::Other(
-            "requirement does not advertise the payment-channel profile".to_string(),
+            "requirement does not advertise the tab profile".to_string(),
         ));
     }
     let payer = payer_signer.pubkey();

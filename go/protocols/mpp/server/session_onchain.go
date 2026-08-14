@@ -27,7 +27,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-// openInstructionDiscriminator is the payment-channel open instruction
+// openInstructionDiscriminator is the tab open instruction
 // discriminator (single-byte Anchor-numeric form, not the 8-byte sha256
 // convention). Matches OPEN_DISCRIMINATOR in the vendored Codama clients.
 const openInstructionDiscriminator = 1
@@ -59,7 +59,7 @@ type VerifyOpenTxExpected struct {
 	// callers must always prove, so an empty Operator is rejected.
 	Operator string
 
-	// ProgramID optionally overrides the payment-channels program id; nil
+	// ProgramID optionally overrides the tabs program id; nil
 	// defaults to the canonical program.
 	ProgramID *solana.PublicKey
 
@@ -93,7 +93,7 @@ type VerifyOpenTxResult struct {
 	Salt uint64
 }
 
-// VerifyOpenTx decodes and validates a client-submitted payment-channel open
+// VerifyOpenTx decodes and validates a client-submitted tab open
 // transaction against the session challenge.
 //
 // Both legacy and v0 transaction encodings are accepted (clients across the
@@ -101,7 +101,7 @@ type VerifyOpenTxResult struct {
 // tables is rejected: the account checks below read the static account keys,
 // so an ALT could hide the real accounts behind the fee-payer co-sign guard.
 // The embedded open
-// instruction must target the configured payment-channels program, the payee
+// instruction must target the configured tabs program, the payee
 // must equal the challenge recipient, the mint must match the challenge
 // currency/network, the authorizedSigner must match the payload, the deposit
 // must be positive and within the cap, and the channel account must equal
@@ -180,7 +180,7 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		break
 	}
 	if openIx == nil {
-		return VerifyOpenTxResult{}, fmt.Errorf("no payment-channels open instruction found")
+		return VerifyOpenTxResult{}, fmt.Errorf("no tabs open instruction found")
 	}
 
 	// Open instruction account layout (matches the generated client):
@@ -464,7 +464,7 @@ type SubmitOpenTxResult struct {
 	Signature string
 }
 
-// SubmitOpenTx validates a client-built payment-channel open transaction,
+// SubmitOpenTx validates a client-built tab open transaction,
 // completes the fee-payer signature when payerSigner is required by the
 // transaction, broadcasts it, and waits for at least confirmed commitment.
 // Callers must not persist channel state for a transaction that never

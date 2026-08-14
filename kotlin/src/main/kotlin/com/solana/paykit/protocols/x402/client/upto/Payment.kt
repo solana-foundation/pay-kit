@@ -20,7 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.util.Base64
 
 /**
- * x402 ``upto`` client (payment-channel asset transfer method): challenge
+ * x402 ``upto`` client (tab asset transfer method): challenge
  * parsing and authorization building.
  *
  * The client opens a channel whose deposit is the authorized maximum, with the
@@ -120,7 +120,7 @@ private fun acceptsFrom(text: String): List<UptoRequirements>? {
 // ── Payment building ──────────────────────────────────────────────────────────
 
 /**
- * Builds an ``upto`` payload for a payment-channel requirement.
+ * Builds an ``upto`` payload for a tab requirement.
  *
  * [expiresAt] is the voucher/authorization deadline (Unix seconds); [nonce] is
  * kept for source compatibility but ignored because the payload nonce is the

@@ -57,7 +57,7 @@ __all__ = [
     "is_placeholder_signature",
 ]
 
-# Payment-channel open instruction discriminator (single-byte Anchor-numeric
+# Tab open instruction discriminator (single-byte Anchor-numeric
 # form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
 
@@ -88,7 +88,7 @@ TopUpTxVerifier = Callable[[TopUpPayload], Awaitable[None]]
 class OpenVerifierConfig(Protocol):
     """The subset of the session config :func:`new_open_tx_verifier` reads:
     the challenge currency/network/recipient, minimum deposit, and optional
-    payment-channels program override."""
+    tabs program override."""
 
     currency: str
     network: str
@@ -240,12 +240,12 @@ async def verify_open_tx(
     payload: OpenPayload,
     rpc_client: RpcClient | None,
 ) -> VerifyOpenTxResult:
-    """Decode and validate a client-submitted payment-channel open transaction
+    """Decode and validate a client-submitted tab open transaction
     against the session challenge.
 
     Both legacy and v0 transaction encodings are accepted. The compiled
     message must use the challenged ``expected.recent_blockhash``, the embedded
-    open instruction must target the configured payment-channels program, the
+    open instruction must target the configured tabs program, the
     payee must equal the challenge recipient, the mint must match the challenge
     currency/network, the authorizedSigner (slot 4) must match the payload, the
     rentPayer (slot 1) must equal the expected operator, the deposit must be
@@ -328,7 +328,7 @@ async def verify_open_tx(
             raise PaymentError("open transaction must contain exactly one open instruction", code="invalid-payload")
         open_ix = ix
     if open_ix is None:
-        raise PaymentError("no payment-channels open instruction found", code="invalid-payload")
+        raise PaymentError("no tabs open instruction found", code="invalid-payload")
 
     # Open instruction account layout after the rentPayer (+1) shift:
     # 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,

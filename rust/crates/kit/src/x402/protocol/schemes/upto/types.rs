@@ -2,7 +2,7 @@
 //!
 //! `upto` authorizes a **maximum** amount; the server settles for the **actual**
 //! usage (`actual <= max`) determined after the resource is consumed. On Solana
-//! the client opens a payment channel whose `deposit` is the ceiling, and the
+//! the client opens a tab whose `deposit` is the ceiling, and the
 //! fee payer (the channel's zero-share payee) settles the metered amount with
 //! a single receiver-authorizer voucher, refunding the remainder. See
 //! `specs/schemes/upto/scheme_upto_svm.md`.

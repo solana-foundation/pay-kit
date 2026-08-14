@@ -1,4 +1,4 @@
-//! Server-side handler for the x402 `batch-settlement` scheme (payment-channel).
+//! Server-side handler for the x402 `batch-settlement` scheme (tab).
 //!
 //! High-throughput channel payments: the client opens an escrow channel
 //! ([`X402BatchSettlement::verify_payment`] with a `deposit` payload), then signs

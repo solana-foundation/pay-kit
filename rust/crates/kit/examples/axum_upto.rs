@@ -1,6 +1,6 @@
 //! Usage-based (`upto`) gate: charge per actual usage, up to a ceiling.
 //!
-//! The route advertises a **maximum** price. The client opens a payment channel
+//! The route advertises a **maximum** price. The client opens a tab
 //! depositing that ceiling; the handler meters real usage and reports it via the
 //! [`Charge`] extractor; the gate settles the actual amount and refunds the
 //! remainder. This is the shape you want for LLM-token billing or per-byte

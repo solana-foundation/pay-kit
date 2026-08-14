@@ -55,7 +55,7 @@ subscriptions-generate-rs: codegen-install
 # Full refresh: pull IDL + regenerate Rust client.
 subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs
 
-# Fetch the payment-channels IDL from the pinned upstream commit into
+# Fetch the tabs IDL from the pinned upstream commit into
 # `idl/payment-channels.json`.
 payment-channels-pull-idl:
     @mkdir -p idl

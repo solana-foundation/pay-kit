@@ -1,4 +1,4 @@
-"""Client-side helpers for payment-channel open transactions.
+"""Client-side helpers for tab open transactions.
 
 This is the challenge-driven layer above the raw instruction builders in
 :mod:`solana_pay_kit.protocols.mpp._paymentchannels`: it derives the full channel open
@@ -59,7 +59,7 @@ __all__ = [
     "unique_salt",
 ]
 
-#: Default payment-channel close grace period, in seconds, applied to a derived
+#: Default tab close grace period, in seconds, applied to a derived
 #: open when the caller does not override it.
 DEFAULT_GRACE_PERIOD_SECONDS = 900
 
@@ -89,7 +89,7 @@ def generate_authorized_signer() -> Keypair:
 
 @dataclass
 class PaymentChannelOpen:
-    """A fully derived payment-channel open: addresses plus channel parameters.
+    """A fully derived tab open: addresses plus channel parameters.
 
     Holds everything needed to open one channel: the derived channel PDA, the
     payer and payee, the SPL mint and its token program, the authorized session
@@ -187,7 +187,7 @@ class PaymentChannelOpenTransaction:
 
 @dataclass
 class PaymentChannelOpenOptions:
-    """Optional overrides for deriving a payment-channel open.
+    """Optional overrides for deriving a tab open.
 
     Every field falls back to a challenge-derived default: ``deposit`` to the
     challenge ``suggestedDeposit`` or ``minimumDeposit``, ``grace_period`` to
@@ -267,7 +267,7 @@ def derive_payment_channel_open(
     network = details.network
     resolved_mint = resolve_stablecoin_mint(request.currency, network)
     if resolved_mint is None:
-        raise ValueError("session payment channels require an SPL token")
+        raise ValueError("session tabs require an SPL token")
     mint = _parse_pubkey(resolved_mint, "mint")
     payee = _parse_pubkey(request.recipient, "recipient")
     requested_deposit = request.suggested_deposit or request.minimum_deposit
@@ -468,7 +468,7 @@ def _build_open_payment_channel_tx(
     try:
         payer_index = signer_keys.index(payer)
     except ValueError as exc:
-        raise ValueError("payment-channel open signing failed: payer is not a transaction signer") from exc
+        raise ValueError("tab open signing failed: payer is not a transaction signer") from exc
 
     signatures = [Signature.default() for _ in range(num_required)]
     signatures[payer_index] = _sign_message(signer, message_bytes)

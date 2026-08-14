@@ -7,7 +7,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * Byte-exact golden vectors for the payment-channel voucher preimage and the
+ * Byte-exact golden vectors for the tab voucher preimage and the
  * channel PDA, pinning the upstream program's 50-byte magic-prefixed payload
  * `magic[0x56, 0x01](2) || channelId(32) || cumulative(u64 LE) || expiresAt(i64
  * LE)` and the epoch-addressed PDA seeds (trailing `openSlot` u64 LE). The

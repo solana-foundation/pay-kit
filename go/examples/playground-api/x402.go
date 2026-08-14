@@ -183,7 +183,7 @@ func registerX402(mux *http.ServeMux, a *app) error {
 	}))
 	mux.Handle("POST /api/v1/summarize", bufferRequestBody(summarizeMaxBodyBytes, summarizeHandler))
 
-	// Usage-gated route: the client opens a payment channel depositing
+	// Usage-gated route: the client opens a tab depositing
 	// the authorized ceiling; the handler meters the response and the
 	// gate settles the actual amount after it returns.
 	usageGate := paykit.Gate{

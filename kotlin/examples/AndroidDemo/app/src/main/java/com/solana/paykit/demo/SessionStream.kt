@@ -26,7 +26,7 @@ import java.security.SecureRandom
 import java.util.UUID
 
 /**
- * Drives a full MPP payment-channel **session** against the playground's
+ * Drives a full MPP tab **session** against the playground's
  * `/api/v1/stream` (a metered SSE endpoint) — the flow the one-shot charge
  * client can't do. Mirrors the iOS `SessionStream`:
  *

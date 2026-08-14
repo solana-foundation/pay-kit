@@ -247,7 +247,7 @@ func TestFindChannelPDAUsesCanonicalProgramID(t *testing.T) {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
 	// Deriving against a different program id must produce a different PDA,
-	// proving FindChannelPDA binds to the canonical payment-channels program.
+	// proving FindChannelPDA binds to the canonical tabs program.
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, 99)
 	openSlotLE := make([]byte, 8)

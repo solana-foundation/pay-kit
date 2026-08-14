@@ -1,5 +1,5 @@
 /**
- * Generate the pay-kit payment-channels Go client from the upstream
+ * Generate the pay-kit tabs Go client from the upstream
  * `Moonsong-Labs/solana-payment-channels` Codama IDL.
  *
  * Mirrors generate-payment-channels-client-rs.ts (the Rust path) — both scripts

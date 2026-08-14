@@ -95,7 +95,7 @@ type UsageAdapter interface {
 	UsageAcceptsEntry(gate *Gate) AcceptsEntry
 	// DetectUsage reports whether the request carries a usage credential.
 	DetectUsage(req *AdapterRequest) bool
-	// VerifyOpen validates the credential and opens the payment channel.
+	// VerifyOpen validates the credential and opens the tab.
 	// Returns the opaque verified open and a provisional Payment (with
 	// empty Transaction — filled in after settlement).
 	VerifyOpen(ctx context.Context, req *AdapterRequest) (VerifiedUsageOpen, *Payment, error)

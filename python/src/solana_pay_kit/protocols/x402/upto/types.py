@@ -27,7 +27,7 @@ __all__ = [
 #: The x402 scheme identifier for usage-based ``upto`` authorizations.
 UPTO_SCHEME = "upto"
 
-#: Default forced-close delay, in seconds, for SVM ``upto`` payment channels.
+#: Default forced-close delay, in seconds, for SVM ``upto`` tabs.
 DEFAULT_UPTO_WITHDRAW_DELAY_SECONDS = 900
 
 #: Settlement error raised when the metered actual exceeds the signed ceiling.
@@ -100,7 +100,7 @@ _UptoPayloadRequired = TypedDict(
 class UptoPayload(_UptoPayloadRequired, total=False):
     """The client authorization in ``PAYMENT-SIGNATURE.payload``.
 
-    The common + ``payment-channel`` fields are required; ``openTransaction``
+    The common + ``tab`` fields are required; ``openTransaction``
     (pull-style) and ``signature`` (push-style) are optional.
     """
 

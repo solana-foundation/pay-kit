@@ -1,7 +1,7 @@
 // Canonical voucher message encoder and Ed25519 verifier.
 //
 // The 50-byte voucher payload is the exact byte layout the on-chain
-// payment-channels program signs over:
+// tabs program signs over:
 //   magic (2 bytes, constant [0x56, 0x01])
 //   channel_id (32 bytes, base58-decoded pubkey)
 //   cumulative_amount (u64 little-endian)
@@ -66,7 +66,7 @@ export function normalizeSignedVoucher(signed: WireSignedVoucher): SignedVoucher
 }
 
 /**
- * Canonical 50-byte payment-channel voucher payload signed by the session
+ * Canonical 50-byte tab voucher payload signed by the session
  * key. Accepts the strict `VoucherData` shape used in the protocol types.
  */
 export function encodeVoucherMessage(voucher: VoucherData): Uint8Array {

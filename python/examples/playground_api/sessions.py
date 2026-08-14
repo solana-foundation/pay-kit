@@ -66,7 +66,7 @@ _gate = Depends(RequireSession(session, _challenge))
 # Streamed deliveries, billed per chunk against the session voucher. Mirrors the
 # TypeScript playground's `GET /api/v1/stream` (SSE) session route.
 _TOKEN_CHUNKS = (
-    "A payment channel ",
+    "A tab ",
     "lets a client and server ",
     "authorize many small ",
     "off-chain debits ",

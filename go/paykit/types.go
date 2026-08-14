@@ -189,7 +189,7 @@ type X402Config struct {
 	// operator signer.
 	FacilitatorURL string
 	// Scheme is the x402 sub-scheme advertised in the 402 challenge.
-	// Defaults to "exact"; set "upto" for usage-gated payment channels.
+	// Defaults to "exact"; set "upto" for usage-gated tabs.
 	Scheme string
 	// Signer overrides Operator.Signer for x402 facilitator cosigning.
 	// Escape hatch only (DESIGN rule 3): leave nil to use the operator
@@ -202,7 +202,7 @@ type X402Config struct {
 	// (default) the challenge carries no `extensions` object; extensions
 	// default to absent on the wire.
 	RequirePaymentIdentifier bool
-	// ChannelProgram overrides the payment-channels program id advertised
+	// ChannelProgram overrides the tabs program id advertised
 	// by x402 upto. Leave empty for the canonical mainnet deployment.
 	ChannelProgram string
 }

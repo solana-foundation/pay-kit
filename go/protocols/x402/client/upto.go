@@ -30,7 +30,7 @@ func randomSalt() (uint64, error) {
 	return n.Uint64(), nil
 }
 
-// BuildUptoPayload derives the payment-channel open and assembles the upto
+// BuildUptoPayload derives the tab open and assembles the upto
 // authorization payload. The open names extra.feePayer as transaction fee
 // payer, rent payer, and zero-share channel payee, and
 // extra.receiverAuthorizer as the authorized voucher signer only. The channel

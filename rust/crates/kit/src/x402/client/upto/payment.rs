@@ -1,4 +1,4 @@
-//! Client-side payment building for the x402 `upto` scheme (payment-channel).
+//! Client-side payment building for the x402 `upto` scheme (tab).
 //!
 //! The client opens a channel whose `deposit` is the authorized maximum, with
 //! `authorized_signer = receiverAuthorizer` (the voucher signer) and
@@ -23,7 +23,7 @@ use crate::x402::protocol::schemes::upto::{
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 
-/// Build an `upto` payload for a `payment-channel` requirement.
+/// Build an `upto` payload for a `tab` requirement.
 ///
 /// `expires_at` is the voucher/authorization deadline (Unix seconds); `nonce`
 /// uniquely identifies this authorization. The requirement SHOULD carry

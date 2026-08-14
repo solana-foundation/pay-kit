@@ -112,7 +112,7 @@ def test_metered_stream_round_trips_through_client_decoder() -> None:
     )
     usage = MeteringUsage(delivery_id="session-1:1", amount="80")
 
-    stream.write_envelope({"chunk": "A payment channel "}, directive)
+    stream.write_envelope({"chunk": "A tab "}, directive)
     stream.write_usage(usage)
     stream.write_done()
 
@@ -124,7 +124,7 @@ def test_metered_stream_round_trips_through_client_decoder() -> None:
     assert len(events) == 4
 
     assert events[0].kind == "message"
-    assert events[0].message == {"chunk": "A payment channel "}
+    assert events[0].message == {"chunk": "A tab "}
 
     assert events[1].kind == "metering"
     assert events[1].metering is not None

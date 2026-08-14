@@ -1,4 +1,4 @@
-# Server-side session: a metered payment channel, billed per delivery.
+# Server-side session: a metered tab, billed per delivery.
 #
 # Mirrors examples/playground_api/sessions.py. See
 # ../../../docs/snippets-convention.md for the snippet:start/end convention.

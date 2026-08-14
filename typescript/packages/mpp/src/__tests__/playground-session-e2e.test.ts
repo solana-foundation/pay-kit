@@ -2,9 +2,9 @@
  * End-to-end test for the playground's in-process session() method.
  *
  * Spawns the playground server pointed at the public Solana Payment Sandbox
- * (https://402.surfnet.dev:8899 — the payment-channels program is already
+ * (https://402.surfnet.dev:8899 — the tabs program is already
  * deployed there), funds a fresh wallet through the playground faucet, then
- * drives the exact flow the playground UI drives: a real payment-channel
+ * drives the exact flow the playground UI drives: a real tab
  * open (client pre-signs, server completes the fee-payer signature and
  * broadcasts), a metered SSE stream with per-chunk vouchers, and the
  * idle-close watchdog's on-chain settle.
@@ -116,7 +116,7 @@ describe('playground session e2e', () => {
         });
         expect(fund.status).toBe(200);
 
-        // 2) Real payment-channel open + metered SSE through the SDK
+        // 2) Real tab open + metered SSE through the SDK
         //    client — the same flow the playground UI drives. The wallet
         //    pre-signs the open transaction; the server completes the
         //    fee-payer signature, broadcasts, and confirms before metering.

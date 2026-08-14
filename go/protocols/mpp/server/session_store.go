@@ -52,13 +52,13 @@ type CommittedDelivery struct {
 	VoucherSignature string `json:"voucherSignature"`
 }
 
-// ChannelState is the persisted state of a single payment channel from the
+// ChannelState is the persisted state of a single tab from the
 // server's point of view. The JSON tags are the shared snake_case wire
 // names, so durable stores can interoperate across the language SDKs.
 type ChannelState struct {
 	// ChannelID is the on-chain channel address (base58).
 	//
-	// Push sessions: the payment-channel address.
+	// Push sessions: the tab address.
 	// Pull sessions: the FixedDelegation PDA address.
 	ChannelID string `json:"channel_id"`
 

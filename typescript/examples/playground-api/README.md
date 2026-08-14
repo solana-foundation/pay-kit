@@ -17,7 +17,7 @@ lives in the OpenAPI summary, not the URL.
 | `GET` | `/api/v1/joke` | `joke` (`{ amount: usd('0.001'), accept: ['x402'] }`) | x402/exact | A fixed price, **x402 `exact`** only. |
 | `POST` | `/api/v1/summarize` | `summarize` (`usage(usd('0.10'))`) | x402/upto | Authorize a ceiling, then bill metered usage via `pay.charge(req)`, refunding the rest. |
 | `GET` | `/api/v1/feed` | `feed` (`subscription(usd('0.10'), …)`) | mpp/subscription | The first call activates a recurring on-chain plan; mounted only when a plan is bootstrapped. |
-| `GET` | `/api/v1/stream` | `stream` (`session(usd('1.00'), …)`) | mpp/session | Open a payment channel, stream metered deliveries (SSE), settle out-of-band on idle-close. |
+| `GET` | `/api/v1/stream` | `stream` (`session(usd('1.00'), …)`) | mpp/session | Open a tab, stream metered deliveries (SSE), settle out-of-band on idle-close. |
 
 The handler reads the verified receipt with `pay.payment(req)` and (for usage
 gates) the meter with `pay.charge(req)`. That's the entire app surface.

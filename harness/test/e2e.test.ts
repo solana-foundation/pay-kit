@@ -299,7 +299,7 @@ beforeAll(async () => {
     if (scenario.paymentMode === "push") {
       needsSolFunding = true;
     }
-    // x402-upto opens a payment-channel account. The fee payer sponsors the
+    // x402-upto opens a tab account. The fee payer sponsors the
     // transaction fee and channel rent.
     if (scenario.intent === "x402-upto") {
       needsSolFunding = true;

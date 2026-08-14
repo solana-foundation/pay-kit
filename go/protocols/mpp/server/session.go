@@ -81,7 +81,7 @@ type SessionConfig struct {
 	// Network is the Solana network: "mainnet", "devnet", "localnet".
 	Network string
 
-	// ProgramID is the payment-channel program ID. Nil defaults to the
+	// ProgramID is the tab program ID. Nil defaults to the
 	// canonical program.
 	ProgramID *solana.PublicKey
 
@@ -100,7 +100,7 @@ type SessionConfig struct {
 
 	// Modes are the session modes this server accepts, advertised to clients
 	// in the 402 challenge. An empty list or [push] means only the
-	// payment-channel push mode is supported.
+	// tab push mode is supported.
 	Modes []intents.SessionMode
 
 	// PullVoucherStrategy is the voucher authority used for pull sessions.

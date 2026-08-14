@@ -48,7 +48,7 @@ in the intent leaves translate directly:
 │   │   ├── charge.<ext>             ← build_charge_transaction, build_credential_header
 │   │   ├── session.<ext>            ← Session client (open, voucher, commit, close)
 │   │   ├── http_stream.<ext>        ← Optional: SSE / metered streaming helper
-│   │   └── payment_channels.<ext>   ← Optional: payment-channels program client
+│   │   └── payment_channels.<ext>   ← Optional: tabs program client
 │   └── bin/                         ← or `cmd/`, `scripts/` — harness adapters
 │       ├── harness_client.<ext>
 │       └── harness_server.<ext>

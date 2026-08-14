@@ -101,7 +101,7 @@ solana-transaction-status-client-types = { version = "4", default-features = fal
 solana-zero-copy = { version = "1", default-features = false }
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 
-# Generated program-client deps (payment-channels + subscriptions).
+# Generated program-client deps (tabs + subscriptions).
 num-derive = "0.4"
 num-traits = "0.2"
 solana-account-info = "^3"

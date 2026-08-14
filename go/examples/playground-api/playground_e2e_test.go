@@ -2,7 +2,7 @@ package main
 
 // Surfpool-gated end-to-end test: boots the real playground handler against
 // the hosted Solana Payment Sandbox, funds a wallet through the faucet
-// cheatcodes, opens a payment channel on the /sessions/stream 402 (client
+// cheatcodes, opens a tab on the /sessions/stream 402 (client
 // pre-signs, server completes the fee-payer signature and broadcasts),
 // streams the metered SSE chunks, commits a voucher through the side
 // channel, and polls /sessions/receipt until the idle-close watchdog settles
@@ -36,7 +36,7 @@ func sandboxRPCURL() string {
 	return "https://402.surfnet.dev:8899"
 }
 
-// The public hosted sandbox can lag the repo's generated payment-channels ABI.
+// The public hosted sandbox can lag the repo's generated tabs ABI.
 // Keep explicit MPP_HARNESS_RPC_URL runs strict; only skip the default hosted
 // endpoint on the known ABI-drift signature.
 func hostedPaymentChannelsABIDrift(body string) bool {
@@ -142,11 +142,11 @@ func TestPlaygroundSessionE2ESurfpool(t *testing.T) {
 	response, body = playgroundRequest(t, http.MethodGet, streamURL, "", openAuthorization)
 	if response.StatusCode != http.StatusOK {
 		if hostedPaymentChannelsABIDrift(body) {
-			t.Skipf("hosted Surfpool payment-channels program ABI is behind the repo generated client: %s", body)
+			t.Skipf("hosted Surfpool tabs program ABI is behind the repo generated client: %s", body)
 		}
 		t.Fatalf("open failed: %d %s", response.StatusCode, body)
 	}
-	if !strings.Contains(body, "payment channel") || !strings.Contains(body, "[DONE]") {
+	if !strings.Contains(body, "tab") || !strings.Contains(body, "[DONE]") {
 		t.Fatalf("stream body missing chunks or sentinel: %s", body)
 	}
 	channelID := opener.Session.ChannelIDString()

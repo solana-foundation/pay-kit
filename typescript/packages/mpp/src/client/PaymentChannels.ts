@@ -46,7 +46,7 @@ const DEFAULT_GRACE_PERIOD_SECONDS = 900;
 
 /** Placeholder signature used while the operator still needs to broadcast the open transaction. */
 /**
- * Payment-channel open fields shared by client-built and server-built open flows.
+ * Tab open fields shared by client-built and server-built open flows.
  */
 export interface PaymentChannelOpen {
     readonly channelId: string;
@@ -60,14 +60,14 @@ export interface PaymentChannelOpen {
 }
 
 /**
- * Single payment-channel open transaction plus the fields needed to authorize a session.
+ * Single tab open transaction plus the fields needed to authorize a session.
  */
 export interface PaymentChannelOpenTransaction extends PaymentChannelOpen {
     readonly transaction: Base64EncodedWireTransaction;
 }
 
 /**
- * Derives the payment-channel open fields without building a transaction.
+ * Derives the tab open fields without building a transaction.
  *
  * Use this for server-opened client-voucher sessions: the client must know the
  * channel PDA so it can sign vouchers, but the operator still funds and opens
@@ -90,7 +90,7 @@ export async function derivePaymentChannelOpen(
 }
 
 /**
- * Builds the payer-signed payment-channel open transaction for a session.
+ * Builds the payer-signed tab open transaction for a session.
  *
  * The transaction uses the operator from the session challenge as fee payer and
  * is intentionally left partially signed; the server adds the operator
@@ -194,9 +194,9 @@ export async function buildOpenPaymentChannelTransaction(
 }
 
 /**
- * Creates a high-level payment-channel session opener.
+ * Creates a high-level tab session opener.
  *
- * The opener turns a session 402 challenge into a payment-channel open action
+ * The opener turns a session 402 challenge into a tab open action
  * with the signed transaction attached. The server/operator broadcasts that
  * transaction, then subsequent stream commits are cumulative vouchers signed by
  * the generated session key.
@@ -383,7 +383,7 @@ async function preparePaymentChannelOpen(
     const network = normalizeNetwork(request.methodDetails.network);
     const mint = resolveStablecoinMint(request.currency, network);
     if (!mint) {
-        throw new Error('payment-channel sessions require an SPL token currency');
+        throw new Error('tab sessions require an SPL token currency');
     }
 
     const programAddress = address(parameters.programAddress ?? request.methodDetails.channelProgram);

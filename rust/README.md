@@ -187,7 +187,7 @@ and client — plus SIWX.
 | `upto`         | ✅      | ✅      |
 | `batch-settlement` | ✅      | ✅      |
 
-`upto` charges for actual usage up to a ceiling: it settles on a payment channel
+`upto` charges for actual usage up to a ceiling: it settles on a tab
 after the handler runs, so it needs a `fee_payer_signer` (the fee payer signs
 the settlement as the channel's zero-share payee, and doubles as receiver
 authorizer — the voucher signer — by default) and is gated with `paid_upto_get`

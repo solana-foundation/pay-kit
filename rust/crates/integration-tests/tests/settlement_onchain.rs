@@ -1,6 +1,6 @@
 //! On-chain proof + bench/demo for the shared settlement worker, driven through
 //! the reusable `solana_pay_kit::core::settlement::testkit` harness against a surfnet
-//! that has the payment-channels program + USDC deployed.
+//! that has the tabs program + USDC deployed.
 //!
 //! Run:
 //!   SURFNET_RPC=https://402.surfnet.dev:8899 \

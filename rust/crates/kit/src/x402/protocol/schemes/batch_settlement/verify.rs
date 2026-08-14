@@ -33,13 +33,13 @@ pub fn verify_batch_voucher(voucher: &BatchVoucher, now: i64) -> Result<(), Erro
 }
 
 /// Confirm a profile string is one the server advertised and that this crate
-/// supports (`payment-channel`).
+/// supports (`tab`).
 pub fn check_profile(profiles: &[String]) -> Result<(), Error> {
     if profiles.iter().any(|p| p == PROFILE_PAYMENT_CHANNEL) {
         Ok(())
     } else {
         Err(Error::Other(
-            "batch-settlement requires the payment-channel profile".to_string(),
+            "batch-settlement requires the tab profile".to_string(),
         ))
     }
 }

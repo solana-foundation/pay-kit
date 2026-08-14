@@ -50,7 +50,7 @@ func TestMeteredStreamRoundTripsThroughClientDecoder(t *testing.T) {
 	}
 	usage := intents.MeteringUsage{DeliveryID: "session-1:1", Amount: "80"}
 
-	if err := stream.WriteEnvelope(map[string]string{"chunk": "A payment channel "}, directive); err != nil {
+	if err := stream.WriteEnvelope(map[string]string{"chunk": "A tab "}, directive); err != nil {
 		t.Fatalf("WriteEnvelope: %v", err)
 	}
 	if err := stream.WriteUsage(usage); err != nil {
@@ -74,7 +74,7 @@ func TestMeteredStreamRoundTripsThroughClientDecoder(t *testing.T) {
 	if len(events) != 4 {
 		t.Fatalf("decoded %d events, want 4: %+v", len(events), events)
 	}
-	if events[0].Kind != client.MeteredSseEventMessage || !strings.Contains(string(events[0].Message), "A payment channel") {
+	if events[0].Kind != client.MeteredSseEventMessage || !strings.Contains(string(events[0].Message), "A tab") {
 		t.Fatalf("event 0 = %+v", events[0])
 	}
 	if events[1].Kind != client.MeteredSseEventMetering || events[1].Metering.DeliveryID != directive.DeliveryID {

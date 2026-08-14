@@ -1,8 +1,8 @@
 //! Session intent request and voucher types.
 //!
-//! The session intent opens a payment channel between a client and server,
+//! The session intent opens a tab between a client and server,
 //! allowing incremental payments via off-chain signed vouchers backed by
-//! the on-chain payment-channels program.
+//! the on-chain tabs program.
 
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +51,7 @@ where
         .transpose()
 }
 
-/// Who holds voucher signing authority for the payment channel.
+/// Who holds voucher signing authority for the tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -261,7 +261,7 @@ pub enum SessionAction {
     Close(ClosePayload),
 }
 
-/// Exact payment-channel `open` credential payload.
+/// Exact tab `open` credential payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenPayload {
@@ -296,7 +296,7 @@ pub struct OpenPayload {
 }
 
 impl OpenPayload {
-    /// Construct a payment-channel open payload.
+    /// Construct a tab open payload.
     #[allow(clippy::too_many_arguments)]
     pub fn payment_channel(
         channel_id: String,
@@ -601,7 +601,7 @@ pub struct SignedVoucher {
     /// Base58 public key that signed the voucher.
     pub signer: String,
 
-    /// Ed25519 signature over the payment-channel Borsh voucher bytes (base58).
+    /// Ed25519 signature over the tab Borsh voucher bytes (base58).
     pub signature: String,
 
     /// Signature algorithm; the session contract currently permits Ed25519 only.
@@ -636,7 +636,7 @@ pub struct VoucherData {
 }
 
 impl VoucherData {
-    /// Serialize to the payment-channels `VoucherArgs` bytes signed by Ed25519.
+    /// Serialize to the tabs `VoucherArgs` bytes signed by Ed25519.
     pub fn message_bytes(&self) -> crate::mpp::error::Result<Vec<u8>> {
         let channel_id = crate::mpp::program::payment_channels::parse_pubkey(&self.channel_id)?;
         let cumulative = self.cumulative_amount.parse().map_err(|_| {

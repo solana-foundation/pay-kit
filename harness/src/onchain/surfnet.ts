@@ -1,6 +1,6 @@
 /**
  * On-chain test harness: boots a surfpool instance that FORKS mainnet-beta and
- * streams the live payment-channels (+ subscriptions) programs, so settlement
+ * streams the live tabs (+ subscriptions) programs, so settlement
  * transactions actually EXECUTE the deployed program. This is what the
  * structural harness (`start-surfnet-proxy.mjs`) does not do - it only seeds
  * mints and inspects transaction bytes, so on-chain validations (treasury ATA,

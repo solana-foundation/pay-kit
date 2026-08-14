@@ -1,6 +1,6 @@
 //! High-throughput (`batch-settlement`) gate: one channel, many cheap requests.
 //!
-//! The client opens a payment channel once and signs a cumulative voucher per
+//! The client opens a tab once and signs a cumulative voucher per
 //! request. The gate (`paid_batch_get` / `paid_batch_post`) verifies each
 //! voucher off-chain and serves immediately — no on-chain transaction per
 //! request. The operator redeems vouchers on-chain later, in batches, via

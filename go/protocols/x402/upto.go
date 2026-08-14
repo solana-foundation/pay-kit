@@ -36,7 +36,7 @@ type uptoSigner interface {
 
 const (
 	UptoScheme                       = "upto"
-	UptoAssetTransferMethod          = "payment-channel"
+	UptoAssetTransferMethod          = "tab"
 	UptoErrorSettlementExceedsAmount = "invalid_upto_svm_payload_settlement_exceeds_amount"
 	DefaultUptoWithdrawDelaySeconds  = 900
 )
@@ -242,7 +242,7 @@ type UptoConfig struct {
 	RecentSlotProvider func() (uint64, error)
 }
 
-// X402Upto is the server-side x402 upto payment-channel engine.
+// X402Upto is the server-side x402 upto tab engine.
 type X402Upto struct {
 	cfg                UptoConfig
 	rpc                solanatx.RPCClient
@@ -431,7 +431,7 @@ func ParseUptoPaymentSignature(header string) (UptoSignatureEnvelope, error) {
 	return envelope, nil
 }
 
-// VerifyOpen validates, broadcasts, confirms, and binds a payment-channel open.
+// VerifyOpen validates, broadcasts, confirms, and binds a tab open.
 func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*UptoVerifiedOpen, error) {
 	envelope, err := ParseUptoPaymentSignature(header)
 	if err != nil {
@@ -492,7 +492,7 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 		}
 	}()
 	if payload.OpenTransaction == "" {
-		return nil, errors.New("payment-channel asset transfer method requires openTransaction (pull)")
+		return nil, errors.New("tab asset transfer method requires openTransaction (pull)")
 	}
 	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
 	if err != nil {

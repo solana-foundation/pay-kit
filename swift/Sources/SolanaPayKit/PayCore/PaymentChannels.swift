@@ -1,6 +1,6 @@
 import Foundation
 
-/// Client-side payment-channels primitives: PDA/ATA derivation, the 50-byte
+/// Client-side tabs primitives: PDA/ATA derivation, the 50-byte
 /// voucher preimage, and the `open` instruction + partially-signed open
 /// transaction the session client broadcasts via the operator.
 ///
@@ -12,10 +12,10 @@ import Foundation
 public enum PaymentChannels {
     private static let canonicalProgramId = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
-    /// Canonical payment-channels program ID deployed to Surfnet.
+    /// Canonical tabs program ID deployed to Surfnet.
     public static let programId: Pubkey = {
         guard let id = try? Pubkey(base58: canonicalProgramId) else {
-            preconditionFailure("invalid canonical payment-channels program ID")
+            preconditionFailure("invalid canonical tabs program ID")
         }
         return id
     }()
@@ -26,7 +26,7 @@ public enum PaymentChannels {
     /// Event-authority PDA seed prefix.
     static let eventAuthoritySeed = Data("event_authority".utf8)
 
-    /// Default payment-channel close grace period, in seconds.
+    /// Default tab close grace period, in seconds.
     public static let defaultGracePeriodSeconds: UInt32 = 900
 
     /// Constant magic prefix of the signed voucher payload: version byte 0x01
@@ -274,7 +274,7 @@ public enum PaymentChannels {
         )
         let signature = try await payer.sign(message: message.serialize())
         guard signature.count == Ed25519.signatureLength else {
-            throw PayKitError.signingFailure("payment-channel open signature must be 64 bytes, got \(signature.count)")
+            throw PayKitError.signingFailure("tab open signature must be 64 bytes, got \(signature.count)")
         }
         guard let signerIndex = message.accountKeys.firstIndex(of: payerPubkey) else {
             throw PayKitError.invalidTransaction("payer is not in the open transaction account list")

@@ -539,7 +539,7 @@ func TestSubmitOpenTxFailureMatrix(t *testing.T) {
 // ── VerifyOpenTx malformed instruction matrix ──
 
 // buildRawOpenPayload wraps a hand-built instruction targeting the
-// payment-channels program into a signed transaction + open payload.
+// tabs program into a signed transaction + open payload.
 func buildRawOpenPayload(t *testing.T, accounts []*solana.AccountMeta, data []byte) (intents.OpenPayload, VerifyOpenTxExpected) {
 	t.Helper()
 	payer := testutil.NewPrivateKey()
@@ -616,7 +616,7 @@ func TestVerifyOpenTxMalformedInstructions(t *testing.T) {
 	// No open instruction at all (wrong discriminator).
 	wrongDisc, wrongExpected := buildRawOpenPayload(t, accounts, []byte{9, 9, 9})
 	if _, err := VerifyOpenTx(ctx, wrongExpected, &wrongDisc, nil); err == nil ||
-		!strings.Contains(err.Error(), "no payment-channels open instruction") {
+		!strings.Contains(err.Error(), "no tabs open instruction") {
 		t.Fatalf("wrong discriminator = %v", err)
 	}
 }

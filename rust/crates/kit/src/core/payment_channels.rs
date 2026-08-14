@@ -1,4 +1,4 @@
-//! Typed helpers for the payment-channels program.
+//! Typed helpers for the tabs program.
 //!
 //! The generated Codama client is kept as a path dependency and re-exported
 //! through this module.  Everything else here is hand-written adapter code: PDA
@@ -34,7 +34,7 @@ use crate::generated::payment_channels::generated::types::{
     DistributeArgs, DistributionEntry, OpenArgs, SettleAndSealArgs, TopUpArgs, VoucherArgs,
 };
 
-/// Canonical payment-channels program ID deployed to Surfnet.
+/// Canonical tabs program ID deployed to Surfnet.
 pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX";
 
 /// Associated Token Account program ID.
@@ -43,7 +43,7 @@ pub const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTN
 /// System Program ID.
 pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 
-/// Default payment-channel close grace period, in seconds.
+/// Default tab close grace period, in seconds.
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 900;
 
 /// Constant magic prefix of the signed voucher payload (`[0x56, 0x01]`).
@@ -88,9 +88,9 @@ pub const INSTRUCTIONS_SYSVAR_ID: &str = "Sysvar1nstructions11111111111111111111
 /// Rent sysvar ID.
 pub const RENT_SYSVAR_ID: &str = "SysvarRent111111111111111111111111111111111";
 
-/// Treasury owner used by the current payment-channels program deployment.
+/// Treasury owner used by the current tabs program deployment.
 // Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP — the treasury owner baked into
-// the deployed (mainnet-build) payment-channels program; `distribute` checks the
+// the deployed (mainnet-build) tabs program; `distribute` checks the
 // treasury ATA against ATA(TREASURY_OWNER, mint, token_program).
 pub const TREASURY_OWNER: [u8; 32] = [
     0xB0, 0x41, 0xD9, 0xD3, 0x37, 0xB7, 0x21, 0xBE, 0x57, 0x89, 0x4E, 0xB6, 0x9C, 0x3B, 0x68, 0x09,
@@ -143,7 +143,7 @@ pub struct PaymentChannelOpenTransaction {
 }
 
 pub fn default_program_id() -> Pubkey {
-    Pubkey::from_str(PAYMENT_CHANNELS_PROGRAM_ID).expect("valid payment-channels program id")
+    Pubkey::from_str(PAYMENT_CHANNELS_PROGRAM_ID).expect("valid tabs program id")
 }
 
 /// Generate a random `u64` channel salt.
@@ -193,7 +193,7 @@ pub fn from_address(address: &Address) -> Pubkey {
 }
 
 /// Decode a base64 (standard) bincode transaction, accepting both legacy and v0
-/// versioned wire formats. Payment-channel opens are built by legacy clients
+/// versioned wire formats. Tab opens are built by legacy clients
 /// (the pay Rust client) and v0 clients (the canonical pay-kit JS client, which
 /// builds `createTransactionMessage({ version: 0 })`), so any server that
 /// broadcasts a client-built open must accept either. Shared by x402
@@ -211,7 +211,7 @@ pub fn decode_transaction(b64: &str) -> Result<VersionedTransaction> {
     bincode::deserialize(&bytes).map_err(|e| Error::Other(format!("invalid transaction: {e}")))
 }
 
-/// Co-sign the operator's (fee-payer) slot of a partially-signed payment-channel
+/// Co-sign the operator's (fee-payer) slot of a partially-signed tab
 /// transaction. The operator must be the fee payer (the first static account
 /// key); its signature slot is filled in place. Works on both legacy and v0
 /// transactions (via [`VersionedTransaction`]). Shared by x402
@@ -640,10 +640,10 @@ pub async fn build_open_payment_channel_tx(
     signer
         .sign_transaction(&mut tx)
         .await
-        .map_err(|e| Error::Other(format!("payment-channel open signing failed: {e}")))?;
+        .map_err(|e| Error::Other(format!("tab open signing failed: {e}")))?;
 
     let bytes = bincode::serialize(&tx).map_err(|e| {
-        Error::Serialization(format!("payment-channel open tx serialization failed: {e}"))
+        Error::Serialization(format!("tab open tx serialization failed: {e}"))
     })?;
     Ok(PaymentChannelOpenTransaction {
         channel_id,

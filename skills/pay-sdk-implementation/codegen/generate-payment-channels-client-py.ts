@@ -1,5 +1,5 @@
 /**
- * Generate the pay-kit Python payment-channels client from the upstream
+ * Generate the pay-kit Python tabs client from the upstream
  * `Moonsong-Labs/solana-payment-channels` Codama IDL.
  *
  * Mirrors generate-payment-channels-client.ts (Rust) - both scripts read the

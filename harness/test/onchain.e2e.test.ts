@@ -2,7 +2,7 @@
  * On-chain settlement E2E — the regression net the structural harness lacks.
  *
  * Boots a mainnet-forking surfnet (@solana/surfpool 1.4, which executes the
- * deployed payment-channels program) and drives the real pay-kit client/server
+ * deployed tabs program) and drives the real pay-kit client/server
  * end-to-end. A success is only returned after settlement CONFIRMS on-chain, so
  * this catches settlement-class regressions the byte-shape harness cannot — e.g.
  * the `TreasuryAccountMismatch` (0x961) that made `upto` silently 402 after
@@ -52,7 +52,7 @@ async function startServer(): Promise<void> {
     network: "localnet",
     operator: { recipient: operator.address, signer: operator },
     pricing: {
-      // x402 `upto` — settles by invoking the payment-channels program
+      // x402 `upto` — settles by invoking the tabs program
       // (settle_and_seal + distribute). This is the scheme that regressed.
       summarize: usage(usd("0.1"), { description: "Summarize, billed per token" }),
       // Fixed charge baseline (MPP / x402 exact — SPL transfer).
@@ -138,7 +138,7 @@ describe.skipIf(!RUN)("on-chain settlement (mainnet fork, real program)", () => 
 
 /*
  * MATRIX GAPS (explicit — no client/server today; not yet covered):
- *   - x402 upto:             Go, Python   (no svm payment-channel client)
+ *   - x402 upto:             Go, Python   (no svm tab client)
  *   - x402 batch-settlement: Go, Python   (Rust + TS only)
  *   - mpp subscription:      TS, Go, Python (Rust SDK only; needs plan bootstrap)
  *   - mpp session:           Go, TS, Ruby, Lua servers (Python/Rust only)

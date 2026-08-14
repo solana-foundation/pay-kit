@@ -248,7 +248,7 @@ def RequireUsage(  # noqa: N802 - factory reads as a dependency constructor
     """Build a FastAPI dependency that gates a route behind an x402 ``upto`` usage gate.
 
     On a missing/invalid credential it raises ``HTTPException`` carrying the 402
-    upto challenge. On success it opens + binds the payment channel, attaches a
+    upto challenge. On success it opens + binds the tab, attaches a
     :class:`~solana_pay_kit.usage.Charge` meter to ``request.state`` (read it with
     :func:`~solana_pay_kit.usage.charge_from`, or ``Depends`` on this), and registers a
     pending settlement that the usage middleware finalizes after the handler

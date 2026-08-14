@@ -137,7 +137,7 @@ pub struct SessionConfig {
     /// Solana network: "mainnet", "devnet", "localnet".
     pub network: String,
 
-    /// Payment-channel program ID. `None` defaults to the canonical program.
+    /// Tab program ID. `None` defaults to the canonical program.
     pub channel_program: Option<Pubkey>,
 
     /// SPL token program override.
@@ -213,7 +213,7 @@ pub struct SealParams {
     /// SPL mint locked by the channel.
     pub mint: Option<Pubkey>,
 
-    /// Payment-channels program ID.
+    /// Tabs program ID.
     pub program_id: Pubkey,
 
     /// The settled watermark to commit on-chain.
@@ -434,11 +434,11 @@ impl<S: ChannelStore> SessionServer<S> {
         ))
     }
 
-    /// Build and validate payment-channel open parameters from an `open` payload.
+    /// Build and validate tab open parameters from an `open` payload.
     ///
     /// This verifies the client-provided payer/payee/mint/salt/deposit/channel
     /// fields against the session challenge and returns the exact on-chain open
-    /// params expected by the payment-channels program.
+    /// params expected by the tabs program.
     pub fn payment_channel_open_params(
         &self,
         payload: &OpenPayload,
@@ -479,17 +479,17 @@ impl<S: ChannelStore> SessionServer<S> {
 
         if payee != expected_payee {
             return Err(Error::Other(
-                "payment-channel open payee does not match challenge recipient".to_string(),
+                "tab open payee does not match challenge recipient".to_string(),
             ));
         }
         if mint != expected_mint {
             return Err(Error::Other(
-                "payment-channel open mint does not match challenge currency".to_string(),
+                "tab open mint does not match challenge currency".to_string(),
             ));
         }
         if grace_period != self.config.grace_period_seconds {
             return Err(Error::Other(
-                "payment-channel open gracePeriodSeconds does not match challenge".to_string(),
+                "tab open gracePeriodSeconds does not match challenge".to_string(),
             ));
         }
         if self
@@ -498,7 +498,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .is_some_and(|minimum| deposit < minimum)
         {
             return Err(Error::Other(
-                "payment-channel open depositAmount is below minimumDeposit".to_string(),
+                "tab open depositAmount is below minimumDeposit".to_string(),
             ));
         }
 
@@ -514,7 +514,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .collect::<Result<_>>()?;
         if payload_splits != self.config.splits {
             return Err(Error::Other(
-                "payment-channel open distributionSplits do not match challenge".to_string(),
+                "tab open distributionSplits do not match challenge".to_string(),
             ));
         }
 
@@ -546,14 +546,14 @@ impl<S: ChannelStore> SessionServer<S> {
         let channel = parse_pubkey_field(&payload.channel_id, "channelId")?;
         if channel != expected_channel {
             return Err(Error::Other(
-                "payment-channel open channelId does not match derived channel PDA".to_string(),
+                "tab open channelId does not match derived channel PDA".to_string(),
             ));
         }
 
         Ok(params)
     }
 
-    /// Build the exact payment-channel open instruction expected for a payload.
+    /// Build the exact tab open instruction expected for a payload.
     pub fn payment_channel_open_instruction(
         &self,
         payload: &OpenPayload,
@@ -566,7 +566,7 @@ impl<S: ChannelStore> SessionServer<S> {
 
     /// Process an `open` action: persist the channel state.
     ///
-    /// Accepts payment-channel opens and operated-voucher delegated-token opens.
+    /// Accepts tab opens and operated-voucher delegated-token opens.
     /// Returns the stored `ChannelState`.
     ///
     /// When `config.rpc_url` is set, confirms the open transaction is finalized
@@ -1950,14 +1950,14 @@ fn parse_pubkey(s: &str) -> Result<Pubkey> {
 }
 
 fn parse_pubkey_field(value: &str, field: &str) -> Result<Pubkey> {
-    parse_pubkey(value).map_err(|e| Error::Other(format!("invalid payment-channel {field}: {e}")))
+    parse_pubkey(value).map_err(|e| Error::Other(format!("invalid tab {field}: {e}")))
 }
 
 /// Parse the configured operator pubkey used for operator-signed vouchers.
 fn parse_required_operator(operator: &str) -> Result<Pubkey> {
     if operator.trim().is_empty() {
         return Err(Error::Other(
-            "payment-channel open requires a configured operator signer".to_string(),
+            "tab open requires a configured operator signer".to_string(),
         ));
     }
     parse_pubkey_field(operator, "operator")
@@ -1965,7 +1965,7 @@ fn parse_required_operator(operator: &str) -> Result<Pubkey> {
 
 fn expected_payment_channel_mint(config: &SessionConfig) -> Result<Pubkey> {
     let mint = resolve_stablecoin_mint(&config.currency, Some(config.network.as_str()))
-        .ok_or_else(|| Error::Other("payment-channel sessions require an SPL token".to_string()))?;
+        .ok_or_else(|| Error::Other("tab sessions require an SPL token".to_string()))?;
     parse_pubkey_field(mint, "currency")
 }
 
@@ -2012,7 +2012,7 @@ fn verify_signature(
     .map_err(Into::into)
 }
 
-/// Compute the payment-channel distribution hash for explicit recipients.
+/// Compute the tab distribution hash for explicit recipients.
 ///
 /// The primary payee receives the implicit remainder and is not part of the
 /// hashed preimage unless it is explicitly listed in `splits`.

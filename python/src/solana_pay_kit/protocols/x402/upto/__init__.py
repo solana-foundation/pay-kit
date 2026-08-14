@@ -1,4 +1,4 @@
-"""x402 ``upto`` (Solana) server engine - ``payment-channel`` profile.
+"""x402 ``upto`` (Solana) server engine - ``tab`` profile.
 
 Self-hosted usage-based authorization. Unlike ``exact`` (one inline transfer
 settled before the handler runs), ``upto`` is two-phase: :meth:`X402Upto.verify_open`
@@ -126,7 +126,7 @@ class VerifiedUptoOpen:
 
 
 class X402Upto:
-    """Server-side x402 ``upto`` payment-channel engine."""
+    """Server-side x402 ``upto`` tab engine."""
 
     def __init__(
         self,
@@ -295,7 +295,7 @@ class X402Upto:
             open_tx = payload.get("openTransaction")
             if not open_tx:
                 raise InvalidProofError(
-                    "payment-channel asset transfer method requires openTransaction (pull)", code="payment_invalid"
+                    "tab asset transfer method requires openTransaction (pull)", code="payment_invalid"
                 )
             account_keys, instructions = _decode_transaction(open_tx)
             # The challenged recentSlot at verify time: the requirement is
@@ -525,7 +525,7 @@ class X402Upto:
         data, owner = account
         if owner != str(program_id):
             raise InvalidProofError(
-                "channel account is not owned by the payment-channels program", code="payment_invalid"
+                "channel account is not owned by the tabs program", code="payment_invalid"
             )
         # The on-chain account carries a 1-byte account discriminator ahead of
         # the struct (Go's `Channel.Discriminator uint8`); the generated

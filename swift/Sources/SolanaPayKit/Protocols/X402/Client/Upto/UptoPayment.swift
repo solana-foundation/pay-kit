@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - x402 upto challenge parsing and payment building (payment-channel)
+// MARK: - x402 upto challenge parsing and payment building (tab)
 
 // MARK: - Challenge parsing
 
@@ -43,7 +43,7 @@ public func parseUptoAccepts(
 
 // MARK: - Payment building
 
-/// Build an `upto` payload for a `payment-channel` requirement.
+/// Build an `upto` payload for a `tab` requirement.
 ///
 /// The client (`signer`) is the channel payer. `extra.feePayer` is the
 /// transaction fee payer, rent payer, and zero-share channel payee;

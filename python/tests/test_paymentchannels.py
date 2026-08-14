@@ -1,4 +1,4 @@
-"""Tests for the payment-channels on-chain glue.
+"""Tests for the tabs on-chain glue.
 
 Parity is verified against the Rust spine
 (``rust/crates/mpp/src/program/payment_channels.rs``) and the CI-green Go port.
@@ -235,7 +235,7 @@ def test_build_open_instruction_account_order_and_flags() -> None:
     assert str(accounts[11].pubkey) == "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
     # 12 event_authority PDA.
     assert accounts[12].pubkey == event_authority
-    # 13 self/program == the payment-channels program id.
+    # 13 self/program == the tabs program id.
     assert accounts[13].pubkey == PROGRAM_ID
     # Open signer mask: payer and rentPayer are signers, nothing else.
     assert [a.is_signer for a in accounts] == [True, True] + [False] * 12

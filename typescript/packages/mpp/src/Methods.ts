@@ -201,7 +201,7 @@ export const subscription = Method.from({
 /**
  * Solana session method — shared schema used by both server and client.
  *
- * A session opens a payment channel once, then pays for later deliveries with
+ * A session opens a tab once, then pays for later deliveries with
  * cumulative off-chain vouchers.
  */
 export const session = Method.from({

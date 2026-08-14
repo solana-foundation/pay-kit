@@ -207,7 +207,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	// Wire the usage (upto) adapter only for x402 upto configs. Exact x402
 	// still supports a recipient separate from the operator signer, while
-	// the payment-channel program requires upto recipient == operator.
+	// the tab program requires upto recipient == operator.
 	if containsProtocol(cfg.Accept, X402) && cfg.X402.Scheme == "upto" && registeredUsageBuilder != nil {
 		usageAdapter, err := registeredUsageBuilder(cfg)
 		if err != nil {

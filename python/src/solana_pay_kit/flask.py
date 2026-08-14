@@ -122,7 +122,7 @@ def require_usage(
 ) -> Callable[[_F], _F]:
     """Decorate a Flask view so it serves only after an x402 ``upto`` usage gate.
 
-    Two-phase: before the view it opens + binds the payment channel, attaching a
+    Two-phase: before the view it opens + binds the tab, attaching a
     :class:`~solana_pay_kit.usage.Charge` meter (read it with :func:`charge` or
     :func:`solana_pay_kit.usage.charge_from`); after the view it settles the metered
     amount. A missing/invalid credential aborts with a 402 carrying the upto

@@ -1,4 +1,4 @@
-// Client-side helpers for payment-channel open transactions.
+// Client-side helpers for tab open transactions.
 //
 // These builders turn a parsed session challenge (SessionRequest) into the
 // on-chain open transaction and the matching open action payload, applying the
@@ -28,7 +28,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-// DefaultGracePeriodSeconds is the default payment-channel close grace period,
+// DefaultGracePeriodSeconds is the default tab close grace period,
 // shared across the language SDK clients.
 const DefaultGracePeriodSeconds uint32 = 900
 
@@ -37,7 +37,7 @@ const DefaultGracePeriodSeconds uint32 = 900
 // the base58 form of an all-zero 64-byte signature (64 ones).
 const PendingServerSignature = "1111111111111111111111111111111111111111111111111111111111111111"
 
-// PaymentChannelOpen is a fully derived payment-channel open: every channel
+// PaymentChannelOpen is a fully derived tab open: every channel
 // parameter resolved from the challenge plus the resulting channel PDA.
 type PaymentChannelOpen struct {
 	// ChannelID is the channel PDA derived from payer, payee, mint,
@@ -87,7 +87,7 @@ type PaymentChannelOpen struct {
 	// PYUSD/USDG/CASH).
 	TokenProgram solana.PublicKey
 
-	// ProgramID is the payment-channels program the open targets; defaults
+	// ProgramID is the tabs program the open targets; defaults
 	// to the canonical program unless the challenge pins one.
 	ProgramID solana.PublicKey
 }
@@ -153,7 +153,7 @@ type PaymentChannelOpenOptions struct {
 	// recentSlot (the slot the server pre-fetched alongside recentBlockhash).
 	OpenSlot *uint64
 
-	// ProgramID overrides the payment-channels program. Defaults to the
+	// ProgramID overrides the tabs program. Defaults to the
 	// challenge programId, falling back to the canonical program.
 	ProgramID *solana.PublicKey
 
@@ -194,7 +194,7 @@ func DerivePaymentChannelOpen(
 
 	mintAddress := paycore.ResolveMint(request.Currency, network)
 	if mintAddress == "" {
-		return PaymentChannelOpen{}, fmt.Errorf("session payment channels require an SPL token")
+		return PaymentChannelOpen{}, fmt.Errorf("session tabs require an SPL token")
 	}
 	mint, err := parseSessionPubkey(mintAddress, "mint")
 	if err != nil {
@@ -514,14 +514,14 @@ func buildOpenPaymentChannelTx(
 		solana.TransactionPayer(feePayer),
 	)
 	if err != nil {
-		return PaymentChannelOpenTransaction{}, fmt.Errorf("build payment-channel open transaction: %w", err)
+		return PaymentChannelOpenTransaction{}, fmt.Errorf("build tab open transaction: %w", err)
 	}
 	if err := solanatx.SignTransaction(tx, payerSigner); err != nil {
-		return PaymentChannelOpenTransaction{}, fmt.Errorf("payment-channel open signing failed: %w", err)
+		return PaymentChannelOpenTransaction{}, fmt.Errorf("tab open signing failed: %w", err)
 	}
 	encoded, err := solanatx.EncodeTransactionBase64(tx)
 	if err != nil {
-		return PaymentChannelOpenTransaction{}, fmt.Errorf("payment-channel open tx serialization failed: %w", err)
+		return PaymentChannelOpenTransaction{}, fmt.Errorf("tab open tx serialization failed: %w", err)
 	}
 	return PaymentChannelOpenTransaction{ChannelID: open.ChannelID, Transaction: encoded}, nil
 }

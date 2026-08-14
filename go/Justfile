@@ -41,7 +41,7 @@ audit:
     go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 # Test with coverage gate (defaults to 90).
-# The codama-generated payment-channels client and the runnable examples are
+# The codama-generated tabs client and the runnable examples are
 # filtered from the profile before the gate: the generated client is
 # byte-for-byte reproducible from idl/payment-channels.json (the same
 # carve-out the lint recipe applies), and examples are demo binaries that the

@@ -13,7 +13,7 @@ Payment Sandbox (a hosted test validator, no real funds):
 - **Sessions**: the in-process Go session method gating `/api/v1/stream`
   (pay-per-chunk SSE, also served at `/sessions/stream`) and
   `/sessions/compute` (pay-per-call), with real
-  payment-channel opens (server-completed fee-payer signature), voucher
+  tab opens (server-completed fee-payer signature), voucher
   metering through the `/__402/session/*` side channel, and on-chain
   settlement via the idle-close watchdog.
 - **x402**: the TS-style `/api/v1/summarize` usage endpoint, two legacy

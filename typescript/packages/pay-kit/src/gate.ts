@@ -23,7 +23,7 @@ export type GateDefaults = {
  * - `fixed` — charge a fixed amount up front (MPP `charge` / x402 `exact`),
  * - `usage` — authorize a ceiling and settle the metered amount afterwards (x402 `upto`),
  * - `subscription` — activate a recurring on-chain authorization on the first call (MPP `subscription`),
- * - `session` — open a payment channel and meter streamed deliveries, settling out-of-band (MPP `session`).
+ * - `session` — open a tab and meter streamed deliveries, settling out-of-band (MPP `session`).
  *
  * Defaults to `fixed`. `subscription` and `session` are MPP-only.
  */

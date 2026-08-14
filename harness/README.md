@@ -3,7 +3,7 @@
 This directory is PayKit's **conformance and interop test harness**. PayKit
 ships the same two payment protocols — **MPP** and **x402** — in many languages
 (TypeScript, Rust, Go, Python, Ruby, Lua, Swift, Kotlin, PHP) over a shared
-on-chain Solana payment-channels program. The harness exists to prove those
+on-chain Solana tabs program. The harness exists to prove those
 independent implementations actually agree with each other and with the
 deployed program, so a change in one SDK (or the program) can't silently break
 another.
@@ -47,7 +47,7 @@ bytes**, not the result of executing the on-chain program.
 `test/onchain.e2e.test.ts`, `src/onchain/surfnet.ts`.
 
 Boots a Surfpool that **forks mainnet-beta** (via `@solana/surfpool`) and streams
-the live programs — payment-channels (`CHNLx…`) and subscriptions (`De1eg…`) —
+the live programs — tabs (`CHNLx…`) and subscriptions (`De1eg…`) —
 so settlement transactions **actually execute the deployed program**. It drives
 the real pay-kit client/server and asserts the settlement **confirms on-chain**
 (a settlement failure surfaces as a re-challenged `402`). This is what catches
@@ -168,7 +168,7 @@ schemes against the same mainnet-fork bootstrap in `src/onchain/surfnet.ts`.
 ## Limitations
 
 - **The structural tier does not execute the program.** It asserts transaction
-  byte-shape and balance deltas, not the result of running the payment-channels
+  byte-shape and balance deltas, not the result of running the tabs
   program. Settlement-class bugs (treasury ATA, voucher expiry, ALT guard) are
   invisible to it — they only fail when the program runs. That is precisely the
   gap the on-chain tier fills, and historically why such bugs reached the

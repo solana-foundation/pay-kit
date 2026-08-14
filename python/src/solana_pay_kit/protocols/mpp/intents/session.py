@@ -1,8 +1,8 @@
 """Session intent request and voucher types.
 
-The session intent opens a payment channel between a client and server,
+The session intent opens a tab between a client and server,
 allowing incremental payments via off-chain signed vouchers backed by the
-on-chain payment-channels program. The wire format is defined by the MPP
+on-chain tabs program. The wire format is defined by the MPP
 specification's session intent.
 
 Types are plain :func:`dataclasses.dataclass` with explicit
@@ -376,7 +376,7 @@ def _string_from_wire(value: Any, label: str) -> str:
 
 @dataclass
 class OpenPayload:
-    """Exact payment-channel ``open`` credential payload."""
+    """Exact tab ``open`` credential payload."""
 
     channel_id: str
     payer: str
@@ -497,7 +497,7 @@ class VoucherData:
         )
 
     def message_bytes(self) -> bytes:
-        """Serialize to the payment-channels ``VoucherArgs`` bytes signed by
+        """Serialize to the tabs ``VoucherArgs`` bytes signed by
         Ed25519.
 
         Layout (exactly 50 bytes): the constant 2-byte voucher magic

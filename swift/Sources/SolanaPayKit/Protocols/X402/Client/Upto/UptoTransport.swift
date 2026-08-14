@@ -70,7 +70,7 @@ func uptoExpiresAt(nowSeconds: Int, maxTimeoutSeconds: Int) throws -> Int {
 }
 
 public extension PayKit.HttpClient {
-    /// A client that drives x402 `upto` (payment-channel) endpoints: on a 402,
+    /// A client that drives x402 `upto` (tab) endpoints: on a 402,
     /// parse the `upto` challenge, build a partially-signed channel `open`
     /// through `signer`, and replay with a `Payment-Signature` header.
     static func x402Upto(

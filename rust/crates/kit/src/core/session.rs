@@ -1,4 +1,4 @@
-//! Wire-agnostic payment-channel session logic shared by the MPP `session`
+//! Wire-agnostic tab session logic shared by the MPP `session`
 //! intent and the x402 `batch-settlement` scheme.
 //!
 //! [`accept_voucher`] is the server-side acceptance of a cumulative voucher:

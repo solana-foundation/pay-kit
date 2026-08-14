@@ -1,4 +1,4 @@
-//! Wire-agnostic payment-channel voucher verification.
+//! Wire-agnostic tab voucher verification.
 //!
 //! A voucher authorizes a cumulative spend on a channel: the 50-byte Borsh
 //! payload `magic(0x56 0x01) ‖ channelId ‖ cumulativeAmount ‖ expiresAt` (see

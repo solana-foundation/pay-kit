@@ -337,7 +337,7 @@ private fun DemoScreen() {
                                             busy = null
                                         }
                                     }
-                                    // Session: open a payment channel, stream metered SSE
+                                    // Session: open a tab, stream metered SSE
                                     // deliveries, sign + commit a voucher, settle.
                                     "session" -> {
                                         busy = BusyKind.Pay(endpoint.id)
@@ -787,7 +787,7 @@ private val httpClient = OkHttpClient()
  * signature is pulled from the `Payment-Receipt` envelope on success.
  */
 /**
- * Drive the full payment-channel **session** for a session endpoint: open the
+ * Drive the full tab **session** for a session endpoint: open the
  * channel, stream the metered SSE deliveries, sign + commit a voucher, and poll
  * the settle signature (see [SessionStream]). Mirrors the iOS demo's session path.
  */
@@ -810,7 +810,7 @@ private suspend fun consumeSession(signer: SolanaSigner, endpoint: Endpoint): Lo
 
 /**
  * Drive the x402 **upto** (usage) flow for a metered endpoint: POST the input,
- * and on the 402 challenge open a payment channel authorizing the ceiling, then
+ * and on the 402 challenge open a tab authorizing the ceiling, then
  * replay with the `Payment-Signature` header. The server meters actual usage and
  * settles `actual <= max`, refunding the rest; the response body reports the
  * billed amount. Mirrors the iOS demo's `upto` path.

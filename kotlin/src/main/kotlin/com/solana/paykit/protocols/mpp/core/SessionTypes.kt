@@ -19,7 +19,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 /**
- * MPP payment-channel session wire types, mirroring the Rust spine
+ * MPP tab session wire types, mirroring the Rust spine
  * (`rust/crates/mpp/src/protocol/intents/session.rs`) and the Go reference
  * tag-for-tag and key-for-key. JSON keys are camelCase; `salt` and `recentSlot`
  * serialize as decimal strings (read string-or-number);

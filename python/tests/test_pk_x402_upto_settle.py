@@ -233,7 +233,7 @@ async def test_verify_open_happy(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_verify_open_binds_custom_gate_payee(monkeypatch) -> None:
     """A usage gate with its own pay_to is honored end to end via the bound
-    payment-channel distribution split."""
+    tab distribution split."""
     eng, cfg, holder = _engine(monkeypatch)
     custom_payee = str(Keypair().pubkey())
     gate = Gate.build(
@@ -539,7 +539,7 @@ def test_reserve_channel_concurrent(monkeypatch) -> None:
 
 def test_parse_payload_missing_field() -> None:
     with pytest.raises(InvalidProofError, match="missing"):
-        upto_mod._parse_payload({"profile": "payment-channel"})  # noqa: SLF001
+        upto_mod._parse_payload({"profile": "tab"})  # noqa: SLF001
 
 
 def test_parse_payload_not_a_dict() -> None:

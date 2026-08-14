@@ -1,8 +1,8 @@
 """Client-side session intent implementation.
 
-:class:`ActiveSession` tracks an open payment channel and signs cumulative
+:class:`ActiveSession` tracks an open tab and signs cumulative
 vouchers for each metered API call. Vouchers are Ed25519-signed over the
-on-chain Borsh voucher layout used by the payment-channels program, so the same
+on-chain Borsh voucher layout used by the tabs program, so the same
 bytes the server verifies on the HTTP credential are the bytes the on-chain
 settle instruction consumes.
 
@@ -137,7 +137,7 @@ class ActiveSession:
         method); ``expires_at`` is the Unix timestamp applied to newly signed
         vouchers, defaulting to :data:`DEFAULT_VOUCHER_EXPIRES_AT`;
         ``cumulative`` seeds the watermark when resuming a known channel
-        position (the payment-channel openers use it to write the starting
+        position (the tab openers use it to write the starting
         ``cumulative`` value).
         """
         self._channel_id = channel_id
@@ -296,7 +296,7 @@ class ActiveSession:
         authentication: SessionAuthentication | None = None,
         idle_timeout_seconds: int | None = None,
     ) -> SessionAction:
-        """Build a payment-channel open action carrying the full channel
+        """Build a tab open action carrying the full channel
         parameters.
 
         ``open_slot`` is the slot the channel was derived

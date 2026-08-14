@@ -125,7 +125,7 @@ data class UptoRequiredEnvelope(
 /**
  * The client authorization carried in ``PAYMENT-SIGNATURE.payload``.
  *
- * For the payment-channel method the channel ``open`` is the authorization: the
+ * For the tab method the channel ``open`` is the authorization: the
  * client's signature commits the deposit ceiling, payee, and mint. There is no
  * ``signature`` or ``profile`` field; the receiver authorizer settles with its own voucher.
  */

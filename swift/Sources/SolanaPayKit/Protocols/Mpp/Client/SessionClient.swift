@@ -1,6 +1,6 @@
 import Foundation
 
-/// A live metered session bound to one payment channel.
+/// A live metered session bound to one tab.
 ///
 /// Holds the cumulative watermark, request nonce, and voucher expiry, and signs
 /// monotonically-increasing vouchers with the session signer. Mirrors the Go
@@ -194,7 +194,7 @@ public final class ActiveSession {
     }
 }
 
-// MARK: - Payment-channel session opener
+// MARK: - Tab session opener
 
 /// Placeholder operator signature: the server fills its fee-payer slot before
 /// broadcasting the open transaction.
@@ -280,7 +280,7 @@ public struct PaymentChannelSessionOpenOptions: Sendable {
     }
 }
 
-/// Result of opening a payment-channel session client-side.
+/// Result of opening a tab session client-side.
 public struct PaymentChannelSessionOpen {
     public let open: PaymentChannelOpen
     public let session: ActiveSession
@@ -288,7 +288,7 @@ public struct PaymentChannelSessionOpen {
 }
 
 public enum PaymentChannelSession {
-    /// Build a pull + clientVoucher payment-channel session open. The payer
+    /// Build a pull + clientVoucher tab session open. The payer
     /// partial-signs the open transaction; the operator (fee payer) co-signs and
     /// broadcasts. `recentBlockhash` is base58. The channel-PDA `openSlot` seed
     /// comes from the challenge (`request.recentSlot`, server-prefetched like
@@ -362,7 +362,7 @@ public enum PaymentChannelSession {
         options: PaymentChannelOpenOptions
     ) throws -> PaymentChannelOpen {
         guard let mintString = Mints.resolveChargeMint(currency: request.currency, network: request.network) else {
-            throw PayKitError.invalidTransaction("session payment channels require an SPL token")
+            throw PayKitError.invalidTransaction("session tabs require an SPL token")
         }
         let mint = try Pubkey(base58: mintString)
         let payee: Pubkey

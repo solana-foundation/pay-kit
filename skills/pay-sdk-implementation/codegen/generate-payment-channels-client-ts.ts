@@ -1,5 +1,5 @@
 /**
- * Generate the pay-kit payment-channels TypeScript client from the upstream
+ * Generate the pay-kit tabs TypeScript client from the upstream
  * `Moonsong-Labs/solana-payment-channels` Codama IDL.
  *
  * Mirrors generate-payment-channels-client-rs.ts (Rust) and
@@ -33,7 +33,7 @@ const tsClientDir = path.join(
   "mpp",
   "src",
   "generated",
-  "payment-channels",
+  "tabs",
 );
 
 if (!fs.existsSync(idlPath)) {

@@ -1,7 +1,7 @@
 """Surfnet-gated end-to-end session lifecycle test.
 
 Exercises the real on-chain paths against the hosted Solana Payment Sandbox:
-a server-broadcast payment-channel open (openTxSubmitter=server, the A4 path),
+a server-broadcast tab open (openTxSubmitter=server, the A4 path),
 an in-band voucher, and the on-chain settle-at-close (the A2 path), asserting
 the open and settle transactions confirm on-chain. Mirrors Go's
 session_e2e_test.go. Skips explicitly (never silently passes) when the sandbox

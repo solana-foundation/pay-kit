@@ -8,7 +8,7 @@ A single-page React + Express playground that lets you poke every payment surfac
 - **Charges** — stocks, weather, marketplace splits, a browser-friendly payment link
 - **x402** — embedded facilitator + the canonical `/x402/joke` and `/x402/fact` routes
 - **Subscriptions** — server-side `solana.subscription` gating a `/api/v1/premium/feed`
-- **Sessions** — payment-channel sessions served in-process by `@solana/mpp`
+- **Sessions** — tab sessions served in-process by `@solana/mpp`
 - **Docs** — language quickstarts for TypeScript, Rust, Go, Python, Ruby, PHP, Lua, Kotlin, Swift.
   TypeScript's card is generated from `typescript/docs/snippets/` (see `docs/snippets-convention.md`);
   the other languages use curated entries until their snippet directories are populated

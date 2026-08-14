@@ -23,7 +23,7 @@ The wire shape is likely:
 ## Relationship to MPP `session`
 
 The MPP session intent already does on-chain batching: the
-payment-channels program holds funds; vouchers authorize cumulative
+tabs program holds funds; vouchers authorize cumulative
 spend; close settles. The biggest implementation overlap with
 `x402/batch-settlement` is voucher / cumulative semantics — see
 `rust/crates/mpp/src/protocol/intents/session.rs::SignedVoucher`

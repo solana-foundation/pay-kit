@@ -1,6 +1,6 @@
-"""On-chain glue for the payment-channels program (shared core).
+"""On-chain glue for the tabs program (shared core).
 
-Canonical home for payment-channel PDA derivation, associated-token derivation,
+Canonical home for tab PDA derivation, associated-token derivation,
 voucher preimage bytes, and the convenience instruction builders (``open``,
 ``topUp``, ``settleAndSeal``, ``distribute``, ``reclaim``, plus the Ed25519
 voucher precompile). Shared by the MPP session flow and the x402 ``upto``
@@ -20,7 +20,7 @@ This module only adds what the IDL cannot express:
 - The channel PDA is not declared in the IDL's ``pdas`` section, so its
   derivation is hand-written here.
 
-The payment-channels program uses a single-byte instruction discriminator
+The tabs program uses a single-byte instruction discriminator
 (``open`` = 1, ``topUp`` = 3), not the 8-byte Anchor discriminator; the
 generated builders encode it.
 """
@@ -94,7 +94,7 @@ SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
 #: the signed byte payload, never in voucher wire JSON.
 VOUCHER_MAGIC = bytes([0x56, 0x01])
 
-# Canonical payment-channels program id deployed to the network. Matches the
+# Canonical tabs program id deployed to the network. Matches the
 # generated client's default; used for every PDA derivation and instruction.
 PAYMENT_CHANNELS_PROGRAM_ID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
@@ -164,7 +164,7 @@ class OpenChannelParams:
             the channel's payouts. Empty means a single implicit payee.
         token_program: The token program owning the mint (SPL Token or
             Token-2022).
-        program_id: The payment-channels program the instruction targets;
+        program_id: The tabs program the instruction targets;
             defaults to the production deployment.
     """
 
@@ -268,7 +268,7 @@ def find_channel_pda(
             identical seeds, packed little-endian into the seeds.
         open_slot: The slot the channel is opened at, packed little-endian
             into the seeds.
-        program_id: The payment-channels program to derive against; defaults to
+        program_id: The tabs program to derive against; defaults to
             the production deployment.
 
     Returns:
@@ -299,7 +299,7 @@ def find_event_authority_pda(program_id: Pubkey = PROGRAM_ID) -> tuple[Pubkey, i
     no override.
 
     Args:
-        program_id: The payment-channels program to derive against; defaults to
+        program_id: The tabs program to derive against; defaults to
             the production deployment.
 
     Returns:
@@ -487,7 +487,7 @@ def build_ed25519_verify_instruction(authorized_signer: Pubkey, signature: bytes
 
 
 def treasury_owner() -> Pubkey:
-    """Treasury owner baked into the deployed (mainnet-build) payment-channels
+    """Treasury owner baked into the deployed (mainnet-build) tabs
     program; the treasury ATA is ATA(treasury_owner, mint, token_program).
     Mirrors the Rust/Go ``TreasuryOwner``."""
     return Pubkey.from_string("Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")

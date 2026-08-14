@@ -2,7 +2,7 @@ package server
 
 // Surfpool-gated end-to-end session lifecycle test.
 //
-// Exercises a real payment-channel open completed and broadcast by the
+// Exercises a real tab open completed and broadcast by the
 // server, metered vouchers, side-channel reserve/commit, and on-chain settle
 // at close against the hosted Solana Payment Sandbox. The suite gates at
 // runtime: it skips explicitly (never silently passes) when the sandbox is
@@ -40,7 +40,7 @@ func surfpoolRPCURL() string {
 	return "https://402.surfnet.dev:8899"
 }
 
-// The public hosted sandbox can lag the repo's generated payment-channels ABI.
+// The public hosted sandbox can lag the repo's generated tabs ABI.
 // Keep explicit MPP_HARNESS_RPC_URL runs strict; only skip the default hosted
 // endpoint on the known ABI-drift signature.
 func hostedPaymentChannelsABIDrift(body string) bool {
@@ -216,7 +216,7 @@ func TestSessionServerE2ESurfpool(t *testing.T) {
 	response, body = authedGet(t, streamURL, openAuthorization)
 	if response.StatusCode != http.StatusOK {
 		if hostedPaymentChannelsABIDrift(body) {
-			t.Skipf("hosted Surfpool payment-channels program ABI is behind the repo generated client: %s", body)
+			t.Skipf("hosted Surfpool tabs program ABI is behind the repo generated client: %s", body)
 		}
 		t.Fatalf("open failed: %d %s", response.StatusCode, body)
 	}

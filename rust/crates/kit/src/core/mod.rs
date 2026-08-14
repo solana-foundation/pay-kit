@@ -6,10 +6,10 @@
 //!
 //! Exposes:
 //! - [`payment_channels`]: PDA derivation, voucher bytes, distribution hashing,
-//!   and instruction/transaction builders for the on-chain payment-channels
+//!   and instruction/transaction builders for the on-chain tabs
 //!   program (`solana-mpp` re-exports it at `mpp::program::payment_channels`;
 //!   `solana-x402` uses it for the `upto` and `batch-settlement` schemes).
-//! - [`store`]: replay-protection + payment-channel session state stores
+//! - [`store`]: replay-protection + tab session state stores
 //!   (`solana-mpp` re-exports at `mpp::store`).
 //! - [`signing`]: transaction-intent signing for legacy and v0 wire formats.
 //! - [`voucher`] / [`session`]: wire-agnostic cumulative-voucher verification and

@@ -1,4 +1,4 @@
-// Package paymentchannels_parity guards the Codama-generated payment-channels
+// Package paymentchannels_parity guards the Codama-generated tabs
 // Go client against the Rust spine byte-for-byte.
 //
 // It lives in a separate directory from the generated package because the Go

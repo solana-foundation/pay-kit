@@ -71,10 +71,10 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: python
-      # x402 upto settles on the canonical payment-channels program; the upto
+      # x402 upto settles on the canonical tabs program; the upto
       # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors
       # the harness-go job in .github/workflows/go.yml.
-      - name: Checkout payment channels program
+      - name: Checkout tabs program
         uses: actions/checkout@v5
         with:
           repository: Moonsong-Labs/solana-payment-channels
@@ -85,7 +85,7 @@ jobs:
         run: |
           sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-      - name: Patch payment channels treasury owner
+      - name: Patch tabs treasury owner
         working-directory: _payment-channels
         run: |
           program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
@@ -105,7 +105,7 @@ jobs:
             echo "::error::payment-channels treasury sentinel patch did not apply"
             exit 1
           fi
-      - name: Build payment channels program
+      - name: Build tabs program
         working-directory: _payment-channels/program/payment_channels
         run: cargo build-sbf --tools-version v1.52 --arch v1
       # Sync the uv environment the conformance runner (runners/python.json:
@@ -170,7 +170,7 @@ jobs:
       # upto reference. x402-upto-basic runs every active client x server; the
       # zero-actual scenario is pinned to rust-x402-upto (serverIds in
       # intents/x402-upto.ts), so the fail-closed PayKit python/go servers are
-      # excluded from it. Requires the payment-channels .so built above.
+      # excluded from it. Requires the tabs .so built above.
       - name: Focused python-x402-upto -> rust/python upto servers
         working-directory: harness
         env:

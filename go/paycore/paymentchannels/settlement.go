@@ -1,6 +1,6 @@
 package paymentchannels
 
-// Server-side settlement instruction builders for the payment-channel close
+// Server-side settlement instruction builders for the tab close
 // paths: the Ed25519 signature-verification precompile, permissionless settle,
 // cooperative settle_and_seal, distribute, and permissionless reclaim.
 //
@@ -30,7 +30,7 @@ func Ed25519ProgramPubkey() solana.PublicKey {
 }
 
 // TreasuryOwner returns the treasury owner baked into the deployed
-// (mainnet-build) payment-channels program; distribute checks the treasury ATA
+// (mainnet-build) tabs program; distribute checks the treasury ATA
 // against ATA(TreasuryOwner, mint, token_program).
 func TreasuryOwner() solana.PublicKey {
 	return solana.MustPublicKeyFromBase58("Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
@@ -72,7 +72,7 @@ func BuildEd25519VerifyInstruction(authorizedSigner solana.PublicKey, signature 
 // SettleParams carries the inputs required to build the permissionless settle
 // instruction sequence.
 type SettleParams struct {
-	// Channel is the payment-channel address being settled.
+	// Channel is the tab address being settled.
 	Channel solana.PublicKey
 
 	// AuthorizedSigner is the voucher signing key recorded at open.
@@ -87,7 +87,7 @@ type SettleParams struct {
 	// ExpiresAt is the expiry of the settled voucher (Unix seconds).
 	ExpiresAt int64
 
-	// ProgramID is the payment-channels program targeted by this settle. The
+	// ProgramID is the tabs program targeted by this settle. The
 	// zero value resolves to the package program id.
 	ProgramID solana.PublicKey
 }
@@ -126,7 +126,7 @@ type SettleAndSealParams struct {
 	// payee recorded at open; named "merchant" before the upstream rename).
 	Payee solana.PublicKey
 
-	// Channel is the payment-channel address being settled.
+	// Channel is the tab address being settled.
 	Channel solana.PublicKey
 
 	// AuthorizedSigner is the voucher signing key recorded at open. Only
@@ -143,7 +143,7 @@ type SettleAndSealParams struct {
 	// ExpiresAt is the expiry of the settled voucher (Unix seconds).
 	ExpiresAt int64
 
-	// ProgramID is the payment-channels program targeted by this settle. The
+	// ProgramID is the tabs program targeted by this settle. The
 	// zero value resolves to the package program id.
 	ProgramID solana.PublicKey
 }
@@ -191,7 +191,7 @@ func BuildSettleAndSealInstructions(params SettleAndSealParams) ([]solana.Instru
 // DistributeParams carries the inputs required to build a Distribute
 // instruction.
 type DistributeParams struct {
-	// Channel is the settled payment-channel address.
+	// Channel is the settled tab address.
 	Channel solana.PublicKey
 
 	// Payer is the original channel payer, refunded the unsettled remainder.
@@ -219,7 +219,7 @@ type DistributeParams struct {
 	// TokenProgram owning the mint (Token or Token-2022).
 	TokenProgram solana.PublicKey
 
-	// ProgramID is the payment-channels program targeted by this distribute.
+	// ProgramID is the tabs program targeted by this distribute.
 	// The zero value resolves to the package program id.
 	ProgramID solana.PublicKey
 }
@@ -298,14 +298,14 @@ func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, er
 
 // ReclaimParams carries the inputs required to build a Reclaim instruction.
 type ReclaimParams struct {
-	// Channel is the distributed payment-channel address being reclaimed.
+	// Channel is the distributed tab address being reclaimed.
 	Channel solana.PublicKey
 
 	// RentPayer is the rent destination recorded as the channel rent_payer at
 	// open; it receives the channel PDA lamports when the account closes.
 	RentPayer solana.PublicKey
 
-	// ProgramID is the payment-channels program targeted by this reclaim.
+	// ProgramID is the tabs program targeted by this reclaim.
 	// The zero value resolves to the package program id.
 	ProgramID solana.PublicKey
 }

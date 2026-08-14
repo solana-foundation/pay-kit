@@ -122,10 +122,10 @@ struct SessionWireTests {
     }
 }
 
-/// The payment-channel session opener: pull + clientVoucher only, payer-signed
+/// The tab session opener: pull + clientVoucher only, payer-signed
 /// open transaction with the operator as fee payer. Mirrors
 /// `create_payment_channel_session_opener` and its guard tests.
-@Suite("Payment-channel session opener", .serialized)
+@Suite("Tab session opener", .serialized)
 struct SessionOpenerTests {
     private let operatorAddress = Base58.encode(Data(repeating: 0x05, count: 32))
     private let recipient = Base58.encode(Data(repeating: 0x06, count: 32))

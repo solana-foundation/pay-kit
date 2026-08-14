@@ -1,6 +1,6 @@
 # `mpp/session`
 
-**Session intent**: open a Solana payment channel, authorize incremental
+**Session intent**: open a Solana tab, authorize incremental
 off-chain usage, and settle on-chain only at open, top-up, and close.
 
 Spec: `mpp-specs/specs/methods/solana/session.md` on the branch containing
@@ -24,7 +24,7 @@ Reference implementations:
 
 1. Exact challenge and action types.
 2. Canonical voucher-byte encoder shared by client and server.
-3. Generated payment-channels program client and PDA helpers.
+3. Generated tabs program client and PDA helpers.
 4. Reusable payer-authentication proof helpers for operator voucher mode.
 
 ### Client
@@ -207,7 +207,7 @@ apply the opening challenge's expiry to `voucher`, `use`, `topUp`, or `close`.
 
 For an open transaction, verify all of the following before persistence:
 
-- exactly one payment-channels open instruction, with only explicitly allowed
+- exactly one tabs open instruction, with only explicitly allowed
   compute-budget instructions alongside it;
 - transaction fee-payer policy and every required signature;
 - channel program, payer, rent payer, payee, mint, authorized signer, token

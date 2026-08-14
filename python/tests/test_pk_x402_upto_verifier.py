@@ -250,7 +250,7 @@ def test_client_open_tx_passes_engine_validator() -> None:
         recent_slot=4242,  # the challenged extra.recentSlot the client built against
     )
 
-    # Encode/decode the header round-trips and carries the payment-channel payload.
+    # Encode/decode the header round-trips and carries the tab payload.
     import base64
     import json
 

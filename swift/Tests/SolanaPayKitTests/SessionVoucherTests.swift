@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SolanaPayKit
 
-/// Byte-exact golden vectors for the payment-channel voucher preimage and the
+/// Byte-exact golden vectors for the tab voucher preimage and the
 /// channel PDA, mirroring the Rust spine tests
 /// (`voucher_message_is_program_borsh_layout`, `channel_pda_is_stable`).
 @Suite("Session voucher preimage + PDA")

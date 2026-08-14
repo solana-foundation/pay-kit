@@ -144,7 +144,7 @@ CHANNEL_STATE_SCHEMA_VERSION = 1
 
 @dataclass
 class ChannelState:
-    """Persisted state of a single payment channel from the server's point of
+    """Persisted state of a single tab from the server's point of
     view.
 
     The JSON tags are the shared snake_case wire names, so durable stores can

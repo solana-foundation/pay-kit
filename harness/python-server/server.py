@@ -354,7 +354,7 @@ class _Adapter:
         # recentSlot come from a shared blockhash cache instead of a
         # recent_state_provider hook. ``new_session`` also now fails closed
         # without an RPC client, but this scenario's surfnet runs no
-        # payment-channels program, so the wire-level trust model must stay
+        # tabs program, so the wire-level trust model must stay
         # intact: the harness composes the lower-level SessionServer directly
         # with accept-all tx verifiers (open verification / broadcast /
         # settle-at-close stay off, exactly like the draft-era rpc=None mode)

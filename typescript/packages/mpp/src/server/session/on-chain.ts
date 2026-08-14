@@ -4,7 +4,7 @@
 // `rust/crates/mpp/src/program/payment_channels.rs` and the orchestration
 // in `rust/crates/mpp/src/server/session.rs`. Two responsibilities:
 //
-//   1. Build the exact instruction bytes the on-chain payment-channels
+//   1. Build the exact instruction bytes the on-chain tabs
 //      program expects (settle_and_seal, distribute, top_up, reclaim).
 //   2. Verify client-submitted open transactions against the session
 //      challenge before persisting channel state.
@@ -71,7 +71,7 @@ export const ED25519_PROGRAM_ADDRESS =
     'Ed25519SigVerify111111111111111111111111111' as Address<'Ed25519SigVerify111111111111111111111111111'>;
 
 /**
- * Canonical payment-channels program ID, re-exported from the generated client
+ * Canonical tabs program ID, re-exported from the generated client
  * so there's a single source of truth that updates on IDL regeneration.
  * Callers can override per-call.
  */
@@ -88,7 +88,7 @@ export const PAYMENT_CHANNELS_PROGRAM_ID = PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 export const OPEN_SLOT_WINDOW = 1_500n;
 
 /**
- * Treasury owner baked into the deployed (mainnet-build) payment-channels
+ * Treasury owner baked into the deployed (mainnet-build) tabs
  * program — Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP. The treasury ATA is
  * ATA(TREASURY_OWNER, mint, tokenProgram). Mirrors `TREASURY_OWNER` in
  * `rust/crates/core/src/payment_channels.rs`.
@@ -98,7 +98,7 @@ const TREASURY_OWNER_BYTES = new Uint8Array([
     0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,
 ]);
 
-/** Payment-channel open instruction discriminator. */
+/** Tab open instruction discriminator. */
 const OPEN_DISCRIMINATOR = 1;
 
 const U16_LE = (n: number) => new Uint8Array([n & 0xff, (n >> 8) & 0xff]);
@@ -185,11 +185,11 @@ export function encodeVoucherMessageBytes(args: {
 
 /** Arguments to {@link buildSettleAndSealInstructions}. */
 export interface SettleAndSealBuildArgs {
-    /** Payment-channel address being settled (base58). */
+    /** Tab address being settled (base58). */
     readonly channelId: string;
     /** Merchant signer authorized to settle the channel. */
     readonly merchantSigner: TransactionSigner;
-    /** Payment-channels program id override. */
+    /** Tabs program id override. */
     readonly programId?: Address | undefined;
     /**
      * Optional final voucher. When present, an Ed25519 precompile IX is
@@ -430,7 +430,7 @@ export function buildReclaimInstruction(args: ReclaimBuildArgs): ServerInstructi
  */
 export interface VerifyOpenTxExpected {
     readonly authorizedSigner: string;
-    /** Optional override for the payment-channels program id. */
+    /** Optional override for the tabs program id. */
     readonly channelProgram?: string | undefined;
     readonly currency: string;
     /** Transaction fee payer required by the challenge policy. */
@@ -502,7 +502,7 @@ export interface VerifyOpenTxArgs {
 
 /** Channel facts extracted from a verified open transaction. */
 export interface VerifyOpenTxResult {
-    /** Payment-channel address derived from the open instruction (base58). */
+    /** Tab address derived from the open instruction (base58). */
     readonly channelId: string;
     /** Deposit locked by the open, in base units. */
     readonly deposit: bigint;
@@ -526,7 +526,7 @@ export interface VerifyOpenTxResult {
  * Accepts both legacy and v0 transaction encodings (the Rust client emits
  * legacy; the TS client emits v0).
  *
- * Asserts the embedded Open IX targets the configured payment-channels
+ * Asserts the embedded Open IX targets the configured tabs
  * program, that `payee == expected.recipient`, that the mint matches the
  * challenge currency/network, that the deposit and other declared open fields
  * match the instruction, and that the
@@ -600,7 +600,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         openIx = { accountIndices: ix.accountIndices ?? [], data: ix.data };
     }
     if (!openIx) {
-        throw new Error('verifyOpenTx: no payment-channels open instruction found');
+        throw new Error('verifyOpenTx: no tabs open instruction found');
     }
 
     // open instruction account layout (matches vendored open.ts) after the

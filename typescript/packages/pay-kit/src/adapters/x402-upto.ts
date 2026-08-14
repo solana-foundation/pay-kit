@@ -82,7 +82,7 @@ type SettlementWireRpc = Parameters<typeof buildAndSignWireTransaction>[0];
 
 /**
  * Usage-based (`upto`) x402 engine: the metered counterpart to the `exact`
- * adapter. The client opens a payment channel depositing the authorized ceiling;
+ * adapter. The client opens a tab depositing the authorized ceiling;
  * the in-process `@x402/svm` upto handler verifies and broadcasts the open,
  * then settles the metered amount with a single voucher, refunding the remainder.
  *

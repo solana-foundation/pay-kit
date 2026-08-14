@@ -29,7 +29,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 
 /**
- * A live metered session bound to one payment channel.
+ * A live metered session bound to one tab.
  *
  * Holds the cumulative watermark, request nonce, and voucher expiry, and signs
  * monotonically-increasing vouchers with the session signer. Mirrors the Go
@@ -176,7 +176,7 @@ class ActiveSession(
     }
 }
 
-// ── Payment-channel session opener ──
+// ── Tab session opener ──
 
 /** Placeholder operator signature; the server fills its fee-payer slot before broadcast. */
 const val PENDING_SERVER_SIGNATURE: String =
@@ -231,7 +231,7 @@ data class PaymentChannelSessionOpenOptions(
     val expiresAt: Long? = null,
 )
 
-/** Result of opening a payment-channel session client-side. */
+/** Result of opening a tab session client-side. */
 data class PaymentChannelSessionOpen(
     val open: PaymentChannelOpen,
     val session: ActiveSession,
@@ -246,7 +246,7 @@ object PaymentChannelSession {
     }
 
     /**
-     * Build a pull + clientVoucher payment-channel session open. The payer
+     * Build a pull + clientVoucher tab session open. The payer
      * partial-signs the open transaction; the operator (fee payer) co-signs and
      * broadcasts. `recentBlockhash` is base58; `openSlot` is the server-
      * prefetched current slot carried by the 402 challenge
@@ -316,7 +316,7 @@ object PaymentChannelSession {
         options: PaymentChannelOpenOptions,
     ): PaymentChannelOpen {
         val mintString = resolveStablecoinMint(request.currency, request.network)
-            ?: throw MppException.InvalidTransaction("session payment channels require an SPL token")
+            ?: throw MppException.InvalidTransaction("session tabs require an SPL token")
         val mint = PublicKey.fromBase58(mintString)
         val payee = PublicKey.fromBase58(request.recipient)
         val deposit = options.deposit

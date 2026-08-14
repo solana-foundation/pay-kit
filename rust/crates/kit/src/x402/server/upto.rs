@@ -1,4 +1,4 @@
-//! Server-side handler for the x402 `upto` scheme (payment-channel asset transfer method).
+//! Server-side handler for the x402 `upto` scheme (tab asset transfer method).
 //!
 //! Flow (single HTTP round-trip, handler-determined amount):
 //!
@@ -50,7 +50,7 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION
 /// `ChannelStatus::Open` discriminant in the generated client.
 const CHANNEL_STATUS_OPEN: u8 = 0;
 
-/// `Open` instruction discriminator in the generated payment-channels client
+/// `Open` instruction discriminator in the generated tabs client
 /// (`crate::generated::payment_channels::generated::instructions::OPEN_DISCRIMINATOR`).
 const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 
@@ -79,7 +79,7 @@ pub struct UptoConfig {
     pub max_timeout_seconds: u64,
     /// Channel program id override (defaults to the canonical deployment).
     pub program_id: Option<String>,
-    /// Channel forced-close delay, in seconds. Defaults to the payment-channel
+    /// Channel forced-close delay, in seconds. Defaults to the tab
     /// program default when set to `0`.
     pub withdraw_delay: u32,
     /// Signer that co-signs the open as transaction fee payer and channel rent
@@ -542,7 +542,7 @@ impl X402Upto {
         // not yet supported; require the transaction.
         let open_tx_b64 = payload.open_transaction.as_deref().ok_or_else(|| {
             Error::Other(
-                "payment-channel asset transfer method requires openTransaction (pull)".to_string(),
+                "tab asset transfer method requires openTransaction (pull)".to_string(),
             )
         })?;
         let mut tx = decode_transaction(open_tx_b64)?;
@@ -834,13 +834,13 @@ impl X402Upto {
         Ok(self.settlement_response(open, actual, signature))
     }
 
-    /// Verify the client transaction is exactly the expected payment-channels
+    /// Verify the client transaction is exactly the expected tabs
     /// `open` instruction before the operator co-signs it as fee payer.
     ///
     /// Without this, a malicious client could include any operator-authorized
     /// instruction (e.g. a SystemProgram transfer draining the operator) and the
     /// operator would blindly sign it. We require a single instruction, on the
-    /// payment-channels program, with the `open` discriminator, whose accounts
+    /// tabs program, with the `open` discriminator, whose accounts
     /// bind the expected payer / payee / mint / fee payer / channel.
     fn validate_open_transaction(
         &self,
@@ -1010,7 +1010,7 @@ fn validate_distribution_hash(
     Ok(())
 }
 
-/// Assert `tx` is exactly the expected payment-channels `open` instruction so the
+/// Assert `tx` is exactly the expected tabs `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
 // Each account slot is an independent expected key (rentPayer vs
 // authorized_signer are distinct roles), so they are passed individually

@@ -1,8 +1,8 @@
 //! Client-side session intent implementation.
 //!
-//! Tracks an open payment channel and signs cumulative vouchers for each
+//! Tracks an open tab and signs cumulative vouchers for each
 //! API call. Vouchers are Ed25519-signed over the on-chain Borsh voucher
-//! layout used by the payment-channels program.
+//! layout used by the tabs program.
 //!
 //! # Example
 //!
@@ -38,7 +38,7 @@ use crate::mpp::protocol::intents::session::{
 };
 use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 
-/// Default payment-channel close grace period (seconds). Re-exported from
+/// Default tab close grace period (seconds). Re-exported from
 /// `solana-pay-core` to preserve this crate's public path.
 pub use crate::mpp::program::payment_channels::DEFAULT_GRACE_PERIOD_SECONDS;
 
@@ -207,7 +207,7 @@ impl ActiveSession {
         }))
     }
 
-    /// Build a `SessionAction::Open` for the payment-channels program.
+    /// Build a `SessionAction::Open` for the tabs program.
     #[allow(clippy::too_many_arguments)]
     pub fn open_payment_channel_action(
         &self,
@@ -364,7 +364,7 @@ pub fn derive_payment_channel_open(
     let network = Some(details.network.as_str());
     let mint = parse_pubkey(
         resolve_stablecoin_mint(&request.currency, network)
-            .ok_or_else(|| Error::Other("session payment channels require an SPL token".into()))?,
+            .ok_or_else(|| Error::Other("session tabs require an SPL token".into()))?,
         "mint",
     )?;
     let payee = parse_pubkey(&request.recipient, "recipient")?;

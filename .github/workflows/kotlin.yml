@@ -124,9 +124,9 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: kotlin-x402-upto
-      # x402 upto settles on the canonical payment-channels program; the upto
+      # x402 upto settles on the canonical tabs program; the upto
       # e2e runs this localnet SBF build on the embedded surfnet.
-      - name: Build payment channels program
+      - name: Build tabs program
         id: payment-channels
         uses: ./.github/actions/build-payment-channels
       # Pre-warm the Kotlin x402 upto client install so the harness adapter
@@ -138,7 +138,7 @@ jobs:
         run: gradle installDist --no-daemon
       # Drive the Kotlin solana paykit upto client (channel open) against the
       # canonical Rust upto server (broadcast + voucher settle on the embedded
-      # surfnet). Requires the payment-channels .so built above.
+      # surfnet). Requires the tabs .so built above.
       - name: Run Kotlin x402 upto client to Rust upto server harness
         working-directory: harness
         env:

@@ -1,4 +1,4 @@
-"""x402 ``upto`` client builder - ``payment-channel`` asset transfer method.
+"""x402 ``upto`` client builder - ``tab`` asset transfer method.
 
 Parses an ``upto`` 402 challenge and builds the client authorization: a signed
 channel ``open`` transaction (the deposit is the ceiling) plus the

@@ -53,7 +53,7 @@ function getSessionFetch(): SessionFetchClient {
       // globalThis.fetch (installed when charge/subscription Mppx instances
       // construct) doesn't intercept and misdispatch our session 402s.
       fetch: nativeFetch,
-      // Real payment-channel opens: the wallet keypair pre-signs the open
+      // Real tab opens: the wallet keypair pre-signs the open
       // transaction (deposit comes from its airdropped USDC) and the server
       // completes + broadcasts it. The signer only exists after onboarding,
       // so resolve it lazily per open.
@@ -183,7 +183,7 @@ interface Options {
  *
  * Handles charges, subscriptions (via the kit), and x402 (the kit's mppx already
  * negotiates over the challenge header). Sessions go through the kit's
- * SessionFetchClient: it opens a payment channel on the 402 challenge, then we
+ * SessionFetchClient: it opens a tab on the 402 challenge, then we
  * record the metered cumulative amount per delivered chunk so signed vouchers
  * are committed back to the server, and flush before reporting success.
  */

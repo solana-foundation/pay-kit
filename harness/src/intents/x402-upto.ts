@@ -5,10 +5,10 @@ import type { HarnessScenario } from "../contracts";
 // The matrix pairs each x402 upto client against each x402 upto server
 // registered in `implementations.ts`.
 //
-// `upto` is a payment-channel flow: the client opens a channel depositing
+// `upto` is a tab flow: the client opens a channel depositing
 // the authorized ceiling; the server broadcasts the open, then settles
 // the metered actual amount with a voucher after the handler runs.
-// Live settlement requires the payment-channels program on surfpool.
+// Live settlement requires the tabs program on surfpool.
 export const x402UptoScenarios: readonly HarnessScenario[] = [
   {
     id: "x402-upto-basic",

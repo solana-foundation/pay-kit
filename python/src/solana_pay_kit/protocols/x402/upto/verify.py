@@ -1,4 +1,4 @@
-"""Pure verification for the x402 ``upto`` payment-channel asset transfer method.
+"""Pure verification for the x402 ``upto`` tab asset transfer method.
 
 No I/O: these functions validate already-decoded structures and raise
 :class:`~solana_pay_kit.errors.InvalidProofError` on rejection. The ordered payload
@@ -38,7 +38,7 @@ __all__ = [
     "parse_base_units",
 ]
 
-# Payment-channels open instruction discriminator (single-byte Anchor-numeric
+# Tabs open instruction discriminator (single-byte Anchor-numeric
 # form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
 
@@ -134,7 +134,7 @@ def validate_upto_open_instruction(
     """Validate the client-built channel-open instruction byte-for-byte.
 
     The open transaction must contain exactly one instruction targeting the
-    payment-channels program with the channel-open discriminator and the 14
+    tabs program with the channel-open discriminator and the 14
     accounts in the fixed order the program expects. ``fee_payer`` is the
     ``rentPayer`` (slot 1), ``payee`` is the zero-share channel payee seat
     (slot 2, the fee payer for ``upto``), and ``receiver_authorizer`` is the

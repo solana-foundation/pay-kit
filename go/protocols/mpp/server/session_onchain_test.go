@@ -23,7 +23,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-// openTxFixture bundles a freshly built and signed payment-channel open
+// openTxFixture bundles a freshly built and signed tab open
 // transaction with the payload and challenge expectations that accept it.
 type openTxFixture struct {
 	payer      solana.PrivateKey    // channel payer keypair; fee payer and sole signer of the open tx
@@ -331,7 +331,7 @@ func TestVerifyOpenTxRejectsMissingOpenInstruction(t *testing.T) {
 		t.Fatalf("BuildMemoInstruction: %v", err)
 	}
 	_, fixture.payload = signAndAttachOpenTx(t, &fixture, memo, false)
-	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "no payment-channels open instruction") {
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "no tabs open instruction") {
 		t.Fatalf("err = %v, want missing-open-instruction rejection", err)
 	}
 }
@@ -555,7 +555,7 @@ func TestNewTopUpTxVerifierSurfacesFailureAndNotFound(t *testing.T) {
 
 // ── SettlementInstructions ──
 
-// openSettlementChannel opens a payment-channel-shaped session (payer set, so
+// openSettlementChannel opens a tab-shaped session (payer set, so
 // the distribute refund account can be derived) and returns the voucher
 // signer plus the channel id.
 func openSettlementChannel(t *testing.T, server *SessionServer, payer solana.PublicKey) (testVoucherSigner, string) {
@@ -751,7 +751,7 @@ func TestSettlementInstructionsErrorPaths(t *testing.T) {
 	}
 
 	// A pull-style session id that is not a base58 pubkey cannot be settled
-	// through the payment-channels program.
+	// through the tabs program.
 	if _, err := server.ProcessOpen(context.Background(), sessionOpenPayload("not-a-pubkey!", 1_000_000, "signer1")); err != nil {
 		t.Fatalf("ProcessOpen: %v", err)
 	}

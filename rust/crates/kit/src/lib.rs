@@ -18,13 +18,13 @@
 //!   stores, settlement). Available whenever `mpp` or `x402` is enabled.
 //! - [`mpp`]: the Machine Payments Protocol implementation (`mpp` feature).
 //! - [`x402`]: the x402 / HTTP 402 implementation (`x402` feature).
-//! - [`generated`]: Codama-generated program clients (payment-channels +
+//! - [`generated`]: Codama-generated program clients (tabs +
 //!   subscriptions), consumed by `core`/`mpp`.
 
 /// Protocol-neutral access to the signer traits and backends used by pay-kit.
 pub use solana_keychain;
 
-/// Codama-generated program clients (payment-channels + subscriptions).
+/// Codama-generated program clients (tabs + subscriptions).
 #[cfg(any(feature = "mpp", feature = "x402"))]
 pub mod generated;
 

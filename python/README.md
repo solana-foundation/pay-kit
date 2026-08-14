@@ -273,7 +273,7 @@ Use MPP when:
 | `subscription` | —      | —      |
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
-challenge-driven pull/clientVoucher payment-channel openers (fee payer =
+challenge-driven pull/clientVoucher tab openers (fee payer =
 challenge operator, pending-server-signature placeholder), the metered
 `SessionConsumer`, and the SSE streaming helpers (`MeteredSseSession`,
 `MeteredSseStream`, `HttpCommitTransport`). Server: the session method

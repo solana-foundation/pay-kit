@@ -36,7 +36,7 @@ pub struct CachedBlockhash {
     pub blockhash: String,
     pub last_valid_block_height: u64,
     /// Current slot observed when the entry was refreshed. Embedded as the
-    /// `recentSlot` challenge hint — the payment-channels program accepts
+    /// `recentSlot` challenge hint — the tabs program accepts
     /// opens up to 1500 slots (~10 min) past it, far beyond [`MAX_AGE`].
     pub slot: u64,
 }

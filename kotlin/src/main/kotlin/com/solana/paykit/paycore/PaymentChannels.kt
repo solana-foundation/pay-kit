@@ -4,7 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.util.Base64
 
 /**
- * Client-side payment-channels primitives: PDA/ATA derivation, the 50-byte
+ * Client-side tabs primitives: PDA/ATA derivation, the 50-byte
  * magic-prefixed voucher preimage, and the `open` instruction + payer-signed
  * (operator-fee-payer-unsigned) open transaction the session client broadcasts
  * via the operator.
@@ -16,13 +16,13 @@ import java.util.Base64
  * channel `open` passes its recipients inline rather than hashed.
  */
 object PaymentChannels {
-    /** Canonical payment-channels program ID deployed to Surfnet. */
+    /** Canonical tabs program ID deployed to Surfnet. */
     const val PROGRAM_ID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
     /** Rent sysvar account. */
     const val RENT_SYSVAR_ID = "SysvarRent111111111111111111111111111111111"
 
-    /** Default payment-channel close grace period, in seconds. */
+    /** Default tab close grace period, in seconds. */
     const val DEFAULT_GRACE_PERIOD_SECONDS: UInt = 900u
 
     private const val OPEN_DISCRIMINATOR: Byte = 1

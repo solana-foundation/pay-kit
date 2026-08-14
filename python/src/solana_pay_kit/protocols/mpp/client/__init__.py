@@ -2,7 +2,7 @@
 
 Exposes the charge transport plus the client-only session surface: the
 :class:`ActiveSession` voucher tracker, the :class:`SessionConsumer` metered
-ack/commit helper, the challenge-driven payment-channel openers, the metered
+ack/commit helper, the challenge-driven tab openers, the metered
 SSE streaming helpers, and the :func:`serialize_session_credential` /
 :func:`parse_session_challenge` credential framing free functions. The
 per-intent modules (:mod:`solana_pay_kit.protocols.mpp.client.charge`,

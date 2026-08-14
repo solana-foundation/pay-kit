@@ -1,5 +1,5 @@
 // Package paymentchannels is the thin, hand-written on-chain glue over the
-// codama-generated payment-channels client in
+// codama-generated tabs client in
 // protocols/programs/paymentchannels. It provides PDA derivation, associated
 // token derivation, voucher preimage bytes, and convenience instruction
 // builders for the push-mode session flow (open + top_up).
@@ -21,7 +21,7 @@ import (
 	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
-// ProgramID is the canonical payment-channels program id deployed to the
+// ProgramID is the canonical tabs program id deployed to the
 // network. It matches the codama-generated package's default; every PDA
 // derivation and instruction built here is pinned to this value.
 const ProgramID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
@@ -119,7 +119,7 @@ type OpenChannelParams struct {
 	// used to derive the payer and channel associated token accounts.
 	TokenProgram solana.PublicKey
 
-	// ProgramID is the payment-channels program targeted by this open. The
+	// ProgramID is the tabs program targeted by this open. The
 	// zero value resolves to the package program id (ProgramPubkey, or the
 	// last SetProgramID override).
 	ProgramID solana.PublicKey
@@ -141,7 +141,7 @@ type TopUpParams struct {
 	// used to derive the payer and channel associated token accounts.
 	TokenProgram solana.PublicKey
 
-	// ProgramID is the payment-channels program targeted by this top-up. The
+	// ProgramID is the tabs program targeted by this top-up. The
 	// zero value resolves to the package program id (ProgramPubkey, or the
 	// last SetProgramID override).
 	ProgramID solana.PublicKey

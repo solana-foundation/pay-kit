@@ -30,7 +30,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-// OpenTxSubmitter selects who broadcasts a push-mode payment-channel open
+// OpenTxSubmitter selects who broadcasts a push-mode tab open
 // transaction.
 type OpenTxSubmitter string
 
@@ -72,7 +72,7 @@ type SessionOptions struct {
 	// Realm is the challenge realm. Defaults to DetectRealm().
 	Realm string
 
-	// ProgramID overrides the payment-channels program id. Nil defaults to
+	// ProgramID overrides the tabs program id. Nil defaults to
 	// the canonical program.
 	ProgramID *solana.PublicKey
 
@@ -497,8 +497,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 
 	switch {
 	case hasTransaction:
-		// Payment-channel-backed open: push sessions and clientVoucher pull
-		// sessions whose deposit lives in an on-chain payment channel both
+		// Tab-backed open: push sessions and clientVoucher pull
+		// sessions whose deposit lives in an on-chain tab both
 		// attach the pre-signed open transaction.
 		expected := VerifyOpenTxExpected{
 			AuthorizedSigner: payload.AuthorizedSigner,

@@ -1,7 +1,7 @@
 import Foundation
 import SolanaPayKit
 
-/// Swift x402 `upto` (payment-channel) harness adapter. Mirrors the Python
+/// Swift x402 `upto` (tab) harness adapter. Mirrors the Python
 /// `harness/python-x402-upto-client/main.py` and the Go/Rust upto clients:
 ///
 /// Env variables:

@@ -96,7 +96,7 @@ The sibling `protocols/mpp/client` does the same for MPP
 
 The exact-amount scheme, settled locally against the operator signer or
 delegated to a facilitator. Both client and server ship. The
-usage-based `upto` scheme (payment-channel profile) ships server-side
+usage-based `upto` scheme (tab profile) ships server-side
 via `paykit.RequireUsage` and client-side through the protocol helper
 used by the harness. The generic `x402client.NewClient` transport is
 still exact-only.
@@ -108,7 +108,7 @@ still exact-only.
 | `x402/batch-settlement` | — | — |
 
 `upto` charges for actual usage up to a ceiling: the client opens a
-payment channel depositing the authorized maximum, the server
+tab depositing the authorized maximum, the server
 broadcasts the open (co-signing as fee payer), the handler runs and
 determines the actual metered amount, then the server settles with a
 single operator voucher and refunds the remainder. It requires an
@@ -152,7 +152,7 @@ Client side:
 - session challenge parsing and selection (`ParseSessionChallenge`,
   `SelectSessionChallenge` with network/currency/mode filters; omitted
   or empty `modes` means push-only),
-- payment-channel open builders driven by the challenge (deposit
+- tab open builders driven by the challenge (deposit
   defaults to the cap, grace period 900s, random salt, token program
   resolved from the currency so Token-2022 mints work, operator as fee
   payer with a payer partial-sign, challenge `recentBlockhash` echo,

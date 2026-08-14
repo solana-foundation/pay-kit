@@ -376,7 +376,7 @@ jobs:
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000
 
   # Real on-chain settlement gate: forks mainnet (surfpool 1.4) and executes the
-  # deployed payment-channels program, so a green run proves settlement actually
+  # deployed tabs program, so a green run proves settlement actually
   # lands on-chain (the byte-shape harness above cannot). Needs @solana/pay-kit
   # built (the on-chain suite imports it) and a mainnet RPC to fork from.
   onchain:

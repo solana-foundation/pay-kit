@@ -162,7 +162,7 @@ class SessionConfig:
     # Splits are optional splits routed to specific recipients at close.
     splits: list[Split] = field(default_factory=list)
 
-    # Exact payment-channel program advertised under methodDetails.
+    # Exact tab program advertised under methodDetails.
     channel_program: str = ""
 
     token_program: str | None = None

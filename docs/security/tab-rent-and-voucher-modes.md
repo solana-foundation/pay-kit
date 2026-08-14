@@ -1,6 +1,6 @@
-# Payment-channel rent & voucher modes
+# Tab rent & voucher modes
 
-A payment-channel `open` instruction binds two **independent** roles. Conflating
+A tab `open` instruction binds two **independent** roles. Conflating
 them is a recurring bug source, so they are tracked separately everywhere the
 open is built, validated, or settled.
 

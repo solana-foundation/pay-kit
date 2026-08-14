@@ -18,7 +18,7 @@ import (
 
 // tokenChunks is the canned token stream payload.
 var tokenChunks = []string{
-	"A payment channel ",
+	"A tab ",
 	"lets a client and server ",
 	"authorize many small ",
 	"off-chain debits ",
@@ -55,7 +55,7 @@ func registerSessions(mux *http.ServeMux, a *app) (func(), error) {
 			Decimals:  usdcDecimals,
 			Network:   a.network,
 			SecretKey: a.secretKey,
-			// Real on-chain opens: the browser pre-signs a payment-channel
+			// Real on-chain opens: the browser pre-signs a tab
 			// open transaction (fee payer = operator) and the server
 			// completes the signature, broadcasts, and waits for
 			// confirmation before metering.

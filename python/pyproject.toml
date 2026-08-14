@@ -15,7 +15,7 @@ dependencies = [
     "solana>=0.35",
     "pydantic>=2",
     "pydantic-settings>=2",
-    # Required by the codama-py generated payment-channels client
+    # Required by the codama-py generated tabs client
     # (solana_pay_kit/protocols/programs/paymentchannels).
     "anchorpy>=0.21",
     "borsh-construct>=0.1",

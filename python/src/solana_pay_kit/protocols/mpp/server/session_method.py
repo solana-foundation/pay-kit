@@ -117,7 +117,7 @@ class SessionOptions:
     secret_key: str = ""
     # Realm is the challenge realm. Defaults to detect_realm().
     realm: str = ""
-    # Payment-channel program advertised under methodDetails.channelProgram.
+    # Tab program advertised under methodDetails.channelProgram.
     channel_program: Pubkey | None = None
     token_program: str | None = None
     suggested_deposit: int | None = None

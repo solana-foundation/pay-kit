@@ -4,7 +4,7 @@
 //! channel, signs cumulative Ed25519 vouchers per request (verified off-chain
 //! and served immediately), and the operator redeems the latest voucher per
 //! channel on-chain later, in batches. The on-chain backing is the
-//! payment-channels program + 50-byte voucher shared with `upto`; the channel /
+//! tabs program + 50-byte voucher shared with `upto`; the channel /
 //! voucher / store logic is the wire-agnostic core also used by the MPP
 //! `session` intent. See `specs/schemes/batch-settlement/scheme_batch_settlement_svm.md`.
 
@@ -16,8 +16,8 @@ use crate::x402::protocol::schemes::exact::ResourceInfo;
 /// `batch-settlement` scheme identifier.
 pub const BATCH_SETTLEMENT_SCHEME: &str = "batch-settlement";
 
-/// The only v1 settlement profile (escrow payment channel).
-pub const PROFILE_PAYMENT_CHANNEL: &str = "payment-channel";
+/// The only v1 settlement profile (escrow tab).
+pub const PROFILE_PAYMENT_CHANNEL: &str = "tab";
 
 fn batch_scheme() -> String {
     BATCH_SETTLEMENT_SCHEME.to_string()

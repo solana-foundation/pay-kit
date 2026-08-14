@@ -1,5 +1,5 @@
 /**
- * Generate the pay-kit payment-channels client crate from the upstream
+ * Generate the pay-kit tabs client crate from the upstream
  * `Moonsong-Labs/solana-payment-channels` Codama IDL.
  *
  * Mirrors generate-subscriptions-client.ts — both scripts vendor the IDL
@@ -24,7 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
 const idlPath = path.join(repoRoot, 'idl', 'payment-channels.json');
-// The payment-channels client is inlined into the single publishable crate at
+// The tabs client is inlined into the single publishable crate at
 // rust/crates/kit/src/generated/payment_channels/generated/.
 const rustClientDir = path.join(repoRoot, 'rust', 'crates', 'kit', 'src', 'generated', 'payment_channels');
 

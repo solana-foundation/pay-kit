@@ -229,7 +229,7 @@ The harness adapters live outside the shipped library:
 - [`harness/kotlin-x402-client`](../harness/kotlin-x402-client) drives an
   x402 exact server.
 - [`harness/kotlin-x402-upto-client`](../harness/kotlin-x402-upto-client) drives
-  an x402 `upto` (payment-channel) server.
+  an x402 `upto` (tab) server.
 
 ```bash
 cd harness

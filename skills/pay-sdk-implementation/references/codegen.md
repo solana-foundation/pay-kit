@@ -1,6 +1,6 @@
 # Codama codegen — Solana program clients
 
-Pay-kit consumes a handful of Solana programs (payment-channels,
+Pay-kit consumes a handful of Solana programs (tabs,
 subscriptions, …) whose on-chain wire format is best produced from a
 single source of truth: each program's Codama IDL. Hand-writing a
 client per language is how `rust/crates/mpp/src/program/subscriptions.rs`

@@ -1,4 +1,4 @@
-"""Tests for challenge-driven payment-channel session opens."""
+"""Tests for challenge-driven tab session opens."""
 
 from __future__ import annotations
 

@@ -55,7 +55,7 @@ export interface ProcessedUse {
 export const CHANNEL_STATE_SCHEMA_VERSION = 1;
 
 /**
- * Persisted state of a single payment channel from the server's POV.
+ * Persisted state of a single tab from the server's POV.
  * Field-for-field mirror of Rust `ChannelState`. `bigint` is used for
  * every Rust `u64` so we don't lose precision on > 2^53 amounts.
  */
@@ -64,7 +64,7 @@ export interface ChannelState {
     readonly authentication?: SessionAuthentication | undefined;
     /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
-    /** On-chain payment-channel address (base58). */
+    /** On-chain tab address (base58). */
     readonly channelId: string;
     /** Unix seconds when cooperative close was requested. Vouchers blocked once set. */
     readonly closeRequestedAt?: bigint | undefined;

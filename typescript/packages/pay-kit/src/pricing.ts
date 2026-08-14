@@ -23,7 +23,7 @@ export type SubscriptionGateParams = Omit<InlineGateParams, 'feeOnTop' | 'feeWit
 };
 
 /**
- * A session gate definition: open a payment channel capped at `amount`, meter
+ * A session gate definition: open a tab capped at `amount`, meter
  * streamed deliveries at `session.unitPrice`, and settle out-of-band. MPP-only.
  * Produced by {@link session}.
  */
@@ -89,7 +89,7 @@ export function subscription(
 }
 
 /**
- * Declares a session gate: the client opens a payment channel capped at `cap`,
+ * Declares a session gate: the client opens a tab capped at `cap`,
  * the server meters streamed deliveries at `unitPrice` each, and settlement runs
  * out-of-band when the channel idle-closes. MPP-only.
  *

@@ -257,7 +257,7 @@ type ChallengeID struct {
 // VoucherPreimage holds the inputs to the 50-byte session voucher message
 // bytes (a constant [0x56, 0x01] magic prefix leads the payload).
 type VoucherPreimage struct {
-	// ChannelID is the payment-channel address (base58); its 32 raw bytes
+	// ChannelID is the tab address (base58); its 32 raw bytes
 	// follow the 2-byte magic prefix.
 	ChannelID string `json:"channelId"`
 	// CumulativeAmount is the channel's cumulative spend in token base

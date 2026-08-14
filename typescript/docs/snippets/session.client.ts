@@ -1,4 +1,4 @@
-// Client-side session: open one payment channel, stream paid chunks.
+// Client-side session: open one tab, stream paid chunks.
 // See ./README.md for the snippet:start/end convention.
 
 import { createPaymentChannelSessionOpener, createSessionFetch } from '@solana/mpp/client'

@@ -1,14 +1,14 @@
 // Client-side session intent implementation.
 //
-// ActiveSession tracks an open payment channel and signs cumulative vouchers
+// ActiveSession tracks an open tab and signs cumulative vouchers
 // for each metered API call. Vouchers are Ed25519-signed over the on-chain
-// Borsh voucher layout used by the payment-channels program, so the same bytes
+// Borsh voucher layout used by the tabs program, so the same bytes
 // the server verifies on the HTTP credential are the bytes the on-chain settle
 // instruction consumes.
 //
-// Scope is client-only PUSH (payment-channel) plus pull/clientVoucher, both
+// Scope is client-only PUSH (tab) plus pull/clientVoucher, both
 // served by the challenge-driven openers in payment_channels.go: the client
-// signs cumulative vouchers off-chain over a payment channel the operator
+// signs cumulative vouchers off-chain over a tab the operator
 // settles. Pull/operatedVoucher (the multi-delegator program), the SPL
 // approve-delegation builder for non-channel pull opens, and the server
 // verification path are out of scope.
@@ -256,7 +256,7 @@ func (s *ActiveSession) OpenAction(deposit uint64, openTxSignature string) inten
 	))
 }
 
-// OpenPaymentChannelAction builds a payment-channel push open action carrying
+// OpenPaymentChannelAction builds a tab push open action carrying
 // the full channel parameters.
 func (s *ActiveSession) OpenPaymentChannelAction(
 	deposit uint64,
@@ -270,7 +270,7 @@ func (s *ActiveSession) OpenPaymentChannelAction(
 		intents.SessionModePush, deposit, payer, payee, mint, salt, gracePeriod, openSlot, openTxSignature)
 }
 
-// OpenPaymentChannelActionWithMode builds a payment-channel open action with an
+// OpenPaymentChannelActionWithMode builds a tab open action with an
 // explicit submission mode (push, or pull when the operator broadcasts).
 func (s *ActiveSession) OpenPaymentChannelActionWithMode(
 	mode intents.SessionMode,

@@ -155,7 +155,7 @@ export interface SignedVoucher {
 }
 
 /**
- * Open action payload for a payment channel.
+ * Open action payload for a tab.
  */
 export interface OpenPayload {
     /** Reusable payer proof required for operator-signed vouchers. */
@@ -168,7 +168,7 @@ export interface OpenPayload {
     readonly capabilities?: Record<string, unknown> | undefined;
     /** Channel address, base58. */
     readonly channelId: string;
-    /** Deposit locked in the payment channel, in base units. */
+    /** Deposit locked in the tab, in base units. */
     readonly depositAmount: string;
     /** Distribution split preimage bound by the open instruction. */
     readonly distributionSplits?: readonly SessionSplit[] | undefined;
@@ -481,7 +481,7 @@ export async function verifySessionAuthentication(
 }
 
 /**
- * Builds canonical payment-channel voucher bytes:
+ * Builds canonical tab voucher bytes:
  * `magic (0x56, 0x01) || channel_id || cumulative_amount_le_u64 || expires_at_le_i64`.
  *
  * Delegates to the shared encoder so client and server agree on the bytes
@@ -674,7 +674,7 @@ export class ActiveSession {
     }
 
     /**
-     * Builds a detailed payment-channel `open` action.
+     * Builds a detailed tab `open` action.
      */
     openPaymentChannelAction(
         parameters: ActiveSession.PaymentChannelOpenParameters,
