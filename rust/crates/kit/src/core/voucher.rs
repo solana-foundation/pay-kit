@@ -68,14 +68,10 @@ impl ParsedVoucherSignature {
 
     #[cfg(feature = "server")]
     fn ensure_batch_safe(&self) -> Result<()> {
-        use curve25519_dalek::edwards::CompressedEdwardsY;
-
-        let r = CompressedEdwardsY(*self.signature.r_bytes())
-            .decompress()
-            .ok_or_else(|| Error::Other("Voucher signature verification failed".to_string()))?;
-        if r.compress().as_bytes() != self.signature.r_bytes()
+        let r_bytes = self.signature.r_bytes();
+        if !compressed_edwards_y_is_canonical(r_bytes)
+            || compressed_edwards_y_is_small_order(r_bytes)
             || self.verifying_key.is_weak()
-            || r.is_small_order()
         {
             return Err(Error::Other(
                 "Voucher signature verification failed".to_string(),
@@ -83,6 +79,35 @@ impl ParsedVoucherSignature {
         }
         Ok(())
     }
+}
+
+#[cfg(feature = "server")]
+fn compressed_edwards_y_is_canonical(encoded: &[u8; 32]) -> bool {
+    // The low 255 bits encode y in little-endian form; the high bit encodes
+    // the sign of x. A canonical field element must be less than 2^255 - 19.
+    const FIELD_MODULUS: [u8; 32] = [
+        0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0x7f,
+    ];
+    let mut y = *encoded;
+    y[31] &= 0x7f;
+    for index in (0..32).rev() {
+        if y[index] != FIELD_MODULUS[index] {
+            return y[index] < FIELD_MODULUS[index];
+        }
+    }
+    false
+}
+
+#[cfg(feature = "server")]
+fn compressed_edwards_y_is_small_order(encoded: &[u8; 32]) -> bool {
+    static SMALL_ORDER_ENCODINGS: std::sync::OnceLock<[[u8; 32]; 8]> = std::sync::OnceLock::new();
+    SMALL_ORDER_ENCODINGS
+        .get_or_init(|| {
+            curve25519_dalek::constants::EIGHT_TORSION.map(|point| point.compress().to_bytes())
+        })
+        .contains(encoded)
 }
 
 #[allow(clippy::too_many_arguments)]
