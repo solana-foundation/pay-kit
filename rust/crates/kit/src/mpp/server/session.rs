@@ -382,6 +382,8 @@ pub struct SessionServer<S: ChannelStore> {
     config: SessionConfig,
     store: S,
     blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
+    #[cfg(feature = "server")]
+    tx_pipeline: tokio::sync::OnceCell<crate::core::tx_pipeline::TxPipeline>,
 }
 
 impl<S: ChannelStore> SessionServer<S> {
@@ -390,6 +392,8 @@ impl<S: ChannelStore> SessionServer<S> {
             config,
             store,
             blockhash_cache: None,
+            #[cfg(feature = "server")]
+            tx_pipeline: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -399,6 +403,34 @@ impl<S: ChannelStore> SessionServer<S> {
     pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
         self
+    }
+
+    /// Use a host-owned transaction pipeline for session open and top-up.
+    /// Sharing this across gate instances preserves one RPC connection pool
+    /// and one confirmation/read-back batcher process-wide.
+    #[cfg(feature = "server")]
+    pub fn with_tx_pipeline(self, pipeline: crate::core::tx_pipeline::TxPipeline) -> Self {
+        let _ = self.tx_pipeline.set(pipeline);
+        self
+    }
+
+    #[cfg(feature = "server")]
+    async fn tx_pipeline(&self) -> Result<&crate::core::tx_pipeline::TxPipeline> {
+        let rpc_url = self.config.rpc_url.as_ref().ok_or_else(|| {
+            Error::Other(
+                "session transaction verification requires an RPC client; funding verification cannot be skipped"
+                    .to_string(),
+            )
+        })?;
+        Ok(self
+            .tx_pipeline
+            .get_or_init(|| async {
+                crate::core::tx_pipeline::TxPipeline::new(
+                    rpc_url.clone(),
+                    crate::core::tx_pipeline::TxPipelineConfig::default(),
+                )
+            })
+            .await)
     }
 
     /// Build the exact `SessionRequest` embedded in a new-channel 402
@@ -762,11 +794,24 @@ impl<S: ChannelStore> SessionServer<S> {
             .await
             .map_err(store_err)?
             .is_none();
+        #[cfg(feature = "server")]
+        let pipeline = self.tx_pipeline().await?;
+        #[cfg(feature = "server")]
         let transaction_signature = verify_submit_and_fetch_open(
             payload,
             &params,
             context.recent_blockhash,
-            self.config.rpc_url.as_deref(),
+            pipeline,
+            fresh_open,
+            self.config.fee_payer_signer.as_deref(),
+        )
+        .await?;
+        #[cfg(not(feature = "server"))]
+        let transaction_signature = verify_submit_and_fetch_open(
+            payload,
+            &params,
+            context.recent_blockhash,
+            &(),
             fresh_open,
             self.config.fee_payer_signer.as_deref(),
         )
@@ -1239,13 +1284,14 @@ impl<S: ChannelStore> SessionServer<S> {
         // co-signing. A replay may therefore reach RPC again; the confirmed
         // signature status makes that path idempotent before this mutator
         // credits the deposit.
-        let topup_signature = verify_submit_and_fetch_topup(
-            payload,
-            &existing,
-            &self.config,
-            self.config.rpc_url.as_deref(),
-        )
-        .await?;
+        #[cfg(feature = "server")]
+        let pipeline = self.tx_pipeline().await?;
+        #[cfg(feature = "server")]
+        let topup_signature =
+            verify_submit_and_fetch_topup(payload, &existing, &self.config, pipeline).await?;
+        #[cfg(not(feature = "server"))]
+        let topup_signature =
+            verify_submit_and_fetch_topup(payload, &existing, &self.config, &()).await?;
 
         let cid = payload.channel_id.clone();
         let lifecycle_owner = self.config.operator.clone();
@@ -1845,16 +1891,10 @@ async fn verify_submit_and_fetch_open(
     payload: &OpenPayload,
     params: &payment_channels::OpenChannelParams,
     challenged_blockhash: &str,
-    rpc_url: Option<&str>,
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
     fresh_open: bool,
     fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
 ) -> Result<String> {
-    let rpc_url = rpc_url.ok_or_else(|| {
-        Error::Other(
-            "session open requires an RPC client; funding verification cannot be skipped"
-                .to_string(),
-        )
-    })?;
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     if tx
         .message
@@ -1936,13 +1976,11 @@ async fn verify_submit_and_fetch_open(
         .ok_or_else(|| Error::Other("open transaction is missing its fee-payer signature".into()))?
         .to_string();
 
-    let rpc = confirmed_rpc_client(rpc_url);
     if fresh_open {
-        let current_slot = rpc.get_slot().map_err(|error| {
-            Error::Rpc(format!(
-                "failed to fetch current cluster slot for session open: {error}"
-            ))
-        })?;
+        let current_slot = pipeline
+            .current_slot()
+            .await
+            .map_err(|error| Error::Rpc(format!("session open slot validation failed: {error}")))?;
         if params.open_slot > current_slot {
             return Err(Error::Other(format!(
                 "open openSlot {} is ahead of the current cluster slot {current_slot}",
@@ -1956,7 +1994,10 @@ async fn verify_submit_and_fetch_open(
                 payment_channels::OPEN_SLOT_WINDOW
             )));
         }
-    } else if fetch_and_match_open_channel(&rpc, params).is_ok() {
+    } else if fetch_and_match_open_channel(pipeline, params, None)
+        .await
+        .is_ok()
+    {
         // This open already exists in the store (a resubmit — e.g. the
         // client never saw the first response), and the channel account
         // confirmed on-chain already matches this exact open. Return the
@@ -1971,30 +2012,31 @@ async fn verify_submit_and_fetch_open(
     // channel account is — it matches the verified open params only if this
     // exact open succeeded, so a match is treated as success regardless of
     // what the broadcast said.
-    let broadcast_error = rpc
-        .send_and_confirm_transaction(&tx)
-        .map_err(|error| Error::Rpc(format!("open broadcast failed: {error}")))
-        .err();
-    let confirmed = retry_confirmed_rpc_read(|| fetch_and_match_open_channel(&rpc, params)).await;
-    match (broadcast_error, confirmed) {
-        (None, confirmed) => confirmed,
-        (Some(_), Ok(())) => Ok(()),
-        (Some(broadcast_error), Err(_)) => Err(broadcast_error),
+    let submission = pipeline.submit_verified(&tx).await;
+    let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
+    let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot).await;
+    match (submission, confirmed) {
+        (Ok(_), confirmed) => confirmed,
+        (Err(_), Ok(())) => Ok(()),
+        (Err(error), Err(_)) => Err(Error::Rpc(format!("open submission failed: {error}"))),
     }?;
     Ok(transaction_signature)
 }
 
 #[cfg(feature = "server")]
-fn fetch_and_match_open_channel(
-    rpc: &solana_rpc_client::rpc_client::RpcClient,
+async fn fetch_and_match_open_channel(
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
     params: &payment_channels::OpenChannelParams,
+    min_context_slot: Option<u64>,
 ) -> Result<()> {
     let channel_address = payment_channels::derive_channel_addresses(params).channel;
-    let account = rpc
-        .get_account(&channel_address)
-        .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?;
+    let account_data = pipeline
+        .read_account_data(channel_address, min_context_slot)
+        .await
+        .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?
+        .ok_or_else(|| Error::Rpc("confirmed channel account not found".to_string()))?;
     let channel =
-        payment_channels::generated::generated::accounts::Channel::from_bytes(&account.data)
+        payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
             .map_err(|error| Error::Other(format!("decode confirmed channel: {error}")))?;
     if channel.status != 0
         || channel.deposit != params.deposit
@@ -2015,44 +2057,13 @@ fn fetch_and_match_open_channel(
     Ok(())
 }
 
-/// A confirmed signature can become visible before the account write is
-/// readable through a lagging RPC backend. Retry only RPC read failures;
-/// decoded state mismatches remain authoritative and fail immediately.
-#[cfg(feature = "server")]
-async fn retry_confirmed_rpc_read<T>(mut read: impl FnMut() -> Result<T>) -> Result<T> {
-    const RETRIES: usize = 6;
-    #[cfg(not(test))]
-    const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
-    #[cfg(test)]
-    const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
-
-    let mut backoff = INITIAL_BACKOFF;
-    for attempt in 0..=RETRIES {
-        match read() {
-            Ok(value) => return Ok(value),
-            Err(Error::Rpc(_)) if attempt < RETRIES => {
-                tokio::time::sleep(backoff).await;
-                backoff = backoff.saturating_mul(2);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!("bounded confirmed RPC read retry loop must return")
-}
-
 #[cfg(feature = "server")]
 async fn verify_submit_and_fetch_topup(
     payload: &TopUpPayload,
     state: &ChannelState,
     config: &SessionConfig,
-    rpc_url: Option<&str>,
+    pipeline: &crate::core::tx_pipeline::TxPipeline,
 ) -> Result<String> {
-    let rpc_url = rpc_url.ok_or_else(|| {
-        Error::Other(
-            "session top-up requires an RPC client; funding verification cannot be skipped"
-                .to_string(),
-        )
-    })?;
     let amount = payload
         .additional_amount
         .parse::<u64>()
@@ -2167,29 +2178,22 @@ async fn verify_submit_and_fetch_topup(
     if state.processed_topup_signatures.contains(&signature) {
         return Ok(signature);
     }
-    let rpc = confirmed_rpc_client(rpc_url);
-    if let Err(error) = rpc.send_and_confirm_transaction(&tx) {
-        // A duplicate of an already-landed top-up dies at preflight with
-        // "already processed". The signature identifies this exact verified
-        // transaction — an unrelated top-up cannot satisfy it — so a
-        // confirmed non-error status means escrow was funded once and the
-        // deposit re-check below plus the mutator's signature dedupe decide
-        // whether it was already credited.
-        let signature = tx
-            .signatures
-            .first()
-            .ok_or_else(|| Error::Other("top-up transaction is missing a signature".to_string()))?;
-        if !matches!(rpc.get_signature_status(signature), Ok(Some(Ok(())))) {
-            return Err(Error::Rpc(format!("top-up broadcast failed: {error}")));
+    let submission = pipeline.submit_verified(&tx).await;
+    let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
+    let account_data = pipeline
+        .read_account_data(channel, min_context_slot)
+        .await
+        .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
+        .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()));
+    let account_data = match (submission, account_data) {
+        (Ok(_), account) => account?,
+        (Err(_), Ok(account)) => account,
+        (Err(error), Err(_)) => {
+            return Err(Error::Rpc(format!("top-up submission failed: {error}")))
         }
-    }
-    let account = retry_confirmed_rpc_read(|| {
-        rpc.get_account(&channel)
-            .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))
-    })
-    .await?;
+    };
     let channel_state =
-        payment_channels::generated::generated::accounts::Channel::from_bytes(&account.data)
+        payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
             .map_err(|error| Error::Other(format!("decode topped-up channel: {error}")))?;
     let minimum = state
         .deposit
@@ -2208,7 +2212,7 @@ async fn verify_submit_and_fetch_topup(
     _payload: &TopUpPayload,
     _state: &ChannelState,
     _config: &SessionConfig,
-    _rpc_url: Option<&str>,
+    _pipeline: &(),
 ) -> Result<String> {
     Err(Error::Other(
         "session top-up verification requires the `server` feature".to_string(),
@@ -2220,7 +2224,7 @@ async fn verify_submit_and_fetch_open(
     _payload: &OpenPayload,
     _params: &payment_channels::OpenChannelParams,
     _challenged_blockhash: &str,
-    _rpc_url: Option<&str>,
+    _pipeline: &(),
     _fresh_open: bool,
     _fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
 ) -> Result<String> {
@@ -2373,41 +2377,6 @@ mod tests {
         bytes[..32].copy_from_slice(key.as_bytes());
         bytes[32..].copy_from_slice(key.verifying_key().as_bytes());
         Box::new(MemorySigner::from_bytes(&bytes).unwrap())
-    }
-
-    #[cfg(feature = "server")]
-    #[tokio::test]
-    async fn confirmed_rpc_read_retries_transient_visibility_failures() {
-        let attempts = std::cell::Cell::new(0usize);
-        let value = retry_confirmed_rpc_read(|| {
-            let attempt = attempts.get() + 1;
-            attempts.set(attempt);
-            if attempt < 3 {
-                Err(Error::Rpc("account not visible yet".into()))
-            } else {
-                Ok(42)
-            }
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(value, 42);
-        assert_eq!(attempts.get(), 3);
-    }
-
-    #[cfg(feature = "server")]
-    #[tokio::test]
-    async fn confirmed_rpc_read_does_not_retry_state_mismatches() {
-        let attempts = std::cell::Cell::new(0usize);
-        let error = retry_confirmed_rpc_read::<()>(|| {
-            attempts.set(attempts.get() + 1);
-            Err(Error::Other("confirmed state mismatch".into()))
-        })
-        .await
-        .unwrap_err();
-
-        assert!(error.to_string().contains("confirmed state mismatch"));
-        assert_eq!(attempts.get(), 1);
     }
 
     fn shared_signer(seed: u8) -> std::sync::Arc<dyn solana_keychain::SolanaSigner> {
@@ -2686,6 +2655,29 @@ mod tests {
                                 "space": 256
                             }
                         })),
+                        "getMultipleAccounts" => {
+                            let account = json!({
+                                "data": [
+                                    base64::engine::general_purpose::STANDARD.encode(account_data),
+                                    "base64"
+                                ],
+                                "executable": false,
+                                "lamports": 1,
+                                "owner": payment_channels::PAYMENT_CHANNELS_PROGRAM_ID,
+                                "rentEpoch": 0,
+                                "space": 256
+                            });
+                            let values = request["params"][0]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|_| account.clone())
+                                .collect::<Vec<_>>();
+                            Ok(json!({
+                                "context": { "slot": 43 },
+                                "value": values
+                            }))
+                        }
                         method => panic!("unexpected RPC method {method}"),
                     };
                     let body = serde_json::to_vec(&match result {

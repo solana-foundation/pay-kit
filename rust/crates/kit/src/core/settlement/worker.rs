@@ -25,13 +25,16 @@ use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
-use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::Transaction;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::Instant;
 use tracing::Instrument;
 
-use crate::core::{payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX, rpc::SKIP_PREFLIGHT_SEND};
+use crate::core::{
+    payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX,
+    rpc::SKIP_PREFLIGHT_SEND,
+    tx_pipeline::{TxPipeline, TxPipelineConfig, TxPipelineError},
+};
 
 use super::packing::{tx_size, would_overflow_tx};
 
@@ -376,66 +379,54 @@ async fn settle_group(
     .await
 }
 
-/// Production broadcaster over a blocking `RpcClient` (calls run on
-/// `spawn_blocking` so they never stall the async runtime).
+/// Production broadcaster backed by the shared asynchronous RPC pipeline.
 pub struct RpcBroadcaster {
-    rpc: Arc<RpcClient>,
+    pipeline: TxPipeline,
 }
 
 impl RpcBroadcaster {
     pub fn new(rpc_url: impl Into<String>) -> Self {
         Self {
-            rpc: Arc::new(RpcClient::new(rpc_url.into())),
+            pipeline: TxPipeline::new(rpc_url, TxPipelineConfig::default()),
         }
+    }
+
+    pub fn with_pipeline(pipeline: TxPipeline) -> Self {
+        Self { pipeline }
     }
 }
 
 #[async_trait]
 impl Broadcaster for RpcBroadcaster {
     async fn latest_blockhash(&self) -> Result<Hash, String> {
-        let rpc = self.rpc.clone();
-        tokio::task::spawn_blocking(move || rpc.get_latest_blockhash())
+        self.pipeline
+            .latest_blockhash()
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())
+            .map_err(|error| error.to_string())
     }
 
     async fn send(&self, tx: &Transaction) -> Result<String, String> {
-        let rpc = self.rpc.clone();
-        let tx = tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let send_policy = SKIP_PREFLIGHT_SEND;
-            // Settlement follows a confirmed channel-open fetch. A separate
-            // preflight simulation can run against a stale bank that has not
-            // loaded the new channel PDA yet, producing false
-            // `InvalidAccountOwner` failures. Broadcast directly and let the
-            // confirmation/reconciliation loop decide the durable outcome.
-            rpc.send_transaction_with_config(&tx, send_policy.config())
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map(|s| s.to_string())
-        .map_err(|e| e.to_string())
+        // Settlement follows a confirmed channel-open fetch. A separate
+        // preflight simulation can run against a stale bank that has not
+        // loaded the new channel PDA yet, producing false failures.
+        self.pipeline
+            .broadcast_verified(tx)
+            .await
+            .map(|signature| signature.to_string())
+            .map_err(|error| error.to_string())
     }
 
     async fn confirm(&self, signature: &str) -> Result<ConfirmOutcome, String> {
         use solana_signature::Signature;
-        let rpc = self.rpc.clone();
         let sig: Signature = signature.parse().map_err(|_| "bad signature".to_string())?;
-        tokio::task::spawn_blocking(move || {
-            let statuses = rpc
-                .get_signature_statuses(&[sig])
-                .map_err(|e| e.to_string())?;
-            Ok(match statuses.value.into_iter().next().flatten() {
-                Some(s) => match s.err {
-                    Some(e) => ConfirmOutcome::Failed(format!("{e:?}")),
-                    None => ConfirmOutcome::Confirmed,
-                },
-                None => ConfirmOutcome::Pending,
-            })
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        match self.pipeline.confirm(sig).await {
+            Ok(_) => Ok(ConfirmOutcome::Confirmed),
+            Err(TxPipelineError::TransactionFailed { reason, .. }) => {
+                Ok(ConfirmOutcome::Failed(reason))
+            }
+            Err(TxPipelineError::ConfirmationTimeout { .. }) => Ok(ConfirmOutcome::Pending),
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 
