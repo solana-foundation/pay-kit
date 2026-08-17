@@ -485,8 +485,7 @@ impl<S: ChannelStore> SessionServer<S> {
         }
         #[cfg(feature = "server")]
         if let Some(ref rpc_url) = self.config.rpc_url {
-            use solana_rpc_client::rpc_client::RpcClient;
-            let rpc = RpcClient::new(rpc_url.clone());
+            let rpc = confirmed_rpc_client(rpc_url);
             return crate::core::blockhash::fetch_blockhash_with_slot(&rpc, rpc.commitment())
                 .map_err(|e| {
                     Error::Rpc(format!(
@@ -648,9 +647,9 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Accepts payment-channel opens and operated-voucher delegated-token opens.
     /// Returns the stored `ChannelState`.
     ///
-    /// When `config.rpc_url` is set, confirms the open transaction is finalized
-    /// on-chain before persisting — rejects the open if the tx is unknown or
-    /// failed. Leave `rpc_url` as `None` in unit tests.
+    /// When `config.rpc_url` is set, confirms the open transaction on-chain at
+    /// confirmed commitment before persisting — rejects the open if the tx is
+    /// unknown or failed. Leave `rpc_url` as `None` in unit tests.
     ///
     /// Replayed opens are idempotent: when a channel already exists for the
     /// session id with the same authorized signer, the existing state is
@@ -1834,6 +1833,14 @@ fn unix_now_i64() -> i64 {
 }
 
 #[cfg(feature = "server")]
+fn confirmed_rpc_client(rpc_url: &str) -> solana_rpc_client::rpc_client::RpcClient {
+    solana_rpc_client::rpc_client::RpcClient::new_with_commitment(
+        rpc_url.to_string(),
+        solana_commitment_config::CommitmentConfig::confirmed(),
+    )
+}
+
+#[cfg(feature = "server")]
 async fn verify_submit_and_fetch_open(
     payload: &OpenPayload,
     params: &payment_channels::OpenChannelParams,
@@ -1842,8 +1849,6 @@ async fn verify_submit_and_fetch_open(
     fresh_open: bool,
     fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
 ) -> Result<String> {
-    use solana_rpc_client::rpc_client::RpcClient;
-
     let rpc_url = rpc_url.ok_or_else(|| {
         Error::Other(
             "session open requires an RPC client; funding verification cannot be skipped"
@@ -1931,7 +1936,7 @@ async fn verify_submit_and_fetch_open(
         .ok_or_else(|| Error::Other("open transaction is missing its fee-payer signature".into()))?
         .to_string();
 
-    let rpc = RpcClient::new(rpc_url.to_string());
+    let rpc = confirmed_rpc_client(rpc_url);
     if fresh_open {
         let current_slot = rpc.get_slot().map_err(|error| {
             Error::Rpc(format!(
@@ -2017,8 +2022,6 @@ async fn verify_submit_and_fetch_topup(
     config: &SessionConfig,
     rpc_url: Option<&str>,
 ) -> Result<String> {
-    use solana_rpc_client::rpc_client::RpcClient;
-
     let rpc_url = rpc_url.ok_or_else(|| {
         Error::Other(
             "session top-up requires an RPC client; funding verification cannot be skipped"
@@ -2139,7 +2142,7 @@ async fn verify_submit_and_fetch_topup(
     if state.processed_topup_signatures.contains(&signature) {
         return Ok(signature);
     }
-    let rpc = RpcClient::new(rpc_url.to_string());
+    let rpc = confirmed_rpc_client(rpc_url);
     if let Err(error) = rpc.send_and_confirm_transaction(&tx) {
         // A duplicate of an already-landed top-up dies at preflight with
         // "already processed". The signature identifies this exact verified
@@ -2351,6 +2354,15 @@ mod tests {
 
     fn signer_address(seed: u8) -> String {
         bs58::encode(key(seed).verifying_key().as_bytes()).into_string()
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn session_rpc_uses_confirmed_commitment() {
+        assert_eq!(
+            confirmed_rpc_client("http://127.0.0.1:1").commitment(),
+            solana_commitment_config::CommitmentConfig::confirmed()
+        );
     }
 
     /// The `recentSlot` every test challenge advertises; matches the
