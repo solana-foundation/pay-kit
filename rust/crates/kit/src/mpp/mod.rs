@@ -92,6 +92,7 @@ pub use protocol::intents::{
 
 pub use protocol::solana::{
     default_token_program_for_currency, mints, programs, resolve_stablecoin_mint,
+    try_resolve_stablecoin_mint,
 };
 
 // Store types

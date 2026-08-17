@@ -35,7 +35,7 @@ use crate::mpp::protocol::intents::session::{
     SessionReceiptExtensions, SessionReceiptIntent, SessionRequest, SessionSplit, SignedVoucher,
     TopUpPayload, UsePayload, VoucherData, VoucherPayload, VoucherSignatureType,
 };
-use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
+use crate::mpp::protocol::solana::default_token_program_for_currency;
 use crate::mpp::store::{
     ChannelLifecycle, ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError,
     CHANNEL_STATE_SCHEMA_VERSION,
@@ -2255,8 +2255,11 @@ fn parse_required_operator(operator: &str) -> Result<Pubkey> {
 }
 
 fn expected_payment_channel_mint(config: &SessionConfig) -> Result<Pubkey> {
-    let mint = resolve_stablecoin_mint(&config.currency, Some(config.network.as_str()))
-        .ok_or_else(|| Error::Other("payment-channel sessions require an SPL token".to_string()))?;
+    let mint = crate::mpp::protocol::solana::try_resolve_stablecoin_mint(
+        &config.currency,
+        Some(config.network.as_str()),
+    )?
+    .ok_or_else(|| Error::Other("payment-channel sessions require an SPL token".to_string()))?;
     parse_pubkey_field(mint, "currency")
 }
 
@@ -2376,6 +2379,16 @@ mod tests {
             idle_timeout_seconds: 300,
             ..SessionConfig::default()
         }
+    }
+
+    #[test]
+    fn usdtest_mainnet_challenge_is_rejected_before_rpc() {
+        let mut config = config(VoucherSigner::Client);
+        config.currency = "USDtest".to_string();
+        let server = SessionServer::new(config, MemoryChannelStore::new());
+
+        let error = server.build_challenge_request().unwrap_err();
+        assert!(error.to_string().contains("USDtest is devnet-only"));
     }
 
     fn state(channel_id: String, authorized_signer: String) -> ChannelState {

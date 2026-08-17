@@ -141,6 +141,12 @@ impl X402 {
         }
         Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
+        for currency in &config.currencies {
+            crate::x402::exact::try_resolve_stablecoin_mint(
+                &currency.currency,
+                Some(&config.network),
+            )?;
+        }
 
         let rpc_url = config
             .rpc_url
@@ -971,6 +977,18 @@ mod tests {
                 .collect(),
             ..config()
         }
+    }
+
+    #[test]
+    fn usdtest_mainnet_config_is_rejected() {
+        let mut config = multi_currency_config(&["USDtest"]);
+        config.network = "mainnet-beta".to_string();
+
+        let error = match X402::new(config) {
+            Ok(_) => panic!("USDtest must not be accepted on mainnet"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("USDtest is devnet-only"));
     }
 
     fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {

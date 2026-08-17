@@ -41,8 +41,7 @@ use crate::x402::protocol::schemes::batch_settlement::{
     PROFILE_PAYMENT_CHANNEL,
 };
 use crate::x402::protocol::schemes::exact::{
-    caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency,
-    resolve_stablecoin_mint, ResourceInfo,
+    caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
 };
 use crate::x402::server::upto::{
     cosign_operator_fee_payer, decode_transaction, validate_open_instruction,
@@ -152,6 +151,7 @@ impl X402BatchSettlement {
         }
         Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
+        crate::x402::exact::try_resolve_stablecoin_mint(&config.currency, Some(&config.cluster))?;
         let operator = config.operator_signer.pubkey();
         let rpc_url = config
             .rpc_url
@@ -180,8 +180,11 @@ impl X402BatchSettlement {
     }
 
     fn mint(&self) -> Result<Pubkey, Error> {
-        let mint = resolve_stablecoin_mint(&self.config.currency, Some(&self.config.cluster))
-            .ok_or_else(|| Error::Other("batch-settlement requires an SPL token".into()))?;
+        let mint = crate::x402::exact::try_resolve_stablecoin_mint(
+            &self.config.currency,
+            Some(&self.config.cluster),
+        )?
+        .ok_or_else(|| Error::Other("batch-settlement requires an SPL token".into()))?;
         Pubkey::from_str(mint).map_err(|e| Error::Other(format!("invalid mint: {e}")))
     }
 

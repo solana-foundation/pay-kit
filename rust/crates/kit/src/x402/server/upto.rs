@@ -37,8 +37,7 @@ use crate::core::payment_channels::generated::accounts::Channel;
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::exact::{
-    caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency,
-    resolve_stablecoin_mint, ResourceInfo,
+    caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
 };
 use crate::x402::protocol::schemes::upto::{
     assert_settlement_within_ceiling, verify_upto_payload, UptoExtra, UptoRequiredEnvelope,
@@ -188,6 +187,12 @@ impl X402Upto {
         if config.currencies.is_empty() {
             return Err(Error::Other("at least one currency is required".into()));
         }
+        for currency in &config.currencies {
+            crate::x402::exact::try_resolve_stablecoin_mint(
+                &currency.currency,
+                Some(&config.cluster),
+            )?;
+        }
         if let UptoPayout::Beneficiary { address } = &config.payout {
             Pubkey::from_str(address)
                 .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
@@ -268,8 +273,11 @@ impl X402Upto {
     /// Resolve the mint for a specific currency descriptor on the configured
     /// cluster.
     fn mint_for(&self, cc: &CurrencyConfig) -> Result<Pubkey, Error> {
-        let mint = resolve_stablecoin_mint(&cc.currency, Some(&self.config.cluster))
-            .ok_or_else(|| Error::Other("upto requires an SPL token (not native SOL)".into()))?;
+        let mint = crate::x402::exact::try_resolve_stablecoin_mint(
+            &cc.currency,
+            Some(&self.config.cluster),
+        )?
+        .ok_or_else(|| Error::Other("upto requires an SPL token (not native SOL)".into()))?;
         Pubkey::from_str(mint).map_err(|e| Error::Other(format!("invalid mint: {e}")))
     }
 

@@ -14,9 +14,9 @@ use crate::x402::{
     error::Error,
     protocol::schemes::exact::{
         caip2_network_for_cluster, cluster_for_caip2_network, default_token_program_for_currency,
-        programs, resolve_stablecoin_mint, PaymentExtensions, PaymentPayload, PaymentProof,
-        PaymentRequiredEnvelope, PaymentRequirements, PaymentSignatureEnvelope, EXACT_SCHEME,
-        MAX_MEMO_BYTES, SOLANA_MAINNET,
+        programs, resolve_stablecoin_mint, try_resolve_stablecoin_mint, PaymentExtensions,
+        PaymentPayload, PaymentProof, PaymentRequiredEnvelope, PaymentRequirements,
+        PaymentSignatureEnvelope, EXACT_SCHEME, MAX_MEMO_BYTES, SOLANA_MAINNET,
     },
     PAYMENT_REQUIRED_HEADER, SOLANA_NETWORK, X402_V1_PAYMENT_REQUIRED_HEADER, X402_VERSION_V1,
     X402_VERSION_V2,
@@ -56,8 +56,11 @@ pub async fn build_payment(
     instructions.push(compute_unit_limit_ix(20_000));
     instructions.push(compute_unit_price_ix(1));
 
-    let cluster = requirements.cluster.as_deref();
-    let mint = resolve_mint(&requirements.currency, cluster);
+    let cluster = requirements
+        .cluster
+        .as_deref()
+        .or_else(|| cluster_for_caip2_network(&requirements.network));
+    let mint = try_resolve_mint(&requirements.currency, cluster)?;
 
     if let Some(mint_str) = mint {
         build_spl_instructions(
@@ -520,8 +523,16 @@ fn transfer_checked_ix(
 /// Resolve a currency to an optional mint address.
 ///
 /// Returns `None` for native SOL, or `Some(mint_address)` for SPL tokens.
+#[cfg(test)]
 fn resolve_mint<'a>(currency: &'a str, cluster: Option<&str>) -> Option<&'a str> {
     resolve_stablecoin_mint(currency, cluster)
+}
+
+fn try_resolve_mint<'a>(
+    currency: &'a str,
+    cluster: Option<&str>,
+) -> Result<Option<&'a str>, Error> {
+    try_resolve_stablecoin_mint(currency, cluster)
 }
 
 #[cfg(test)]
