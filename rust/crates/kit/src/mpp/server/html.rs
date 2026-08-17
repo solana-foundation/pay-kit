@@ -90,7 +90,9 @@ pub fn challenge_to_html(challenge: &PaymentChallenge, _rpc_url: &str, _network:
         format!("{:.2}", amount_f)
     };
     let amount_display = match currency {
-        "USDC" | "USDT" | "USDG" | "PYUSD" | "CASH" => format!("${display_amount}"),
+        "USDC" | "USDT" | "USDTEST" | "USDG" | "PYUSD" | "CASH" => {
+            format!("${display_amount}")
+        }
         mints::USDC_MAINNET
         | mints::USDC_DEVNET
         | mints::USDT_MAINNET
@@ -98,7 +100,8 @@ pub fn challenge_to_html(challenge: &PaymentChallenge, _rpc_url: &str, _network:
         | mints::USDG_DEVNET
         | mints::PYUSD_MAINNET
         | mints::PYUSD_DEVNET
-        | mints::CASH_MAINNET => format!("${display_amount}"),
+        | mints::CASH_MAINNET
+        | mints::USDTEST_DEVNET => format!("${display_amount}"),
         c if c.to_lowercase() == "sol" => format!("{display_amount} SOL"),
         _ => format!("{display_amount} {}", &currency[..6.min(currency.len())]),
     };

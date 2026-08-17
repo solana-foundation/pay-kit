@@ -316,7 +316,7 @@ pub async fn build_prepared_charge(
         options.compute_budget.compute_unit_limit,
     ));
 
-    let mint = resolve_mint(currency, method_details.network.as_deref());
+    let mint = try_resolve_mint(currency, method_details.network.as_deref())?;
     let has_ata_creation_splits = splits
         .iter()
         .any(|split| split.ata_creation_required == Some(true));
@@ -435,13 +435,14 @@ pub async fn build_charge_transaction_with_options(
             // this straight to Pubkey::from_str, so a bare symbol would fail.
             // SOL (resolve_mint -> None) is already rejected by
             // validate_confidential_charge above; guard defensively anyway.
-            let mint =
-                resolve_mint(currency, method_details.network.as_deref()).ok_or_else(|| {
+            let mint = try_resolve_mint(currency, method_details.network.as_deref())?.ok_or_else(
+                || {
                     Error::InvalidConfig(
                         "confidential transfers require an SPL Token-2022 mint, not native SOL"
                             .into(),
                     )
-                })?;
+                },
+            )?;
             let blockhash = resolve_blockhash(rpc, method_details)?;
             return super::confidential::confidential_charge_payload(
                 signer,
@@ -937,8 +938,16 @@ fn transfer_checked_ix(
 /// mint string we don't recognize. Callers handling arbitrary mints MUST
 /// validate parseability separately; audit #27 calls out the docstring
 /// drift from "Some(mint_address)" alone.
+#[cfg(test)]
 fn resolve_mint<'a>(currency: &'a str, network: Option<&str>) -> Option<&'a str> {
     crate::mpp::protocol::solana::resolve_stablecoin_mint(currency, network)
+}
+
+fn try_resolve_mint<'a>(
+    currency: &'a str,
+    network: Option<&str>,
+) -> Result<Option<&'a str>, Error> {
+    crate::mpp::protocol::solana::try_resolve_stablecoin_mint(currency, network)
 }
 
 fn is_solana_charge_challenge_name(challenge: &PaymentChallenge) -> bool {

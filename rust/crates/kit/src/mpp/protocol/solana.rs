@@ -68,6 +68,9 @@ pub fn default_rpc_url(network: &str) -> &'static str {
 /// Resolve a stablecoin symbol to a mint address for a network.
 ///
 /// Returns `None` for native SOL and passes through unknown symbols/mints.
+/// Call [`try_resolve_stablecoin_mint`] when the currency may be `USDtest` so
+/// unsupported networks produce an actionable error rather than reaching a
+/// later pubkey parser as an unknown symbol.
 pub fn resolve_stablecoin_mint<'a>(currency: &'a str, network: Option<&str>) -> Option<&'a str> {
     match currency.to_uppercase().as_str() {
         "SOL" => None,
@@ -76,6 +79,7 @@ pub fn resolve_stablecoin_mint<'a>(currency: &'a str, network: Option<&str>) -> 
             Some("testnet") => mints::USDC_TESTNET,
             _ => mints::USDC_MAINNET,
         }),
+        "USDTEST" if network == Some(NETWORK_DEVNET) => Some(mints::USDTEST_DEVNET),
         "USDT" => Some(mints::USDT_MAINNET),
         "USDG" => Some(match network {
             Some("devnet") => mints::USDG_DEVNET,
@@ -93,16 +97,37 @@ pub fn resolve_stablecoin_mint<'a>(currency: &'a str, network: Option<&str>) -> 
     }
 }
 
+/// Resolve a stablecoin symbol while enforcing network-specific availability.
+///
+/// `USDtest` exists on devnet only. An omitted network defaults to mainnet per
+/// the MPP specification and is rejected just like an explicit mainnet or
+/// localnet selection.
+pub fn try_resolve_stablecoin_mint<'a>(
+    currency: &'a str,
+    network: Option<&str>,
+) -> Result<Option<&'a str>, crate::mpp::error::Error> {
+    let is_usdtest = currency.eq_ignore_ascii_case("USDtest") || currency == mints::USDTEST_DEVNET;
+    if is_usdtest && network != Some(NETWORK_DEVNET) {
+        let actual = network.unwrap_or(DEFAULT_NETWORK);
+        return Err(crate::mpp::error::Error::InvalidConfig(format!(
+            "USDtest is devnet-only; set network to `devnet` (got `{actual}`)"
+        )));
+    }
+    Ok(resolve_stablecoin_mint(currency, network))
+}
+
 fn stablecoin_uses_token_2022(mint: &str) -> bool {
-    matches!(
-        mint,
-        mints::PYUSD_MAINNET
-            | mints::PYUSD_DEVNET
-            | mints::USDG_MAINNET
-            | mints::USDG_DEVNET
-            | mints::CASH_MAINNET
-            | mints::USDPT_MAINNET
-    )
+    mint.eq_ignore_ascii_case("USDtest")
+        || matches!(
+            mint,
+            mints::USDTEST_DEVNET
+                | mints::PYUSD_MAINNET
+                | mints::PYUSD_DEVNET
+                | mints::USDG_MAINNET
+                | mints::USDG_DEVNET
+                | mints::CASH_MAINNET
+                | mints::USDPT_MAINNET
+        )
 }
 
 /// Whether `mint` is a well-known stablecoin whose Token-2022 mint enables the
@@ -122,6 +147,7 @@ pub fn is_known_stablecoin_mint(mint: &str) -> bool {
         mint,
         mints::USDC_MAINNET
             | mints::USDC_DEVNET
+            | mints::USDTEST_DEVNET
             | mints::USDT_MAINNET
             | mints::USDG_MAINNET
             | mints::USDG_DEVNET
@@ -282,6 +308,7 @@ mod tests {
 
         assert!(Pubkey::from_str(mints::USDC_MAINNET).is_ok());
         assert!(Pubkey::from_str(mints::USDC_DEVNET).is_ok());
+        assert!(Pubkey::from_str(mints::USDTEST_DEVNET).is_ok());
         assert!(Pubkey::from_str(mints::USDT_MAINNET).is_ok());
         assert!(Pubkey::from_str(mints::USDG_MAINNET).is_ok());
         assert!(Pubkey::from_str(mints::USDG_DEVNET).is_ok());
@@ -301,6 +328,16 @@ mod tests {
             resolve_stablecoin_mint("USDC", Some("devnet")),
             Some(mints::USDC_DEVNET)
         );
+        assert_eq!(
+            try_resolve_stablecoin_mint("USDtest", Some("devnet")).unwrap(),
+            Some(mints::USDTEST_DEVNET)
+        );
+        for network in [None, Some("mainnet"), Some("testnet"), Some("localnet")] {
+            let error = try_resolve_stablecoin_mint("usdtest", network).unwrap_err();
+            assert!(error.to_string().contains("USDtest is devnet-only"));
+            let error = try_resolve_stablecoin_mint(mints::USDTEST_DEVNET, network).unwrap_err();
+            assert!(error.to_string().contains("USDtest is devnet-only"));
+        }
         assert_eq!(
             resolve_stablecoin_mint("USDT", None),
             Some(mints::USDT_MAINNET)
@@ -326,6 +363,14 @@ mod tests {
 
     #[test]
     fn stablecoins_default_to_correct_token_program() {
+        assert_eq!(
+            default_token_program_for_currency("USDtest", Some("devnet")),
+            programs::TOKEN_2022_PROGRAM
+        );
+        assert_eq!(
+            default_token_program_for_currency(mints::USDTEST_DEVNET, Some("devnet")),
+            programs::TOKEN_2022_PROGRAM
+        );
         assert_eq!(
             default_token_program_for_currency("CASH", None),
             programs::TOKEN_2022_PROGRAM

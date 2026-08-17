@@ -8,6 +8,9 @@
 pub const USDC_MAINNET: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 pub const USDC_DEVNET: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 pub const USDC_TESTNET: &str = USDC_DEVNET;
+/// Devnet-only Token-2022 test dollar used for payment-channel integration and
+/// load testing. There is intentionally no mainnet or localnet alias.
+pub const USDTEST_DEVNET: &str = "6MJyWHwFpPsaTEuYarEz49ngtsSKPYn6yHqtJUW2a9St";
 pub const USDT_MAINNET: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 pub const USDG_MAINNET: &str = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH";
 pub const USDG_DEVNET: &str = "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7";
