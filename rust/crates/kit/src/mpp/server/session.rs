@@ -414,8 +414,11 @@ impl<S: ChannelStore> SessionServer<S> {
         self
     }
 
+    /// Return the lazily initialized pipeline used by this session server.
+    /// Hosts can reuse the clone for settlement and reconciliation so every
+    /// lifecycle phase shares the same RPC pool and confirmation tracker.
     #[cfg(feature = "server")]
-    async fn tx_pipeline(&self) -> Result<&crate::core::tx_pipeline::TxPipeline> {
+    pub async fn transaction_pipeline(&self) -> Result<crate::core::tx_pipeline::TxPipeline> {
         let rpc_url = self.config.rpc_url.as_ref().ok_or_else(|| {
             Error::Other(
                 "session transaction verification requires an RPC client; funding verification cannot be skipped"
@@ -430,7 +433,8 @@ impl<S: ChannelStore> SessionServer<S> {
                     crate::core::tx_pipeline::TxPipelineConfig::default(),
                 )
             })
-            .await)
+            .await
+            .clone())
     }
 
     /// Build the exact `SessionRequest` embedded in a new-channel 402
@@ -795,13 +799,13 @@ impl<S: ChannelStore> SessionServer<S> {
             .map_err(store_err)?
             .is_none();
         #[cfg(feature = "server")]
-        let pipeline = self.tx_pipeline().await?;
+        let pipeline = self.transaction_pipeline().await?;
         #[cfg(feature = "server")]
         let transaction_signature = verify_submit_and_fetch_open(
             payload,
             &params,
             context.recent_blockhash,
-            pipeline,
+            &pipeline,
             fresh_open,
             self.config.fee_payer_signer.as_deref(),
         )
@@ -1285,10 +1289,10 @@ impl<S: ChannelStore> SessionServer<S> {
         // signature status makes that path idempotent before this mutator
         // credits the deposit.
         #[cfg(feature = "server")]
-        let pipeline = self.tx_pipeline().await?;
+        let pipeline = self.transaction_pipeline().await?;
         #[cfg(feature = "server")]
         let topup_signature =
-            verify_submit_and_fetch_topup(payload, &existing, &self.config, pipeline).await?;
+            verify_submit_and_fetch_topup(payload, &existing, &self.config, &pipeline).await?;
         #[cfg(not(feature = "server"))]
         let topup_signature =
             verify_submit_and_fetch_topup(payload, &existing, &self.config, &()).await?;
