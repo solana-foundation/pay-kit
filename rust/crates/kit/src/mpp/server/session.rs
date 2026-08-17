@@ -987,6 +987,11 @@ impl<S: ChannelStore> SessionServer<S> {
             now_unix_secs(),
             self.config.min_voucher_delta,
             self.config.grace_period_seconds as i64,
+            // Reject a voucher whose newly authorized credit
+            // (`acceptedCumulative - spentAmount`) can't cover this action's
+            // fixed price, before the watermark advances — matches the
+            // TypeScript/Python session servers' availability gate.
+            self.config.amount,
         )
         .await
         .map_err(Error::from)?;
@@ -3396,6 +3401,81 @@ mod tests {
             })
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn voucher_below_action_price_is_rejected_and_not_replayable() {
+        let (server, mut session, channel_id) = client_server().await;
+        // Serve one action at the fixed price (config.amount == 25): the
+        // watermark and spent_amount both advance to 25, so the channel's
+        // available credit (cumulative - spent) is now 0.
+        let first = session.sign_increment(25).await.unwrap();
+        let accepted = server
+            .verify_voucher(&VoucherPayload {
+                channel_id: first.data.channel_id.clone(),
+                voucher: first,
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.charged, 25);
+
+        // A delta-1 voucher (min_voucher_delta is 0, so monotonicity alone
+        // admits it) authorizes only 1 new unit — it cannot cover the 25-unit
+        // action price. The server must reject it, not serve at full price and
+        // settle only the +1 cumulative.
+        let underfunded = session.sign_increment(1).await.unwrap();
+        let rejected = server
+            .verify_voucher(&VoucherPayload {
+                channel_id: underfunded.data.channel_id.clone(),
+                voucher: underfunded.clone(),
+            })
+            .await;
+        assert!(rejected
+            .unwrap_err()
+            .to_string()
+            .contains("insufficient authorized voucher availability"));
+
+        // The rejection advanced neither the watermark, the highest-voucher
+        // signature, nor spent — so a retry of that same under-funded voucher is
+        // not mistaken for an already-paid replay and served for free.
+        let after_reject = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_reject.cumulative, 25);
+        assert_eq!(after_reject.spent_amount, 25);
+        let retry = server
+            .verify_voucher(&VoucherPayload {
+                channel_id: underfunded.data.channel_id.clone(),
+                voucher: underfunded,
+            })
+            .await;
+        assert!(retry
+            .unwrap_err()
+            .to_string()
+            .contains("insufficient authorized voucher availability"));
+
+        // A voucher that authorizes a full action's worth of new credit serves
+        // and debits normally: the gate only blocks the under-funded case.
+        let funded = session.sign_increment(24).await.unwrap(); // 26 -> 50
+        let served = server
+            .verify_voucher(&VoucherPayload {
+                channel_id: funded.data.channel_id.clone(),
+                voucher: funded,
+            })
+            .await
+            .unwrap();
+        assert_eq!(served.charged, 25);
+        let after = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.cumulative, 50);
+        assert_eq!(after.spent_amount, 50);
     }
 
     #[tokio::test]

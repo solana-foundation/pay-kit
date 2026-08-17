@@ -617,6 +617,9 @@ impl X402BatchSettlement {
             now_unix(),
             self.config.min_voucher_delta,
             self.config.grace_period_seconds as i64,
+            // Batch settlement meters via the cumulative watermark, not a
+            // per-action `spentAmount` debit, so it has no availability floor.
+            0,
         )
         .await
         .map_err(Into::into)

@@ -42,6 +42,17 @@ pub struct VoucherAcceptance {
 /// [`crate::core::voucher::verify_voucher_signature`]), then atomically advances the
 /// watermark and records the voucher signature/expiry.
 ///
+/// `required_availability` is the caller's per-action cost. When it is
+/// non-zero, a fresh acceptance is rejected — atomically, before the watermark
+/// or signature are committed — if the voucher does not authorize enough new
+/// credit to cover it: `acceptedCumulative - spentAmount < required_availability`
+/// (draft-solana-session-00, Debit Processing). Gating here rather than at a
+/// later debit step is deliberate: if the watermark/signature were advanced for
+/// an under-funded voucher and then rejected, a retry of that same voucher
+/// would be seen as an idempotent replay and served for free. Pass `0` to
+/// disable the gate (x402 batch settlement meters via the cumulative watermark,
+/// not a `spentAmount` debit, so it has no per-action availability floor).
+///
 /// The cumulative amount doubles as the channel's nonce: a new charge requires a
 /// STRICT increment (`new_cumulative > current`). An exact replay of the highest
 /// voucher (same cumulative AND same signature) is accepted idempotently as a
@@ -61,6 +72,7 @@ pub async fn accept_voucher(
     now: i64,
     min_voucher_delta: u64,
     settlement_window: i64,
+    required_availability: u64,
 ) -> Result<VoucherAcceptance> {
     // Read current state (for authorized_signer, watermark, deposit).
     let state = store
@@ -167,6 +179,17 @@ pub async fn accept_voucher(
                         "Concurrent update: watermark advanced".to_string(),
                     ));
                 }
+                // Availability gate (draft-solana-session-00, Debit Processing):
+                // the newly authorized credit must cover the caller's per-action
+                // cost. Enforced here, under the same lock that advances the
+                // watermark, so an under-funded voucher never leaves the
+                // watermark/signature advanced — otherwise its retry would be
+                // classified as a paid-for replay and served for free.
+                if new_cumulative.saturating_sub(state.spent_amount) < required_availability {
+                    return Err(StoreError::Internal(
+                        "insufficient authorized voucher availability".to_string(),
+                    ));
+                }
                 // Set on every committing run so a retried closure (e.g. a
                 // CAS-based store) reflects the final decision, not an earlier one.
                 replayed_cl.store(false, Ordering::SeqCst);
@@ -256,14 +279,14 @@ mod tests {
         let exp = 4_102_444_800;
         let sig1 = sign(&channel, 100, exp, &sk);
         // First charge: strict increment from 0 → charged 100, not a replay.
-        let first = accept_voucher(&store, &channel_b58, 100, exp, &sig1, 1, 0, 0)
+        let first = accept_voucher(&store, &channel_b58, 100, exp, &sig1, 1, 0, 0, 0)
             .await
             .unwrap();
         assert_eq!(first.cumulative, 100);
         assert_eq!(first.charged, 100);
         assert!(!first.replay);
         // Idempotent replay of the latest voucher: no charge, flagged as replay.
-        let replay = accept_voucher(&store, &channel_b58, 100, exp, &sig1, 1, 0, 0)
+        let replay = accept_voucher(&store, &channel_b58, 100, exp, &sig1, 1, 0, 0, 0)
             .await
             .unwrap();
         assert_eq!(replay.cumulative, 100);
@@ -271,7 +294,7 @@ mod tests {
         assert!(replay.replay);
         // Advance.
         let sig2 = sign(&channel, 250, exp, &sk);
-        let advanced = accept_voucher(&store, &channel_b58, 250, exp, &sig2, 1, 0, 0)
+        let advanced = accept_voucher(&store, &channel_b58, 250, exp, &sig2, 1, 0, 0, 0)
             .await
             .unwrap();
         assert_eq!(advanced.cumulative, 250);
@@ -280,14 +303,14 @@ mod tests {
         // Regression rejected.
         let sig_lo = sign(&channel, 200, exp, &sk);
         assert!(
-            accept_voucher(&store, &channel_b58, 200, exp, &sig_lo, 1, 0, 0)
+            accept_voucher(&store, &channel_b58, 200, exp, &sig_lo, 1, 0, 0, 0)
                 .await
                 .is_err()
         );
         // Over deposit rejected.
         let sig_hi = sign(&channel, 2_000_000, exp, &sk);
         assert!(
-            accept_voucher(&store, &channel_b58, 2_000_000, exp, &sig_hi, 1, 0, 0)
+            accept_voucher(&store, &channel_b58, 2_000_000, exp, &sig_hi, 1, 0, 0, 0)
                 .await
                 .is_err()
         );
@@ -335,7 +358,7 @@ mod tests {
             .unwrap();
         let exp = 4_102_444_800;
         let sig1 = sign(&channel, 100, exp, &sk);
-        accept_voucher(&store, &channel_b58, 100, exp, &sig1, 1, 0, 0)
+        accept_voucher(&store, &channel_b58, 100, exp, &sig1, 1, 0, 0, 0)
             .await
             .unwrap();
 
@@ -344,7 +367,7 @@ mod tests {
         // expiry yields a valid-but-different signature at the same cumulative.
         let sig_other = sign(&channel, 100, exp + 1, &sk);
         assert_ne!(sig1, sig_other);
-        let err = accept_voucher(&store, &channel_b58, 100, exp + 1, &sig_other, 1, 0, 0)
+        let err = accept_voucher(&store, &channel_b58, 100, exp + 1, &sig_other, 1, 0, 0, 0)
             .await
             .unwrap_err();
         // Rejected as non-monotonic (it is not the exact replay of the latest).
@@ -367,7 +390,7 @@ mod tests {
             .await
             .unwrap();
         let sig = sign(&channel, 100, 0, &sk);
-        let out = accept_voucher(&store, &channel_b58, 100, 0, &sig, 1_000, 0, 900)
+        let out = accept_voucher(&store, &channel_b58, 100, 0, &sig, 1_000, 0, 900, 0)
             .await
             .unwrap();
         assert_eq!(out.cumulative, 100);
@@ -388,7 +411,7 @@ mod tests {
         // expires_at inside the window → rejected.
         let exp = now + window - 1;
         let sig = sign(&channel, 100, exp, &sk);
-        let err = accept_voucher(&store, &channel_b58, 100, exp, &sig, now, 0, window)
+        let err = accept_voucher(&store, &channel_b58, 100, exp, &sig, now, 0, window, 0)
             .await
             .unwrap_err();
         assert!(
