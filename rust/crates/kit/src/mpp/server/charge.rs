@@ -144,7 +144,9 @@ fn resolve_server_token_program(
         return Ok(None);
     }
 
-    if let Some(mint) = crate::mpp::protocol::solana::resolve_stablecoin_mint(currency, network) {
+    if let Some(mint) =
+        crate::mpp::protocol::solana::try_resolve_stablecoin_mint(currency, network)?
+    {
         if crate::mpp::protocol::solana::is_known_stablecoin_mint(mint) {
             return Ok(Some(
                 crate::mpp::protocol::solana::default_token_program_for_currency(currency, network),
@@ -608,10 +610,10 @@ impl Mpp {
                 "ataCreationRequired requires an SPL token currency".into(),
             ));
         }
-        if crate::mpp::protocol::solana::resolve_stablecoin_mint(
+        if crate::mpp::protocol::solana::try_resolve_stablecoin_mint(
             &self.currency,
             Some(&self.network),
-        ) != Some(self.currency.as_str())
+        )? != Some(self.currency.as_str())
         {
             return Err(Error::InvalidConfig(
                 "ataCreationRequired requires currency to be an SPL token mint address".into(),
@@ -3105,7 +3107,8 @@ pub(crate) fn resolve_expected_mint(
     currency: &str,
     network: Option<&str>,
 ) -> Result<Pubkey, VerificationError> {
-    let Some(mint) = crate::mpp::protocol::solana::resolve_stablecoin_mint(currency, network)
+    let Some(mint) = crate::mpp::protocol::solana::try_resolve_stablecoin_mint(currency, network)
+        .map_err(|error| VerificationError::invalid_payload(error.to_string()))?
     else {
         return Err(VerificationError::invalid_payload(
             "SOL does not use an SPL mint".to_string(),

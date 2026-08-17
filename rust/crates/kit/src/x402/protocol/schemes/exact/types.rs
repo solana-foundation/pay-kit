@@ -84,6 +84,8 @@ pub fn is_native_sol(currency: &str) -> bool {
 /// Resolve a stablecoin symbol to a mint address for a cluster.
 ///
 /// Returns `None` for native SOL and passes through unknown symbols/mints.
+/// Call [`try_resolve_stablecoin_mint`] when the currency may be `USDtest` so
+/// unsupported clusters produce an actionable error.
 pub fn resolve_stablecoin_mint<'a>(currency: &'a str, cluster: Option<&str>) -> Option<&'a str> {
     if is_native_sol(currency) {
         return None;
@@ -94,6 +96,14 @@ pub fn resolve_stablecoin_mint<'a>(currency: &'a str, cluster: Option<&str>) -> 
             Some(SOLANA_TESTNET) | Some("testnet") => mints::USDC_TESTNET,
             _ => mints::USDC_MAINNET,
         }),
+        "USDTEST"
+            if matches!(
+                cluster,
+                Some(SOLANA_DEVNET) | Some("devnet") | Some("solana-devnet")
+            ) =>
+        {
+            Some(mints::USDTEST_DEVNET)
+        }
         "USDT" => Some(mints::USDT_MAINNET),
         "USDG" => Some(match cluster {
             Some(SOLANA_DEVNET) | Some("devnet") | Some("localnet") => mints::USDG_DEVNET,
@@ -110,6 +120,28 @@ pub fn resolve_stablecoin_mint<'a>(currency: &'a str, cluster: Option<&str>) -> 
     }
 }
 
+/// Resolve a stablecoin symbol while enforcing cluster-specific availability.
+///
+/// `USDtest` is intentionally available only on devnet. Omitted, mainnet,
+/// testnet, and localnet clusters are rejected.
+pub fn try_resolve_stablecoin_mint<'a>(
+    currency: &'a str,
+    cluster: Option<&str>,
+) -> Result<Option<&'a str>, crate::x402::Error> {
+    let is_devnet = matches!(
+        cluster,
+        Some(SOLANA_DEVNET) | Some("devnet") | Some("solana-devnet")
+    );
+    let is_usdtest = currency.eq_ignore_ascii_case("USDtest") || currency == mints::USDTEST_DEVNET;
+    if is_usdtest && !is_devnet {
+        let actual = cluster.unwrap_or("mainnet-beta");
+        return Err(crate::x402::Error::Other(format!(
+            "USDtest is devnet-only; set cluster to `devnet` (got `{actual}`)"
+        )));
+    }
+    Ok(resolve_stablecoin_mint(currency, cluster))
+}
+
 /// Reverse lookup: given a known mint address or stablecoin symbol, return
 /// the canonical symbol. Returns `None` for native SOL or unknown values.
 ///
@@ -123,12 +155,14 @@ pub fn stablecoin_symbol(currency_or_mint: &str) -> Option<&'static str> {
     let upper = currency_or_mint.to_uppercase();
     match upper.as_str() {
         "USDC" => Some("USDC"),
+        "USDTEST" => Some("USDTEST"),
         "USDT" => Some("USDT"),
         "USDG" => Some("USDG"),
         "PYUSD" => Some("PYUSD"),
         "CASH" => Some("CASH"),
         _ => match currency_or_mint {
             mints::USDC_MAINNET | mints::USDC_DEVNET => Some("USDC"),
+            mints::USDTEST_DEVNET => Some("USDTEST"),
             mints::USDT_MAINNET => Some("USDT"),
             mints::USDG_MAINNET | mints::USDG_DEVNET => Some("USDG"),
             mints::PYUSD_MAINNET | mints::PYUSD_DEVNET => Some("PYUSD"),
@@ -144,7 +178,7 @@ pub fn stablecoin_symbol(currency_or_mint: &str) -> Option<&'static str> {
 pub fn stablecoin_uses_token_2022(currency_or_mint: &str) -> bool {
     matches!(
         stablecoin_symbol(currency_or_mint),
-        Some("USDG") | Some("PYUSD") | Some("CASH")
+        Some("USDTEST") | Some("USDG") | Some("PYUSD") | Some("CASH")
     )
 }
 
@@ -727,6 +761,7 @@ mod tests {
 
         assert!(Pubkey::from_str(mints::USDC_MAINNET).is_ok());
         assert!(Pubkey::from_str(mints::USDC_DEVNET).is_ok());
+        assert!(Pubkey::from_str(mints::USDTEST_DEVNET).is_ok());
         assert!(Pubkey::from_str(mints::USDT_MAINNET).is_ok());
         assert!(Pubkey::from_str(mints::USDG_MAINNET).is_ok());
         assert!(Pubkey::from_str(mints::USDG_DEVNET).is_ok());
@@ -745,6 +780,21 @@ mod tests {
             resolve_stablecoin_mint("PYUSD", Some("devnet")),
             Some(mints::PYUSD_DEVNET)
         );
+        assert_eq!(
+            try_resolve_stablecoin_mint("USDtest", Some("devnet")).unwrap(),
+            Some(mints::USDTEST_DEVNET)
+        );
+        for cluster in [
+            None,
+            Some("mainnet-beta"),
+            Some("testnet"),
+            Some("localnet"),
+        ] {
+            let error = try_resolve_stablecoin_mint("usdtest", cluster).unwrap_err();
+            assert!(error.to_string().contains("USDtest is devnet-only"));
+            let error = try_resolve_stablecoin_mint(mints::USDTEST_DEVNET, cluster).unwrap_err();
+            assert!(error.to_string().contains("USDtest is devnet-only"));
+        }
         assert_eq!(
             resolve_stablecoin_mint("USDT", None),
             Some(mints::USDT_MAINNET)
@@ -766,6 +816,10 @@ mod tests {
 
     #[test]
     fn token_2022_stablecoins_default_to_token_2022() {
+        assert_eq!(
+            default_token_program_for_currency("USDtest", Some("devnet")),
+            programs::TOKEN_2022_PROGRAM
+        );
         assert_eq!(
             default_token_program_for_currency("USDC", None),
             programs::TOKEN_PROGRAM
@@ -811,7 +865,7 @@ mod tests {
 
     #[test]
     fn stablecoin_symbol_round_trips_symbols() {
-        for sym in ["USDC", "USDT", "USDG", "PYUSD", "CASH"] {
+        for sym in ["USDC", "USDT", "USDTEST", "USDG", "PYUSD", "CASH"] {
             assert_eq!(stablecoin_symbol(sym), Some(sym));
             assert_eq!(stablecoin_symbol(&sym.to_lowercase()), Some(sym));
         }
@@ -821,6 +875,7 @@ mod tests {
     fn stablecoin_symbol_resolves_known_mints() {
         assert_eq!(stablecoin_symbol(mints::USDC_MAINNET), Some("USDC"));
         assert_eq!(stablecoin_symbol(mints::USDC_DEVNET), Some("USDC"));
+        assert_eq!(stablecoin_symbol(mints::USDTEST_DEVNET), Some("USDTEST"));
         assert_eq!(stablecoin_symbol(mints::USDT_MAINNET), Some("USDT"));
         assert_eq!(stablecoin_symbol(mints::USDG_MAINNET), Some("USDG"));
         assert_eq!(stablecoin_symbol(mints::USDG_DEVNET), Some("USDG"));
@@ -843,6 +898,8 @@ mod tests {
         assert!(stablecoin_uses_token_2022("USDG"));
         assert!(stablecoin_uses_token_2022("PYUSD"));
         assert!(stablecoin_uses_token_2022("CASH"));
+        assert!(stablecoin_uses_token_2022("USDtest"));
+        assert!(stablecoin_uses_token_2022(mints::USDTEST_DEVNET));
         assert!(stablecoin_uses_token_2022(mints::USDG_MAINNET));
         assert!(stablecoin_uses_token_2022(mints::PYUSD_DEVNET));
         // Legacy stablecoins use the original SPL Token program.

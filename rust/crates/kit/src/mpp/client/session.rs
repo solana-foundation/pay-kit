@@ -36,7 +36,7 @@ use crate::mpp::protocol::intents::session::{
     SessionVoucherSigner, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
     VoucherSignatureType, DEFAULT_SESSION_EXPIRES_AT,
 };
-use crate::mpp::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
+use crate::mpp::protocol::solana::default_token_program_for_currency;
 
 /// Default payment-channel close grace period (seconds). Re-exported from
 /// `solana-pay-core` to preserve this crate's public path.
@@ -363,7 +363,7 @@ pub fn derive_payment_channel_open(
     let details = &request.method_details;
     let network = Some(details.network.as_str());
     let mint = parse_pubkey(
-        resolve_stablecoin_mint(&request.currency, network)
+        crate::mpp::protocol::solana::try_resolve_stablecoin_mint(&request.currency, network)?
             .ok_or_else(|| Error::Other("session payment channels require an SPL token".into()))?,
         "mint",
     )?;
