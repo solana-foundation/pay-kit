@@ -1975,7 +1975,7 @@ async fn verify_submit_and_fetch_open(
         .send_and_confirm_transaction(&tx)
         .map_err(|error| Error::Rpc(format!("open broadcast failed: {error}")))
         .err();
-    let confirmed = fetch_and_match_open_channel(&rpc, params);
+    let confirmed = retry_confirmed_rpc_read(|| fetch_and_match_open_channel(&rpc, params)).await;
     match (broadcast_error, confirmed) {
         (None, confirmed) => confirmed,
         (Some(_), Ok(())) => Ok(()),
@@ -2013,6 +2013,31 @@ fn fetch_and_match_open_channel(
         ));
     }
     Ok(())
+}
+
+/// A confirmed signature can become visible before the account write is
+/// readable through a lagging RPC backend. Retry only RPC read failures;
+/// decoded state mismatches remain authoritative and fail immediately.
+#[cfg(feature = "server")]
+async fn retry_confirmed_rpc_read<T>(mut read: impl FnMut() -> Result<T>) -> Result<T> {
+    const RETRIES: usize = 6;
+    #[cfg(not(test))]
+    const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+    #[cfg(test)]
+    const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(1);
+
+    let mut backoff = INITIAL_BACKOFF;
+    for attempt in 0..=RETRIES {
+        match read() {
+            Ok(value) => return Ok(value),
+            Err(Error::Rpc(_)) if attempt < RETRIES => {
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded confirmed RPC read retry loop must return")
 }
 
 #[cfg(feature = "server")]
@@ -2158,9 +2183,11 @@ async fn verify_submit_and_fetch_topup(
             return Err(Error::Rpc(format!("top-up broadcast failed: {error}")));
         }
     }
-    let account = rpc
-        .get_account(&channel)
-        .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?;
+    let account = retry_confirmed_rpc_read(|| {
+        rpc.get_account(&channel)
+            .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))
+    })
+    .await?;
     let channel_state =
         payment_channels::generated::generated::accounts::Channel::from_bytes(&account.data)
             .map_err(|error| Error::Other(format!("decode topped-up channel: {error}")))?;
@@ -2346,6 +2373,41 @@ mod tests {
         bytes[..32].copy_from_slice(key.as_bytes());
         bytes[32..].copy_from_slice(key.verifying_key().as_bytes());
         Box::new(MemorySigner::from_bytes(&bytes).unwrap())
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn confirmed_rpc_read_retries_transient_visibility_failures() {
+        let attempts = std::cell::Cell::new(0usize);
+        let value = retry_confirmed_rpc_read(|| {
+            let attempt = attempts.get() + 1;
+            attempts.set(attempt);
+            if attempt < 3 {
+                Err(Error::Rpc("account not visible yet".into()))
+            } else {
+                Ok(42)
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(value, 42);
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn confirmed_rpc_read_does_not_retry_state_mismatches() {
+        let attempts = std::cell::Cell::new(0usize);
+        let error = retry_confirmed_rpc_read::<()>(|| {
+            attempts.set(attempts.get() + 1);
+            Err(Error::Other("confirmed state mismatch".into()))
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("confirmed state mismatch"));
+        assert_eq!(attempts.get(), 1);
     }
 
     fn shared_signer(seed: u8) -> std::sync::Arc<dyn solana_keychain::SolanaSigner> {
