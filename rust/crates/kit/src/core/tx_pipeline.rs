@@ -18,7 +18,6 @@ use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client::rpc_client::SerializableTransaction;
 use solana_rpc_client_api::config::RpcAccountInfoConfig;
 use solana_signature::Signature;
-use solana_transaction::versioned::VersionedTransaction;
 use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 
 use crate::core::rpc::SKIP_PREFLIGHT_SEND;
@@ -31,6 +30,12 @@ const ACCOUNT_BATCH_LIMIT: usize = 100;
 pub struct TxPipelineConfig {
     /// Maximum concurrent `sendTransaction` calls.
     pub max_send_concurrency: usize,
+    /// Maximum attempts for transient `sendTransaction` failures.
+    pub submission_max_attempts: usize,
+    /// Initial retry delay for failed submissions.
+    pub submission_initial_backoff: Duration,
+    /// Maximum retry delay for failed submissions.
+    pub submission_max_backoff: Duration,
     /// Minimum spacing between submissions through this pipeline.
     pub send_interval: Duration,
     /// Delay between batched signature-status polls.
@@ -51,6 +56,9 @@ impl Default for TxPipelineConfig {
     fn default() -> Self {
         Self {
             max_send_concurrency: 256,
+            submission_max_attempts: 4,
+            submission_initial_backoff: Duration::from_millis(50),
+            submission_max_backoff: Duration::from_secs(1),
             send_interval: Duration::from_millis(1),
             confirmation_poll_interval: Duration::from_millis(250),
             confirmation_timeout: Duration::from_secs(90),
@@ -175,14 +183,11 @@ impl TxPipeline {
     ///
     /// Only this API skips preflight. Callers must not pass arbitrary client
     /// transactions without first performing byte-exact validation.
-    pub async fn submit_verified(
-        &self,
-        transaction: &VersionedTransaction,
-    ) -> PipelineResult<ConfirmedTransaction> {
-        let signature = *transaction
-            .signatures
-            .first()
-            .ok_or(TxPipelineError::MissingSignature)?;
+    pub async fn submit_verified<T>(&self, transaction: &T) -> PipelineResult<ConfirmedTransaction>
+    where
+        T: SerializableTransaction + Sync,
+    {
+        let signature = *transaction.get_signature();
         // A send failure is not authoritative: the same signed transaction
         // may already have landed while its prior response was lost. Always
         // ask the shared confirmation tracker before deciding the outcome.
@@ -210,13 +215,25 @@ impl TxPipeline {
             .acquire()
             .await
             .map_err(|_| TxPipelineError::Stopped)?;
-        self.pace_submission().await;
-        let result = self
-            .inner
-            .rpc
-            .send_transaction_with_config(transaction, SKIP_PREFLIGHT_SEND.config())
-            .await
-            .map_err(|_| TxPipelineError::SubmissionFailed { signature });
+        let attempts = self.inner.config.submission_max_attempts.max(1);
+        let mut backoff = self.inner.config.submission_initial_backoff;
+        let mut result = Err(TxPipelineError::SubmissionFailed { signature });
+        for attempt in 1..=attempts {
+            self.pace_submission().await;
+            result = self
+                .inner
+                .rpc
+                .send_transaction_with_config(transaction, SKIP_PREFLIGHT_SEND.config())
+                .await
+                .map_err(|_| TxPipelineError::SubmissionFailed { signature });
+            if result.is_ok() || attempt == attempts {
+                break;
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = backoff
+                .saturating_mul(2)
+                .min(self.inner.config.submission_max_backoff);
+        }
         drop(permit);
         result
     }
