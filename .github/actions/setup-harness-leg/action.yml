@@ -26,6 +26,13 @@ runs:
     # miss this cache — different runner.os — and compile Rust themselves, as
     # they do today.)
     - uses: dtolnay/rust-toolchain@stable
+    # Same key expression as setup-harness (see the comment there for why the
+    # gitignored-lockfile hash froze this cache): the build job saves under
+    # this key, the legs hit it exactly.
+    - name: Compute cargo cache key
+      id: cargo-key
+      shell: bash
+      run: echo "rustc=$(rustc -V | tr -d ' ()')" >> "$GITHUB_OUTPUT"
     - name: Restore shared cargo cache
       uses: actions/cache@v5
       with:
@@ -33,8 +40,8 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           rust/target
-        key: ${{ runner.os }}-cargo-shared-harness-${{ hashFiles('rust/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-shared-harness-
+        key: ${{ runner.os }}-cargo-shared-harness-${{ steps.cargo-key.outputs.rustc }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
+        restore-keys: ${{ runner.os }}-cargo-shared-harness-${{ steps.cargo-key.outputs.rustc }}-
     - name: Install harness
       working-directory: harness
       shell: bash

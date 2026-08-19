@@ -44,6 +44,21 @@ runs:
     - name: Set up Rust toolchain
       if: inputs.cargo-bins != ''
       uses: dtolnay/rust-toolchain@stable
+    # rust/Cargo.lock is gitignored, so hashFiles on it alone resolves to the
+    # empty string and the key degenerates to a constant. A constant key is an
+    # exact primary hit on every run, and actions/cache never re-saves on an
+    # exact hit, so the cache stayed frozen at whatever the first run ever
+    # stored: artifacts from an older rustc that cargo discards, restored (up
+    # to 660 MB) and then fully recompiled, every run. Key on the live rustc
+    # version plus the manifest hash instead; the lockfile pattern stays in
+    # the hash so it starts contributing the moment the lockfile is committed.
+    # setup-harness-leg computes the same key so the legs restore what the
+    # build job saves.
+    - name: Compute cargo cache key
+      if: inputs.cargo-bins != ''
+      id: cargo-key
+      shell: bash
+      run: echo "rustc=$(rustc -V | tr -d ' ()')" >> "$GITHUB_OUTPUT"
     - name: Cache cargo registry + target
       if: inputs.cargo-bins != ''
       uses: actions/cache@v5
@@ -52,8 +67,8 @@ runs:
           ~/.cargo/registry
           ~/.cargo/git
           rust/target
-        key: ${{ runner.os }}-cargo-${{ inputs.cargo-cache-key }}-harness-${{ hashFiles('rust/Cargo.lock') }}
-        restore-keys: ${{ runner.os }}-cargo-${{ inputs.cargo-cache-key }}-harness-
+        key: ${{ runner.os }}-cargo-${{ inputs.cargo-cache-key }}-harness-${{ steps.cargo-key.outputs.rustc }}-${{ hashFiles('rust/Cargo.lock', 'rust/**/Cargo.toml') }}
+        restore-keys: ${{ runner.os }}-cargo-${{ inputs.cargo-cache-key }}-harness-${{ steps.cargo-key.outputs.rustc }}-
     - name: Build Rust harness adapters
       if: inputs.cargo-bins != ''
       working-directory: rust
