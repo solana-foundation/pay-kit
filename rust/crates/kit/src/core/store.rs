@@ -733,15 +733,27 @@ where
     }
 }
 
-/// In-memory channel store backed by a Mutex.
+/// In-memory channel store backed by a sharded concurrent map.
+///
+/// Uses [`DashMap`] rather than a single `Mutex<HashMap>` so that requests for
+/// distinct channels contend only when they hash to the same internal shard,
+/// not globally. Each session has its own channel, so under real load the
+/// per-request `get_channel` + `update_channel` (two lock acquisitions per
+/// voucher) previously serialized every gateway worker thread on one mutex —
+/// a hard aggregate throughput ceiling regardless of core count. Sharding
+/// removes that single point of contention. Per-channel operations remain
+/// atomic: `update_channel`/`advance_cumulative`/`touch_channel_lifecycle`
+/// hold the shard's lock (via the entry / `get_mut` guard) across their
+/// read-modify-write, so concurrent updates to the *same* channel are still
+/// serialized correctly.
 pub struct MemoryChannelStore {
-    data: std::sync::Mutex<std::collections::HashMap<String, ChannelState>>,
+    data: dashmap::DashMap<String, ChannelState>,
 }
 
 impl Default for MemoryChannelStore {
     fn default() -> Self {
         Self {
-            data: std::sync::Mutex::new(std::collections::HashMap::new()),
+            data: dashmap::DashMap::new(),
         }
     }
 }
@@ -756,7 +768,13 @@ impl ChannelStore for MemoryChannelStore {
     fn list_channels(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
-        let channels = self.data.lock().unwrap().values().cloned().collect();
+        // Iterates shard-by-shard rather than holding one global lock across
+        // the whole clone, so a lifecycle sweep no longer stalls every request.
+        let channels = self
+            .data
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         Box::pin(async move { Ok(channels) })
     }
 
@@ -764,7 +782,7 @@ impl ChannelStore for MemoryChannelStore {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<ChannelState>, StoreError>> + Send + '_>> {
-        let result = self.data.lock().unwrap().get(channel_id).cloned();
+        let result = self.data.get(channel_id).map(|entry| entry.value().clone());
         Box::pin(async move { Ok(result) })
     }
 
@@ -773,12 +791,13 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         state: ChannelState,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let result = match self.data.lock().unwrap().entry(channel_id.to_string()) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
+        use dashmap::mapref::entry::Entry;
+        let result = match self.data.entry(channel_id.to_string()) {
+            Entry::Vacant(entry) => {
                 entry.insert(state);
                 Ok(())
             }
-            std::collections::hash_map::Entry::Occupied(_) => Err(StoreError::Internal(format!(
+            Entry::Occupied(_) => Err(StoreError::Internal(format!(
                 "Channel {channel_id} already exists"
             ))),
         };
@@ -789,7 +808,7 @@ impl ChannelStore for MemoryChannelStore {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        self.data.lock().unwrap().remove(channel_id);
+        self.data.remove(channel_id);
         Box::pin(async { Ok(()) })
     }
 
@@ -798,17 +817,30 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
-        let result = {
-            let mut data = self.data.lock().unwrap();
-            let current = data.get(channel_id).cloned();
-            let key = channel_id.to_string();
-            match updater(current) {
+        use dashmap::mapref::entry::Entry;
+        // Hold only this key's shard lock across the read-modify-write, so the
+        // update is atomic per channel without blocking other channels. The
+        // updater must not re-enter the store for the same key (same invariant
+        // the previous single-mutex version required — a re-entrant lock would
+        // have deadlocked there too).
+        let result = match self.data.entry(channel_id.to_string()) {
+            Entry::Occupied(mut entry) => {
+                let current = Some(entry.get().clone());
+                match updater(current) {
+                    Ok(new_state) => {
+                        entry.insert(new_state.clone());
+                        Ok(new_state)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Entry::Vacant(entry) => match updater(None) {
                 Ok(new_state) => {
-                    data.insert(key, new_state.clone());
+                    entry.insert(new_state.clone());
                     Ok(new_state)
                 }
                 Err(e) => Err(e),
-            }
+            },
         };
         Box::pin(async move { result })
     }
@@ -818,12 +850,8 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         lifecycle: ChannelLifecycle,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
-        let result = {
-            let mut data = self.data.lock().unwrap();
-            let state = data
-                .get_mut(channel_id)
-                .ok_or_else(|| StoreError::Internal("Channel not found".to_string()));
-            state.map(|state| {
+        let result = match self.data.get_mut(channel_id) {
+            Some(mut state) => {
                 let replace = !state.sealed
                     && state.close_requested_at.is_none()
                     && state
@@ -833,8 +861,9 @@ impl ChannelStore for MemoryChannelStore {
                 if replace {
                     state.lifecycle = Some(lifecycle);
                 }
-                state.clone()
-            })
+                Ok(state.clone())
+            }
+            None => Err(StoreError::Internal("Channel not found".to_string())),
         };
         Box::pin(async move { result })
     }
@@ -845,9 +874,8 @@ impl ChannelStore for MemoryChannelStore {
         expected: u64,
         new: u64,
     ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
-        let mut data = self.data.lock().unwrap();
-        match data.get_mut(channel_id) {
-            Some(state) if state.cumulative == expected => {
+        match self.data.get_mut(channel_id) {
+            Some(mut state) if state.cumulative == expected => {
                 state.cumulative = new;
                 Box::pin(async { Ok(true) })
             }
@@ -861,9 +889,8 @@ impl ChannelStore for MemoryChannelStore {
         channel_id: &str,
         new_deposit: u64,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let mut data = self.data.lock().unwrap();
-        match data.get_mut(channel_id) {
-            Some(state) => {
+        match self.data.get_mut(channel_id) {
+            Some(mut state) => {
                 state.deposit = new_deposit;
                 Box::pin(async { Ok(()) })
             }
@@ -875,9 +902,8 @@ impl ChannelStore for MemoryChannelStore {
         &self,
         channel_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
-        let mut data = self.data.lock().unwrap();
-        match data.get_mut(channel_id) {
-            Some(state) => {
+        match self.data.get_mut(channel_id) {
+            Some(mut state) => {
                 state.sealed = true;
                 Box::pin(async { Ok(()) })
             }

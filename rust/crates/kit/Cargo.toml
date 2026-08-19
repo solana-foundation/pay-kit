@@ -102,6 +102,9 @@ solana-transaction-status-client-types = { version = "4", default-features = fal
 solana-zero-copy = { version = "1", default-features = false }
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 
+# Sharded concurrent map for the in-memory channel store hot path.
+dashmap = "5"
+
 # Generated program-client deps (payment-channels + subscriptions).
 num-derive = "0.4"
 num-traits = "0.2"
