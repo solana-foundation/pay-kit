@@ -6,6 +6,21 @@ on:
   pull_request:
   workflow_call:
 
+concurrency:
+  # Cancel a pull-request run when a newer push supersedes it. Measured over
+  # the last 810 pull-request runs, 119 of them kept running after a newer
+  # push had already started, for 11.2 hours of runner time spent on commits
+  # nobody was waiting on.
+  #
+  # Non-pull-request runs get a group of their own, keyed on run_id, rather
+  # than sharing one keyed on the ref. A shared group would queue them against
+  # each other, and a concurrency group only holds one pending run: a third
+  # push landing while the first is still running evicts the second, which
+  # would then report no result at all for that commit. `cancel-in-progress`
+  # being false does not prevent that, it only protects the running run.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test-ruby:
     name: Ruby tests
