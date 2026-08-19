@@ -22,7 +22,41 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      lua: ${{ steps.filter.outputs.lua }}
+      harness: ${{ steps.filter.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            lua:
+              - 'lua/**'
+              - 'html/**'
+              - '.github/**'
+            harness:
+              - 'lua/**'
+              - 'html/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   test-lua:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.lua == 'true'
     name: Lua tests
     runs-on: ubuntu-latest
     steps:
@@ -115,6 +149,8 @@ jobs:
           if-no-files-found: ignore
 
   harness-lua:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true'
     name: Lua harness focused matrix
     runs-on: ubuntu-latest
     steps:
