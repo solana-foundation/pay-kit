@@ -16,6 +16,7 @@
 //!   acceptance, shared by the MPP `session` intent and the x402
 //!   `batch-settlement` scheme.
 
+pub mod batch_verify;
 pub mod blockhash;
 pub mod mints;
 #[cfg(feature = "otel")]

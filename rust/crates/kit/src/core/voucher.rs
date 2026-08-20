@@ -39,6 +39,47 @@ pub fn verify_voucher_signature(
     now: i64,
     settlement_window: i64,
 ) -> Result<()> {
+    let parts = voucher_verify_parts(
+        channel_id,
+        cumulative,
+        expires_at,
+        signature_b58,
+        authorized_signer_b58,
+        now,
+        settlement_window,
+    )?;
+    parts
+        .verifying_key
+        .verify_strict(&parts.message, &parts.signature)
+        .map_err(|_| Error::Other("Voucher signature verification failed".to_string()))
+}
+
+/// The Ed25519 verification inputs for a voucher: the exact signed message, the
+/// parsed authorized-signer key, and the parsed signature. Produced by
+/// [`voucher_verify_parts`], which also runs the (cheap) expiry checks. The
+/// caller performs the (expensive) curve operation — either inline via
+/// [`ed25519_dalek::VerifyingKey::verify_strict`] or, under the batch-verify
+/// mode, coalesced into an [`ed25519_dalek::verify_batch`] call.
+pub struct VoucherVerifyParts {
+    pub message: Vec<u8>,
+    pub verifying_key: ed25519_dalek::VerifyingKey,
+    pub signature: ed25519_dalek::Signature,
+}
+
+/// Run the expiry checks and build the Ed25519 verification inputs for a voucher
+/// WITHOUT performing the signature curve operation. Splitting the cheap checks
+/// + parsing from the expensive verify lets the hot path either verify inline or
+/// hand the parts to a batch verifier. Expiry semantics match
+/// [`verify_voucher_signature`].
+pub fn voucher_verify_parts(
+    channel_id: &str,
+    cumulative: u64,
+    expires_at: i64,
+    signature_b58: &str,
+    authorized_signer_b58: &str,
+    now: i64,
+    settlement_window: i64,
+) -> Result<VoucherVerifyParts> {
     use ed25519_dalek::{Signature, VerifyingKey};
 
     // `expires_at == 0` is never-expires (on-chain parity); skip all time checks.
@@ -80,9 +121,11 @@ pub fn verify_voucher_signature(
         .map_err(|e| Error::Other(format!("Invalid authorized_signer key: {e}")))?;
     let signature = Signature::from_bytes(&sig_arr);
 
-    verifying_key
-        .verify_strict(&message, &signature)
-        .map_err(|_| Error::Other("Voucher signature verification failed".to_string()))
+    Ok(VoucherVerifyParts {
+        message,
+        verifying_key,
+        signature,
+    })
 }
 
 #[cfg(test)]

@@ -151,7 +151,7 @@ getrandom = "0.3"
 # Crypto (HMAC challenge IDs + SHA-256 distribution hash + voucher verification)
 hmac = "0.12"
 sha2 = "0.10"
-ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "batch"] }
 
 # Time (expiration, timestamps)
 time = { version = "0.3", features = ["formatting", "parsing"] }

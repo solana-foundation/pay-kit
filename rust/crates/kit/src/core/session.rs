@@ -132,16 +132,38 @@ pub async fn accept_voucher(
         )));
     }
 
-    // Verify the signature (expensive) before touching the store.
-    verify_voucher_signature(
-        channel_id,
-        new_cumulative,
-        expires_at,
-        signature_b58,
-        &state.authorized_signer,
-        now,
-        settlement_window,
-    )?;
+    // Verify the signature (expensive) before touching the store. Under the
+    // opt-in batch-verify mode the curve op is coalesced with other concurrent
+    // vouchers into one `verify_batch`; otherwise it runs inline (verify_strict).
+    if let Some(verifier) = crate::core::batch_verify::batch_verifier() {
+        let parts = crate::core::voucher::voucher_verify_parts(
+            channel_id,
+            new_cumulative,
+            expires_at,
+            signature_b58,
+            &state.authorized_signer,
+            now,
+            settlement_window,
+        )?;
+        if !verifier
+            .verify(parts.message, parts.verifying_key, parts.signature)
+            .await
+        {
+            return Err(Error::Other(
+                "Voucher signature verification failed".to_string(),
+            ));
+        }
+    } else {
+        verify_voucher_signature(
+            channel_id,
+            new_cumulative,
+            expires_at,
+            signature_b58,
+            &state.authorized_signer,
+            now,
+            settlement_window,
+        )?;
+    }
 
     let prior_cumulative = state.cumulative;
     let sig = signature_b58.to_string();
