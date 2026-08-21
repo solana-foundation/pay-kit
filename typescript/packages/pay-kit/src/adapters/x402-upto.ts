@@ -13,7 +13,7 @@ import {
     encodePaymentResponseHeader,
 } from '@x402/core/http';
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements } from '@x402/core/types';
-import { getStablecoinTokenProgram, resolveStablecoinMint } from '@x402/svm';
+import { getStablecoinTokenProgram, resolveStablecoinMint, toFacilitatorSvmSigner } from '@x402/svm';
 import { UptoSvmScheme as UptoSvmFacilitator } from '@x402/svm/upto/facilitator';
 
 import { requireMint, resolveCoin } from '../coin.js';
@@ -114,9 +114,10 @@ export class X402Upto {
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
             this.#network,
-            new UptoSvmFacilitator(config.operator.signer.signer, config.operator.signer.signer, {
-                rpcUrl: config.rpcUrl,
-            }),
+            new UptoSvmFacilitator(
+                toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
+                { rpcUrl: config.rpcUrl },
+            ),
         );
     }
 

@@ -102,9 +102,9 @@ payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs pa
 # ── TypeScript ──
 
 # Rebuild the vendored @x402 tarballs from the external/x402 submodule.
-# @solana/pay-kit bundles @x402/core + @x402/svm (a fork not on npm) into its
-# dist; the tarballs are committed for reproducible installs. Run after the
-# submodule moves, then `pnpm install` to refresh the lockfile.
+# @solana/pay-kit bundles @x402/core + @x402/svm into its dist, pinned to the
+# submodule's commit; the tarballs are committed for reproducible installs. Run
+# after the submodule moves, then `pnpm install` to refresh the lockfile.
 x402-vendor:
     git submodule update --init typescript/external/x402
     cd typescript/external/x402/typescript && pnpm install

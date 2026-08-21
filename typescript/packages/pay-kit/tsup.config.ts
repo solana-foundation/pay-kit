@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
-// @x402/core + @x402/svm are a fork (built from the external/x402 submodule)
-// that isn't published to npm under those names, so we bundle them into the
+// @x402/core + @x402/svm are vendored tarballs built from the external/x402
+// submodule (upstream `main`, pinned to one commit), so we bundle them into the
 // dist and the published package carries no @x402 dependency. `zod` is bundled
 // alongside them — @x402/core's only non-Solana runtime dep — so pay-kit
 // doesn't add a top-level zod that would clash with mppx's bundled zod.

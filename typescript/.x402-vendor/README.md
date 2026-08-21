@@ -1,17 +1,18 @@
 # Vendored `@x402` tarballs
 
 These are prebuilt npm tarballs of `@x402/core` and `@x402/svm`, packed from the
-**`external/x402` git submodule** (the Solana fork of x402, pinned to a specific
-commit). `@solana/pay-kit` depends on them via relative `file:` paths and
-**bundles** them into its `dist` (they aren't published to npm under the `@x402`
-names), so the published `@solana/pay-kit` carries no `@x402` dependency.
+**`external/x402` git submodule** (`x402-foundation/x402`, pinned to a specific
+commit on `main`). `@solana/pay-kit` depends on them via relative `file:` paths
+and **bundles** them into its `dist`, so the published `@solana/pay-kit` carries
+no `@x402` dependency and its `@x402` surface is pinned to one reviewed commit
+rather than a semver range.
 
 They're committed so `pnpm install --frozen-lockfile` is reproducible in CI and
 fresh clones without first building the submodule.
 
 ## Regenerating
 
-After the submodule moves (e.g. the fork branch advances) or its version bumps:
+After the submodule moves (e.g. upstream `main` advances) or its version bumps:
 
 ```sh
 just x402-vendor      # init submodule, build @x402/core + @x402/svm, repack here

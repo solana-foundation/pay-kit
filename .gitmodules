@@ -1,4 +1,4 @@
 [submodule "typescript/external/x402"]
 	path = typescript/external/x402
-	url = https://github.com/solana-foundation/x402.git
-	branch = feat/svm-upto-scheme
+	url = https://github.com/x402-foundation/x402.git
+	branch = main

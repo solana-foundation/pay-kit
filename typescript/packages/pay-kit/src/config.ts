@@ -33,6 +33,19 @@ export type MppOptions = {
  */
 export type X402Options = {
     readonly enableSmartWalletVerification?: boolean;
+    /** Compute-unit ceiling on the static path. Default: unset (no limit). */
+    readonly maxComputeUnits?: number;
+    /**
+     * Compute-unit-price ceiling on the static path. The operator is the fee
+     * payer, so the payer picks a priority fee the operator pays.
+     * Default: 5,000,000 microlamports.
+     */
+    readonly maxPriorityFeeMicroLamports?: number;
+    /**
+     * Signature-count ceiling; each signature costs the operator 5,000 lamports
+     * of base fee. A typical payment needs two. Default: unset (no limit).
+     */
+    readonly maxRequiredSignatures?: number;
     readonly smartWalletAllowedPrograms?: readonly string[];
     readonly smartWalletMaxComputeUnits?: number;
     readonly smartWalletMaxPriorityFeeMicroLamports?: number;
