@@ -143,6 +143,10 @@ def _find_canonical_open_instruction(
     co-signs this transaction as fee payer, so an unrecognized instruction is one
     the operator would blindly authorize. For the same reason no wrapper
     instruction may name the fee payer among its accounts.
+
+    The memo's *contents* are not checked: a facilitator only pins them when the
+    seller declares ``extra.memo``, which the pay-kit servers never do, so any
+    memo the client chooses is acceptable here.
     """
     if not account_keys:
         raise InvalidProofError("open transaction has no fee payer", code="payment_invalid")

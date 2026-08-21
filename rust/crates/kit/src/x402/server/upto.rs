@@ -1041,6 +1041,10 @@ fn validate_distribution_hash(
 /// co-signs this transaction as fee payer, so an unrecognized instruction is one
 /// the operator would blindly authorize. For the same reason no wrapper
 /// instruction may name the fee payer among its accounts.
+///
+/// The memo's *contents* are not checked: a facilitator only pins them when the
+/// seller declares `extra.memo`, and this server never does (it advertises
+/// `memo: None`), so any memo the client chooses is acceptable here.
 fn find_canonical_open_instruction<'tx>(
     tx: &'tx VersionedTransaction,
     keys: &[Pubkey],
