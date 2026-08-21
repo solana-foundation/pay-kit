@@ -176,9 +176,17 @@ export class X402Upto {
         // `payload.openSlot`, so window-checking the payload value here binds
         // the openArgs transitively. Mirrors the Rust
         // `X402Upto::validate_open_transaction` recentSlot check.
-        await this.#assertOpenSlotBoundToChallenge(payload);
+        //
+        // x402 is stateless, so the challenged slot is re-observed here exactly
+        // how the challenge minted it (one `getLatestBlockhash`, context slot)
+        // and then handed to the facilitator, which runs the same window check
+        // inside `verifyOpenTransaction`. Without the hint the facilitator
+        // falls back to `getSlot({commitment: 'finalized'})`, which lags the
+        // challenge's own read by tens of slots and rejects a fresh open.
+        const recentSlot = await this.#observeRecentSlot();
+        this.#assertOpenSlotBoundToChallenge(payload, recentSlot);
 
-        const requirements = this.#requirements(maxPrice);
+        const requirements = this.#requirements(maxPrice, recentSlot);
         const verification = await this.#facilitator.verify(payload, requirements);
         if (!verification.isValid) {
             throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
@@ -187,17 +195,29 @@ export class X402Upto {
     }
 
     /**
+     * Re-observe the current slot the way {@link X402Upto.accepts} mints it for
+     * the challenge: one `getLatestBlockhash`, whose response context carries
+     * the slot the blockhash was produced at. `undefined` when the RPC read
+     * fails — callers then skip the window check (the facilitator's channel-PDA
+     * bind still holds and the program enforces the window at broadcast).
+     */
+    async #observeRecentSlot(): Promise<bigint | undefined> {
+        try {
+            const { context } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
+            return BigInt(context.slot);
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
      * Enforce `openSlot <= recentSlot` and `recentSlot - openSlot <=
-     * OPEN_SLOT_WINDOW` against the challenged recentSlot at verify time
-     * (x402 is stateless, so it is re-observed via one `getLatestBlockhash`,
-     * exactly how the challenge minted it). A failed re-fetch skips the
-     * window check - the facilitator's channel-PDA bind still holds and the
-     * program enforces the window at broadcast.
+     * OPEN_SLOT_WINDOW` against the re-observed challenged recentSlot.
      *
      * @throws {InvalidProofError} when the openSlot was not built against a
      *   fresh challenge.
      */
-    async #assertOpenSlotBoundToChallenge(payload: PaymentPayload): Promise<void> {
+    #assertOpenSlotBoundToChallenge(payload: PaymentPayload, recentSlot: bigint | undefined): void {
         const raw = payload.payload as { openSlot?: unknown } | undefined;
         if (!raw || typeof raw.openSlot !== 'string' || !/^\d+$/.test(raw.openSlot)) {
             throw new InvalidProofError(
@@ -206,13 +226,7 @@ export class X402Upto {
             );
         }
         const openSlot = BigInt(raw.openSlot);
-        let recentSlot: bigint;
-        try {
-            const { context } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
-            recentSlot = BigInt(context.slot);
-        } catch {
-            return;
-        }
+        if (recentSlot === undefined) return;
         if (openSlot > recentSlot) {
             throw new InvalidProofError(
                 'invalid_upto_svm_payload_open_slot',
@@ -300,7 +314,13 @@ export class X402Upto {
         return getBase58Decoder().decode(signature);
     }
 
-    #requirements(maxPrice: Price): PaymentRequirements {
+    /**
+     * The route's pinned requirements. `recentSlot`, when passed, is the
+     * challenged slot the facilitator window-checks `payload.openSlot` against;
+     * omitting it makes the facilitator read its own `finalized` slot, which
+     * lags the challenge and rejects a fresh open.
+     */
+    #requirements(maxPrice: Price, recentSlot?: bigint): PaymentRequirements {
         const coin = resolveCoin(maxPrice, this.#stablecoins);
         const mint = requireMint(coin, resolveStablecoinMint(coin, this.#network), this.#network);
         return {
@@ -309,6 +329,7 @@ export class X402Upto {
             extra: {
                 feePayer: this.#feePayer,
                 receiverAuthorizer: this.#receiverAuthorizer,
+                ...(recentSlot !== undefined && { recentSlot: recentSlot.toString() }),
                 tokenProgram: getStablecoinTokenProgram(mint, this.#network),
                 withdrawDelay: DEFAULT_WITHDRAW_DELAY_SECONDS,
             },
