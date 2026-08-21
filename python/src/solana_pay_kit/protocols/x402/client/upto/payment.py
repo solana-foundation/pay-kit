@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
+from solders.instruction import Instruction  # type: ignore[import-untyped]
 from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
@@ -27,7 +28,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     build_open_instruction,
     find_channel_pda,
 )
-from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_PROGRAM
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
 from solana_pay_kit.protocols.x402.upto.types import (
     UPTO_SCHEME,
@@ -46,6 +47,11 @@ __all__ = [
 ]
 
 _U64_MAX = (1 << 64) - 1
+
+#: Maximum byte length of the memo emitted after ``open``. Narrower than the SPL
+#: Memo program's own limit: it is the cap the canonical x402 client enforces on
+#: ``extra.memo``, so a longer memo would only be rejected by the facilitator.
+_OPEN_MAX_MEMO_BYTES = 256
 
 
 def _parse_recent_slot(raw: Any) -> int:
@@ -165,7 +171,17 @@ def build_upto_payload(
             program_id=program_id,
         )
     )
-    open_tx = _build_payer_signed_open(open_ix, fee_payer, payer, blockhash, signer)
+    # A seller that declares extra.memo requires exactly one matching Memo
+    # instruction after open; without the declaration the transaction stays a
+    # bare open, which every upto facilitator accepts.
+    instructions = [open_ix]
+    memo = extra.get("memo")
+    if memo:
+        memo_data = memo.encode("utf-8")
+        if len(memo_data) > _OPEN_MAX_MEMO_BYTES:
+            raise ValueError(f"x402 client: extra.memo exceeds {_OPEN_MAX_MEMO_BYTES} bytes")
+        instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo_data, []))
+    open_tx = _build_payer_signed_open(instructions, fee_payer, payer, blockhash, signer)
 
     valid_after = int(extra.get("validAfter", 0))
     payload: UptoPayload = {
@@ -206,7 +222,7 @@ def build_upto_header(
 
 
 def _build_payer_signed_open(
-    open_ix: Any,
+    instructions: list[Any],
     fee_payer: Pubkey,
     payer: Pubkey,
     blockhash: Hash,
@@ -214,7 +230,7 @@ def _build_payer_signed_open(
 ) -> str:
     """Assemble the open transaction with the advertised fee payer, signed only
     in the client's (payer) slot. Returns base64 wire."""
-    message = Message.new_with_blockhash([open_ix], fee_payer, blockhash)
+    message = Message.new_with_blockhash(instructions, fee_payer, blockhash)
     account_keys = list(message.account_keys)
     num_required = int(message.header.num_required_signatures)
     try:

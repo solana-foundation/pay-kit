@@ -107,6 +107,37 @@ PROGRAM_ID = Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID)
 #: ``openSlot <= recentSlot`` and ``recentSlot - openSlot <= OPEN_SLOT_WINDOW``.
 OPEN_SLOT_WINDOW = 1500
 
+#: Phantom/Solflare Lighthouse program id. Both wallets inject assertion
+#: instructions after what a dapp asked them to sign, so an open signed through
+#: them arrives with a Lighthouse suffix a verifier must tolerate rather than
+#: treat as a smuggled instruction.
+LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
+
+#: ``SetComputeUnitLimit`` / ``SetComputeUnitPrice`` instruction type bytes.
+COMPUTE_BUDGET_SET_UNIT_LIMIT = 2
+COMPUTE_BUDGET_SET_UNIT_PRICE = 3
+
+#: Ceiling on ``SetComputeUnitLimit`` in a channel-``open`` transaction. An
+#: observed open consumes ~51,000 CU; the ceiling is the runtime's own
+#: per-transaction reservation for the open + memo pair.
+OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000
+
+#: Ceiling on ``SetComputeUnitPrice`` in a channel-``open`` transaction. The
+#: operator is the fee payer, so the payer picks a priority fee the operator
+#: pays; 5,000,000 microlamports (5 lamports/CU) is the spec ceiling.
+MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
+
+#: Maximum Lighthouse assertions accepted after ``open``.
+OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS = 3
+
+#: Maximum optional instructions accepted after ``open`` (3 Lighthouse + 1 Memo).
+OPEN_MAX_OPTIONAL_SUFFIX = 4
+
+#: Maximum byte length of a memo emitted after ``open``. Narrower than the SPL
+#: Memo program's own limit: it is the cap the canonical x402 client enforces on
+#: ``extra.memo``, so a longer memo would only be rejected by the facilitator.
+OPEN_MAX_MEMO_BYTES = 256
+
 # Channel PDA seed prefix.
 _CHANNEL_SEED = b"channel"
 

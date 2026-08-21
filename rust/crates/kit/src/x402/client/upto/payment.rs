@@ -92,7 +92,12 @@ pub async fn build_upto_payload(
         .map_err(|e| Error::Other(format!("invalid recentBlockhash: {e}")))?;
 
     let salt = pc::random_salt();
-    let open = pc::build_open_payment_channel_tx(
+    // A seller that declares `extra.memo` requires exactly one matching Memo
+    // after `open`; without the declaration the transaction stays a bare open.
+    let options = pc::OpenTxOptions {
+        memo: requirements.extra.memo.clone(),
+    };
+    let open = pc::build_open_payment_channel_tx_with_options(
         payer_signer,
         // Channel payee: the fee payer's zero-share lifecycle seat.
         &fee_payer,
@@ -107,6 +112,7 @@ pub async fn build_upto_payload(
         &program_id,
         &fee_payer,
         blockhash,
+        &options,
     )
     .await?;
 
@@ -241,6 +247,7 @@ mod tests {
                 last_valid_block_height: None,
                 recent_slot: Some("314".to_string()),
                 valid_after: None,
+                memo: None,
             },
         }
     }
@@ -341,6 +348,50 @@ mod tests {
             .await
             .expect("payload with fetched slot");
         assert_eq!(payload.open_slot, "1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_payload_emits_the_declared_memo_after_open() {
+        // A seller that declares extra.memo requires exactly one matching Memo
+        // after open, so the client emits it; without the declaration the
+        // transaction stays a bare open.
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("fails".to_string());
+        let mut req = requirements();
+        req.extra.memo = Some("order-4711".to_string());
+        let payload = build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1")
+            .await
+            .expect("payload with a declared memo");
+        let tx = pc::decode_transaction(
+            payload
+                .open_transaction
+                .as_deref()
+                .expect("open transaction"),
+        )
+        .expect("decodable open transaction");
+        let keys = tx.message.static_account_keys();
+        let instructions = tx.message.instructions();
+        assert_eq!(instructions.len(), 2);
+        let memo = &instructions[1];
+        assert_eq!(keys[memo.program_id_index as usize], pc::memo_program_id());
+        assert_eq!(memo.data.as_slice(), b"order-4711");
+
+        // Bare open when the challenge declares no memo.
+        let bare = build_upto_payload(&*signer, &rpc, &requirements(), 4_102_444_800, "n-1")
+            .await
+            .expect("payload without a memo");
+        let bare_tx =
+            pc::decode_transaction(bare.open_transaction.as_deref().expect("open transaction"))
+                .expect("decodable open transaction");
+        assert_eq!(bare_tx.message.instructions().len(), 1);
+
+        // An over-long memo fails at build time rather than at the facilitator.
+        req.extra.memo = Some("x".repeat(pc::OPEN_MAX_MEMO_BYTES + 1));
+        assert!(
+            build_upto_payload(&*signer, &rpc, &req, 4_102_444_800, "n-1")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -46,6 +46,46 @@ pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 /// Default payment-channel close grace period, in seconds.
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 900;
 
+/// Compute Budget program ID.
+pub const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
+
+/// SPL Memo program ID.
+pub const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+
+/// Phantom/Solflare Lighthouse program ID. Both wallets inject assertion
+/// instructions after the instructions a dapp asked them to sign, so an `open`
+/// signed through them arrives with a Lighthouse suffix the verifier must
+/// tolerate rather than treat as a smuggled instruction.
+pub const LIGHTHOUSE_PROGRAM: &str = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
+
+/// `SetComputeUnitLimit` instruction type byte in Compute Budget data.
+pub const COMPUTE_BUDGET_SET_UNIT_LIMIT: u8 = 2;
+
+/// `SetComputeUnitPrice` instruction type byte in Compute Budget data.
+pub const COMPUTE_BUDGET_SET_UNIT_PRICE: u8 = 3;
+
+/// Ceiling on `SetComputeUnitLimit` in a channel-`open` transaction. An
+/// observed open consumes ~51,000 CU; the ceiling is the runtime's own
+/// per-transaction reservation for the open + memo pair.
+pub const OPEN_MAX_COMPUTE_UNIT_LIMIT: u32 = 400_000;
+
+/// Ceiling on `SetComputeUnitPrice` in a channel-`open` transaction. The
+/// operator is the fee payer, so the payer picks a priority fee the operator
+/// pays; 5,000,000 microlamports (5 lamports/CU) is the spec ceiling.
+pub const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
+
+/// Maximum Lighthouse assertion instructions accepted after `open`.
+pub const OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS: usize = 3;
+
+/// Maximum optional instructions accepted after `open` (3 Lighthouse + 1 Memo).
+pub const OPEN_MAX_OPTIONAL_SUFFIX: usize = 4;
+
+/// Maximum byte length of a memo emitted after `open`. Narrower than the SPL
+/// Memo program's own limit: it is the cap the canonical x402 client enforces
+/// on `extra.memo`, so a longer memo would be built here only to be rejected
+/// by the counterparty.
+pub const OPEN_MAX_MEMO_BYTES: usize = 256;
+
 /// Constant magic prefix of the signed voucher payload (`[0x56, 0x01]`).
 ///
 /// The program rejects a voucher whose signed bytes do not start with it
@@ -166,6 +206,18 @@ pub fn system_program_id() -> Pubkey {
 
 pub fn instructions_sysvar_id() -> Pubkey {
     Pubkey::from_str(INSTRUCTIONS_SYSVAR_ID).expect("valid instructions sysvar id")
+}
+
+pub fn compute_budget_program_id() -> Pubkey {
+    Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).expect("valid compute budget program id")
+}
+
+pub fn memo_program_id() -> Pubkey {
+    Pubkey::from_str(MEMO_PROGRAM).expect("valid memo program id")
+}
+
+pub fn lighthouse_program_id() -> Pubkey {
+    Pubkey::from_str(LIGHTHOUSE_PROGRAM).expect("valid lighthouse program id")
 }
 
 pub fn rent_sysvar_id() -> Pubkey {
@@ -594,6 +646,20 @@ pub fn build_distribute_instruction(
     ix
 }
 
+/// Optional instructions wrapping the `open` in the built transaction.
+///
+/// The default is a bare `open`: every pay-kit server accepts it, and adding
+/// instructions a counterparty's verifier does not expect turns a valid payment
+/// into a rejected one. Only set a field when the challenge asks for it.
+#[derive(Debug, Clone, Default)]
+pub struct OpenTxOptions {
+    /// Seller-declared memo (`extra.memo`), emitted as one SPL Memo
+    /// instruction after `open`. The x402 `upto` facilitator that declares it
+    /// requires exactly one matching Memo, so the text is passed through
+    /// verbatim.
+    pub memo: Option<String>,
+}
+
 /// Build a payer-signed (fee-payer-unsigned) channel `open` transaction.
 ///
 /// The `payer` (the `signer`) signs to authorize the deposit; `fee_payer` is the
@@ -617,6 +683,44 @@ pub async fn build_open_payment_channel_tx(
     fee_payer: &Pubkey,
     recent_blockhash: Hash,
 ) -> Result<PaymentChannelOpenTransaction> {
+    build_open_payment_channel_tx_with_options(
+        signer,
+        payee,
+        mint,
+        authorized_signer,
+        salt,
+        open_slot,
+        deposit,
+        grace_period,
+        recipients,
+        token_program,
+        program_id,
+        fee_payer,
+        recent_blockhash,
+        &OpenTxOptions::default(),
+    )
+    .await
+}
+
+/// [`build_open_payment_channel_tx`] with the optional wrapper instructions in
+/// [`OpenTxOptions`] appended after `open`.
+#[allow(clippy::too_many_arguments)]
+pub async fn build_open_payment_channel_tx_with_options(
+    signer: &dyn SolanaSigner,
+    payee: &Pubkey,
+    mint: &Pubkey,
+    authorized_signer: &Pubkey,
+    salt: u64,
+    open_slot: u64,
+    deposit: u64,
+    grace_period: u32,
+    recipients: Vec<Distribution>,
+    token_program: &Pubkey,
+    program_id: &Pubkey,
+    fee_payer: &Pubkey,
+    recent_blockhash: Hash,
+    options: &OpenTxOptions,
+) -> Result<PaymentChannelOpenTransaction> {
     let params = OpenChannelParams {
         payer: signer.pubkey(),
         // rentPayer is pinned to the operator / fee payer already in scope.
@@ -633,8 +737,21 @@ pub async fn build_open_payment_channel_tx(
         program_id: *program_id,
     };
     let channel_id = derive_channel_addresses(&params).channel;
-    let ix = build_open_instruction(&params);
-    let message = Message::new_with_blockhash(&[ix], Some(fee_payer), &recent_blockhash);
+    let mut instructions = vec![build_open_instruction(&params)];
+    if let Some(memo) = options.memo.as_deref() {
+        if memo.len() > OPEN_MAX_MEMO_BYTES {
+            return Err(Error::Other(format!(
+                "channel open memo is {} bytes, over the {OPEN_MAX_MEMO_BYTES}-byte maximum",
+                memo.len()
+            )));
+        }
+        instructions.push(Instruction {
+            program_id: memo_program_id(),
+            accounts: vec![],
+            data: memo.as_bytes().to_vec(),
+        });
+    }
+    let message = Message::new_with_blockhash(&instructions, Some(fee_payer), &recent_blockhash);
     let mut tx = Transaction::new_unsigned(message);
 
     signer
@@ -723,5 +840,108 @@ mod tests {
         let (a, _) = find_channel_pda(&pk(1), &pk(2), &pk(3), &pk(4), 99, 100, &program_id);
         let (b, _) = find_channel_pda(&pk(1), &pk(2), &pk(3), &pk(4), 99, 101, &program_id);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn well_known_program_ids_parse() {
+        // Each id is parsed from a literal, so a typo would only surface as a
+        // panic at first use — in the middle of building or verifying an open.
+        assert_eq!(
+            pubkey_string(&compute_budget_program_id()),
+            COMPUTE_BUDGET_PROGRAM
+        );
+        assert_eq!(pubkey_string(&memo_program_id()), MEMO_PROGRAM);
+        assert_eq!(pubkey_string(&lighthouse_program_id()), LIGHTHOUSE_PROGRAM);
+        assert_eq!(pubkey_string(&system_program_id()), SYSTEM_PROGRAM);
+        assert_eq!(
+            pubkey_string(&associated_token_program_id()),
+            ASSOCIATED_TOKEN_PROGRAM
+        );
+        assert_eq!(pubkey_string(&rent_sysvar_id()), RENT_SYSVAR_ID);
+        assert_eq!(
+            pubkey_string(&instructions_sysvar_id()),
+            INSTRUCTIONS_SYSVAR_ID
+        );
+        assert_eq!(
+            pubkey_string(&treasury_owner()),
+            "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP"
+        );
+        assert!(parse_pubkey("not-a-pubkey").is_err());
+    }
+
+    #[test]
+    fn open_tx_options_default_to_a_bare_open() {
+        // The default must stay memo-free: every pay-kit server accepts a bare
+        // open, so wrapping instructions are opt-in per challenge.
+        let options = OpenTxOptions::default();
+        assert!(options.memo.is_none());
+        assert!(options.clone().memo.is_none());
+        assert!(format!("{options:?}").contains("memo"));
+    }
+
+    fn test_signer() -> Box<dyn SolanaSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    async fn build_open(options: &OpenTxOptions) -> Result<PaymentChannelOpenTransaction> {
+        let signer = test_signer();
+        build_open_payment_channel_tx_with_options(
+            &*signer,
+            &pk(2),
+            &pk(3),
+            &pk(4),
+            99,
+            314,
+            1_000_000,
+            DEFAULT_GRACE_PERIOD_SECONDS,
+            vec![Distribution {
+                recipient: pk(5),
+                bps: 10_000,
+            }],
+            &Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap(),
+            &default_program_id(),
+            &pk(6),
+            Hash::default(),
+            options,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn open_tx_carries_the_memo_only_when_requested() {
+        // The bare open is what every pay-kit server verifies; a declared
+        // `extra.memo` adds exactly one Memo instruction after it.
+        let bare = build_open(&OpenTxOptions::default())
+            .await
+            .expect("bare open transaction");
+        let tx = decode_transaction(&bare.transaction).expect("decodable");
+        assert_eq!(tx.message.instructions().len(), 1);
+        assert_eq!(tx.message.static_account_keys()[0], pk(6));
+
+        let with_memo = build_open(&OpenTxOptions {
+            memo: Some("order-4711".to_string()),
+        })
+        .await
+        .expect("open transaction with a memo");
+        assert_eq!(with_memo.channel_id, bare.channel_id);
+        let tx = decode_transaction(&with_memo.transaction).expect("decodable");
+        let keys = tx.message.static_account_keys();
+        let instructions = tx.message.instructions();
+        assert_eq!(instructions.len(), 2);
+        let memo = &instructions[1];
+        assert_eq!(keys[memo.program_id_index as usize], memo_program_id());
+        assert_eq!(memo.data.as_slice(), b"order-4711");
+
+        // Over the cap the counterparty enforces, so it fails here instead.
+        let err = build_open(&OpenTxOptions {
+            memo: Some("x".repeat(OPEN_MAX_MEMO_BYTES + 1)),
+        })
+        .await
+        .expect_err("an over-long memo must be rejected");
+        assert!(err.to_string().contains("memo"));
     }
 }

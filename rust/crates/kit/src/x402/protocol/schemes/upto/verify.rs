@@ -97,6 +97,7 @@ mod tests {
                 last_valid_block_height: None,
                 recent_slot: None,
                 valid_after: None,
+                memo: None,
             },
         }
     }

@@ -55,13 +55,16 @@ class UptoExtra(_UptoExtraRequired, total=False):
     authority). ``recentBlockhash``/``recentSlot``/
     ``lastValidBlockHeight``/``validAfter`` are optional. ``recentSlot`` is the
     server-fetched slot the client uses as the channel ``openSlot`` (u64-as-string
-    like the session challenge; a plain number is accepted inbound).
+    like the session challenge; a plain number is accepted inbound). ``memo`` is
+    a seller-declared memo the client must emit as a single SPL Memo instruction
+    after ``open``; a facilitator that declares it requires an exact match.
     """
 
     recentBlockhash: str
     recentSlot: str
     lastValidBlockHeight: str
     validAfter: int
+    memo: str
 
 
 class UptoRequirements(TypedDict):

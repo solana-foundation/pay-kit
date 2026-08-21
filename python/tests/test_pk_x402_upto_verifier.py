@@ -401,3 +401,200 @@ def _default_program() -> Pubkey:
     from solana_pay_kit._paycore.paymentchannels import PROGRAM_ID
 
     return PROGRAM_ID
+
+
+# -- open transaction layout ------------------------------------------------
+
+
+def _cu_limit_ix(units: int):
+    from solders.instruction import Instruction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.paymentchannels import COMPUTE_BUDGET_SET_UNIT_LIMIT
+    from solana_pay_kit._paycore.solana import COMPUTE_BUDGET_PROGRAM
+
+    data = bytes([COMPUTE_BUDGET_SET_UNIT_LIMIT]) + units.to_bytes(4, "little")
+    return Instruction(Pubkey.from_string(COMPUTE_BUDGET_PROGRAM), data, [])
+
+
+def _cu_price_ix(micro_lamports: int):
+    from solders.instruction import Instruction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.paymentchannels import COMPUTE_BUDGET_SET_UNIT_PRICE
+    from solana_pay_kit._paycore.solana import COMPUTE_BUDGET_PROGRAM
+
+    data = bytes([COMPUTE_BUDGET_SET_UNIT_PRICE]) + micro_lamports.to_bytes(8, "little")
+    return Instruction(Pubkey.from_string(COMPUTE_BUDGET_PROGRAM), data, [])
+
+
+def _heap_frame_ix():
+    """A ComputeBudget instruction outside the two the layout permits."""
+    from solders.instruction import Instruction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.solana import COMPUTE_BUDGET_PROGRAM
+
+    return Instruction(Pubkey.from_string(COMPUTE_BUDGET_PROGRAM), bytes([1, 0, 0, 0, 0]), [])
+
+
+def _memo_ix(text: str):
+    from solders.instruction import Instruction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.solana import MEMO_PROGRAM
+
+    return Instruction(Pubkey.from_string(MEMO_PROGRAM), text.encode("utf-8"), [])
+
+
+def _lighthouse_ix():
+    from solders.instruction import Instruction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.paymentchannels import LIGHTHOUSE_PROGRAM
+
+    return Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), bytes([0]), [])
+
+
+def test_open_tx_layout_accepts_compute_budget_and_memo_wrapping() -> None:
+    """The canonical TypeScript client sizes the compute budget before the open
+    and appends a memo after it; Phantom/Solflare inject Lighthouse assertions.
+    Every wrapper is optional, and the bare open the pay-kit clients build stays
+    valid."""
+    from solders.hash import Hash  # type: ignore[import-untyped]
+    from solders.message import Message  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.paymentchannels import (
+        Distribution,
+        OpenChannelParams,
+        build_open_instruction,
+        find_channel_pda,
+    )
+
+    _, op = _operator()
+    operator = Pubkey.from_string(op)
+    payer = Pubkey.from_string(LocalSigner.from_keypair(Keypair()).pubkey())
+    mint = Pubkey.from_string(MINT)
+    token_program = Pubkey.from_string(TOKEN_PROGRAM)
+    program_id = _default_program()
+    salt = 7
+    open_slot = 4242
+    channel, _ = find_channel_pda(payer, operator, mint, operator, salt, open_slot, program_id)
+    open_ix = build_open_instruction(
+        OpenChannelParams(
+            payer=payer,
+            rent_payer=operator,
+            payee=operator,
+            mint=mint,
+            authorized_signer=operator,
+            salt=salt,
+            deposit=MAX,
+            grace_period=900,
+            open_slot=open_slot,
+            recipients=[Distribution(recipient=Pubkey.from_string(str(Keypair().pubkey())), bps=10_000)],
+            token_program=token_program,
+            program_id=program_id,
+        )
+    )
+
+    def check(prefix: list, suffix: list) -> None:
+        """Validate `prefix` + open + `suffix` with every account expectation
+        satisfied, so the outcome turns only on the layout."""
+        message = Message.new_with_blockhash([*prefix, open_ix, *suffix], operator, Hash.from_string(BH))
+        validate_upto_open_instruction(
+            [str(k) for k in message.account_keys],
+            list(message.instructions),
+            program_id=program_id,
+            fee_payer=operator,
+            receiver_authorizer=operator,
+            payer=payer,
+            payee=operator,
+            mint=mint,
+            token_program=token_program,
+            channel_id=channel,
+            max_amount=MAX,
+            withdraw_delay=900,
+            payload_nonce=str(salt),
+            payload_open_slot=str(open_slot),
+            recent_slot=open_slot,
+        )
+
+    check([], [])
+    check([_cu_limit_ix(90_000), _cu_price_ix(1)], [_memo_ix("order-4711")])
+    check([], [_lighthouse_ix(), _lighthouse_ix(), _lighthouse_ix(), _memo_ix("x")])
+
+    # ComputeBudget ordering, duplicates, and unsupported opcodes.
+    with pytest.raises(InvalidProofError, match="must precede"):
+        check([_cu_price_ix(1), _cu_limit_ix(90_000)], [])
+    with pytest.raises(InvalidProofError, match="duplicate SetComputeUnitLimit"):
+        check([_cu_limit_ix(90_000), _cu_limit_ix(90_000)], [])
+    with pytest.raises(InvalidProofError, match="duplicate SetComputeUnitPrice"):
+        check([_cu_price_ix(1), _cu_price_ix(1)], [])
+    with pytest.raises(InvalidProofError, match="unsupported ComputeBudget"):
+        check([_heap_frame_ix()], [])
+
+    # The operator pays the priority fee on the requested limit, so both knobs
+    # are capped.
+    with pytest.raises(InvalidProofError, match="compute unit limit"):
+        check([_cu_limit_ix(400_001)], [])
+    with pytest.raises(InvalidProofError, match="compute unit price"):
+        check([_cu_price_ix(5_000_001)], [])
+
+    # Suffix budget: at most 3 Lighthouse assertions, 4 optional instructions,
+    # and nothing but Lighthouse/Memo.
+    with pytest.raises(InvalidProofError, match="Lighthouse instructions"):
+        check([], [_lighthouse_ix()] * 4)
+    with pytest.raises(InvalidProofError, match="instructions after open"):
+        check([], [_lighthouse_ix(), _lighthouse_ix(), _lighthouse_ix(), _memo_ix("a"), _memo_ix("b")])
+    with pytest.raises(InvalidProofError, match="must be Lighthouse or Memo"):
+        check([], [_cu_limit_ix(90_000)])
+
+    # The operator co-signs this transaction, so only `open` may reference it: a
+    # wrapper instruction naming the fee payer could borrow its authority.
+    from solders.instruction import AccountMeta, Instruction  # type: ignore[import-untyped]
+
+    from solana_pay_kit._paycore.solana import MEMO_PROGRAM
+
+    memo_naming_operator = Instruction(
+        Pubkey.from_string(MEMO_PROGRAM),
+        b"signed-memo",
+        [AccountMeta(operator, True, False)],
+    )
+    with pytest.raises(InvalidProofError, match="Memo instruction must not reference the fee payer"):
+        check([], [memo_naming_operator])
+
+
+def test_client_emits_the_declared_memo_after_open() -> None:
+    """A seller that declares extra.memo requires exactly one matching Memo
+    after open, so the client emits it; without the declaration the transaction
+    stays a bare open."""
+    from solana_pay_kit._paycore.solana import MEMO_PROGRAM
+
+    _, op = _operator()
+    client = LocalSigner.from_keypair(Keypair())
+    req = _requirements(op, str(Keypair().pubkey()))
+    req["extra"]["memo"] = "order-4711"
+    payload = build_upto_payload(client, req, int(time.time()) + 300)
+    account_keys, instructions = _decode_transaction(payload.get("openTransaction", ""))
+    assert len(instructions) == 2
+    memo_ix = instructions[1]
+    assert account_keys[int(memo_ix.program_id_index)] == MEMO_PROGRAM
+    assert bytes(memo_ix.data).decode("utf-8") == "order-4711"
+    # The wrapped open still satisfies the validator.
+    validate_upto_open_instruction(
+        account_keys,
+        instructions,
+        program_id=_default_program(),
+        fee_payer=Pubkey.from_string(op),
+        receiver_authorizer=Pubkey.from_string(op),
+        payer=Pubkey.from_string(client.pubkey()),
+        payee=Pubkey.from_string(op),
+        mint=Pubkey.from_string(MINT),
+        token_program=Pubkey.from_string(TOKEN_PROGRAM),
+        channel_id=Pubkey.from_string(payload["channelId"]),
+        max_amount=MAX,
+        withdraw_delay=900,
+        payload_nonce=payload["nonce"],
+        payload_open_slot=payload["openSlot"],
+        recent_slot=4242,
+    )
+
+    # An over-long memo is rejected at build time rather than by the facilitator.
+    req["extra"]["memo"] = "x" * 257
+    with pytest.raises(ValueError, match="memo"):
+        build_upto_payload(client, req, int(time.time()) + 300)

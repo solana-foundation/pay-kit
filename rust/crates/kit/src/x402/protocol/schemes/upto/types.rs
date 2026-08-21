@@ -59,6 +59,12 @@ pub struct UptoExtra {
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<i64>,
+
+    /// Seller-declared memo the client must emit as a single SPL Memo
+    /// instruction after `open`. Absent means the client is free to emit its
+    /// own memo (or none at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memo: Option<String>,
 }
 
 /// An `upto` payment requirement (the `accepted` object in a 402 challenge).
@@ -240,6 +246,7 @@ mod tests {
                 last_valid_block_height: None,
                 recent_slot: None,
                 valid_after: None,
+                memo: None,
             },
         }
     }

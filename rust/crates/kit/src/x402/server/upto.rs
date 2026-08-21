@@ -26,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -34,6 +35,9 @@ use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
+// The ComputeBudget wire format is identical wherever it appears, so the
+// charge verifier's policy-free decoder is reused here rather than duplicated.
+use crate::mpp::server::charge::{decode_compute_budget_op, ComputeBudgetOp};
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::exact::{
@@ -362,6 +366,9 @@ impl X402Upto {
                 last_valid_block_height: None,
                 recent_slot: None,
                 valid_after: None,
+                // No seller memo: the server accepts (but never requires) the
+                // client's own memo after `open`.
+                memo: None,
             },
         })
     }
@@ -842,14 +849,16 @@ impl X402Upto {
         Ok(self.settlement_response(open, actual, signature))
     }
 
-    /// Verify the client transaction is exactly the expected payment-channels
+    /// Verify the client transaction carries the expected payment-channels
     /// `open` instruction before the operator co-signs it as fee payer.
     ///
     /// Without this, a malicious client could include any operator-authorized
     /// instruction (e.g. a SystemProgram transfer draining the operator) and the
-    /// operator would blindly sign it. We require a single instruction, on the
+    /// operator would blindly sign it. We require exactly one instruction on the
     /// payment-channels program, with the `open` discriminator, whose accounts
-    /// bind the expected payer / payee / mint / fee payer / channel.
+    /// bind the expected payer / payee / mint / fee payer / channel — wrapped, at
+    /// most, by the allowlisted ComputeBudget prefix and Lighthouse/Memo suffix
+    /// that [`find_canonical_open_instruction`] accepts.
     fn validate_open_transaction(
         &self,
         tx: &VersionedTransaction,
@@ -1018,7 +1027,152 @@ fn validate_distribution_hash(
     Ok(())
 }
 
-/// Assert `tx` is exactly the expected payment-channels `open` instruction so the
+/// Locate the canonical payment-channels `open` in `tx` and enforce the `upto`
+/// top-level transaction layout: an optional ComputeBudget prefix
+/// (`SetComputeUnitLimit` before `SetComputeUnitPrice`, each at most once and
+/// within the spec ceilings), exactly one `open`, then an optional suffix of at
+/// most [`pc::OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS`] Lighthouse assertions and a
+/// Memo, capped at [`pc::OPEN_MAX_OPTIONAL_SUFFIX`] instructions total.
+///
+/// Clients legitimately wrap the open: the canonical TypeScript client sizes the
+/// compute budget and appends a Memo (a seller-declared `extra.memo`, else a
+/// random nonce), and Phantom/Solflare inject Lighthouse assertions into what
+/// they sign. Anything outside that allowlist is rejected — the operator
+/// co-signs this transaction as fee payer, so an unrecognized instruction is one
+/// the operator would blindly authorize. For the same reason no wrapper
+/// instruction may name the fee payer among its accounts.
+fn find_canonical_open_instruction<'tx>(
+    tx: &'tx VersionedTransaction,
+    keys: &[Pubkey],
+    program_id: &Pubkey,
+) -> Result<&'tx CompiledInstruction, Error> {
+    let instructions = tx.message.instructions();
+    let fee_payer = *keys
+        .first()
+        .ok_or_else(|| Error::Other("open transaction has no fee payer".to_string()))?;
+    let program_of = |ix: &CompiledInstruction| -> Result<Pubkey, Error> {
+        keys.get(ix.program_id_index as usize)
+            .copied()
+            .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))
+    };
+    let reject_fee_payer = |ix: &CompiledInstruction, label: &str| -> Result<(), Error> {
+        if ix
+            .accounts
+            .iter()
+            .any(|&i| keys.get(i as usize) == Some(&fee_payer))
+        {
+            return Err(Error::Other(format!(
+                "{label} instruction must not reference the fee payer"
+            )));
+        }
+        Ok(())
+    };
+
+    let compute_budget = pc::compute_budget_program_id();
+    let mut index = 0usize;
+    let (mut seen_limit, mut seen_price) = (false, false);
+    while let Some(ix) = instructions.get(index) {
+        if program_of(ix)? != compute_budget {
+            break;
+        }
+        reject_fee_payer(ix, "ComputeBudget")?;
+        match decode_compute_budget_op(ix) {
+            Some(ComputeBudgetOp::UnitLimit(units)) => {
+                if seen_limit {
+                    return Err(Error::Other(
+                        "open transaction has a duplicate SetComputeUnitLimit instruction"
+                            .to_string(),
+                    ));
+                }
+                if seen_price {
+                    return Err(Error::Other(
+                        "open transaction SetComputeUnitLimit must precede SetComputeUnitPrice"
+                            .to_string(),
+                    ));
+                }
+                if units > pc::OPEN_MAX_COMPUTE_UNIT_LIMIT {
+                    return Err(Error::Other(format!(
+                        "open transaction compute unit limit {units} exceeds maximum {}",
+                        pc::OPEN_MAX_COMPUTE_UNIT_LIMIT
+                    )));
+                }
+                seen_limit = true;
+            }
+            Some(ComputeBudgetOp::UnitPrice(price)) => {
+                if seen_price {
+                    return Err(Error::Other(
+                        "open transaction has a duplicate SetComputeUnitPrice instruction"
+                            .to_string(),
+                    ));
+                }
+                if price > pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS {
+                    return Err(Error::Other(format!(
+                        "open transaction compute unit price {price} exceeds maximum {}",
+                        pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+                    )));
+                }
+                seen_price = true;
+            }
+            None => {
+                return Err(Error::Other(
+                    "open transaction has an unsupported ComputeBudget instruction".to_string(),
+                ))
+            }
+        }
+        index += 1;
+    }
+
+    let open = instructions.get(index).ok_or_else(|| {
+        Error::Other("open transaction contains no channel-open instruction".to_string())
+    })?;
+    if program_of(open)? != *program_id {
+        return Err(Error::Other(
+            "open transaction targets an unexpected program".to_string(),
+        ));
+    }
+    if open.data.first() != Some(&OPEN_INSTRUCTION_DISCRIMINATOR) {
+        return Err(Error::Other(
+            "open transaction is not a channel-open instruction".to_string(),
+        ));
+    }
+    index += 1;
+
+    let memo = pc::memo_program_id();
+    let lighthouse = pc::lighthouse_program_id();
+    let (mut lighthouse_count, mut optional_count) = (0usize, 0usize);
+    while let Some(ix) = instructions.get(index) {
+        optional_count += 1;
+        if optional_count > pc::OPEN_MAX_OPTIONAL_SUFFIX {
+            return Err(Error::Other(format!(
+                "open transaction allows at most {} instructions after open",
+                pc::OPEN_MAX_OPTIONAL_SUFFIX
+            )));
+        }
+        let program = program_of(ix)?;
+        if program == lighthouse {
+            lighthouse_count += 1;
+            if lighthouse_count > pc::OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS {
+                return Err(Error::Other(format!(
+                    "open transaction allows at most {} Lighthouse instructions after open",
+                    pc::OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS
+                )));
+            }
+            reject_fee_payer(ix, "Lighthouse")?;
+        } else if program == memo {
+            reject_fee_payer(ix, "Memo")?;
+        } else {
+            return Err(Error::Other(format!(
+                "open transaction instruction after open must be Lighthouse or Memo, found {}",
+                pc::pubkey_string(&program)
+            )));
+        }
+        index += 1;
+    }
+
+    Ok(open)
+}
+
+/// Assert `tx` carries the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
 // Each account slot is an independent expected key (rentPayer vs
 // authorized_signer are distinct roles), so they are passed individually
@@ -1057,27 +1211,7 @@ pub(crate) fn validate_open_instruction(
     }
 
     let keys = tx.message.static_account_keys();
-    let instructions = tx.message.instructions();
-    if instructions.len() != 1 {
-        return Err(Error::Other(format!(
-            "open transaction must contain exactly one instruction, found {}",
-            instructions.len()
-        )));
-    }
-    let ix = &instructions[0];
-    let prog = keys
-        .get(ix.program_id_index as usize)
-        .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))?;
-    if prog != program_id {
-        return Err(Error::Other(
-            "open transaction targets an unexpected program".to_string(),
-        ));
-    }
-    if ix.data.first() != Some(&OPEN_INSTRUCTION_DISCRIMINATOR) {
-        return Err(Error::Other(
-            "open transaction is not a channel-open instruction".to_string(),
-        ));
-    }
+    let ix = find_canonical_open_instruction(tx, keys, program_id)?;
     // Account order from `build_open_instruction`:
     // [payer, rentPayer, payee, mint, authorized_signer, channel, ...].
     // rentPayer (slot 1) is whoever funds the channel PDA + escrow-ATA rent and
@@ -1546,6 +1680,235 @@ mod tests {
             &operator,
             &payer,
             &wrong_payee,
+            &mint,
+            &token_program(),
+            &channel,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_err());
+    }
+
+    fn cu_limit_ix(units: u32) -> solana_instruction::Instruction {
+        let mut data = vec![pc::COMPUTE_BUDGET_SET_UNIT_LIMIT];
+        data.extend_from_slice(&units.to_le_bytes());
+        solana_instruction::Instruction {
+            program_id: pc::compute_budget_program_id(),
+            accounts: vec![],
+            data,
+        }
+    }
+
+    fn cu_price_ix(micro_lamports: u64) -> solana_instruction::Instruction {
+        let mut data = vec![pc::COMPUTE_BUDGET_SET_UNIT_PRICE];
+        data.extend_from_slice(&micro_lamports.to_le_bytes());
+        solana_instruction::Instruction {
+            program_id: pc::compute_budget_program_id(),
+            accounts: vec![],
+            data,
+        }
+    }
+
+    fn memo_ix(text: &str) -> solana_instruction::Instruction {
+        solana_instruction::Instruction {
+            program_id: pc::memo_program_id(),
+            accounts: vec![],
+            data: text.as_bytes().to_vec(),
+        }
+    }
+
+    fn lighthouse_ix() -> solana_instruction::Instruction {
+        solana_instruction::Instruction {
+            program_id: pc::lighthouse_program_id(),
+            accounts: vec![],
+            data: vec![0],
+        }
+    }
+
+    /// Run the layout + binding validator over `instructions` with every
+    /// account expectation satisfied, so the outcome turns only on the layout.
+    fn validate_layout(instructions: &[solana_instruction::Instruction]) -> Result<(), Error> {
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let open = build_open_instruction(&params);
+        let wrapped: Vec<solana_instruction::Instruction> = instructions
+            .iter()
+            .cloned()
+            .map(|ix| {
+                if ix.program_id == Pubkey::default() {
+                    open.clone()
+                } else {
+                    ix
+                }
+            })
+            .collect();
+        let tx = unsigned_tx(&wrapped);
+        validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Placeholder standing in for the channel `open`, substituted by
+    /// [`validate_layout`] so a case only spells out the wrapping.
+    fn open_placeholder() -> solana_instruction::Instruction {
+        solana_instruction::Instruction {
+            program_id: Pubkey::default(),
+            accounts: vec![],
+            data: vec![],
+        }
+    }
+
+    #[test]
+    fn accepts_the_canonical_compute_budget_and_memo_wrapping() {
+        // What the canonical TypeScript client emits: a sized compute budget
+        // before the open and a memo after it.
+        assert!(validate_layout(&[
+            cu_limit_ix(90_000),
+            cu_price_ix(1),
+            open_placeholder(),
+            memo_ix("order-4711"),
+        ])
+        .is_ok());
+        // A bare open stays valid - every wrapper is optional.
+        assert!(validate_layout(&[open_placeholder()]).is_ok());
+        // Phantom/Solflare inject up to three Lighthouse assertions, and a
+        // memo can ride alongside them.
+        assert!(validate_layout(&[
+            open_placeholder(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            memo_ix("x"),
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_a_malformed_compute_budget_prefix() {
+        // SetComputeUnitPrice before SetComputeUnitLimit: the runtime applies
+        // the price to the limit, so the spec pins the order.
+        assert!(
+            validate_layout(&[cu_price_ix(1), cu_limit_ix(90_000), open_placeholder()]).is_err()
+        );
+        assert!(
+            validate_layout(&[cu_limit_ix(90_000), cu_limit_ix(90_000), open_placeholder()])
+                .is_err()
+        );
+        assert!(validate_layout(&[cu_price_ix(1), cu_price_ix(1), open_placeholder()]).is_err());
+        // An unsupported ComputeBudget opcode (RequestHeapFrame).
+        let heap_frame = solana_instruction::Instruction {
+            program_id: pc::compute_budget_program_id(),
+            accounts: vec![],
+            data: vec![1, 0, 0, 0, 0],
+        };
+        assert!(validate_layout(&[heap_frame, open_placeholder()]).is_err());
+    }
+
+    #[test]
+    fn rejects_compute_budget_values_over_the_spec_ceilings() {
+        // The operator pays the priority fee on the requested limit, so both
+        // knobs are capped: a client cannot bill the operator arbitrarily.
+        assert!(validate_layout(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT),
+            open_placeholder()
+        ])
+        .is_ok());
+        assert!(validate_layout(&[
+            cu_limit_ix(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT + 1),
+            open_placeholder()
+        ])
+        .is_err());
+        assert!(validate_layout(&[
+            cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS),
+            open_placeholder()
+        ])
+        .is_ok());
+        assert!(validate_layout(&[
+            cu_price_ix(pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1),
+            open_placeholder()
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_an_over_long_or_unknown_suffix() {
+        // A fourth Lighthouse assertion is past what either wallet injects.
+        assert!(validate_layout(&[
+            open_placeholder(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+        ])
+        .is_err());
+        // Five optional instructions exceed the suffix budget.
+        assert!(validate_layout(&[
+            open_placeholder(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            lighthouse_ix(),
+            memo_ix("a"),
+            memo_ix("b"),
+        ])
+        .is_err());
+        // A ComputeBudget instruction may only appear before the open.
+        assert!(validate_layout(&[open_placeholder(), cu_limit_ix(90_000)]).is_err());
+        // A second open is not a permitted suffix instruction.
+        assert!(validate_layout(&[open_placeholder(), open_placeholder()]).is_err());
+    }
+
+    #[test]
+    fn rejects_a_wrapper_instruction_naming_the_fee_payer() {
+        // The operator co-signs this transaction; a wrapper instruction that
+        // names it could borrow its authority, so only `open` may reference it.
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let memo_naming_operator = solana_instruction::Instruction {
+            program_id: pc::memo_program_id(),
+            accounts: vec![solana_instruction::AccountMeta::new_readonly(
+                operator, true,
+            )],
+            data: b"signed-memo".to_vec(),
+        };
+        let tx = unsigned_tx_with_fee_payer(
+            &[build_open_instruction(&params), memo_naming_operator],
+            operator,
+        );
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
             &mint,
             &token_program(),
             &channel,
