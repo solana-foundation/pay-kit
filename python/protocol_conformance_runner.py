@@ -192,17 +192,23 @@ def _credential_from_canonical(obj: dict[str, Any]) -> PaymentCredential:
 
 
 def _receipt_from_canonical(obj: dict[str, Any]) -> Receipt:
-    # Reject a malformed idle timeout with the same rule `parse_receipt`
-    # applies, rather than coercing it to None: `format_receipt` omits a None
-    # field, so coercion would answer `receipt.format` with a header that our
-    # own `receipt.parse` rejects as a session receipt missing
-    # `idleTimeoutSeconds` — the runner reporting success on input the wire
-    # contract refuses.
+    # Reject malformed session accounting/timeout fields with the same rules
+    # `parse_receipt` applies, rather than coercing them: coercion would let
+    # `receipt.format` report success while emitting a header our own
+    # `receipt.parse` refuses to read back — the runner claiming conformance
+    # the wire contract does not have.
     idle_timeout_seconds = obj.get("idleTimeoutSeconds")
     if idle_timeout_seconds is not None and (
         isinstance(idle_timeout_seconds, bool) or not isinstance(idle_timeout_seconds, int) or idle_timeout_seconds < 0
     ):
         raise ValueError("'idleTimeoutSeconds' in receipt must be a non-negative integer")
+    if obj.get("intent") == "session":
+        for field in ("acceptedCumulative", "spent"):
+            value = obj.get(field)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, str) or not value.isascii() or not value.isdigit()
+            ):
+                raise ValueError(f"'{field}' in receipt must be a decimal string")
     return Receipt(
         status=str(obj.get("status", "")),
         method=str(obj.get("method", "")),

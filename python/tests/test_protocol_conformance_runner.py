@@ -73,3 +73,32 @@ def test_session_receipt_format_rejects_a_malformed_idle_timeout():
         assert result["success"] is False, f"{bad!r} must not format"
         assert "idleTimeoutSeconds" in result["error"]
         assert result["error_type"] == "format_error"
+
+
+def test_session_receipt_format_rejects_malformed_accounting_fields():
+    """A malformed ``acceptedCumulative``/``spent`` must fail the format op.
+
+    ``parse_receipt`` requires both to be non-decimal-string-free ASCII digit
+    strings on a session receipt. Coercing a bool, int, float, ``None``, or
+    non-digit string via ``str(...)`` would let ``receipt.format`` report
+    success while emitting a header ``receipt.parse`` refuses to read back.
+    """
+    base = {
+        "status": "success",
+        "method": "solana",
+        "timestamp": "2026-01-29T12:00:30Z",
+        "reference": "0xabc",
+        "intent": "session",
+        "acceptedCumulative": "500000",
+        "spent": "125000",
+        "idleTimeoutSeconds": 300,
+        "txHash": "5x7y9z",
+        "refunded": "0",
+    }
+
+    for field in ("acceptedCumulative", "spent"):
+        for bad in (True, 500000, 500000.5, "-1", "abc", ""):
+            result = _dispatch("receipt.format", {**base, field: bad})
+            assert result["success"] is False, f"{field}={bad!r} must not format"
+            assert field in result["error"]
+            assert result["error_type"] == "format_error"
