@@ -19,8 +19,8 @@
 //! two agree; the difference only concerns small-order/malleable edge cases,
 //! which is why this is an explicit opt-in mode.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, VerifyingKey};
