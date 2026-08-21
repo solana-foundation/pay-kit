@@ -191,24 +191,47 @@ def _credential_from_canonical(obj: dict[str, Any]) -> PaymentCredential:
     )
 
 
+def _require_session_decimal_string(obj: dict[str, Any], field: str) -> str:
+    """Read a required session-receipt accounting field as a decimal string.
+
+    Mirrors `parse_receipt`'s two session-only rules for this field: it must
+    be present (not ``None``/``""``) and, once present, an ASCII digit string
+    (`value.isascii() and value.isdigit()`). Raising here — instead of
+    coercing a missing or malformed value to `""` — keeps `receipt.format`
+    from reporting success on a receipt `receipt.parse` would refuse to read
+    back as this runner's own inconsistency.
+    """
+    value = obj.get(field)
+    if value is None or value == "":
+        raise ValueError(f"Missing '{field}' in receipt")
+    if isinstance(value, bool) or not isinstance(value, str) or not value.isascii() or not value.isdigit():
+        raise ValueError(f"'{field}' in receipt must be a decimal string")
+    return value
+
+
 def _receipt_from_canonical(obj: dict[str, Any]) -> Receipt:
-    # Reject malformed session accounting/timeout fields with the same rules
-    # `parse_receipt` applies, rather than coercing them: coercion would let
-    # `receipt.format` report success while emitting a header our own
-    # `receipt.parse` refuses to read back — the runner claiming conformance
-    # the wire contract does not have.
+    # Reject malformed or missing session accounting/timeout fields with the
+    # same rules `parse_receipt` applies, rather than coercing them: coercion
+    # would let `receipt.format` report success while emitting a header our
+    # own `receipt.parse` refuses to read back — the runner claiming
+    # conformance the wire contract does not have.
+    is_session = obj.get("intent") == "session"
+
     idle_timeout_seconds = obj.get("idleTimeoutSeconds")
+    if is_session and idle_timeout_seconds is None:
+        raise ValueError("Missing 'idleTimeoutSeconds' in receipt")
     if idle_timeout_seconds is not None and (
         isinstance(idle_timeout_seconds, bool) or not isinstance(idle_timeout_seconds, int) or idle_timeout_seconds < 0
     ):
         raise ValueError("'idleTimeoutSeconds' in receipt must be a non-negative integer")
-    if obj.get("intent") == "session":
-        for field in ("acceptedCumulative", "spent"):
-            value = obj.get(field)
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, str) or not value.isascii() or not value.isdigit()
-            ):
-                raise ValueError(f"'{field}' in receipt must be a decimal string")
+
+    if is_session:
+        accepted_cumulative = _require_session_decimal_string(obj, "acceptedCumulative")
+        spent = _require_session_decimal_string(obj, "spent")
+    else:
+        accepted_cumulative = str(obj.get("acceptedCumulative", ""))
+        spent = str(obj.get("spent", ""))
+
     return Receipt(
         status=str(obj.get("status", "")),
         method=str(obj.get("method", "")),
@@ -217,8 +240,8 @@ def _receipt_from_canonical(obj: dict[str, Any]) -> Receipt:
         challenge_id=str(obj.get("challengeId", "")),
         external_id=str(obj.get("externalId", "")),
         intent=str(obj.get("intent", "")),
-        accepted_cumulative=str(obj.get("acceptedCumulative", "")),
-        spent=str(obj.get("spent", "")),
+        accepted_cumulative=accepted_cumulative,
+        spent=spent,
         idle_timeout_seconds=idle_timeout_seconds,
         tx_hash=str(obj.get("txHash", "")),
         refunded=str(obj.get("refunded", "")),

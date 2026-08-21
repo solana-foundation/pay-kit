@@ -102,3 +102,48 @@ def test_session_receipt_format_rejects_malformed_accounting_fields():
             assert result["success"] is False, f"{field}={bad!r} must not format"
             assert field in result["error"]
             assert result["error_type"] == "format_error"
+
+
+def test_session_receipt_format_rejects_missing_required_fields():
+    """A session receipt must fail the format op when a required accounting or
+    timeout field is missing (absent key or explicit ``null``), rather than
+    silently formatting a header ``receipt.parse`` then rejects as missing
+    that same field.
+    """
+    base = {
+        "status": "success",
+        "method": "solana",
+        "timestamp": "2026-01-29T12:00:30Z",
+        "reference": "0xabc",
+        "intent": "session",
+        "acceptedCumulative": "500000",
+        "spent": "125000",
+        "idleTimeoutSeconds": 300,
+        "txHash": "5x7y9z",
+        "refunded": "0",
+    }
+
+    for field in ("acceptedCumulative", "spent", "idleTimeoutSeconds"):
+        # Explicit null.
+        result = _dispatch("receipt.format", {**base, field: None})
+        assert result["success"] is False, f"null {field} must not format"
+        assert field in result["error"]
+        assert result["error_type"] == "format_error"
+
+        # Key entirely absent.
+        without_field = {k: v for k, v in base.items() if k != field}
+        result = _dispatch("receipt.format", without_field)
+        assert result["success"] is False, f"missing {field} must not format"
+        assert field in result["error"]
+        assert result["error_type"] == "format_error"
+
+    # A non-session receipt has no such requirement: omitting these fields
+    # still formats (and the header carries no accounting/timeout fields).
+    non_session = {
+        "status": "success",
+        "method": "solana",
+        "timestamp": "2026-01-29T12:00:30Z",
+        "reference": "0xabc",
+    }
+    result = _dispatch("receipt.format", non_session)
+    assert result["success"] is True
