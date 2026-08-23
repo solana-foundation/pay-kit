@@ -152,6 +152,11 @@ getrandom = "0.3"
 hmac = "0.12"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "batch"] }
+# Direct dep only to pre-filter degenerate (small-order R) batch-verify inputs
+# the same way ed25519-dalek's own `verify_strict` does internally; version
+# must track whatever ed25519-dalek 2.x pins so the same curve point type
+# flows through both without a second copy of the crate.
+curve25519-dalek = { version = "4", default-features = false }
 
 # Time (expiration, timestamps)
 time = { version = "0.3", features = ["formatting", "parsing"] }
