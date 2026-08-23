@@ -415,6 +415,14 @@ fn verify_transfer_instruction(
         return invalid("invalid_exact_svm_payload_amount_mismatch");
     }
 
+    let decimals = instruction.data[9];
+    let expected_decimals = requirements.decimals.ok_or_else(|| {
+        Error::Other("invalid_exact_svm_payload_decimals_missing".into())
+    })?;
+    if decimals != expected_decimals {
+        return invalid("invalid_exact_svm_payload_decimals_mismatch");
+    }
+
     Ok(())
 }
 
@@ -669,7 +677,7 @@ mod tests {
                     "mint": requirements.currency,
                     "tokenAmount": {
                         "amount": requirements.amount,
-                        "decimals": requirements.decimals.unwrap_or(6),
+                        "decimals": requirements.decimals.expect("decimals required for test helper"),
                     },
                 },
             },
@@ -755,7 +763,7 @@ mod tests {
 
         let mut data = vec![12u8];
         data.extend_from_slice(&amount.to_le_bytes());
-        data.push(requirements.decimals.unwrap_or(6));
+        data.push(requirements.decimals.expect("decimals required for transfer helper"));
 
         Instruction {
             program_id: token_program,
