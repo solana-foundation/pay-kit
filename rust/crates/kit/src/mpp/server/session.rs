@@ -2182,20 +2182,29 @@ async fn verify_submit_and_fetch_topup(
     if state.processed_topup_signatures.contains(&signature) {
         return Ok(signature);
     }
-    let submission = pipeline.submit_verified(&tx).await;
-    let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
+    // `submit_verified` already asks the shared confirmation tracker whether
+    // THIS signature specifically reached confirmed commitment
+    // (`TxPipeline::confirm`, via `getSignatureStatuses`) before reporting an
+    // error — a send failure alone is never authoritative there (see its own
+    // doc comment). So `Err` here means this exact transaction did not
+    // confirm, full stop: falling through to a generic "does the channel's
+    // aggregate on-chain deposit meet `state.deposit + amount`" check would
+    // let a *different*, concurrently-landed top-up satisfy an unrelated
+    // request's minimum, since every concurrent top-up in this window reads
+    // the same stale `state.deposit` baseline. That request would then
+    // return `Ok(signature)` for a signature that never landed, and the
+    // atomic mutator in `process_topup_with_outcome` credits
+    // `additionalAmount` once per distinct signature — stacking N credits in
+    // the store for one real on-chain deposit.
+    let confirmed = pipeline
+        .submit_verified(&tx)
+        .await
+        .map_err(|error| Error::Rpc(format!("top-up submission failed: {error}")))?;
     let account_data = pipeline
-        .read_account_data(channel, min_context_slot)
+        .read_account_data(channel, Some(confirmed.slot))
         .await
         .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
-        .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()));
-    let account_data = match (submission, account_data) {
-        (Ok(_), account) => account?,
-        (Err(_), Ok(account)) => account,
-        (Err(error), Err(_)) => {
-            return Err(Error::Rpc(format!("top-up submission failed: {error}")))
-        }
-    };
+        .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()))?;
     let channel_state =
         payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
             .map_err(|error| Error::Other(format!("decode topped-up channel: {error}")))?;
@@ -2538,6 +2547,26 @@ mod tests {
         tokio::task::JoinHandle<()>,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
     ) {
+        rpc_for_channel_with_options(channel, current_slot, false).await
+    }
+
+    /// Like [`rpc_for_channel`], but `landed_with_error` makes
+    /// `getSignatureStatuses` report every landed signature as failed
+    /// on-chain (`confirm`'s fast, non-timeout failure path), simulating a
+    /// submission whose execution genuinely fails — as opposed to one whose
+    /// response is merely lost. Account reads
+    /// (`getAccountInfo`/`getMultipleAccounts`) still return the fixed
+    /// `channel` state regardless, matching a real cluster where the account
+    /// reflects whatever *other* transaction landed.
+    async fn rpc_for_channel_with_options(
+        channel: payment_channels::generated::generated::accounts::Channel,
+        current_slot: u64,
+        landed_with_error: bool,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use base64::Engine;
         use serde_json::{json, Value};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2628,13 +2657,29 @@ mod tests {
                                 .map(|signature| {
                                     if landed.lock().unwrap().contains(signature.as_str().unwrap())
                                     {
-                                        json!({
-                                            "slot": 43,
-                                            "confirmations": null,
-                                            "err": null,
-                                            "confirmationStatus": "finalized",
-                                            "status": { "Ok": null }
-                                        })
+                                        if landed_with_error {
+                                            // A signature the RPC saw land, but
+                                            // whose execution failed on-chain
+                                            // (e.g. insufficient fee-payer
+                                            // funds) — the confirmation
+                                            // tracker's fast (non-timeout)
+                                            // failure path.
+                                            json!({
+                                                "slot": 43,
+                                                "confirmations": null,
+                                                "err": "AlreadyProcessed",
+                                                "confirmationStatus": "finalized",
+                                                "status": { "Err": "AlreadyProcessed" }
+                                            })
+                                        } else {
+                                            json!({
+                                                "slot": 43,
+                                                "confirmations": null,
+                                                "err": null,
+                                                "confirmationStatus": "finalized",
+                                                "status": { "Ok": null }
+                                            })
+                                        }
                                     } else {
                                         Value::Null
                                     }
@@ -3407,6 +3452,123 @@ mod tests {
             .unwrap();
         assert_eq!(stored.deposit, 1_100);
         assert_eq!(stored.processed_topup_signatures.len(), 1);
+        rpc.abort();
+    }
+
+    /// Regression: a top-up whose own transaction fails on-chain must not be
+    /// credited just because the channel's *aggregate* on-chain deposit
+    /// happens to already meet `state.deposit + amount` — that aggregate can
+    /// be satisfied by a wholly different, concurrently-landed top-up reading
+    /// the same stale `state.deposit` baseline. Crediting on that basis lets
+    /// N concurrent (but individually failed) top-up requests each add their
+    /// own `additionalAmount` to the store — since each carries a distinct
+    /// signature, the mutator's replay-by-signature dedupe never catches
+    /// it — inflating the stored deposit far past what actually escrowed
+    /// on-chain.
+    #[cfg(feature = "server")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn topup_whose_own_transaction_fails_is_not_credited_from_the_aggregate_deposit() {
+        use base64::Engine;
+        use payment_channels::generated::generated::types::SettlementWatermarks;
+        use solana_message::Message;
+        use solana_transaction::Transaction;
+
+        let (mut server, _session, channel_id) = client_server().await;
+        let payer = signer(5);
+        let sponsor = shared_signer(8);
+        server.config.fee_payer_signer = Some(std::sync::Arc::clone(&sponsor));
+        server
+            .store
+            .update_channel(
+                &channel_id,
+                Box::new({
+                    let payer = payer.pubkey().to_string();
+                    let rent_payer = sponsor.pubkey().to_string();
+                    move |state| {
+                        let mut state = state.unwrap();
+                        state.payer = payer;
+                        state.rent_payer = rent_payer;
+                        Ok(state)
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        let channel = Pubkey::from_str(&channel_id).unwrap();
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).unwrap();
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+        let program_id = payment_channels::default_program_id();
+        let ix = payment_channels::build_top_up_instruction(
+            &payer.pubkey(),
+            &channel,
+            &mint,
+            100,
+            &token_program,
+            &program_id,
+        );
+        let message = Message::new_with_blockhash(
+            &[ix],
+            Some(&sponsor.pubkey()),
+            &solana_hash::Hash::new_unique(),
+        );
+        let mut tx = Transaction::new_unsigned(message);
+        payer.sign_transaction(&mut tx).await.unwrap();
+        let transaction =
+            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+        // The on-chain account already reflects deposit=1_100 — as if a
+        // *different* concurrent top-up already landed — even though THIS
+        // request's own transaction is about to be reported as failed.
+        let account = payment_channels::generated::generated::accounts::Channel {
+            discriminator: 1,
+            version: 1,
+            bump: 1,
+            status: 0,
+            salt: 7,
+            deposit: 1_100,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period: server.config.grace_period_seconds,
+            distribution_hash: [0; 32],
+            payer: payment_channels::to_address(&payer.pubkey()),
+            payee: payment_channels::to_address(
+                &Pubkey::from_str(&server.config.recipient).unwrap(),
+            ),
+            authorized_signer: payment_channels::to_address(&signer(1).pubkey()),
+            mint: payment_channels::to_address(&mint),
+            rent_payer: payment_channels::to_address(&sponsor.pubkey()),
+            open_slot: 42,
+        };
+        let (url, rpc, _send_tx_count) =
+            rpc_for_channel_with_options(account, 43, /* landed_with_error */ true).await;
+        server.config.rpc_url = Some(url);
+        let payload = TopUpPayload {
+            channel_id: channel_id.clone(),
+            additional_amount: "100".into(),
+            transaction,
+        };
+
+        let result = server.process_topup_with_outcome(&payload).await;
+        assert!(
+            result.is_err(),
+            "a top-up whose own transaction failed on-chain must not report success \
+             just because the channel's aggregate deposit already meets the minimum"
+        );
+
+        let stored = server
+            .store
+            .get_channel(&channel_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.deposit, 1_000,
+            "no credit may be applied for a transaction that never confirmed"
+        );
+        assert!(stored.processed_topup_signatures.is_empty());
         rpc.abort();
     }
 
