@@ -1,11 +1,5 @@
 import { createSolanaRpc, getBase58Decoder } from '@solana/kit';
-import {
-    buildAndSignWireTransaction,
-    encodeVoucherMessageBytes,
-    OPEN_SLOT_WINDOW,
-    submitSettleAndDistribute,
-    waitForSignatureConfirmation,
-} from '@solana/mpp/server';
+import { encodeVoucherMessageBytes, OPEN_SLOT_WINDOW } from '@solana/mpp/server';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -30,7 +24,6 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
 const DEFAULT_WITHDRAW_DELAY_SECONDS = 900;
-const BASIS_POINTS_DENOMINATOR = 10_000;
 
 /**
  * Usage meter handed to a usage-gated handler. The handler reports the actual
@@ -76,15 +69,12 @@ export type UptoSettlement = {
     readonly transaction: string;
 };
 
-type SettlementSubmitRpc = Parameters<typeof submitSettleAndDistribute>[0]['rpc'];
-type SettlementConfirmRpc = Parameters<typeof waitForSignatureConfirmation>[0]['rpc'];
-type SettlementWireRpc = Parameters<typeof buildAndSignWireTransaction>[0];
-
 /**
  * Usage-based (`upto`) x402 engine: the metered counterpart to the `exact`
  * adapter. The client opens a payment channel depositing the authorized ceiling;
- * the in-process `@x402/svm` upto handler verifies and broadcasts the open,
- * then settles the metered amount with a single voucher, refunding the remainder.
+ * the in-process `@x402/svm` upto facilitator broadcasts the open (deposit
+ * settle) before the handler runs, then settles the metered amount with a
+ * single voucher (claim settle), refunding the remainder.
  *
  * `upto` does not fit the protocol-uniform {@link import('../adapter.js').ProtocolAdapter}
  * contract (which settles before the handler runs), so it is exposed as a
@@ -157,7 +147,15 @@ export class X402Upto {
      * Verify the authorization and broadcast the channel open (escrowing the
      * ceiling before the resource is served).
      *
-     * @throws {InvalidProofError} when the authorization fails verification.
+     * In `@x402/svm` >= 2.23 the facilitator's `verify()` is a read-only
+     * preflight — the open broadcast moved to `settle()`'s deposit path
+     * (no `voucherSignature`, `requirements.amount === payload.maxAmount`).
+     * `settle()` runs the same authorization checks `verify()` does before
+     * touching the network, so calling it directly here does not skip any
+     * validation — it is the only path that actually escrows the ceiling.
+     *
+     * @throws {InvalidProofError} when the authorization or the deposit
+     *   broadcast fails.
      */
     async verifyOpen(request: Request, maxPrice: Price): Promise<UptoVerified> {
         const header = x402PaymentHeader(request);
@@ -187,11 +185,11 @@ export class X402Upto {
         this.#assertOpenSlotBoundToChallenge(payload, recentSlot);
 
         const requirements = this.#requirements(maxPrice, recentSlot);
-        const verification = await this.#facilitator.verify(payload, requirements);
-        if (!verification.isValid) {
-            throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
+        const settled = await this.#facilitator.settle(payload, requirements);
+        if (!settled.success) {
+            throw new InvalidProofError(settled.errorReason ?? 'invalid_proof', settled.errorMessage);
         }
-        return { maxBaseUnits: BigInt(requirements.amount), payer: verification.payer ?? '', payload, requirements };
+        return { maxBaseUnits: BigInt(requirements.amount), payer: settled.payer ?? '', payload, requirements };
     }
 
     /**
@@ -251,55 +249,29 @@ export class X402Upto {
     async settle(verified: UptoVerified, actualBaseUnits: bigint): Promise<UptoSettlement> {
         const actual = actualBaseUnits > verified.maxBaseUnits ? verified.maxBaseUnits : actualBaseUnits;
         const payload = parseUptoPayload(verified.payload);
-        const rpc = createSolanaRpc(this.#rpcUrl);
-        const confirmRpc = rpc as unknown as SettlementConfirmRpc;
-        const submitRpc = rpc as unknown as SettlementSubmitRpc;
-        const wireRpc = rpc as unknown as SettlementWireRpc;
-        let signature: string;
-        try {
-            const signed =
-                actual > 0n
-                    ? {
-                          signature: await this.#signVoucher(payload.channelId, actual, BigInt(payload.expiresAt)),
-                          signatureType: 'ed25519' as const,
-                          signer: this.#receiverAuthorizer,
-                          voucher: {
-                              channelId: payload.channelId,
-                              cumulativeAmount: actual.toString(),
-                              expiresAt: payload.expiresAt,
-                          },
-                      }
-                    : undefined;
-            const result = await submitSettleAndDistribute({
-                buildAndSignWireTransaction: instructions =>
-                    buildAndSignWireTransaction(wireRpc, this.#signer.signer, instructions),
-                channelId: payload.channelId,
-                mint: verified.requirements.asset,
-                network: verified.requirements.network,
-                payee: this.#feePayer,
-                payer: payload.from,
-                rentPayer: this.#feePayer,
-                rpc: submitRpc,
-                signer: this.#signer.signer,
-                splits: this.#recipientSplits(verified.requirements.payTo),
-                tokenProgram: tokenProgramFor(verified.requirements),
-                voucher: signed ? { authorizedSigner: this.#receiverAuthorizer, signed } : undefined,
-            });
-            signature = result.signature;
-            await waitForSignatureConfirmation({
-                context: 'x402 upto settle',
-                rpc: confirmRpc,
-                signature: result.signature,
-            });
-        } catch (error) {
-            throw new InvalidProofError('transaction_failed', errorMessage(error));
+
+        // `voucherSignature` is the wire discriminator `UptoSvmScheme.settle`
+        // uses to route to the claim path (vs. the deposit path `verifyOpen`
+        // already ran) — always sign, even for a zero-amount refund: the
+        // facilitator's claim validation requires a non-empty signature
+        // regardless of the settled amount.
+        const voucherSignature = await this.#signVoucher(payload.channelId, actual, BigInt(payload.expiresAt));
+        const claimPayload: PaymentPayload = {
+            ...verified.payload,
+            payload: { ...verified.payload.payload, voucherSignature },
+        };
+        const claimRequirements: PaymentRequirements = { ...verified.requirements, amount: actual.toString() };
+
+        const settled = await this.#facilitator.settle(claimPayload, claimRequirements);
+        if (!settled.success) {
+            throw new InvalidProofError(settled.errorReason ?? 'transaction_failed', settled.errorMessage);
         }
         const settlement = {
-            amount: actual.toString(),
-            network: verified.payload.accepted.network,
-            payer: payload.from,
+            amount: settled.amount ?? actual.toString(),
+            network: verified.requirements.network,
+            payer: settled.payer ?? payload.from,
             success: true,
-            transaction: signature,
+            transaction: settled.transaction,
         } as const;
         return {
             amount: settlement.amount,
@@ -338,13 +310,6 @@ export class X402Upto {
             payTo: this.#recipient,
             scheme: 'upto',
         };
-    }
-
-    #recipientSplits(recipient: string): readonly { readonly bps: number; readonly recipient: string }[] {
-        // Always explicit: the payee seat is held by the fee payer with a zero
-        // implicit remainder, so 100% of settled funds must be assigned to
-        // `payTo` through the recipients list.
-        return [{ bps: BASIS_POINTS_DENOMINATOR, recipient }];
     }
 
     /**
@@ -396,10 +361,4 @@ function parseUptoPayload(payload: PaymentPayload): UptoPaymentChannelPayload {
         throw new InvalidProofError('invalid_upto_payload');
     }
     return { channelId: raw.channelId, expiresAt: raw.expiresAt, from: raw.from };
-}
-
-function tokenProgramFor(requirements: PaymentRequirements): string {
-    const fromExtra = requirements.extra?.tokenProgram;
-    if (typeof fromExtra === 'string') return fromExtra;
-    return getStablecoinTokenProgram(requirements.asset, requirements.network);
 }

@@ -25,6 +25,7 @@ import {
   startOnchainSurfnet,
   PAYMENT_CHANNELS_PROGRAM,
   resolveDatasourceRpc,
+  USDC_MINT,
   type OnchainSurfnet,
 } from "../src/onchain/surfnet.js";
 
@@ -101,6 +102,32 @@ async function payAndAssertSettled(path: string, init: RequestInit, protocol: "x
   expect(res.status, `settlement did not confirm on-chain: ${res.status} ${text}`).toBe(200);
 }
 
+/**
+ * The operator's USDC ATA balance (base units), read straight from surfpool.
+ * A 402/500 short-circuits before this is called; a false-positive 200 from a
+ * swallowed settlement failure (the exact bug class this file guards against:
+ * `verifyOpen` no longer escrows on-chain since `@x402/svm` >= 2.23, and the
+ * framework serves the buffered 200 anyway on the assumption it already had)
+ * leaves this balance unchanged, which no HTTP-status-only assertion catches.
+ */
+async function getUsdcBalance(owner: string): Promise<bigint> {
+  const r = await fetch(net.rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getTokenAccountsByOwner",
+      params: [owner, { mint: USDC_MINT }, { encoding: "jsonParsed" }],
+    }),
+  });
+  const json = (await r.json()) as {
+    result?: { value?: { account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }[] };
+  };
+  const amount = json.result?.value?.[0]?.account.data.parsed.info.tokenAmount.amount;
+  return BigInt(amount ?? "0");
+}
+
 describe.skipIf(!RUN)("on-chain settlement (mainnet fork, real program)", () => {
   beforeAll(async () => {
     net = await startOnchainSurfnet();
@@ -125,6 +152,24 @@ describe.skipIf(!RUN)("on-chain settlement (mainnet fork, real program)", () => 
       { method: "POST", body: "The quick brown fox jumps over the lazy dog. ".repeat(20) },
       "x402",
     );
+  }, 90_000);
+
+  // Regression: `verifyOpen` returning 200 proves nothing on its own — a
+  // silently-swallowed settle() failure (e.g. the channel never actually
+  // opened on-chain) still serves 200, since the framework assumes the
+  // ceiling was already escrowed by the time settle() runs. Assert the
+  // operator's USDC balance actually moved by the exact billed amount, the
+  // only signal that distinguishes "settled" from "served for free."
+  it("x402 upto actually transfers the billed amount on-chain", async () => {
+    const body = "Four score and seven years ago our fathers brought forth. ".repeat(15);
+    const tokens = BigInt(Math.max(1, Math.floor(body.length / 4)));
+    const expectedBilled = tokens * PRICE_PER_TOKEN;
+
+    const before = await getUsdcBalance(operator.address);
+    await payAndAssertSettled("/api/v1/summarize", { method: "POST", body }, "x402");
+    const after = await getUsdcBalance(operator.address);
+
+    expect(after - before).toBe(expectedBilled);
   }, 90_000);
 
   it("x402 exact charge settles on-chain", async () => {

@@ -17,7 +17,7 @@ expectTypeOf<Immutable<ExactSvmSchemeOptions>>().toEqualTypeOf<X402Options>();
 // no-bare-offer failure path.
 const rpcState = vi.hoisted(() => ({ fail: false, slot: 314n }));
 const ctorCalls = vi.hoisted(() => [] as unknown[][]);
-const uptoVerifyCalls = vi.hoisted(() => [] as unknown[][]);
+const uptoSettleCalls = vi.hoisted(() => [] as unknown[][]);
 vi.mock('@solana/kit', async importOriginal => {
     const actual = await importOriginal<typeof import('@solana/kit')>();
     return {
@@ -53,15 +53,18 @@ vi.mock('@x402/svm/exact/facilitator', async importOriginal => {
     };
 });
 
-// Subclass spy: records the requirements each verify runs against.
+// Subclass spy: records the requirements each deposit settle runs against.
+// `verifyOpen` calls `settle()` (not `verify()`) since @x402/svm >= 2.23 moved
+// the open broadcast off the now-read-only `verify()` and onto `settle()`'s
+// deposit path.
 vi.mock('@x402/svm/upto/facilitator', async importOriginal => {
     const actual = await importOriginal<typeof import('@x402/svm/upto/facilitator')>();
     return {
         ...actual,
         UptoSvmScheme: class extends actual.UptoSvmScheme {
-            verify(...args: Parameters<InstanceType<typeof actual.UptoSvmScheme>['verify']>) {
-                uptoVerifyCalls.push(args);
-                return super.verify(...args);
+            settle(...args: Parameters<InstanceType<typeof actual.UptoSvmScheme>['settle']>) {
+                uptoSettleCalls.push(args);
+                return super.settle(...args);
             }
         },
     };
@@ -247,16 +250,17 @@ describe('x402 upto engine', () => {
         }
     });
 
-    // Regression: the facilitator runs the same openSlot window check inside
-    // `verifyOpenTransaction`, and without a `recentSlot` hint it reads its own
-    // `finalized` slot — which lags this challenge's `getLatestBlockhash`
-    // context slot by tens of slots and rejects a perfectly fresh open. The
-    // verify-time requirements must therefore carry the re-observed slot.
+    // Regression: the facilitator's deposit-settle path runs the same openSlot
+    // window check inside `verifyOpenTransaction`, and without a `recentSlot`
+    // hint it reads its own `finalized` slot — which lags this challenge's
+    // `getLatestBlockhash` context slot by tens of slots and rejects a
+    // perfectly fresh open. The requirements `verifyOpen` hands to
+    // `facilitator.settle()` must therefore carry the re-observed slot.
     it('hands the facilitator the re-observed recentSlot it window-checks against', async () => {
-        uptoVerifyCalls.length = 0;
+        uptoSettleCalls.length = 0;
         const { request, upto } = await verifyOpenRequestFor('314');
         await expect(upto.verifyOpen(request, usd('1.00'))).rejects.toThrow();
-        const requirements = uptoVerifyCalls.at(-1)?.[1] as { extra?: { recentSlot?: unknown } } | undefined;
+        const requirements = uptoSettleCalls.at(-1)?.[1] as { extra?: { recentSlot?: unknown } } | undefined;
         expect(requirements?.extra?.recentSlot).toBe('314');
     });
 
