@@ -470,7 +470,7 @@ fn mpp_candidate(challenge: &PaymentChallenge, order: usize) -> Option<Candidate
         mint,
         network,
         amount,
-        decimals: details.decimals.unwrap_or(6),
+        decimals: details.decimals?,
         source: Source::MppCharge(Box::new(challenge.clone())),
         order,
     })
@@ -501,7 +501,7 @@ fn x402_candidate(requirement: &PaymentRequirements, order: usize) -> Option<Can
         mint,
         network,
         amount,
-        decimals: requirement.decimals.unwrap_or(6),
+        decimals: requirement.decimals?,
         source: Source::X402Exact(Box::new(requirement.clone())),
         order,
     })
