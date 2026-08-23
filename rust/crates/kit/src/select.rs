@@ -572,7 +572,7 @@ mod tests {
             "amount": amount.to_string(),
             "currency": currency,
             "recipient": RECIPIENT,
-            "methodDetails": { "network": "mainnet" },
+            "methodDetails": { "network": "mainnet", "decimals": 6 },
         });
         let challenge = PaymentChallenge::new(
             "id-1",
