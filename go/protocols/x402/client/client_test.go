@@ -518,3 +518,26 @@ func TestBuildTransactionNonceSourceError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestBuildSPLTransferRejectsMissingDecimals(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	// Wrapped SOL carries nine decimals. A challenge that omits decimals must
+	// be rejected instead of silently building a 6-decimal transferChecked.
+	entry := &x402.AcceptsEntry{
+		Protocol: "x402",
+		Scheme:   "exact",
+		Network:  mainnetCAIP2,
+		Asset:    "So11111111111111111111111111111111111111112",
+		Amount:   "1",
+		PayTo:    recipient.String(),
+	}
+
+	_, err := buildSPLTransfer(signer, recipient, 1, entry)
+	if err == nil {
+		t.Fatal("expected missing decimals to be rejected")
+	}
+	if !strings.Contains(err.Error(), "required for SPL payments") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
