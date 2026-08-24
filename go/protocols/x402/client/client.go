@@ -562,6 +562,13 @@ func buildSPLTransfer(
 	amount uint64,
 	entry *x402.AcceptsEntry,
 ) (solana.Instruction, error) {
+	// #42: decimals are required for SPL payments (spec §7.2 marks them MUST be
+	// present for a mint). parseEntry defaults them to 6 with DecimalsSet unset
+	// when the offer omits the field; defaulting here would silently build a
+	// transferChecked at the wrong divisor for a non-6-decimal mint.
+	if !entry.Extra.DecimalsSet {
+		return nil, fmt.Errorf("x402 client: extra.decimals is required for SPL payments (spec §7.2)")
+	}
 	mint, err := solana.PublicKeyFromBase58(entry.Asset)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: mint %q: %w", entry.Asset, err)
