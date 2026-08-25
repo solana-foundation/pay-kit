@@ -488,6 +488,17 @@ async def test_build_payment_rejects_missing_asset():
 
 
 @pytest.mark.asyncio
+async def test_build_payment_rejects_missing_decimals_for_spl():
+    # Wrapped SOL carries nine decimals; an offer omitting decimals must be
+    # rejected rather than silently signed at the default six.
+    signer = Signer.generate()
+    offer = _offer(asset="So11111111111111111111111111111111111111112", decimals=None)
+    offer["extra"].pop("decimals")
+    with pytest.raises(ValueError, match="required for SPL payments"):
+        await build_payment(signer, None, _entry(offer))
+
+
+@pytest.mark.asyncio
 async def test_build_payment_rejects_missing_pay_to():
     signer = Signer.generate()
     offer = _offer()
