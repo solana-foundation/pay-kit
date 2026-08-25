@@ -74,8 +74,6 @@ __all__ = [
 _COMPUTE_UNIT_LIMIT = 20_000
 #: ComputeBudget SetComputeUnitPrice microlamports (disc 3, u64 LE, <= MAX).
 _COMPUTE_UNIT_PRICE = 1
-#: Default SPL decimals when the offer omits ``extra.decimals``.
-_DEFAULT_DECIMALS = 6
 #: Random memo nonce length in bytes when the offer omits ``extra.memo``. The
 #: x402 SVM exact contract requires a Memo of at least 16 bytes; it is
 #: hex-encoded to a UTF-8 string for the Memo instruction data.
@@ -524,15 +522,17 @@ async def build_payment(
         if token_program is None:
             cluster_label = _mints_label_for_caip2(_caip2_for_selection(_str_field(req, "network")))
             token_program = default_token_program_for_currency(asset, cluster_label)
-        # decimals: top-level first, then extra (types.rs:344-345); default 6.
+        # Decimals are required for SPL payments (spec section 7.2 marks them
+        # MUST be present for a mint). Defaulting a missing value to 6
+        # silently signs a wrong transferChecked decimals byte / wrong
+        # divisor for any non-6-decimal mint, the worst failure mode for a
+        # signed transaction.
         decimals_raw = req.get("decimals")
         if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
             decimals_raw = extra.get("decimals")
-        decimals = (
-            int(decimals_raw)
-            if isinstance(decimals_raw, int) and not isinstance(decimals_raw, bool)
-            else _DEFAULT_DECIMALS
-        )
+        if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
+            raise ValueError("extra.decimals is required for SPL payments (spec §7.2)")
+        decimals = int(decimals_raw)
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(asset)
         source_ata = Pubkey.from_string(derive_ata(str(signer_pubkey), asset, token_program))
