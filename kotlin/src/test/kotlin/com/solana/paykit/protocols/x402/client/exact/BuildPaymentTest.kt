@@ -312,6 +312,28 @@ class BuildPaymentTest {
     }
 
     @Test
+    fun rejectsSplPaymentWhenDecimalsMissing() {
+        // Wrapped SOL carries nine decimals; an offer omitting decimals must be
+        // rejected rather than silently signed at the default six.
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_MAINNET,
+            asset = "So11111111111111111111111111111111111111112",
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(
+                tokenProgram = Programs.TOKEN_PROGRAM,
+                decimals = null,
+                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+            ),
+        )
+        val error = assertFailsWith<IllegalArgumentException> {
+            buildPayment(signer, offer, fixedBlockhash)
+        }
+        assertTrue(error.message!!.contains("required for SPL payments"))
+    }
+
+    @Test
     fun splOfferMissingTokenProgramDefaultsFromCurrency() {
         // A known stablecoin offer that omits the token program defaults it
         // from the currency (rust `default_token_program_for_currency`) rather

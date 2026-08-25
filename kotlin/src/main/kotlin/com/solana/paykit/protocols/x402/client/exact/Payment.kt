@@ -63,8 +63,6 @@ private const val COMPUTE_UNIT_LIMIT = 20_000
 /** ComputeBudget SetComputeUnitPrice microlamports. */
 private const val COMPUTE_UNIT_PRICE = 1L
 
-/** Default SPL decimals when the offer omits ``extra.decimals``. */
-private const val DEFAULT_DECIMALS = 6
 
 /**
  * x402 memo byte cap. INVARIANT: 256 (rust ``MAX_MEMO_BYTES``). This is
@@ -284,7 +282,12 @@ fun buildPayment(
         val mintStr = resolveStablecoinMint(asset, label) ?: asset
         val tokenProgramStr = requirement.effectiveTokenProgram
             ?: defaultTokenProgramForCurrency(asset, label)
-        val decimals = requirement.effectiveDecimals ?: DEFAULT_DECIMALS
+        // Decimals are required for SPL payments (spec section 7.2 marks them
+        // MUST be present for a mint). Defaulting a missing value to 6
+        // silently signs a wrong transferChecked decimals byte for any
+        // non-6-decimal mint, the worst failure mode for a signed transaction.
+        val decimals = requirement.effectiveDecimals
+            ?: throw IllegalArgumentException("extra.decimals is required for SPL payments (spec §7.2)")
         val tokenProgramKey = PublicKey.fromBase58(tokenProgramStr)
         val mintKey = PublicKey.fromBase58(mintStr)
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgramKey)
