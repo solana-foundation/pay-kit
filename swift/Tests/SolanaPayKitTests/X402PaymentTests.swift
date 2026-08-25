@@ -542,6 +542,25 @@ struct X402PaymentBuildingTests {
             Issue.record("expected error")
         } catch { }
     }
+
+    @Test
+    func throwsOnMissingDecimalsForSPL() async {
+        let signer = try! Self.makeSigner()
+        let rpc = Self.makeRpc()
+        // Wrapped SOL carries nine decimals; an offer omitting decimals must be
+        // rejected rather than silently signed at the default six.
+        let extra: [String: JSONValue] = ["recentBlockhash": .string(Self.knownBlockhash)]
+        let offer = X402AcceptsEntry(
+            scheme: "exact", network: SolanaNetwork.mainnet,
+            amount: "1000", maxAmountRequired: nil,
+            asset: "So11111111111111111111111111111111111111112",
+            payTo: "recipient", recipient: nil, extra: extra
+        )
+        do {
+            _ = try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: offer)
+            Issue.record("expected error")
+        } catch { }
+    }
 }
 
 // MARK: - Mints / Network registry tests

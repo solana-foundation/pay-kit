@@ -12,9 +12,6 @@ let X402ComputeUnitLimit: UInt32 = 20_000
 /// ComputeBudget SetComputeUnitPrice micro-lamports.
 let X402ComputeUnitPrice: UInt64 = 1
 
-/// Default SPL decimals when the offer omits `extra.decimals`.
-let X402DefaultDecimals: UInt8 = 6
-
 // MARK: - Challenge parsing
 
 /// A selected x402 offer together with the protocol version the server's
@@ -317,12 +314,16 @@ private func _buildPaymentPayload(
             ?? Mints.defaultTokenProgram(currency: assetStr, cluster: clusterLabel)
         let tokenProgram = try Pubkey(base58: tokenProgramStr)
         let mint = try Pubkey(base58: mintStr)
-        let decimals: UInt8
-        if let d = offer.effectiveDecimals, d >= 0, d <= 255 {
-            decimals = UInt8(d)
-        } else {
-            decimals = X402DefaultDecimals
+        // Decimals are required for SPL payments (spec §7.2 marks them MUST be
+        // present for a mint). Defaulting a missing value to 6 silently signs
+        // a wrong transferChecked decimals byte / wrong divisor for any
+        // non-6-decimal mint, the worst failure mode for a signed transaction.
+        guard let d = offer.effectiveDecimals, d >= 0, d <= 255 else {
+            throw PayKitError.invalidTransaction(
+                "extra.decimals is required for SPL payments (spec §7.2)"
+            )
         }
+        let decimals = UInt8(d)
         let sourceAta = try AssociatedTokenAccount.address(
             owner: signerPubkey, mint: mint, tokenProgram: tokenProgram
         )
