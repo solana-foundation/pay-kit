@@ -415,12 +415,17 @@ fn verify_transfer_instruction(
         return invalid("invalid_exact_svm_payload_amount_mismatch");
     }
 
-    let decimals = instruction.data[9];
-    let expected_decimals = requirements.decimals.ok_or_else(|| {
-        Error::Other("invalid_exact_svm_payload_decimals_missing".into())
-    })?;
-    if decimals != expected_decimals {
-        return invalid("invalid_exact_svm_payload_decimals_mismatch");
+    // A spec-compliant x402 offer may legally omit extra.decimals, so the
+    // requirement cannot always pin an expected byte. When present it is a
+    // strict hint; when absent the on-chain transferChecked instruction still
+    // verifies the byte against the mint, keeping lying payloads fail-closed.
+    if let Some(expected_decimals) = requirements.decimals {
+        let decimals = instruction.data[9];
+        if decimals != u8::try_from(expected_decimals).map_err(|_| Error::Other(
+            "invalid_exact_svm_payload_decimals_mismatch".into(),
+        ))? {
+            return invalid("invalid_exact_svm_payload_decimals_mismatch");
+        }
     }
 
     Ok(())

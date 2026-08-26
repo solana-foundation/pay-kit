@@ -487,15 +487,63 @@ async def test_build_payment_rejects_missing_asset():
         await build_payment(signer, None, _entry(offer))
 
 
+class _MintInfoRpc:
+    """RPC stub exposing only get_account_info for a 9-decimal wrapped-SOL mint."""
+
+    def __init__(self, decimals: int = 9, data_len: int = 82):
+        self.decimals = decimals
+        self.data_len = data_len
+
+    async def get_account_info(self, _pubkey):
+        class _Data:
+            data = bytes(self.data_len)
+
+        class _Value:
+            value = _Data()
+
+        raw = bytearray(self.data_len)
+        raw[44] = self.decimals
+
+        class _Resp:
+            class value:  # noqa: N801 - mirrors RPC response shape
+                data = bytes(raw)
+
+        return _Resp()
+
+
 @pytest.mark.asyncio
-async def test_build_payment_rejects_missing_decimals_for_spl():
-    # Wrapped SOL carries nine decimals; an offer omitting decimals must be
-    # rejected rather than silently signed at the default six.
+async def test_build_payment_fetches_decimals_from_mint_when_absent():
+    # A spec-compliant offer may omit extra.decimals; the client must fetch the
+    # authoritative value from the on-chain mint instead of rejecting (or
+    # defaulting blindly to six).
     signer = Signer.generate()
     offer = _offer(asset="So11111111111111111111111111111111111111112", decimals=None)
     offer["extra"].pop("decimals")
-    with pytest.raises(ValueError, match="required for SPL payments"):
-        await build_payment(signer, None, _entry(offer))
+    rpc = _MintInfoRpc(decimals=9)
+
+    class _BlockhashRpc(_MintInfoRpc):
+        async def get_latest_blockhash(self):
+            return "B" * 44
+
+    envelope = await build_payment(signer, _BlockhashRpc(), _entry(offer))
+    assert envelope["payload"]["transaction"]
+
+
+@pytest.mark.asyncio
+async def test_build_payment_errors_when_mint_fetch_fails_and_no_decimals():
+    signer = Signer.generate()
+    offer = _offer(asset="So11111111111111111111111111111111111111112", decimals=None)
+    offer["extra"].pop("decimals")
+
+    class _BrokenRpc:
+        async def get_account_info(self, _pubkey):
+            raise RuntimeError("rpc down")
+
+        async def get_latest_blockhash(self):
+            return "B" * 44
+
+    with pytest.raises(ValueError, match="fetching mint"):
+        await build_payment(signer, _BrokenRpc(), _entry(offer))
 
 
 @pytest.mark.asyncio

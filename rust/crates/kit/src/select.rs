@@ -181,7 +181,9 @@ struct Candidate {
     mint: String,
     network: String,
     amount: u64,
-    decimals: u8,
+    /// `None` when the offer legally omits `extra.decimals`; resolved at
+    /// build time from the on-chain mint instead of rejecting here.
+    decimals: Option<u8>,
     /// Server enumeration order, for stable tie-breaking.
     order: usize,
 }
@@ -362,8 +364,12 @@ fn rank(fundable: &mut [(usize, &Candidate, &AcceptableToken)], order: &Ordering
 }
 
 /// Decimals-adjusted amount, for comparing cost across tokens.
+///
+/// Ranking heuristic only: a missing `decimals` falls back to six here
+/// because selection never signs anything; the build path resolves the
+/// authoritative value from the mint.
 fn human_amount(c: &Candidate) -> f64 {
-    c.amount as f64 / 10f64.powi(c.decimals as i32)
+    c.amount as f64 / 10f64.powi(c.decimals.unwrap_or(6) as i32)
 }
 
 /// Position of a candidate's token in a fixed-priority list (`usize::MAX` if
@@ -470,7 +476,7 @@ fn mpp_candidate(challenge: &PaymentChallenge, order: usize) -> Option<Candidate
         mint,
         network,
         amount,
-        decimals: details.decimals?,
+        decimals: details.decimals,
         source: Source::MppCharge(Box::new(challenge.clone())),
         order,
     })
@@ -501,7 +507,7 @@ fn x402_candidate(requirement: &PaymentRequirements, order: usize) -> Option<Can
         mint,
         network,
         amount,
-        decimals: requirement.decimals?,
+        decimals: requirement.decimals,
         source: Source::X402Exact(Box::new(requirement.clone())),
         order,
     })

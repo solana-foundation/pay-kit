@@ -312,9 +312,27 @@ class BuildPaymentTest {
     }
 
     @Test
-    fun rejectsSplPaymentWhenDecimalsMissing() {
-        // Wrapped SOL carries nine decimals; an offer omitting decimals must be
-        // rejected rather than silently signed at the default six.
+    fun fetchesDecimalsFromProviderWhenOfferOmitsThem() {
+        // Wrapped SPL carries nine decimals; a spec-compliant offer omitting
+        // decimals must resolve them from the on-chain mint (via the injected
+        // provider) instead of rejecting or silently defaulting to six.
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_MAINNET,
+            asset = "So11111111111111111111111111111111111111112",
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(
+                tokenProgram = Programs.TOKEN_PROGRAM,
+                decimals = null,
+                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+            ),
+        )
+        val envelope = buildPayment(signer, offer, fixedBlockhash) { 9.toUByte() }
+        assertTrue(envelope.payload.transaction.isNotEmpty())
+    }
+
+    fun errorsWhenDecimalsAbsentAndNoDecimalsProvider() {
         val offer = X402AcceptsEntry(
             scheme = "exact",
             network = Network.SOLANA_MAINNET,
@@ -330,7 +348,7 @@ class BuildPaymentTest {
         val error = assertFailsWith<IllegalArgumentException> {
             buildPayment(signer, offer, fixedBlockhash)
         }
-        assertTrue(error.message!!.contains("required for SPL payments"))
+        assertTrue(error.message!!.contains("rpcDecimalsProvider"))
     }
 
     @Test

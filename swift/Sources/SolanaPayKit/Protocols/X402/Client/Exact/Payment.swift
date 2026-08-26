@@ -314,16 +314,25 @@ private func _buildPaymentPayload(
             ?? Mints.defaultTokenProgram(currency: assetStr, cluster: clusterLabel)
         let tokenProgram = try Pubkey(base58: tokenProgramStr)
         let mint = try Pubkey(base58: mintStr)
-        // Decimals are required for SPL payments (spec §7.2 marks them MUST be
-        // present for a mint). Defaulting a missing value to 6 silently signs
-        // a wrong transferChecked decimals byte / wrong divisor for any
-        // non-6-decimal mint, the worst failure mode for a signed transaction.
-        guard let d = offer.effectiveDecimals, d >= 0, d <= 255 else {
-            throw PayKitError.invalidTransaction(
-                "extra.decimals is required for SPL payments (spec §7.2)"
-            )
+        // A spec-compliant x402 offer may legally omit extra.decimals; when
+        // absent, read the authoritative value from the on-chain mint over the
+        // RPC connection this client already holds. When present, the offer
+        // value stays an RPC-saving hint. On-chain transferChecked still
+        // verifies the byte against the mint, so a lying hint remains
+        // fail-closed. Defaulting blindly to six would silently sign a wrong
+        // decimals byte / wrong divisor for any non-6-decimal mint.
+        let decimals: UInt8
+        if let d = offer.effectiveDecimals, d >= 0, d <= 255 {
+            decimals = UInt8(d)
+        } else {
+            do {
+                decimals = try await rpc.getMintDecimals(pubkeyBase58: mintStr)
+            } catch {
+                throw PayKitError.invalidTransaction(
+                    "extra.decimals is absent and fetching mint \(mintStr) failed: \(error)"
+                )
+            }
         }
-        let decimals = UInt8(d)
         let sourceAta = try AssociatedTokenAccount.address(
             owner: signerPubkey, mint: mint, tokenProgram: tokenProgram
         )
