@@ -73,7 +73,7 @@ class BuildPaymentTest {
         assertEquals(Programs.TOKEN_2022_PROGRAM, defaultTokenProgramForCurrency("USDG", "devnet"))
 
         val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
-            """"amount":"1000","asset":"USDC","payTo":"$devnetRecipient"}]}"""
+            """"amount":"1000","asset":"USDC","payTo":"$devnetRecipient","extra":{"decimals":6}}]}"""
         val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
         assertNotNull(requirement)
         // Previously threw on the symbol asset / missing token program.
@@ -328,8 +328,8 @@ class BuildPaymentTest {
                 recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
             ),
         )
-        val envelope = buildPayment(signer, offer, fixedBlockhash) { 9.toUByte() }
-        assertTrue(envelope.payload.transaction.isNotEmpty())
+        val envelope = buildPayment(signer, offer, fixedBlockhash, rpcDecimalsProvider = { 9.toUByte() })
+        assertTrue(envelope.payload.transaction!!.isNotEmpty())
     }
 
     fun errorsWhenDecimalsAbsentAndNoDecimalsProvider() {
@@ -362,7 +362,7 @@ class BuildPaymentTest {
             asset = Mints.USDC_DEVNET,
             amount = "1000",
             payTo = devnetRecipient,
-            extra = X402Extra(tokenProgram = null),
+            extra = X402Extra(tokenProgram = null, decimals = 6),
         )
         val envelope = buildPayment(signer, offer, fixedBlockhash)
         assertNotNull(envelope.payload.transaction)
