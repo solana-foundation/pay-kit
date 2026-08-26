@@ -530,8 +530,13 @@ async def build_payment(
         decimals_raw = req.get("decimals")
         if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
             decimals_raw = extra.get("decimals")
-        if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
-            raise ValueError("extra.decimals is required for SPL payments (spec §7.2)")
+        if (
+            not isinstance(decimals_raw, int)
+            or isinstance(decimals_raw, bool)
+            or decimals_raw < 0
+            or decimals_raw > 255
+        ):
+            raise ValueError("extra.decimals must be an integer between 0 and 255")
         decimals = int(decimals_raw)
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(asset)
