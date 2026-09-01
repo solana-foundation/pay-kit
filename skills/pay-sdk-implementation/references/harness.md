@@ -159,11 +159,13 @@ MPP_HARNESS_CLIENTS=rust MPP_HARNESS_SERVERS=<lang> pnpm test
 MPP_HARNESS_CLIENTS=<lang> MPP_HARNESS_SERVERS=<lang> pnpm test
 ```
 
-For x402, use the corresponding `X402_HARNESS_CLIENTS` and
-`X402_HARNESS_SERVERS` selectors plus `MPP_HARNESS_INTENTS=x402-<scheme>` and a
-matching `MPP_HARNESS_SCENARIOS` value. Copy a current command from the target
-scheme's entries or README; do not assume the MPP adapter IDs also implement
-x402.
+For x402 `exact` or `upto`, use the corresponding `X402_HARNESS_CLIENTS` and
+`X402_HARNESS_SERVERS` selectors plus `MPP_HARNESS_INTENTS=x402-exact` or
+`MPP_HARNESS_INTENTS=x402-upto` and a matching `MPP_HARNESS_SCENARIOS` value.
+Copy a current command from the target scheme's entries or README; do not assume
+the MPP adapter IDs also implement x402. The current harness rejects the
+`batch-settlement` selector. Add its intent and scenarios first instead of
+substituting that scheme into these commands.
 
 Add corresponding `Run <lang> client harness smoke` /
 `Run <lang> server harness smoke` / `Run <lang> end-to-end harness smoke`
