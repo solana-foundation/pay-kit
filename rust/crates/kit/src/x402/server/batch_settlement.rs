@@ -227,8 +227,9 @@ pub struct BatchOutcome {
     payload: BatchPayload,
     requirements: BatchRequirements,
     max_claimable: u64,
-    /// The channel deposit once any carried setup transaction confirms.
-    deposit_after: u64,
+    /// The channel payer's signature over a carried setup transaction, which
+    /// identifies it uniquely across retries.
+    deposit_signature: Option<String>,
     _guard: ChannelGuard,
 }
 
@@ -549,7 +550,7 @@ impl X402BatchSettlement {
                     payload,
                     requirements,
                     max_claimable: stored.as_ref().map(|s| s.cumulative).unwrap_or_default(),
-                    deposit_after: stored.as_ref().map(|s| s.deposit).unwrap_or_default(),
+                    deposit_signature: None,
                     _guard: guard,
                 })
             }
@@ -573,7 +574,7 @@ impl X402BatchSettlement {
                     payload,
                     requirements,
                     max_claimable,
-                    deposit_after: state.deposit,
+                    deposit_signature: None,
                     _guard: guard,
                 })
             }
@@ -585,15 +586,12 @@ impl X402BatchSettlement {
                 // A top-up rides on an existing channel; a first deposit opens
                 // one. The stored record decides which, because the onchain
                 // channel does not exist yet for an `open`.
-                let (form, deposit_after, prior) = match &stored {
+                let (form, prior) = match &stored {
                     Some(state) => {
                         self.check_channel_open(state)?;
-                        let after = state.deposit.checked_add(deposit_amount).ok_or_else(|| {
-                            batch_err(codes::INVALID_CHANNEL_STATE, "deposit overflow")
-                        })?;
-                        (SetupForm::TopUp, after, Some(state))
+                        (SetupForm::TopUp, Some(state))
                     }
-                    None => (SetupForm::Open, deposit_amount, None),
+                    None => (SetupForm::Open, None),
                 };
                 let replay = match prior {
                     Some(state) => self.check_watermark(state, voucher, max_claimable, charge)?,
@@ -609,7 +607,6 @@ impl X402BatchSettlement {
                         false
                     }
                 };
-                self.check_deposit_cap(max_claimable, deposit_after)?;
                 let mint = self.mint()?;
                 let token_program = self.token_program()?;
                 let receiver = pc::parse_pubkey(&requirements.pay_to)?;
@@ -633,13 +630,21 @@ impl X402BatchSettlement {
                         .map(|hint| hint.slot)
                     })
                     .flatten();
-                crate::x402::protocol::schemes::batch_settlement::validate_setup_transaction(
-                    &deposit.transaction,
-                    form,
-                    &expectations,
+                let validated =
+                    crate::x402::protocol::schemes::batch_settlement::validate_setup_transaction(
+                        &deposit.transaction,
+                        form,
+                        &expectations,
+                        deposit_amount,
+                        recent_slot,
+                    )?;
+                let deposit_signature = payer_signature(&validated.transaction);
+                let deposit_after = Self::deposit_ceiling(
+                    stored.as_ref(),
                     deposit_amount,
-                    recent_slot,
+                    deposit_signature.as_deref(),
                 )?;
+                self.check_deposit_cap(max_claimable, deposit_after)?;
                 Ok(BatchOutcome {
                     serve: !replay,
                     replay,
@@ -649,7 +654,7 @@ impl X402BatchSettlement {
                     payload,
                     requirements,
                     max_claimable,
-                    deposit_after,
+                    deposit_signature,
                     _guard: guard,
                 })
             }
@@ -728,6 +733,39 @@ impl X402BatchSettlement {
             ));
         }
         Ok(false)
+    }
+
+    /// The deposit ceiling a request may authorize against, once its carried
+    /// setup transaction confirms.
+    ///
+    /// A retry must not add the same escrow twice. The first attempt may have
+    /// broadcast, confirmed, and recorded the deposit before failing later
+    /// (a store error while committing the voucher, say), and re-adding it
+    /// would leave the request permanently unsatisfiable: the ceiling would
+    /// exceed what the chain will ever hold, so the confirmed-state check
+    /// could never pass and the escrowed funds would be stranded. The payer's
+    /// signature identifies the transaction across attempts.
+    fn deposit_ceiling(
+        stored: Option<&ChannelState>,
+        deposit_amount: u64,
+        deposit_signature: Option<&str>,
+    ) -> Result<u64, Error> {
+        let Some(state) = stored else {
+            // No channel yet: the `open` is the whole escrow.
+            return Ok(deposit_amount);
+        };
+        if deposit_signature.is_some_and(|signature| {
+            state
+                .processed_topup_signatures
+                .iter()
+                .any(|s| s == signature)
+        }) {
+            return Ok(state.deposit);
+        }
+        state
+            .deposit
+            .checked_add(deposit_amount)
+            .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "deposit overflow"))
     }
 
     fn check_deposit_cap(&self, max_claimable: u64, deposit: u64) -> Result<(), Error> {
@@ -942,7 +980,11 @@ impl X402BatchSettlement {
             }
         };
         expect(channel.status == CHANNEL_STATUS_OPEN, "status")?;
-        expect(channel.deposit >= outcome.deposit_after, "deposit")?;
+        // The escrow must cover what this voucher authorizes. That — not the
+        // arithmetic ceiling computed before broadcast — is the property the
+        // program enforces at `settle`, and it is the one that stays true when
+        // a retry re-confirms a deposit that already landed.
+        expect(channel.deposit >= outcome.max_claimable, "deposit")?;
         expect(
             pc::pubkey_string(&pc::from_address(&channel.payer)) == config.payer,
             "payer",
@@ -984,6 +1026,7 @@ impl X402BatchSettlement {
         let payer = config.payer.clone();
         let rent_payer = self.fee_payer();
         let authorized_signer = config.payer_authorizer.clone();
+        let deposit_signature = outcome.deposit_signature.clone();
         self.store
             .update_channel(
                 &channel_id.clone(),
@@ -1021,6 +1064,14 @@ impl X402BatchSettlement {
                     state.deposit = state.deposit.max(deposit);
                     state.settled_on_chain = state.settled_on_chain.max(settled);
                     state.last_activity_at = now_unix();
+                    // Marks this escrow as applied, so a retry of the same
+                    // transaction re-uses the confirmed deposit rather than
+                    // adding it a second time.
+                    if let Some(signature) = deposit_signature {
+                        if !state.processed_topup_signatures.contains(&signature) {
+                            state.processed_topup_signatures.push(signature);
+                        }
+                    }
                     Ok(state)
                 }),
             )
@@ -1390,6 +1441,17 @@ impl X402BatchSettlement {
     }
 }
 
+/// The channel payer's base58 signature over a setup transaction.
+///
+/// Slot 0 is the sponsor's and is still empty before co-signing, so the payer's
+/// slot is what identifies a client-supplied transaction across retries. The
+/// payer signs the compiled message, which commits to the blockhash and every
+/// instruction, so the signature is unique to this exact transaction.
+fn payer_signature(transaction: &VersionedTransaction) -> Option<String> {
+    let signature = transaction.signatures.get(1)?;
+    Some(signature.to_string())
+}
+
 fn decode_signature(signature_b58: &str) -> Result<[u8; 64], Error> {
     let bytes = bs58::decode(signature_b58)
         .into_vec()
@@ -1547,6 +1609,74 @@ mod tests {
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
         }
+    }
+
+    /// A deposit that confirmed on a first attempt must not be counted again
+    /// when the request is retried.
+    ///
+    /// The first attempt can broadcast, confirm, and record the escrow and
+    /// still fail afterwards — a store error while committing the voucher, say.
+    /// If the retry re-added the same amount, the ceiling would exceed anything
+    /// the chain will ever hold, the confirmed-state check could never pass,
+    /// and the client's escrow would be stranded with its voucher permanently
+    /// uncommittable.
+    #[test]
+    fn a_confirmed_deposit_is_not_counted_twice_on_retry() {
+        let (_, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = BatchRequirements {
+            scheme: BATCH_SETTLEMENT_SCHEME.to_string(),
+            network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string(),
+            amount: "1000".to_string(),
+            asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+            pay_to: PAY_TO.to_string(),
+            max_timeout_seconds: 300,
+            extra: BatchExtra {
+                payment_flow: None,
+                fee_payer: pc::pubkey_string(&fee_payer),
+                receiver_authorizer: None,
+                withdraw_delay: 3600,
+                token_program: programs::TOKEN_PROGRAM.to_string(),
+                memo: None,
+                recent_blockhash: None,
+                recent_slot: None,
+                channel_state: None,
+                voucher_state: None,
+            },
+        };
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let signature = "5xTopUpSignature";
+
+        // Before the top-up is applied, its amount raises the ceiling.
+        let state = seeded(&channel, &config, 5_000, 0);
+        assert_eq!(
+            X402BatchSettlement::deposit_ceiling(Some(&state), 3_000, Some(signature)).unwrap(),
+            8_000
+        );
+
+        // After it confirms, the stored deposit already includes it, so the
+        // ceiling is the confirmed deposit — not the confirmed deposit plus the
+        // same top-up a second time.
+        let mut applied = seeded(&channel, &config, 8_000, 0);
+        applied
+            .processed_topup_signatures
+            .push(signature.to_string());
+        assert_eq!(
+            X402BatchSettlement::deposit_ceiling(Some(&applied), 3_000, Some(signature)).unwrap(),
+            8_000
+        );
+
+        // A different top-up against the same channel still adds.
+        assert_eq!(
+            X402BatchSettlement::deposit_ceiling(Some(&applied), 3_000, Some("otherSignature"))
+                .unwrap(),
+            11_000
+        );
+
+        // A first deposit has no stored channel: the open is the whole escrow.
+        assert_eq!(
+            X402BatchSettlement::deposit_ceiling(None, 3_000, Some(signature)).unwrap(),
+            3_000
+        );
     }
 
     #[test]
