@@ -3,12 +3,13 @@
 //! The client opens a payment channel once and signs a cumulative voucher per
 //! request. The gate (`paid_batch_get` / `paid_batch_post`) verifies each
 //! voucher off-chain and serves immediately — no on-chain transaction per
-//! request. The operator redeems vouchers on-chain later, in batches, via
-//! `pay.x402_batch()`.
+//! request. The server redeems vouchers on-chain later, in batches, via
+//! `pay.x402_batch()`: `claim` advances each channel's on-chain watermark from
+//! its latest stored voucher, then `settle` pays the claimed delta to `payTo`.
 //!
-//! `batch-settlement` settlement is operator-signed, so it needs a
-//! `fee_payer_signer`. Provide the operator key as a JSON byte array in
-//! `MPP_OPERATOR_KEY`:
+//! The server self-facilitates, so it needs a `fee_payer_signer` — the key that
+//! sponsors channel rent, co-signs the client's `open`, and signs redemption.
+//! Provide it as a JSON byte array in `MPP_OPERATOR_KEY`:
 //!
 //! ```bash
 //! export MPP_OPERATOR_KEY='[12,34,...]'   # 64-byte keypair
@@ -47,26 +48,37 @@ async fn main() {
     })
     .expect("valid config");
 
-    // Operator-side settlement runs out of band: on a cadence (or a threshold),
-    // redeem the latest voucher per active channel in batches, then sweep.
+    // Redemption runs out of band, never in the request path. Claim promptly:
+    // a voucher that is not claimed before a payer's forced close completes is
+    // value the server forfeits.
     if let Some(batch) = pay.x402_batch().cloned() {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                // In a real deployment, enumerate active channel ids from your
-                // store and pass them here; settle_batch packs several per tx.
-                let channels: Vec<String> = vec![];
+                // Channels this server has state for. `discover_sponsored_channels()`
+                // rebuilds the on-chain half of this list after state loss.
+                let channels: Vec<String> = match batch.store().list_channels().await {
+                    Ok(states) => states.into_iter().map(|s| s.channel_id).collect(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "channel listing failed");
+                        continue;
+                    }
+                };
                 if channels.is_empty() {
                     continue;
                 }
-                match batch.settle_batch(&channels).await {
-                    Ok(sigs) => {
-                        for id in &channels {
-                            let _ = batch.distribute(id).await;
-                        }
-                        tracing::info!(?sigs, "settled batch");
+                // `claim` advances the on-chain watermark (up to four channels
+                // per transaction); `settle` then pays the newly claimed delta.
+                match batch.claim(&channels).await {
+                    Ok(sigs) => tracing::info!(?sigs, "claimed vouchers"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "claim failed");
+                        continue;
                     }
-                    Err(e) => tracing::warn!(error = %e, "batch settle failed"),
+                }
+                match batch.settle(&channels).await {
+                    Ok(sigs) => tracing::info!(?sigs, "distributed settled funds"),
+                    Err(e) => tracing::warn!(error = %e, "distribute failed"),
                 }
             }
         });

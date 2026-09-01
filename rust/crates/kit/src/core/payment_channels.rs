@@ -18,6 +18,7 @@ use solana_hash::Hash;
 use solana_instruction::AccountMeta;
 use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_transaction::versioned::VersionedTransaction;
@@ -767,6 +768,284 @@ pub async fn build_open_payment_channel_tx_with_options(
         transaction: base64::engine::general_purpose::STANDARD.encode(bytes),
     })
 }
+
+// ── Client-supplied transaction acceptance policy ──
+//
+// A sponsor co-signs a transaction the *client* built, so its signature can
+// only be safely given to a transaction whose every top-level instruction is
+// on a static allowlist. [`scan_channel_tx_layout`] is that allowlist check,
+// shared by the x402 `upto` and `batch-settlement` sponsors: an optional
+// ComputeBudget prefix, exactly one canonical payment-channels instruction,
+// then a bounded Memo/Lighthouse suffix. Simulation is not a substitute — it
+// runs only after the signature has already authorized fee (and, for `open`,
+// rent) expenditure.
+
+/// A decoded ComputeBudget instruction the sponsor policy permits: a unit
+/// limit or a unit price.
+///
+/// The on-chain wire format (tag [`COMPUTE_BUDGET_SET_UNIT_LIMIT`], 5 bytes,
+/// `u32`; tag [`COMPUTE_BUDGET_SET_UNIT_PRICE`], 9 bytes, `u64`) is the same
+/// everywhere, so it is decoded once here. Callers apply their own caps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputeBudgetOp {
+    /// `SetComputeUnitLimit(units)`.
+    UnitLimit(u32),
+    /// `SetComputeUnitPrice(microLamportsPerComputeUnit)`.
+    UnitPrice(u64),
+}
+
+/// Decode a `SetComputeUnitLimit` / `SetComputeUnitPrice` ComputeBudget
+/// instruction. Returns `None` for any other opcode or a malformed length —
+/// callers decide whether that is an error and how to report it.
+pub fn decode_compute_budget_op(ix: &CompiledInstruction) -> Option<ComputeBudgetOp> {
+    match (ix.data.first().copied(), ix.data.len()) {
+        (Some(COMPUTE_BUDGET_SET_UNIT_LIMIT), 5) => Some(ComputeBudgetOp::UnitLimit(
+            u32::from_le_bytes(ix.data[1..5].try_into().expect("4-byte slice")),
+        )),
+        (Some(COMPUTE_BUDGET_SET_UNIT_PRICE), 9) => Some(ComputeBudgetOp::UnitPrice(
+            u64::from_le_bytes(ix.data[1..9].try_into().expect("8-byte slice")),
+        )),
+        _ => None,
+    }
+}
+
+/// Minimum length of a random Memo nonce, in bytes, before hex encoding.
+///
+/// SVM `batch-settlement` requires the setup transaction to carry a Memo so the
+/// sponsor can correlate it; absent a seller-declared `extra.memo` the client
+/// supplies "a random nonce of at least 16 bytes encoded as hexadecimal text".
+pub const MIN_MEMO_NONCE_BYTES: usize = 16;
+
+/// How [`scan_channel_tx_layout`] polices the Memo suffix.
+#[derive(Debug, Clone, Copy)]
+pub enum MemoPolicy<'a> {
+    /// A Memo may appear at most once and its contents are not inspected.
+    ///
+    /// Used by `upto`, whose server never declares `extra.memo`, so any memo
+    /// the client chose is acceptable.
+    Optional,
+    /// Exactly one Memo is required.
+    ///
+    /// `Some(memo)` pins its UTF-8 data to the seller-declared `extra.memo`;
+    /// `None` instead requires a random nonce of at least
+    /// [`MIN_MEMO_NONCE_BYTES`] bytes encoded as hexadecimal text.
+    Required(Option<&'a str>),
+}
+
+/// Enforce the sponsor's top-level instruction allowlist and return the single
+/// canonical payment-channels instruction it wraps.
+///
+/// The accepted layout is exactly three ordered regions:
+///
+/// 1. An optional ComputeBudget prefix: at most one `SetComputeUnitLimit` and
+///    at most one `SetComputeUnitPrice`, limit before price, each within
+///    [`OPEN_MAX_COMPUTE_UNIT_LIMIT`] / [`MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`].
+/// 2. Exactly one instruction on `program_id` whose first data byte is
+///    `discriminator`.
+/// 3. A suffix of at most [`OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS`] Lighthouse
+///    assertions plus a Memo governed by `memo`, capped at
+///    [`OPEN_MAX_OPTIONAL_SUFFIX`] instructions in total.
+///
+/// No wrapper instruction may name the transaction fee payer among its
+/// accounts: outside the payment-channels instruction's own prescribed roles
+/// the sponsor's signature must authorize network fees and nothing else.
+///
+/// `label` names the operation in error messages (`"open"`, `"top_up"`, …).
+pub fn scan_channel_tx_layout<'tx>(
+    tx: &'tx VersionedTransaction,
+    keys: &[Pubkey],
+    program_id: &Pubkey,
+    discriminator: u8,
+    label: &str,
+    memo: MemoPolicy<'_>,
+) -> Result<&'tx CompiledInstruction> {
+    let instructions = tx.message.instructions();
+    let fee_payer = *keys
+        .first()
+        .ok_or_else(|| Error::Other(format!("{label} transaction has no fee payer")))?;
+    let program_of = |ix: &CompiledInstruction| -> Result<Pubkey> {
+        keys.get(ix.program_id_index as usize)
+            .copied()
+            .ok_or_else(|| Error::Other(format!("{label} instruction program id out of range")))
+    };
+    let reject_fee_payer = |ix: &CompiledInstruction, wrapper: &str| -> Result<()> {
+        if ix
+            .accounts
+            .iter()
+            .any(|&i| keys.get(i as usize) == Some(&fee_payer))
+        {
+            return Err(Error::Other(format!(
+                "{wrapper} instruction must not reference the fee payer"
+            )));
+        }
+        Ok(())
+    };
+
+    let compute_budget = compute_budget_program_id();
+    let mut index = 0usize;
+    let (mut seen_limit, mut seen_price) = (false, false);
+    while let Some(ix) = instructions.get(index) {
+        if program_of(ix)? != compute_budget {
+            break;
+        }
+        reject_fee_payer(ix, "ComputeBudget")?;
+        match decode_compute_budget_op(ix) {
+            Some(ComputeBudgetOp::UnitLimit(units)) => {
+                if seen_limit {
+                    return Err(Error::Other(format!(
+                        "{label} transaction has a duplicate SetComputeUnitLimit instruction"
+                    )));
+                }
+                if seen_price {
+                    return Err(Error::Other(format!(
+                        "{label} transaction SetComputeUnitLimit must precede SetComputeUnitPrice"
+                    )));
+                }
+                if units > OPEN_MAX_COMPUTE_UNIT_LIMIT {
+                    return Err(Error::Other(format!(
+                        "{label} transaction compute unit limit {units} exceeds maximum {OPEN_MAX_COMPUTE_UNIT_LIMIT}"
+                    )));
+                }
+                seen_limit = true;
+            }
+            Some(ComputeBudgetOp::UnitPrice(price)) => {
+                if seen_price {
+                    return Err(Error::Other(format!(
+                        "{label} transaction has a duplicate SetComputeUnitPrice instruction"
+                    )));
+                }
+                if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS {
+                    return Err(Error::Other(format!(
+                        "{label} transaction compute unit price {price} exceeds maximum {MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}"
+                    )));
+                }
+                seen_price = true;
+            }
+            None => {
+                return Err(Error::Other(format!(
+                    "{label} transaction has an unsupported ComputeBudget instruction"
+                )))
+            }
+        }
+        index += 1;
+    }
+
+    let primary = instructions.get(index).ok_or_else(|| {
+        Error::Other(format!(
+            "{label} transaction contains no payment-channels instruction"
+        ))
+    })?;
+    if program_of(primary)? != *program_id {
+        return Err(Error::Other(format!(
+            "{label} transaction targets an unexpected program"
+        )));
+    }
+    if primary.data.first() != Some(&discriminator) {
+        return Err(Error::Other(format!(
+            "{label} transaction is not a payment-channels {label} instruction"
+        )));
+    }
+    index += 1;
+
+    let memo_program = memo_program_id();
+    let lighthouse = lighthouse_program_id();
+    let (mut lighthouse_count, mut optional_count, mut memo_count) = (0usize, 0usize, 0usize);
+    while let Some(ix) = instructions.get(index) {
+        optional_count += 1;
+        if optional_count > OPEN_MAX_OPTIONAL_SUFFIX {
+            return Err(Error::Other(format!(
+                "{label} transaction allows at most {OPEN_MAX_OPTIONAL_SUFFIX} instructions after {label}"
+            )));
+        }
+        let program = program_of(ix)?;
+        if program == lighthouse {
+            lighthouse_count += 1;
+            if lighthouse_count > OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS {
+                return Err(Error::Other(format!(
+                    "{label} transaction allows at most {OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS} Lighthouse instructions after {label}"
+                )));
+            }
+            reject_fee_payer(ix, "Lighthouse")?;
+        } else if program == memo_program {
+            memo_count += 1;
+            if memo_count > 1 {
+                return Err(Error::Other(format!(
+                    "{label} transaction allows at most one Memo instruction"
+                )));
+            }
+            reject_fee_payer(ix, "Memo")?;
+            check_memo_data(&ix.data, label, memo)?;
+        } else {
+            return Err(Error::Other(format!(
+                "{label} transaction instruction after {label} must be Lighthouse or Memo, found {}",
+                pubkey_string(&program)
+            )));
+        }
+        index += 1;
+    }
+    if memo_count == 0 && matches!(memo, MemoPolicy::Required(_)) {
+        return Err(Error::Other(format!(
+            "{label} transaction must carry exactly one Memo instruction"
+        )));
+    }
+
+    Ok(primary)
+}
+
+/// Apply a [`MemoPolicy`] to one Memo instruction's data.
+fn check_memo_data(data: &[u8], label: &str, memo: MemoPolicy<'_>) -> Result<()> {
+    let MemoPolicy::Required(expected) = memo else {
+        return Ok(());
+    };
+    if data.len() > OPEN_MAX_MEMO_BYTES {
+        return Err(Error::Other(format!(
+            "{label} transaction memo is {} bytes, over the {OPEN_MAX_MEMO_BYTES}-byte maximum",
+            data.len()
+        )));
+    }
+    let text = std::str::from_utf8(data)
+        .map_err(|_| Error::Other(format!("{label} transaction memo is not valid UTF-8")))?;
+    match expected {
+        Some(expected) => {
+            if text != expected {
+                return Err(Error::Other(format!(
+                    "{label} transaction memo does not match the declared extra.memo"
+                )));
+            }
+        }
+        // No seller-declared memo: the client must supply a random hex nonce,
+        // which correlates the transaction without letting it carry a payload
+        // the sponsor never agreed to.
+        None => {
+            if text.len() < MIN_MEMO_NONCE_BYTES * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(Error::Other(format!(
+                    "{label} transaction memo must be a hex nonce of at least {MIN_MEMO_NONCE_BYTES} bytes"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fixed byte length of the payment-channels channel account layout this SDK
+/// targets. `getProgramAccounts` discovery filters on it, and a different
+/// length means an unsupported account version whose field offsets below no
+/// longer hold.
+pub const CHANNEL_ACCOUNT_SIZE: usize = 256;
+
+/// `Channel.payer` byte offset — a client discovers its own channels here.
+pub const CHANNEL_PAYER_OFFSET: usize = 88;
+
+/// `Channel.payee` byte offset — the lifecycle authority seat.
+pub const CHANNEL_PAYEE_OFFSET: usize = 120;
+
+/// `Channel.authorized_signer` byte offset — the voucher signer.
+pub const CHANNEL_AUTHORIZED_SIGNER_OFFSET: usize = 152;
+
+/// `Channel.rent_payer` byte offset — a sponsor discovers the channels whose
+/// rent it fronted here.
+pub const CHANNEL_RENT_PAYER_OFFSET: usize = 216;
 
 #[cfg(test)]
 mod tests {

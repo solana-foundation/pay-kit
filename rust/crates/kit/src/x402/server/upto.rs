@@ -37,7 +37,6 @@ use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 // The ComputeBudget wire format is identical wherever it appears, so the
 // charge verifier's policy-free decoder is reused here rather than duplicated.
-use crate::mpp::server::charge::{decode_compute_budget_op, ComputeBudgetOp};
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::exact::{
@@ -1050,130 +1049,16 @@ fn find_canonical_open_instruction<'tx>(
     keys: &[Pubkey],
     program_id: &Pubkey,
 ) -> Result<&'tx CompiledInstruction, Error> {
-    let instructions = tx.message.instructions();
-    let fee_payer = *keys
-        .first()
-        .ok_or_else(|| Error::Other("open transaction has no fee payer".to_string()))?;
-    let program_of = |ix: &CompiledInstruction| -> Result<Pubkey, Error> {
-        keys.get(ix.program_id_index as usize)
-            .copied()
-            .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))
-    };
-    let reject_fee_payer = |ix: &CompiledInstruction, label: &str| -> Result<(), Error> {
-        if ix
-            .accounts
-            .iter()
-            .any(|&i| keys.get(i as usize) == Some(&fee_payer))
-        {
-            return Err(Error::Other(format!(
-                "{label} instruction must not reference the fee payer"
-            )));
-        }
-        Ok(())
-    };
-
-    let compute_budget = pc::compute_budget_program_id();
-    let mut index = 0usize;
-    let (mut seen_limit, mut seen_price) = (false, false);
-    while let Some(ix) = instructions.get(index) {
-        if program_of(ix)? != compute_budget {
-            break;
-        }
-        reject_fee_payer(ix, "ComputeBudget")?;
-        match decode_compute_budget_op(ix) {
-            Some(ComputeBudgetOp::UnitLimit(units)) => {
-                if seen_limit {
-                    return Err(Error::Other(
-                        "open transaction has a duplicate SetComputeUnitLimit instruction"
-                            .to_string(),
-                    ));
-                }
-                if seen_price {
-                    return Err(Error::Other(
-                        "open transaction SetComputeUnitLimit must precede SetComputeUnitPrice"
-                            .to_string(),
-                    ));
-                }
-                if units > pc::OPEN_MAX_COMPUTE_UNIT_LIMIT {
-                    return Err(Error::Other(format!(
-                        "open transaction compute unit limit {units} exceeds maximum {}",
-                        pc::OPEN_MAX_COMPUTE_UNIT_LIMIT
-                    )));
-                }
-                seen_limit = true;
-            }
-            Some(ComputeBudgetOp::UnitPrice(price)) => {
-                if seen_price {
-                    return Err(Error::Other(
-                        "open transaction has a duplicate SetComputeUnitPrice instruction"
-                            .to_string(),
-                    ));
-                }
-                if price > pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS {
-                    return Err(Error::Other(format!(
-                        "open transaction compute unit price {price} exceeds maximum {}",
-                        pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
-                    )));
-                }
-                seen_price = true;
-            }
-            None => {
-                return Err(Error::Other(
-                    "open transaction has an unsupported ComputeBudget instruction".to_string(),
-                ))
-            }
-        }
-        index += 1;
-    }
-
-    let open = instructions.get(index).ok_or_else(|| {
-        Error::Other("open transaction contains no channel-open instruction".to_string())
-    })?;
-    if program_of(open)? != *program_id {
-        return Err(Error::Other(
-            "open transaction targets an unexpected program".to_string(),
-        ));
-    }
-    if open.data.first() != Some(&OPEN_INSTRUCTION_DISCRIMINATOR) {
-        return Err(Error::Other(
-            "open transaction is not a channel-open instruction".to_string(),
-        ));
-    }
-    index += 1;
-
-    let memo = pc::memo_program_id();
-    let lighthouse = pc::lighthouse_program_id();
-    let (mut lighthouse_count, mut optional_count) = (0usize, 0usize);
-    while let Some(ix) = instructions.get(index) {
-        optional_count += 1;
-        if optional_count > pc::OPEN_MAX_OPTIONAL_SUFFIX {
-            return Err(Error::Other(format!(
-                "open transaction allows at most {} instructions after open",
-                pc::OPEN_MAX_OPTIONAL_SUFFIX
-            )));
-        }
-        let program = program_of(ix)?;
-        if program == lighthouse {
-            lighthouse_count += 1;
-            if lighthouse_count > pc::OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS {
-                return Err(Error::Other(format!(
-                    "open transaction allows at most {} Lighthouse instructions after open",
-                    pc::OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS
-                )));
-            }
-            reject_fee_payer(ix, "Lighthouse")?;
-        } else if program == memo {
-            reject_fee_payer(ix, "Memo")?;
-        } else {
-            return Err(Error::Other(format!(
-                "open transaction instruction after open must be Lighthouse or Memo, found {}",
-                pc::pubkey_string(&program)
-            )));
-        }
-        index += 1;
-    }
-
-    Ok(open)
+    Ok(pc::scan_channel_tx_layout(
+        tx,
+        keys,
+        program_id,
+        OPEN_INSTRUCTION_DISCRIMINATOR,
+        "open",
+        // `upto` servers never declare `extra.memo`, so whatever memo the
+        // client chose is acceptable; only its presence is bounded.
+        pc::MemoPolicy::Optional,
+    )?)
 }
 
 /// Assert `tx` carries the expected payment-channels `open` instruction so the
