@@ -1,41 +1,38 @@
 # `mpp/subscription`
 
-**Status: not yet implemented in any SDK.** No spec PR has merged; no
-Rust reference exists. Include the row in the README compatibility matrix
-as `—`, but do not implement.
+**Status: implemented in Rust and TypeScript.** Use the public sources instead
+of treating subscription semantics as an unpublished draft.
 
-Spec — to be added at <https://github.com/tempoxyz/mpp-specs> when
-proposed. Watch the PR queue for the title `subscription intent`.
+Spec and protocol context: <https://paymentauth.org>
 
-## Why this file exists
+## References
 
-The compatibility matrix in every SDK's README must list this row so the
-matrix is diff-able across languages. Without this leaf, a new SDK might
-quietly drop the row and break the cross-language `README.md` table.
+- Rust wire types: `rust/crates/kit/src/mpp/protocol/intents/subscription.rs`
+- Rust client: `rust/crates/kit/src/mpp/client/subscription.rs`
+- Rust server: `rust/crates/kit/src/mpp/server/subscription.rs`
+- Generated Solana program client:
+  `rust/crates/kit/src/mpp/program/subscriptions.rs`
+- TypeScript shared implementation and tests:
+  `typescript/packages/mpp/src/shared/subscription.ts` and
+  `typescript/packages/mpp/src/__tests__/subscription*.test.ts`
 
-## If a user asks to implement it
+## Porting order
 
-1. Stop and confirm with the user: *"There is no spec PR for
-   `mpp/subscription` yet. Do you have a draft you can share?"*
-2. If yes, ask for the spec text and the canonical TS implementation
-   (when one exists). The user mentions an `~/Coding/x402-kit` directory
-   for x402 work; a parallel `~/Coding/mpp-subscription` or similar
-   would be the expected location for a subscription draft.
-3. Do **not** invent semantics. Subscriptions are likely to be a
-   composition of session + recurring vouchers + automated top-up,
-   but the exact wire format, cap-renewal policy, and cancellation
-   flow are not yet decided.
-4. Until the spec lands, keep the row at `—` in the SDK's README. Do
-   not stub out types in code.
+1. Read both public implementations and the subscriptions IDL under `idl/`.
+2. Port the protocol types and canonical header/payload encoding.
+3. Generate the target-language program client from the checked-in IDL; do not
+   hand-write account or instruction layouts.
+4. Port client lifecycle operations and server verification.
+5. Add replay-safe persistence, expiry, cancellation, and retry tests.
+6. Register any available harness vectors and keep unsupported README cells at
+   `—` until their proof exists.
 
-## README matrix row
+## Guardrails
 
-The row must appear in both Client and Server matrices, with the cell
-content `—`:
-
-```md
-| `mpp/subscription` | — |
-```
-
-Order matters: subscription is the last MPP row, immediately under
-`mpp/session`. See `references/readme-template.md`.
+- Treat subscription state, caps, renewal windows, and cancellation rules as
+  wire-level behavior. Copy them from current code and tests, not intuition.
+- Pin recipient, currency, network, subscription identity, and authorized cap
+  before accepting a credential.
+- Make create, renew, charge, cancel, and retry paths idempotent where the
+  reference is idempotent.
+- Do not infer support in another language from the Rust or TypeScript matrix.

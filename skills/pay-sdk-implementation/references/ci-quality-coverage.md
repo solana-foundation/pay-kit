@@ -1,6 +1,6 @@
 # CI, quality, coverage
 
-The reference CI is `mpp-sdk/.github/workflows/ci.yml`. Copy the
+The reference CI is `.github/workflows/ci.yml`. Copy the
 shape of `test-rust` (or `test-python`/`test-go` for the closest
 language fit), add formatter + linter steps, gate coverage at ≥ 90 %.
 
@@ -115,7 +115,7 @@ must fail the job:
 
 Every public type/function carries a **one-line summary** so the
 language's hover/LSP shows it. Reference: every `pub` item in
-`rust/crates/mpp/src/lib.rs` has a `///` line. Examples to mirror:
+`rust/crates/kit/src/lib.rs` has a `///` line. Examples to mirror:
 
 ```rust
 /// Payment method identifier (newtype over String).
@@ -154,7 +154,7 @@ the new language:
   in CI if you see drift between local and CI numbers.
 - **`html-assets` is an artifact, not a checked-in directory.** The
   `build-html` job uploads it; downstream jobs `actions/download-artifact`
-  it. Generated HTML files (e.g. `rust/crates/mpp/src/server/html/*.gen.*`) are
+  it. Generated HTML files (e.g. `rust/crates/kit/src/mpp/server/html/*.gen.*`) are
   committed for offline builds but CI verifies the committed copy is
   up-to-date — see the `Verify committed gen files are up to date`
   step in `ci.yml`. New language servers go in that diff list.

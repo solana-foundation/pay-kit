@@ -37,7 +37,7 @@ Use the language's canonical identifier case:
   `SCREAMING_SNAKE` for constants.
 
 Wire-format field names are **camelCase JSON** in every language (see
-`rust/crates/mpp/src/protocol/intents/charge.rs:35` — `externalId`, `methodDetails`
+`rust/crates/kit/src/mpp/protocol/intents/charge.rs` — `externalId`, `methodDetails`
 are serde-renamed to camelCase). The struct/class field name follows
 language convention; only the serialized form is camelCase.
 
@@ -64,9 +64,9 @@ language convention; only the serialized form is camelCase.
 The SDK exposes **one** error type per top-level concern:
 
 - `Error` (or `MppError`) — the protocol/SDK-level enum (see
-  `rust/crates/mpp/src/error.rs`).
+  `rust/crates/kit/src/mpp/error.rs`).
 - `StoreError` — replay-store internal errors (see
-  `rust/crates/mpp/src/store.rs:36`).
+  `rust/crates/kit/src/mpp/store.rs`).
 - `VerificationError` — server-side credential verification result.
 
 In typed languages, use the language's enum/sum-type construct
@@ -92,7 +92,7 @@ diff-able across languages.
 The server-side **charge** intent is fundamentally synchronous (one
 HTTP round-trip; one optional RPC call). Only **session** with metered
 streaming forces a true async runtime — see
-`rust/crates/mpp/src/client/http_stream.rs`.
+`rust/crates/kit/src/mpp/client/http_stream.rs`.
 
 ## Memory & concurrency safety
 
@@ -107,9 +107,9 @@ streaming forces a true async runtime — see
 
 Every public type and function carries a one-line doc comment. The
 Rust crate is the reference (`pub fn`/`pub struct` items in
-`rust/crates/mpp/src/lib.rs` all have a `///` summary). Multi-paragraph doc
+`rust/crates/kit/src/mpp/mod.rs` all have a `///` summary). Multi-paragraph doc
 comments are fine where they explain a non-obvious invariant — see
-`rust/crates/mpp/src/protocol/intents/session.rs:71-78` for an example.
+`rust/crates/kit/src/mpp/protocol/intents/session.rs` for an example.
 
 ## Forbidden in committed artifacts
 
@@ -129,12 +129,12 @@ comments are fine where they explain a non-obvious invariant — see
   to switch between languages by changing the import prefix only.
 - **`Default` everywhere it makes sense.** `Config::default()`,
   `ChargeOptions::default()`, `ChargeRequest::default()` — see
-  `rust/crates/mpp/src/server/charge.rs:94`. Default values keep the language's
+  `rust/crates/kit/src/mpp/server/charge.rs`. Default values keep the language's
   builder ergonomics consistent.
 - **Builder methods are short.** `OpenPayload::push()`,
   `OpenPayload::pull()`, `OpenPayload::with_transaction()`,
   `OpenPayload::with_init_tx()` — see
-  `rust/crates/mpp/src/protocol/intents/session.rs:318-455`. Mirror this
+  `rust/crates/kit/src/mpp/protocol/intents/session.rs`. Mirror this
   fluent style in the target language (or its equivalent — Python
   keyword arguments, Go option functions, TS object literal +
   `as const`).

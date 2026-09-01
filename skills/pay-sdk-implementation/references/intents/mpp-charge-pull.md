@@ -7,7 +7,7 @@ shape is `WWW-Authenticate: Payment ...` (server) → `Authorization: Payment ..
 
 Spec: <https://paymentauth.org>, charge intent.
 Spec PR: <https://github.com/tempoxyz/mpp-specs/pull/188>.
-Rust reference: `rust/crates/mpp/src/server/charge.rs`, `rust/crates/mpp/src/client/charge.rs`.
+Rust reference: `rust/crates/kit/src/mpp/server/charge.rs`, `rust/crates/kit/src/mpp/client/charge.rs`.
 
 ## Wire format
 
@@ -21,10 +21,10 @@ Payment realm="<realm>", id="<hmac>", method="solana", intent="charge",
 
 - Multiple challenges in one response — comma-separated. Parse with
   `parse_www_authenticate_all` (handles quoted commas in values; see
-  `rust/crates/mpp/src/protocol/core/headers.rs`).
+  `rust/crates/kit/src/mpp/protocol/core/headers.rs`).
 - All param values **quoted**; the parser unquotes.
 
-`ChargeRequest` (`rust/crates/mpp/src/protocol/intents/charge.rs`):
+`ChargeRequest` (`rust/crates/kit/src/mpp/protocol/intents/charge.rs`):
 
 ```json
 {
@@ -66,18 +66,18 @@ Payment status="success", method="solana", reference="<signature-base58>", chall
 ## Server obligations
 
 Implement these steps in `server::charge::verify` (mirror
-`rust/crates/mpp/src/server/charge.rs:474-563`):
+`rust/crates/kit/src/mpp/server/charge.rs`):
 
 1. **HMAC tier-1.** Recompute the challenge ID with
    `compute_challenge_id(secret_key, realm, method, intent, request,
-   expires, digest, opaque)` (`rust/crates/mpp/src/protocol/core/challenge.rs:192`)
+   expires, digest, opaque)` (`rust/crates/kit/src/mpp/protocol/core/challenge.rs`)
    and compare. Constant-time compare.
 2. **Expiry check.** Reject if `expires` is in the past. Reject if it
    fails to parse as RFC 3339 (fail-closed).
 3. **Pinned-field tier-2.** Even if the credential's echoed request is
    "trusted as-is", pin `method`, `intent`, `realm`, `currency`,
    `recipient` to the server's configured values (see
-   `verify_pinned_fields` at `rust/crates/mpp/src/server/charge.rs:424`). The
+   `verify_pinned_fields` at `rust/crates/kit/src/mpp/server/charge.rs`). The
    realm pin is critical because HMAC uses the server's realm — a
    tampered echoed realm would otherwise pass HMAC.
 4. **Cross-route tier-2 (recommended).** Expose
@@ -85,7 +85,7 @@ Implement these steps in `server::charge::verify` (mirror
    so route handlers can pin `amount`/`currency`/`recipient` per
    endpoint. The expected request — not the credential's echo — is
    then passed to settlement (see
-   `rust/crates/mpp/src/server/charge.rs:412-418` and `examples/payment_link_server.rs:25`).
+   `rust/crates/kit/src/mpp/server/charge.rs` and `rust/crates/kit/examples/payment_link_server.rs`).
 5. **Network blockhash gate.** Before broadcasting, call
    `check_network_blockhash(network, tx.message.recent_blockhash())`
    to reject mainnet keys pointed at a sandbox server (and vice versa).
@@ -111,8 +111,8 @@ Implement these steps in `server::charge::verify` (mirror
 
 ## Client obligations
 
-Mirror `rust/crates/mpp/src/client/charge.rs::build_charge_transaction` and the
-adapter at `rust/crates/mpp/src/bin/harness_client.rs`:
+Mirror `rust/crates/kit/src/mpp/client/charge.rs::build_charge_transaction` and the
+adapter at `rust/crates/harness-bins/src/bin/mpp_harness_client.rs`:
 
 1. Parse all `WWW-Authenticate` values; pick the `solana`/`charge`
    challenge (filter by `method.as_str() == "solana"`,
@@ -147,20 +147,20 @@ adapter at `rust/crates/mpp/src/bin/harness_client.rs`:
   them is the #1 cross-language bug. `parse_authorization` accepts
   both alphabets for the payload but the canonical write path emits
   no-pad URL-safe for header fields and std-with-pad for the
-  transaction body. See `rust/crates/mpp/src/protocol/core/types.rs:177-198`.
+  transaction body. See `rust/crates/kit/src/mpp/protocol/core/types.rs`.
 - **`MethodName` and `IntentName` are normalized lowercase ASCII.** The
   parser rejects mixed case in `method` (see
-  `rust/crates/mpp/src/protocol/core/headers.rs:42-46`). The `IntentName::new` ctor
+  `rust/crates/kit/src/mpp/protocol/core/headers.rs`). The `IntentName::new` ctor
   forces lowercase. Mirror this in your types.
 - **`ChargeRequest.decimals` is `serde(skip)`.** It is not part of the
   wire format; it lives in `methodDetails.decimals` instead. Mark the
   equivalent field non-serialized in your type — see
-  `rust/crates/mpp/src/protocol/intents/charge.rs:22-24`.
+  `rust/crates/kit/src/mpp/protocol/intents/charge.rs`.
 - **`amount` is a string in base units.** Do not parse to a number on
   the wire — JS can't safely round-trip u64. Use `parse_units(amount,
   decimals)` to convert from a decimal display string at the SDK
-  boundary (`rust/crates/mpp/src/protocol/intents/mod.rs:18`).
-- **Splits cap at 8.** `rust/crates/mpp/src/client/charge.rs:76` enforces this; the
+  boundary (`rust/crates/kit/src/mpp/protocol/intents/mod.rs`).
+- **Splits cap at 8.** `rust/crates/kit/src/mpp/client/charge.rs` enforces this; the
   server's pre-broadcast verifier enforces it too. Reject earlier in
   the new SDK.
 - **`recentBlockhash` in `methodDetails`** is **base58**, not base64.
@@ -168,7 +168,7 @@ adapter at `rust/crates/mpp/src/bin/harness_client.rs`:
 - **Pre-broadcast verification is BEFORE co-signing.** Co-signing a
   hostile transaction (and then catching it post-hoc) leaks the fee
   payer key's signature; the order in `verify_pull`
-  (`rust/crates/mpp/src/server/charge.rs:596-599`) is verify → cosign → simulate
+  (`rust/crates/kit/src/mpp/server/charge.rs`) is verify → cosign → simulate
   → broadcast.
 - **Network gate first.** Calling `check_network_blockhash` before
   decoding instructions is cheaper than letting broadcast fail with a
@@ -176,9 +176,9 @@ adapter at `rust/crates/mpp/src/bin/harness_client.rs`:
 
 ## Test plan
 
-Unit tests to mirror (from `rust/crates/mpp/src/protocol/core/types.rs`,
-`rust/crates/mpp/src/protocol/intents/charge.rs`, and
-`rust/crates/mpp/src/server/charge.rs` `#[cfg(test)] mod tests`):
+Unit tests to mirror (from `rust/crates/kit/src/mpp/protocol/core/types.rs`,
+`rust/crates/kit/src/mpp/protocol/intents/charge.rs`, and
+`rust/crates/kit/src/mpp/server/charge.rs` `#[cfg(test)] mod tests`):
 
 - `MethodName` normalizes to lowercase, rejects empty / non-ASCII.
 - `IntentName::is_charge` is case-insensitive.
@@ -197,7 +197,7 @@ Unit tests to mirror (from `rust/crates/mpp/src/protocol/core/types.rs`,
 Integration test:
 
 - Surfpool-backed `tests/charge_integration.<ext>` mirroring
-  `rust/tests/charge_integration.rs`. Cover SOL transfer, SPL transfer,
+  `rust/crates/integration-tests/tests/charge_integration.rs`. Cover SOL transfer, SPL transfer,
   splits with ATA creation, fee-payer mode.
 
 Harness scenario: `charge-basic` and `charge-split-ata` in

@@ -1,7 +1,7 @@
 # Harness adapter
 
 Cross-language compatibility is enforced by the TypeScript/Vitest harness
-at `mpp-sdk/harness`. Read its README first
+at `harness/`. Read its README first
 (`harness/README.md`) — that is the contract; this file summarizes
 the bits that bite when adding a new language.
 
@@ -9,18 +9,19 @@ the bits that bite when adding a new language.
 
 A new language ships **two** adapters that conform to the same contract:
 
-1. **Client adapter** — accepts a `MPP_HARNESS_TARGET_URL`, pays it,
+1. **Client adapter** — accepts the scenario target URL, pays it,
    emits one `result` JSON message on stdout, then exits.
 2. **Server adapter** — listens on `127.0.0.1:<port>`, exposes the
-   scenario's `resourcePath` protected by an MPP `charge` challenge,
+   scenario's `resourcePath` protected by the selected protocol intent,
    emits one `ready` JSON message on stdout, then serves.
 
 Reference adapters:
 
-- `rust/crates/mpp/src/bin/harness_client.rs` (94 lines — copy it).
-- `rust/crates/mpp/src/bin/harness_server.rs` (317 lines — copy it).
-- `harness/rust-client/` — Cargo manifest wrapper used by the
-  harness command.
+- `rust/crates/harness-bins/src/bin/mpp_harness_client.rs`
+- `rust/crates/harness-bins/src/bin/mpp_harness_server.rs`
+- `rust/crates/harness-bins/src/bin/x402_harness_client.rs`
+- `rust/crates/harness-bins/src/bin/x402_harness_server.rs`
+- `harness/rust-client/` — Cargo manifest wrapper used by MPP harness commands.
 
 ## The contract (verbatim from `harness/README.md`)
 
@@ -144,7 +145,8 @@ path-depends on `../../<lang>`, or a `package.json` with a single
 
 ## Focused matrix command
 
-Before enabling the implementation by default, run:
+Before enabling the implementation by default, select the exact intent and
+scenario. For MPP, run:
 
 ```bash
 # new client against the Rust server
@@ -157,6 +159,12 @@ MPP_HARNESS_CLIENTS=rust MPP_HARNESS_SERVERS=<lang> pnpm test
 MPP_HARNESS_CLIENTS=<lang> MPP_HARNESS_SERVERS=<lang> pnpm test
 ```
 
+For x402, use the corresponding `X402_HARNESS_CLIENTS` and
+`X402_HARNESS_SERVERS` selectors plus `MPP_HARNESS_INTENTS=x402-<scheme>` and a
+matching `MPP_HARNESS_SCENARIOS` value. Copy a current command from the target
+scheme's entries or README; do not assume the MPP adapter IDs also implement
+x402.
+
 Add corresponding `Run <lang> client harness smoke` /
 `Run <lang> server harness smoke` / `Run <lang> end-to-end harness smoke`
 steps to the `harness` job in `.github/workflows/ci.yml`. The Rust steps
@@ -168,7 +176,7 @@ in that file are the pattern.
   `[k, v]` tuples. Headers with multiple values are joined per the
   language's HTTP client behavior; if the client receives multiple
   `WWW-Authenticate` headers, use `parse_www_authenticate_all` (see
-  `rust/crates/mpp/src/bin/harness_client.rs:22-32`) to handle them — do not
+  `rust/crates/harness-bins/src/bin/mpp_harness_client.rs`) to handle them — do not
   rely on a single header.
 - **`settlement` is optional** but the harness expects it whenever
   the server returns the `harnessScenario.settlementHeader` header.
@@ -178,7 +186,7 @@ in that file are the pattern.
   route alongside the protected one, then attacks the protected
   route with a credential issued for the cheap one. Your server must
   reject it — see `verify_credential_with_expected` in
-  `rust/crates/mpp/src/bin/harness_server.rs` for the wiring.
+  `rust/crates/harness-bins/src/bin/mpp_harness_server.rs` for the wiring.
 - **Build first, then run** in the harness command if your language
   compiles. Rust uses `cargo run` (which compiles on demand); Go uses
   `go run`. Avoid double-build paths in CI by reusing the language's
@@ -187,8 +195,8 @@ in that file are the pattern.
   `surfnet_setTokenAccount`) are JSON-RPC methods on the Surfpool
   endpoint. The server adapter uses them to fund the recipient's
   token account before serving — see
-  `rust/crates/mpp/src/bin/harness_server.rs` and
-  `rust/examples/payment_link_server.rs:160-186` for the pattern.
+  `rust/crates/harness-bins/src/bin/mpp_harness_server.rs` and
+  `rust/crates/kit/examples/payment_link_server.rs` for the pattern.
 - **Expectations are centralized.** For successful charge scenarios,
   the harness fetches the settlement signature from Surfpool and
   verifies the resulting transaction includes expected SPL

@@ -1,60 +1,38 @@
 # `x402/upto`
 
-**Status: scaffold only.** Same caveat as `x402-exact.md`: reference
-implementation is `~/Coding/x402-kit` on the user's local machine.
-Don't implement from spec text alone.
+**Status: implemented.** `upto` authorizes a ceiling and settles the measured
+amount after the protected operation.
 
-Spec: <https://docs.x402.org/introduction>
-Reference (local-only): `~/Coding/x402-kit`.
+Spec: <https://x402.org>
 
-## Scheme
+## References
 
-`x402/upto` is the "pay any amount up to the advertised ceiling"
-scheme — the discretionary/tip variant. The challenge advertises a
-maximum; the credential carries the chosen amount and the server
-settles for the chosen amount, verifying it does not exceed the cap.
+- Wire types and verification:
+  `rust/crates/kit/src/x402/protocol/schemes/upto/`
+- Paying client: `rust/crates/kit/src/x402/client/upto/`
+- Server lifecycle: `rust/crates/kit/src/x402/server/upto.rs`
+- TypeScript Pay Kit integration:
+  `typescript/packages/pay-kit/src/adapters/x402-upto.ts`
+- Cross-language vectors: the `x402-upto` entries in
+  `harness/src/implementations.ts`
 
-## Relationship to MPP
+## Porting order
 
-- The MPP charge intent has a single fixed `amount`. The MPP
-  `ChargeRequest.validate_max_amount` helper exists for ad-hoc max
-  checks (`rust/crates/mpp/src/protocol/intents/charge.rs:61`) — that pattern
-  is the closest in-tree analog, but it is not on the wire format
-  the way x402/upto is.
-- Solana settlement reuses the same instruction whitelist + replay
-  store as charge.
+1. Port the challenge and payload types, including the channel-open context.
+2. Port verification that binds the authorization to the route and proves the
+   actual amount does not exceed the advertised ceiling.
+3. Port channel open, post-handler metering, settlement, and close behavior.
+4. Register protocol-specific client and server harness adapters.
 
-## When to implement
+## Guardrails
 
-After `x402/exact` is shipped and harness-green. The "upto" semantics
-add a single check (amount-from-credential ≤ amount-from-challenge)
-on top of the exact flow. Don't ship `upto` before `exact`.
-
-## Hooks for future implementation
-
-This file should be expanded after the x402-kit reference is available:
-
-1. **Wire format** — exactly what differs from `exact` (likely the
-   challenge's amount field becomes a `maxAmount`, the credential
-   echoes the chosen amount, the server checks `<=`).
-2. **Server obligations** — same as `exact` plus the cap check.
-   Receipt must reference the **actual** amount paid, not the cap.
-3. **Client obligations** — UI / API decides the chosen amount up to
-   the ceiling; the credential payload carries it.
-4. **Things to pay attention to**:
-   - Replay key must include the actual amount (or the signature),
-     not the cap.
-   - Cross-route protection still pins `currency`/`recipient`; the
-     amount is bounded by the route's cap, not pinned exactly.
-   - Same canonical-JSON / base64 / base58 rules as MPP.
-5. **Test plan** — unit (cap enforcement at boundary, below, above),
-   integration (Surfpool), harness.
-
-## README matrix row
-
-```md
-| `x402/upto` | — |
-```
-
-Position: second row in both client and server matrices (between
-`x402/exact` and `x402/batch-settlement`).
+- Preserve integer base-unit arithmetic; do not compare floating-point token
+  amounts.
+- Source current blockhash and slot behavior from the reference implementation.
+  Do not reuse expired hints or invent fallback values.
+- Settle and seal through the reference lifecycle even when the protected
+  handler fails; match the current target-language adapter's error semantics.
+- Pin channel roles, mint, network, recipient, fee payer, and ceiling before
+  serving the resource.
+- Do not claim support from unit tests alone; run the focused `x402-upto`
+  harness matrix.

@@ -1,77 +1,43 @@
 # `x402/batch-settlement`
 
-**Status: scaffold only.** Reference implementation is
-`~/Coding/x402-kit` on the user's local machine. Don't implement from
-spec text alone.
+**Status: implemented in the public references.** This scheme serves requests
+against cumulative off-chain vouchers and redeems them on chain in batches.
 
-Spec: <https://docs.x402.org/introduction>
-Reference (local-only): `~/Coding/x402-kit`.
+Spec: <https://x402.org>
 
-## Scheme
+## References
 
-`x402/batch-settlement` is the "accumulate small charges, settle on
-chain less often" scheme. Closest MPP analog is the **session intent**:
-both batch off-chain authorizations and settle on chain at intervals.
+- Wire types and verification:
+  `rust/crates/kit/src/x402/protocol/schemes/batch_settlement/`
+- Paying client: `rust/crates/kit/src/x402/client/batch_settlement/`
+- Server lifecycle and batch redemption:
+  `rust/crates/kit/src/x402/server/batch_settlement.rs`
+- Rust public usage: the batch-settlement section in `rust/README.md`
+- Current harness coverage status: `harness/README.md` and
+  `harness/test/intent-selection.test.ts`
 
-The wire shape is likely:
+The TypeScript x402 submodule also ships the SVM scheme, but Pay Kit's
+TypeScript gate adapter may expose fewer lifecycle operations than the protocol
+package. Inspect both the target language's adapter and its harness registration
+before defining scope.
 
-- Server-signed accumulator state (last-settled cumulative, next-expected sequence).
-- Client-signed authorizations (per-request signed amounts).
-- Periodic settlement (every N authorizations, or on time elapsed, or
-  on session close).
+## Porting order
 
-## Relationship to MPP `session`
+1. Port channel, voucher, and cumulative-amount wire types.
+2. Port signature, sequence, role, ceiling, and monotonicity verification.
+3. Add persistent state with atomic compare-and-set semantics.
+4. Add client voucher generation and server-side off-chain acceptance.
+5. Add idempotent batch redemption and distribution.
+6. Add a scoped batch-settlement harness intent and scenarios before claiming
+   cross-language compatibility; the current harness rejects that selector.
 
-The MPP session intent already does on-chain batching: the
-payment-channels program holds funds; vouchers authorize cumulative
-spend; close settles. The biggest implementation overlap with
-`x402/batch-settlement` is voucher / cumulative semantics — see
-`rust/crates/mpp/src/protocol/intents/session.rs::SignedVoucher`
-(lines 656-705) and the cumulative monotonicity rule.
+## Guardrails
 
-When the x402-kit reference is available, much of the voucher logic
-can be re-used; only the wire-format names and the on-chain settlement
-program differ.
-
-## When to implement
-
-Last in the x402 sequence — after `exact` and `upto` are harness-green.
-Batch settlement is the most complex of the three because it requires:
-
-- Lifecycle state in the server (open / accumulate / settle / close).
-- A persistent store for partially-accumulated authorizations
-  (`store.<ext>` already exists; add new key prefixes).
-- Coordination with the on-chain settlement contract (whatever x402
-  picks for Solana).
-
-## Hooks for future implementation
-
-1. **Wire format** — to be defined from x402-kit. Expect a tagged
-   `action: "open" | "authorize" | "settle" | "close"` similar to MPP
-   `SessionAction`.
-2. **Server obligations** — accumulator state, replay protection per
-   `(channelId, sequence)`, settlement transaction submission.
-3. **Client obligations** — sign each authorization, hand the latest
-   cumulative back on every API call, request settlement when the
-   session ends.
-4. **Things to pay attention to**:
-   - Replay key includes both channel and sequence.
-   - Cumulative monotonicity (same rule as MPP session vouchers).
-   - Settle is **idempotent** — multiple settle requests on the same
-     cumulative return a cached receipt.
-   - Cross-protocol replay: settlement signatures must use a
-     namespaced key so an x402 signature cannot be replayed as MPP
-     charge or vice versa. Suggested prefixes —
-     `x402-batch:consumed:<sig>`, `solana-charge:consumed:<sig>`
-     (already used by MPP charge).
-5. **Test plan** — unit (sequence monotonicity, replay,
-   settle-idempotency), integration (Surfpool full lifecycle), harness.
-
-## README matrix row
-
-```md
-| `x402/batch-settlement` | — |
-```
-
-Position: third row in both client and server matrices (immediately
-above `mpp/charge/pull`).
+- Key state by the complete channel identity and reject stale or decreasing
+  cumulative vouchers.
+- Make concurrent voucher acceptance and redemption race-safe.
+- Treat a repeated settlement of the same cumulative state as an idempotent
+  retry, not a second debit.
+- Keep x402 replay keys namespaced away from MPP charge and session state.
+- Leave the README cell incomplete when the target language lacks a client,
+  server, persistent store, or harness proof required by its advertised scope.

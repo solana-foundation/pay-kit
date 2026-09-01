@@ -7,8 +7,8 @@ This is the default in browser flows (payment links) where the client
 wallet does the broadcasting.
 
 Spec: <https://paymentauth.org>, charge intent.
-Rust reference: `rust/crates/mpp/src/server/charge.rs::verify_push`,
-`rust/crates/mpp/src/protocol/solana.rs::CredentialPayload`.
+Rust reference: `rust/crates/kit/src/mpp/server/charge.rs::verify_push`,
+`rust/crates/kit/src/mpp/protocol/solana.rs::CredentialPayload`.
 
 ## Wire format
 
@@ -26,14 +26,14 @@ itself.
 ```
 
 The credential payload is a `CredentialPayload::Signature { signature }`
-(see `rust/crates/mpp/src/protocol/solana.rs::CredentialPayload`), tagged via serde
+(see `rust/crates/kit/src/mpp/protocol/solana.rs::CredentialPayload`), tagged via serde
 internally tag/untag rules.
 
 ## Server obligations
 
-Mirror `verify_push` (search `rust/crates/mpp/src/server/charge.rs` for the function;
+Mirror `verify_push` (search `rust/crates/kit/src/mpp/server/charge.rs` for the function;
 the entry is `match payload { CredentialPayload::Signature { ref
-signature } => self.verify_push(...) }` at `rust/crates/mpp/src/server/charge.rs:541`):
+signature } => self.verify_push(...) }` at `rust/crates/kit/src/mpp/server/charge.rs`):
 
 1. **HMAC tier-1** + **expiry** + **pinned-field tier-2** + **cross-route
    tier-2** — same as pull (see `mpp-charge-pull.md`).
@@ -83,8 +83,8 @@ signs and broadcasts:
 For payment-link / browser flows, the wallet adapter does steps 3-4 and
 hands the signature back. The MPP SDK's role is steps 1-2 and 5-7;
 see the service worker pattern in
-`rust/crates/mpp/src/server/html/service_worker.gen.js` and the example at
-`rust/examples/payment_link_server.rs`.
+`rust/crates/kit/src/mpp/server/html/service_worker.gen.js` and the example at
+`rust/crates/kit/examples/payment_link_server.rs`.
 
 ## Things to pay attention to
 
@@ -101,13 +101,13 @@ see the service worker pattern in
   server's `CommitmentConfig`; do not accept `Processed` for
   settlement. The Rust default is `Confirmed`.
 - **Browser CORS for `payment-receipt` header.** The example at
-  `rust/examples/payment_link_server.rs:50-58` exposes `payment-receipt`
+  `rust/crates/kit/examples/payment_link_server.rs` exposes `payment-receipt`
   in the response. The corresponding service worker reads it back.
   Don't strip the header in middleware.
 - **Service worker assets must be served from the same origin** as the
   protected route — see `html::SERVICE_WORKER_PARAM` and the
   `service-worker-allowed: /` header in
-  `rust/examples/payment_link_server.rs:79-84`. The new-language server
+  `rust/crates/kit/examples/payment_link_server.rs`. The new-language server
   must expose the same `?<param>` query that returns the generated
   service-worker JS.
 - **Signature length / encoding.** Solana signatures are 64 bytes; the

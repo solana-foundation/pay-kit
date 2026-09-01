@@ -4,17 +4,21 @@ The new-language SDK lives as a sibling of the existing language
 directories in `solana-foundation/pay-kit`:
 
 ```
-mpp-sdk/
-├── rust/        ← reference; mirror its module split
+pay-kit/
+├── rust/        ← broadest reference; protocol code is in crates/kit/src/
 ├── typescript/
 ├── go/
 ├── python/
+├── kotlin/
+├── swift/
+├── ruby/
+├── php/
 ├── lua/
 ├── <new-lang>/  ← what you are creating
 ├── harness/
 │   └── <new-lang>-client/   ← harness adapter (see harness.md)
 ├── .github/workflows/ci.yml ← add a job (see ci-quality-coverage.md)
-└── justfile     ← add recipes (see "justfile recipes" below)
+└── Justfile     ← add recipes (see "Justfile recipes" below)
 ```
 
 ## Inside `<new-lang>/`
@@ -61,15 +65,14 @@ in the intent leaves translate directly:
 
 The Rust crate is the canonical reference for everything in `src/`:
 
-- `rust/crates/mpp/src/lib.rs` — public re-exports the new SDK must mirror.
-- `rust/crates/mpp/src/protocol/core/{challenge,headers,types}.rs` — wire format.
-- `rust/crates/mpp/src/protocol/intents/{charge,session}.rs` — intent request types.
-- `rust/crates/mpp/src/protocol/solana.rs` — program/mint constants.
-- `rust/crates/mpp/src/server/{mod,charge,session,html,axum}.rs` — server side.
-- `rust/crates/mpp/src/client/{mod,charge,session,...}.rs` — client side.
-- `rust/crates/mpp/src/store.rs` — replay store trait.
-- `rust/crates/mpp/src/bin/harness_{client,server}.rs` — harness adapter shape.
-- `rust/examples/payment_link_server.rs` — minimal protected example.
+- `rust/crates/kit/src/lib.rs` — public Pay Kit re-exports.
+- `rust/crates/kit/src/mpp/protocol/core/{challenge,headers,types}.rs` — MPP wire format.
+- `rust/crates/kit/src/mpp/protocol/intents/` — MPP intent request types.
+- `rust/crates/kit/src/mpp/protocol/solana.rs` — program/mint constants.
+- `rust/crates/kit/src/mpp/{server,client,store.rs}` — MPP runtime surfaces.
+- `rust/crates/kit/src/x402/{protocol,server,client}` — x402 schemes and runtime surfaces.
+- `rust/crates/harness-bins/src/bin/` — Rust harness adapters.
+- `rust/crates/kit/examples/` — protected server and client examples.
 - `rust/Cargo.toml` — manifest pattern (atomic Solana crate pinning).
 
 ## Public surface — re-exports
@@ -106,8 +109,8 @@ prefix:
 
 ## `justfile` recipes
 
-Add one section per language, matching the existing pattern in
-`mpp-sdk/justfile`. The required recipes are:
+Add one section per language, matching the existing pattern in the root
+`Justfile`. The required recipes are:
 
 ```just
 # ── <Language> ──

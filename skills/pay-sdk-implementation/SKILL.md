@@ -1,22 +1,26 @@
 ---
 name: payment-sdk-implementation
-description: Derive a new-language SDK port of the Solana payment SDKs (MPP today, x402 next). Use when the user asks to "port the SDK to <language>", "add <language> client/server for MPP", "scaffold a <language> mpp-sdk", or "add x402 support in <language>". Routes to progressive-disclosure references; do not read every leaf — only the ones for the compatibility-matrix cells the user has in scope.
+description: Port or extend a Pay Kit SDK for x402 and MPP on Solana. Use when the user asks to "port Pay Kit to <language>", "add <language> payment client/server support", "implement an MPP intent", or "add an x402 scheme". Inspect the target language's current matrix before choosing scope, then load only the relevant intent references.
 ---
 
 # Payment SDK implementation
 
-This skill scaffolds a language port of the Solana payment SDKs that stays
-wire-compatible with the Rust reference at `mpp-sdk/rust` (in the
-`solana-foundation/pay-kit` repo). It supports both **MPP** (today) and
-**x402** (scaffolded; spec references only until x402-kit lands).
+This skill scaffolds or extends a language port of Pay Kit while keeping it
+wire-compatible with the public reference implementations in this repository.
+Rust under `rust/crates/kit/src/` is the broadest in-repo reference; TypeScript
+under `typescript/packages/` is also authoritative for the surfaces it ships.
+Both **MPP** and **x402** are implemented today, but coverage varies by language
+and changes quickly.
 
 ## Specs (authoritative)
 
 - MPP / HTTP Payment Authentication scheme — <https://paymentauth.org>
   - Spec PRs — <https://github.com/tempoxyz/mpp-specs>
 - x402 — <https://docs.x402.org/introduction>
-- Reference Rust crate — `mpp-sdk/rust` (every wire-format claim in
-  this skill is grep-able to a path under that tree)
+- Pay Kit interface — `docs/paykit-interface.md`
+- Rust reference — `rust/crates/kit/src/{mpp,x402}`
+- TypeScript reference — `typescript/packages/{mpp,pay-kit}` and
+  `typescript/external/x402`
 
 ## Compatibility matrix — pick the cells in scope
 
@@ -26,17 +30,18 @@ maps to exactly one reference file under `references/intents/`:
 
 | Cell | Reference file | Status |
 |---|---|---|
-| `x402/exact` | `intents/x402-exact.md` | scaffold (future) |
-| `x402/upto` | `intents/x402-upto.md` | scaffold (future) |
-| `x402/batch-settlement` | `intents/x402-batch-settlement.md` | scaffold (future) |
-| `mpp/charge/pull` | `intents/mpp-charge-pull.md` | implemented in Rust |
-| `mpp/charge/push` | `intents/mpp-charge-push.md` | implemented in Rust |
-| `mpp/session` | `intents/mpp-session.md` | implemented in Rust |
-| `mpp/subscription` | `intents/mpp-subscription.md` | not yet specified |
+| `x402/exact` | `intents/x402-exact.md` | public Rust and TypeScript references |
+| `x402/upto` | `intents/x402-upto.md` | public Rust and TypeScript references |
+| `x402/batch-settlement` | `intents/x402-batch-settlement.md` | public Rust and TypeScript references |
+| `mpp/charge/pull` | `intents/mpp-charge-pull.md` | public Rust and TypeScript references |
+| `mpp/charge/push` | `intents/mpp-charge-push.md` | public Rust and TypeScript references |
+| `mpp/session` | `intents/mpp-session.md` | public Rust and TypeScript references |
+| `mpp/subscription` | `intents/mpp-subscription.md` | public Rust and TypeScript references |
 
-> **Default scope today:** MPP only. `mpp/charge/{pull,push}` are required
-> for any new SDK; `mpp/session` is optional; `mpp/subscription` and all
-> x402 cells stay listed in the README as `—` until the spec ships.
+Do not infer a default protocol matrix. Read the target language's README,
+source tree, and its entries in `harness/src/implementations.ts`, then implement
+only the cells requested. A cell implemented in Rust is not automatically
+available or harness-enabled in every other language.
 
 ## Workflow
 
@@ -64,8 +69,8 @@ the directory skeleton and CI from earlier ones.
    read the matching file under `references/intents/`. Each leaf is
    self-contained: wire format, server obligations, client obligations,
    subtle bugs to avoid, test cases to mirror, spec links. Reference the
-   Rust file paths cited in the leaf to disambiguate anything that's
-   under-specified.
+   current Rust and TypeScript paths cited in the leaf to disambiguate
+   anything that's under-specified.
 6. **Consume Solana program clients via Codama.** Read
    `references/codegen.md`. Pay-kit vendors Codama IDLs at
    `idl/<program>.json` and renders per-language clients with
@@ -74,14 +79,13 @@ the directory skeleton and CI from earlier ones.
    program; do **not** hand-write a Solana program client in a new
    language — add a `subscriptions-generate-<lang>` recipe alongside
    the existing `subscriptions-generate-rs` and consume the generated
-   tree the same way `mpp/program/payment_channels.rs` and
-   `mpp/program/subscriptions.rs` do in Rust.
+   tree the same way `rust/crates/kit/src/mpp/program/` does in Rust.
 7. **Add the harness adapter.** Read `references/harness.md`,
    create `harness/<lang>-client/` (and a `bin/harness_server` if
    you're shipping a server), and register it in
-   `harness/src/implementations.ts`. Run the focused matrix
-   (`MPP_HARNESS_CLIENTS=<lang> MPP_HARNESS_SERVERS=rust pnpm test` and
-   the inverse) before flipping `enabled: true`.
+   `harness/src/implementations.ts`. Run the focused matrix with the
+   protocol-specific `MPP_HARNESS_*` or `X402_HARNESS_*` selectors documented
+   there before flipping `enabled: true`.
 8. **Apply the operability caveats.** Read
    `references/operability-caveats.md`. These are the gaps the Ruby
    gem's PR #142 follow-up closed (default `localnet` RPC, mainnet
@@ -99,8 +103,9 @@ the directory skeleton and CI from earlier ones.
 ## Hard rules
 
 - **No fabricated invariants.** Every wire-format claim in the SDK you
-  ship must trace back to either a Rust file under
-  `rust/crates/mpp/src/` or the spec at `paymentauth.org`. If a
+  ship must trace back to a public implementation under
+  `rust/crates/kit/src/{mpp,x402}`, the corresponding TypeScript package, or
+  the governing protocol spec. If a
   reference file says "see X.rs", open it.
 - **Canonical JSON → base64url, no padding.** Bodies that flow through
   the `request` field, the `opaque` field, or signing inputs use
@@ -110,7 +115,7 @@ the directory skeleton and CI from earlier ones.
   `references/intents/mpp-charge-pull.md` for the exact boundary.
 - **Cross-route replay protection is non-negotiable.** Every server
   must run the tier-2 pinned-field check before settlement — see the
-  pinned-field backstop in `rust/crates/mpp/src/server/charge.rs:424`. The new
+  pinned-field backstop in `rust/crates/kit/src/mpp/server/charge.rs`. The new
   SDK must expose a `verify_credential_with_expected` (or the
   language-idiomatic equivalent) that pins `amount`, `currency`, and
   `recipient` per route.
@@ -126,13 +131,9 @@ the directory skeleton and CI from earlier ones.
 
 ## When the user asks for something this skill does not cover
 
-- Spec gaps (e.g. `mpp/subscription` semantics): point at
-  `intents/mpp-subscription.md` and ask the user to share the spec
-  draft. Do not invent semantics.
-- x402-specific code beyond the scaffold: ask the user to share
-  `~/Coding/x402-kit` (lives on their local machine; not in this
-  container). Treat the scaffold as a placeholder until the reference
-  lands.
+- A protocol or language cell without a public reference: report the exact
+  missing source or harness vector and ask for scope. Do not invent semantics
+  or depend on a private checkout.
 - Anything cross-cutting in the on-chain payment-channels program: treat
   that as out of scope. The Rust crate
   re-exports the on-chain artifacts; the new SDK only needs to

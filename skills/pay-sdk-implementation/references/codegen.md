@@ -3,7 +3,7 @@
 Pay-kit consumes a handful of Solana programs (payment-channels,
 subscriptions, …) whose on-chain wire format is best produced from a
 single source of truth: each program's Codama IDL. Hand-writing a
-client per language is how `rust/crates/mpp/src/program/subscriptions.rs`
+client per language is how `rust/crates/kit/src/mpp/program/subscriptions.rs`
 became 825 lines that drifted from the upstream IDL the moment a new
 field landed.
 
