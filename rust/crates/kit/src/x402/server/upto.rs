@@ -314,10 +314,7 @@ impl X402Upto {
         // to `payTo` through the recipients list.
         let recipient = Pubkey::from_str(&self.pay_to())
             .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
-        Ok(vec![pc::Distribution {
-            recipient,
-            bps: 10_000,
-        }])
+        Ok(pc::sole_recipient(&recipient))
     }
 
     /// Build the `upto` payment requirement for the primary currency at the
@@ -1848,7 +1845,7 @@ mod tests {
         let recipient = Pubkey::new_unique();
         let split = vec![pc::Distribution {
             recipient,
-            bps: 10_000,
+            bps: pc::FULL_SHARE_BPS,
         }];
 
         // Channel committed to exactly the expected split → accepted.
@@ -2158,7 +2155,7 @@ mod tests {
             // Real recipient is paid via a bound 100% split, not as the payee.
             recipients: vec![crate::core::payment_channels::Distribution {
                 recipient,
-                bps: 10_000,
+                bps: pc::FULL_SHARE_BPS,
             }],
             token_program: token_program(),
             program_id: pc::default_program_id(),

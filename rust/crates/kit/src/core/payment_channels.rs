@@ -138,6 +138,24 @@ pub const TREASURY_OWNER: [u8; 32] = [
     0xA5, 0x3A, 0x0E, 0x2B, 0x6A, 0x23, 0x99, 0xFC, 0x7D, 0x5B, 0x7E, 0xDA, 0x8C, 0xAC, 0x89, 0xAA,
 ];
 
+/// Basis points denominating a distribution share; 10,000 is the whole amount.
+pub const FULL_SHARE_BPS: u16 = 10_000;
+
+/// The single-recipient distribution both channel schemes commit at `open`.
+///
+/// `upto` and `batch-settlement` each send 100% of settled funds to one
+/// address, leaving the channel `payee` with a zero implicit remainder. The
+/// program hashes this list into `distribution_hash` at `open` and re-checks it
+/// at `distribute`, so the preimage has to be rebuilt identically at every site
+/// that opens, verifies, or pays out a channel — which is exactly why it is
+/// built here rather than spelled out at each one.
+pub fn sole_recipient(recipient: &Pubkey) -> Vec<Distribution> {
+    vec![Distribution {
+        recipient: *recipient,
+        bps: FULL_SHARE_BPS,
+    }]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Distribution {
     pub recipient: Pubkey,

@@ -73,10 +73,6 @@ const CHANNEL_STATUS_CLOSING: u8 = 2;
 /// `ChannelStatus::Distributed` discriminant.
 const CHANNEL_STATUS_DISTRIBUTED: u8 = 3;
 
-/// Basis points paid to `payTo`. The scheme never assigns any part of settled
-/// funds away from it, and the `payee` implicit remainder is always zero.
-const FULL_SHARE_BPS: u16 = 10_000;
-
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -973,10 +969,7 @@ impl X402BatchSettlement {
         // The distribution is only committed as a hash, so it is checked by
         // rebuilding the single-recipient preimage the scheme requires.
         let receiver = pc::parse_pubkey(&outcome.requirements.pay_to)?;
-        let expected_hash = pc::distribution_hash(&[pc::Distribution {
-            recipient: receiver,
-            bps: FULL_SHARE_BPS,
-        }]);
+        let expected_hash = pc::distribution_hash(&pc::sole_recipient(&receiver));
         expect(channel.distribution_hash == expected_hash, "distribution")?;
         Ok(())
     }
@@ -1186,10 +1179,7 @@ impl X402BatchSettlement {
                 &self.fee_payer,
                 &pc::treasury_owner(),
                 &mint,
-                &[pc::Distribution {
-                    recipient: receiver,
-                    bps: FULL_SHARE_BPS,
-                }],
+                &pc::sole_recipient(&receiver),
                 &token_program,
                 &program_id,
             );
@@ -1283,10 +1273,7 @@ impl X402BatchSettlement {
                         &self.fee_payer,
                         &pc::treasury_owner(),
                         &mint,
-                        &[pc::Distribution {
-                            recipient: receiver,
-                            bps: FULL_SHARE_BPS,
-                        }],
+                        &pc::sole_recipient(&receiver),
                         &token_program,
                         &program_id,
                     ),

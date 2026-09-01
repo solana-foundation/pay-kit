@@ -59,7 +59,7 @@ pub async fn build_upto_payload(
     // assigned to `payTo` through the recipients list.
     let recipients = vec![pc::Distribution {
         recipient: beneficiary,
-        bps: 10_000,
+        bps: pc::FULL_SHARE_BPS,
     }];
     let program_id = pc::default_program_id();
     let token_program = match &requirements.extra.token_program {

@@ -36,10 +36,6 @@ const TOP_UP_DISCRIMINATOR: u8 = 3;
 /// `request_close` instruction discriminator.
 const REQUEST_CLOSE_DISCRIMINATOR: u8 = 5;
 
-/// Basis points assigned to the sole distribution recipient. The scheme never
-/// assigns any part of settled funds away from `payTo`.
-const FULL_SHARE_BPS: u16 = 10_000;
-
 /// Serialized size of one `DistributionEntry`: a 32-byte recipient plus a
 /// little-endian `u16` share.
 const DISTRIBUTION_ENTRY_LEN: usize = 34;
@@ -553,7 +549,7 @@ fn check_open_args(
     // The distribution is committed at `open` and re-checked at `distribute`,
     // so this is the one moment the payout destination can be pinned. Anything
     // other than all of it to `payTo` diverts settled funds.
-    if recipient != *expected.receiver || bps != FULL_SHARE_BPS {
+    if recipient != *expected.receiver || bps != pc::FULL_SHARE_BPS {
         return Err(err(format!(
             "open distribution must pay 100% to {}, got {} at {bps} bps",
             pc::pubkey_string(expected.receiver),
@@ -768,10 +764,7 @@ mod tests {
                 open_slot: 341_000_000,
                 deposit,
                 grace_period: 3600,
-                recipients: vec![pc::Distribution {
-                    recipient: self.receiver,
-                    bps: FULL_SHARE_BPS,
-                }],
+                recipients: pc::sole_recipient(&self.receiver),
                 token_program: self.token_program,
                 program_id: self.program_id,
             }
@@ -925,7 +918,7 @@ mod tests {
         for recipients in [
             vec![pc::Distribution {
                 recipient: Pubkey::new_unique(),
-                bps: FULL_SHARE_BPS,
+                bps: pc::FULL_SHARE_BPS,
             }],
             vec![
                 pc::Distribution {

@@ -398,10 +398,7 @@ pub async fn build_deposit(
         open_slot,
         deposit_amount,
         terms.withdraw_delay,
-        vec![pc::Distribution {
-            recipient: terms.receiver,
-            bps: 10_000,
-        }],
+        pc::sole_recipient(&terms.receiver),
         &terms.token_program,
         &pc::default_program_id(),
         &terms.fee_payer,
