@@ -52,11 +52,11 @@ use crate::core::store::{
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
     check_channel_config, check_no_cooperative_close, check_token_program, check_voucher,
-    derive_channel_id, errors as codes, BatchChannelConfig, BatchError, BatchExtra, BatchPayload,
-    BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements, BatchSettlementExtra,
-    BatchSettlementResponse, ChannelStateSnapshot, SetupForm, TransactionExpectations,
-    VoucherState, BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS,
-    VOUCHER_EXPIRES_AT,
+    check_withdraw_delay, derive_channel_id, errors as codes, setup_form_from_transaction,
+    BatchChannelConfig, BatchError, BatchExtra, BatchPayload, BatchPaymentPayload,
+    BatchRequiredEnvelope, BatchRequirements, BatchSettlementExtra, BatchSettlementResponse,
+    ChannelStateSnapshot, SetupForm, TransactionExpectations, VoucherState,
+    BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS, VOUCHER_EXPIRES_AT,
 };
 use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
@@ -152,12 +152,16 @@ impl BatchConfig {
     }
 }
 
-/// Per-channel serialization guard.
+/// Per-channel, process-local serialization guard.
 ///
 /// The spec requires the server to serialize all paid-request and close
 /// processing per channel. The guard is held from `verify_payment` through
 /// `settle_payment`, so a second request on the same channel cannot read the
 /// watermark, serve, and commit in between.
+///
+/// A multi-replica deployment must route a channel to one replica until its
+/// verified outcome settles; a future store reservation can remove that
+/// deployment constraint.
 #[derive(Clone, Default)]
 struct InFlight(Arc<Mutex<HashSet<String>>>);
 
@@ -260,6 +264,9 @@ impl X402BatchSettlement {
     }
 
     /// Build a handler over a caller-provided (durable) channel store.
+    ///
+    /// The in-flight reservation is process-local, so multi-replica callers
+    /// must consistently route each channel to one instance until settlement.
     pub fn with_store(config: BatchConfig, store: Arc<dyn ChannelStore>) -> Result<Self, Error> {
         if config.pay_to.is_empty() {
             return Err(Error::Other("pay_to is required".into()));
@@ -267,6 +274,8 @@ impl X402BatchSettlement {
         Pubkey::from_str(&config.pay_to)
             .map_err(|e| Error::Other(format!("invalid payTo pubkey: {e}")))?;
         crate::x402::exact::try_resolve_stablecoin_mint(&config.currency, Some(&config.cluster))?;
+        check_withdraw_delay(config.withdraw_delay, config.max_timeout_seconds)
+            .map_err(|e| Error::Other(e.to_string()))?;
         let fee_payer = config.fee_payer_signer.pubkey();
         if pc::pubkey_string(&fee_payer) == config.pay_to {
             // Not fatal onchain, but it collapses the cold-wallet separation the
@@ -470,9 +479,7 @@ impl X402BatchSettlement {
     ///
     /// A cumulative-amount mismatch gets the corrective challenge, carrying the
     /// server's snapshot and the voucher proof the client needs to resynchronize
-    /// and retry; every other failure gets the ordinary challenge. Falls back to
-    /// the ordinary challenge whenever the corrective one cannot be built — the
-    /// client is better served by a retryable 402 than by an error.
+    /// and retry. Every challenge carries a machine-readable error code.
     pub async fn challenge_for_failure(
         &self,
         header: &str,
@@ -489,7 +496,12 @@ impl X402BatchSettlement {
                 }
             }
         }
-        self.payment_required_header(amount)
+        let mut envelope = self.challenge(amount)?;
+        envelope.error = Some(
+            crate::x402::protocol::schemes::batch_settlement::classify(&error.to_string())
+                .to_string(),
+        );
+        Ok((PAYMENT_REQUIRED_HEADER.to_string(), encode_json(&envelope)?))
     }
 
     fn channel_id_for_header(&self, header: &str) -> Option<String> {
@@ -583,16 +595,11 @@ impl X402BatchSettlement {
             } => {
                 let max_claimable = check_voucher(voucher, &config, &channel_id)?;
                 let deposit_amount = deposit.amount()?;
-                // A top-up rides on an existing channel; a first deposit opens
-                // one. The stored record decides which, because the onchain
-                // channel does not exist yet for an `open`.
-                let (form, prior) = match &stored {
-                    Some(state) => {
-                        self.check_channel_open(state)?;
-                        (SetupForm::TopUp, Some(state))
-                    }
-                    None => (SetupForm::Open, None),
-                };
+                let form = setup_form_from_transaction(&deposit.transaction, &program_id)?;
+                if let Some(state) = &stored {
+                    self.check_channel_open(state)?;
+                }
+                let prior = stored.as_ref();
                 let replay = match prior {
                     Some(state) => self.check_watermark(state, voucher, max_claimable, charge)?,
                     None => {
@@ -611,6 +618,7 @@ impl X402BatchSettlement {
                 let token_program = self.token_program()?;
                 let receiver = pc::parse_pubkey(&requirements.pay_to)?;
                 self.check_mint_owner(&mint, &token_program)?;
+                self.check_settlement_accounts(&mint, &token_program, &receiver)?;
                 let expectations = TransactionExpectations {
                     program_id: &program_id,
                     fee_payer: &self.fee_payer,
@@ -801,6 +809,36 @@ impl X402BatchSettlement {
         Ok(())
     }
 
+    /// Ensure a channel can later distribute its settled funds before the
+    /// sponsor co-signs the escrow transaction.
+    fn check_settlement_accounts(
+        &self,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+        receiver: &Pubkey,
+    ) -> Result<(), Error> {
+        for (role, owner) in [
+            ("payee", self.fee_payer),
+            ("treasury", pc::treasury_owner()),
+            ("receiver", *receiver),
+        ] {
+            let (ata, _) = pc::find_associated_token_address(&owner, mint, token_program);
+            let account = self.rpc.get_account(&ata).map_err(|e| {
+                batch_err(
+                    codes::INVALID_SETUP_TRANSACTION,
+                    format!("{role} settlement ATA {ata} is unavailable: {e}"),
+                )
+            })?;
+            if pc::from_address(&account.owner) != *token_program {
+                return Err(batch_err(
+                    codes::INVALID_SETUP_TRANSACTION,
+                    format!("{role} settlement ATA {ata} has the wrong owner"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn verify_refund(
         &self,
         transaction: &str,
@@ -847,8 +885,30 @@ impl X402BatchSettlement {
         let network = outcome.requirements.network.clone();
         match &outcome.payload {
             BatchPayload::Refund { transaction, .. } => {
-                let signature = self.broadcast_client_transaction(transaction).await?;
-                let channel = self.fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)?;
+                let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
+                let mut channel = self.fetch_channel(&channel_id)?;
+                self.upsert_channel(&outcome, &channel).await?;
+                let signature = if channel.status == CHANNEL_STATUS_OPEN {
+                    let state = self
+                        .store
+                        .get_channel(&outcome.channel_id)
+                        .await
+                        .map_err(|e| Error::Other(format!("store error: {e}")))?;
+                    if state.is_some_and(|state| state.cumulative > channel.settlement.settled) {
+                        self.claim(std::slice::from_ref(&outcome.channel_id))
+                            .await?;
+                        channel = self.fetch_channel(&channel_id)?;
+                    }
+                    self.broadcast_client_transaction(transaction).await?
+                } else if channel.status == CHANNEL_STATUS_CLOSING {
+                    String::new()
+                } else {
+                    return Err(batch_err(
+                        codes::INVALID_CLOSE_STATE,
+                        "channel cannot be closed",
+                    ));
+                };
+                channel = self.fetch_channel(&channel_id)?;
                 if channel.status != CHANNEL_STATUS_CLOSING {
                     return Err(batch_err(
                         codes::INVALID_CLOSE_STATE,
@@ -915,6 +975,20 @@ impl X402BatchSettlement {
         }
     }
 
+    /// Rebuild the accepted response for an idempotent voucher retry.
+    pub async fn replay_response(
+        &self,
+        outcome: &BatchOutcome,
+    ) -> Result<BatchSettlementResponse, Error> {
+        let state = self
+            .store
+            .get_channel(&outcome.channel_id)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+            .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "channel vanished"))?;
+        Ok(self.accepted_response(outcome, &state, String::new(), String::new()))
+    }
+
     /// Co-sign a client-supplied transaction as fee payer and broadcast it.
     ///
     /// The transaction was already statically validated during verification, so
@@ -934,6 +1008,9 @@ impl X402BatchSettlement {
             .signatures
             .first()
             .ok_or_else(|| Error::Other("transaction has no signature slot".into()))?;
+        if matches!(self.rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
+            return Ok(signature.to_string());
+        }
         // Simulate the exact bytes before they reach the network. The static
         // policy has already bounded what the sponsor is authorizing; this
         // catches the rest — an unfunded payer, a frozen or wrong-owner token
@@ -1165,7 +1242,7 @@ impl X402BatchSettlement {
         let program_id = self.program_id()?;
         let mut groups = Vec::with_capacity(channel_ids.len());
         for channel_id in channel_ids {
-            let state = self
+            let mut state = self
                 .store
                 .get_channel(channel_id)
                 .await
@@ -1176,6 +1253,26 @@ impl X402BatchSettlement {
                         format!("unknown channel {channel_id}"),
                     )
                 })?;
+            let channel = pc::parse_pubkey(channel_id)?;
+            let onchain = self.fetch_channel(&channel)?;
+            if onchain.status != CHANNEL_STATUS_OPEN || onchain.closure_started_at != 0 {
+                continue;
+            }
+            let settled_on_chain = onchain.settlement.settled;
+            state.settled_on_chain = state.settled_on_chain.max(settled_on_chain);
+            self.store
+                .update_channel(
+                    channel_id,
+                    Box::new(move |current| {
+                        let mut current = current.ok_or_else(|| {
+                            crate::core::store::StoreError::Internal("channel not found".into())
+                        })?;
+                        current.settled_on_chain = current.settled_on_chain.max(settled_on_chain);
+                        Ok(current)
+                    }),
+                )
+                .await
+                .map_err(|e| Error::Other(format!("store error: {e}")))?;
             let Some(signature) = state.highest_voucher_signature.clone() else {
                 continue;
             };
@@ -1184,7 +1281,6 @@ impl X402BatchSettlement {
             if state.cumulative <= state.settled_on_chain {
                 continue;
             }
-            let channel = pc::parse_pubkey(channel_id)?;
             let authorized_signer = pc::parse_pubkey(&state.authorized_signer)?;
             let signature_bytes = decode_signature(&signature)?;
             let expires_at = state
@@ -1333,7 +1429,28 @@ impl X402BatchSettlement {
         }
         // One channel per transaction: a seal/distribute pair is far larger
         // than a claim, and a single failure must not strand its neighbours.
-        self.submit_groups(groups, 1).await
+        let finalized: Vec<_> = groups
+            .iter()
+            .map(|group| group.channel_id.clone())
+            .collect();
+        let signatures = self.submit_groups(groups, 1).await?;
+        for channel_id in finalized {
+            self.store
+                .update_channel(
+                    &channel_id,
+                    Box::new(|current| {
+                        let mut state = current.ok_or_else(|| {
+                            crate::core::store::StoreError::Internal("channel not found".into())
+                        })?;
+                        state.sealed = true;
+                        state.last_activity_at = now_unix();
+                        Ok(state)
+                    }),
+                )
+                .await
+                .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        }
+        Ok(signatures)
     }
 
     /// Recover the PDA rent this server fronted for `Distributed` channels.
@@ -1370,7 +1487,18 @@ impl X402BatchSettlement {
                 )],
             });
         }
-        self.submit_groups(groups, pc::MAX_RECLAIMS_PER_TX).await
+        let reclaimed: Vec<_> = groups
+            .iter()
+            .map(|group| group.channel_id.clone())
+            .collect();
+        let signatures = self.submit_groups(groups, pc::MAX_RECLAIMS_PER_TX).await?;
+        for channel_id in reclaimed {
+            self.store
+                .delete_channel(&channel_id)
+                .await
+                .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        }
+        Ok(signatures)
     }
 
     /// Discover every channel whose rent this server sponsored.

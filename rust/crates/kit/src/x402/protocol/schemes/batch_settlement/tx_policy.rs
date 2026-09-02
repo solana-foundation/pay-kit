@@ -71,6 +71,42 @@ impl SetupForm {
     }
 }
 
+/// Read the setup instruction discriminator from a client transaction.
+///
+/// The form is a property of the signed transaction, not of whether the
+/// server happened to persist a channel record. This matters when an `open`
+/// landed but its voucher commit did not: retrying that same transaction must
+/// remain an `open`.
+pub fn setup_form_from_transaction(
+    transaction_b64: &str,
+    program_id: &Pubkey,
+) -> Result<SetupForm> {
+    let tx = decode(transaction_b64, "setup")?;
+    let keys = tx.message.static_account_keys();
+    let forms: Vec<_> = tx
+        .message
+        .instructions()
+        .iter()
+        .filter_map(|ix| {
+            (keys.get(usize::from(ix.program_id_index)) == Some(program_id))
+                .then_some(ix.data.first().copied())
+                .flatten()
+        })
+        .filter_map(|discriminator| match discriminator {
+            OPEN_DISCRIMINATOR => Some(SetupForm::Open),
+            TOP_UP_DISCRIMINATOR => Some(SetupForm::TopUp),
+            _ => None,
+        })
+        .collect();
+    match forms.as_slice() {
+        [form] => Ok(*form),
+        _ => Err(BatchError::new(
+            errors::INVALID_SETUP_TRANSACTION,
+            "transaction must contain exactly one open or top_up instruction",
+        )),
+    }
+}
+
 /// Everything a client-supplied transaction is checked against.
 ///
 /// These come from the requirements the server advertised and the channel

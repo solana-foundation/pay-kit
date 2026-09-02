@@ -258,7 +258,7 @@ impl PayKit {
     }
 
     /// The underlying x402 `batch-settlement` handler, when a fee-payer signer is
-    /// configured. Drive `settle_batch` / `distribute` on it out of band.
+    /// configured. Drive `claim` / `settle` and close lifecycle work out of band.
     pub fn x402_batch(&self) -> Option<&Arc<X402BatchSettlement>> {
         self.x402_batch.as_ref()
     }
@@ -948,11 +948,15 @@ async fn batch_gate_middleware(
     // charge or execute twice. Applications needing true replay must cache on
     // `extra.commitmentId` and short-circuit before the gate.
     if outcome.replay {
-        return (
+        let mut response = (
             StatusCode::CONFLICT,
             "payment authorization already used; retry is not cached by this gate",
         )
             .into_response();
+        if let Ok(settlement) = batch.replay_response(&outcome).await {
+            attach_settlement_header(&batch, &settlement, &mut response);
+        }
+        return response;
     }
 
     // A refund is a payment-control operation, not a paid request: the

@@ -80,6 +80,14 @@ async fn main() {
                     Ok(sigs) => tracing::info!(?sigs, "distributed settled funds"),
                     Err(e) => tracing::warn!(error = %e, "distribute failed"),
                 }
+                match batch.finalize_close(&channels).await {
+                    Ok(sigs) => tracing::info!(?sigs, "finalized due channel closes"),
+                    Err(e) => tracing::warn!(error = %e, "close finalization failed"),
+                }
+                match batch.reclaim(&channels).await {
+                    Ok(sigs) => tracing::info!(?sigs, "reclaimed channel rent"),
+                    Err(e) => tracing::warn!(error = %e, "rent reclaim failed"),
+                }
             }
         });
     }

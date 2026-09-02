@@ -196,8 +196,8 @@ authorizer — the voucher signer — by default) and is gated with `paid_upto_g
 `batch-settlement` is for high-throughput APIs: the client opens one channel and
 signs a cumulative voucher per request, which the gate (`paid_batch_get` /
 `paid_batch_post`) verifies off-chain and serves immediately. The operator
-redeems vouchers on-chain later in batches via `pay.x402_batch()` (`settle_batch`
-/ `distribute`). It also needs a `fee_payer_signer`.
+redeems vouchers on-chain later in batches via `pay.x402_batch()` (`claim`,
+`settle`, `finalize_close`, and `reclaim`). It also needs a `fee_payer_signer`.
 
 ## Client
 
