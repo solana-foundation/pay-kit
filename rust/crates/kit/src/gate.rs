@@ -976,36 +976,33 @@ async fn batch_gate_middleware(
     }
 
     let channel_id = outcome.channel_id.clone();
+    // `batch-settlement` commits the authorization before granting access. In
+    // particular, do not run the handler until the voucher watermark has been
+    // durably advanced: releasing an uncommitted outcome after a successful
+    // handler would allow the same voucher to authorize another execution.
+    let settlement = match batch.settle_payment(outcome).await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::error!(
+                channel = %channel_id,
+                error = %e,
+                "batch-settlement commit failed before the resource was served"
+            );
+            return (
+                StatusCode::BAD_GATEWAY,
+                "payment authorization could not be committed",
+            )
+                .into_response();
+        }
+    };
+
     req.extensions_mut().insert(Payment {
         amount: amount.clone(),
         protocol: Protocol::X402,
         reference: channel_id.clone(),
     });
     let mut resp = next.run(req).await;
-
-    // Charge only for work that succeeded. Dropping the outcome releases the
-    // channel without committing, so the client can retry the same voucher.
-    if !resp.status().is_success() {
-        tracing::debug!(
-            channel = %channel_id,
-            status = %resp.status(),
-            "handler failed; batch-settlement voucher left uncommitted"
-        );
-        return resp;
-    }
-
-    match batch.settle_payment(outcome).await {
-        Ok(response) => attach_settlement_header(&batch, &response, &mut resp),
-        Err(e) => {
-            // The resource was already served, so the response stands; the
-            // uncommitted charge is the server's loss, and worth an alert.
-            tracing::error!(
-                channel = %channel_id,
-                error = %e,
-                "batch-settlement commit failed after the resource was served"
-            );
-        }
-    }
+    attach_settlement_header(&batch, &settlement, &mut resp);
     resp
 }
 

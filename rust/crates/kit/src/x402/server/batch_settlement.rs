@@ -18,10 +18,10 @@
 //!
 //! 1. [`X402BatchSettlement::verify_payment`] runs before the resource handler
 //!    and is read-only: it checks the voucher and reserves the channel.
-//! 2. The route handler runs.
-//! 3. [`X402BatchSettlement::settle_payment`] runs after it succeeds, and only
-//!    then commits the watermark and broadcasts any deposit transaction. A
-//!    handler that fails leaves state untouched, so the client can retry.
+//! 2. [`X402BatchSettlement::settle_payment`] durably commits the watermark and
+//!    broadcasts any deposit transaction.
+//! 3. The route handler runs only after that commitment succeeds. This prevents
+//!    a successful handler execution from being replayed with the same voucher.
 //!
 //! Redemption is out of band: [`X402BatchSettlement::claim`] advances the
 //! onchain watermark from stored vouchers and [`X402BatchSettlement::settle`]
@@ -521,9 +521,8 @@ impl X402BatchSettlement {
     /// Verify a payment for a route priced at `amount`, without mutating state.
     ///
     /// On success the returned [`BatchOutcome`] holds the channel's in-flight
-    /// guard: keep it alive across the resource handler and hand it to
-    /// [`Self::settle_payment`], which commits the watermark only after the
-    /// handler has succeeded.
+    /// guard. Hand it to [`Self::settle_payment`] before serving the resource,
+    /// which atomically commits the voucher watermark before access is granted.
     ///
     /// A cumulative-amount mismatch fails with
     /// `invalid_batch_settlement_svm_cumulative_amount_mismatch`; answer it with
@@ -885,10 +884,10 @@ impl X402BatchSettlement {
         Ok(())
     }
 
-    // ── Settle (after the resource handler) ──
+    // ── Commit (before the resource handler) ──
 
-    /// Commit a verified payment. Call only after the resource handler has
-    /// succeeded — this is the step that charges the client.
+    /// Commit a verified payment before serving the resource. This advances the
+    /// voucher watermark, making the authorization non-replayable.
     pub async fn settle_payment(
         &self,
         outcome: BatchOutcome,
