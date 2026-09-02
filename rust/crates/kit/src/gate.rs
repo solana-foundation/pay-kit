@@ -1065,11 +1065,12 @@ async fn batch_gate_middleware(
                 error = %e,
                 "batch-settlement authorization could not be released after a failed handler"
             );
-            // The reservation is still live, so serving another request on it
-            // would run the handler twice. Say so, and let its lease expire.
+            // The reservation stands, and an unreleased one is never taken
+            // over — serving another request on it would run the handler
+            // twice. The client is uncharged but this voucher is spent.
             return (
                 StatusCode::BAD_GATEWAY,
-                "payment authorization could not be released; retry shortly",
+                "payment authorization could not be released; this voucher cannot be reused",
             )
                 .into_response();
         }

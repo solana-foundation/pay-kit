@@ -649,7 +649,9 @@ pub struct ProcessedUse {
 // for retry, a successful handler runs at most once, and a retry after a lost
 // response returns the stored result. That needs three durable stages, because
 // a reservation alone cannot tell a crash *before* the handler ran from a crash
-// *after* it succeeded.
+// *after* it succeeded. What it also cannot tell is a crash *during* the
+// handler, so a reservation nobody reported an outcome for is terminal rather
+// than reclaimable — see `BatchReservation::Abandoned`.
 //
 // The stages reuse the session records rather than adding a parallel ledger:
 // `pending_deliveries` is the reservation (identity plus lease, as in
@@ -685,6 +687,21 @@ pub enum BatchReservation {
     Committed,
     /// The same authorization id was presented by a different request.
     Conflict,
+    /// A reservation outlived its lease without reporting either outcome, so
+    /// whether its handler ran is unknown.
+    ///
+    /// The reservation is taken immediately before the handler is invoked, so
+    /// an unreported one means the handler may well have run — a process that
+    /// crashed between returning and marking success, or one still running
+    /// past its lease. Serving it again would execute the same authorization
+    /// twice, which the scheme forbids outright, so it is never reclaimed.
+    ///
+    /// This is deliberately terminal for that authorization: the client cannot
+    /// reuse the voucher, and because the watermark never advanced it cannot
+    /// step past it either, so recovery is a new channel. That liveness cost
+    /// falls only on a crashed or overrunning request, and it is the price of
+    /// never serving a paid request twice.
+    Abandoned,
 }
 
 impl ChannelState {
@@ -732,9 +749,7 @@ impl ChannelState {
         } else if pending.expires_at > now {
             BatchReservation::InProgress
         } else {
-            // The prior owner is presumed gone and its handler never reported
-            // success, so this authorization is reservable again.
-            BatchReservation::Reserved
+            BatchReservation::Abandoned
         }
     }
 
@@ -768,6 +783,10 @@ impl ChannelState {
     /// [`Self::commit_authorization`]. Call this inside a
     /// [`ChannelStore::update_channel`] transition so the decision and the
     /// record are one atomic step.
+    ///
+    /// Only an authorization with no record at all is reservable. An existing
+    /// reservation is never taken over, however long its lease has been
+    /// dead — see [`BatchReservation::Abandoned`].
     pub fn reserve_authorization(
         &mut self,
         authorization_id: &str,
@@ -782,20 +801,16 @@ impl ChannelState {
         }
         self.prune_authorizations(now);
         self.next_delivery_sequence = self.next_delivery_sequence.saturating_add(1);
-        let reservation = PendingDelivery {
+        self.pending_deliveries.push(PendingDelivery {
             delivery_id: authorization_id.to_string(),
             amount,
             sequence: self.next_delivery_sequence,
+            // Past this the reservation is suspect rather than free: a retry is
+            // refused instead of taking it over.
             expires_at: now.saturating_add(lease.as_secs() as i64),
             request_fingerprint: Some(request_fingerprint.to_string()),
             handler_succeeded: false,
-        };
-        // A reclaimed dead lease is replaced, so the new owner's lease is the
-        // one a concurrent replica sees.
-        match self.pending_index(authorization_id) {
-            Some(index) => self.pending_deliveries[index] = reservation,
-            None => self.pending_deliveries.push(reservation),
-        }
+        });
         BatchReservation::Reserved
     }
 
@@ -915,14 +930,16 @@ impl ChannelState {
         Ok(())
     }
 
-    /// Drop abandoned reservations and committed records past their retention,
-    /// then bound the committed tail to [`MAX_COMMITTED_AUTHORIZATIONS`].
+    /// Drop committed records past their retention, then bound the committed
+    /// tail to [`MAX_COMMITTED_AUTHORIZATIONS`].
     ///
-    /// A reservation whose handler succeeded is never dropped: it is the only
-    /// record that a request was served but not yet charged.
+    /// Reservations are never dropped. A reservation is removed only by the
+    /// request that owns it, releasing or committing it; anything left behind
+    /// is the record that a handler may have run without reporting, and
+    /// dropping it would make that authorization reservable — and servable —
+    /// a second time. They accumulate one per crashed or overrunning request,
+    /// which is bounded by how often that happens rather than by traffic.
     pub fn prune_authorizations(&mut self, now: i64) {
-        self.pending_deliveries
-            .retain(|entry| entry.handler_succeeded || entry.expires_at > now);
         self.committed_deliveries
             .retain(|entry| entry.retain_until == 0 || entry.retain_until > now);
         if self.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
@@ -2081,6 +2098,33 @@ mod tests {
         );
         // Releasing it would let the same voucher serve twice.
         assert!(state.release_authorization("access:c1:1000", "fp").is_err());
+    }
+
+    /// A reservation nobody reported an outcome for is terminal. The handler
+    /// may have run, and the scheme forbids serving one authorization twice.
+    #[test]
+    fn an_abandoned_reservation_is_never_served_again() {
+        let mut state = make_state("c1", 10_000);
+        assert_eq!(
+            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100),
+            BatchReservation::Reserved
+        );
+
+        // Its owner crashed mid-request: no release, no success marker.
+        let after_lease = 100 + LEASE.as_secs() as i64 + 1;
+        assert_eq!(
+            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, after_lease),
+            BatchReservation::Abandoned,
+            "an unreported reservation must never be taken over"
+        );
+
+        // Pruning must not launder it into a fresh reservation either.
+        state.prune_authorizations(after_lease);
+        assert_eq!(
+            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, after_lease),
+            BatchReservation::Abandoned
+        );
+        assert_eq!(state.cumulative, 0, "and it is never charged");
     }
 
     /// A retry after a lost response returns the original result rather than

@@ -1075,6 +1075,25 @@ impl X402BatchSettlement {
                     authorization.id
                 ),
             )),
+            // A reservation that never reported an outcome may have served its
+            // request already, so this voucher can never be served again. The
+            // channel is stuck at this cumulative and the client's recovery is
+            // a new one, which is worth an operator's attention.
+            BatchReservation::Abandoned => {
+                tracing::error!(
+                    channel = %outcome.channel_id,
+                    authorization = %authorization.id,
+                    "authorization was abandoned mid-request; refusing to serve it twice"
+                );
+                Err(batch_err(
+                    codes::INVALID_CHANNEL_STATE,
+                    format!(
+                        "authorization {} was abandoned while it may have been served; \
+                         open a new channel",
+                        authorization.id
+                    ),
+                ))
+            }
         }
     }
 
