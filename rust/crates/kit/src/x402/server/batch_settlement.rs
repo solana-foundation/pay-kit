@@ -1046,15 +1046,20 @@ impl X402BatchSettlement {
         header: &str,
         amount: &str,
     ) -> Result<BatchAccess, Error> {
-        // Reconcile before verifying: the stored close state is what
-        // `verify_payment` refuses a force-closed channel on.
-        if let Some(channel_id) = self.channel_id_for_header(header) {
-            self.reconcile_channel(&channel_id).await?;
-        }
         let outcome = self.verify_payment(header, amount).await?;
         let Some(authorization) = outcome.authorization.clone() else {
             return Ok(BatchAccess::Control(outcome));
         };
+        // Only now, holding a payload this channel's own signer authorized, is
+        // an RPC worth spending: reconciling first would let any well-formed
+        // header pull an account fetch out of the operator, on the one path
+        // this scheme otherwise keeps free of RPC entirely.
+        //
+        // Verification read the pre-reconciliation snapshot, which is safe in
+        // one direction only — a deposit ceiling can grow but never shrink, so
+        // a stale one is conservative — while a channel that is closing or gone
+        // is refused by the reconciliation itself.
+        self.reconcile_channel(&outcome.channel_id).await?;
         // The watermark already stands at this voucher, so the request it pays
         // for was charged and served. Answer it as a replay even if the cached
         // record has since aged out — never as a fresh serve.
