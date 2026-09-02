@@ -20,7 +20,7 @@ pub struct CurrencyConfig {
     pub token_program: Option<String>,
 }
 
-pub use batch_settlement::{BatchConfig, BatchOutcome, X402BatchSettlement};
+pub use batch_settlement::{BatchAccess, BatchConfig, BatchOutcome, X402BatchSettlement};
 pub use exact::{
     check_network_blockhash, Config, ExactOptions, VerifiedExactPayment, LOCALNET_NETWORK,
     SURFPOOL_BLOCKHASH_PREFIX, X402,

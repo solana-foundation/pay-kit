@@ -859,6 +859,8 @@ impl<S: ChannelStore> SessionServer<S> {
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+            pending_setup: None,
+            onchain_checked_at: 0,
             lifecycle: Some(ChannelLifecycle {
                 owner: self.config.operator.clone(),
                 close_after: now_ms.saturating_add(u64::from(effective_idle_timeout) * 1_000),
@@ -1432,6 +1434,12 @@ impl<S: ChannelStore> SessionServer<S> {
                             amount,
                             sequence,
                             expires_at,
+                            // A metered delivery is bound by its own
+                            // `deliveryId` and committed by the client's
+                            // voucher, so it carries no request digest and no
+                            // handler stage.
+                            request_fingerprint: None,
+                            handler_succeeded: false,
                         });
 
                         *directive_out.lock().unwrap() = Some(MeteringDirective {
@@ -1627,6 +1635,12 @@ impl<S: ChannelStore> SessionServer<S> {
                             amount: actual_amount,
                             cumulative: new_cumulative,
                             voucher_signature: signature,
+                            // A commit replay is answered by rebuilding the
+                            // receipt from this record, so there is no stored
+                            // response and no retention clock to run.
+                            request_fingerprint: None,
+                            settlement_response: None,
+                            retain_until: 0,
                         });
                         *commit_outcome.lock().unwrap() =
                             Some((actual_amount, new_cumulative, CommitStatus::Committed));
@@ -2472,6 +2486,8 @@ mod tests {
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+            pending_setup: None,
+            onchain_checked_at: 0,
             lifecycle: None,
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
@@ -4133,6 +4149,8 @@ mod tests {
             amount: 10,
             sequence: 1,
             expires_at: 1,
+            request_fingerprint: None,
+            handler_succeeded: false,
         });
         let expired_server = seeded_server(config(VoucherSigner::Client), expired).await;
         assert!(expired_server

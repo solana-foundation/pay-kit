@@ -362,6 +362,9 @@ impl ChargeReplayStore {
 // ── Channel store ──
 
 /// A delivery reserved by the server but not yet committed by the client.
+///
+/// Also carries an x402 `batch-settlement` payment authorization between its
+/// reservation and its commitment — see [`ChannelState::reserve_authorization`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingDelivery {
     #[serde(rename = "deliveryId")]
@@ -370,8 +373,28 @@ pub struct PendingDelivery {
     pub sequence: u64,
     #[serde(rename = "expiresAt")]
     pub expires_at: i64,
+
+    /// Digest of the request that owns this reservation, when the flow binds
+    /// one. A presentation of the same id under a different digest is a
+    /// different request reusing the reservation, and is refused.
+    #[serde(
+        default,
+        rename = "requestFingerprint",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub request_fingerprint: Option<String>,
+
+    /// True once the resource handler for this authorization returned success.
+    ///
+    /// This is the crash boundary: a retry that observes it MUST finish
+    /// commitment and MUST NOT run the handler again, however long ago the
+    /// lease in `expires_at` ran out.
+    #[serde(default, rename = "handlerSucceeded")]
+    pub handler_succeeded: bool,
 }
 
+/// A committed delivery, retained so an exact retry can be answered without
+/// charging or serving twice.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommittedDelivery {
     #[serde(rename = "deliveryId")]
@@ -380,6 +403,59 @@ pub struct CommittedDelivery {
     pub cumulative: u64,
     #[serde(rename = "voucherSignature")]
     pub voucher_signature: String,
+
+    /// Digest of the request this record was committed for; see
+    /// [`PendingDelivery::request_fingerprint`].
+    #[serde(
+        default,
+        rename = "requestFingerprint",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub request_fingerprint: Option<String>,
+
+    /// The exact protocol response returned when this authorization committed.
+    ///
+    /// Stored so a retry after a lost HTTP response gets the original result —
+    /// its real charged amount and channel snapshot — rather than a synthesized
+    /// one. Held as opaque JSON so this protocol-neutral record does not depend
+    /// on any one scheme's response type.
+    #[serde(
+        default,
+        rename = "settlementResponse",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub settlement_response: Option<serde_json::Value>,
+
+    /// Unix seconds after which this record may be dropped. `0` for records
+    /// written before retention was tracked; those are kept.
+    #[serde(default, rename = "retainUntil")]
+    pub retain_until: i64,
+}
+
+/// A setup transaction the server has validated and taken responsibility for,
+/// but not yet broadcast and confirmed.
+///
+/// An initial deposit has no onchain channel to reserve against, so this is the
+/// durable record that a channel is being opened — keyed, like a top-up, by the
+/// payer's signature over the setup transaction, so one signed transaction can
+/// never be credited twice.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingSetup {
+    /// The channel payer's base58 signature over the setup transaction.
+    #[serde(rename = "payerSignature")]
+    pub payer_signature: String,
+
+    /// Escrow the transaction adds, in atomic units.
+    pub deposit: u64,
+
+    /// Whether this transaction creates the channel (`open`) rather than
+    /// topping up an existing one (`top_up`).
+    #[serde(rename = "opensChannel")]
+    pub opens_channel: bool,
+
+    /// Unix seconds after which an abandoned pending setup may be reclaimed.
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
 }
 
 /// Durable lifecycle scheduling metadata for a payment channel.
@@ -521,6 +597,23 @@ pub struct ChannelState {
     #[serde(default)]
     pub committed_deliveries: Vec<CommittedDelivery>,
 
+    /// A validated setup transaction awaiting broadcast and confirmation.
+    ///
+    /// Present between the moment the server takes responsibility for a client
+    /// `open`/`top_up` and the moment the confirmed channel is recorded. While
+    /// an `open` is pending the record holds no escrow yet, so it must not
+    /// authorize anything.
+    #[serde(default)]
+    pub pending_setup: Option<PendingSetup>,
+
+    /// Unix seconds of the last reconciliation against confirmed onchain state.
+    ///
+    /// A scheme that must confirm the channel is still `Open` before accepting
+    /// an authorization uses this to decide whether its snapshot is fresh
+    /// enough to trust. `0` means never reconciled.
+    #[serde(default)]
+    pub onchain_checked_at: u64,
+
     /// Store-backed idle-close deadline.
     ///
     /// The Serde default keeps existing persisted channel records readable.
@@ -548,6 +641,299 @@ pub struct ProcessedUse {
     pub idempotency_key: String,
     pub cumulative: u64,
     pub voucher_signature: String,
+}
+
+// ── Durable payment authorizations ──
+//
+// An authorization must have exactly one outcome: a failed handler releases it
+// for retry, a successful handler runs at most once, and a retry after a lost
+// response returns the stored result. That needs three durable stages, because
+// a reservation alone cannot tell a crash *before* the handler ran from a crash
+// *after* it succeeded.
+//
+// The stages reuse the session records rather than adding a parallel ledger:
+// `pending_deliveries` is the reservation (identity plus lease, as in
+// `mpp::server::session::SessionServer::begin_delivery`),
+// `committed_deliveries` is the completed record (as in `process_commit`), and
+// `PendingDelivery::handler_succeeded` is the one stage added between them.
+
+/// Most committed authorizations retained per channel.
+///
+/// A long-lived channel serves far more requests than any client will retry, so
+/// the tail is bounded. Dropping a record only costs the cached response: the
+/// watermark rule still refuses the stale voucher behind it, so an evicted
+/// authorization can never be served a second time.
+pub const MAX_COMMITTED_AUTHORIZATIONS: usize = 64;
+
+/// Outcome of [`ChannelState::reserve_authorization`].
+///
+/// Mirrors [`ChargeReservation`]: only the caller that receives
+/// [`Self::Reserved`] owns the authorization and may run the handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchReservation {
+    /// This caller now owns the authorization: run the handler exactly once,
+    /// then either release it or commit it.
+    Reserved,
+    /// A live reservation for this authorization is owned by another in-flight
+    /// request. Do not run the handler; the client may retry shortly.
+    InProgress,
+    /// An earlier attempt's handler already succeeded. Finish commitment and
+    /// return its result; never run the handler again.
+    HandlerSucceeded,
+    /// Already committed. Answer with the response stored on the record —
+    /// see [`ChannelState::committed_authorization`].
+    Committed,
+    /// The same authorization id was presented by a different request.
+    Conflict,
+}
+
+impl ChannelState {
+    /// The committed record for `authorization_id`, carrying the response that
+    /// answered it.
+    pub fn committed_authorization(&self, authorization_id: &str) -> Option<&CommittedDelivery> {
+        self.committed_deliveries
+            .iter()
+            .find(|entry| entry.delivery_id == authorization_id)
+    }
+
+    fn pending_index(&self, authorization_id: &str) -> Option<usize> {
+        self.pending_deliveries
+            .iter()
+            .position(|entry| entry.delivery_id == authorization_id)
+    }
+
+    /// Classify `authorization_id` without changing anything.
+    ///
+    /// `now` is unix seconds. A record whose fingerprint disagrees with
+    /// `request_fingerprint` is a different request reusing the id, and is
+    /// reported as [`BatchReservation::Conflict`] rather than served.
+    pub fn classify_authorization(
+        &self,
+        authorization_id: &str,
+        request_fingerprint: &str,
+        now: i64,
+    ) -> BatchReservation {
+        if let Some(committed) = self.committed_authorization(authorization_id) {
+            if committed.request_fingerprint.as_deref() != Some(request_fingerprint) {
+                return BatchReservation::Conflict;
+            }
+            return BatchReservation::Committed;
+        }
+        let Some(index) = self.pending_index(authorization_id) else {
+            return BatchReservation::Reserved;
+        };
+        let pending = &self.pending_deliveries[index];
+        if pending.request_fingerprint.as_deref() != Some(request_fingerprint) {
+            BatchReservation::Conflict
+        } else if pending.handler_succeeded {
+            // A succeeded handler outranks the lease. The work is already done;
+            // the only safe continuation is to finish committing it.
+            BatchReservation::HandlerSucceeded
+        } else if pending.expires_at > now {
+            BatchReservation::InProgress
+        } else {
+            // The prior owner is presumed gone and its handler never reported
+            // success, so this authorization is reservable again.
+            BatchReservation::Reserved
+        }
+    }
+
+    /// The index of the reservation `request_fingerprint` owns, erroring when
+    /// another request holds it.
+    fn owned_pending_index(
+        &self,
+        authorization_id: &str,
+        request_fingerprint: &str,
+    ) -> Result<Option<usize>, StoreError> {
+        let Some(index) = self.pending_index(authorization_id) else {
+            return Ok(None);
+        };
+        if self.pending_deliveries[index]
+            .request_fingerprint
+            .as_deref()
+            != Some(request_fingerprint)
+        {
+            return Err(StoreError::Internal(format!(
+                "authorization {authorization_id} is reserved by a different request"
+            )));
+        }
+        Ok(Some(index))
+    }
+
+    /// Reserve `authorization_id` for this request, or classify the record that
+    /// already holds it.
+    ///
+    /// On [`BatchReservation::Reserved`] the caller owns the authorization and
+    /// MUST eventually call [`Self::release_authorization`] or
+    /// [`Self::commit_authorization`]. Call this inside a
+    /// [`ChannelStore::update_channel`] transition so the decision and the
+    /// record are one atomic step.
+    pub fn reserve_authorization(
+        &mut self,
+        authorization_id: &str,
+        request_fingerprint: &str,
+        amount: u64,
+        lease: Duration,
+        now: i64,
+    ) -> BatchReservation {
+        let outcome = self.classify_authorization(authorization_id, request_fingerprint, now);
+        if outcome != BatchReservation::Reserved {
+            return outcome;
+        }
+        self.prune_authorizations(now);
+        self.next_delivery_sequence = self.next_delivery_sequence.saturating_add(1);
+        let reservation = PendingDelivery {
+            delivery_id: authorization_id.to_string(),
+            amount,
+            sequence: self.next_delivery_sequence,
+            expires_at: now.saturating_add(lease.as_secs() as i64),
+            request_fingerprint: Some(request_fingerprint.to_string()),
+            handler_succeeded: false,
+        };
+        // A reclaimed dead lease is replaced, so the new owner's lease is the
+        // one a concurrent replica sees.
+        match self.pending_index(authorization_id) {
+            Some(index) => self.pending_deliveries[index] = reservation,
+            None => self.pending_deliveries.push(reservation),
+        }
+        BatchReservation::Reserved
+    }
+
+    /// Record that the resource handler for `authorization_id` succeeded.
+    ///
+    /// This is the crash boundary: after it, no retry may run the handler
+    /// again, only finish commitment.
+    pub fn mark_authorization_handler_succeeded(
+        &mut self,
+        authorization_id: &str,
+        request_fingerprint: &str,
+    ) -> Result<(), StoreError> {
+        // Already committed: the handler ran and its result is durable.
+        if self.committed_authorization(authorization_id).is_some() {
+            return Ok(());
+        }
+        let index = self
+            .owned_pending_index(authorization_id, request_fingerprint)?
+            .ok_or_else(|| {
+                StoreError::Internal(format!(
+                    "authorization {authorization_id} is no longer reserved"
+                ))
+            })?;
+        self.pending_deliveries[index].handler_succeeded = true;
+        Ok(())
+    }
+
+    /// Release the reservation on `authorization_id` after a handler failure,
+    /// so the same authorization can be presented again.
+    ///
+    /// Idempotent. A reservation whose handler already succeeded is never
+    /// released — that would let the same authorization run the handler twice.
+    pub fn release_authorization(
+        &mut self,
+        authorization_id: &str,
+        request_fingerprint: &str,
+    ) -> Result<(), StoreError> {
+        let Some(index) = self.owned_pending_index(authorization_id, request_fingerprint)? else {
+            return Ok(());
+        };
+        if self.pending_deliveries[index].handler_succeeded {
+            return Err(StoreError::Internal(format!(
+                "authorization {authorization_id} already served its handler"
+            )));
+        }
+        self.pending_deliveries.remove(index);
+        Ok(())
+    }
+
+    /// Commit `authorization_id`: advance the voucher watermark and store the
+    /// response that answered the request, in one transition.
+    ///
+    /// `response` is called on the committed state, so the stored response can
+    /// carry the snapshot the client is being told about.
+    ///
+    /// Idempotent — committing an already-committed authorization leaves the
+    /// stored response in place, so a retried transition (a CAS store re-running
+    /// its updater) cannot charge twice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_authorization(
+        &mut self,
+        authorization_id: &str,
+        request_fingerprint: &str,
+        cumulative: u64,
+        voucher_signature: &str,
+        voucher_expires_at: i64,
+        now: i64,
+        response: impl FnOnce(&Self) -> Option<serde_json::Value>,
+    ) -> Result<(), StoreError> {
+        if let Some(committed) = self.committed_authorization(authorization_id) {
+            if committed.request_fingerprint.as_deref() != Some(request_fingerprint) {
+                return Err(StoreError::Internal(format!(
+                    "authorization {authorization_id} was committed by a different request"
+                )));
+            }
+            return Ok(());
+        }
+        let index = self
+            .owned_pending_index(authorization_id, request_fingerprint)?
+            .ok_or_else(|| {
+                StoreError::Internal(format!(
+                    "authorization {authorization_id} is no longer reserved"
+                ))
+            })?;
+        if cumulative < self.cumulative {
+            return Err(StoreError::Internal(format!(
+                "authorization {authorization_id} would lower the watermark from {} to {cumulative}",
+                self.cumulative
+            )));
+        }
+        let charged = cumulative - self.cumulative;
+        self.pending_deliveries.remove(index);
+        self.cumulative = cumulative;
+        self.spent_amount = self.spent_amount.max(cumulative);
+        self.highest_voucher_signature = Some(voucher_signature.to_string());
+        self.highest_voucher_expires_at = Some(voucher_expires_at);
+        self.committed_deliveries.push(CommittedDelivery {
+            delivery_id: authorization_id.to_string(),
+            amount: charged,
+            cumulative,
+            voucher_signature: voucher_signature.to_string(),
+            request_fingerprint: Some(request_fingerprint.to_string()),
+            settlement_response: None,
+            retain_until: voucher_expires_at
+                .max(now)
+                .saturating_add(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64),
+        });
+        self.prune_authorizations(now);
+        let stored = response(self);
+        if let Some(index) = self
+            .committed_deliveries
+            .iter()
+            .position(|entry| entry.delivery_id == authorization_id)
+        {
+            self.committed_deliveries[index].settlement_response = stored;
+        }
+        Ok(())
+    }
+
+    /// Drop abandoned reservations and committed records past their retention,
+    /// then bound the committed tail to [`MAX_COMMITTED_AUTHORIZATIONS`].
+    ///
+    /// A reservation whose handler succeeded is never dropped: it is the only
+    /// record that a request was served but not yet charged.
+    pub fn prune_authorizations(&mut self, now: i64) {
+        self.pending_deliveries
+            .retain(|entry| entry.handler_succeeded || entry.expires_at > now);
+        self.committed_deliveries
+            .retain(|entry| entry.retain_until == 0 || entry.retain_until > now);
+        if self.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
+            // The newest records are the ones a client could still be retrying,
+            // and `cumulative` is monotonic per channel, so it orders them.
+            let excess = self.committed_deliveries.len() - MAX_COMMITTED_AUTHORIZATIONS;
+            self.committed_deliveries
+                .sort_by_key(|entry| entry.cumulative);
+            self.committed_deliveries.drain(..excess);
+        }
+    }
 }
 
 /// Async store for channel state with compare-and-swap watermark advancement.
@@ -1642,10 +2028,142 @@ mod tests {
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
             committed_deliveries: vec![],
+            pending_setup: None,
+            onchain_checked_at: 0,
             lifecycle: None,
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
         }
+    }
+
+    const LEASE: Duration = CHARGE_RESERVATION_LEASE;
+
+    /// A handler failure releases the authorization, and the same request may
+    /// then reserve it again — the retry the client is entitled to.
+    #[test]
+    fn a_released_authorization_is_reservable_again() {
+        let mut state = make_state("c1", 10_000);
+        let reserve = |state: &mut ChannelState| {
+            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100)
+        };
+        assert_eq!(reserve(&mut state), BatchReservation::Reserved);
+        // A second attempt while the first is live must not run the handler.
+        assert_eq!(reserve(&mut state), BatchReservation::InProgress);
+
+        state.release_authorization("access:c1:1000", "fp").unwrap();
+        assert_eq!(reserve(&mut state), BatchReservation::Reserved);
+        assert_eq!(
+            state.cumulative, 0,
+            "a released authorization charges nothing"
+        );
+    }
+
+    /// The crash boundary: once the handler has succeeded, no retry may run it
+    /// again — not even after the reservation lease has run out.
+    #[test]
+    fn a_succeeded_handler_outranks_its_lease() {
+        let mut state = make_state("c1", 10_000);
+        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        state
+            .mark_authorization_handler_succeeded("access:c1:1000", "fp")
+            .unwrap();
+
+        let after_lease = 100 + LEASE.as_secs() as i64 + 1;
+        assert_eq!(
+            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, after_lease),
+            BatchReservation::HandlerSucceeded
+        );
+        // And it is not swept as an abandoned reservation.
+        state.prune_authorizations(after_lease);
+        assert_eq!(
+            state.classify_authorization("access:c1:1000", "fp", after_lease),
+            BatchReservation::HandlerSucceeded
+        );
+        // Releasing it would let the same voucher serve twice.
+        assert!(state.release_authorization("access:c1:1000", "fp").is_err());
+    }
+
+    /// A retry after a lost response returns the original result rather than
+    /// re-serving or synthesizing a zero charge.
+    #[test]
+    fn a_committed_authorization_replays_its_stored_response() {
+        let mut state = make_state("c1", 10_000);
+        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        state
+            .mark_authorization_handler_succeeded("access:c1:1000", "fp")
+            .unwrap();
+        state
+            .commit_authorization("access:c1:1000", "fp", 1_000, "sig", 0, 100, |committed| {
+                Some(serde_json::json!({ "chargedAmount": committed.cumulative.to_string() }))
+            })
+            .unwrap();
+
+        assert_eq!(state.cumulative, 1_000);
+        assert_eq!(state.highest_voucher_signature.as_deref(), Some("sig"));
+        assert_eq!(
+            state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 200),
+            BatchReservation::Committed,
+            "a committed authorization must replay, not reserve"
+        );
+        let stored = state
+            .committed_authorization("access:c1:1000")
+            .and_then(|committed| committed.settlement_response.clone())
+            .expect("the response returned for it is stored");
+        assert_eq!(stored["chargedAmount"], serde_json::json!("1000"));
+        // Re-committing is a no-op: the watermark cannot advance twice.
+        state
+            .commit_authorization("access:c1:1000", "fp", 1_000, "sig", 0, 200, |_| None)
+            .unwrap();
+        assert_eq!(state.cumulative, 1_000);
+    }
+
+    /// The id names the authorization; the fingerprint proves it is the same
+    /// request. A different request presenting the same id is refused rather
+    /// than handed another request's reservation.
+    #[test]
+    fn a_different_request_cannot_reuse_an_authorization() {
+        let mut state = make_state("c1", 10_000);
+        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        assert_eq!(
+            state.reserve_authorization("access:c1:1000", "other", 1_000, LEASE, 100),
+            BatchReservation::Conflict
+        );
+        assert!(state
+            .mark_authorization_handler_succeeded("access:c1:1000", "other")
+            .is_err());
+        assert!(state
+            .release_authorization("access:c1:1000", "other")
+            .is_err());
+    }
+
+    /// Committed records are retained for retries, not forever.
+    #[test]
+    fn committed_authorizations_are_bounded_and_expire() {
+        let mut state = make_state("c1", 10_000_000);
+        for step in 1..=(MAX_COMMITTED_AUTHORIZATIONS as u64 + 10) {
+            let cumulative = step * 1_000;
+            let id = format!("access:c1:{cumulative}");
+            state.reserve_authorization(&id, "fp", 1_000, LEASE, 100);
+            state
+                .mark_authorization_handler_succeeded(&id, "fp")
+                .unwrap();
+            state
+                .commit_authorization(&id, "fp", cumulative, "sig", 0, 100, |_| None)
+                .unwrap();
+        }
+        assert_eq!(
+            state.committed_deliveries.len(),
+            MAX_COMMITTED_AUTHORIZATIONS
+        );
+        // The newest are kept: those are the ones a client could still retry.
+        let newest = (MAX_COMMITTED_AUTHORIZATIONS as u64 + 10) * 1_000;
+        assert!(state
+            .committed_authorization(&format!("access:c1:{newest}"))
+            .is_some());
+
+        let past_retention = 100 + DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64 + 1;
+        state.prune_authorizations(past_retention);
+        assert!(state.committed_deliveries.is_empty());
     }
 
     #[tokio::test]
