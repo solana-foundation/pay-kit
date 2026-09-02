@@ -701,7 +701,8 @@ impl X402BatchSettlement {
                 let token_program = self.token_program()?;
                 let receiver = pc::parse_pubkey(&requirements.pay_to)?;
                 self.check_mint_owner(&mint, &token_program)?;
-                self.check_settlement_accounts(&mint, &token_program, &receiver)?;
+                let payer = pc::parse_pubkey(&config.payer)?;
+                self.check_settlement_accounts(&mint, &token_program, &receiver, &payer)?;
                 let expectations = TransactionExpectations {
                     program_id: &program_id,
                     fee_payer: &self.fee_payer,
@@ -928,11 +929,16 @@ impl X402BatchSettlement {
         mint: &Pubkey,
         token_program: &Pubkey,
         receiver: &Pubkey,
+        payer: &Pubkey,
     ) -> Result<(), Error> {
         for (role, owner) in [
             ("payee", self.fee_payer),
             ("treasury", pc::treasury_owner()),
             ("receiver", *receiver),
+            // The payer's return ATA is a settlement destination too: a close
+            // pays `deposit - settled` back through it, so an unusable one
+            // would strand the remainder of an escrow this server sponsored.
+            ("payer", *payer),
         ] {
             let (ata, _) = pc::find_associated_token_address(&owner, mint, token_program);
             let reject = |detail: String| {
@@ -1000,6 +1006,10 @@ impl X402BatchSettlement {
             transaction,
             &expectations,
         )?;
+        // The close pays out through these accounts once the grace period
+        // ends; an unusable one would leave the escrow unrecoverable.
+        let payer = pc::parse_pubkey(&config.payer)?;
+        self.check_settlement_accounts(&self.mint()?, &token_program, &receiver, &payer)?;
         // The channel must still be closeable. `Closing` is accepted so a
         // retried refund is idempotent rather than a second transition.
         let channel = self.fetch_channel(channel_id)?;
@@ -2848,6 +2858,48 @@ mod tests {
                 .expect("verification itself succeeds"),
             BatchAccess::InProgress
         ));
+    }
+
+    /// Settlement accounts are decoded, not just probed for existence: a
+    /// frozen, wrong-mint or uninitialized ATA fails `distribute` only after
+    /// the escrow is locked and the request served.
+    #[test]
+    fn settlement_account_decoding_rejects_unusable_token_accounts() {
+        let mint = Pubkey::from([3u8; 32]);
+        let owner = Pubkey::from([4u8; 32]);
+        let account = |state: u8, len: usize| {
+            let mut data = vec![0u8; len];
+            if len >= 64 {
+                data[0..32].copy_from_slice(&mint.to_bytes());
+                data[32..64].copy_from_slice(&owner.to_bytes());
+            }
+            if len > 108 {
+                data[108] = state;
+            }
+            data
+        };
+
+        let live = decode_token_account(&account(TOKEN_ACCOUNT_INITIALIZED, TOKEN_ACCOUNT_LEN))
+            .expect("an initialized token account decodes");
+        assert_eq!(live.mint, mint);
+        assert_eq!(live.owner, owner);
+        assert_eq!(live.state, TOKEN_ACCOUNT_INITIALIZED);
+
+        // Token-2022 appends extensions after the same base layout.
+        assert!(decode_token_account(&account(TOKEN_ACCOUNT_INITIALIZED, 300)).is_some());
+
+        // A frozen account is decodable but unusable, and the caller rejects it
+        // on the state byte.
+        assert_eq!(
+            decode_token_account(&account(TOKEN_ACCOUNT_FROZEN, TOKEN_ACCOUNT_LEN))
+                .expect("a frozen account still decodes")
+                .state,
+            TOKEN_ACCOUNT_FROZEN
+        );
+
+        // An uninitialized (or non-token) account is too short to be one.
+        assert!(decode_token_account(&account(0, 0)).is_none());
+        assert!(decode_token_account(&account(0, TOKEN_ACCOUNT_LEN - 1)).is_none());
     }
 
     #[tokio::test]
