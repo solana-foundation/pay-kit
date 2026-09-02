@@ -1425,6 +1425,43 @@ mod tests {
     }
 
     #[test]
+    fn build_sol_instructions_preserves_zero_and_duplicate_split_legs() {
+        let signer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let splits = vec![
+            Split {
+                recipient: split_recipient.to_string(),
+                amount: "0".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            },
+            Split {
+                recipient: split_recipient.to_string(),
+                amount: "0".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            },
+        ];
+        let mut instructions = Vec::new();
+
+        build_sol_instructions(&mut instructions, &signer, &recipient, 1_000, None, &splits)
+            .unwrap();
+
+        assert_eq!(instructions.len(), 3);
+        assert_eq!(
+            instructions[1],
+            system_instruction::transfer(&signer, &split_recipient, 0)
+        );
+        assert_eq!(
+            instructions[2],
+            system_instruction::transfer(&signer, &split_recipient, 0)
+        );
+    }
+
+    #[test]
     fn build_sol_instructions_with_external_id_memo() {
         let signer = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();

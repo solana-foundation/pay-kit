@@ -576,10 +576,10 @@ impl Mpp {
             ));
         }
 
-        // Audit #21: validate the splits up-front so malformed entries
-        // (bad pubkey, unparseable/zero amount, overflowing aggregate,
-        // duplicate recipients, too many splits) fail at challenge issuance
-        // instead of at on-chain settlement.
+        // Validate malformed entries (bad pubkey, unparseable amount,
+        // overflowing aggregate, too many splits) at challenge issuance.
+        // Zero-value legs are intentional wire data. Repeated recipients
+        // remain distinct when their memos differ.
         crate::mpp::protocol::solana::validate_splits(&options.splits)?;
 
         // Audit #38: spec §9.5 forbids fee-payer-funded ATA creation for the
@@ -721,10 +721,7 @@ impl Mpp {
                 }
             }
 
-            // Audit #21: shared split validation with the
-            // `charge_with_options` path. Failure modes (bad pubkey,
-            // unparseable/zero amount, overflowing aggregate, duplicate
-            // recipients, too many splits) all surface here.
+            // Shared split validation with the `charge_with_options` path.
             if let Some(splits) = md.splits.as_deref() {
                 crate::mpp::protocol::solana::validate_splits(splits)?;
             }
@@ -5461,9 +5458,9 @@ mod tests {
     }
 
     #[test]
-    fn charge_with_options_rejects_zero_split_amount() {
+    fn charge_with_options_preserves_zero_split_amount() {
         let mpp = test_mpp();
-        let err = mpp
+        let challenge = mpp
             .charge_with_options(
                 "1.00",
                 ChargeOptions {
@@ -5471,29 +5468,33 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("zero split amount should be rejected");
-        assert!(format!("{err}").contains("greater than zero"), "got: {err}");
+            .expect("zero-value split should be preserved");
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        assert_eq!(request.method_details.unwrap()["splits"][0]["amount"], "0");
     }
 
     #[test]
-    fn charge_with_options_rejects_duplicate_split_recipient() {
+    fn charge_with_options_preserves_duplicate_split_recipient_with_distinct_memos() {
         let mpp = test_mpp();
         let dup = Pubkey::new_unique().to_string();
-        let err = mpp
+        let mut platform_fee = split_helper(&dup, "100");
+        platform_fee.memo = Some("platform fee".to_string());
+        let mut referral = split_helper(&dup, "200");
+        referral.memo = Some("referral".to_string());
+        let challenge = mpp
             .charge_with_options(
                 "1.00",
                 ChargeOptions {
-                    splits: vec![split_helper(&dup, "100"), split_helper(&dup, "200")],
+                    splits: vec![platform_fee, referral],
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("duplicate split recipient should be rejected");
-        assert!(
-            format!("{err}").contains("duplicate recipient"),
-            "got: {err}"
-        );
+            .expect("duplicate-recipient legs should be preserved");
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let splits = &request.method_details.unwrap()["splits"];
+        assert_eq!(splits.as_array().unwrap().len(), 2);
+        assert_eq!(splits[0]["recipient"], dup);
+        assert_eq!(splits[1]["recipient"], dup);
     }
 
     #[test]

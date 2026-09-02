@@ -659,13 +659,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_splits_rejects_zero_amount() {
+    fn validate_splits_accepts_zero_amount() {
         let splits = vec![split(&unique_pubkey(), "0")];
-        let err = validate_splits(&splits).err().expect("zero amount");
-        assert!(
-            format!("{err}").contains("amount must be greater than zero"),
-            "got: {err}"
-        );
+        validate_splits(&splits).expect("zero-value legs are preserved");
     }
 
     #[test]
@@ -680,12 +676,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_splits_rejects_duplicate_recipient() {
+    fn validate_splits_accepts_duplicate_recipient_with_distinct_memos() {
+        let dup = unique_pubkey();
+        let mut first = split(&dup, "100");
+        first.memo = Some("platform fee".to_string());
+        let mut second = split(&dup, "200");
+        second.memo = Some("referral".to_string());
+        let splits = vec![first, second];
+        validate_splits(&splits).expect("duplicate recipients are distinct legs");
+    }
+
+    #[test]
+    fn validate_splits_rejects_duplicate_recipient_and_memo() {
         let dup = unique_pubkey();
         let splits = vec![split(&dup, "100"), split(&dup, "200")];
-        let err = validate_splits(&splits).err().expect("duplicate recipient");
+        let err = validate_splits(&splits)
+            .err()
+            .expect("duplicate recipient and memo should be rejected");
         assert!(
-            format!("{err}").contains("duplicate recipient"),
+            format!("{err}").contains("duplicate recipient and memo"),
             "got: {err}"
         );
     }
@@ -1037,9 +1046,12 @@ pub const MAX_SPLITS: usize = 8;
 /// Checks (each callsite gets the same error shape):
 /// 1. `splits.len() <= MAX_SPLITS`.
 /// 2. Each `split.recipient` parses as a `Pubkey`.
-/// 3. Each `split.amount` parses as `u64` AND is non-zero.
+/// 3. Each `split.amount` parses as `u64`.
 /// 4. The aggregate sum fits in `u64` (`checked_sum_split_amounts` is `Some`).
-/// 5. No duplicate `recipient` across splits.
+///
+/// Zero-value legs and repeated recipients are valid. Each `(recipient,
+/// memo)` pair must be unique so a repeated recipient remains a distinct,
+/// identifiable payment leg; callers must not normalize or coalesce them.
 ///
 /// Application-level recipient allowlists are out of scope — an SDK
 /// shouldn't bake in domain-specific policy.
@@ -1052,26 +1064,20 @@ pub fn validate_splits(splits: &[Split]) -> Result<(), crate::mpp::error::Error>
         return Err(Error::TooManySplits);
     }
 
-    let mut seen_recipients: HashSet<&str> = HashSet::with_capacity(splits.len());
+    let mut seen_legs: HashSet<(&str, Option<&str>)> = HashSet::with_capacity(splits.len());
     for (idx, split) in splits.iter().enumerate() {
         solana_pubkey::Pubkey::from_str(&split.recipient).map_err(|e| {
             Error::InvalidConfig(format!("splits[{idx}]: invalid recipient pubkey: {e}"))
         })?;
-        let amount = split.amount.parse::<u64>().map_err(|_| {
+        split.amount.parse::<u64>().map_err(|_| {
             Error::InvalidConfig(format!(
                 "splits[{idx}]: amount `{}` is not a valid u64",
                 split.amount
             ))
         })?;
-        if amount == 0 {
+        if !seen_legs.insert((split.recipient.as_str(), split.memo.as_deref())) {
             return Err(Error::InvalidConfig(format!(
-                "splits[{idx}]: amount must be greater than zero"
-            )));
-        }
-        if !seen_recipients.insert(split.recipient.as_str()) {
-            return Err(Error::InvalidConfig(format!(
-                "splits[{idx}]: duplicate recipient `{}`",
-                split.recipient
+                "splits[{idx}]: duplicate recipient and memo"
             )));
         }
     }
