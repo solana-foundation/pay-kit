@@ -530,6 +530,12 @@ impl X402BatchSettlement {
     /// [`Self::corrective_challenge`] so the client can resynchronize.
     pub async fn verify_payment(&self, header: &str, amount: &str) -> Result<BatchOutcome, Error> {
         let envelope = self.parse_payment(header)?;
+        if envelope.x402_version != X402_VERSION_V2 {
+            return Err(batch_err(
+                codes::INVALID_CHANNEL_STATE,
+                "batch-settlement requires x402 version 2",
+            ));
+        }
         let requirements = self.requirements(amount)?;
         let payload = envelope.payload;
         let config = payload.channel_config().clone();
@@ -681,8 +687,13 @@ impl X402BatchSettlement {
             || accepted.amount != requirements.amount
             || accepted.asset != requirements.asset
             || accepted.pay_to != requirements.pay_to
+            || accepted.max_timeout_seconds != requirements.max_timeout_seconds
+            || accepted.extra.payment_flow != requirements.extra.payment_flow
             || accepted.extra.fee_payer != requirements.extra.fee_payer
-            || accepted.extra.withdraw_delay != requirements.extra.withdraw_delay;
+            || accepted.extra.receiver_authorizer != requirements.extra.receiver_authorizer
+            || accepted.extra.withdraw_delay != requirements.extra.withdraw_delay
+            || accepted.extra.token_program != requirements.extra.token_program
+            || accepted.extra.memo != requirements.extra.memo;
         if mismatched {
             return Err(batch_err(
                 codes::INVALID_CHANNEL_STATE,
