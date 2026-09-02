@@ -483,7 +483,16 @@ pub struct ChannelLifecycle {
 /// re-encode + CAS write would destroy them for every reader. Unknown fields
 /// at the same or an older version round-trip verbatim through
 /// [`ChannelState::extra`] instead.
-pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 added [`PendingDelivery::handler_succeeded`]. That field records
+/// that a paid request was served but not yet charged, and unlike a
+/// `ChannelState` field it has no `extra` to survive a version-1 writer's
+/// read-modify-write. Silently stripping it would turn a served authorization
+/// back into a reservable one and serve the same payment twice, so a
+/// version-1 writer must refuse these records instead — during a rolling
+/// deploy that means older replicas fail on records newer ones have written,
+/// which is the intended fail-closed direction.
+pub const CHANNEL_STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Persisted state of a payment channel, managed by the server.
 ///
