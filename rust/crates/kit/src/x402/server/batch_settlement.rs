@@ -1046,7 +1046,18 @@ impl X402BatchSettlement {
         header: &str,
         amount: &str,
     ) -> Result<BatchAccess, Error> {
-        let outcome = self.verify_payment(header, amount).await?;
+        let outcome = match self.verify_payment(header, amount).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // A channel the chain knows and this server does not. Rebuild
+                // the record and verify again rather than refuse a funded,
+                // open channel.
+                if !self.recover_channel(header, amount).await? {
+                    return Err(error);
+                }
+                self.verify_payment(header, amount).await?
+            }
+        };
         let Some(authorization) = outcome.authorization.clone() else {
             return Ok(BatchAccess::Control(outcome));
         };
@@ -1141,7 +1152,7 @@ impl X402BatchSettlement {
             }
         });
         let seed = matches!(outcome.payload, BatchPayload::Deposit { .. })
-            .then(|| self.seed_state(outcome));
+            .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
         let reservation = Arc::new(Mutex::new(BatchReservation::InProgress));
         let out = Arc::clone(&reservation);
         self.store
@@ -1282,7 +1293,15 @@ impl X402BatchSettlement {
                     .broadcast_client_transaction(&deposit.transaction)
                     .await?;
                 let channel = self.fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)?;
-                self.check_confirmed_channel(&outcome, &channel)?;
+                self.check_channel_bindings(
+                    &channel,
+                    outcome.payload.channel_config(),
+                    &outcome.requirements.pay_to,
+                    // The escrow must cover what this voucher authorizes: that
+                    // is what the program enforces at `settle`, and it stays
+                    // true when a retry re-confirms a deposit that landed.
+                    outcome.max_claimable,
+                )?;
                 (signature, deposit.amount.clone(), Some(channel))
             }
             _ => (String::new(), String::new(), None),
@@ -1368,6 +1387,100 @@ impl X402BatchSettlement {
                 "payload reserves no authorization",
             )
         })
+    }
+
+    /// Rebuild a channel record from confirmed onchain state when this server
+    /// has none, and report whether it created one.
+    ///
+    /// A server that lost its store — or a replica reading one that never held
+    /// this channel — would otherwise refuse every voucher for a channel that
+    /// is open and funded, leaving the payer's escrow to be recovered through a
+    /// forced close. The chain carries every immutable binding plus the settled
+    /// watermark, and that watermark is the most this server can honestly claim
+    /// to have charged: any voucher above it is unclaimable without the
+    /// signature that vanished with the store, so starting from it forfeits
+    /// nothing that was not already lost.
+    ///
+    /// The client's own voucher signature is checked before any RPC, so a
+    /// payload nobody signed cannot make this server read accounts. What the
+    /// rebuilt record cannot know is which requests were already served below
+    /// that watermark; a store loss is outside what the scheme's serve-once
+    /// guarantee can cover, and the corrective 402 that follows carries no
+    /// voucher proof, so the client resynchronizes from onchain state instead.
+    async fn recover_channel(&self, header: &str, amount: &str) -> Result<bool, Error> {
+        let Ok(envelope) = self.parse_payment(header) else {
+            return Ok(false);
+        };
+        // Only a steady-state voucher recovers: a deposit carries the `open`
+        // that would create the channel, and a refund reads the chain anyway.
+        let BatchPayload::Voucher {
+            channel_config,
+            voucher,
+        } = &envelope.payload
+        else {
+            return Ok(false);
+        };
+        let requirements = self.requirements(amount)?;
+        let program_id = self.program_id()?;
+        let Ok(channel_id) =
+            derive_channel_id(channel_config, &requirements.extra.fee_payer, &program_id)
+        else {
+            return Ok(false);
+        };
+        let channel_b58 = pc::pubkey_string(&channel_id);
+        if self
+            .store
+            .get_channel(&channel_b58)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        if check_voucher(voucher, channel_config, &channel_id).is_err() {
+            return Ok(false);
+        }
+        let Some(channel) = self.lookup_channel(&channel_id)? else {
+            return Ok(false);
+        };
+        // The deposit cap is left to verification, which reports it with the
+        // code the client acts on.
+        self.check_channel_bindings(&channel, channel_config, &requirements.pay_to, 0)?;
+        if channel.closure_started_at != 0 {
+            return Err(batch_err(
+                codes::INVALID_CLOSE_STATE,
+                format!("channel {channel_b58} is closing onchain"),
+            ));
+        }
+        let settled = channel.settlement.settled;
+        let deposit = channel.deposit;
+        let open_slot = channel.open_slot;
+        let now = now_unix();
+        let mut seed = self.seed_state(&channel_b58, channel_config);
+        seed.deposit = deposit;
+        seed.cumulative = settled;
+        seed.spent_amount = settled;
+        seed.settled_on_chain = settled;
+        seed.open_slot = Some(open_slot);
+        seed.onchain_checked_at = now;
+        self.store
+            .update_channel(
+                &channel_b58,
+                Box::new(move |current| {
+                    // Another replica may have rebuilt it first; its record is
+                    // no less authoritative than this one.
+                    Ok(current.unwrap_or(seed))
+                }),
+            )
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        tracing::info!(
+            channel = %channel_b58,
+            settled,
+            deposit,
+            "rebuilt an unknown channel record from confirmed onchain state"
+        );
+        Ok(true)
     }
 
     /// Refresh a channel record from confirmed onchain state before it
@@ -1616,12 +1729,18 @@ impl X402BatchSettlement {
 
     /// Re-read the confirmed channel and bind every immutable field to the
     /// payload and requirements before reporting settlement success.
-    fn check_confirmed_channel(
+    /// Bind every immutable field of an onchain channel to the payload and
+    /// requirements that claim it.
+    ///
+    /// `min_deposit` is the escrow the caller needs the channel to already
+    /// hold; pass `0` to check only the bindings.
+    fn check_channel_bindings(
         &self,
-        outcome: &BatchOutcome,
         channel: &Channel,
+        config: &BatchChannelConfig,
+        pay_to: &str,
+        min_deposit: u64,
     ) -> Result<(), Error> {
-        let config = outcome.payload.channel_config();
         let expect = |ok: bool, what: &str| -> Result<(), Error> {
             if ok {
                 Ok(())
@@ -1637,7 +1756,7 @@ impl X402BatchSettlement {
         // arithmetic ceiling computed before broadcast — is the property the
         // program enforces at `settle`, and it is the one that stays true when
         // a retry re-confirms a deposit that already landed.
-        expect(channel.deposit >= outcome.max_claimable, "deposit")?;
+        expect(channel.deposit >= min_deposit, "deposit")?;
         expect(
             pc::pubkey_string(&pc::from_address(&channel.payer)) == config.payer,
             "payer",
@@ -1663,7 +1782,7 @@ impl X402BatchSettlement {
         expect(channel.open_slot == config.open_slot, "open_slot")?;
         // The distribution is only committed as a hash, so it is checked by
         // rebuilding the single-recipient preimage the scheme requires.
-        let receiver = pc::parse_pubkey(&outcome.requirements.pay_to)?;
+        let receiver = pc::parse_pubkey(pay_to)?;
         let expected_hash = pc::distribution_hash(&pc::sole_recipient(&receiver));
         expect(channel.distribution_hash == expected_hash, "distribution")?;
         Ok(())
@@ -1674,7 +1793,7 @@ impl X402BatchSettlement {
     async fn upsert_channel(&self, outcome: &BatchOutcome, channel: &Channel) -> Result<(), Error> {
         let deposit = channel.deposit;
         let settled = channel.settlement.settled;
-        let seed = self.seed_state(outcome);
+        let seed = self.seed_state(&outcome.channel_id, outcome.payload.channel_config());
         let deposit_signature = outcome.deposit_signature.clone();
         self.store
             .update_channel(
@@ -1704,10 +1823,9 @@ impl X402BatchSettlement {
 
     /// A fresh channel record for this request's channel, holding no escrow and
     /// no accepted voucher.
-    fn seed_state(&self, outcome: &BatchOutcome) -> ChannelState {
-        let config = outcome.payload.channel_config();
+    fn seed_state(&self, channel_id: &str, config: &BatchChannelConfig) -> ChannelState {
         ChannelState {
-            channel_id: outcome.channel_id.clone(),
+            channel_id: channel_id.to_string(),
             authorized_signer: config.payer_authorizer.clone(),
             deposit: 0,
             cumulative: 0,
@@ -2882,6 +3000,93 @@ mod tests {
                 .expect("verification itself succeeds"),
             BatchAccess::InProgress
         ));
+    }
+
+    /// Every immutable field of a recovered channel is bound to the payload
+    /// that claims it. A channel this server did not sponsor, or one carrying
+    /// a distribution that pays someone else, must not become a usable record.
+    #[test]
+    fn recovering_a_channel_binds_it_to_the_payload_that_claims_it() {
+        use crate::core::payment_channels::generated::types::SettlementWatermarks;
+
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, _) = client(&fee_payer, &requirements);
+        let receiver = pc::parse_pubkey(&requirements.pay_to).unwrap();
+        let onchain = |mutate: &dyn Fn(&mut Channel)| {
+            let mut channel = Channel {
+                discriminator: 0,
+                version: 1,
+                bump: 0,
+                status: CHANNEL_STATUS_OPEN,
+                salt: config.salt.parse().unwrap(),
+                deposit: 5_000,
+                settlement: SettlementWatermarks {
+                    settled: 2_000,
+                    payout_watermark: 0,
+                },
+                closure_started_at: 0,
+                payer_withdrawn_at: 0,
+                grace_period: config.withdraw_delay,
+                distribution_hash: pc::distribution_hash(&pc::sole_recipient(&receiver)),
+                payer: pc::to_address(&pc::parse_pubkey(&config.payer).unwrap()),
+                payee: pc::to_address(&fee_payer),
+                authorized_signer: pc::to_address(
+                    &pc::parse_pubkey(&config.payer_authorizer).unwrap(),
+                ),
+                mint: pc::to_address(&pc::parse_pubkey(&config.token).unwrap()),
+                rent_payer: pc::to_address(&fee_payer),
+                open_slot: config.open_slot,
+            };
+            mutate(&mut channel);
+            channel
+        };
+        let check = |channel: &Channel, min_deposit: u64| {
+            handler.check_channel_bindings(channel, &config, &requirements.pay_to, min_deposit)
+        };
+
+        check(&onchain(&|_| {}), 0).expect("a matching channel recovers");
+
+        // A channel whose rent this server never fronted is not its channel to
+        // charge against, and neither is one it is not the payee of.
+        let stranger = pc::to_address(&Pubkey::from([9u8; 32]));
+        type Mutation<'a> = (&'a str, &'a dyn Fn(&mut Channel));
+        let cases: [Mutation; 9] = [
+            ("payee", &|c: &mut Channel| c.payee = stranger),
+            ("rent_payer", &|c: &mut Channel| c.rent_payer = stranger),
+            ("payer", &|c: &mut Channel| c.payer = stranger),
+            ("authorized_signer", &|c: &mut Channel| {
+                c.authorized_signer = stranger
+            }),
+            ("mint", &|c: &mut Channel| c.mint = stranger),
+            ("grace_period", &|c: &mut Channel| c.grace_period += 1),
+            ("open_slot", &|c: &mut Channel| c.open_slot += 1),
+            // The payout destination is only committed as a hash, so a channel
+            // that would pay someone else must be caught by rebuilding it.
+            ("distribution", &|c: &mut Channel| {
+                c.distribution_hash = [7u8; 32]
+            }),
+            ("status", &|c: &mut Channel| {
+                c.status = CHANNEL_STATUS_CLOSING
+            }),
+        ];
+        for (what, mutate) in cases {
+            let err = check(&onchain(mutate), 0)
+                .err()
+                .unwrap_or_else(|| panic!("{what} must not bind"));
+            assert_eq!(
+                crate::x402::protocol::schemes::batch_settlement::classify(&err.to_string()),
+                codes::INVALID_CHANNEL_STATE,
+                "{what}"
+            );
+        }
+
+        // `salt` is deliberately absent: it is a PDA seed, so an account at the
+        // address the caller derived can only have been opened with it.
+
+        // And the escrow must cover what the caller needs it to.
+        check(&onchain(&|_| {}), 5_000).expect("a deposit that exactly covers passes");
+        check(&onchain(&|_| {}), 5_001).expect_err("an escrow short of the need is refused");
     }
 
     /// Settlement accounts are decoded, not just probed for existence: a
