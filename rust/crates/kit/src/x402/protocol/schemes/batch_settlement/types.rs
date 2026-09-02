@@ -304,7 +304,11 @@ impl BatchDeposit {
 /// The client authorization carried in `PAYMENT-SIGNATURE.payload`: a tagged
 /// union on `type`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum BatchPayload {
     /// Open a channel or top up an existing one, and authorize this request.
     Deposit {
@@ -662,6 +666,8 @@ mod tests {
         };
         let json = serde_json::to_value(&deposit).unwrap();
         assert_eq!(json["type"], "deposit");
+        assert!(json.get("channelConfig").is_some());
+        assert!(json.get("channel_config").is_none());
         assert_eq!(json["deposit"]["amount"], "100000");
         assert_eq!(deposit.type_name(), "deposit");
         assert_eq!(
@@ -683,6 +689,7 @@ mod tests {
         };
         let json = serde_json::to_value(&refund).unwrap();
         assert_eq!(json["type"], "refund");
+        assert!(json.get("closeAuthorization").is_none());
         assert!(json.get("voucher").is_none());
         // A refund's voucher is a close hint, never an authorization to serve.
         assert!(refund.charge_voucher().is_none());
