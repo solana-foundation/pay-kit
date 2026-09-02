@@ -699,6 +699,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_splits_treats_empty_memo_as_absent() {
+        let dup = unique_pubkey();
+        let mut with_empty_memo = split(&dup, "200");
+        with_empty_memo.memo = Some(String::new());
+        let err = validate_splits(&[split(&dup, "100"), with_empty_memo])
+            .err()
+            .expect("empty memo must not create a distinct settlement leg");
+        assert!(format!("{err}").contains("duplicate recipient and memo"));
+    }
+
     // ── Confidential transfers: registry ──
 
     #[test]
@@ -1075,7 +1086,11 @@ pub fn validate_splits(splits: &[Split]) -> Result<(), crate::mpp::error::Error>
                 split.amount
             ))
         })?;
-        if !seen_legs.insert((split.recipient.as_str(), split.memo.as_deref())) {
+        // Settlement omits an empty memo from the instruction, so treat it as
+        // the same leg as no memo rather than accepting a challenge the
+        // settlement path cannot reproduce.
+        let memo = split.memo.as_deref().filter(|memo| !memo.is_empty());
+        if !seen_legs.insert((split.recipient.as_str(), memo)) {
             return Err(Error::InvalidConfig(format!(
                 "splits[{idx}]: duplicate recipient and memo"
             )));

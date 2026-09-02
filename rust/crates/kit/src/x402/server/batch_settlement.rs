@@ -907,7 +907,6 @@ impl X402BatchSettlement {
                     if state.is_some_and(|state| state.cumulative > channel.settlement.settled) {
                         self.claim(std::slice::from_ref(&outcome.channel_id))
                             .await?;
-                        channel = self.fetch_channel(&channel_id)?;
                     }
                     self.broadcast_client_transaction(transaction).await?
                 } else if channel.status == CHANNEL_STATUS_CLOSING {
@@ -945,7 +944,13 @@ impl X402BatchSettlement {
             }
             BatchPayload::Voucher { voucher, .. } => {
                 let state = self.commit_voucher(&outcome, voucher).await?;
-                Ok(self.accepted_response(&outcome, &state, String::new(), String::new()))
+                Ok(self.accepted_response(
+                    &outcome,
+                    &state,
+                    String::new(),
+                    String::new(),
+                    outcome.charged_amount,
+                ))
             }
             BatchPayload::Deposit {
                 voucher, deposit, ..
@@ -958,7 +963,13 @@ impl X402BatchSettlement {
                 self.check_confirmed_channel(&outcome, &channel)?;
                 self.upsert_channel(&outcome, &channel).await?;
                 let state = self.commit_voucher(&outcome, voucher).await?;
-                Ok(self.accepted_response(&outcome, &state, signature, deposit.amount.clone()))
+                Ok(self.accepted_response(
+                    &outcome,
+                    &state,
+                    signature,
+                    deposit.amount.clone(),
+                    outcome.charged_amount,
+                ))
             }
         }
     }
@@ -969,6 +980,7 @@ impl X402BatchSettlement {
         state: &ChannelState,
         transaction: String,
         amount: String,
+        charged_amount: u64,
     ) -> BatchSettlementResponse {
         BatchSettlementResponse {
             success: true,
@@ -979,7 +991,7 @@ impl X402BatchSettlement {
             amount,
             extra: Some(BatchSettlementExtra {
                 commitment_id: Some(format!("{}:{}", outcome.channel_id, outcome.max_claimable)),
-                charged_amount: Some(outcome.charged_amount.to_string()),
+                charged_amount: Some(charged_amount.to_string()),
                 channel_state: Some(self.snapshot(state)),
             }),
         }
@@ -996,7 +1008,13 @@ impl X402BatchSettlement {
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?
             .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "channel vanished"))?;
-        Ok(self.accepted_response(outcome, &state, String::new(), String::new()))
+        Ok(self.accepted_response(
+            outcome,
+            &state,
+            String::new(),
+            String::new(),
+            outcome.requirements.amount()?,
+        ))
     }
 
     /// Co-sign a client-supplied transaction as fee payer and broadcast it.
@@ -1326,6 +1344,13 @@ impl X402BatchSettlement {
         for channel_id in channel_ids {
             let channel = pc::parse_pubkey(channel_id)?;
             let onchain = self.fetch_channel(&channel)?;
+            // A close freezes the distributable watermark. Never pack a
+            // closing or terminal channel into a distribute batch: one
+            // program-level rejection would otherwise fail every neighbour in
+            // the atomic transaction.
+            if onchain.status != CHANNEL_STATUS_OPEN || onchain.closure_started_at != 0 {
+                continue;
+            }
             if onchain.settlement.settled <= onchain.settlement.payout_watermark {
                 continue;
             }
