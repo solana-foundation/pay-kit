@@ -1,8 +1,15 @@
+-- No `./` prefix on these patterns. Lua resolves the relative paths the
+-- same way either way, but the prefix leaks into `debug.getinfo().source`
+-- and coverage tooling keys its per-file stats off that string. LuaCov's
+-- pure-Lua hook strips a leading `./`; the C hook from `cluacov` does not,
+-- so a prefixed path makes every file show up twice in the report (once
+-- with real hit counts, once as a 0% "untested" entry discovered by the
+-- filesystem walk) and halves the reported total.
 package.path = table.concat({
-  './?.lua',
-  './?/init.lua',
-  './lua/?.lua',
-  './lua/?/init.lua',
+  '?.lua',
+  '?/init.lua',
+  'lua/?.lua',
+  'lua/?/init.lua',
   package.path,
 }, ';')
 

@@ -27,10 +27,10 @@ jobs:
           path: lua/lua_modules
           # Keep the dev toolchain separate from the runtime-only harness
           # cache: the latter does not contain luacheck or luacov.
-          key: ${{ runner.os }}-luarocks-dev-v3-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
-          restore-keys: ${{ runner.os }}-luarocks-dev-v3-
+          key: ${{ runner.os }}-luarocks-dev-v4-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-dev-v4-
 
-      - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec + lua-resty-openssl + cjson)
+      - name: Install dev rocks (luacheck + luacov + cluacov + luasocket + luasodium + luasec + lua-resty-openssl + cjson)
         if: steps.cache-rocks.outputs.cache-hit != 'true'
         working-directory: lua
         run: |
@@ -38,6 +38,12 @@ jobs:
           luarocks --lua-version=5.1 init --lua-versions 5.1 || true
           luarocks --lua-version=5.1 install --tree lua_modules luacheck
           luarocks --lua-version=5.1 install --tree lua_modules luacov
+          # LuaCov swaps its pure-Lua line hook for cluacov's C hook when the
+          # rock is present. The hook fires on every executed line and cannot
+          # be avoided (a debug hook is what stops LuaJIT from running compiled
+          # traces in the first place), so moving the per-line work out of Lua
+          # is where the wall-clock goes. Same stats, same report.
+          luarocks --lua-version=5.1 install --tree lua_modules cluacov
           luarocks --lua-version=5.1 install --tree lua_modules luasocket
           luarocks --lua-version=5.1 install --tree lua_modules luasodium
           luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
@@ -68,13 +74,11 @@ jobs:
           luacov
           ./scripts/check_coverage.sh ../luacov.report.out 90
 
-      # Codex PR #103 P3: the coverage gate excludes pay_kit/solana/ata
-      # because luacov disables LuaJIT trace recording and the on-curve check
-      # becomes ~100x slower under coverage. Run the suite a second time
-      # WITHOUT luacov so the protocol-critical ATA fixture spec
-      # (`ata.derive matches the Ruby reference for the USDC Token-2022 ATA`)
-      # is actually exercised. test_helper.lua skips it when luacov is loaded.
-      - name: Run protocol-critical ATA fixture suite without coverage
+      # This second run exercises the suite on the JIT path, which is the one
+      # downstream users actually run. luacov's line hook stops LuaJIT from
+      # running compiled traces, so a regression that only shows up with the
+      # trace compiler on would otherwise never surface.
+      - name: Run the suite on the JIT path, without coverage
         working-directory: lua
         run: |
           eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"

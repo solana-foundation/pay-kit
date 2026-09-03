@@ -350,6 +350,19 @@ function M.find_program_address(seeds, program_id)
   error('unable to find program address')
 end
 
+-- `derive` is a pure function of three base58 strings, and the bump search
+-- above costs roughly 18ms of pure-Lua modular arithmetic per call even
+-- with the LuaJIT trace compiler on. The gateway plugins re-derive the
+-- same recipient ATA on every request they verify, so memoize the result.
+--
+-- The cache key contains caller-supplied input, so the table is capped and
+-- dropped wholesale once it fills rather than grown without bound. Only
+-- successful derivations are stored: the byte-length validation below runs
+-- before the lookup, so malformed input keeps raising as it did before.
+local DERIVE_CACHE_LIMIT = 256
+local derive_cache = {}
+local derive_cache_entries = 0
+
 --- Derive the Associated Token Account address for the given owner / mint
 --- / token program. Mirrors `ruby/lib/mpp/methods/solana/associated_token.rb`
 --- and the Rust spine's `AssociatedToken::find_program_address`.
@@ -360,10 +373,22 @@ function M.derive(owner, mint, token_program)
   if #owner_bytes ~= 32 or #token_bytes ~= 32 or #mint_bytes ~= 32 then
     error('ATA derivation requires base58 inputs that decode to 32 bytes')
   end
+  -- `/` is outside the base58 alphabet, so the joined key is unambiguous.
+  local cache_key = owner .. '/' .. mint .. '/' .. token_program
+  local cached = derive_cache[cache_key]
+  if cached then
+    return cached
+  end
   local address, _bump = M.find_program_address(
     { owner_bytes, token_bytes, mint_bytes },
     'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
   )
+  if derive_cache_entries >= DERIVE_CACHE_LIMIT then
+    derive_cache = {}
+    derive_cache_entries = 0
+  end
+  derive_cache[cache_key] = address
+  derive_cache_entries = derive_cache_entries + 1
   return address
 end
 
