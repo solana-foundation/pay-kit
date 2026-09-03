@@ -976,6 +976,12 @@ impl X402BatchSettlement {
             if decoded.state == TOKEN_ACCOUNT_FROZEN {
                 return reject("is frozen".to_string());
             }
+            if let Some(extension) = decoded.unsupported_extension {
+                return reject(format!(
+                    "carries token account extension {extension}, which this server \
+                     will not settle through"
+                ));
+            }
             if decoded.state != TOKEN_ACCOUNT_INITIALIZED {
                 return reject(format!("is in account state {}", decoded.state));
             }
@@ -2055,6 +2061,25 @@ impl X402BatchSettlement {
         if let Some(onchain) = self.lookup_channel(channel)? {
             return Ok(Some(onchain));
         }
+        // A channel being opened has a record before it has a PDA: its setup
+        // transaction is only broadcast once the handler has succeeded. Absence
+        // is expected there, and dropping the record would take the
+        // authorization with it — losing a charge that was served but not yet
+        // committed, or freeing one whose handler already ran to be served a
+        // second time.
+        let in_flight = self
+            .store
+            .get_channel(channel_id)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+            .is_some_and(|state| state.has_in_flight_authorization());
+        if in_flight {
+            tracing::debug!(
+                channel = %channel_id,
+                "channel is not onchain yet; keeping its in-flight record"
+            );
+            return Ok(None);
+        }
         tracing::info!(
             channel = %channel_id,
             "channel account is gone onchain; dropping its record"
@@ -2326,15 +2351,34 @@ const TOKEN_ACCOUNT_INITIALIZED: u8 = 1;
 /// `AccountState::Frozen`: the account cannot receive or send.
 const TOKEN_ACCOUNT_FROZEN: u8 = 2;
 
+/// `AccountType::Account`, the discriminant a Token-2022 account carries at
+/// offset 165 before its extensions.
+const TOKEN_ACCOUNT_TYPE: u8 = 2;
+
+/// `ExtensionType::ImmutableOwner`.
+///
+/// The only account extension a settlement destination may carry. It is inert
+/// — it fixes the owner, nothing else — and every associated token account has
+/// it, so requiring its absence would reject ordinary ATAs.
+const EXTENSION_IMMUTABLE_OWNER: u16 = 7;
+
 /// The fields of an SPL token account this server cares about.
 struct TokenAccount {
     mint: Pubkey,
     owner: Pubkey,
     state: u8,
+    /// An account extension this server will not settle through, if any.
+    unsupported_extension: Option<u16>,
 }
 
 /// Decode a token account, or `None` when the data is too short to be one —
 /// which is what an uninitialized (or non-token) account looks like.
+///
+/// Token-2022 appends a type byte and a TLV extension list after the same
+/// 165-byte base. Those extensions are not cosmetic: one can withhold part of a
+/// transfer, require a memo to precede it, block it from a CPI, or move the
+/// balance out of the classic ledger entirely — so an account carrying one is
+/// reported rather than silently accepted as a payout destination.
 fn decode_token_account(data: &[u8]) -> Option<TokenAccount> {
     if data.len() < TOKEN_ACCOUNT_LEN {
         return None;
@@ -2343,7 +2387,47 @@ fn decode_token_account(data: &[u8]) -> Option<TokenAccount> {
         mint: Pubkey::try_from(&data[0..32]).ok()?,
         owner: Pubkey::try_from(&data[32..64]).ok()?,
         state: data[108],
+        unsupported_extension: unsupported_account_extension(data),
     })
+}
+
+/// The first account extension outside the allowlist, if the account has one.
+///
+/// A malformed or truncated TLV is reported as unsupported rather than skipped:
+/// this decides whether to accept an escrow, so anything it cannot read is
+/// something it should not settle through.
+fn unsupported_account_extension(data: &[u8]) -> Option<u16> {
+    // A classic SPL Token account is exactly the base length and has no
+    // extension list at all.
+    if data.len() == TOKEN_ACCOUNT_LEN {
+        return None;
+    }
+    if data[TOKEN_ACCOUNT_LEN] != TOKEN_ACCOUNT_TYPE {
+        return Some(u16::from(data[TOKEN_ACCOUNT_LEN]));
+    }
+    let mut cursor = TOKEN_ACCOUNT_LEN + 1;
+    while cursor < data.len() {
+        // A run of zero padding is the end of the list, not an extension.
+        if data[cursor..].iter().all(|byte| *byte == 0) {
+            return None;
+        }
+        let Some(header) = data.get(cursor..cursor + 4) else {
+            return Some(u16::MAX);
+        };
+        let extension = u16::from_le_bytes([header[0], header[1]]);
+        let length = usize::from(u16::from_le_bytes([header[2], header[3]]));
+        if extension != EXTENSION_IMMUTABLE_OWNER {
+            return Some(extension);
+        }
+        let Some(next) = cursor.checked_add(4).and_then(|c| c.checked_add(length)) else {
+            return Some(u16::MAX);
+        };
+        if next > data.len() {
+            return Some(u16::MAX);
+        }
+        cursor = next;
+    }
+    None
 }
 
 /// The voucher a payload authorizes with, if any.
@@ -3129,6 +3213,68 @@ mod tests {
         // An uninitialized (or non-token) account is too short to be one.
         assert!(decode_token_account(&account(0, 0)).is_none());
         assert!(decode_token_account(&account(0, TOKEN_ACCOUNT_LEN - 1)).is_none());
+
+        // A Token-2022 account carries a type byte and a TLV extension list.
+        // `ImmutableOwner` is inert and every ATA has it, so it passes; a
+        // padded tail is the end of the list, not an extension.
+        let extended = |extensions: &[(u16, &[u8])]| {
+            let mut data = account(TOKEN_ACCOUNT_INITIALIZED, TOKEN_ACCOUNT_LEN);
+            data.push(TOKEN_ACCOUNT_TYPE);
+            for (kind, value) in extensions {
+                data.extend_from_slice(&kind.to_le_bytes());
+                data.extend_from_slice(&(value.len() as u16).to_le_bytes());
+                data.extend_from_slice(value);
+            }
+            data
+        };
+        assert!(decode_token_account(&extended(&[]))
+            .unwrap()
+            .unsupported_extension
+            .is_none());
+        assert!(
+            decode_token_account(&extended(&[(EXTENSION_IMMUTABLE_OWNER, &[])]))
+                .unwrap()
+                .unsupported_extension
+                .is_none()
+        );
+
+        // Everything else changes what a payout means: withholding part of a
+        // transfer, requiring a memo before it, blocking it from a CPI, or
+        // moving the balance out of the classic ledger.
+        for unsupported in [
+            2u16, // TransferFeeAmount
+            5,    // ConfidentialTransferAccount
+            8,    // MemoTransfer
+            11,   // CpiGuard
+            13,   // NonTransferableAccount
+            15,   // TransferHookAccount
+            27,   // PausableAccount
+        ] {
+            assert_eq!(
+                decode_token_account(&extended(&[(unsupported, &[0u8; 8])]))
+                    .unwrap()
+                    .unsupported_extension,
+                Some(unsupported),
+                "extension {unsupported} must be refused"
+            );
+        }
+        // Including one hiding behind an allowed extension.
+        assert_eq!(
+            decode_token_account(&extended(&[
+                (EXTENSION_IMMUTABLE_OWNER, &[]),
+                (8, &[0u8; 8]),
+            ]))
+            .unwrap()
+            .unsupported_extension,
+            Some(8)
+        );
+        // A truncated TLV is refused rather than skipped.
+        let mut truncated = extended(&[]);
+        truncated.extend_from_slice(&[7u8, 0]);
+        assert!(decode_token_account(&truncated)
+            .unwrap()
+            .unsupported_extension
+            .is_some());
     }
 
     #[tokio::test]

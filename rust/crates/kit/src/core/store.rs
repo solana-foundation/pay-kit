@@ -930,6 +930,18 @@ impl ChannelState {
         Ok(())
     }
 
+    /// Whether this record is carrying work that has not reached an outcome.
+    ///
+    /// Such a record must survive even when the chain says its channel does not
+    /// exist: a channel being opened has a record before it has a PDA, because
+    /// its setup transaction is only broadcast once the handler has succeeded.
+    /// Dropping it would take the authorization with it — losing a charge that
+    /// was served but never committed, or freeing one whose handler already ran
+    /// to be served a second time.
+    pub fn has_in_flight_authorization(&self) -> bool {
+        self.pending_setup.is_some() || !self.pending_deliveries.is_empty()
+    }
+
     /// Drop committed records past their retention, then bound the committed
     /// tail to [`MAX_COMMITTED_AUTHORIZATIONS`].
     ///
@@ -2098,6 +2110,49 @@ mod tests {
         );
         // Releasing it would let the same voucher serve twice.
         assert!(state.release_authorization("access:c1:1000", "fp").is_err());
+    }
+
+    /// A record with work in flight must survive a chain that says its channel
+    /// is not there — that is the normal state of a channel being opened.
+    #[test]
+    fn a_record_with_work_in_flight_is_not_droppable() {
+        let mut state = make_state("c1", 10_000);
+        assert!(
+            !state.has_in_flight_authorization(),
+            "a settled record is droppable"
+        );
+
+        state.reserve_authorization("access:c1:1000", "fp", 1_000, LEASE, 100);
+        assert!(
+            state.has_in_flight_authorization(),
+            "a reservation must be kept"
+        );
+
+        state
+            .mark_authorization_handler_succeeded("access:c1:1000", "fp")
+            .unwrap();
+        assert!(
+            state.has_in_flight_authorization(),
+            "a served-but-uncharged authorization must be kept"
+        );
+
+        state
+            .commit_authorization("access:c1:1000", "fp", 1_000, "sig", 0, 100, |_| None)
+            .unwrap();
+        assert!(
+            !state.has_in_flight_authorization(),
+            "once committed there is nothing left in flight"
+        );
+
+        // A channel being opened holds no reservation of its own once released,
+        // but its setup transaction has not been broadcast yet.
+        state.pending_setup = Some(PendingSetup {
+            deposit: 10_000,
+            expires_at: 200,
+            opens_channel: true,
+            payer_signature: "sig".to_string(),
+        });
+        assert!(state.has_in_flight_authorization());
     }
 
     /// A reservation nobody reported an outcome for is terminal. The handler
