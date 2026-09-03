@@ -1284,9 +1284,9 @@ impl X402BatchSettlement {
     /// either finds the commitment done or redoes all of it.
     pub async fn finish_commit(
         &self,
-        outcome: BatchOutcome,
+        outcome: &BatchOutcome,
     ) -> Result<BatchSettlementResponse, Error> {
-        let Authorization { id, fingerprint } = self.authorization_of(&outcome)?;
+        let Authorization { id, fingerprint } = self.authorization_of(outcome)?;
         let voucher = voucher_of(&outcome.payload)
             .ok_or_else(|| batch_err(codes::INVALID_PAYLOAD_TYPE, "payload carries no voucher"))?
             .clone();
@@ -1382,7 +1382,7 @@ impl X402BatchSettlement {
             Some(response) => Ok(response),
             // The transition found the authorization already committed, so the
             // response stored on its record is the authoritative one.
-            None => self.replay_response(&outcome).await,
+            None => self.replay_response(outcome).await,
         }
     }
 
@@ -1643,7 +1643,7 @@ impl X402BatchSettlement {
                 })
             }
             BatchPayload::Voucher { .. } | BatchPayload::Deposit { .. } => {
-                self.finish_commit(outcome).await
+                self.finish_commit(&outcome).await
             }
         }
     }
@@ -2983,7 +2983,9 @@ mod tests {
         };
         let channel_id = outcome.channel_id.clone();
         handler.mark_handler_succeeded(&outcome).await.unwrap();
-        let settled = handler.finish_commit(outcome).await.expect("commits");
+        let settled = handler.finish_commit(&outcome).await.expect("commits");
+        // The outcome holds the channel's in-flight slot until it drops.
+        drop(outcome);
         let charged = |response: &BatchSettlementResponse| {
             response
                 .extra
@@ -3036,9 +3038,10 @@ mod tests {
         let channel_id = outcome.channel_id.clone();
         // The marker write failed, so the reservation is still unmarked.
         let settled = handler
-            .finish_commit(outcome)
+            .finish_commit(&outcome)
             .await
             .expect("an unmarked reservation still commits");
+        drop(outcome);
         assert!(settled.success);
         assert_eq!(
             store
@@ -3089,7 +3092,7 @@ mod tests {
         else {
             panic!("a served authorization must resume, not serve");
         };
-        let settled = handler.finish_commit(outcome).await.expect("commits");
+        let settled = handler.finish_commit(&outcome).await.expect("commits");
         assert!(settled.success);
         assert_eq!(
             store

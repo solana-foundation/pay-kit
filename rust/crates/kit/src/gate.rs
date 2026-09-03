@@ -1016,7 +1016,7 @@ async fn batch_gate_middleware(
         // An earlier attempt's handler already succeeded; only its charge is
         // unfinished. Finishing it is the one safe continuation.
         BatchAccess::Resume(outcome) => {
-            return match batch.finish_commit(outcome).await {
+            return match batch.finish_commit(&outcome).await {
                 Ok(settlement) => replayed_response(&batch, &settlement),
                 Err(e) => {
                     tracing::error!(error = %e, "batch-settlement commit could not be resumed");
@@ -1094,7 +1094,7 @@ async fn batch_gate_middleware(
     }
 
     let mut resp = resp;
-    match batch.finish_commit(outcome).await {
+    match commit_served_request(&batch, outcome, &channel_id).await {
         Ok(settlement) => {
             attach_settlement_header(&batch, &settlement, &mut resp);
             resp
@@ -1114,6 +1114,52 @@ async fn batch_gate_middleware(
                 .into_response()
         }
     }
+}
+
+/// Attempts a served request's charge is willing to make before giving up.
+const COMMIT_ATTEMPTS: u32 = 3;
+
+/// Charge a request whose handler has already run, retrying a store that is
+/// only briefly unavailable.
+///
+/// This is the last write standing between a served request and the payment
+/// for it, and it is idempotent: committing an authorization that is already
+/// committed leaves it alone, and a deposit's setup transaction is recovered
+/// by its signature rather than broadcast again. So a store that blinks costs
+/// a little latency instead of the charge.
+///
+/// What no number of attempts can cover is a store that stays unavailable, or
+/// a process that exits mid-charge. Nothing durable can be written then, and
+/// the authorization stays unreported — which a later retry treats as
+/// terminal rather than serving it a second time. That direction is
+/// deliberate: the scheme requires that one authorization never runs the
+/// handler twice, so an outage costs the operator a served request rather
+/// than costing the payer a duplicate execution.
+async fn commit_served_request(
+    batch: &X402BatchSettlement,
+    outcome: crate::x402::server::BatchOutcome,
+    channel_id: &str,
+) -> Result<crate::x402::batch_settlement::BatchSettlementResponse, crate::x402::Error> {
+    let mut last = None;
+    for attempt in 1..=COMMIT_ATTEMPTS {
+        match batch.finish_commit(&outcome).await {
+            Ok(settlement) => return Ok(settlement),
+            Err(error) => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    attempt,
+                    error = %error,
+                    "batch-settlement charge failed; retrying"
+                );
+                last = Some(error);
+                if attempt < COMMIT_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * u64::from(attempt)))
+                        .await;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| crate::x402::Error::Other("commit did not run".into())))
 }
 
 /// Attach the `PAYMENT-RESPONSE` settlement header to `resp`.
