@@ -1815,7 +1815,9 @@ impl ChannelStore for RedisChannelStore {
             let current_raw = self.get_raw(&channel_id).await?;
             let mut state = match current_raw.as_deref().map(Self::decode).transpose()? {
                 Some(state) => state,
-                None => seed.ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?,
+                None => {
+                    seed.ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?
+                }
             };
             mutator(&mut state)?;
             let (new_raw, _) = Self::encode_for_write(state)?;

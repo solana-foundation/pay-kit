@@ -749,17 +749,23 @@ impl X402BatchSettlement {
                     )
                     .await
                     .map_err(|e| Error::Other(format!("store error: {e}")))?;
-                let (sealed, close_requested, cumulative, highest_voucher_signature, deposit, payer) =
-                    fields
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .take()
-                        .ok_or_else(|| {
-                            batch_err(
-                                codes::INVALID_CHANNEL_STATE,
-                                format!("no channel {channel_b58}; open one with a deposit payload"),
-                            )
-                        })?;
+                let (
+                    sealed,
+                    close_requested,
+                    cumulative,
+                    highest_voucher_signature,
+                    deposit,
+                    payer,
+                ) = fields
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .ok_or_else(|| {
+                        batch_err(
+                            codes::INVALID_CHANNEL_STATE,
+                            format!("no channel {channel_b58}; open one with a deposit payload"),
+                        )
+                    })?;
                 self.check_channel_open(sealed, close_requested)?;
                 let max_claimable = check_voucher(voucher, &config, &channel_id)?;
                 let replay = self.check_watermark(
