@@ -10,27 +10,44 @@ jobs:
   test-python:
     name: Python tests
     runs-on: ubuntu-latest
+    env:
+      UV_MALWARE_CHECK: "1"
+      UV_PREVIEW_FEATURES: "audit-command,malware-check"
     steps:
       - uses: actions/checkout@v5
+      - name: Python supply-chain guard self-test
+        run: bash scripts/check-python-supply-chain_test.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-      - name: Install Python SDK
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.26"
+          cache-dependency-glob: python/uv.lock
+          enable-cache: true
+      - name: Verify uv.lock is up to date
+        working-directory: python
+        run: uv lock --check
+      - name: Audit locked Python dependencies
+        working-directory: python
+        run: uv audit --frozen
+      - name: Install Python SDK (frozen)
         working-directory: python
         # Framework extras bring fastapi/flask/django so the solana_pay_kit shim tests
         # import and pyright can resolve them; dev brings ruff, pyright, pytest.
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,fastapi,flask,django]"
+          uv sync --frozen --extra dev --extra fastapi --extra flask --extra django
+      - name: Verify Python docs tooling
+        working-directory: python
+        run: uv run --frozen pydoc-markdown >/dev/null
       - name: Lint with ruff
         working-directory: python
-        run: ruff check src tests
+        run: uv run --frozen ruff check src tests
       - name: Type check with pyright
         working-directory: python
         # Point pyright at the interpreter the extras were installed into; it
         # does not reliably auto-detect the active env on the runner.
-        run: pyright --pythonpath "$(python -c 'import sys; print(sys.executable)')"
+        run: uv run --frozen pyright --pythonpath "$(uv run --frozen python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
         # Coverage gate: line coverage at 90% over solana_pay_kit (the MPP wire layer
@@ -38,7 +55,7 @@ jobs:
         # pyproject (live-RPC paths). Branch coverage gate is follow-up work,
         # tracked in #108.
         run: |
-          pytest \
+          uv run --frozen pytest \
             --cov=solana_pay_kit \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
@@ -55,18 +72,26 @@ jobs:
     name: Python harness matrix
     runs-on: ubuntu-latest
     needs: test-python
+    env:
+      UV_MALWARE_CHECK: "1"
+      UV_PREVIEW_FEATURES: "audit-command,malware-check"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
       - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.26"
+          cache-dependency-glob: python/uv.lock
+          enable-cache: true
+      - name: Audit locked Python dependencies
+        working-directory: python
+        run: uv audit --frozen
       - name: Install Python SDK
         working-directory: python
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          uv sync --frozen --extra dev
       - uses: ./.github/actions/setup-harness
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
@@ -114,7 +139,7 @@ jobs:
       # without a per-vector cold install.
       - name: Sync Python uv environment
         working-directory: python
-        run: uv sync --extra dev
+        run: uv sync --frozen --extra dev
       # Cross-SDK conformance vectors for Python: charge, x402-exact, and the
       # session voucher-preimage byte-vector (runners/python.json declares the
       # session intent). Pins the Python session wire bytes against the frozen
