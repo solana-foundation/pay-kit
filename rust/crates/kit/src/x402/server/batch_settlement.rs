@@ -103,6 +103,52 @@ fn rpc_lookup_channel(rpc: &RpcClient, channel_id: &Pubkey) -> Result<Option<Cha
         .transpose()
 }
 
+/// Simulate, broadcast, and confirm a co-signed deposit/top-up with the
+/// blocking RPC client. Factored out of
+/// [`X402BatchSettlement::broadcast_client_transaction`] so it can run on a
+/// blocking thread (via `spawn_blocking`): `simulate_transaction` and
+/// `send_and_confirm_transaction` otherwise block a Tokio runtime thread for
+/// the full round trip — for `send_and_confirm_transaction`, the entire
+/// confirm-poll loop — which under concurrent channel opens starves the
+/// runtime, collapsing provisioning throughput and, via client-side timeouts
+/// and retries, amplifying `sendTransaction`/`getSignatureStatuses` volume.
+fn broadcast_and_confirm_deposit(
+    rpc: &RpcClient,
+    tx: &VersionedTransaction,
+) -> Result<String, Error> {
+    let signature = *tx
+        .signatures
+        .first()
+        .ok_or_else(|| Error::Other("transaction has no signature slot".into()))?;
+    if matches!(rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
+        return Ok(signature.to_string());
+    }
+    // Simulate the exact bytes before they reach the network. The static
+    // policy has already bounded what the sponsor is authorizing; this
+    // catches the rest — an unfunded payer, a frozen or wrong-owner token
+    // account, a settlement path that would not be usable later — while
+    // rejecting is still free.
+    let simulation = rpc
+        .simulate_transaction(tx)
+        .map_err(|e| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, e.to_string()))?;
+    if let Some(err) = simulation.value.err {
+        return Err(batch_err(
+            codes::INVALID_SETTLEMENT_SIMULATION,
+            format!("simulation failed: {err:?}"),
+        ));
+    }
+    match rpc.send_and_confirm_transaction(tx) {
+        Ok(confirmed) => Ok(confirmed.to_string()),
+        Err(error) => {
+            if matches!(rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
+                Ok(signature.to_string())
+            } else {
+                Err(Error::Rpc(format!("broadcast failed: {error}")))
+            }
+        }
+    }
+}
+
 /// Server configuration for the SVM `batch-settlement` scheme.
 #[derive(Clone)]
 pub struct BatchConfig {
@@ -1782,38 +1828,10 @@ impl X402BatchSettlement {
             &mut tx,
         )
         .await?;
-        let signature = *tx
-            .signatures
-            .first()
-            .ok_or_else(|| Error::Other("transaction has no signature slot".into()))?;
-        if matches!(self.rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
-            return Ok(signature.to_string());
-        }
-        // Simulate the exact bytes before they reach the network. The static
-        // policy has already bounded what the sponsor is authorizing; this
-        // catches the rest — an unfunded payer, a frozen or wrong-owner token
-        // account, a settlement path that would not be usable later — while
-        // rejecting is still free.
-        let simulation = self
-            .rpc
-            .simulate_transaction(&tx)
-            .map_err(|e| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, e.to_string()))?;
-        if let Some(err) = simulation.value.err {
-            return Err(batch_err(
-                codes::INVALID_SETTLEMENT_SIMULATION,
-                format!("simulation failed: {err:?}"),
-            ));
-        }
-        match self.rpc.send_and_confirm_transaction(&tx) {
-            Ok(confirmed) => Ok(confirmed.to_string()),
-            Err(error) => {
-                if matches!(self.rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
-                    Ok(signature.to_string())
-                } else {
-                    Err(Error::Rpc(format!("broadcast failed: {error}")))
-                }
-            }
-        }
+        let rpc = Arc::clone(&self.rpc);
+        tokio::task::spawn_blocking(move || broadcast_and_confirm_deposit(&rpc, &tx))
+            .await
+            .map_err(|e| Error::Other(format!("broadcast join error: {e}")))?
     }
 
     /// Re-read the confirmed channel and bind every immutable field to the
