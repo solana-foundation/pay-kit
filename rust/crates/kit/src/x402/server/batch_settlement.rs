@@ -84,6 +84,25 @@ fn batch_err(code: &'static str, detail: impl Into<String>) -> Error {
     BatchError::new(code, detail).into()
 }
 
+/// Fetch and decode a channel account with the blocking RPC client. Factored out
+/// of [`X402BatchSettlement::lookup_channel`] so the reconcile path can run it on
+/// a blocking thread (via `spawn_blocking`) instead of stalling an async worker:
+/// the sync `RpcClient` call otherwise blocks a Tokio runtime thread for a full
+/// RPC round-trip on every stale-snapshot refresh, which under load serializes
+/// unrelated paid requests and collapses gateway throughput.
+fn rpc_lookup_channel(rpc: &RpcClient, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
+    let account = rpc
+        .get_account_with_commitment(channel_id, rpc.commitment())
+        .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?
+        .value;
+    account
+        .map(|account| {
+            Channel::from_bytes(&account.data)
+                .map_err(|e| Error::Other(format!("channel decode failed: {e}")))
+        })
+        .transpose()
+}
+
 /// Server configuration for the SVM `batch-settlement` scheme.
 #[derive(Clone)]
 pub struct BatchConfig {
@@ -1513,7 +1532,13 @@ impl X402BatchSettlement {
             return Ok(());
         }
         let channel_id = pc::parse_pubkey(channel_b58)?;
-        let onchain = match self.lookup_channel(&channel_id) {
+        // Run the blocking RPC on a blocking thread so a stale-snapshot refresh
+        // never stalls the async worker serving other paid requests.
+        let rpc = Arc::clone(&self.rpc);
+        let fetched = tokio::task::spawn_blocking(move || rpc_lookup_channel(&rpc, &channel_id))
+            .await
+            .map_err(|e| Error::Other(format!("channel reconcile task failed: {e}")))?;
+        let onchain = match fetched {
             Ok(onchain) => onchain,
             Err(e) => {
                 // A degraded RPC must not reject every paid request, but it also
@@ -1902,17 +1927,7 @@ impl X402BatchSettlement {
     /// absence: a durable record must not be dropped for a condition that can
     /// clear, because it holds the only copy of this server's charge watermark.
     fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
-        let account = self
-            .rpc
-            .get_account_with_commitment(channel_id, self.rpc.commitment())
-            .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?
-            .value;
-        account
-            .map(|account| {
-                Channel::from_bytes(&account.data)
-                    .map_err(|e| Error::Other(format!("channel decode failed: {e}")))
-            })
-            .transpose()
+        rpc_lookup_channel(&self.rpc, channel_id)
     }
 
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
