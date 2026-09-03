@@ -1024,6 +1024,38 @@ pub trait ChannelStore: Send + Sync {
         updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>>;
 
+    /// Read channel state in place, without cloning the record.
+    ///
+    /// The `reader` receives `Option<&ChannelState>` (borrowed under the read
+    /// guard) and extracts only the small values the caller needs, so a hot
+    /// path can inspect a few fields without deep-cloning the whole state
+    /// (String fields, the `extra` map, and the growing delivery Vecs). The
+    /// reader MUST NOT re-enter the store for the same key.
+    fn read_channel(
+        &self,
+        channel_id: &str,
+        reader: Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
+    /// Atomically mutate channel state in place, without cloning the record.
+    ///
+    /// This is the allocation-free counterpart to [`Self::update_channel`] for
+    /// the batch-settlement hot path. The `mutator` receives `&mut ChannelState`
+    /// and returns only a small caller-selected result (typically captured out
+    /// through the closure), so an in-memory backend can apply it under the
+    /// shard write guard with ZERO clone of the state. Implementations MUST
+    /// still guarantee the read-modify-write is atomic per channel.
+    ///
+    /// When the channel is absent, `seed` (if provided) is inserted first and
+    /// then mutated in place; if the channel is absent and `seed` is `None`,
+    /// the call fails. The mutator MUST NOT re-enter the store for the same key.
+    fn mutate_channel(
+        &self,
+        channel_id: &str,
+        seed: Option<ChannelState>,
+        mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
     /// Persist an idle-close deadline without allowing an older touch to move
     /// an existing deadline backwards. Once close is claimed or the channel is
     /// sealed, return the current state without changing its lifecycle.
@@ -1106,6 +1138,23 @@ where
         updater: Box<dyn FnOnce(Option<ChannelState>) -> Result<ChannelState, StoreError> + Send>,
     ) -> Pin<Box<dyn Future<Output = Result<ChannelState, StoreError>> + Send + '_>> {
         (**self).update_channel(channel_id, updater)
+    }
+
+    fn read_channel(
+        &self,
+        channel_id: &str,
+        reader: Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).read_channel(channel_id, reader)
+    }
+
+    fn mutate_channel(
+        &self,
+        channel_id: &str,
+        seed: Option<ChannelState>,
+        mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        (**self).mutate_channel(channel_id, seed, mutator)
     }
 
     fn touch_channel_lifecycle(
@@ -1255,6 +1304,45 @@ impl ChannelStore for MemoryChannelStore {
                     Ok(new_state)
                 }
                 Err(e) => Err(e),
+            },
+        };
+        Box::pin(async move { result })
+    }
+
+    fn read_channel(
+        &self,
+        channel_id: &str,
+        reader: Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        // Borrow the record behind the key's shard read guard and let the
+        // reader copy out only what it needs — no clone of the full state.
+        let result = {
+            let guard = self.data.get(channel_id);
+            reader(guard.as_deref())
+        };
+        Box::pin(async move { result })
+    }
+
+    fn mutate_channel(
+        &self,
+        channel_id: &str,
+        seed: Option<ChannelState>,
+        mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        use dashmap::mapref::entry::Entry;
+        // Apply the mutation directly to the record behind this key's shard
+        // write guard — no clone in, no clone out. The atomicity guarantee is
+        // identical to `update_channel`; only the allocation is gone.
+        let result = match self.data.entry(channel_id.to_string()) {
+            Entry::Occupied(mut entry) => mutator(entry.get_mut()),
+            Entry::Vacant(entry) => match seed {
+                // Only an initial deposit seeds a new record; the seed is
+                // inserted and then mutated in place, still under the guard.
+                Some(seed) => {
+                    let mut guard = entry.insert(seed);
+                    mutator(guard.value_mut())
+                }
+                None => Err(StoreError::Internal("Channel not found".to_string())),
             },
         };
         Box::pin(async move { result })
@@ -1697,6 +1785,52 @@ impl ChannelStore for RedisChannelStore {
                 ));
             }
             Ok(new_state)
+        })
+    }
+
+    fn read_channel(
+        &self,
+        channel_id: &str,
+        reader: Box<dyn FnOnce(Option<&ChannelState>) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            let raw = self.get_raw(&channel_id).await?;
+            let state = raw.as_deref().map(Self::decode).transpose()?;
+            reader(state.as_ref())
+        })
+    }
+
+    fn mutate_channel(
+        &self,
+        channel_id: &str,
+        seed: Option<ChannelState>,
+        mutator: Box<dyn FnOnce(&mut ChannelState) -> Result<(), StoreError> + Send>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
+        let channel_id = channel_id.to_string();
+        Box::pin(async move {
+            // A durable backend has to serialize regardless, so this decodes,
+            // applies the mutation, and re-writes under the same compare-and-set
+            // guard `update_channel` uses. The in-place win is the memory store's.
+            let current_raw = self.get_raw(&channel_id).await?;
+            let mut state = match current_raw.as_deref().map(Self::decode).transpose()? {
+                Some(state) => state,
+                None => seed.ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?,
+            };
+            mutator(&mut state)?;
+            let (new_raw, _) = Self::encode_for_write(state)?;
+            if current_raw.as_deref() == Some(new_raw.as_str()) {
+                return Ok(());
+            }
+            if !self
+                .compare_and_set(&channel_id, current_raw.as_deref(), &new_raw)
+                .await?
+            {
+                return Err(StoreError::Internal(
+                    "Concurrent channel update; retry the request".to_string(),
+                ));
+            }
+            Ok(())
         })
     }
 

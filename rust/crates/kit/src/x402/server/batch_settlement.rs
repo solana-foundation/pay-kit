@@ -641,15 +641,27 @@ impl X402BatchSettlement {
         let guard = self.in_flight.acquire(&channel_b58)?;
 
         let charge = requirements.amount()?;
-        let stored = self
-            .store
-            .get_channel(&channel_b58)
-            .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?;
 
         match &payload {
             BatchPayload::Refund { transaction, .. } => {
                 self.verify_refund(transaction, &config, &requirements, &channel_id)?;
+                // A refund only needs the current watermark; read it out without
+                // cloning the record.
+                let max_claimable = Arc::new(Mutex::new(0u64));
+                let out = Arc::clone(&max_claimable);
+                self.store
+                    .read_channel(
+                        &channel_b58,
+                        Box::new(move |state| {
+                            if let Some(state) = state {
+                                *out.lock().unwrap_or_else(|e| e.into_inner()) = state.cumulative;
+                            }
+                            Ok(())
+                        }),
+                    )
+                    .await
+                    .map_err(|e| Error::Other(format!("store error: {e}")))?;
+                let max_claimable = *max_claimable.lock().unwrap_or_else(|e| e.into_inner());
                 Ok(BatchOutcome {
                     serve: false,
                     replay: false,
@@ -658,30 +670,67 @@ impl X402BatchSettlement {
                     charged_amount: 0,
                     payload,
                     requirements,
-                    max_claimable: stored.as_ref().map(|s| s.cumulative).unwrap_or_default(),
+                    max_claimable,
                     deposit_signature: None,
                     authorization: None,
                     _guard: guard,
                 })
             }
             BatchPayload::Voucher { voucher, .. } => {
-                let state = stored.ok_or_else(|| {
-                    batch_err(
-                        codes::INVALID_CHANNEL_STATE,
-                        format!("no channel {channel_b58}; open one with a deposit payload"),
+                // Hot path: extract only the scalar fields the checks need,
+                // borrowing the record under the read guard. The growing
+                // `committed_deliveries` Vec and the `extra` map are never
+                // cloned here.
+                let fields: Arc<Mutex<Option<(bool, bool, u64, Option<String>, u64, String)>>> =
+                    Arc::new(Mutex::new(None));
+                let out = Arc::clone(&fields);
+                self.store
+                    .read_channel(
+                        &channel_b58,
+                        Box::new(move |state| {
+                            if let Some(state) = state {
+                                *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+                                    state.sealed,
+                                    state.close_requested_at.is_some(),
+                                    state.cumulative,
+                                    state.highest_voucher_signature.clone(),
+                                    state.deposit,
+                                    state.payer.clone(),
+                                ));
+                            }
+                            Ok(())
+                        }),
                     )
-                })?;
-                self.check_channel_open(&state)?;
+                    .await
+                    .map_err(|e| Error::Other(format!("store error: {e}")))?;
+                let (sealed, close_requested, cumulative, highest_voucher_signature, deposit, payer) =
+                    fields
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take()
+                        .ok_or_else(|| {
+                            batch_err(
+                                codes::INVALID_CHANNEL_STATE,
+                                format!("no channel {channel_b58}; open one with a deposit payload"),
+                            )
+                        })?;
+                self.check_channel_open(sealed, close_requested)?;
                 let max_claimable = check_voucher(voucher, &config, &channel_id)?;
-                let replay = self.check_watermark(&state, voucher, max_claimable, charge)?;
-                self.check_deposit_cap(max_claimable, state.deposit)?;
+                let replay = self.check_watermark(
+                    cumulative,
+                    highest_voucher_signature.as_deref(),
+                    voucher,
+                    max_claimable,
+                    charge,
+                )?;
+                self.check_deposit_cap(max_claimable, deposit)?;
                 let authorization =
                     authorization_for(&channel_b58, voucher, max_claimable, &requirements);
                 Ok(BatchOutcome {
                     serve: !replay,
                     replay,
                     channel_id: channel_b58,
-                    payer: state.payer.clone(),
+                    payer,
                     charged_amount: if replay { 0 } else { charge },
                     payload,
                     requirements,
@@ -694,15 +743,26 @@ impl X402BatchSettlement {
             BatchPayload::Deposit {
                 voucher, deposit, ..
             } => {
+                let stored = self
+                    .store
+                    .get_channel(&channel_b58)
+                    .await
+                    .map_err(|e| Error::Other(format!("store error: {e}")))?;
                 let max_claimable = check_voucher(voucher, &config, &channel_id)?;
                 let deposit_amount = deposit.amount()?;
                 let form = setup_form_from_transaction(&deposit.transaction, &program_id)?;
                 if let Some(state) = &stored {
-                    self.check_channel_open(state)?;
+                    self.check_channel_open(state.sealed, state.close_requested_at.is_some())?;
                 }
                 let prior = stored.as_ref();
                 let replay = match prior {
-                    Some(state) => self.check_watermark(state, voucher, max_claimable, charge)?,
+                    Some(state) => self.check_watermark(
+                        state.cumulative,
+                        state.highest_voucher_signature.as_deref(),
+                        voucher,
+                        max_claimable,
+                        charge,
+                    )?,
                     None => {
                         if max_claimable != charge {
                             return Err(batch_err(
@@ -818,13 +878,13 @@ impl X402BatchSettlement {
         Ok(())
     }
 
-    fn check_channel_open(&self, state: &ChannelState) -> Result<(), Error> {
-        if state.sealed {
+    fn check_channel_open(&self, sealed: bool, close_requested: bool) -> Result<(), Error> {
+        if sealed {
             return Err(batch_err(codes::INVALID_CLOSE_STATE, "channel is sealed"));
         }
         // Once a payer-forced close has been broadcast the redemption window is
         // bounded by the grace period, so no further charge may be accepted.
-        if state.close_requested_at.is_some() {
+        if close_requested {
             return Err(batch_err(
                 codes::INVALID_CLOSE_STATE,
                 "channel close is pending; open a new channel",
@@ -842,18 +902,18 @@ impl X402BatchSettlement {
     /// served. Anything else is stale or a fork, and must not be served.
     fn check_watermark(
         &self,
-        state: &ChannelState,
+        cumulative: u64,
+        highest_voucher_signature: Option<&str>,
         voucher: &crate::x402::protocol::schemes::batch_settlement::BatchVoucher,
         max_claimable: u64,
         charge: u64,
     ) -> Result<bool, Error> {
-        if max_claimable == state.cumulative
-            && state.highest_voucher_signature.as_deref() == Some(voucher.signature.as_str())
+        if max_claimable == cumulative
+            && highest_voucher_signature == Some(voucher.signature.as_str())
         {
             return Ok(true);
         }
-        let expected = state
-            .cumulative
+        let expected = cumulative
             .checked_add(charge)
             .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "cumulative amount overflow"))?;
         if max_claimable != expected {
@@ -861,8 +921,7 @@ impl X402BatchSettlement {
                 codes::INVALID_CUMULATIVE_AMOUNT_MISMATCH,
                 format!(
                     "voucher authorizes {max_claimable}, expected {expected} \
-                     (charged {} + amount {charge})",
-                    state.cumulative
+                     (charged {cumulative} + amount {charge})"
                 ),
             ));
         }
@@ -1179,22 +1238,16 @@ impl X402BatchSettlement {
             .then(|| self.seed_state(&outcome.channel_id, outcome.payload.channel_config()));
         let reservation = Arc::new(Mutex::new(BatchReservation::InProgress));
         let out = Arc::clone(&reservation);
+        // In-place reservation: the record is mutated behind the store's shard
+        // guard with no clone. When no record exists yet, only an initial
+        // deposit may create one (via `seed`); a plain voucher on an unknown
+        // channel is refused by the store's missing-channel error. The
+        // reservation outcome is carried out through `out`.
         self.store
-            .update_channel(
+            .mutate_channel(
                 &outcome.channel_id,
-                Box::new(move |current| {
-                    let mut state = match (current, seed) {
-                        (Some(state), _) => state,
-                        // No record yet: only an initial deposit may create
-                        // one, and it holds no escrow until its setup
-                        // transaction confirms.
-                        (None, Some(seed)) => seed,
-                        (None, None) => {
-                            return Err(crate::core::store::StoreError::Internal(
-                                "channel not found".into(),
-                            ))
-                        }
-                    };
+                seed,
+                Box::new(move |state| {
                     if let Some(setup) = setup {
                         match &state.pending_setup {
                             // Another setup transaction is already in flight for
@@ -1210,7 +1263,7 @@ impl X402BatchSettlement {
                     }
                     *out.lock().unwrap_or_else(|e| e.into_inner()) =
                         state.reserve_authorization(&id, &fingerprint, charge, lease, now);
-                    Ok(state)
+                    Ok(())
                 }),
             )
             .await
@@ -1229,14 +1282,12 @@ impl X402BatchSettlement {
     pub async fn mark_handler_succeeded(&self, outcome: &BatchOutcome) -> Result<(), Error> {
         let Authorization { id, fingerprint } = self.authorization_of(outcome)?;
         self.store
-            .update_channel(
+            .mutate_channel(
                 &outcome.channel_id,
-                Box::new(move |current| {
-                    let mut state = current.ok_or_else(|| {
-                        crate::core::store::StoreError::Internal("channel not found".into())
-                    })?;
+                None,
+                Box::new(move |state| {
                     state.mark_authorization_handler_succeeded(&id, &fingerprint)?;
-                    Ok(state)
+                    Ok(())
                 }),
             )
             .await
@@ -1342,12 +1393,10 @@ impl X402BatchSettlement {
         let committed = Arc::new(Mutex::new(None));
         let out = Arc::clone(&committed);
         self.store
-            .update_channel(
+            .mutate_channel(
                 &outcome.channel_id,
-                Box::new(move |current| {
-                    let mut state = current.ok_or_else(|| {
-                        crate::core::store::StoreError::Internal("channel not found".into())
-                    })?;
+                None,
+                Box::new(move |state| {
                     if let Some(channel) = &confirmed {
                         // A top-up only ever raises the ceiling; never let a
                         // stale read lower a deposit the chain has confirmed.
@@ -1389,7 +1438,7 @@ impl X402BatchSettlement {
                             value
                         },
                     )?;
-                    Ok(state)
+                    Ok(())
                 }),
             )
             .await
@@ -1515,18 +1564,28 @@ impl X402BatchSettlement {
     /// a per-request fetch. A payer can force a close at any time; serving past
     /// the grace period that follows is unbacked work.
     async fn reconcile_channel(&self, channel_b58: &str) -> Result<(), Error> {
-        let Some(state) = self
-            .store
-            .get_channel(channel_b58)
+        // Hot path: only the last-checked timestamp decides whether a refresh
+        // is due, so read that one field without cloning the whole record.
+        let checked_at: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&checked_at);
+        self.store
+            .read_channel(
+                channel_b58,
+                Box::new(move |state| {
+                    *out.lock().unwrap_or_else(|e| e.into_inner()) =
+                        state.map(|s| s.onchain_checked_at);
+                    Ok(())
+                }),
+            )
             .await
-            .map_err(|e| Error::Other(format!("store error: {e}")))?
-        else {
+            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        let Some(onchain_checked_at) = *checked_at.lock().unwrap_or_else(|e| e.into_inner()) else {
             // Nothing to reconcile: an unknown channel is refused by
             // verification, and a deposit confirms its own channel.
             return Ok(());
         };
         let now = now_unix();
-        let age = now.saturating_sub(state.onchain_checked_at);
+        let age = now.saturating_sub(onchain_checked_at);
         if age < self.config.channel_snapshot_max_age_seconds {
             return Ok(());
         }
@@ -1545,7 +1604,7 @@ impl X402BatchSettlement {
                 // grace period, a close started right after the last check
                 // would leave too little time to claim.
                 let stale_limit = u64::from(self.config.withdraw_delay) / 2;
-                if state.onchain_checked_at > 0 && age < stale_limit {
+                if onchain_checked_at > 0 && age < stale_limit {
                     tracing::warn!(channel = %channel_b58, error = %e, age, "serving on a stale channel snapshot");
                     return Ok(());
                 }
