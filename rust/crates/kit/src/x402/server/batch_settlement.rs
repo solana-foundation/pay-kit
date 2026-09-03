@@ -29,7 +29,7 @@
 //!
 //! See `specs/schemes/batch-settlement/scheme_batch_settlement_svm.md`.
 
-use std::collections::HashSet;
+use dashmap::DashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -192,12 +192,15 @@ impl BatchConfig {
 /// verified outcome settles; a future store reservation can remove that
 /// deployment constraint.
 #[derive(Clone, Default)]
-struct InFlight(Arc<Mutex<HashSet<String>>>);
+struct InFlight(Arc<DashSet<String>>);
 
 impl InFlight {
     fn acquire(&self, channel_id: &str) -> Result<ChannelGuard, Error> {
-        let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if !set.insert(channel_id.to_string()) {
+        // Sharded set, not a global Mutex<HashSet>: this guard is acquired and
+        // released on every paid request, so a single mutex here serializes all
+        // gateway traffic and caps throughput at ~1/critical-section regardless
+        // of concurrency. DashSet shards the contention away.
+        if !self.0.insert(channel_id.to_string()) {
             return Err(batch_err(
                 codes::DUPLICATE_SETTLEMENT,
                 format!("channel {channel_id} already has a request in flight"),
@@ -226,11 +229,7 @@ impl std::fmt::Debug for InFlight {
 
 impl Drop for ChannelGuard {
     fn drop(&mut self) {
-        self.in_flight
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.channel_id);
+        self.in_flight.0.remove(&self.channel_id);
     }
 }
 
