@@ -118,10 +118,13 @@ jcs_files      := "arrays french structures unicode values weird"
 
 # Fetch the cyberphone testdata pairs into `harness/vectors/rfc8785/{input,output}`.
 # Pinned to {{cyberphone_ref}} so the corpus is reproducible from a clean
-# checkout. Idempotent: re-running overwrites the vendored files.
+# checkout. Idempotent: re-running overwrites the vendored files. `set -e`
+# inside the recipe so a failed curl (network blip, ref move, rate limit)
+# halts the loop instead of leaving a stale partial file that `jcs-sync`
+# would then bake into a generated vectors file.
 jcs-pull-corpus:
     @mkdir -p {{jcs_corpus_dir}}/input {{jcs_corpus_dir}}/output
-    @for f in {{jcs_files}}; do \
+    @set -e; for f in {{jcs_files}}; do \
         echo "Fetching {{jcs_corpus_dir}}/input/$f.json @ {{cyberphone_ref}}"; \
         curl -fsSL \
             "https://raw.githubusercontent.com/{{cyberphone_repo}}/{{cyberphone_ref}}/testdata/input/$f.json" \

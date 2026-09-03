@@ -10,7 +10,7 @@ reference suite, pinned to commit `19d51d7fe467d4706a3ff08adf8a748f29fc21e0`
 
 | Name | What it covers |
 |---|---|
-| `arrays` | array ordering / nested arrays; input is a JSON array of 2 cases, expanded into `rfc8785-arrays-0` and `rfc8785-arrays-1` |
+| `arrays` | array ordering / nested arrays; input is `[56, {"d": true, "10": null, "1": []}]`, expected canonical form sorts the inner object by UTF-16 code unit (`{"1":[], "10":null, "d":true}`) while preserving the array's element order |
 | `french` | BMP non-ASCII keys (`peach` / `péché` / `pêche`); pins UTF-16 code-unit sort order across accented characters |
 | `structures` | nested object key ordering, mixed numeric / string / empty / `A`-vs-`a` keys |
 | `unicode` | unnormalized Unicode (`Å` → `Å`) — the canonical-form contract is *not* NFC, by RFC 8785 §3.2.2.2 |
@@ -22,6 +22,25 @@ serialization), and §3.2.3 (UTF-16 code-unit key sorting). The 100M-value
 ES6 random-number file referenced by the cyberphone Go test lives outside
 this repo and is not vendored — its size and seed would make the
 conformance matrix non-deterministic.
+
+### Known test-channel limitation: `values` precision
+
+The `values` vector's `numbers` array has one case, `333333333.33333329`,
+where the source string carries a digit beyond what IEEE 754 doubles can
+represent. After any JSON parse — including the harness driver's stdin
+deserialization — the value collapses to the nearest double,
+`333333333.3333333`, which is the same form the canonical output requires.
+The other four number cases (`1E30` → `1e+30`, `4.50` → `4.5`, `2e-3` →
+`0.002`, `0.000000000000000000000000001` → `1e-27`) survive the parse
+lossless and continue to exercise the §3.2.2.3 shortest-form rule end to
+end. The collapsed case still pins the property at the value level: an
+encoder that emits anything other than the shortest round-trip form for
+the parsed double fails the vector. The original cyberphone Go/Java/JS
+test frameworks avoid this by piping the raw input bytes straight into
+`Transform(bytes)` without a parse round-trip; the harness's typed-`value`
+conformance channel can't. A future change that adds a raw-bytes input
+shape to the conformance schema would restore the end-to-end precision
+test.
 
 ## Why verbatim?
 

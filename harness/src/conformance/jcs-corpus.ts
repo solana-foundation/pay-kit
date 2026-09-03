@@ -25,13 +25,22 @@
 //    contain literal non-ASCII bytes (e.g. `€` in `values.json`).
 //
 // 3. The input is a JSON value. We parse the input file (it is JSON) and
-//    re-stringify it for embedding into the vector; the runner's JSON
-//    parser re-parses on receipt, and the JCS encoder canonicalizes the
-//    resulting value. Round-trip equivalence holds for our cases.
+//    embed the parsed value; the runner's JSON parser re-parses on
+//    receipt, and the JCS encoder canonicalizes the resulting value. One
+//    vector per cyberphone file: the top-level JSON value (object, array,
+//    or scalar) is the input and the file's output is the expected
+//    canonical form. This mirrors the reference implementations
+//    (`Transform(bytes)` once per file, never per element).
 //
-// 4. arrays.json is a JSON array of multiple cases; the other files are
-//    single values. We expand arrays into one vector per element with a
-//    `-N` suffix so failures are attributable to a specific case.
+// 4. `values.json` has a number that exceeds IEEE 754 precision
+//    (`333333333.33333329`). Any JSON parse round-trips it to
+//    `333333333.3333333`, the same form the canonical output requires,
+//    so the input-side of that one case is collapsed before the encoder
+//    runs. The §3.2.2.3 shortest-form property is still pinned at the
+//    value level (a wrong encoder still fails); the original source
+//    string is not. See `harness/vectors/rfc8785/README.md` for the
+//    longer discussion and the raw-bytes input shape that would
+//    restore end-to-end precision in a future change.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
