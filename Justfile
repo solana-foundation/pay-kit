@@ -7,6 +7,12 @@ subscriptions_repo     := "solana-foundation/subscriptions"
 subscriptions_ref      := "30a6f7cbd1c53862cc598d93cb771c2c86a10cbf"
 payment_channels_repo  := "Moonsong-Labs/solana-payment-channels"
 payment_channels_ref   := "0c07d5751c8972abf6a219570a3f39a72f46f879"
+# RFC 8785 (JCS) reference corpus. Vendored verbatim from
+# cyberphone/json-canonicalization; do NOT hand-write vectors here — the
+# whole point is to import from a battle-tested reference suite
+# (issue #110).
+cyberphone_repo        := "cyberphone/json-canonicalization"
+cyberphone_ref         := "19d51d7fe467d4706a3ff08adf8a748f29fc21e0"
 
 default:
     @just --list
@@ -98,6 +104,46 @@ payment-channels-generate-py: codegen-install
 
 # Full refresh: pull IDL + regenerate every client (Rust, Go, TypeScript, Python).
 payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs payment-channels-generate-go payment-channels-generate-ts payment-channels-generate-py
+
+# ── RFC 8785 (JCS) conformance corpus ──
+#
+# Vendors the cyberphone/json-canonicalization `testdata/{input,output}`
+# pairs into `harness/vectors/rfc8785/`, then renders them into a
+# ConformanceVector[] file at `harness/vectors/rfc8785-vectors.json` so
+# every SDK's `canonical-bytes` runner can ingest them. The corpus is the
+# source of truth — do not hand-author vectors here (issue #110).
+
+jcs_corpus_dir := "harness/vectors/rfc8785"
+jcs_files      := "arrays french structures unicode values weird"
+
+# Fetch the cyberphone testdata pairs into `harness/vectors/rfc8785/{input,output}`.
+# Pinned to {{cyberphone_ref}} so the corpus is reproducible from a clean
+# checkout. Idempotent: re-running overwrites the vendored files.
+jcs-pull-corpus:
+    @mkdir -p {{jcs_corpus_dir}}/input {{jcs_corpus_dir}}/output
+    @for f in {{jcs_files}}; do \
+        echo "Fetching {{jcs_corpus_dir}}/input/$f.json @ {{cyberphone_ref}}"; \
+        curl -fsSL \
+            "https://raw.githubusercontent.com/{{cyberphone_repo}}/{{cyberphone_ref}}/testdata/input/$f.json" \
+            -o "{{jcs_corpus_dir}}/input/$f.json"; \
+        echo "Fetching {{jcs_corpus_dir}}/output/$f.json @ {{cyberphone_ref}}"; \
+        curl -fsSL \
+            "https://raw.githubusercontent.com/{{cyberphone_repo}}/{{cyberphone_ref}}/testdata/output/$f.json" \
+            -o "{{jcs_corpus_dir}}/output/$f.json"; \
+    done
+    @echo "Wrote RFC 8785 corpus @ {{cyberphone_ref}}"
+
+# Render `harness/vectors/rfc8785-vectors.json` from the vendored pairs.
+# Run with `harness` as cwd (or anywhere — script resolves its own paths).
+# One vector per cyberphone file: the top-level JSON value (object, array,
+# or scalar) is the input and the file's output is the expected canonical
+# form. Mirrors how the reference implementations exercise the corpus
+# (`Transform(bytes)` once per file, never per element).
+jcs-generate-vectors:
+    cd harness && pnpm run jcs:generate-vectors
+
+# Full refresh: pull corpus + regenerate vectors file.
+jcs-sync: jcs-pull-corpus jcs-generate-vectors
 
 # ── TypeScript ──
 
