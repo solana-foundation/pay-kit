@@ -293,6 +293,25 @@ export const clientImplementations: ImplementationDefinition[] = [
     intents: ["x402-upto"],
     reportsAs: "python",
   },
+  {
+    id: "ts-x402-upto",
+    label: "TypeScript x402 upto client",
+    role: "client",
+    // Real SDK path: `@solana/pay-kit/client` already registers UptoSvmScheme.
+    // Fixture builds a payment-channel credential and retries — not a wire
+    // stub like `ts-x402` exact. Opt in via `X402_HARNESS_CLIENTS=ts-x402-upto`.
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/typescript/upto-client.ts",
+    ],
+    enabled: isEnabled("ts-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "typescript",
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
