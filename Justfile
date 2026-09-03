@@ -118,21 +118,31 @@ jcs_files      := "arrays french structures unicode values weird"
 
 # Fetch the cyberphone testdata pairs into `harness/vectors/rfc8785/{input,output}`.
 # Pinned to {{cyberphone_ref}} so the corpus is reproducible from a clean
-# checkout. Idempotent: re-running overwrites the vendored files. `set -e`
-# inside the recipe so a failed curl (network blip, ref move, rate limit)
-# halts the loop instead of leaving a stale partial file that `jcs-sync`
-# would then bake into a generated vectors file.
+# checkout. Idempotent: re-running overwrites the vendored files.
+#
+# Each file is downloaded into a `.tmp` sibling first and only renamed into
+# place once the curl run completes cleanly. `curl -o` opens the
+# destination on stream start, so a mid-stream network failure on a
+# direct `-o` write leaves the vendored file truncated — `set -e` halts
+# the recipe but cannot undo that. The tmp+rename pair makes the swap
+# atomic: a successful `mv` means a complete file, a failed `curl` leaves
+# the `.tmp` partial (deleted by the trap) and the vendored file
+# unchanged. This protects the standalone `jcs-generate-vectors` step
+# from embedding a damaged output into `rfc8785-vectors.json`.
 jcs-pull-corpus:
     @mkdir -p {{jcs_corpus_dir}}/input {{jcs_corpus_dir}}/output
     @set -e; for f in {{jcs_files}}; do \
-        echo "Fetching {{jcs_corpus_dir}}/input/$f.json @ {{cyberphone_ref}}"; \
-        curl -fsSL \
-            "https://raw.githubusercontent.com/{{cyberphone_repo}}/{{cyberphone_ref}}/testdata/input/$f.json" \
-            -o "{{jcs_corpus_dir}}/input/$f.json"; \
-        echo "Fetching {{jcs_corpus_dir}}/output/$f.json @ {{cyberphone_ref}}"; \
-        curl -fsSL \
-            "https://raw.githubusercontent.com/{{cyberphone_repo}}/{{cyberphone_ref}}/testdata/output/$f.json" \
-            -o "{{jcs_corpus_dir}}/output/$f.json"; \
+        for side in input output; do \
+            dest="{{jcs_corpus_dir}}/$side/$f.json"; \
+            tmp="$${dest}.tmp"; \
+            trap 'rm -f "$$tmp"' EXIT; \
+            echo "Fetching $dest @ {{cyberphone_ref}}"; \
+            curl -fsSL \
+                "https://raw.githubusercontent.com/{{cyberphone_repo}}/{{cyberphone_ref}}/testdata/$side/$f.json" \
+                -o "$$tmp"; \
+            mv "$$tmp" "$$dest"; \
+            trap - EXIT; \
+        done; \
     done
     @echo "Wrote RFC 8785 corpus @ {{cyberphone_ref}}"
 
