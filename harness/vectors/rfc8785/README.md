@@ -69,6 +69,9 @@ pnpm run jcs:generate-vectors
 
 ## License
 
-The cyberphone corpus is licensed Apache-2.0
-([LICENSE](https://github.com/cyberphone/json-canonicalization/blob/master/LICENSE)).
-Test data attribution per Apache-2.0 §4(d).
+The cyberphone corpus is licensed Apache-2.0; a local copy of the
+upstream [LICENSE](https://github.com/cyberphone/json-canonicalization/blob/master/LICENSE)
+lives at `LICENSE` next to this README so the vendored material ships
+with its own terms. Test data attribution per Apache-2.0 §4(d):
+copyright 2018 Anders Rundgren (`cyberphone/json-canonicalization`),
+pinned to commit `19d51d7fe467d4706a3ff08adf8a748f29fc21e0`.
