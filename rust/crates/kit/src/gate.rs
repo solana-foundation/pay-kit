@@ -1078,17 +1078,19 @@ async fn batch_gate_middleware(
     }
 
     // The crash boundary: past this point a retry may only finish the charge.
+    //
+    // A marker that fails to write is not a reason to abandon the charge. This
+    // process watched the handler succeed; the marker only makes that durable
+    // for a crash, and committing needs the reservation, not the marker. So a
+    // failure here is logged and the charge is attempted anyway — otherwise a
+    // store hiccup would serve the request for free and leave the client's
+    // channel stuck at a watermark nothing can advance.
     if let Err(e) = batch.mark_handler_succeeded(&outcome).await {
         tracing::error!(
             channel = %channel_id,
             error = %e,
-            "batch-settlement could not record a served handler"
+            "batch-settlement could not record a served handler; charging anyway"
         );
-        return (
-            StatusCode::BAD_GATEWAY,
-            "payment authorization could not be committed",
-        )
-            .into_response();
     }
 
     let mut resp = resp;

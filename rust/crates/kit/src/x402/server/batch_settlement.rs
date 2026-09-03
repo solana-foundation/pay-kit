@@ -3016,6 +3016,52 @@ mod tests {
         );
     }
 
+    /// A served request is still charged when the success marker could not be
+    /// written. The marker makes "the handler ran" survive a crash; committing
+    /// needs the reservation, not the marker, so losing it must not turn a
+    /// served request into a free one.
+    #[tokio::test]
+    async fn a_served_request_is_charged_even_without_its_marker() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+
+        let BatchAccess::Serve(outcome) = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .unwrap()
+        else {
+            panic!("a fresh authorization must be served");
+        };
+        let channel_id = outcome.channel_id.clone();
+        // The marker write failed, so the reservation is still unmarked.
+        let settled = handler
+            .finish_commit(outcome)
+            .await
+            .expect("an unmarked reservation still commits");
+        assert!(settled.success);
+        assert_eq!(
+            store
+                .get_channel(&channel_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            3_000,
+            "the served request is charged exactly once"
+        );
+
+        // And the retry is answered as a replay, not refused: an unmarked
+        // reservation that was charged anyway leaves nothing stranded.
+        assert!(matches!(
+            handler
+                .verify_and_reserve_payment(&request, "0.001")
+                .await
+                .expect("the same voucher verifies"),
+            BatchAccess::Replay(_)
+        ));
+    }
+
     /// The crash boundary. Once the handler has succeeded, a retry may only
     /// finish the charge — it must never run the handler a second time.
     #[tokio::test]
