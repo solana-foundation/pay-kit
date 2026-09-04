@@ -1746,20 +1746,26 @@ impl X402BatchSettlement {
     async fn reconcile_channel(&self, channel_b58: &str) -> Result<(), Error> {
         // Hot path: only the last-checked timestamp decides whether a refresh
         // is due, so read that one field without cloning the whole record.
-        let checked_at: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
-        let out = Arc::clone(&checked_at);
+        let snapshot: Arc<Mutex<Option<(u64, bool)>>> = Arc::new(Mutex::new(None));
+        let out = Arc::clone(&snapshot);
         self.store
             .read_channel(
                 channel_b58,
                 Box::new(move |state| {
-                    *out.lock().unwrap_or_else(|e| e.into_inner()) =
-                        state.map(|s| s.onchain_checked_at);
+                    *out.lock().unwrap_or_else(|e| e.into_inner()) = state.map(|state| {
+                        (
+                            state.onchain_checked_at,
+                            state.has_in_flight_authorization(),
+                        )
+                    });
                     Ok(())
                 }),
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let Some(onchain_checked_at) = *checked_at.lock().unwrap_or_else(|e| e.into_inner()) else {
+        let Some((onchain_checked_at, has_in_flight_authorization)) =
+            *snapshot.lock().unwrap_or_else(|e| e.into_inner())
+        else {
             // Nothing to reconcile: an unknown channel is refused by
             // verification, and a deposit confirms its own channel.
             return Ok(());
@@ -1795,10 +1801,22 @@ impl X402BatchSettlement {
             // Confirmed absent: reclaimed, or never opened. Either way no
             // voucher against it can ever be redeemed.
             None => {
+                // An opening setup is stored before its transaction is
+                // broadcast. If that broadcast returns ambiguously, a retry
+                // must reach `Resume` and finish it; treating the expected
+                // pre-open absence as a reclaimed channel strands the exact
+                // authorization that makes the retry safe.
+                if has_in_flight_authorization {
+                    tracing::debug!(
+                        channel = %channel_b58,
+                        "channel is not onchain yet; allowing in-flight setup to resume"
+                    );
+                    return Ok(());
+                }
                 return Err(batch_err(
                     codes::INVALID_CHANNEL_STATE,
                     format!("channel {channel_b58} no longer exists onchain"),
-                ))
+                ));
             }
             Some(channel) => {
                 let closed_at = (channel.status != CHANNEL_STATUS_OPEN
