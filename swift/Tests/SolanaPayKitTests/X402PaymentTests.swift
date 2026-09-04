@@ -542,6 +542,86 @@ struct X402PaymentBuildingTests {
             Issue.record("expected error")
         } catch { }
     }
+
+    @Test
+    func fetchesDecimalsFromMintWhenAbsentForSPL() async {
+        // A spec-compliant offer may legally omit extra.decimals; the client
+        // must read the authoritative value from the on-chain mint over RPC.
+        // The mint stub carries 9 decimals at byte 44 of the base Mint layout
+        // (wrapped SOL), so a blind default of six would have been wrong.
+        func drainBody(_ req: URLRequest) -> String {
+            if let body = req.httpBody { return String(data: body, encoding: .utf8) ?? "" }
+            guard let stream = req.httpBodyStream else { return "" }
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            let bufSize = 4096
+            let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: bufSize)
+            defer { buf.deallocate() }
+            while stream.hasBytesAvailable {
+                let n = stream.read(buf, maxLength: bufSize)
+                if n <= 0 { break }
+                data.append(buf, count: n)
+            }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+
+        var mintFetches = 0
+        X402StubURLProtocol.reset()
+        X402StubURLProtocol.responder = { req in
+            let body = drainBody(req)
+            if body.contains("getAccountInfo") {
+                mintFetches += 1
+                var raw = [UInt8](repeating: 0, count: 82)
+                raw[44] = 9
+                let b64 = Data(raw).base64EncodedString()
+                let json = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"value\":{\"data\":[\"\(b64)\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\"}}}"
+                return X402StubResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: Data(json.utf8))
+            }
+            if body.contains("getLatestBlockhash") {
+                let json = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"value\":{\"blockhash\":\"\(Self.knownBlockhash)\"}}}"
+                return X402StubResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: Data(json.utf8))
+            }
+            return X402StubResponse(statusCode: 500, headers: [:], body: Data("{}".utf8))
+        }
+        defer { X402StubURLProtocol.reset() }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [X402StubURLProtocol.self]
+        let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!, urlSession: URLSession(configuration: config))
+
+        let signer = try! Self.makeSigner()
+        let extra: [String: JSONValue] = ["recentBlockhash": .string(Self.knownBlockhash)]
+        let offer = X402AcceptsEntry(
+            scheme: "exact", network: SolanaNetwork.mainnet,
+            amount: "1000", maxAmountRequired: nil,
+            asset: "So11111111111111111111111111111111111111112",
+            payTo: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", recipient: nil, extra: extra
+        )
+        do {
+            _ = try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: offer)
+        } catch {
+            Issue.record("expected decimals fallback to succeed, got \(error)")
+        }
+        #expect(mintFetches >= 1)
+    }
+
+    @Test
+    func errorsWhenDecimalsAbsentAndMintFetchFails() async {
+        let signer = try! Self.makeSigner()
+        let rpc = Self.makeRpc() // unreachable endpoint
+        let extra: [String: JSONValue] = ["recentBlockhash": .string(Self.knownBlockhash)]
+        let offer = X402AcceptsEntry(
+            scheme: "exact", network: SolanaNetwork.mainnet,
+            amount: "1000", maxAmountRequired: nil,
+            asset: "So11111111111111111111111111111111111111112",
+            payTo: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", recipient: nil, extra: extra
+        )
+        do {
+            _ = try await buildX402PaymentHeader(signer: signer, rpc: rpc, offer: offer)
+            Issue.record("expected error")
+        } catch { }
+    }
 }
 
 // MARK: - Mints / Network registry tests

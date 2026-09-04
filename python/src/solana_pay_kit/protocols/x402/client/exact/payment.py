@@ -74,8 +74,6 @@ __all__ = [
 _COMPUTE_UNIT_LIMIT = 20_000
 #: ComputeBudget SetComputeUnitPrice microlamports (disc 3, u64 LE, <= MAX).
 _COMPUTE_UNIT_PRICE = 1
-#: Default SPL decimals when the offer omits ``extra.decimals``.
-_DEFAULT_DECIMALS = 6
 #: Random memo nonce length in bytes when the offer omits ``extra.memo``. The
 #: x402 SVM exact contract requires a Memo of at least 16 bytes; it is
 #: hex-encoded to a UTF-8 string for the Memo instruction data.
@@ -524,15 +522,27 @@ async def build_payment(
         if token_program is None:
             cluster_label = _mints_label_for_caip2(_caip2_for_selection(_str_field(req, "network")))
             token_program = default_token_program_for_currency(asset, cluster_label)
-        # decimals: top-level first, then extra (types.rs:344-345); default 6.
+        # Decimals: the offer may carry them (an RPC-saving hint), but a
+        # spec-compliant x402 offer can legally omit ``extra.decimals``. When
+        # absent, read the authoritative value from the on-chain mint over the
+        # RPC connection this client already holds; on-chain transferChecked
+        # still verifies the byte against the mint, so a lying hint stays
+        # fail-closed. Defaulting blindly to 6 would silently sign a wrong
+        # decimals byte / wrong divisor for any non-6-decimal mint.
         decimals_raw = req.get("decimals")
         if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
             decimals_raw = extra.get("decimals")
-        decimals = (
-            int(decimals_raw)
-            if isinstance(decimals_raw, int) and not isinstance(decimals_raw, bool)
-            else _DEFAULT_DECIMALS
-        )
+        if decimals_raw is None:
+            decimals = await _fetch_mint_decimals(rpc, asset)
+        else:
+            if (
+                not isinstance(decimals_raw, int)
+                or isinstance(decimals_raw, bool)
+                or decimals_raw < 0
+                or decimals_raw > 255
+            ):
+                raise ValueError("extra.decimals must be an integer between 0 and 255")
+            decimals = int(decimals_raw)
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(asset)
         source_ata = Pubkey.from_string(derive_ata(str(signer_pubkey), asset, token_program))
@@ -637,6 +647,31 @@ def _resource_info_of(req: Mapping[str, object]) -> dict[str, object] | None:
     if description is not None:
         info["description"] = description
     return info
+
+
+async def _fetch_mint_decimals(rpc: Any, mint: str) -> int:
+    """Fetch the authoritative decimals of an SPL mint over RPC.
+
+    Reads byte 44 of the base SPL Mint layout (4-byte COption tag + 32-byte
+    authority + 8-byte supply precede it); token-2022 keeps that prefix, so
+    the offset holds for both token programs.
+    """
+    from solders.pubkey import Pubkey
+
+    try:
+        resp = await rpc.get_account_info(Pubkey.from_string(mint))
+    except Exception as err:
+        raise ValueError(
+            f"extra.decimals is absent and fetching mint {mint} failed: {err}"
+        ) from err
+    value = getattr(resp, "value", None)
+    data = getattr(value, "data", None) if value is not None else None
+    if data is None:
+        raise ValueError(f"extra.decimals is absent and mint {mint} was not found on chain")
+    raw = bytes(data)
+    if len(raw) < 45:
+        raise ValueError(f"mint {mint} data too short to contain decimals")
+    return raw[44]
 
 
 async def _resolve_blockhash(
