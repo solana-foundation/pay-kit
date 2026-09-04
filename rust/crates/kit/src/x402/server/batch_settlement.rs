@@ -84,6 +84,35 @@ fn batch_err(code: &'static str, detail: impl Into<String>) -> Error {
     BatchError::new(code, detail).into()
 }
 
+/// Bound on in-flight `send_and_confirm_transaction` calls inside
+/// [`X402BatchSettlement::submit_groups`]. High enough that a large
+/// `finalize_close`/`reclaim` sweep isn't bottlenecked on RPC round-trip
+/// latency; low enough not to overwhelm the RPC endpoint or the blocking
+/// thread pool during the frequent, small-batch `settle`/`claim` calls a
+/// live gateway makes on the same path.
+const SUBMIT_GROUPS_CONCURRENCY: usize = 16;
+
+/// Pop and spawn the next pending transaction onto `in_flight`, if any.
+/// Broadcasting runs on the blocking pool (`send_and_confirm_transaction` is
+/// the sync `RpcClient`, whose full confirm-poll round trip would otherwise
+/// stall a Tokio worker thread — the same hazard documented on
+/// [`rpc_lookup_channel`]/[`broadcast_and_confirm_deposit`] above).
+fn spawn_next_submission(
+    in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
+    pending: &mut std::collections::VecDeque<Transaction>,
+    rpc: &Arc<RpcClient>,
+) {
+    let Some(tx) = pending.pop_front() else {
+        return;
+    };
+    let rpc = Arc::clone(rpc);
+    in_flight.spawn_blocking(move || {
+        rpc.send_and_confirm_transaction(&VersionedTransaction::from(tx))
+            .map(|signature| signature.to_string())
+            .map_err(|e| Error::Rpc(format!("settlement broadcast failed: {e}")))
+    });
+}
+
 /// Fetch and decode a channel account with the blocking RPC client. Factored out
 /// of [`X402BatchSettlement::lookup_channel`] so the reconcile path can run it on
 /// a blocking thread (via `spawn_blocking`) instead of stalling an async worker:
@@ -2275,16 +2304,26 @@ impl X402BatchSettlement {
             return Ok(vec![]);
         }
         let batches = pack(groups, &self.fee_payer, max_per_tx);
-        let mut signatures = Vec::with_capacity(batches.len());
+
+        // One shared blockhash for every batch below: batches broadcast
+        // concurrently and typically all confirm within seconds of each
+        // other, well inside a blockhash's ~60-90s validity window, so a
+        // single fetch replaces what was previously one blocking RPC round
+        // trip per batch.
+        let rpc = Arc::clone(&self.rpc);
+        let blockhash = tokio::task::spawn_blocking(move || rpc.get_latest_blockhash())
+            .await
+            .map_err(|e| Error::Other(format!("blockhash join error: {e}")))?
+            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
+
+        // Sign every batch's transaction. Async (a signer may be remote) but
+        // never touches the blocking RPC client, so this stays a plain loop.
+        let mut pending = std::collections::VecDeque::with_capacity(batches.len());
         for batch in batches {
             let instructions: Vec<_> = batch
                 .into_iter()
                 .flat_map(|group| group.instructions)
                 .collect();
-            let blockhash = self
-                .rpc
-                .get_latest_blockhash()
-                .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
             let message = Message::new_with_blockhash(
                 &instructions,
                 Some(&pc::to_address(&self.fee_payer)),
@@ -2296,11 +2335,23 @@ impl X402BatchSettlement {
                 .sign_transaction(&mut tx)
                 .await
                 .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-            let signature = self
-                .rpc
-                .send_and_confirm_transaction(&VersionedTransaction::from(tx))
-                .map_err(|e| Error::Rpc(format!("settlement broadcast failed: {e}")))?;
-            signatures.push(signature.to_string());
+            pending.push_back(tx);
+        }
+
+        // Broadcast+confirm concurrently, bounded: each batch is an
+        // independent transaction, so serializing them here (as a plain
+        // sequential loop previously did) buys no correctness — only
+        // latency. Under a large `finalize_close`/`reclaim` sweep this was
+        // the difference between minutes and days.
+        let total = pending.len();
+        let mut in_flight = tokio::task::JoinSet::new();
+        for _ in 0..SUBMIT_GROUPS_CONCURRENCY {
+            spawn_next_submission(&mut in_flight, &mut pending, &self.rpc);
+        }
+        let mut signatures = Vec::with_capacity(total);
+        while let Some(joined) = in_flight.join_next().await {
+            spawn_next_submission(&mut in_flight, &mut pending, &self.rpc);
+            signatures.push(joined.map_err(|e| Error::Other(format!("submit join error: {e}")))??);
         }
         Ok(signatures)
     }
