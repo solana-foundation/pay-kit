@@ -94,6 +94,9 @@ fn batch_err(code: &'static str, detail: impl Into<String>) -> Error {
 /// endpoint's real throughput ceiling, not on an arbitrary in-flight cap.
 const SUBMIT_GROUPS_CONCURRENCY: usize = 48;
 
+/// Solana JSON-RPC caps `getMultipleAccounts` at 100 addresses.
+const MAX_CHANNELS_PER_RPC_READ: usize = 100;
+
 /// Pop and spawn the next pending transaction onto `in_flight`, if any.
 /// Broadcasting runs on the blocking pool (`send_and_confirm_transaction` is
 /// the sync `RpcClient`, whose full confirm-poll round trip would otherwise
@@ -2160,6 +2163,67 @@ impl X402BatchSettlement {
         })
     }
 
+    /// Fetch lifecycle snapshots in JSON-RPC batches instead of issuing one
+    /// `getAccountInfo` round trip per channel. Large redemption sweeps are
+    /// otherwise dominated by RPC latency before a transaction is even built.
+    async fn lookup_channels_for_lifecycle(
+        &self,
+        channel_ids: &[String],
+    ) -> Result<Vec<Option<Channel>>, Error> {
+        let addresses = channel_ids
+            .iter()
+            .map(|channel_id| pc::parse_pubkey(channel_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut snapshots = Vec::with_capacity(addresses.len());
+        for chunk in addresses.chunks(MAX_CHANNELS_PER_RPC_READ) {
+            let rpc = Arc::clone(&self.rpc);
+            let chunk = chunk.to_vec();
+            let accounts = tokio::task::spawn_blocking(move || rpc.get_multiple_accounts(&chunk))
+                .await
+                .map_err(|error| Error::Other(format!("channel batch fetch join error: {error}")))?
+                .map_err(|error| Error::Rpc(format!("channel batch fetch failed: {error}")))?;
+            for account in accounts {
+                snapshots.push(
+                    account
+                        .map(|account| {
+                            Channel::from_bytes(&account.data).map_err(|error| {
+                                Error::Other(format!("channel decode failed: {error}"))
+                            })
+                        })
+                        .transpose()?,
+                );
+            }
+        }
+
+        for (channel_id, snapshot) in channel_ids.iter().zip(&snapshots) {
+            if snapshot.is_some() {
+                continue;
+            }
+            let in_flight = self
+                .store
+                .get_channel(channel_id)
+                .await
+                .map_err(|error| Error::Other(format!("store error: {error}")))?
+                .is_some_and(|state| state.has_in_flight_authorization());
+            if in_flight {
+                tracing::debug!(
+                    channel = %channel_id,
+                    "channel is not onchain yet; keeping its in-flight record"
+                );
+                continue;
+            }
+            tracing::info!(
+                channel = %channel_id,
+                "channel account is gone onchain; dropping its record"
+            );
+            self.store
+                .delete_channel(channel_id)
+                .await
+                .map_err(|error| Error::Other(format!("store error: {error}")))?;
+        }
+        Ok(snapshots)
+    }
+
     // ── Redemption (out of band) ──
 
     /// Advance the onchain `settled` watermark from each channel's stored
@@ -2172,8 +2236,9 @@ impl X402BatchSettlement {
     /// Returns the confirmed transaction signatures.
     pub async fn claim(&self, channel_ids: &[String]) -> Result<Vec<String>, Error> {
         let program_id = self.program_id()?;
+        let onchain_channels = self.lookup_channels_for_lifecycle(channel_ids).await?;
         let mut groups = Vec::with_capacity(channel_ids.len());
-        for channel_id in channel_ids {
+        for (channel_id, onchain) in channel_ids.iter().zip(onchain_channels) {
             let mut state = self
                 .store
                 .get_channel(channel_id)
@@ -2186,7 +2251,7 @@ impl X402BatchSettlement {
                     )
                 })?;
             let channel = pc::parse_pubkey(channel_id)?;
-            let Some(onchain) = self.lookup_for_lifecycle(channel_id, &channel).await? else {
+            let Some(onchain) = onchain else {
                 continue;
             };
             if onchain.status != CHANNEL_STATUS_OPEN || onchain.closure_started_at != 0 {
@@ -2246,10 +2311,11 @@ impl X402BatchSettlement {
         let mint = self.mint()?;
         let token_program = self.token_program()?;
         let receiver = pc::parse_pubkey(&self.config.pay_to)?;
+        let onchain_channels = self.lookup_channels_for_lifecycle(channel_ids).await?;
         let mut groups = Vec::with_capacity(channel_ids.len());
-        for channel_id in channel_ids {
+        for (channel_id, onchain) in channel_ids.iter().zip(onchain_channels) {
             let channel = pc::parse_pubkey(channel_id)?;
-            let Some(onchain) = self.lookup_for_lifecycle(channel_id, &channel).await? else {
+            let Some(onchain) = onchain else {
                 continue;
             };
             // A close freezes the distributable watermark. Never pack a
