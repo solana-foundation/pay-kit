@@ -2366,6 +2366,7 @@ impl X402BatchSettlement {
             );
         }
         let mut signatures = Vec::with_capacity(total);
+        let mut failures = Vec::new();
         while let Some(joined) = in_flight.join_next().await {
             spawn_next_submission(
                 &mut in_flight,
@@ -2374,7 +2375,20 @@ impl X402BatchSettlement {
                 &self.config.fee_payer_signer,
                 &self.fee_payer,
             );
-            signatures.push(joined.map_err(|e| Error::Other(format!("submit join error: {e}")))??);
+            match joined {
+                Ok(Ok(signature)) => signatures.push(signature),
+                Ok(Err(error)) => failures.push(error.to_string()),
+                Err(error) => failures.push(format!("submit join error: {error}")),
+            }
+        }
+        if !failures.is_empty() {
+            return Err(Error::Rpc(format!(
+                "{} of {total} settlement submissions failed after all outcomes were drained; \
+                 confirmed signatures: [{}]; failures: [{}]",
+                failures.len(),
+                signatures.join(", "),
+                failures.join("; ")
+            )));
         }
         Ok(signatures)
     }
