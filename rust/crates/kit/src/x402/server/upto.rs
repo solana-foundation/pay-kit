@@ -747,7 +747,7 @@ impl X402Upto {
         ));
         instructions.push(pc::build_create_associated_token_account_instruction(
             &self.fee_payer,
-            &pc::treasury_owner(),
+            &pc::treasury_owner_for_cluster(&self.config.cluster),
             &open.mint,
             &open.token_program,
         ));
@@ -764,7 +764,7 @@ impl X402Upto {
             &open.payer,
             &open.rent_payer,
             &payee,
-            &pc::treasury_owner(),
+            &pc::treasury_owner_for_cluster(&self.config.cluster),
             &open.mint,
             &open.distribution,
             &open.token_program,

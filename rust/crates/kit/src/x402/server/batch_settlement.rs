@@ -1087,7 +1087,10 @@ impl X402BatchSettlement {
     ) -> Result<(), Error> {
         for (role, owner) in [
             ("payee", self.fee_payer),
-            ("treasury", pc::treasury_owner()),
+            (
+                "treasury",
+                pc::treasury_owner_for_cluster(&self.config.cluster),
+            ),
             ("receiver", *receiver),
             // The payer's return ATA is a settlement destination too: a close
             // pays `deposit - settled` back through it, so an unusable one
@@ -2203,7 +2206,7 @@ impl X402BatchSettlement {
                 &pc::from_address(&onchain.payer),
                 &self.fee_payer,
                 &self.fee_payer,
-                &pc::treasury_owner(),
+                &pc::treasury_owner_for_cluster(&self.config.cluster),
                 &mint,
                 &pc::sole_recipient(&receiver),
                 &token_program,
@@ -2345,7 +2348,7 @@ impl X402BatchSettlement {
                         &pc::from_address(&onchain.payer),
                         &self.fee_payer,
                         &self.fee_payer,
-                        &pc::treasury_owner(),
+                        &pc::treasury_owner_for_cluster(&self.config.cluster),
                         &mint,
                         &pc::sole_recipient(&receiver),
                         &token_program,

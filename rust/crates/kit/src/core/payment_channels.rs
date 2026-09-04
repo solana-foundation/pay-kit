@@ -129,13 +129,24 @@ pub const INSTRUCTIONS_SYSVAR_ID: &str = "Sysvar1nstructions11111111111111111111
 /// Rent sysvar ID.
 pub const RENT_SYSVAR_ID: &str = "SysvarRent111111111111111111111111111111111";
 
-/// Treasury owner used by the current payment-channels program deployment.
-// Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP — the treasury owner baked into
-// the deployed (mainnet-build) payment-channels program; `distribute` checks the
-// treasury ATA against ATA(TREASURY_OWNER, mint, token_program).
+/// Treasury owner baked into the mainnet-build payment-channels program.
+// Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP — `distribute` checks the
+// treasury ATA against ATA(TREASURY_OWNER, mint, token_program), so this must
+// match the constant the target deployment was built with exactly, or
+// `distribute` fails with `TreasuryAccountMismatch`. The devnet build was
+// deployed with a different constant — see [`treasury_owner_for_cluster`].
 pub const TREASURY_OWNER: [u8; 32] = [
     0xB0, 0x41, 0xD9, 0xD3, 0x37, 0xB7, 0x21, 0xBE, 0x57, 0x89, 0x4E, 0xB6, 0x9C, 0x3B, 0x68, 0x09,
     0xA5, 0x3A, 0x0E, 0x2B, 0x6A, 0x23, 0x99, 0xFC, 0x7D, 0x5B, 0x7E, 0xDA, 0x8C, 0xAC, 0x89, 0xAA,
+];
+
+/// Treasury owner baked into the devnet-build payment-channels program
+/// (4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap) — distinct from the
+/// mainnet build's constant. Mirrors the TypeScript SDK's
+/// `DEVNET_TREASURY_OWNER` (mechanisms/svm/src/payment-channels/onchain.ts).
+pub const DEVNET_TREASURY_OWNER: [u8; 32] = [
+    0x3B, 0x4B, 0x4A, 0x4C, 0x3E, 0xCD, 0x7E, 0x59, 0xD6, 0x34, 0xAE, 0x67, 0xE5, 0xDE, 0xBB, 0xEC,
+    0x0A, 0xD0, 0x6F, 0x20, 0x4D, 0xF0, 0x13, 0xA6, 0x95, 0xA3, 0x37, 0x6A, 0x57, 0xB9, 0x8D, 0x05,
 ];
 
 /// Basis points denominating a distribution share; 10,000 is the whole amount.
@@ -245,6 +256,22 @@ pub fn rent_sysvar_id() -> Pubkey {
 
 pub fn treasury_owner() -> Pubkey {
     Pubkey::from(TREASURY_OWNER)
+}
+
+/// Treasury owner for the payment-channels program deployment on `cluster`.
+///
+/// Each network's program binary is built with its own baked-in
+/// `TREASURY_OWNER`; `distribute` validates the treasury ATA against it, so
+/// callers settling on devnet must use [`DEVNET_TREASURY_OWNER`] or every
+/// `distribute` fails with `TreasuryAccountMismatch` (0x961). Mirrors the
+/// TypeScript SDK's `getPaymentChannelsTreasuryOwner` matching rule.
+pub fn treasury_owner_for_cluster(cluster: &str) -> Pubkey {
+    match cluster {
+        "devnet" | "solana-devnet" | "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" => {
+            Pubkey::from(DEVNET_TREASURY_OWNER)
+        }
+        _ => Pubkey::from(TREASURY_OWNER),
+    }
 }
 
 pub fn parse_pubkey(value: &str) -> Result<Pubkey> {
