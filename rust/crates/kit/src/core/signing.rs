@@ -1,19 +1,23 @@
 //! Shared transaction-signing helpers.
 //!
-//! The current keychain release signs serialized transaction messages through
-//! `sign_message`. Hardware-wallet support stays out of this release until its
-//! transaction-signing API is published.
+//! These route through `TransactionSigner::sign_transaction`, so a backend that
+//! cannot raw-sign arbitrary bytes -- a hardware wallet -- works here. The
+//! previous `sign_message(&tx.message.serialize())` form assumed a software key
+//! that raw-ed25519-signs anything, which is why hardware support had to stay
+//! out; keychain 2.x publishes a versioned-transaction signing API, so the
+//! assumption is no longer needed. For software backends the bytes signed are
+//! unchanged, so signatures are byte-identical to before.
 
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_pubkey::Pubkey;
-use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction::Transaction;
 
 use crate::core::{Error, Result};
 
 /// Sign the calling signer's required slot in a legacy or v0 transaction.
 pub async fn sign_versioned_transaction_slot(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     tx: &mut VersionedTransaction,
 ) -> Result<()> {
     let signer_pubkey = signer.pubkey();
@@ -36,11 +40,39 @@ pub async fn sign_versioned_transaction_slot(
         )));
     }
 
-    let signature = signer
-        .sign_message(&tx.message.serialize())
+    // `sign_transaction` places the signature at this signer's own index and
+    // leaves every other slot untouched, which is what the checks above have
+    // just established is safe. The `signer_index` computed above is therefore
+    // still the slot that changes; it stays computed because the validation
+    // depends on it.
+    signer
+        .sign_transaction(tx)
         .await
         .map_err(|error| Error::Other(format!("transaction signing failed: {error}")))?;
-    tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
+    Ok(())
+}
+
+/// Sign a legacy transaction through the versioned signing API.
+///
+/// `TransactionSigner::sign_transaction` takes a `VersionedTransaction`, while
+/// much of the kit still builds legacy `Transaction`s and serializes them as
+/// such. Converting to a versioned view is lossless in both directions here: a
+/// legacy transaction becomes `VersionedMessage::Legacy`, which leaves the
+/// account keys, the header and therefore the signature slot ordering exactly
+/// as they were, so copying the signature vector back is a faithful round-trip.
+///
+/// This keeps the conversion in one place rather than at each call site, and
+/// leaves callers free to go on serializing the legacy transaction.
+pub async fn sign_legacy_transaction(
+    signer: &dyn TransactionSigner,
+    tx: &mut Transaction,
+) -> Result<()> {
+    let mut versioned = VersionedTransaction::from(tx.clone());
+    signer
+        .sign_transaction(&mut versioned)
+        .await
+        .map_err(|error| Error::Other(format!("transaction signing failed: {error}")))?;
+    tx.signatures = versioned.signatures;
     Ok(())
 }
 
@@ -51,7 +83,7 @@ pub async fn sign_versioned_transaction_slot(
 /// account key zero: accepting it at a later index would let a crafted
 /// transaction leave its actual fee payer unsigned.
 pub async fn cosign_versioned_fee_payer(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     expected_fee_payer: &Pubkey,
     tx: &mut VersionedTransaction,
 ) -> Result<()> {
@@ -68,12 +100,32 @@ pub async fn cosign_versioned_fee_payer(
     sign_versioned_transaction_slot(signer, tx).await
 }
 
+/// Co-sign a legacy transaction's fee-payer slot after pinning the sponsor.
+///
+/// The legacy counterpart to `cosign_versioned_fee_payer`, for the paths that
+/// still build and serialize a legacy `Transaction`. It runs the same sponsor
+/// and slot validation, and routes the signature through `sign_transaction`, so
+/// a hardware backend works here too. The round-trip through the versioned view
+/// is faithful for the same reason `sign_legacy_transaction` documents.
+pub async fn cosign_legacy_fee_payer(
+    signer: &dyn TransactionSigner,
+    expected_fee_payer: &Pubkey,
+    tx: &mut Transaction,
+) -> Result<()> {
+    let mut versioned = VersionedTransaction::from(tx.clone());
+    cosign_versioned_fee_payer(signer, expected_fee_payer, &mut versioned).await?;
+    tx.signatures = versioned.signatures;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
     use solana_hash::Hash;
-    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_keychain::transaction_util::TransactionUtil;
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
     use solana_message::{v0, Message, VersionedMessage};
+    use solana_signature::Signature;
     use solana_system_interface::instruction as system_instruction;
     use solana_transaction::Transaction;
 
@@ -99,23 +151,33 @@ mod tests {
             self.pubkey
         }
 
-        async fn sign_transaction(
-            &self,
-            _tx: &mut Transaction,
-        ) -> std::result::Result<SignTransactionResult, SignerError> {
-            Err(SignerError::Other("unused legacy path".into()))
-        }
-
         async fn sign_message(
             &self,
-            message: &[u8],
+            _message: &[u8],
         ) -> std::result::Result<Signature, SignerError> {
-            *self.signed_message.lock().unwrap() = message.to_vec();
-            Ok(Signature::from([7u8; 64]))
+            // Stands in for a hardware backend: raw-byte signing is exactly what
+            // such a signer cannot do, so the helpers must never reach this.
+            Err(SignerError::Other(
+                "sign_message must not be used to sign a transaction".into(),
+            ))
         }
 
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl TransactionSigner for TransactionOnlySigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut VersionedTransaction,
+        ) -> std::result::Result<SignTransactionResult, SignerError> {
+            *self.signed_message.lock().unwrap() = tx.message.serialize();
+            let signature = Signature::from([7u8; 64]);
+            TransactionUtil::add_signature_to_transaction(tx, &self.pubkey, signature)?;
+            let signed = (TransactionUtil::serialize_transaction(tx)?, signature);
+            Ok(TransactionUtil::classify_signed_transaction(tx, signed))
         }
     }
 
@@ -146,6 +208,104 @@ mod tests {
             *signer.signed_message.lock().unwrap(),
             tx.message.serialize()
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_fee_payer_cosign_never_calls_sign_message() {
+        // `TransactionOnlySigner::sign_message` returns an error, standing in
+        // for a hardware backend that cannot raw-sign arbitrary bytes. If this
+        // helper regressed to `sign_message(&tx.message_data())` the call would
+        // fail rather than quietly signing the wrong bytes.
+        let signer = TransactionOnlySigner::new(Pubkey::new_unique());
+        let fee_payer = signer.pubkey();
+        let source = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let instruction = system_instruction::transfer(&source, &recipient, 1);
+        let message =
+            Message::new_with_blockhash(&[instruction], Some(&fee_payer), &Hash::new_unique());
+        let mut tx = Transaction::new_unsigned(message);
+
+        cosign_legacy_fee_payer(&signer, &fee_payer, &mut tx)
+            .await
+            .unwrap();
+
+        // Signed the fee-payer slot, and covered the transaction message rather
+        // than some other byte string.
+        assert_eq!(tx.signatures[0], Signature::from([7u8; 64]));
+        assert_eq!(
+            *signer.signed_message.lock().unwrap(),
+            VersionedTransaction::from(tx.clone()).message.serialize()
+        );
+        // Every other required slot is left for its own signer.
+        assert_eq!(tx.signatures[1], Signature::default());
+    }
+
+    #[tokio::test]
+    async fn legacy_fee_payer_cosign_rejects_a_sponsor_that_is_not_the_fee_payer() {
+        // The sponsor must be account key zero. Signing it at a later index
+        // would leave the transaction's actual fee payer unsigned.
+        let signer = TransactionOnlySigner::new(Pubkey::new_unique());
+        let other_fee_payer = Pubkey::new_unique();
+        let instruction = system_instruction::transfer(&signer.pubkey(), &other_fee_payer, 1);
+        let message = Message::new_with_blockhash(
+            &[instruction],
+            Some(&other_fee_payer),
+            &Hash::new_unique(),
+        );
+        let mut tx = Transaction::new_unsigned(message);
+
+        let err = cosign_legacy_fee_payer(&signer, &signer.pubkey(), &mut tx)
+            .await
+            .expect_err("a sponsor that is not account key zero must be rejected");
+        assert!(err.to_string().contains("fee payer"), "{err}");
+        assert!(tx.signatures.iter().all(|s| *s == Signature::default()));
+    }
+
+    #[tokio::test]
+    async fn legacy_signing_preserves_other_slots_signatures() {
+        // The legacy shim round-trips through a versioned view. If that
+        // conversion dropped or reordered signatures, a co-signing flow would
+        // silently discard a signature already collected -- so pin it.
+        //
+        // Two required signers: `fee_payer` (account key 0) and the transfer
+        // source, which is the signer under test.
+        let signer = TransactionOnlySigner::new(Pubkey::new_unique());
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let instruction = system_instruction::transfer(&signer.pubkey(), &recipient, 1);
+        let message =
+            Message::new_with_blockhash(&[instruction], Some(&fee_payer), &Hash::new_unique());
+        let mut tx = Transaction::new_unsigned(message);
+
+        let fee_payer_index = tx
+            .message
+            .account_keys
+            .iter()
+            .position(|key| key == &fee_payer)
+            .unwrap();
+        let signer_index = tx
+            .message
+            .account_keys
+            .iter()
+            .position(|key| key == &signer.pubkey())
+            .unwrap();
+        assert_ne!(signer_index, fee_payer_index);
+
+        // Stand in for a signature already collected from the fee payer.
+        let preexisting = Signature::from([9u8; 64]);
+        tx.signatures[fee_payer_index] = preexisting;
+
+        let expected_message = VersionedTransaction::from(tx.clone()).message.serialize();
+
+        sign_legacy_transaction(&signer, &mut tx).await.unwrap();
+
+        assert_eq!(
+            tx.signatures[fee_payer_index], preexisting,
+            "an already-collected signature must survive the versioned round-trip"
+        );
+        assert_eq!(tx.signatures[signer_index], Signature::from([7u8; 64]));
+        // The bytes the signer saw are the transaction message itself.
+        assert_eq!(*signer.signed_message.lock().unwrap(), expected_message);
     }
 
     #[tokio::test]

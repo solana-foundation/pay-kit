@@ -16,7 +16,7 @@ use std::str::FromStr;
 
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_keychain::SolanaSigner;
+use solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -367,7 +367,7 @@ pub async fn sign_voucher(
 /// transaction fee payer and the channel `rent_payer`, so the client's own SOL
 /// is never spent.
 pub async fn build_deposit(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     requirements: &BatchRequirements,
     terms: &BatchTerms,
     deposit_amount: u64,
@@ -437,7 +437,7 @@ pub async fn build_deposit(
 /// Build a `deposit` payload that tops up an existing channel and authorizes
 /// this request. Used when the next voucher would exceed the escrowed deposit.
 pub async fn build_top_up(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     channel: &BatchChannel,
     terms: &BatchTerms,
     top_up_amount: u64,
@@ -475,7 +475,7 @@ pub async fn build_top_up(
 /// untrusted request. After the grace period the unused escrow returns to the
 /// payer; the channel cannot be reused.
 pub async fn build_refund(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     channel: &BatchChannel,
     terms: &BatchTerms,
     blockhash: Hash,
@@ -507,15 +507,14 @@ fn memo_instruction(memo: &str) -> Instruction {
 /// Compile `instructions` with the sponsor as fee payer, sign the payer slot,
 /// and return the base64 transaction for the sponsor to co-sign.
 async fn sign_sponsored(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     fee_payer: &Pubkey,
     instructions: &[Instruction],
     blockhash: Hash,
 ) -> Result<String, Error> {
     let message = Message::new_with_blockhash(instructions, Some(fee_payer), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
-    signer
-        .sign_transaction(&mut tx)
+    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("transaction signing failed: {e}")))?;
     let bytes = bincode::serialize(&tx)
@@ -597,7 +596,7 @@ mod tests {
     use crate::x402::protocol::schemes::exact::programs;
     use async_trait::async_trait;
     use ed25519_dalek::{Signer as _, SigningKey};
-    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
     use solana_signature::Signature;
 
     const PAY_TO: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
@@ -621,32 +620,34 @@ mod tests {
         fn pubkey(&self) -> Pubkey {
             self.pubkey
         }
-        async fn sign_transaction(
-            &self,
-            tx: &mut Transaction,
-        ) -> Result<SignTransactionResult, SignerError> {
-            let message = tx.message.serialize();
-            let signature = Signature::from(self.key.sign(&message).to_bytes());
-            let index = tx
-                .message
-                .account_keys
-                .iter()
-                .position(|k| *k == self.pubkey)
-                .unwrap_or(0);
-            if tx.signatures.len() <= index {
-                tx.signatures.resize(
-                    tx.message.header.num_required_signatures as usize,
-                    Signature::default(),
-                );
-            }
-            tx.signatures[index] = signature;
-            Ok(SignTransactionResult::Partial((String::new(), signature)))
-        }
         async fn sign_message(&self, message: &[u8]) -> Result<Signature, SignerError> {
             Ok(Signature::from(self.key.sign(message).to_bytes()))
         }
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl TransactionSigner for TestSigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            let message = tx.message.serialize();
+            let signature = Signature::from(self.key.sign(&message).to_bytes());
+            let index = tx
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| *k == self.pubkey)
+                .unwrap_or(0);
+            let required = tx.message.header().num_required_signatures as usize;
+            if tx.signatures.len() <= index {
+                tx.signatures.resize(required, Signature::default());
+            }
+            tx.signatures[index] = signature;
+            Ok(SignTransactionResult::Partial((String::new(), signature)))
         }
     }
 

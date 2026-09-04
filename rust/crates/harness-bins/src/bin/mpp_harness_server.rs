@@ -51,7 +51,7 @@ use solana_pay_kit::mpp::{
     format_www_authenticate, parse_authorization, AUTHORIZATION_HEADER, PAYMENT_RECEIPT_HEADER,
     WWW_AUTHENTICATE_HEADER,
 };
-use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
+use solana_pay_kit::solana_keychain::{memory::MemorySigner, TransactionSigner};
 
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
 const HEALTH_PATH: &str = "/health";
@@ -126,7 +126,7 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
     let push_mode = env::var("MPP_HARNESS_PAYMENT_MODE")
         .map(|v| v == "push")
         .unwrap_or(false);
-    let fee_payer: Arc<dyn SolanaSigner> =
+    let fee_payer: Arc<dyn TransactionSigner> =
         Arc::new(read_memory_signer("MPP_HARNESS_FEE_PAYER_SECRET_KEY")?);
     let price = env::var("MPP_HARNESS_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
     let replay_source = match (

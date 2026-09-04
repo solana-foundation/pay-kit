@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_instruction::Instruction;
-use solana_keychain::SolanaSigner;
+use solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_message::compiled_instruction::CompiledInstruction;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
@@ -89,9 +89,15 @@ pub struct UptoConfig {
     /// `settle_and_seal` (lifecycle authority: it can always seal with
     /// `has_voucher = 0` to recover rent, but cannot settle a nonzero amount
     /// or redirect funds).
-    pub fee_payer_signer: Arc<dyn SolanaSigner>,
+    pub fee_payer_signer: Arc<dyn TransactionSigner>,
     /// Signer for the Ed25519 settlement voucher (the channel's
     /// `authorized_signer`). Defaults to `fee_payer_signer` when absent.
+    ///
+    /// Stays `SolanaSigner`, not `TransactionSigner`: this signer only ever
+    /// signs the voucher via `sign_message` and never a transaction, so
+    /// requiring the transaction capability would demand something it does not
+    /// use. It is also exactly the path a hardware wallet cannot serve yet,
+    /// which makes the narrower bound the honest one.
     pub receiver_authorizer_signer: Option<Arc<dyn SolanaSigner>>,
 }
 
@@ -204,9 +210,11 @@ impl X402Upto {
             config.withdraw_delay = pc::DEFAULT_GRACE_PERIOD_SECONDS;
         }
 
-        let receiver_authorizer_signer = config
+        let receiver_authorizer_signer: Arc<dyn SolanaSigner> = config
             .receiver_authorizer_signer
             .clone()
+            // `TransactionSigner: SolanaSigner`, so the fee-payer fallback
+            // upcasts into the narrower bound.
             .unwrap_or_else(|| config.fee_payer_signer.clone());
         config.receiver_authorizer_signer = Some(receiver_authorizer_signer.clone());
         let fee_payer = config.fee_payer_signer.pubkey();
@@ -913,9 +921,7 @@ impl X402Upto {
     /// payee signer, while the receiver authorizer's voucher rides inside the
     /// instruction data rather than as a transaction signature.
     async fn sign_settlement_transaction(&self, tx: &mut Transaction) -> Result<(), Error> {
-        self.config
-            .fee_payer_signer
-            .sign_transaction(tx)
+        crate::core::signing::sign_legacy_transaction(self.config.fee_payer_signer.as_ref(), tx)
             .await
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         Ok(())
@@ -934,7 +940,7 @@ impl X402Upto {
 /// Shared by the `upto` and `batch-settlement` servers — the implementation
 /// lives in `solana-pay-core` so the MPP session opener reuses it too.
 pub(crate) async fn cosign_operator_fee_payer(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     operator: &Pubkey,
     tx: &mut VersionedTransaction,
 ) -> Result<(), Error> {
@@ -1233,7 +1239,7 @@ mod tests {
         build_open_instruction, derive_channel_addresses, OpenChannelParams,
     };
     use async_trait::async_trait;
-    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
     use solana_signature::Signature;
 
     struct TestSigner(Pubkey);
@@ -1244,19 +1250,34 @@ mod tests {
             self.0
         }
 
-        async fn sign_transaction(
-            &self,
-            _tx: &mut Transaction,
-        ) -> Result<SignTransactionResult, SignerError> {
-            Err(SignerError::Other("unused".to_string()))
-        }
-
         async fn sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
             Ok(Signature::from([7u8; 64]))
         }
 
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl TransactionSigner for TestSigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            let signature = Signature::from([7u8; 64]);
+            solana_keychain::transaction_util::TransactionUtil::add_signature_to_transaction(
+                tx, &self.0, signature,
+            )?;
+            let signed = (
+                solana_keychain::transaction_util::TransactionUtil::serialize_transaction(tx)?,
+                signature,
+            );
+            Ok(
+                solana_keychain::transaction_util::TransactionUtil::classify_signed_transaction(
+                    tx, signed,
+                ),
+            )
         }
     }
 

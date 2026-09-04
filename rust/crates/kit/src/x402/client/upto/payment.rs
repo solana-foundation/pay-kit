@@ -10,7 +10,7 @@
 use std::str::FromStr;
 
 use solana_hash::Hash;
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 
@@ -34,7 +34,7 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 /// either is absent, a single `getLatestBlockhash` call against `rpc`
 /// supplies the missing value(s); `rpc` is untouched when both are present.
 pub async fn build_upto_payload(
-    payer_signer: &dyn SolanaSigner,
+    payer_signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &UptoRequirements,
     expires_at: i64,
@@ -160,7 +160,7 @@ pub fn encode_upto_header(
 
 /// Build the full `PAYMENT-SIGNATURE` header value for an `upto` payment.
 pub async fn build_upto_header(
-    payer_signer: &dyn SolanaSigner,
+    payer_signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &UptoRequirements,
     expires_at: i64,
@@ -215,7 +215,7 @@ mod tests {
 
     const RECEIVER_AUTHORIZER: &str = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
 
-    fn make_signer() -> Box<dyn SolanaSigner> {
+    fn make_signer() -> Box<dyn TransactionSigner> {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());

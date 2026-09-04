@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_message::{v0, VersionedMessage};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -26,7 +26,7 @@ use crate::x402::{
 ///
 /// Returns a `PaymentPayload` ready to be wrapped in `PAYMENT-SIGNATURE`.
 pub async fn build_payment(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
 ) -> Result<PaymentPayload, Error> {
@@ -122,7 +122,7 @@ pub async fn build_payment(
 /// [`PaymentExtensions::with_payment_identifier_id`]. Pass `None` when
 /// the server didn't advertise any extensions.
 pub async fn build_payment_header(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
     extensions: Option<PaymentExtensions>,
@@ -143,7 +143,7 @@ pub async fn build_payment_header(
 
 /// Build a legacy v1 `X-PAYMENT` header value for older integrations.
 pub async fn build_payment_header_v1(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
 ) -> Result<String, Error> {
@@ -544,7 +544,6 @@ mod tests {
     };
     use async_trait::async_trait;
     use solana_keychain::{SignerError, SolanaSigner};
-    use solana_transaction::Transaction as SolanaTransaction;
 
     struct MockSigner {
         pubkey: Pubkey,
@@ -555,13 +554,6 @@ mod tests {
     impl SolanaSigner for MockSigner {
         fn pubkey(&self) -> solana_pubkey::Pubkey {
             self.pubkey
-        }
-
-        async fn sign_transaction(
-            &self,
-            _tx: &mut SolanaTransaction,
-        ) -> Result<solana_keychain::SignTransactionResult, SignerError> {
-            Err(SignerError::Other("unused".to_string()))
         }
 
         async fn sign_message(
@@ -577,6 +569,33 @@ mod tests {
 
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl solana_keychain::TransactionSigner for MockSigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> Result<solana_keychain::SignTransactionResult, SignerError> {
+            if self.fail_sign {
+                return Err(SignerError::SigningFailed("boom".to_string()));
+            }
+            let signature = Signature::from([7u8; 64]);
+            solana_keychain::transaction_util::TransactionUtil::add_signature_to_transaction(
+                tx,
+                &self.pubkey,
+                signature,
+            )?;
+            let signed = (
+                solana_keychain::transaction_util::TransactionUtil::serialize_transaction(tx)?,
+                signature,
+            );
+            Ok(
+                solana_keychain::transaction_util::TransactionUtil::classify_signed_transaction(
+                    tx, signed,
+                ),
+            )
         }
     }
 

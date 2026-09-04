@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use solana_keychain::SolanaSigner;
+use solana_keychain::{SolanaSigner, TransactionSigner};
 use tokio::sync::{mpsc, oneshot};
 
 use super::charge::{Config as MppConfig, Mpp, VerificationError};
@@ -94,7 +94,10 @@ impl ConfidentialHandle {
 
 /// Spawn the single confidential worker run-loop and return a handle. The loop
 /// lives for the process lifetime; the returned handle (and its clones) drive it.
-pub fn spawn(cfg: ConfidentialWorkerConfig, signer: Arc<dyn SolanaSigner>) -> ConfidentialHandle {
+pub fn spawn(
+    cfg: ConfidentialWorkerConfig,
+    signer: Arc<dyn TransactionSigner>,
+) -> ConfidentialHandle {
     let (tx, mut rx) = mpsc::channel::<ConfidentialMsg>(CHANNEL_CAPACITY);
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
 
@@ -160,7 +163,7 @@ pub fn spawn(cfg: ConfidentialWorkerConfig, signer: Arc<dyn SolanaSigner>) -> Co
 /// store + signer) and verify the credential through it.
 async fn settle(
     cfg: &ConfidentialWorkerConfig,
-    signer: &Arc<dyn SolanaSigner>,
+    signer: &Arc<dyn TransactionSigner>,
     store: &Arc<dyn Store>,
     credential: &PaymentCredential,
     charge_request: &ChargeRequest,
@@ -191,7 +194,7 @@ fn build_mpp(
     recipient: String,
     currency: String,
     decimals: u8,
-    signer: Arc<dyn SolanaSigner>,
+    signer: Arc<dyn TransactionSigner>,
     store: Arc<dyn Store>,
 ) -> Option<Mpp> {
     Mpp::new(MppConfig {

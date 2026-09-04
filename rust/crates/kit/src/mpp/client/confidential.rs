@@ -20,7 +20,7 @@ use base64::Engine;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_keypair::Keypair;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
@@ -161,7 +161,7 @@ fn proof_context_pair<T: bytemuck::Pod>(
 /// gateway to co-sign at settlement. Returns the base64-encoded serialized
 /// transactions in submission order.
 pub async fn build_confidential_transfer_bundle(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     params: ConfidentialTransferParams<'_>,
 ) -> Result<Vec<String>, Error> {
@@ -502,7 +502,7 @@ pub async fn build_confidential_transfer_bundle(
 /// a U256 range proof) versus three for the plain transfer.
 #[allow(clippy::too_many_arguments)]
 async fn build_confidential_transfer_with_fee_bundle(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     params: &ConfidentialTransferParams<'_>,
     sender_token_account: &Pubkey,
@@ -734,7 +734,7 @@ async fn build_confidential_transfer_with_fee_bundle(
 /// `CredentialPayload::Bundle`. Called from the charge credential builder when
 /// `methodDetails.confidential` is set.
 pub(crate) async fn confidential_charge_payload(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     amount: u64,
     mint: &str,
@@ -769,7 +769,7 @@ pub(crate) async fn confidential_charge_payload(
 /// Returns one partially-signed tx per transaction.
 #[allow(clippy::too_many_arguments)]
 async fn stage_range_proof_record(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     payer: &Pubkey,
     record_account: &Keypair,
@@ -850,7 +850,7 @@ async fn stage_range_proof_record(
 /// left empty (all-zero) for the gateway to co-sign at settlement. Returns the
 /// base64-encoded serialized partially-signed transaction.
 async fn partial_sign_tx(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     fee_payer: &Pubkey,
     extra: &[&Keypair],
     instructions: &[Instruction],
@@ -867,8 +867,7 @@ async fn partial_sign_tx(
     let sender_pubkey = signer.pubkey();
     let num_signers = tx.message.header.num_required_signatures as usize;
     if tx.message.account_keys[..num_signers].contains(&sender_pubkey) {
-        signer
-            .sign_transaction(&mut tx)
+        crate::core::signing::sign_legacy_transaction(signer, &mut tx)
             .await
             .map_err(|e| Error::Other(format!("signing failed: {e}")))?;
     }
@@ -951,10 +950,10 @@ pub(crate) fn cast_ae_ciphertext_v7_to_legacy(v7: &AeCiphertext) -> PodAeCiphert
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
     use solana_zk_sdk::encryption::auth_encryption::AeKey;
 
-    fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {
+    fn memory_signer(seed: u8) -> Box<dyn TransactionSigner> {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());
@@ -970,21 +969,6 @@ mod tests {
             self.0
         }
 
-        async fn sign_transaction(
-            &self,
-            tx: &mut solana_transaction::Transaction,
-        ) -> std::result::Result<SignTransactionResult, SignerError> {
-            let index = tx
-                .message
-                .account_keys
-                .iter()
-                .position(|key| key == &self.0)
-                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
-            let signature = Signature::from([7u8; 64]);
-            tx.signatures[index] = signature;
-            Ok(SignTransactionResult::Partial((String::new(), signature)))
-        }
-
         async fn sign_message(
             &self,
             _message: &[u8],
@@ -996,6 +980,24 @@ mod tests {
 
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl TransactionSigner for TransactionOnlySigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> std::result::Result<SignTransactionResult, SignerError> {
+            let index = tx
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
+            let signature = Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(SignTransactionResult::Partial((String::new(), signature)))
         }
     }
 

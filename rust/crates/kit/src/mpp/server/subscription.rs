@@ -97,7 +97,7 @@ pub struct SubscriptionConfig {
     /// Fee-payer signer (used when `fee_payer` is `true`). Required at
     /// verify time to co-sign the activation transaction; optional at
     /// challenge time if `fee_payer_pubkey` is set explicitly.
-    pub fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    pub fee_payer_signer: Option<Arc<dyn solana_keychain::TransactionSigner>>,
     /// Fee-payer pubkey emitted as `methodDetails.feePayerKey` in the
     /// challenge. When `None`, falls back to the `fee_payer_signer`'s
     /// pubkey. Set this when the server has the pubkey but not the
@@ -847,37 +847,35 @@ fn validate_activation_scope(
     Ok(())
 }
 
-/// Sign the transaction's message with the server's fee-payer signer and
-/// fill the matching slot in `tx.signatures`. The client has already
-/// signed as the subscriber and (when fee sponsorship is in play) left an
-/// empty signature slot at the fee-payer index.
+/// Sign the transaction's fee-payer slot with the server's fee-payer signer.
+/// The client has already signed as the subscriber and (when fee sponsorship is
+/// in play) left an empty signature slot at the fee-payer index.
+///
+/// Routes through `TransactionSigner::sign_transaction`, so a hardware
+/// fee-payer signer works. Raw-signing `tx.message_data()` here is what used to
+/// restrict activation sponsorship to software keys.
 async fn co_sign_as_fee_payer(
     tx: &mut Transaction,
-    signer: &Arc<dyn solana_keychain::SolanaSigner>,
+    signer: &Arc<dyn solana_keychain::TransactionSigner>,
 ) -> Result<(), VerificationError> {
     let pubkey = signer.pubkey();
-    let idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| *k == pubkey)
-        .ok_or_else(|| {
-            VerificationError::invalid_payload(
-                "Fee payer pubkey not present in activation transaction",
-            )
-        })?;
-    let msg_bytes = tx.message_data();
-    let sig_bytes = signer
-        .sign_message(&msg_bytes)
-        .await
-        .map_err(|e| VerificationError::new(format!("Fee-payer signing failed: {e}")))?;
-    if tx.signatures.len() <= idx {
+    // Keep the payload-shaped diagnostics: both failures are caused by the
+    // client's transaction, so neither may read as a server fault. The fee payer
+    // is account key zero by construction, and accepting the sponsor at a later
+    // index would let a crafted transaction leave its actual fee payer unsigned.
+    if tx.message.account_keys.first() != Some(&pubkey) {
+        return Err(VerificationError::invalid_payload(
+            "Fee payer pubkey not present in activation transaction",
+        ));
+    }
+    if tx.signatures.len() != tx.message.header.num_required_signatures as usize {
         return Err(VerificationError::invalid_payload(
             "Transaction signatures vec is shorter than account_keys",
         ));
     }
-    tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
-    Ok(())
+    crate::core::signing::cosign_legacy_fee_payer(signer.as_ref(), &pubkey, tx)
+        .await
+        .map_err(|e| VerificationError::new(format!("Fee-payer signing failed: {e}")))
 }
 
 /// Minimal in-process view of the on-chain `SubscriptionDelegation`
@@ -1118,6 +1116,101 @@ mod tests {
         let mut cfg = make_config();
         cfg.realm = String::new();
         assert!(SubscriptionServer::new(cfg).is_err());
+    }
+
+    /// Activation sponsorship must co-sign through `sign_transaction`, never
+    /// `sign_message`. This signer implements `TransactionSigner` and fails on
+    /// `sign_message`, standing in for a hardware wallet: a Ledger wraps a
+    /// `sign_message` payload in an off-chain-message envelope and signs that,
+    /// so the raw-signing form this path used to take produced a signature over
+    /// the wrong bytes and the cluster rejected the activation at preflight.
+    struct TransactionOnlySigner(solana_pubkey::Pubkey);
+
+    #[async_trait::async_trait]
+    impl solana_keychain::SolanaSigner for TransactionOnlySigner {
+        fn pubkey(&self) -> solana_pubkey::Pubkey {
+            self.0
+        }
+        async fn sign_message(
+            &self,
+            _message: &[u8],
+        ) -> std::result::Result<Signature, solana_keychain::SignerError> {
+            Err(solana_keychain::SignerError::Other(
+                "a hardware signer cannot raw-sign a transaction message".into(),
+            ))
+        }
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl solana_keychain::TransactionSigner for TransactionOnlySigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> std::result::Result<solana_keychain::SignTransactionResult, solana_keychain::SignerError>
+        {
+            use solana_keychain::transaction_util::TransactionUtil;
+            let signature = Signature::from([9u8; 64]);
+            TransactionUtil::add_signature_to_transaction(tx, &self.0, signature)?;
+            let signed = (TransactionUtil::serialize_transaction(tx)?, signature);
+            Ok(TransactionUtil::classify_signed_transaction(tx, signed))
+        }
+    }
+
+    #[tokio::test]
+    async fn activation_cosign_never_calls_sign_message() {
+        let fee_payer = solana_pubkey::Pubkey::new_unique();
+        let signer: Arc<dyn solana_keychain::TransactionSigner> =
+            Arc::new(TransactionOnlySigner(fee_payer));
+        let subscriber = solana_pubkey::Pubkey::new_unique();
+        let instruction = solana_system_interface::instruction::transfer(
+            &subscriber,
+            &solana_pubkey::Pubkey::new_unique(),
+            1,
+        );
+        let message = solana_message::Message::new_with_blockhash(
+            &[instruction],
+            Some(&fee_payer),
+            &solana_hash::Hash::new_unique(),
+        );
+        let mut tx = Transaction::new_unsigned(message);
+
+        co_sign_as_fee_payer(&mut tx, &signer)
+            .await
+            .expect("co-signing must not reach sign_message");
+
+        assert_eq!(tx.signatures[0], Signature::from([9u8; 64]));
+        // The subscriber's own slot is left for the client.
+        assert_eq!(tx.signatures[1], Signature::default());
+    }
+
+    #[tokio::test]
+    async fn activation_cosign_rejects_a_sponsor_that_is_not_the_fee_payer() {
+        let sponsor = solana_pubkey::Pubkey::new_unique();
+        let signer: Arc<dyn solana_keychain::TransactionSigner> =
+            Arc::new(TransactionOnlySigner(sponsor));
+        let other_fee_payer = solana_pubkey::Pubkey::new_unique();
+        let instruction = solana_system_interface::instruction::transfer(
+            &sponsor,
+            &solana_pubkey::Pubkey::new_unique(),
+            1,
+        );
+        let message = solana_message::Message::new_with_blockhash(
+            &[instruction],
+            Some(&other_fee_payer),
+            &solana_hash::Hash::new_unique(),
+        );
+        let mut tx = Transaction::new_unsigned(message);
+
+        let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
+        assert!(
+            err.message.contains("Fee payer pubkey not present"),
+            "{}",
+            err.message
+        );
+        assert!(tx.signatures.iter().all(|s| *s == Signature::default()));
     }
 
     #[test]

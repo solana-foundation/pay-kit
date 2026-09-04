@@ -1,6 +1,6 @@
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -23,7 +23,7 @@ use crate::mpp::protocol::solana::{
 /// Returns a `CredentialPayload::Transaction` with the signed (or
 /// partially signed) transaction ready to send to the server.
 pub async fn build_charge_transaction(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     amount: &str,
     currency: &str,
@@ -377,7 +377,7 @@ pub async fn build_prepared_charge(
 }
 
 pub async fn build_charge_transaction_with_options(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     amount: &str,
     currency: &str,
@@ -481,8 +481,7 @@ pub async fn build_charge_transaction_with_options(
     .await?;
 
     let mut tx = prepared.transaction;
-    signer
-        .sign_transaction(&mut tx)
+    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
 
@@ -500,7 +499,7 @@ pub async fn build_charge_transaction_with_options(
 /// Parses the challenge, builds and signs the transaction, and formats the
 /// credential as `"Payment <base64url(credential_json)>"`.
 pub async fn build_credential_header(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     challenge: &PaymentChallenge,
 ) -> Result<String, Error> {
@@ -512,7 +511,7 @@ pub async fn build_credential_header(
 /// `allow_unknown_token_2022` to opt into signing for unknown Token-2022
 /// mints (see that field's docs).
 pub async fn build_credential_header_with_options(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     challenge: &PaymentChallenge,
     mut options: BuildChargeTransactionOptions,
@@ -1010,6 +1009,7 @@ mod tests {
     use super::*;
     use crate::mpp::protocol::core::Base64UrlJson;
     use crate::mpp::protocol::solana::mints;
+    use solana_keychain::SolanaSigner;
 
     #[test]
     fn parse_challenge_from_header() {
@@ -1691,7 +1691,7 @@ mod tests {
 
     // ── Helpers for async/RPC-bypass tests ──
 
-    fn make_signer() -> Box<dyn SolanaSigner> {
+    fn make_signer() -> Box<dyn TransactionSigner> {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());
@@ -1702,28 +1702,9 @@ mod tests {
     struct TransactionOnlySigner(Pubkey);
 
     #[async_trait::async_trait]
-    impl SolanaSigner for TransactionOnlySigner {
+    impl solana_keychain::SolanaSigner for TransactionOnlySigner {
         fn pubkey(&self) -> Pubkey {
             self.0
-        }
-
-        async fn sign_transaction(
-            &self,
-            tx: &mut Transaction,
-        ) -> std::result::Result<solana_keychain::SignTransactionResult, solana_keychain::SignerError>
-        {
-            let index = tx
-                .message
-                .account_keys
-                .iter()
-                .position(|key| key == &self.0)
-                .ok_or_else(|| solana_keychain::SignerError::Other("missing signer".into()))?;
-            let signature = solana_signature::Signature::from([7u8; 64]);
-            tx.signatures[index] = signature;
-            Ok(solana_keychain::SignTransactionResult::Partial((
-                String::new(),
-                signature,
-            )))
         }
 
         async fn sign_message(
@@ -1738,6 +1719,28 @@ mod tests {
 
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TransactionSigner for TransactionOnlySigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> std::result::Result<solana_keychain::SignTransactionResult, solana_keychain::SignerError>
+        {
+            let index = tx
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| solana_keychain::SignerError::Other("missing signer".into()))?;
+            let signature = solana_signature::Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(solana_keychain::SignTransactionResult::Partial((
+                String::new(),
+                signature,
+            )))
         }
     }
 

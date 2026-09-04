@@ -36,7 +36,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, MethodRouter};
 
 use crate::mpp::server::{Config as MppConfig, Mpp};
-use crate::mpp::solana_keychain::SolanaSigner;
+use crate::mpp::solana_keychain::TransactionSigner;
 use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
 use crate::x402::server::{
     BatchAccess, BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig,
@@ -92,7 +92,7 @@ pub struct PayKitConfig {
     pub challenge_binding_secret: Option<String>,
     /// When set, the server sponsors the network fee: drives MPP fee-sponsored
     /// mode and is used as the x402 fee-payer address.
-    pub fee_payer_signer: Option<Arc<dyn SolanaSigner>>,
+    pub fee_payer_signer: Option<Arc<dyn TransactionSigner>>,
     /// Accept push-mode MPP credentials (off by default; see audit §13.5).
     pub accept_push_mode: bool,
     /// Currencies the server is willing to accept (x402 multi-currency).
@@ -1240,7 +1240,7 @@ mod tests {
         "ok"
     }
 
-    fn test_signer() -> Arc<dyn SolanaSigner> {
+    fn test_signer() -> Arc<dyn TransactionSigner> {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());

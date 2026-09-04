@@ -25,7 +25,7 @@ use solana_pay_kit::mpp::protocol::confidential::derive_confidential_keys;
 use solana_pay_kit::mpp::protocol::solana::MethodDetails;
 use solana_pay_kit::mpp::server::{Config, Mpp};
 use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
-use solana_pay_kit::mpp::solana_keychain::SolanaSigner;
+use solana_pay_kit::mpp::solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
@@ -119,7 +119,7 @@ fn cast_ae_v7_to_legacy(
 async fn configure(
     rpc: &RpcClient,
     payer: &Keypair,
-    owner_signer: &dyn SolanaSigner,
+    owner_signer: &dyn TransactionSigner,
     owner_kp: &Keypair,
     mint: &solana_pubkey::Pubkey,
 ) -> solana_pubkey::Pubkey {
@@ -203,8 +203,8 @@ struct Setup {
     surfnet: Surfnet,
     rpc: RpcClient,
     gateway: Keypair,
-    gateway_signer: Arc<dyn SolanaSigner>,
-    sender_signer: Arc<dyn SolanaSigner>,
+    gateway_signer: Arc<dyn TransactionSigner>,
+    sender_signer: Arc<dyn TransactionSigner>,
     mint: solana_pubkey::Pubkey,
     decimals: u8,
 }
@@ -229,9 +229,9 @@ async fn setup_confidential() -> Setup {
             .fund_sol(&kp.pubkey(), 100_000_000_000)
             .unwrap();
     }
-    let gateway_signer: Arc<dyn SolanaSigner> =
+    let gateway_signer: Arc<dyn TransactionSigner> =
         Arc::new(MemorySigner::from_bytes(&gateway.to_bytes()).unwrap());
-    let sender_signer: Arc<dyn SolanaSigner> =
+    let sender_signer: Arc<dyn TransactionSigner> =
         Arc::new(MemorySigner::from_bytes(&sender.to_bytes()).unwrap());
 
     // Confidential mint (auto-approve, no auditor).
@@ -400,7 +400,7 @@ fn gateway_mpp(s: &Setup) -> Mpp {
         realm: Some(REALM.to_string()),
         fee_payer: true,
         fee_payer_signer: Some(s.gateway_signer.clone()),
-        recipient_signer: Some(s.gateway_signer.clone()),
+        recipient_signer: Some(s.gateway_signer.clone() as Arc<dyn SolanaSigner>),
         ..Default::default()
     })
     .unwrap()
@@ -457,7 +457,8 @@ async fn confidential_charge_via_worker() {
             sweep_decimals: s.decimals,
             fee_payer_pubkey: s.gateway.pubkey().to_string(),
             // Gateway is the recipient here ⇒ recipient-key amount enforcement.
-            recipient_signer: Some(s.gateway_signer.clone()),
+            // Recipient is a message-only role, so upcast the gateway signer.
+            recipient_signer: Some(s.gateway_signer.clone() as Arc<dyn SolanaSigner>),
         },
         s.gateway_signer.clone(),
     );
