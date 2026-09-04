@@ -97,6 +97,69 @@ const SUBMIT_GROUPS_CONCURRENCY: usize = 48;
 /// Solana JSON-RPC caps `getMultipleAccounts` at 100 addresses.
 const MAX_CHANNELS_PER_RPC_READ: usize = 100;
 
+/// Poll long enough for a submitted deposit signature to become visible across
+/// lagging/load-balanced RPC backends before treating a rejection as final.
+const DEPOSIT_CONFIRMATION_ATTEMPTS: usize = 60;
+const DEPOSIT_CONFIRMATION_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(200);
+
+#[derive(Debug, PartialEq, Eq)]
+enum DepositSignatureStatus {
+    Confirmed,
+    Failed(String),
+    Pending,
+}
+
+fn interpret_deposit_signature_status(
+    status: Result<Option<Result<(), String>>, String>,
+) -> DepositSignatureStatus {
+    match status {
+        Ok(Some(Ok(()))) => DepositSignatureStatus::Confirmed,
+        Ok(Some(Err(error))) => DepositSignatureStatus::Failed(error),
+        Ok(None) | Err(_) => DepositSignatureStatus::Pending,
+    }
+}
+
+fn deposit_signature_status(
+    rpc: &RpcClient,
+    signature: &solana_signature::Signature,
+) -> DepositSignatureStatus {
+    interpret_deposit_signature_status(
+        rpc.get_signature_status(signature)
+            .map(|status| status.map(|result| result.map_err(|error| error.to_string())))
+            .map_err(|error| error.to_string()),
+    )
+}
+
+fn await_ambiguous_deposit_confirmation(
+    rpc: &RpcClient,
+    signature: &solana_signature::Signature,
+) -> Result<bool, Error> {
+    for attempt in 0..DEPOSIT_CONFIRMATION_ATTEMPTS {
+        match deposit_signature_status(rpc, signature) {
+            DepositSignatureStatus::Confirmed => return Ok(true),
+            DepositSignatureStatus::Failed(error) => {
+                return Err(batch_err(
+                    codes::INVALID_SETTLEMENT_SIMULATION,
+                    format!("deposit transaction landed but failed: {error}"),
+                ));
+            }
+            DepositSignatureStatus::Pending => {
+                if attempt + 1 < DEPOSIT_CONFIRMATION_ATTEMPTS {
+                    std::thread::sleep(DEPOSIT_CONFIRMATION_POLL_INTERVAL);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn has_active_pending_open(state: &ChannelState, now: u64) -> bool {
+    state.pending_setup.as_ref().is_some_and(|setup| {
+        setup.opens_channel && setup.expires_at >= i64::try_from(now).unwrap_or(i64::MAX)
+    })
+}
+
 /// Pop and spawn the next pending transaction onto `in_flight`, if any.
 /// Broadcasting runs on the blocking pool (`send_and_confirm_transaction` is
 /// the sync `RpcClient`, whose full confirm-poll round trip would otherwise
@@ -180,8 +243,15 @@ fn broadcast_and_confirm_deposit(
         .signatures
         .first()
         .ok_or_else(|| Error::Other("transaction has no signature slot".into()))?;
-    if matches!(rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
-        return Ok(signature.to_string());
+    match deposit_signature_status(rpc, &signature) {
+        DepositSignatureStatus::Confirmed => return Ok(signature.to_string()),
+        DepositSignatureStatus::Failed(error) => {
+            return Err(batch_err(
+                codes::INVALID_SETTLEMENT_SIMULATION,
+                format!("deposit transaction landed but failed: {error}"),
+            ));
+        }
+        DepositSignatureStatus::Pending => {}
     }
     // Simulate the exact bytes before they reach the network. The static
     // policy has already bounded what the sponsor is authorizing; this
@@ -193,6 +263,9 @@ fn broadcast_and_confirm_deposit(
         .map_err(|e| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, e.to_string()))?;
     if let Some(err) = simulation.value.err {
         let logs = simulation.value.logs.unwrap_or_default().join(" | ");
+        if await_ambiguous_deposit_confirmation(rpc, &signature)? {
+            return Ok(signature.to_string());
+        }
         return Err(batch_err(
             codes::INVALID_SETTLEMENT_SIMULATION,
             format!("simulation failed: {err:?}; program logs: {logs}"),
@@ -201,7 +274,7 @@ fn broadcast_and_confirm_deposit(
     match rpc.send_and_confirm_transaction(tx) {
         Ok(confirmed) => Ok(confirmed.to_string()),
         Err(error) => {
-            if matches!(rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
+            if await_ambiguous_deposit_confirmation(rpc, &signature)? {
                 Ok(signature.to_string())
             } else {
                 Err(Error::Rpc(format!("broadcast failed: {error}")))
@@ -1747,6 +1820,7 @@ impl X402BatchSettlement {
     async fn reconcile_channel(&self, channel_b58: &str) -> Result<(), Error> {
         // Hot path: only the last-checked timestamp decides whether a refresh
         // is due, so read that one field without cloning the whole record.
+        let now = now_unix();
         let snapshot: Arc<Mutex<Option<(u64, bool)>>> = Arc::new(Mutex::new(None));
         let out = Arc::clone(&snapshot);
         self.store
@@ -1756,7 +1830,7 @@ impl X402BatchSettlement {
                     *out.lock().unwrap_or_else(|e| e.into_inner()) = state.map(|state| {
                         (
                             state.onchain_checked_at,
-                            state.has_in_flight_authorization(),
+                            has_active_pending_open(state, now),
                         )
                     });
                     Ok(())
@@ -1764,14 +1838,13 @@ impl X402BatchSettlement {
             )
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let Some((onchain_checked_at, has_in_flight_authorization)) =
+        let Some((onchain_checked_at, has_pending_open)) =
             *snapshot.lock().unwrap_or_else(|e| e.into_inner())
         else {
             // Nothing to reconcile: an unknown channel is refused by
             // verification, and a deposit confirms its own channel.
             return Ok(());
         };
-        let now = now_unix();
         let age = now.saturating_sub(onchain_checked_at);
         if age < self.config.channel_snapshot_max_age_seconds {
             return Ok(());
@@ -1807,7 +1880,7 @@ impl X402BatchSettlement {
                 // must reach `Resume` and finish it; treating the expected
                 // pre-open absence as a reclaimed channel strands the exact
                 // authorization that makes the retry safe.
-                if has_in_flight_authorization {
+                if has_pending_open {
                     tracing::debug!(
                         channel = %channel_b58,
                         "channel is not onchain yet; allowing in-flight setup to resume"
@@ -3051,6 +3124,50 @@ mod tests {
             schema_version: CHANNEL_STATE_SCHEMA_VERSION,
             extra: Default::default(),
         }
+    }
+
+    #[test]
+    fn ambiguous_deposit_status_distinguishes_landed_failed_and_pending() {
+        assert_eq!(
+            interpret_deposit_signature_status(Ok(Some(Ok(())))),
+            DepositSignatureStatus::Confirmed
+        );
+        assert_eq!(
+            interpret_deposit_signature_status(Ok(Some(Err("program error".to_string())))),
+            DepositSignatureStatus::Failed("program error".to_string())
+        );
+        assert_eq!(
+            interpret_deposit_signature_status(Ok(None)),
+            DepositSignatureStatus::Pending
+        );
+        assert_eq!(
+            interpret_deposit_signature_status(Err("rpc unavailable".to_string())),
+            DepositSignatureStatus::Pending
+        );
+    }
+
+    #[test]
+    fn only_an_unexpired_open_setup_allows_an_absent_channel() {
+        let (handler, fee_payer) = handler(Arc::new(MemoryChannelStore::new()));
+        let requirements = handler.requirements("0.001").unwrap();
+        let (_, config, channel) = client(&fee_payer, &requirements);
+        let now = now_unix();
+        let mut state = seeded(&channel, &config, 0, 0);
+
+        state.pending_setup = Some(PendingSetup {
+            payer_signature: "open".to_string(),
+            deposit: 5_000,
+            opens_channel: true,
+            expires_at: i64::try_from(now + 60).unwrap(),
+        });
+        assert!(has_active_pending_open(&state, now));
+
+        state.pending_setup.as_mut().unwrap().opens_channel = false;
+        assert!(!has_active_pending_open(&state, now));
+
+        state.pending_setup.as_mut().unwrap().opens_channel = true;
+        state.pending_setup.as_mut().unwrap().expires_at = i64::try_from(now - 1).unwrap();
+        assert!(!has_active_pending_open(&state, now));
     }
 
     /// A deposit that confirmed on a first attempt must not be counted again
