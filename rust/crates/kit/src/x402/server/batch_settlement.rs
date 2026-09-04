@@ -85,12 +85,13 @@ fn batch_err(code: &'static str, detail: impl Into<String>) -> Error {
 }
 
 /// Bound on in-flight `send_and_confirm_transaction` calls inside
-/// [`X402BatchSettlement::submit_groups`]. High enough that a large
-/// `finalize_close`/`reclaim` sweep isn't bottlenecked on RPC round-trip
-/// latency; low enough not to overwhelm the RPC endpoint or the blocking
-/// thread pool during the frequent, small-batch `settle`/`claim` calls a
-/// live gateway makes on the same path.
-const SUBMIT_GROUPS_CONCURRENCY: usize = 16;
+/// [`X402BatchSettlement::submit_groups`]. Concurrency can never exceed the
+/// number of groups in a single call, so this only matters for large
+/// `finalize_close`/`reclaim` sweeps — the frequent, small-batch
+/// `settle`/`claim` calls a live gateway makes on the same path are
+/// unaffected in practice. Sized so a sweep is bottlenecked on the RPC
+/// endpoint's real throughput ceiling, not on an arbitrary in-flight cap.
+const SUBMIT_GROUPS_CONCURRENCY: usize = 48;
 
 /// Pop and spawn the next pending transaction onto `in_flight`, if any.
 /// Broadcasting runs on the blocking pool (`send_and_confirm_transaction` is
