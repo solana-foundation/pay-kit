@@ -1640,6 +1640,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             // response and no retention clock to run.
                             request_fingerprint: None,
                             settlement_response: None,
+                            cached_response: None,
                             retain_until: 0,
                         });
                         *commit_outcome.lock().unwrap() =

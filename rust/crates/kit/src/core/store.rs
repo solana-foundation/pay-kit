@@ -430,6 +430,51 @@ pub struct CommittedDelivery {
     /// written before retention was tracked; those are kept.
     #[serde(default, rename = "retainUntil")]
     pub retain_until: i64,
+
+    /// The resource handler's response, cached so a replay of this exact
+    /// authorization can return the purchased representation itself — not
+    /// just [`Self::settlement_response`] layered on top of it. `None` for
+    /// records predating this field, or whose response exceeded the calling
+    /// scheme's size cap for caching (a settlement-only replay still answers
+    /// correctly in that case; only the original representation is lost).
+    #[serde(
+        default,
+        rename = "cachedResponse",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cached_response: Option<CachedUpstreamResponse>,
+}
+
+/// A resource handler's response body, held verbatim for idempotent replay.
+/// See [`CommittedDelivery::cached_response`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedUpstreamResponse {
+    pub status: u16,
+    #[serde(
+        default,
+        rename = "contentType",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_type: Option<String>,
+    #[serde(with = "cached_response_body_base64")]
+    pub body: Vec<u8>,
+}
+
+mod cached_response_body_base64 {
+    use base64::Engine;
+
+    pub fn serialize<S: serde::Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// A setup transaction the server has validated and taken responsibility for,
@@ -914,6 +959,7 @@ impl ChannelState {
             voucher_signature: voucher_signature.to_string(),
             request_fingerprint: Some(request_fingerprint.to_string()),
             settlement_response: None,
+            cached_response: None,
             retain_until: voucher_expires_at
                 .max(now)
                 .saturating_add(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64),
@@ -928,6 +974,30 @@ impl ChannelState {
             self.committed_deliveries[index].settlement_response = stored;
         }
         Ok(())
+    }
+
+    /// Attach a resource handler's response to an already-committed
+    /// authorization, for [`CommittedDelivery::cached_response`].
+    ///
+    /// A separate step from [`Self::commit_authorization`] because the
+    /// caller (the HTTP adapter) only has the response bytes available after
+    /// the handler has already returned and the commit has already run — see
+    /// `settle_batch`'s post-response hook. A missing target record (already
+    /// pruned, or committed by a different, since-superseded request) is not
+    /// an error: caching is a best-effort improvement to a future replay,
+    /// never a requirement for this request's own success.
+    pub fn attach_cached_response(
+        &mut self,
+        authorization_id: &str,
+        cached: CachedUpstreamResponse,
+    ) {
+        if let Some(entry) = self
+            .committed_deliveries
+            .iter_mut()
+            .find(|entry| entry.delivery_id == authorization_id)
+        {
+            entry.cached_response = Some(cached);
+        }
     }
 
     /// Whether this record is carrying work that has not reached an outcome.

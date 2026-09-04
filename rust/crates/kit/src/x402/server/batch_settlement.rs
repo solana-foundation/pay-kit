@@ -306,8 +306,13 @@ pub enum BatchAccess {
     /// response; the handler MUST NOT run again.
     Resume(BatchOutcome),
     /// Already committed: return this stored response, and do not run the
-    /// handler.
-    Replay(BatchSettlementResponse),
+    /// handler. The second element is the resource handler's cached response
+    /// from the original serve, when one was stored for it — see
+    /// [`X402BatchSettlement::cache_response`].
+    Replay(
+        BatchSettlementResponse,
+        Option<crate::core::store::CachedUpstreamResponse>,
+    ),
     /// Another in-flight request owns this authorization. Answer `409` with
     /// [`codes::DUPLICATE_SETTLEMENT`]; the client may retry shortly.
     InProgress,
@@ -1210,13 +1215,15 @@ impl X402BatchSettlement {
         // for was charged and served. Answer it as a replay even if the cached
         // record has since aged out — never as a fresh serve.
         if outcome.replay {
-            return Ok(BatchAccess::Replay(self.replay_response(&outcome).await?));
+            let (response, cached) = self.replay_response(&outcome).await?;
+            return Ok(BatchAccess::Replay(response, cached));
         }
         match self.reserve(&outcome, &authorization).await? {
             BatchReservation::Reserved => Ok(BatchAccess::Serve(outcome)),
             BatchReservation::HandlerSucceeded => Ok(BatchAccess::Resume(outcome)),
             BatchReservation::Committed => {
-                Ok(BatchAccess::Replay(self.replay_response(&outcome).await?))
+                let (response, cached) = self.replay_response(&outcome).await?;
+                Ok(BatchAccess::Replay(response, cached))
             }
             BatchReservation::InProgress => Ok(BatchAccess::InProgress),
             BatchReservation::Conflict => Err(batch_err(
@@ -1339,6 +1346,34 @@ impl X402BatchSettlement {
                 None,
                 Box::new(move |state| {
                     state.mark_authorization_handler_succeeded(&id, &fingerprint)?;
+                    Ok(())
+                }),
+            )
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+        Ok(())
+    }
+
+    /// Cache the resource handler's response against an already-committed
+    /// authorization, so a future replay of the same voucher can return the
+    /// purchased representation itself rather than only the settlement
+    /// result — the `("access", channelId, maxClaimableAmount)` cache the
+    /// batch-settlement spec requires. Call after [`Self::finish_commit`] (or
+    /// [`Self::settle_payment`]) has already succeeded; this is a best-effort
+    /// improvement to a *future* request, so its own failure is not this
+    /// request's problem and callers should log, not propagate, an error.
+    pub async fn cache_response(
+        &self,
+        outcome: &BatchOutcome,
+        cached: crate::core::store::CachedUpstreamResponse,
+    ) -> Result<(), Error> {
+        let Authorization { id, .. } = self.authorization_of(outcome)?;
+        self.store
+            .mutate_channel(
+                &outcome.channel_id,
+                None,
+                Box::new(move |state| {
+                    state.attach_cached_response(&id, cached);
                     Ok(())
                 }),
             )
@@ -1500,8 +1535,14 @@ impl X402BatchSettlement {
         match response {
             Some(response) => Ok(response),
             // The transition found the authorization already committed, so the
-            // response stored on its record is the authoritative one.
-            None => self.replay_response(outcome).await,
+            // response stored on its record is the authoritative one. The
+            // cached upstream body (if any) is for a genuine replay path to
+            // surface, not this one: `finish_commit`'s own contract is the
+            // settlement result.
+            None => self
+                .replay_response(outcome)
+                .await
+                .map(|(response, _)| response),
         }
     }
 
@@ -1783,39 +1824,53 @@ impl X402BatchSettlement {
         }
     }
 
-    /// Rebuild the accepted response for an idempotent voucher retry.
-    ///
-    /// Used when no response was stored for the authorization — a record that
-    /// predates response storage, or one whose stored response has aged out.
-    /// The charge it reports is this route's fixed price, which is what the
-    /// original response carried.
+    /// Rebuild the accepted response for an idempotent voucher retry, plus
+    /// the resource handler's cached response when one was stored for it
+    /// (see [`Self::cache_response`]) — together, the
+    /// `("access", channelId, maxClaimableAmount)` replay the batch-settlement
+    /// spec requires. The cached response is `None` when no response was
+    /// stored — a record that predates response storage, one whose response
+    /// exceeded the caller's size cap for caching, or one whose stored
+    /// response has aged out — in which case the caller falls back to a
+    /// settlement-only reply.
     pub async fn replay_response(
         &self,
         outcome: &BatchOutcome,
-    ) -> Result<BatchSettlementResponse, Error> {
+    ) -> Result<
+        (
+            BatchSettlementResponse,
+            Option<crate::core::store::CachedUpstreamResponse>,
+        ),
+        Error,
+    > {
         let state = self
             .store
             .get_channel(&outcome.channel_id)
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?
             .ok_or_else(|| batch_err(codes::INVALID_CHANNEL_STATE, "channel vanished"))?;
-        let stored = outcome
+        let committed = outcome
             .authorization
             .as_ref()
-            .and_then(|authorization| state.committed_authorization(&authorization.id))
+            .and_then(|authorization| state.committed_authorization(&authorization.id));
+        let cached = committed.and_then(|committed| committed.cached_response.clone());
+        let stored = committed
             .and_then(|committed| committed.settlement_response.clone())
             .and_then(|value| serde_json::from_value(value).ok());
         if let Some(response) = stored {
-            return Ok(response);
+            return Ok((response, cached));
         }
-        Ok(accepted_response(
-            &outcome.payer,
-            &outcome.requirements.network,
-            format!("{}:{}", outcome.channel_id, outcome.max_claimable),
-            String::new(),
-            String::new(),
-            outcome.requirements.amount()?,
-            &state,
+        Ok((
+            accepted_response(
+                &outcome.payer,
+                &outcome.requirements.network,
+                format!("{}:{}", outcome.channel_id, outcome.max_claimable),
+                String::new(),
+                String::new(),
+                outcome.requirements.amount()?,
+                &state,
+            ),
+            cached,
         ))
     }
 
@@ -3095,7 +3150,7 @@ mod tests {
         assert_eq!(state.cumulative, 3_000);
 
         // The retry is answered from the stored response, not by serving again.
-        let BatchAccess::Replay(replayed) = handler
+        let BatchAccess::Replay(replayed, _cached) = handler
             .verify_and_reserve_payment(&request, "0.001")
             .await
             .expect("the same voucher verifies")
@@ -3113,6 +3168,46 @@ mod tests {
             3_000,
             "a replay must not charge again"
         );
+    }
+
+    /// A replay returns the resource handler's own cached response when one
+    /// was stored for it — the spec's `("access", channelId,
+    /// maxClaimableAmount)` cache — not only the settlement result layered
+    /// on top of it.
+    #[tokio::test]
+    async fn a_replay_surfaces_the_cached_upstream_response() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let (handler, fee_payer) = handler(store.clone());
+        let (_, request) = paid_channel(&store, &handler, &fee_payer, 2_000).await;
+
+        let BatchAccess::Serve(outcome) = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .unwrap()
+        else {
+            panic!("a fresh authorization must be served");
+        };
+        handler.mark_handler_succeeded(&outcome).await.unwrap();
+        handler.finish_commit(&outcome).await.expect("commits");
+        let cached = crate::core::store::CachedUpstreamResponse {
+            status: 200,
+            content_type: Some("application/json".to_string()),
+            body: br#"{"result":42}"#.to_vec(),
+        };
+        handler
+            .cache_response(&outcome, cached.clone())
+            .await
+            .expect("caching a response is best-effort but should succeed here");
+        drop(outcome);
+
+        let BatchAccess::Replay(_, replayed_cached) = handler
+            .verify_and_reserve_payment(&request, "0.001")
+            .await
+            .expect("the same voucher verifies")
+        else {
+            panic!("a committed authorization must replay");
+        };
+        assert_eq!(replayed_cached, Some(cached));
     }
 
     /// A served request is still charged when the success marker could not be
@@ -3158,7 +3253,7 @@ mod tests {
                 .verify_and_reserve_payment(&request, "0.001")
                 .await
                 .expect("the same voucher verifies"),
-            BatchAccess::Replay(_)
+            BatchAccess::Replay(_, _)
         ));
     }
 
