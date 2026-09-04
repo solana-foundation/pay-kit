@@ -213,6 +213,68 @@ pub fn check_voucher(
     Ok(max_claimable)
 }
 
+/// Async counterpart to [`check_voucher`] that reuses the shared secure
+/// micro-batch verifier when `PAY_VERIFY_BATCH=1`.
+///
+/// Batch settlement and MPP sessions carry the same canonical payment-channel
+/// voucher signature. Keeping batch settlement on the synchronous verifier
+/// left every gateway worker doing an independent curve operation even though
+/// the shared verifier already coalesces concurrent vouchers, rejects
+/// degenerate inputs before the batch equation, and strictly re-verifies an
+/// individually failing batch.
+pub async fn check_voucher_batched(
+    voucher: &BatchVoucher,
+    config: &BatchChannelConfig,
+    channel_id: &Pubkey,
+) -> Result<u64> {
+    let expected = pc::pubkey_string(channel_id);
+    if voucher.channel_id != expected {
+        return Err(BatchError::new(
+            errors::INVALID_CHANNEL_ID_MISMATCH,
+            format!(
+                "voucher.channelId {} does not match the derived PDA {expected}",
+                voucher.channel_id
+            ),
+        ));
+    }
+    check_voucher_expiry(voucher.expires_at)?;
+    let max_claimable = voucher
+        .max_claimable()
+        .map_err(|e| BatchError::new(errors::INVALID_VOUCHER_SIGNATURE, e.to_string()))?;
+
+    let Some(verifier) = crate::core::batch_verify::batch_verifier() else {
+        verify_voucher_signature(
+            &voucher.channel_id,
+            max_claimable,
+            voucher.expires_at,
+            &voucher.signature,
+            &config.payer_authorizer,
+        )?;
+        return Ok(max_claimable);
+    };
+
+    let parts = crate::core::voucher::voucher_verify_parts(
+        &voucher.channel_id,
+        max_claimable,
+        voucher.expires_at,
+        &voucher.signature,
+        &config.payer_authorizer,
+        0,
+        0,
+    )
+    .map_err(|e| BatchError::new(errors::INVALID_VOUCHER_SIGNATURE, e.to_string()))?;
+    if !verifier
+        .verify(parts.message, parts.verifying_key, parts.signature)
+        .await
+    {
+        return Err(BatchError::new(
+            errors::INVALID_VOUCHER_SIGNATURE,
+            "Voucher signature verification failed",
+        ));
+    }
+    Ok(max_claimable)
+}
+
 /// Reject any voucher expiry other than zero.
 ///
 /// A nonzero expiry would add a second clock the server has to beat, on top of

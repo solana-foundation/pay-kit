@@ -53,11 +53,12 @@ use crate::core::store::{
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
     check_channel_config, check_no_cooperative_close, check_token_program, check_voucher,
-    check_withdraw_delay, derive_channel_id, errors as codes, setup_form_from_transaction,
-    BatchChannelConfig, BatchError, BatchExtra, BatchPayload, BatchPaymentPayload,
-    BatchRequiredEnvelope, BatchRequirements, BatchSettlementExtra, BatchSettlementResponse,
-    ChannelStateSnapshot, SetupForm, TransactionExpectations, VoucherState,
-    BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS, VOUCHER_EXPIRES_AT,
+    check_voucher_batched, check_withdraw_delay, derive_channel_id, errors as codes,
+    setup_form_from_transaction, BatchChannelConfig, BatchError, BatchExtra, BatchPayload,
+    BatchPaymentPayload, BatchRequiredEnvelope, BatchRequirements, BatchSettlementExtra,
+    BatchSettlementResponse, ChannelStateSnapshot, SetupForm, TransactionExpectations,
+    VoucherState, BATCH_SETTLEMENT_SCHEME, MAX_CLAIMS_PER_BATCH, MIN_WITHDRAW_DELAY_SECONDS,
+    VOUCHER_EXPIRES_AT,
 };
 use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency, ResourceInfo,
@@ -938,7 +939,7 @@ impl X402BatchSettlement {
                         )
                     })?;
                 self.check_channel_open(sealed, close_requested)?;
-                let max_claimable = check_voucher(voucher, &config, &channel_id)?;
+                let max_claimable = check_voucher_batched(voucher, &config, &channel_id).await?;
                 let replay = self.check_watermark(
                     cumulative,
                     highest_voucher_signature.as_deref(),
@@ -972,7 +973,7 @@ impl X402BatchSettlement {
                     .get_channel(&channel_b58)
                     .await
                     .map_err(|e| Error::Other(format!("store error: {e}")))?;
-                let max_claimable = check_voucher(voucher, &config, &channel_id)?;
+                let max_claimable = check_voucher_batched(voucher, &config, &channel_id).await?;
                 let deposit_amount = deposit.amount()?;
                 let form = setup_form_from_transaction(&deposit.transaction, &program_id)?;
                 if let Some(state) = &stored {
