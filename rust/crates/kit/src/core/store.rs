@@ -626,6 +626,10 @@ pub struct ChannelState {
     #[serde(default)]
     pub settled_on_chain: u64,
 
+    /// Highest cumulative amount confirmed distributed from escrow on-chain.
+    #[serde(default)]
+    pub distributed_on_chain: u64,
+
     /// Exactly-once operator-use results keyed by HTTP idempotency key.
     #[serde(default)]
     pub processed_uses: Vec<ProcessedUse>,
@@ -2312,6 +2316,7 @@ mod tests {
             last_activity_at: 0,
             spent_amount: 0,
             settled_on_chain: 0,
+            distributed_on_chain: 0,
             processed_uses: vec![],
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,

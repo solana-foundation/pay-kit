@@ -1652,6 +1652,9 @@ impl X402BatchSettlement {
                         state.deposit = state.deposit.max(channel.deposit);
                         state.settled_on_chain =
                             state.settled_on_chain.max(channel.settlement.settled);
+                        state.distributed_on_chain = state
+                            .distributed_on_chain
+                            .max(channel.settlement.payout_watermark);
                         state.open_slot = Some(channel.open_slot);
                         state.rent_payer = rent_payer;
                         state.onchain_checked_at = now.max(0) as u64;
@@ -1789,6 +1792,7 @@ impl X402BatchSettlement {
         seed.cumulative = settled;
         seed.spent_amount = settled;
         seed.settled_on_chain = settled;
+        seed.distributed_on_chain = channel.settlement.payout_watermark;
         seed.open_slot = Some(open_slot);
         seed.onchain_checked_at = now;
         self.store
@@ -1903,6 +1907,7 @@ impl X402BatchSettlement {
                     });
                 let deposit = channel.deposit;
                 let settled = channel.settlement.settled;
+                let distributed = channel.settlement.payout_watermark;
                 let sealed = channel.status != CHANNEL_STATUS_OPEN
                     && channel.status != CHANNEL_STATUS_CLOSING;
                 self.store
@@ -1914,6 +1919,8 @@ impl X402BatchSettlement {
                             })?;
                             state.deposit = state.deposit.max(deposit);
                             state.settled_on_chain = state.settled_on_chain.max(settled);
+                            state.distributed_on_chain =
+                                state.distributed_on_chain.max(distributed);
                             state.sealed = state.sealed || sealed;
                             if let Some(closed_at) = closed_at {
                                 state.close_requested_at =
@@ -2141,6 +2148,7 @@ impl X402BatchSettlement {
     async fn upsert_channel(&self, outcome: &BatchOutcome, channel: &Channel) -> Result<(), Error> {
         let deposit = channel.deposit;
         let settled = channel.settlement.settled;
+        let distributed = channel.settlement.payout_watermark;
         let seed = self.seed_state(&outcome.channel_id, outcome.payload.channel_config());
         let deposit_signature = outcome.deposit_signature.clone();
         self.store
@@ -2152,6 +2160,7 @@ impl X402BatchSettlement {
                     // read lower a deposit the chain has already confirmed.
                     state.deposit = state.deposit.max(deposit);
                     state.settled_on_chain = state.settled_on_chain.max(settled);
+                    state.distributed_on_chain = state.distributed_on_chain.max(distributed);
                     state.last_activity_at = now_unix();
                     // Marks this escrow as applied, so a retry of the same
                     // transaction re-uses the confirmed deposit rather than
@@ -2191,6 +2200,7 @@ impl X402BatchSettlement {
             last_activity_at: now_unix(),
             spent_amount: 0,
             settled_on_chain: 0,
+            distributed_on_chain: 0,
             processed_uses: vec![],
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
@@ -2331,6 +2341,7 @@ impl X402BatchSettlement {
         let program_id = self.program_id()?;
         let onchain_channels = self.lookup_channels_for_lifecycle(channel_ids).await?;
         let mut groups = Vec::with_capacity(channel_ids.len());
+        let mut claimed_watermarks = Vec::with_capacity(channel_ids.len());
         for (channel_id, onchain) in channel_ids.iter().zip(onchain_channels) {
             let mut state = self
                 .store
@@ -2393,8 +2404,26 @@ impl X402BatchSettlement {
                 channel_id: channel_id.clone(),
                 instructions,
             });
+            claimed_watermarks.push((channel_id.clone(), state.cumulative));
         }
-        self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await
+        let signatures = self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await?;
+        for (channel_id, claimed) in claimed_watermarks {
+            self.store
+                .update_channel(
+                    &channel_id,
+                    Box::new(move |current| {
+                        let mut state = current.ok_or_else(|| {
+                            crate::core::store::StoreError::Internal("channel not found".into())
+                        })?;
+                        state.settled_on_chain = state.settled_on_chain.max(claimed);
+                        state.onchain_checked_at = now_unix();
+                        Ok(state)
+                    }),
+                )
+                .await
+                .map_err(|error| Error::Other(format!("store error: {error}")))?;
+        }
+        Ok(signatures)
     }
 
     /// Pay each channel's newly claimed delta to `payTo` via program
@@ -2453,6 +2482,7 @@ impl X402BatchSettlement {
                             crate::core::store::StoreError::Internal("channel not found".into())
                         })?;
                         state.settled_on_chain = state.settled_on_chain.max(distributed);
+                        state.distributed_on_chain = state.distributed_on_chain.max(distributed);
                         state.onchain_checked_at = now_unix();
                         Ok(state)
                     }),
@@ -3112,6 +3142,7 @@ mod tests {
             last_activity_at: 0,
             spent_amount: 0,
             settled_on_chain: 0,
+            distributed_on_chain: 0,
             processed_uses: vec![],
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
