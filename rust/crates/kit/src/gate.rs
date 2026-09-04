@@ -960,16 +960,29 @@ fn is_replayable_response_header(name: &HeaderName) -> bool {
         name.as_str(),
         "accept-ranges"
             | "cache-control"
+            | "content-security-policy"
+            | "content-security-policy-report-only"
             | "content-disposition"
             | "content-encoding"
             | "content-language"
             | "content-location"
             | "content-range"
+            | "cross-origin-embedder-policy"
+            | "cross-origin-opener-policy"
+            | "cross-origin-resource-policy"
             | "etag"
             | "expires"
             | "last-modified"
             | "location"
+            | "permissions-policy"
+            | "referrer-policy"
+            | "reporting-endpoints"
+            | "strict-transport-security"
             | "vary"
+            | "x-content-type-options"
+            | "x-frame-options"
+            | "x-permitted-cross-domain-policies"
+            | "x-xss-protection"
     )
 }
 
@@ -1550,6 +1563,18 @@ mod tests {
             header::CONTENT_DISPOSITION,
             HeaderValue::from_static("attachment; filename=report.txt"),
         );
+        response.headers_mut().insert(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("default-src 'none'"),
+        );
+        response.headers_mut().insert(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        );
+        response.headers_mut().insert(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        );
         response
             .headers_mut()
             .insert(header::CONNECTION, HeaderValue::from_static("close"));
@@ -1568,6 +1593,16 @@ mod tests {
             "content-disposition".to_string(),
             "attachment; filename=report.txt".to_string()
         )));
+        assert!(cached.headers.contains(&(
+            "content-security-policy".to_string(),
+            "default-src 'none'".to_string()
+        )));
+        assert!(cached
+            .headers
+            .contains(&("x-content-type-options".to_string(), "nosniff".to_string())));
+        assert!(cached
+            .headers
+            .contains(&("x-frame-options".to_string(), "DENY".to_string())));
         assert!(!cached.headers.iter().any(|(name, _)| name == "connection"));
         assert!(!cached
             .headers
