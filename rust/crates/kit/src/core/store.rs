@@ -7,6 +7,7 @@
 //! `batch-settlement` scheme) share one implementation. `solana-mpp` re-exports
 //! this module at `mpp::store`.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -645,7 +646,7 @@ pub struct ChannelState {
 
     /// Recently committed deliveries, kept for idempotent commit replay.
     #[serde(default)]
-    pub committed_deliveries: Vec<CommittedDelivery>,
+    pub committed_deliveries: VecDeque<CommittedDelivery>,
 
     /// A validated setup transaction awaiting broadcast and confirmation.
     ///
@@ -957,7 +958,7 @@ impl ChannelState {
         self.spent_amount = self.spent_amount.max(cumulative);
         self.highest_voucher_signature = Some(voucher_signature.to_string());
         self.highest_voucher_expires_at = Some(voucher_expires_at);
-        self.committed_deliveries.push(CommittedDelivery {
+        self.committed_deliveries.push_back(CommittedDelivery {
             delivery_id: authorization_id.to_string(),
             amount: charged,
             cumulative,
@@ -1017,8 +1018,8 @@ impl ChannelState {
         self.pending_setup.is_some() || !self.pending_deliveries.is_empty()
     }
 
-    /// Drop committed records past their retention, then bound the committed
-    /// tail to [`MAX_COMMITTED_AUTHORIZATIONS`].
+    /// Drop the expired committed prefix, then bound the committed tail to
+    /// [`MAX_COMMITTED_AUTHORIZATIONS`].
     ///
     /// Reservations are never dropped. A reservation is removed only by the
     /// request that owns it, releasing or committing it; anything left behind
@@ -1027,15 +1028,19 @@ impl ChannelState {
     /// a second time. They accumulate one per crashed or overrunning request,
     /// which is bounded by how often that happens rather than by traffic.
     pub fn prune_authorizations(&mut self, now: i64) {
-        self.committed_deliveries
-            .retain(|entry| entry.retain_until == 0 || entry.retain_until > now);
-        if self.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
-            // The newest records are the ones a client could still be retrying,
-            // and `cumulative` is monotonic per channel, so it orders them.
-            let excess = self.committed_deliveries.len() - MAX_COMMITTED_AUTHORIZATIONS;
-            self.committed_deliveries
-                .sort_by_key(|entry| entry.cumulative);
-            self.committed_deliveries.drain(..excess);
+        while self
+            .committed_deliveries
+            .front()
+            .is_some_and(|entry| entry.retain_until != 0 && entry.retain_until <= now)
+        {
+            self.committed_deliveries.pop_front();
+        }
+        // Commits append in non-decreasing cumulative order, so the front is
+        // always the oldest authorization. A deque makes steady-state pruning
+        // O(1); the previous Vec retained, sorted, and shifted up to 256 large
+        // replay records on every paid request.
+        while self.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
+            self.committed_deliveries.pop_front();
         }
     }
 }
@@ -2302,7 +2307,7 @@ mod tests {
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: None,

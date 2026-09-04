@@ -896,7 +896,7 @@ impl X402BatchSettlement {
             BatchPayload::Voucher { voucher, .. } => {
                 // Hot path: extract only the scalar fields the checks need,
                 // borrowing the record under the read guard. The growing
-                // `committed_deliveries` Vec and the `extra` map are never
+                // `committed_deliveries` deque and the `extra` map are never
                 // cloned here.
                 let fields: Arc<Mutex<Option<(bool, bool, u64, Option<String>, u64, String)>>> =
                     Arc::new(Mutex::new(None));
@@ -2194,7 +2194,7 @@ impl X402BatchSettlement {
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: None,
@@ -3115,7 +3115,7 @@ mod tests {
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             // Fresh enough that the reservation path trusts it instead of
             // reaching for an RPC these tests do not have.

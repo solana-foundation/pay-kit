@@ -858,7 +858,7 @@ impl<S: ChannelStore> SessionServer<S> {
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: Some(ChannelLifecycle {
@@ -1630,7 +1630,7 @@ impl<S: ChannelStore> SessionServer<S> {
                                 owner: lifecycle_owner.clone(),
                                 close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
                             });
-                        state.committed_deliveries.push(CommittedDelivery {
+                        state.committed_deliveries.push_back(CommittedDelivery {
                             delivery_id: delivery_id.clone(),
                             amount: actual_amount,
                             cumulative: new_cumulative,
@@ -2486,7 +2486,7 @@ mod tests {
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: None,
