@@ -1059,6 +1059,25 @@ pub trait ChannelStore: Send + Sync {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>>;
 
+    /// Return the channel ids in this store without cloning channel records.
+    ///
+    /// Embedded lifecycle loops use this to apply a bounded scan budget before
+    /// reading state. The default preserves compatibility for custom stores;
+    /// in-memory stores override it so growing delivery histories never get
+    /// copied merely to choose the next reconciliation candidates.
+    fn list_channel_ids(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, StoreError>> + Send + '_>> {
+        Box::pin(async move {
+            Ok(self
+                .list_channels()
+                .await?
+                .into_iter()
+                .map(|state| state.channel_id)
+                .collect())
+        })
+    }
+
     fn get_channel(
         &self,
         channel_id: &str,
@@ -1183,6 +1202,12 @@ where
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
         (**self).list_channels()
+    }
+
+    fn list_channel_ids(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, StoreError>> + Send + '_>> {
+        (**self).list_channel_ids()
     }
 
     fn get_channel(
@@ -1315,6 +1340,16 @@ impl ChannelStore for MemoryChannelStore {
             .map(|entry| entry.value().clone())
             .collect();
         Box::pin(async move { Ok(channels) })
+    }
+
+    fn list_channel_ids(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, StoreError>> + Send + '_>> {
+        // Copy only the map keys. Channel records contain growing delivery
+        // histories, so cloning every value for candidate selection makes a
+        // lifecycle sweep increasingly expensive as traffic accumulates.
+        let channel_ids = self.data.iter().map(|entry| entry.key().clone()).collect();
+        Box::pin(async move { Ok(channel_ids) })
     }
 
     fn get_channel(
@@ -2489,6 +2524,7 @@ mod tests {
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
         assert_eq!(store.list_channels().await.unwrap().len(), 1);
+        assert_eq!(store.list_channel_ids().await.unwrap(), ["c1"]);
     }
 
     #[tokio::test]
@@ -2625,6 +2661,7 @@ mod tests {
             store.get_channel("c1").await.unwrap().unwrap().deposit,
             1_000_000
         );
+        assert_eq!(store.list_channel_ids().await.unwrap(), ["c1"]);
     }
 
     #[tokio::test]
