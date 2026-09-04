@@ -2331,6 +2331,7 @@ impl X402BatchSettlement {
         let receiver = pc::parse_pubkey(&self.config.pay_to)?;
         let onchain_channels = self.lookup_channels_for_lifecycle(channel_ids).await?;
         let mut groups = Vec::with_capacity(channel_ids.len());
+        let mut distributed_watermarks = Vec::with_capacity(channel_ids.len());
         for (channel_id, onchain) in channel_ids.iter().zip(onchain_channels) {
             let channel = pc::parse_pubkey(channel_id)?;
             let Some(onchain) = onchain else {
@@ -2361,8 +2362,30 @@ impl X402BatchSettlement {
                 channel_id: channel_id.clone(),
                 instructions: vec![instruction],
             });
+            distributed_watermarks.push((channel_id.clone(), onchain.settlement.settled));
         }
-        self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await
+        let signatures = self.submit_groups(groups, MAX_CLAIMS_PER_BATCH).await?;
+        // A successful distribute proves the claim watermark was already
+        // visible and paid. Persist it immediately so the next lifecycle tick
+        // does not re-submit the same channel merely because the RPC account
+        // view lags its signature-status confirmation.
+        for (channel_id, distributed) in distributed_watermarks {
+            self.store
+                .update_channel(
+                    &channel_id,
+                    Box::new(move |current| {
+                        let mut state = current.ok_or_else(|| {
+                            crate::core::store::StoreError::Internal("channel not found".into())
+                        })?;
+                        state.settled_on_chain = state.settled_on_chain.max(distributed);
+                        state.onchain_checked_at = now_unix();
+                        Ok(state)
+                    }),
+                )
+                .await
+                .map_err(|error| Error::Other(format!("store error: {error}")))?;
+        }
+        Ok(signatures)
     }
 
     /// The onchain channel a lifecycle step should act on, or `None` when there
