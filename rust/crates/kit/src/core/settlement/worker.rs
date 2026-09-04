@@ -22,7 +22,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_transaction::Transaction;
@@ -76,7 +76,7 @@ pub trait Broadcaster: Send + Sync {
 
 pub struct SettlementConfig {
     pub operator: Pubkey,
-    pub operator_signer: Arc<dyn SolanaSigner>,
+    pub operator_signer: Arc<dyn TransactionSigner>,
     /// Calibrated cap for voucher settlement operations; packing is also
     /// byte-bounded.
     pub max_voucher_settlements_per_tx: usize,
@@ -89,7 +89,7 @@ pub struct SettlementConfig {
 }
 
 impl SettlementConfig {
-    pub fn new(operator: Pubkey, operator_signer: Arc<dyn SolanaSigner>) -> Self {
+    pub fn new(operator: Pubkey, operator_signer: Arc<dyn TransactionSigner>) -> Self {
         Self {
             operator,
             operator_signer,
@@ -284,8 +284,7 @@ async fn settle_group(
             let blockhash = broadcaster.latest_blockhash().await?;
             let message = Message::new_with_blockhash(&flat, Some(&cfg.operator), &blockhash);
             let mut tx = Transaction::new_unsigned(message);
-            cfg.operator_signer
-                .sign_transaction(&mut tx)
+            crate::core::signing::sign_legacy_transaction(cfg.operator_signer.as_ref(), &mut tx)
                 .await
                 .map_err(|e| format!("settle signing failed: {e}"))?;
             broadcaster.send(&tx).await
@@ -434,7 +433,7 @@ impl Broadcaster for RpcBroadcaster {
 mod tests {
     use super::*;
     use solana_instruction::AccountMeta;
-    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
     use solana_signature::Signature;
     use std::sync::Mutex;
 
@@ -445,21 +444,25 @@ mod tests {
         fn pubkey(&self) -> Pubkey {
             self.0
         }
+        async fn sign_message(&self, _m: &[u8]) -> Result<Signature, SignerError> {
+            Ok(Signature::from([1u8; 64]))
+        }
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    #[async_trait]
+    impl TransactionSigner for TestSigner {
         async fn sign_transaction(
             &self,
-            tx: &mut Transaction,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
         ) -> Result<SignTransactionResult, SignerError> {
             let sig = Signature::from([1u8; 64]);
             if let Some(s) = tx.signatures.first_mut() {
                 *s = sig;
             }
             Ok(SignTransactionResult::Complete((String::new(), sig)))
-        }
-        async fn sign_message(&self, _m: &[u8]) -> Result<Signature, SignerError> {
-            Ok(Signature::from([1u8; 64]))
-        }
-        async fn is_available(&self) -> bool {
-            true
         }
     }
 

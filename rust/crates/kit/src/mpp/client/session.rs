@@ -23,7 +23,7 @@
 use std::str::FromStr;
 
 use solana_hash::Hash;
-use solana_keychain::SolanaSigner;
+use solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_pubkey::Pubkey;
 
 use crate::mpp::error::{Error, Result};
@@ -468,7 +468,7 @@ pub fn derive_payment_channel_open(
 
 pub struct BuildOpenPaymentChannelTransactionParams<'a> {
     pub request: &'a SessionRequest,
-    pub signer: &'a dyn SolanaSigner,
+    pub signer: &'a dyn TransactionSigner,
     pub authorized_signer: Pubkey,
     pub fee_payer: Option<Pubkey>,
     /// Blockhash for the open transaction. `None` (the default) takes the
@@ -557,7 +557,7 @@ pub async fn build_open_payment_channel_transaction(
 
 pub async fn create_payment_channel_session_opener(
     request: &SessionRequest,
-    payer_signer: &dyn SolanaSigner,
+    payer_signer: &dyn TransactionSigner,
     session_signer: Box<dyn SolanaSigner>,
     recent_blockhash: Option<Hash>,
     options: PaymentChannelSessionOpenOptions,
@@ -667,7 +667,7 @@ mod tests {
     use crate::mpp::protocol::solana::{mints, programs};
     use solana_keychain::MemorySigner;
 
-    fn signer(seed: u8) -> Box<dyn SolanaSigner> {
+    fn signer(seed: u8) -> Box<dyn TransactionSigner> {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let mut bytes = [0_u8; 64];
         bytes[..32].copy_from_slice(key.as_bytes());

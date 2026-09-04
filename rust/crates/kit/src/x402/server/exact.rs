@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use solana_commitment_config::CommitmentConfig;
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
@@ -643,7 +643,7 @@ impl X402 {
     pub async fn settle_exact(
         &self,
         verified: VerifiedExactPayment,
-        fee_payer: &dyn SolanaSigner,
+        fee_payer: &dyn TransactionSigner,
     ) -> Result<String, Error> {
         let mut tx = match verified {
             VerifiedExactPayment::Signature(signature) => return Ok(signature),
@@ -991,7 +991,7 @@ mod tests {
         assert!(error.to_string().contains("USDtest is devnet-only"));
     }
 
-    fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {
+    fn memory_signer(seed: u8) -> Box<dyn TransactionSigner> {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let mut keypair = [0u8; 64];
         keypair[..32].copy_from_slice(signing_key.as_bytes());

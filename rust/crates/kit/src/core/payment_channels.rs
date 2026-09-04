@@ -17,7 +17,7 @@ use solana_address::Address;
 use solana_hash::Hash;
 use solana_instruction::AccountMeta;
 use solana_instruction::Instruction;
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_message::compiled_instruction::CompiledInstruction;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
@@ -288,7 +288,7 @@ pub fn decode_transaction(b64: &str) -> Result<VersionedTransaction> {
 /// transactions (via [`VersionedTransaction`]). Shared by x402
 /// (`upto`/`batch-settlement`) and the MPP session opener.
 pub async fn cosign_fee_payer(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     operator: &Pubkey,
     tx: &mut VersionedTransaction,
 ) -> Result<()> {
@@ -688,7 +688,7 @@ pub struct OpenTxOptions {
 /// Returns the derived channel PDA and the base64-encoded transaction.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_open_payment_channel_tx(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     payee: &Pubkey,
     mint: &Pubkey,
     authorized_signer: &Pubkey,
@@ -725,7 +725,7 @@ pub async fn build_open_payment_channel_tx(
 /// [`OpenTxOptions`] appended after `open`.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_open_payment_channel_tx_with_options(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     payee: &Pubkey,
     mint: &Pubkey,
     authorized_signer: &Pubkey,
@@ -773,8 +773,7 @@ pub async fn build_open_payment_channel_tx_with_options(
     let message = Message::new_with_blockhash(&instructions, Some(fee_payer), &recent_blockhash);
     let mut tx = Transaction::new_unsigned(message);
 
-    signer
-        .sign_transaction(&mut tx)
+    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("payment-channel open signing failed: {e}")))?;
 
@@ -1176,7 +1175,7 @@ mod tests {
         assert!(format!("{options:?}").contains("memo"));
     }
 
-    fn test_signer() -> Box<dyn SolanaSigner> {
+    fn test_signer() -> Box<dyn TransactionSigner> {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());

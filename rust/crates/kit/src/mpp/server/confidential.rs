@@ -9,7 +9,6 @@
 use std::str::FromStr;
 
 use solana_pubkey::Pubkey;
-use solana_signature::Signature;
 use solana_transaction::{versioned::VersionedTransaction, Transaction};
 
 use crate::mpp::protocol::intents::ChargeRequest;
@@ -296,24 +295,24 @@ impl Mpp {
         // the confidential transfer; its signature is the settlement signature.
         let mut final_sig = String::new();
         for (idx, tx) in decoded.iter_mut().enumerate() {
-            let msg_data = tx.message.serialize();
-            let sig_bytes = fee_payer_signer
-                .sign_message(&msg_data)
-                .await
-                .map_err(|e| {
-                    VerificationError::new(format!("Gateway fee-payer signing failed: {e}"))
-                })?;
-            let gw_idx = tx
-                .message
-                .static_account_keys()
-                .iter()
-                .position(|k| k == &gateway_pubkey)
-                .ok_or_else(|| {
-                    VerificationError::invalid_payload(format!(
-                        "Bundle tx {idx}: gateway not in account keys"
-                    ))
-                })?;
-            tx.signatures[gw_idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
+            // The gateway is every bundle tx's fee payer, so it is account key
+            // zero. Keep that as an `invalid_payload` diagnostic naming the tx.
+            if tx.message.static_account_keys().first() != Some(&gateway_pubkey) {
+                return Err(VerificationError::invalid_payload(format!(
+                    "Bundle tx {idx}: gateway not in account keys"
+                )));
+            }
+            // Routes through `sign_transaction` rather than raw-signing the
+            // serialized message, so a hardware gateway signer works.
+            crate::core::signing::cosign_versioned_fee_payer(
+                fee_payer_signer.as_ref(),
+                &gateway_pubkey,
+                tx,
+            )
+            .await
+            .map_err(|e| {
+                VerificationError::new(format!("Gateway fee-payer signing failed: {e}"))
+            })?;
 
             // Simulate before broadcasting to avoid fee loss / partial bundles.
             let sim = self.rpc.simulate_transaction(&*tx).map_err(|e| {
@@ -541,7 +540,7 @@ impl Mpp {
     #[cfg(feature = "worker")]
     pub(crate) async fn broadcast_close(
         &self,
-        signer: &dyn solana_keychain::SolanaSigner,
+        signer: &dyn solana_keychain::TransactionSigner,
         gateway: &Pubkey,
         ix: solana_instruction::Instruction,
     ) -> Result<(), VerificationError> {
@@ -552,11 +551,12 @@ impl Mpp {
             .map_err(|e| VerificationError::network_error(format!("get_latest_blockhash: {e}")))?;
         let message = solana_message::Message::new_with_blockhash(&[ix], Some(gateway), &blockhash);
         let mut tx = Transaction::new_unsigned(message);
-        let sig_bytes = signer
-            .sign_message(&tx.message_data())
+        // The gateway is the sole signer and the fee payer, so this is the
+        // legacy fee-payer co-sign shape. Routing it through `sign_transaction`
+        // is what lets a hardware gateway run the orphan sweeper.
+        crate::core::signing::cosign_legacy_fee_payer(signer, gateway, &mut tx)
             .await
             .map_err(|e| VerificationError::new(format!("sign close: {e}")))?;
-        tx.signatures[0] = Signature::from(<[u8; 64]>::from(sig_bytes));
         let tx = VersionedTransaction::from(tx);
 
         let sim = self

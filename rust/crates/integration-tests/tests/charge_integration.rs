@@ -39,7 +39,9 @@ async fn start_surfnet() -> Option<Surfnet> {
 }
 
 /// Create a funded signer using surfpool cheatcodes.
-fn fund_signer(surfnet: &Surfnet) -> Arc<dyn solana_pay_kit::mpp::solana_keychain::SolanaSigner> {
+fn fund_signer(
+    surfnet: &Surfnet,
+) -> Arc<dyn solana_pay_kit::mpp::solana_keychain::TransactionSigner> {
     use solana_pay_kit::mpp::solana_keychain::memory::MemorySigner;
 
     let keypair = Keypair::new();

@@ -12,7 +12,7 @@
 use std::str::FromStr;
 
 use solana_instruction::{AccountMeta, Instruction};
-use solana_keychain::SolanaSigner;
+use solana_keychain::TransactionSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -57,7 +57,7 @@ pub struct BuildSubscriptionActivationOptions {
 /// is `true`, the transaction is partially signed; the server completes
 /// the fee-payer signature before broadcasting.
 pub async fn build_subscription_activation_transaction(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     method_details: &SubscriptionMethodDetails,
 ) -> Result<CredentialPayload, Error> {
@@ -72,7 +72,7 @@ pub async fn build_subscription_activation_transaction(
 
 /// Build the subscription activation transaction with additional options.
 pub async fn build_subscription_activation_transaction_with_options(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     method_details: &SubscriptionMethodDetails,
     options: BuildSubscriptionActivationOptions,
@@ -308,8 +308,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     // signatures (puller is the server, so the server holds the puller key
     // too). The subscriber is the only client-side signer; when fee
     // sponsorship is in play, the tx is broadcast partially signed.
-    signer
-        .sign_transaction(&mut tx)
+    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("Subscriber signature failed: {e}")))?;
 
@@ -330,7 +329,7 @@ pub async fn build_subscription_activation_transaction_with_options(
 /// hold ~0.002 SOL the first time they subscribe with a given mint.
 #[allow(clippy::too_many_arguments)]
 async fn ensure_subscription_authority_init_id(
-    signer: &dyn SolanaSigner,
+    signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     program_id: Pubkey,
     subscriber: Pubkey,
@@ -360,8 +359,7 @@ async fn ensure_subscription_authority_init_id(
 
     let message = Message::new_with_blockhash(&[init_ix], Some(&subscriber), blockhash);
     let mut tx = Transaction::new_unsigned(message);
-    signer
-        .sign_transaction(&mut tx)
+    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("SA init signature failed: {e}")))?;
 
@@ -479,7 +477,7 @@ mod tests {
     use super::*;
     use crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID;
     use async_trait::async_trait;
-    use solana_keychain::{SignTransactionResult, SignerError};
+    use solana_keychain::{SignTransactionResult, SignerError, SolanaSigner};
     use solana_signature::Signature;
 
     #[test]
@@ -509,7 +507,7 @@ mod tests {
         assert!(SubscriptionMethodDetails::from_json(&value).is_err());
     }
 
-    fn make_signer() -> Box<dyn SolanaSigner> {
+    fn make_signer() -> Box<dyn TransactionSigner> {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());
@@ -520,24 +518,9 @@ mod tests {
     struct TransactionOnlySigner(Pubkey);
 
     #[async_trait]
-    impl SolanaSigner for TransactionOnlySigner {
+    impl solana_keychain::SolanaSigner for TransactionOnlySigner {
         fn pubkey(&self) -> Pubkey {
             self.0
-        }
-
-        async fn sign_transaction(
-            &self,
-            tx: &mut Transaction,
-        ) -> std::result::Result<SignTransactionResult, SignerError> {
-            let index = tx
-                .message
-                .account_keys
-                .iter()
-                .position(|key| key == &self.0)
-                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
-            let signature = Signature::from([7u8; 64]);
-            tx.signatures[index] = signature;
-            Ok(SignTransactionResult::Partial((String::new(), signature)))
         }
 
         async fn sign_message(
@@ -551,6 +534,24 @@ mod tests {
 
         async fn is_available(&self) -> bool {
             true
+        }
+    }
+
+    #[async_trait]
+    impl TransactionSigner for TransactionOnlySigner {
+        async fn sign_transaction(
+            &self,
+            tx: &mut solana_transaction::versioned::VersionedTransaction,
+        ) -> std::result::Result<SignTransactionResult, SignerError> {
+            let index = tx
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|key| key == &self.0)
+                .ok_or_else(|| SignerError::Other("missing signer".into()))?;
+            let signature = Signature::from([7u8; 64]);
+            tx.signatures[index] = signature;
+            Ok(SignTransactionResult::Partial((String::new(), signature)))
         }
     }
 

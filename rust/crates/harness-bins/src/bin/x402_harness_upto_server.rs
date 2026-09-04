@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde_json::json;
-use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner};
+use solana_pay_kit::solana_keychain::{memory::MemorySigner, SolanaSigner, TransactionSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::upto::UptoSettlementResponse,
     server::{
@@ -74,13 +74,14 @@ fn read_state(
     let mint = env::var("X402_HARNESS_MINT")
         .unwrap_or_else(|_| "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU".to_string());
     let pay_to = read_required_env("X402_HARNESS_PAY_TO")?;
-    let fee_payer_signer: Arc<dyn SolanaSigner> = Arc::new(read_memory_signer_any(&[
+    let fee_payer_signer: Arc<dyn TransactionSigner> = Arc::new(read_memory_signer_any(&[
         "X402_HARNESS_FEE_PAYER_SECRET_KEY",
         "X402_HARNESS_FACILITATOR_SECRET_KEY",
     ])?);
     let receiver_authorizer_signer: Arc<dyn SolanaSigner> =
         match read_optional_memory_signer("X402_HARNESS_RECEIVER_AUTHORIZER_SECRET_KEY")? {
             Some(signer) => Arc::new(signer),
+            // `TransactionSigner: SolanaSigner`, so the fee-payer upcasts.
             None => fee_payer_signer.clone(),
         };
     let price =
