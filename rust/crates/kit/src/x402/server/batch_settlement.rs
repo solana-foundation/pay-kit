@@ -32,13 +32,14 @@
 use dashmap::DashSet;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
+use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction::Transaction;
 
@@ -192,6 +193,14 @@ fn broadcast_and_confirm_deposit(
         .simulate_transaction(tx)
         .map_err(|e| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, e.to_string()))?;
     if let Some(err) = simulation.value.err {
+        // Devnet RPC replicas can expose the newly-created channel to
+        // simulation before the transaction's signature status is visible.
+        // In that window a retry simulates as "already initialized" even
+        // though the original submission succeeded. Wait briefly for the
+        // authoritative status instead of poisoning an otherwise valid open.
+        if wait_for_confirmed_signature(rpc, &signature) {
+            return Ok(signature.to_string());
+        }
         return Err(batch_err(
             codes::INVALID_SETTLEMENT_SIMULATION,
             format!("simulation failed: {err:?}"),
@@ -200,13 +209,34 @@ fn broadcast_and_confirm_deposit(
     match rpc.send_and_confirm_transaction(tx) {
         Ok(confirmed) => Ok(confirmed.to_string()),
         Err(error) => {
-            if matches!(rpc.get_signature_status(&signature), Ok(Some(Ok(())))) {
+            if wait_for_confirmed_signature(rpc, &signature) {
                 Ok(signature.to_string())
             } else {
                 Err(Error::Rpc(format!("broadcast failed: {error}")))
             }
         }
     }
+}
+
+/// Allow an RPC replica's recent-signature index to catch up after an
+/// ambiguous send or an "already initialized" retry simulation.
+fn wait_for_confirmed_signature(rpc: &RpcClient, signature: &Signature) -> bool {
+    const ATTEMPTS: usize = 8;
+    const DELAY: Duration = Duration::from_millis(250);
+
+    for attempt in 0..ATTEMPTS {
+        match rpc.get_signature_status(signature) {
+            Ok(Some(Ok(()))) => return true,
+            // A recorded transaction error is authoritative; more polling
+            // cannot turn it into a successful deposit.
+            Ok(Some(Err(_))) => return false,
+            Ok(None) | Err(_) => {}
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(DELAY);
+        }
+    }
+    false
 }
 
 /// Server configuration for the SVM `batch-settlement` scheme.
