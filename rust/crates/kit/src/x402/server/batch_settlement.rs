@@ -49,6 +49,7 @@ use crate::core::store::{
     BatchReservation, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
     CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
 };
+use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
 
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::batch_settlement::{
@@ -162,31 +163,26 @@ fn has_active_pending_open(state: &ChannelState, now: u64) -> bool {
 }
 
 /// Pop and spawn the next pending transaction onto `in_flight`, if any.
-/// Broadcasting runs on the blocking pool (`send_and_confirm_transaction` is
-/// the sync `RpcClient`, whose full confirm-poll round trip would otherwise
-/// stall a Tokio worker thread — the same hazard documented on
-/// [`rpc_lookup_channel`]/[`broadcast_and_confirm_deposit`] above).
+/// Broadcasting and confirmation use the shared asynchronous transaction
+/// pipeline, which globally paces submissions and coalesces signature-status
+/// polling across concurrent lifecycle chunks.
 fn spawn_next_submission(
     in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
     pending: &mut std::collections::VecDeque<Vec<Instruction>>,
-    rpc: &Arc<RpcClient>,
+    pipeline: &TxPipeline,
     signer: &Arc<dyn SolanaSigner>,
     fee_payer: &Pubkey,
 ) {
     let Some(instructions) = pending.pop_front() else {
         return;
     };
-    let rpc = Arc::clone(rpc);
+    let pipeline = pipeline.clone();
     let signer = Arc::clone(signer);
     let fee_payer = *fee_payer;
     in_flight.spawn(async move {
-        // Fetch per transaction, immediately before signing. A remote signer
-        // can take long enough that a blockhash fetched before the whole sweep
-        // expires by the time later transactions are finally submitted.
-        let blockhash_rpc = Arc::clone(&rpc);
-        let blockhash = tokio::task::spawn_blocking(move || blockhash_rpc.get_latest_blockhash())
+        let blockhash = pipeline
+            .latest_blockhash()
             .await
-            .map_err(|e| Error::Other(format!("blockhash join error: {e}")))?
             .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
         let message = Message::new_with_blockhash(
             &instructions,
@@ -198,13 +194,11 @@ fn spawn_next_submission(
             .sign_transaction(&mut tx)
             .await
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-        tokio::task::spawn_blocking(move || {
-            rpc.send_and_confirm_transaction(&VersionedTransaction::from(tx))
-                .map(|signature| signature.to_string())
-                .map_err(|e| Error::Rpc(format!("settlement broadcast failed: {e}")))
-        })
-        .await
-        .map_err(|e| Error::Other(format!("submit join error: {e}")))?
+        pipeline
+            .submit_verified(&VersionedTransaction::from(tx))
+            .await
+            .map(|confirmed| confirmed.signature.to_string())
+            .map_err(|e| Error::Rpc(format!("settlement submission failed: {e}")))
     });
 }
 
@@ -522,6 +516,7 @@ pub struct X402BatchSettlement {
     config: BatchConfig,
     fee_payer: Pubkey,
     store: Arc<dyn ChannelStore>,
+    tx_pipeline: Arc<tokio::sync::OnceCell<TxPipeline>>,
     in_flight: InFlight,
 }
 
@@ -568,8 +563,33 @@ impl X402BatchSettlement {
             config,
             fee_payer,
             store,
+            tx_pipeline: Arc::new(tokio::sync::OnceCell::new()),
             in_flight: InFlight::default(),
         })
+    }
+
+    /// Use a host-owned transaction pipeline for channel redemption.
+    ///
+    /// Sharing one pipeline across gate instances keeps submission pacing and
+    /// batched confirmation global instead of multiplying RPC pressure per
+    /// lifecycle chunk.
+    pub fn with_tx_pipeline(self, pipeline: TxPipeline) -> Self {
+        let _ = self.tx_pipeline.set(pipeline);
+        self
+    }
+
+    /// Return the lazily initialized pipeline used for claim, distribute,
+    /// close-finalization, and reclaim transactions.
+    pub async fn transaction_pipeline(&self) -> TxPipeline {
+        let rpc_url = self
+            .config
+            .rpc_url
+            .clone()
+            .unwrap_or_else(|| default_rpc_url(&self.config.cluster).to_string());
+        self.tx_pipeline
+            .get_or_init(|| async { TxPipeline::new(rpc_url, TxPipelineConfig::default()) })
+            .await
+            .clone()
     }
 
     /// The advertised `extra.feePayer` (base58).
@@ -2561,18 +2581,18 @@ impl X402BatchSettlement {
             pending.push_back(instructions);
         }
 
-        // Broadcast+confirm concurrently, bounded: each batch is an
-        // independent transaction, so serializing them here (as a plain
-        // sequential loop previously did) buys no correctness — only
-        // latency. Under a large `finalize_close`/`reclaim` sweep this was
-        // the difference between minutes and days.
+        // Feed each independent transaction into the shared pipeline. This
+        // local bound limits task creation; the pipeline supplies the global
+        // send bound, pacing, retry policy, and batched confirmation tracker
+        // across every concurrent lifecycle chunk.
         let total = pending.len();
+        let pipeline = self.transaction_pipeline().await;
         let mut in_flight = tokio::task::JoinSet::new();
         for _ in 0..SUBMIT_GROUPS_CONCURRENCY {
             spawn_next_submission(
                 &mut in_flight,
                 &mut pending,
-                &self.rpc,
+                &pipeline,
                 &self.config.fee_payer_signer,
                 &self.fee_payer,
             );
@@ -2583,7 +2603,7 @@ impl X402BatchSettlement {
             spawn_next_submission(
                 &mut in_flight,
                 &mut pending,
-                &self.rpc,
+                &pipeline,
                 &self.config.fee_payer_signer,
                 &self.fee_payer,
             );
