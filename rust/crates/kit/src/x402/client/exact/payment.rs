@@ -469,7 +469,13 @@ fn build_spl_instructions(
             )
         }))
         .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?;
-    let decimals = requirements.decimals.unwrap_or(6);
+    // Mirror mpp::client::charge (Audit #42): `decimals` is required when
+    // `currency` is a mint address. Silently defaulting to 6 produced a
+    // TransferChecked that fails on-chain with MintDecimalsMismatch for every
+    // non-6-decimal mint (e.g. wrapped SOL, which has 9).
+    let decimals = requirements.decimals.ok_or_else(|| {
+        Error::Other("decimals is required for SPL token payments".into())
+    })?;
 
     let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
     let dest_ata = get_associated_token_address(recipient, &mint, &token_program);
@@ -603,6 +609,35 @@ mod tests {
             accepted: None,
             resource_info: None,
         }
+    }
+
+    #[test]
+    fn build_spl_rejects_missing_decimals() {
+        // Audit #42 (mirrors mpp::client::charge): `decimals` is required for
+        // SPL payments. Silently defaulting to 6 produced a TransferChecked
+        // that fails on-chain (MintDecimalsMismatch) for non-6-decimal mints.
+        let signer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        // Wrapped SOL (9 decimals) with `decimals` omitted from the challenge.
+        let spl = "So11111111111111111111111111111111111111112";
+        let mut requirements = test_requirements(spl);
+        requirements.decimals = None;
+
+        let mut instructions = vec![];
+        let err = build_spl_instructions(
+            &mut instructions,
+            &signer,
+            &recipient,
+            spl,
+            &requirements,
+            1_000_000,
+        )
+        .err()
+        .expect("missing decimals should be rejected");
+        assert!(
+            format!("{err}").contains("decimals is required"),
+            "got: {err}"
+        );
     }
 
     fn decode_tx(encoded: &str) -> VersionedTransaction {
