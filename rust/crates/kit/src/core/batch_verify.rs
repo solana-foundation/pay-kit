@@ -3,7 +3,7 @@
 //! Vouchers arrive one per API request, but at high request rates many sit at
 //! the signature-verify step at the same instant. This coalesces those
 //! concurrent, otherwise-independent verifications into `ed25519_dalek::verify_batch`
-//! calls: a pool of worker tasks each collect up to `max_batch` submissions (or
+//! calls: a pool of dedicated worker threads each collect up to `max_batch` submissions (or
 //! wait up to `window`), verify them in one batched multi-scalar multiplication,
 //! then reply per submission. A batch that fails is re-verified per signature
 //! with `verify_strict`, so one bad voucher only rejects itself — never its
@@ -26,12 +26,13 @@
 //! `verify_strict` too.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use ed25519_dalek::{Signature, VerifyingKey};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 struct Job {
     message: Vec<u8>,
@@ -40,10 +41,10 @@ struct Job {
     reply: oneshot::Sender<bool>,
 }
 
-/// A pool of batching worker tasks. Submissions are sharded round-robin across
-/// workers so the crypto parallelizes across the runtime's threads.
+/// A pool of batching worker threads. Submissions are sharded round-robin so
+/// synchronous curve operations never block the caller's async runtime.
 pub struct BatchVerifier {
-    senders: Vec<mpsc::UnboundedSender<Job>>,
+    senders: Vec<mpsc::Sender<Job>>,
     next: AtomicUsize,
 }
 
@@ -52,10 +53,13 @@ impl BatchVerifier {
         let workers = workers.max(1);
         let max_batch = max_batch.max(1);
         let mut senders = Vec::with_capacity(workers);
-        for _ in 0..workers {
-            let (tx, rx) = mpsc::unbounded_channel::<Job>();
+        for worker in 0..workers {
+            let (tx, rx) = mpsc::channel::<Job>();
             senders.push(tx);
-            tokio::spawn(worker_loop(rx, max_batch, window));
+            std::thread::Builder::new()
+                .name(format!("voucher-verify-{worker}"))
+                .spawn(move || worker_loop(rx, max_batch, window))
+                .expect("spawn voucher batch-verification worker");
         }
         tracing::info!(
             workers,
@@ -87,8 +91,8 @@ impl BatchVerifier {
     }
 }
 
-async fn worker_loop(mut rx: mpsc::UnboundedReceiver<Job>, max_batch: usize, window: Duration) {
-    while let Some(first) = rx.recv().await {
+fn worker_loop(rx: mpsc::Receiver<Job>, max_batch: usize, window: Duration) {
+    while let Ok(first) = rx.recv() {
         let mut batch = Vec::with_capacity(max_batch);
         batch.push(first);
         // Coalesce further arrivals until the batch is full or the window
@@ -100,10 +104,10 @@ async fn worker_loop(mut rx: mpsc::UnboundedReceiver<Job>, max_batch: usize, win
             if remaining.is_zero() {
                 break;
             }
-            match tokio::time::timeout(remaining, rx.recv()).await {
-                Ok(Some(job)) => batch.push(job),
-                Ok(None) => break, // channel closed
-                Err(_) => break,   // window elapsed
+            match rx.recv_timeout(remaining) {
+                Ok(job) => batch.push(job),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         verify_and_reply(batch);
@@ -191,8 +195,7 @@ static BATCH_VERIFIER: OnceLock<Option<BatchVerifier>> = OnceLock::new();
 
 /// The process-wide batch verifier, or `None` when the mode is off. Lazily
 /// initialized from the environment on first call — which MUST happen from
-/// within a Tokio runtime (i.e. on the request hot path), since it spawns the
-/// worker tasks. `PAY_VERIFY_BATCH=1` enables it.
+/// on the request hot path. `PAY_VERIFY_BATCH=1` enables it.
 pub fn batch_verifier() -> Option<&'static BatchVerifier> {
     BATCH_VERIFIER.get_or_init(init_from_env).as_ref()
 }
