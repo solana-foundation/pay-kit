@@ -48,29 +48,57 @@ pub struct BatchVerifier {
     next: AtomicUsize,
 }
 
+/// A configuration typo must not be able to allocate an unbounded number of
+/// OS threads. This is deliberately independent of host CPU count: callers
+/// may opt into more workers than available cores for mixed workloads, but
+/// never more than this process-wide safety ceiling.
+const MAX_BATCH_VERIFY_WORKERS: usize = 256;
+
 impl BatchVerifier {
-    fn spawn(workers: usize, max_batch: usize, window: Duration) -> Self {
-        let workers = workers.max(1);
+    fn spawn(workers: usize, max_batch: usize, window: Duration) -> Option<Self> {
+        let requested_workers = workers.max(1);
+        let workers = bounded_worker_count(workers);
+        if workers != requested_workers {
+            tracing::warn!(
+                requested_workers,
+                workers,
+                "clamped batch-verifier worker count"
+            );
+        }
         let max_batch = max_batch.max(1);
         let mut senders = Vec::with_capacity(workers);
         for worker in 0..workers {
             let (tx, rx) = mpsc::channel::<Job>();
-            senders.push(tx);
-            std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name(format!("voucher-verify-{worker}"))
                 .spawn(move || worker_loop(rx, max_batch, window))
-                .expect("spawn voucher batch-verification worker");
+            {
+                Ok(_) => senders.push(tx),
+                Err(error) => {
+                    tracing::error!(
+                        worker,
+                        workers_started = senders.len(),
+                        %error,
+                        "could not spawn batch-verification worker"
+                    );
+                    break;
+                }
+            }
+        }
+        if senders.is_empty() {
+            tracing::error!("batch-verify mode disabled because no worker thread could be started");
+            return None;
         }
         tracing::info!(
-            workers,
+            workers = senders.len(),
             max_batch,
             window_us = window.as_micros() as u64,
             "batch-verify mode enabled"
         );
-        Self {
+        Some(Self {
             senders,
             next: AtomicUsize::new(0),
-        }
+        })
     }
 
     /// Verify one voucher signature through the batch pool. Returns `true` iff
@@ -89,6 +117,10 @@ impl BatchVerifier {
         }
         rx.await.unwrap_or(false)
     }
+}
+
+fn bounded_worker_count(workers: usize) -> usize {
+    workers.clamp(1, MAX_BATCH_VERIFY_WORKERS)
 }
 
 fn worker_loop(rx: mpsc::Receiver<Job>, max_batch: usize, window: Duration) {
@@ -207,11 +239,7 @@ fn init_from_env() -> Option<BatchVerifier> {
     let workers = env_usize("PAY_VERIFY_BATCH_WORKERS", default_workers());
     let max_batch = env_usize("PAY_VERIFY_BATCH_MAX", 64);
     let window_us = env_usize("PAY_VERIFY_BATCH_WINDOW_US", 100) as u64;
-    Some(BatchVerifier::spawn(
-        workers,
-        max_batch,
-        Duration::from_micros(window_us),
-    ))
+    BatchVerifier::spawn(workers, max_batch, Duration::from_micros(window_us))
 }
 
 fn default_workers() -> usize {
@@ -241,6 +269,13 @@ mod tests {
 
     fn keypair(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn worker_count_is_never_zero_or_unbounded() {
+        assert_eq!(bounded_worker_count(0), 1);
+        assert_eq!(bounded_worker_count(8), 8);
+        assert_eq!(bounded_worker_count(usize::MAX), MAX_BATCH_VERIFY_WORKERS);
     }
 
     /// Constructs the exact degenerate forgery `is_degenerate` must reject:
@@ -356,7 +391,7 @@ mod tests {
     async fn batch_verifier_end_to_end_rejects_the_forgery() {
         // Same scenario through the public async API a real caller uses,
         // proving the fix holds through the worker-pool path too.
-        let verifier = BatchVerifier::spawn(1, 8, Duration::from_millis(50));
+        let verifier = BatchVerifier::spawn(1, 8, Duration::from_millis(50)).unwrap();
 
         let honest_signer = keypair(4);
         let honest_message = b"paid".to_vec();

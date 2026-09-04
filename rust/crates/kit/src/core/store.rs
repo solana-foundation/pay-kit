@@ -958,6 +958,17 @@ impl ChannelState {
         self.spent_amount = self.spent_amount.max(cumulative);
         self.highest_voucher_signature = Some(voucher_signature.to_string());
         self.highest_voucher_expires_at = Some(voucher_expires_at);
+        // Keep expiry non-decreasing with insertion order. This preserves the
+        // deque's O(1) expired-prefix pruning even if a later voucher carries
+        // an earlier expiry than its predecessor.
+        let retain_until = voucher_expires_at
+            .max(now)
+            .saturating_add(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64)
+            .max(
+                self.committed_deliveries
+                    .back()
+                    .map_or(0, |entry| entry.retain_until),
+            );
         self.committed_deliveries.push_back(CommittedDelivery {
             delivery_id: authorization_id.to_string(),
             amount: charged,
@@ -966,9 +977,7 @@ impl ChannelState {
             request_fingerprint: Some(request_fingerprint.to_string()),
             settlement_response: None,
             cached_response: None,
-            retain_until: voucher_expires_at
-                .max(now)
-                .saturating_add(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64),
+            retain_until,
         });
         self.prune_authorizations(now);
         let stored = response(self);
@@ -2514,6 +2523,31 @@ mod tests {
         let past_retention = 100 + DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64 + 1;
         state.prune_authorizations(past_retention);
         assert!(state.committed_deliveries.is_empty());
+    }
+
+    #[test]
+    fn committed_authorization_expiry_remains_ordered() {
+        let mut state = make_state("c1", 10_000_000);
+        for (step, voucher_expiry) in [(1, 1_000), (2, 500), (3, 1_500)] {
+            let cumulative = step * 1_000;
+            let id = format!("access:c1:{cumulative}");
+            state.reserve_authorization(&id, "fp", 1_000, LEASE, 100);
+            state
+                .mark_authorization_handler_succeeded(&id, "fp")
+                .unwrap();
+            state
+                .commit_authorization(&id, "fp", cumulative, "sig", voucher_expiry, 100, |_| None)
+                .unwrap();
+        }
+
+        let expiries: Vec<_> = state
+            .committed_deliveries
+            .iter()
+            .map(|entry| entry.retain_until)
+            .collect();
+        assert!(expiries.windows(2).all(|pair| pair[0] <= pair[1]));
+        state.prune_authorizations(expiries[1]);
+        assert_eq!(state.committed_deliveries.len(), 1);
     }
 
     #[tokio::test]
