@@ -28,3 +28,5 @@ overrides:
   qs: '>=6.16.0'
   yaml: '>=2.8.3'
   body-parser: '>=2.3.0'
+  # GHSA-p95v-992w-h6c3: prototype pollution while decoding untrusted TOON.
+  '@toon-format/toon': '2.3.1'

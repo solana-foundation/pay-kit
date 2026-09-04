@@ -34,6 +34,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
@@ -100,17 +101,43 @@ const SUBMIT_GROUPS_CONCURRENCY: usize = 48;
 /// [`rpc_lookup_channel`]/[`broadcast_and_confirm_deposit`] above).
 fn spawn_next_submission(
     in_flight: &mut tokio::task::JoinSet<Result<String, Error>>,
-    pending: &mut std::collections::VecDeque<Transaction>,
+    pending: &mut std::collections::VecDeque<Vec<Instruction>>,
     rpc: &Arc<RpcClient>,
+    signer: &Arc<dyn SolanaSigner>,
+    fee_payer: &Pubkey,
 ) {
-    let Some(tx) = pending.pop_front() else {
+    let Some(instructions) = pending.pop_front() else {
         return;
     };
     let rpc = Arc::clone(rpc);
-    in_flight.spawn_blocking(move || {
-        rpc.send_and_confirm_transaction(&VersionedTransaction::from(tx))
-            .map(|signature| signature.to_string())
-            .map_err(|e| Error::Rpc(format!("settlement broadcast failed: {e}")))
+    let signer = Arc::clone(signer);
+    let fee_payer = *fee_payer;
+    in_flight.spawn(async move {
+        // Fetch per transaction, immediately before signing. A remote signer
+        // can take long enough that a blockhash fetched before the whole sweep
+        // expires by the time later transactions are finally submitted.
+        let blockhash_rpc = Arc::clone(&rpc);
+        let blockhash = tokio::task::spawn_blocking(move || blockhash_rpc.get_latest_blockhash())
+            .await
+            .map_err(|e| Error::Other(format!("blockhash join error: {e}")))?
+            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
+        let message = Message::new_with_blockhash(
+            &instructions,
+            Some(&pc::to_address(&fee_payer)),
+            &blockhash,
+        );
+        let mut tx = Transaction::new_unsigned(message);
+        signer
+            .sign_transaction(&mut tx)
+            .await
+            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            rpc.send_and_confirm_transaction(&VersionedTransaction::from(tx))
+                .map(|signature| signature.to_string())
+                .map_err(|e| Error::Rpc(format!("settlement broadcast failed: {e}")))
+        })
+        .await
+        .map_err(|e| Error::Other(format!("submit join error: {e}")))?
     });
 }
 
@@ -380,6 +407,9 @@ pub struct BatchOutcome {
     /// The channel payer's signature over a carried setup transaction, which
     /// identifies it uniquely across retries.
     deposit_signature: Option<String>,
+    /// Whether a carried setup transaction is an `open` rather than a top-up.
+    /// Computed during verification with the configured program id.
+    opens_channel: bool,
     /// The authorization this request pays with. `None` for a `refund`, which
     /// pays for nothing and reserves nothing.
     authorization: Option<Authorization>,
@@ -403,13 +433,7 @@ impl BatchOutcome {
     /// `PAYMENT-RESPONSE` payload, not a place for an internal signal, and
     /// because callers need this before consuming the outcome by value.
     pub fn opens_channel(&self) -> bool {
-        match &self.payload {
-            BatchPayload::Deposit { deposit, .. } => !matches!(
-                setup_form_from_transaction(&deposit.transaction, &pc::default_program_id()),
-                Ok(SetupForm::TopUp)
-            ),
-            _ => false,
-        }
+        self.opens_channel
     }
 }
 
@@ -486,6 +510,20 @@ impl X402BatchSettlement {
                 Pubkey::from_str(v).map_err(|e| Error::Other(format!("invalid programId: {e}")))
             }
             None => Ok(pc::default_program_id()),
+        }
+    }
+
+    /// Treasury baked into the selected program deployment.
+    ///
+    /// A program-id override denotes a custom deployment, whose treasury
+    /// cannot be inferred from the advertised cluster. Preserve the canonical
+    /// program's historical treasury in that case; callers that target the
+    /// standard devnet deployment leave `program_id` unset.
+    fn treasury_owner(&self) -> Pubkey {
+        if self.config.program_id.is_some() {
+            pc::treasury_owner()
+        } else {
+            pc::treasury_owner_for_cluster(&self.config.cluster)
         }
     }
 
@@ -773,6 +811,7 @@ impl X402BatchSettlement {
                     requirements,
                     max_claimable,
                     deposit_signature: None,
+                    opens_channel: false,
                     authorization: None,
                     _guard: guard,
                 })
@@ -843,6 +882,7 @@ impl X402BatchSettlement {
                     requirements,
                     max_claimable,
                     deposit_signature: None,
+                    opens_channel: false,
                     authorization: Some(authorization),
                     _guard: guard,
                 })
@@ -950,6 +990,7 @@ impl X402BatchSettlement {
                     requirements,
                     max_claimable,
                     deposit_signature,
+                    opens_channel: matches!(form, SetupForm::Open),
                     authorization: Some(authorization),
                     _guard: guard,
                 })
@@ -1117,10 +1158,7 @@ impl X402BatchSettlement {
     ) -> Result<(), Error> {
         for (role, owner) in [
             ("payee", self.fee_payer),
-            (
-                "treasury",
-                pc::treasury_owner_for_cluster(&self.config.cluster),
-            ),
+            ("treasury", self.treasury_owner()),
             ("receiver", *receiver),
             // The payer's return ATA is a settlement destination too: a close
             // pays `deposit - settled` back through it, so an unusable one
@@ -1327,16 +1365,9 @@ impl X402BatchSettlement {
         ));
         let setup = outcome.deposit_signature.clone().map(|payer_signature| {
             let (deposit, opens_channel) = match &outcome.payload {
-                BatchPayload::Deposit { deposit, .. } => (
-                    deposit.amount().unwrap_or_default(),
-                    !matches!(
-                        setup_form_from_transaction(
-                            &deposit.transaction,
-                            &pc::default_program_id()
-                        ),
-                        Ok(SetupForm::TopUp)
-                    ),
-                ),
+                BatchPayload::Deposit { deposit, .. } => {
+                    (deposit.amount().unwrap_or_default(), outcome.opens_channel)
+                }
                 _ => (0, false),
             };
             PendingSetup {
@@ -2236,7 +2267,7 @@ impl X402BatchSettlement {
                 &pc::from_address(&onchain.payer),
                 &self.fee_payer,
                 &self.fee_payer,
-                &pc::treasury_owner_for_cluster(&self.config.cluster),
+                &self.treasury_owner(),
                 &mint,
                 &pc::sole_recipient(&receiver),
                 &token_program,
@@ -2306,37 +2337,16 @@ impl X402BatchSettlement {
         }
         let batches = pack(groups, &self.fee_payer, max_per_tx);
 
-        // One shared blockhash for every batch below: batches broadcast
-        // concurrently and typically all confirm within seconds of each
-        // other, well inside a blockhash's ~60-90s validity window, so a
-        // single fetch replaces what was previously one blocking RPC round
-        // trip per batch.
-        let rpc = Arc::clone(&self.rpc);
-        let blockhash = tokio::task::spawn_blocking(move || rpc.get_latest_blockhash())
-            .await
-            .map_err(|e| Error::Other(format!("blockhash join error: {e}")))?
-            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-
-        // Sign every batch's transaction. Async (a signer may be remote) but
-        // never touches the blocking RPC client, so this stays a plain loop.
+        // Build instruction batches first. Each bounded task below fetches a
+        // fresh blockhash, signs, and broadcasts its own transaction so slow
+        // remote signing cannot age later batches before they are submitted.
         let mut pending = std::collections::VecDeque::with_capacity(batches.len());
         for batch in batches {
             let instructions: Vec<_> = batch
                 .into_iter()
                 .flat_map(|group| group.instructions)
                 .collect();
-            let message = Message::new_with_blockhash(
-                &instructions,
-                Some(&pc::to_address(&self.fee_payer)),
-                &blockhash,
-            );
-            let mut tx = Transaction::new_unsigned(message);
-            self.config
-                .fee_payer_signer
-                .sign_transaction(&mut tx)
-                .await
-                .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
-            pending.push_back(tx);
+            pending.push_back(instructions);
         }
 
         // Broadcast+confirm concurrently, bounded: each batch is an
@@ -2347,11 +2357,23 @@ impl X402BatchSettlement {
         let total = pending.len();
         let mut in_flight = tokio::task::JoinSet::new();
         for _ in 0..SUBMIT_GROUPS_CONCURRENCY {
-            spawn_next_submission(&mut in_flight, &mut pending, &self.rpc);
+            spawn_next_submission(
+                &mut in_flight,
+                &mut pending,
+                &self.rpc,
+                &self.config.fee_payer_signer,
+                &self.fee_payer,
+            );
         }
         let mut signatures = Vec::with_capacity(total);
         while let Some(joined) = in_flight.join_next().await {
-            spawn_next_submission(&mut in_flight, &mut pending, &self.rpc);
+            spawn_next_submission(
+                &mut in_flight,
+                &mut pending,
+                &self.rpc,
+                &self.config.fee_payer_signer,
+                &self.fee_payer,
+            );
             signatures.push(joined.map_err(|e| Error::Other(format!("submit join error: {e}")))??);
         }
         Ok(signatures)
@@ -2400,7 +2422,7 @@ impl X402BatchSettlement {
                         &pc::from_address(&onchain.payer),
                         &self.fee_payer,
                         &self.fee_payer,
-                        &pc::treasury_owner_for_cluster(&self.config.cluster),
+                        &self.treasury_owner(),
                         &mint,
                         &pc::sole_recipient(&receiver),
                         &token_program,
@@ -3267,6 +3289,7 @@ mod tests {
         let cached = crate::core::store::CachedUpstreamResponse {
             status: 200,
             content_type: Some("application/json".to_string()),
+            headers: vec![("etag".to_string(), "\"v1\"".to_string())],
             body: br#"{"result":42}"#.to_vec(),
         };
         handler

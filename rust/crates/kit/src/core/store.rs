@@ -456,6 +456,11 @@ pub struct CachedUpstreamResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub content_type: Option<String>,
+    /// End-to-end representation metadata needed to reproduce the response.
+    /// Hop-by-hop and payment protocol headers are deliberately excluded by
+    /// the HTTP adapter before persistence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
     #[serde(with = "cached_response_body_base64")]
     pub body: Vec<u8>,
 }
