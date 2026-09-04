@@ -917,14 +917,25 @@ fn resource_url(req: &Request) -> Option<String> {
 
 /// Answer a request whose authorization was already charged and served.
 ///
-/// The payment result is authoritative and is returned verbatim, so a client
-/// that lost the original response learns what it was charged. The resource
-/// body is not replayed: this gate caches payment state, not representations.
+/// The payment result is authoritative and is returned verbatim. When the
+/// original resource response was cached, restore that representation too.
 fn replayed_response(
     batch: &X402BatchSettlement,
     settlement: &crate::x402::batch_settlement::BatchSettlementResponse,
+    cached: Option<&crate::core::store::CachedUpstreamResponse>,
 ) -> Response {
-    let mut resp = StatusCode::OK.into_response();
+    let mut resp = if let Some(cached) = cached {
+        let status = StatusCode::from_u16(cached.status).unwrap_or(StatusCode::OK);
+        let mut response = (status, cached.body.clone()).into_response();
+        if let Some(content_type) = &cached.content_type {
+            if let Ok(value) = HeaderValue::from_str(content_type) {
+                response.headers_mut().insert(header::CONTENT_TYPE, value);
+            }
+        }
+        response
+    } else {
+        StatusCode::OK.into_response()
+    };
     resp.headers_mut()
         .insert(PAYMENT_REPLAY_HEADER, HeaderValue::from_static("true"));
     attach_settlement_header(batch, settlement, &mut resp);
@@ -997,7 +1008,9 @@ async fn batch_gate_middleware(
         // Already charged and served. The client lost the response, not the
         // payment, so it gets the original result — never a second charge and
         // never a second execution.
-        BatchAccess::Replay(settlement) => return replayed_response(&batch, &settlement),
+        BatchAccess::Replay(settlement, cached) => {
+            return replayed_response(&batch, &settlement, cached.as_ref());
+        }
 
         // Another in-flight request owns this authorization. The retryable
         // scheme code is the body so a client can act on it without parsing
@@ -1017,7 +1030,7 @@ async fn batch_gate_middleware(
         // unfinished. Finishing it is the one safe continuation.
         BatchAccess::Resume(outcome) => {
             return match batch.finish_commit(&outcome).await {
-                Ok(settlement) => replayed_response(&batch, &settlement),
+                Ok(settlement) => replayed_response(&batch, &settlement, None),
                 Err(e) => {
                     tracing::error!(error = %e, "batch-settlement commit could not be resumed");
                     (
