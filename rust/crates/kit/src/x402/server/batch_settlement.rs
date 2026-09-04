@@ -361,6 +361,26 @@ impl BatchOutcome {
     pub fn payload(&self) -> &BatchPayload {
         &self.payload
     }
+
+    /// Whether this outcome's deposit (if any) opens a brand new channel,
+    /// rather than topping up an existing one — e.g. for a caller emitting a
+    /// "channel opened" telemetry event, which a top-up must not repeat.
+    /// `false` for a `Voucher`/`Refund` payload, which carries no deposit.
+    ///
+    /// Mirrors the identical check [`Self`]'s own reservation already makes
+    /// (see `PendingSetup::opens_channel`); duplicated rather than plumbed
+    /// through the settlement response because that type is also the wire
+    /// `PAYMENT-RESPONSE` payload, not a place for an internal signal, and
+    /// because callers need this before consuming the outcome by value.
+    pub fn opens_channel(&self) -> bool {
+        match &self.payload {
+            BatchPayload::Deposit { deposit, .. } => !matches!(
+                setup_form_from_transaction(&deposit.transaction, &pc::default_program_id()),
+                Ok(SetupForm::TopUp)
+            ),
+            _ => false,
+        }
+    }
 }
 
 /// Server-side handler for the SVM x402 `batch-settlement` scheme.
