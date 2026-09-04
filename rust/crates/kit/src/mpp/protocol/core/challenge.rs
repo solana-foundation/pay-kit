@@ -887,4 +887,140 @@ mod tests {
         // A bare Receipt round-trips through ReceiptKind::Charge.
         assert!(matches!(parsed, ReceiptKind::Charge(_)));
     }
+
+    // ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+    //
+    // Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+    // `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT
+    // verdict against the same vectors, so a divergence between two SDKs shows
+    // up as a failing test in exactly one of them rather than as silence.
+    //
+    // Every scenario in the file runs. There is no slice to select and no
+    // scenario to skip.
+    //
+    // WHY THE VERDICT IS READ OFF `OffsetDateTime::parse` AND NOT OFF
+    // `is_expired`. `is_expired` (this file, `PaymentChallenge::is_expired`)
+    // collapses the outcome into a fail-closed `bool` and reads
+    // `OffsetDateTime::now_utc()` internally, with no parameter to inject a
+    // reference instant — unlike go's `IsExpired(now)`. It therefore cannot
+    // distinguish "parsed, and in the past" from "did not parse", and most of
+    // the corpus is in the past. So the ACCEPT/REJECT axis is asserted against
+    // the exact expression `is_expired` delegates to.
+    //
+    // The fail-closed coupling to the shipped surface is asserted separately
+    // and unambiguously: every REJECT vector must make `is_expired()` true.
+    // That direction has no ambiguity, because a parse failure is the only way
+    // a REJECT vector can reach the comparison.
+
+    const CONFORMANCE_CORPUS: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../harness/vectors/mpp-protocol/expires.json"
+    );
+
+    /// `(name, input, expect_accept, description)` for every corpus scenario.
+    fn conformance_vectors() -> Vec<(String, String, bool, String)> {
+        let raw = std::fs::read_to_string(CONFORMANCE_CORPUS).unwrap_or_else(|e| {
+            panic!("conformance corpus unreadable at {CONFORMANCE_CORPUS}: {e}")
+        });
+        let corpus: serde_json::Value =
+            serde_json::from_str(&raw).expect("conformance corpus must be valid JSON");
+
+        corpus["scenarios"]
+            .as_array()
+            .expect("corpus must carry a `scenarios` array")
+            .iter()
+            .map(|scenario| {
+                // `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success":
+                // false, …}}` is REJECT. Identical to the encoding the other
+                // vector files in the same directory use.
+                let expect_accept = scenario["tests"]["parse"] == serde_json::Value::Bool(true);
+                (
+                    scenario["name"].as_str().unwrap_or_default().to_string(),
+                    scenario["input"].as_str().unwrap_or_default().to_string(),
+                    expect_accept,
+                    scenario["description"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rfc3339_conformance_corpus() {
+        let vectors = conformance_vectors();
+        assert!(
+            !vectors.is_empty(),
+            "conformance corpus carried zero scenarios"
+        );
+
+        let mut divergences = Vec::new();
+        for (name, input, expect_accept, description) in &vectors {
+            let accepted =
+                time::OffsetDateTime::parse(input, &time::format_description::well_known::Rfc3339)
+                    .is_ok();
+            if accepted != *expect_accept {
+                divergences.push(format!(
+                    "{name} ({description}): input {input:?} — corpus expects {}, \
+                     OffsetDateTime::parse reports {}",
+                    if *expect_accept { "ACCEPT" } else { "REJECT" },
+                    if accepted { "ACCEPT" } else { "REJECT" },
+                ));
+            }
+        }
+
+        assert!(
+            divergences.is_empty(),
+            "{} of {} vectors diverge from the cross-SDK corpus:\n  {}",
+            divergences.len(),
+            vectors.len(),
+            divergences.join("\n  "),
+        );
+    }
+
+    #[test]
+    fn rfc3339_conformance_corpus_rejects_fail_closed() {
+        // Ties the corpus to the shipped surface. A REJECT vector must make
+        // `is_expired()` true; a parse failure is the only route to that
+        // outcome for an unparseable value, so this direction is unambiguous.
+        let vectors = conformance_vectors();
+        let rejects: Vec<_> = vectors.iter().filter(|vector| !vector.2).collect();
+        assert!(!rejects.is_empty(), "corpus admitted zero REJECT vectors");
+
+        let mut leaked = Vec::new();
+        for (name, input, _, description) in rejects {
+            let challenge = PaymentChallenge::new(
+                "id",
+                "realm",
+                "solana",
+                "charge",
+                Base64UrlJson::from_value(&serde_json::json!({})).unwrap(),
+            )
+            .with_expires(input.clone());
+            if !challenge.is_expired() {
+                leaked.push(format!("{name} ({description}): input {input:?}"));
+            }
+        }
+
+        assert!(
+            leaked.is_empty(),
+            "{} REJECT vectors did not fail closed through is_expired():\n  {}",
+            leaked.len(),
+            leaked.join("\n  "),
+        );
+    }
+
+    /// Guard the loader so a regression in it cannot go silent: every scenario
+    /// in the file is exercised, and a truncated or empty read fails here
+    /// rather than passing quietly with nothing left to run.
+    #[test]
+    fn rfc3339_conformance_corpus_exercises_every_scenario() {
+        let raw = std::fs::read_to_string(CONFORMANCE_CORPUS).expect("corpus unreadable");
+        let corpus: serde_json::Value = serde_json::from_str(&raw).expect("corpus must be JSON");
+        let total = corpus["scenarios"].as_array().unwrap().len();
+        let admitted = conformance_vectors().len();
+        assert!(total > 0, "corpus carried zero scenarios");
+        assert_eq!(admitted, total, "not every corpus scenario was exercised");
+    }
 }

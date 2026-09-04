@@ -15,6 +15,17 @@ export const VECTORS_DIR = join(here, "..", "..", "vectors", "mpp-protocol");
 
 // Canonical adapter-ABI operation identifiers. These match
 // `conformance/operations.json` in mpp-tools verbatim.
+//
+// DIVERGENCE (this PR): `expires.parse` is the one member below that is NOT
+// in upstream `conformance/operations.json`. It is proposed here, by this PR,
+// to give the RFC 3339 `expires` corpus (issue #111) an operation to hang
+// from; `operations.json` is not vendored in this repo (it lives upstream in
+// tempoxyz/mpp-tools), so nothing here can be checked against it. The
+// maintainer may want the operation added upstream, may want it named
+// differently, or may want it kept as a pay-kit-local extension — all three
+// are their call, and the name is trivially renameable (this union, the
+// OPERATION_COMPARISON entry below, and `collectExpiresCases`). The rest of
+// the union does still match upstream verbatim.
 export type ProtocolOperation =
   | "challenge.parse"
   | "challenge.format"
@@ -24,7 +35,8 @@ export type ProtocolOperation =
   | "receipt.format"
   | "base64url.encode"
   | "base64url.decode"
-  | "challenge.id";
+  | "challenge.id"
+  | "expires.parse";
 
 // Comparison discipline per operation, taken from operations.json:
 //   exact    -> result string/object must equal the golden byte-for-byte
@@ -42,6 +54,14 @@ export const OPERATION_COMPARISON: Record<ProtocolOperation, ComparisonMode> = {
   "base64url.encode": "exact",
   "base64url.decode": "exact",
   "challenge.id": "exact",
+  // `exact`: an `expires.parse` success result is the fixed literal
+  // `{ valid: true }` (see ExpiresScenario below) — there is no header
+  // whitespace, param order, or request encoding for `semantic` to
+  // neutralize. `semantic` in this file is also *implemented* via
+  // `reparseWith`, which needs a paired `*.format` op; `expires.parse` has
+  // no `expires.format` counterpart, so `semantic` is not mechanically
+  // available to it. Same shape as base64url / challenge.id above.
+  "expires.parse": "exact",
 };
 
 // ── Raw vector file shapes ──
@@ -132,6 +152,25 @@ export type ChallengeIdScenario = {
   expected: string;
 };
 
+// RFC 3339 `expires` scenario (issue #111). Same `{ name, description, tags,
+// …, tests }` spine as every other scenario in this directory; the input field
+// is named for its domain (`input`, a single untrusted string) the way header
+// scenarios name theirs `wire` and base64url names its `decoded` / `encoded`.
+//
+// No `object` golden is carried for an ACCEPT: the file is deliberately a
+// verdict corpus, not an instant-normalization corpus (leap seconds have no
+// representable instant in most date libraries and sub-nanosecond precision
+// truncates differently per language). #111 asks for ACCEPT/REJECT parity
+// across SDKs and nothing more.
+export type ExpiresScenario = {
+  name: string;
+  description?: string;
+  tags?: string[];
+  // The single untrusted string under test.
+  input: string;
+  tests: TestFlags;
+};
+
 type VectorFile<S> = {
   version: string;
   spec_ref: string;
@@ -162,6 +201,10 @@ export function loadBase64Url(): VectorFile<Base64Scenario> {
 
 export function loadChallengeId(): VectorFile<ChallengeIdScenario> {
   return load<ChallengeIdScenario>("challenge-id.json");
+}
+
+export function loadExpires(): VectorFile<ExpiresScenario> {
+  return load<ExpiresScenario>("expires.json");
 }
 
 // A single dispatchable unit of work derived from a vector scenario: the
@@ -333,6 +376,65 @@ export function collectProtocolCases(): ProtocolCase[] {
       expectSuccess: true,
       golden: { id: s.expected },
     });
+  }
+
+  return cases;
+}
+
+// Expand the RFC 3339 `expires` corpus into `expires.parse` cases (issue
+// #111: assert ACCEPT and REJECT outcomes match across SDKs for each vector).
+//
+// Every scenario in the file is admitted. There is no slice to select: each row
+// carries an `expires` verdict and nothing else does.
+//
+// ABI shape, PROPOSED BY THIS PR — the maintainer should overrule any of it:
+//   input   : { expires: "<the untrusted string>" }
+//             (mirrors `{ header }` / `{ text }`: the field is named for what
+//             it holds)
+//   success : { valid: true }
+//             The corpus supplies no golden parsed value on purpose, so the
+//             success result carries the verdict itself rather than a
+//             normalized instant. Compared `exact` (see OPERATION_COMPARISON).
+//   failure : error_type "parse_error"
+//             NOT a new taxonomy: `parse_error` is the only `error_type` value
+//             that appears anywhere in this vectors directory (24/24
+//             occurrences), it is the documented vocabulary for `.parse` ops
+//             in `harness/src/protocol/README.md`, and the TypeScript
+//             reference runner already maps any `*.parse` throw to it
+//             (`runners/typescript.ts`, catch block). The corpus encodes it
+//             directly in each REJECT scenario's `tests.parse`.
+//
+// Deliberately NOT folded into `collectProtocolCases()`. That list is driven
+// end-to-end against the TypeScript reference adapter by
+// `test/protocol-conformance.test.ts`, and no adapter implements
+// `expires.parse` yet — folding these in would add one red case per vector to
+// a green suite. Nothing calls this collector today: each SDK's `expires` test
+// loads the vector JSON itself. The collector is the TypeScript side of that
+// contract, kept for the day an adapter implements `expires.parse` — at which
+// point absorbing it is a one-line spread into `cases` above.
+export function collectExpiresCases(): ProtocolCase[] {
+  const cases: ProtocolCase[] = [];
+
+  for (const s of loadExpires().scenarios) {
+    const input = { expires: s.input };
+    const parseErr = expectsError(s.tests.parse);
+    if (parseErr) {
+      cases.push({
+        op: "expires.parse",
+        scenario: s.name,
+        input,
+        expectSuccess: false,
+        errorType: parseErr,
+      });
+    } else if (expectsSuccess(s.tests.parse)) {
+      cases.push({
+        op: "expires.parse",
+        scenario: s.name,
+        input,
+        expectSuccess: true,
+        golden: { valid: true },
+      });
+    }
   }
 
   return cases;

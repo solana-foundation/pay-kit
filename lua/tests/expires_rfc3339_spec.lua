@@ -60,3 +60,75 @@ t.test('expires.is_expired returns true on unparseable input', function()
   local expires = require('pay_kit.protocols.mpp.expires')
   t.assert_equal(expires.is_expired('not-a-timestamp', 0), true)
 end)
+
+-- ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+--
+-- Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+-- `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT verdict
+-- against the same vectors, so a divergence between two SDKs shows up as a
+-- failing test in exactly one of them rather than as silence.
+--
+-- Every scenario in the file runs. There is no slice to select and no scenario
+-- to skip.
+--
+-- Decoding uses the SDK's own `pay_kit.util.json`, so the suite gains no new
+-- dependency. The runner has no fixture-loading facility and no per-vector
+-- test-registration idiom, so the corpus runs as a single aggregate test that
+-- collects EVERY divergence and reports them all in one error. Failing on the
+-- first mismatch would hide the rest.
+
+local function corpus_path()
+  -- `tests/run.lua` is driven from `lua/`, but the load path it sets also
+  -- allows a repo-root cwd. Locate the corpus from this file instead of from
+  -- the working directory.
+  local source = debug.getinfo(1, 'S').source:gsub('^@', '')
+  local dir = source:match('^(.*)/[^/]*$') or '.'
+  return dir .. '/../../harness/vectors/mpp-protocol/expires.json'
+end
+
+t.test('expires.parse_rfc3339 matches the cross-SDK RFC 3339 corpus', function()
+  local expires = require('pay_kit.protocols.mpp.expires')
+  local json = require('pay_kit.util.json')
+
+  local path = corpus_path()
+  local handle = io.open(path, 'r')
+  t.assert_true(handle ~= nil, 'conformance corpus unreadable at ' .. path)
+  local body = handle:read('*a')
+  handle:close()
+
+  local corpus = json.decode(body)
+  local admitted = 0
+  local divergences = {}
+
+  for i = 1, #corpus.scenarios do
+    local scenario = corpus.scenarios[i]
+    admitted = admitted + 1
+    -- `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success": false, …}}`
+    -- is REJECT. Identical to the encoding the other vector files in the same
+    -- directory use.
+    local expect_accept = scenario.tests.parse == true
+    local ok, value = pcall(expires.parse_rfc3339, scenario.input)
+    -- A crash on hostile input is a result, and it is a REJECT.
+    local accepted = ok and value ~= nil
+    if accepted ~= expect_accept then
+      divergences[#divergences + 1] = string.format(
+        '%s: input %q -- corpus expects %s, parse_rfc3339 reports %s',
+        scenario.name, scenario.input,
+        expect_accept and 'ACCEPT' or 'REJECT',
+        accepted and 'ACCEPT' or 'REJECT'
+      )
+    end
+  end
+
+  -- Guard the loader: a truncated or empty read fails here rather than passing
+  -- quietly with nothing to run, and every scenario in the file is exercised.
+  t.assert_true(admitted > 0, 'corpus carried zero scenarios')
+  t.assert_true(admitted == #corpus.scenarios, 'not every corpus scenario was exercised')
+
+  if #divergences > 0 then
+    error(string.format(
+      '%d of %d vectors diverge from the cross-SDK corpus:\n  %s',
+      #divergences, admitted, table.concat(divergences, '\n  ')
+    ))
+  end
+end)
