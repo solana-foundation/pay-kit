@@ -77,7 +77,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: solana-foundation/surfpool
-          ref: feat/sdk
+          # Pinned to a commit, not a branch. This workflow broke because it
+          # followed `feat/sdk`, which surfpool renamed to `feat/sdk-report`;
+          # following the new branch would leave the same failure mode in place,
+          # and a moving ref in another repository is also an unreviewed input to
+          # our CI. e0204c21 is the head of `feat/sdk-report` as of 2026-09-05.
+          # Bump deliberately when that branch advances.
+          ref: e0204c21c59e225fab81075a91ffc8d9c0b20d02
           sparse-checkout: .github/actions
           path: _surfpool
 
