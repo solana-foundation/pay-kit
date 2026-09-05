@@ -3,7 +3,7 @@
 //! Vouchers arrive one per API request, but at high request rates many sit at
 //! the signature-verify step at the same instant. This coalesces those
 //! concurrent, otherwise-independent verifications into `ed25519_dalek::verify_batch`
-//! calls: a pool of worker tasks each collect up to `max_batch` submissions (or
+//! calls: a pool of dedicated worker threads each collect up to `max_batch` submissions (or
 //! wait up to `window`), verify them in one batched multi-scalar multiplication,
 //! then reply per submission. A batch that fails is re-verified per signature
 //! with `verify_strict`, so one bad voucher only rejects itself — never its
@@ -13,25 +13,26 @@
 //! `PAY_VERIFY_BATCH_MAX`, `PAY_VERIFY_BATCH_WINDOW_US`. When off, the caller
 //! verifies inline with `verify_strict` (unchanged behavior).
 //!
-//! Semantics note: the batched fast path uses cofactored verification (the
-//! standard batch equation), whereas the inline path uses `verify_strict`.
-//! Cofactored verification alone is a real gap, not just an edge case:
+//! Semantics note: the batched fast path uses a randomized aggregate equation,
+//! whereas the inline path uses `verify_strict`. Batch verification alone has
+//! a real gap, not just an edge case:
 //! `R = identity`/`s = H(R‖A‖M)·a mod L` satisfies the batch equation for any
 //! message under any key whose scalar the signer knows, no crafted key
-//! needed, while `verify_strict` rejects it outright. [`is_degenerate`]
-//! screens every batch input for exactly the two checks `verify_strict` makes
-//! beyond the batch equation (small-order `R`, small-order key) before the
-//! batch equation runs at all, so the two paths agree on every input, not
-//! just "normal" ones. The per-signature fallback on a failing batch restores
-//! `verify_strict` too.
+//! needed, while `verify_strict` rejects it outright. A mixed-order `R` can
+//! also pass when its deterministic batch coefficient annihilates the torsion
+//! component. [`is_degenerate`] therefore screens every batch input for weak
+//! keys and requires `R` to be torsion-free before the batch equation runs at
+//! all. The per-signature fallback on a failing batch restores `verify_strict`
+//! too.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use ed25519_dalek::{Signature, VerifyingKey};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 struct Job {
     message: Vec<u8>,
@@ -40,33 +41,64 @@ struct Job {
     reply: oneshot::Sender<bool>,
 }
 
-/// A pool of batching worker tasks. Submissions are sharded round-robin across
-/// workers so the crypto parallelizes across the runtime's threads.
+/// A pool of batching worker threads. Submissions are sharded round-robin so
+/// synchronous curve operations never block the caller's async runtime.
 pub struct BatchVerifier {
-    senders: Vec<mpsc::UnboundedSender<Job>>,
+    senders: Vec<mpsc::Sender<Job>>,
     next: AtomicUsize,
 }
 
+/// A configuration typo must not be able to allocate an unbounded number of
+/// OS threads. This is deliberately independent of host CPU count: callers
+/// may opt into more workers than available cores for mixed workloads, but
+/// never more than this process-wide safety ceiling.
+const MAX_BATCH_VERIFY_WORKERS: usize = 256;
+
 impl BatchVerifier {
-    fn spawn(workers: usize, max_batch: usize, window: Duration) -> Self {
-        let workers = workers.max(1);
+    fn spawn(workers: usize, max_batch: usize, window: Duration) -> Option<Self> {
+        let requested_workers = workers.max(1);
+        let workers = bounded_worker_count(workers);
+        if workers != requested_workers {
+            tracing::warn!(
+                requested_workers,
+                workers,
+                "clamped batch-verifier worker count"
+            );
+        }
         let max_batch = max_batch.max(1);
         let mut senders = Vec::with_capacity(workers);
-        for _ in 0..workers {
-            let (tx, rx) = mpsc::unbounded_channel::<Job>();
-            senders.push(tx);
-            tokio::spawn(worker_loop(rx, max_batch, window));
+        for worker in 0..workers {
+            let (tx, rx) = mpsc::channel::<Job>();
+            match std::thread::Builder::new()
+                .name(format!("voucher-verify-{worker}"))
+                .spawn(move || worker_loop(rx, max_batch, window))
+            {
+                Ok(_) => senders.push(tx),
+                Err(error) => {
+                    tracing::error!(
+                        worker,
+                        workers_started = senders.len(),
+                        %error,
+                        "could not spawn batch-verification worker"
+                    );
+                    break;
+                }
+            }
+        }
+        if senders.is_empty() {
+            tracing::error!("batch-verify mode disabled because no worker thread could be started");
+            return None;
         }
         tracing::info!(
-            workers,
+            workers = senders.len(),
             max_batch,
             window_us = window.as_micros() as u64,
             "batch-verify mode enabled"
         );
-        Self {
+        Some(Self {
             senders,
             next: AtomicUsize::new(0),
-        }
+        })
     }
 
     /// Verify one voucher signature through the batch pool. Returns `true` iff
@@ -87,8 +119,12 @@ impl BatchVerifier {
     }
 }
 
-async fn worker_loop(mut rx: mpsc::UnboundedReceiver<Job>, max_batch: usize, window: Duration) {
-    while let Some(first) = rx.recv().await {
+fn bounded_worker_count(workers: usize) -> usize {
+    workers.clamp(1, MAX_BATCH_VERIFY_WORKERS)
+}
+
+fn worker_loop(rx: mpsc::Receiver<Job>, max_batch: usize, window: Duration) {
+    while let Ok(first) = rx.recv() {
         let mut batch = Vec::with_capacity(max_batch);
         batch.push(first);
         // Coalesce further arrivals until the batch is full or the window
@@ -100,28 +136,28 @@ async fn worker_loop(mut rx: mpsc::UnboundedReceiver<Job>, max_batch: usize, win
             if remaining.is_zero() {
                 break;
             }
-            match tokio::time::timeout(remaining, rx.recv()).await {
-                Ok(Some(job)) => batch.push(job),
-                Ok(None) => break, // channel closed
-                Err(_) => break,   // window elapsed
+            match rx.recv_timeout(remaining) {
+                Ok(job) => batch.push(job),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         verify_and_reply(batch);
     }
 }
 
-/// Whether `job` is degenerate the way `verify_strict` rejects but the raw
-/// cofactored batch equation does not: an `R` or verifying key of small order.
+/// Whether `job` can pass the raw batch equation while failing
+/// `verify_strict`: a non-prime-order `R` or a small-order verifying key.
 ///
-/// `ed25519_dalek::verify_batch` checks `[8]sB = [8]R + [8]hA`, which is blind
-/// to the curve's 8-torsion subgroup — multiplying by the cofactor 8 maps every
-/// small-order point to the identity on both sides. Concretely, `R = identity`
-/// (order 1, small-order) and `s = H(R‖A‖M)·a mod L` satisfies that equation
+/// `ed25519_dalek::verify_batch` checks one randomly weighted aggregate
+/// equation. `R = identity` (order 1, small-order) and
+/// `s = H(R‖A‖M)·a mod L` satisfies that equation
 /// for *any* message M, for any key whose private scalar `a` the signer knows
-/// — no weak/crafted key required. `verify_strict` closes this by explicitly
-/// rejecting a small-order `R` or verifying key before its own (cofactorless)
-/// check; batching must apply the same two checks before trusting the batch
-/// equation, or a holder of a legitimate signing key (e.g. the payer, in
+/// — no weak/crafted key required. A mixed-order `R` can likewise pass when
+/// the transcript-derived coefficient kills its torsion component.
+/// `verify_strict` rejects these through its small-order checks or exact
+/// per-signature equation; batching must exclude them before trusting the
+/// aggregate equation, or a holder of a legitimate signing key (e.g. the payer, in
 /// scheme variants where the payer is the channel's own voucher signer) can
 /// produce a signature this gate accepts but on-chain settlement — which
 /// verifies with `verify_strict` via the Ed25519 precompile — never will:
@@ -131,7 +167,7 @@ fn is_degenerate(key: &VerifyingKey, signature: &Signature) -> bool {
         return true;
     }
     match CompressedEdwardsY(*signature.r_bytes()).decompress() {
-        Some(point) => point.is_small_order(),
+        Some(point) => point.is_small_order() || !point.is_torsion_free(),
         // Doesn't even decompress to a curve point; verify_strict would also
         // reject it, by way of `InternalSignature::try_from` failing first.
         None => true,
@@ -191,8 +227,7 @@ static BATCH_VERIFIER: OnceLock<Option<BatchVerifier>> = OnceLock::new();
 
 /// The process-wide batch verifier, or `None` when the mode is off. Lazily
 /// initialized from the environment on first call — which MUST happen from
-/// within a Tokio runtime (i.e. on the request hot path), since it spawns the
-/// worker tasks. `PAY_VERIFY_BATCH=1` enables it.
+/// on the request hot path. `PAY_VERIFY_BATCH=1` enables it.
 pub fn batch_verifier() -> Option<&'static BatchVerifier> {
     BATCH_VERIFIER.get_or_init(init_from_env).as_ref()
 }
@@ -204,11 +239,7 @@ fn init_from_env() -> Option<BatchVerifier> {
     let workers = env_usize("PAY_VERIFY_BATCH_WORKERS", default_workers());
     let max_batch = env_usize("PAY_VERIFY_BATCH_MAX", 64);
     let window_us = env_usize("PAY_VERIFY_BATCH_WINDOW_US", 100) as u64;
-    Some(BatchVerifier::spawn(
-        workers,
-        max_batch,
-        Duration::from_micros(window_us),
-    ))
+    BatchVerifier::spawn(workers, max_batch, Duration::from_micros(window_us))
 }
 
 fn default_workers() -> usize {
@@ -227,7 +258,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+    use curve25519_dalek::constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION};
     use curve25519_dalek::edwards::EdwardsPoint;
     use curve25519_dalek::scalar::Scalar;
     use curve25519_dalek::traits::Identity;
@@ -238,6 +269,13 @@ mod tests {
 
     fn keypair(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn worker_count_is_never_zero_or_unbounded() {
+        assert_eq!(bounded_worker_count(0), 1);
+        assert_eq!(bounded_worker_count(8), 8);
+        assert_eq!(bounded_worker_count(usize::MAX), MAX_BATCH_VERIFY_WORKERS);
     }
 
     /// Constructs the exact degenerate forgery `is_degenerate` must reject:
@@ -254,6 +292,24 @@ mod tests {
         hasher.update(message);
         let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
         let s = h * signer.to_scalar();
+        Signature::from_components(r_bytes, s.to_bytes())
+    }
+
+    /// Constructs a signature whose `R` has both prime-order and torsion
+    /// components. Some transcript-derived batch coefficients erase the
+    /// torsion component, while `verify_strict`'s exact equation rejects it.
+    fn forge_mixed_order_signature(signer: &SigningKey, message: &[u8], nonce: u64) -> Signature {
+        let verifying_key = signer.verifying_key();
+        let r = Scalar::from(nonce);
+        let r_bytes = (r * ED25519_BASEPOINT_POINT + EIGHT_TORSION[1])
+            .compress()
+            .to_bytes();
+        let mut hasher = Sha512::new();
+        hasher.update(r_bytes);
+        hasher.update(verifying_key.as_bytes());
+        hasher.update(message);
+        let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
+        let s = r + h * signer.to_scalar();
         Signature::from_components(r_bytes, s.to_bytes())
     }
 
@@ -297,6 +353,40 @@ mod tests {
         assert!(!is_degenerate(&signer.verifying_key(), &honest));
 
         let forged = forge_degenerate_signature(&signer, message);
+        assert!(is_degenerate(&signer.verifying_key(), &forged));
+    }
+
+    #[test]
+    fn is_degenerate_rejects_mixed_order_r_accepted_by_batch_verification() {
+        let signer = keypair(2);
+        let message = b"mixed-order R";
+        let forged = (1..=1024)
+            .map(|nonce| forge_mixed_order_signature(&signer, message, nonce))
+            .find(|signature| {
+                ed25519_dalek::verify_batch(
+                    &[message.as_slice()],
+                    &[*signature],
+                    &[signer.verifying_key()],
+                )
+                .is_ok()
+            })
+            .expect("a batch coefficient should annihilate the torsion component");
+        let point = CompressedEdwardsY(*forged.r_bytes())
+            .decompress()
+            .expect("constructed R is on the curve");
+
+        assert!(!point.is_small_order());
+        assert!(!point.is_torsion_free());
+        assert!(signer
+            .verifying_key()
+            .verify_strict(message, &forged)
+            .is_err());
+        assert!(ed25519_dalek::verify_batch(
+            &[message.as_slice()],
+            &[forged],
+            &[signer.verifying_key()]
+        )
+        .is_ok());
         assert!(is_degenerate(&signer.verifying_key(), &forged));
     }
 
@@ -353,7 +443,7 @@ mod tests {
     async fn batch_verifier_end_to_end_rejects_the_forgery() {
         // Same scenario through the public async API a real caller uses,
         // proving the fix holds through the worker-pool path too.
-        let verifier = BatchVerifier::spawn(1, 8, Duration::from_millis(50));
+        let verifier = BatchVerifier::spawn(1, 8, Duration::from_millis(50)).unwrap();
 
         let honest_signer = keypair(4);
         let honest_message = b"paid".to_vec();

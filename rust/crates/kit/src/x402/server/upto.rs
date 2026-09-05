@@ -267,6 +267,20 @@ impl X402Upto {
         }
     }
 
+    /// Treasury baked into the selected program deployment.
+    ///
+    /// A program-id override denotes a custom deployment, whose treasury
+    /// cannot be inferred from the advertised cluster. Preserve the canonical
+    /// program's historical treasury in that case; callers that target the
+    /// standard devnet deployment leave `program_id` unset.
+    fn treasury_owner(&self) -> Pubkey {
+        if self.config.program_id.is_some() {
+            pc::treasury_owner()
+        } else {
+            pc::treasury_owner_for_cluster(&self.config.cluster)
+        }
+    }
+
     /// The primary/default currency: `currencies[0]`. The constructor rejects
     /// an empty list, so this never panics.
     fn primary_currency(&self) -> &CurrencyConfig {
@@ -747,7 +761,7 @@ impl X402Upto {
         ));
         instructions.push(pc::build_create_associated_token_account_instruction(
             &self.fee_payer,
-            &pc::treasury_owner(),
+            &self.treasury_owner(),
             &open.mint,
             &open.token_program,
         ));
@@ -764,7 +778,7 @@ impl X402Upto {
             &open.payer,
             &open.rent_payer,
             &payee,
-            &pc::treasury_owner(),
+            &self.treasury_owner(),
             &open.mint,
             &open.distribution,
             &open.token_program,

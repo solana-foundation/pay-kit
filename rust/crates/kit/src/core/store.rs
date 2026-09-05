@@ -7,6 +7,7 @@
 //! `batch-settlement` scheme) share one implementation. `solana-mpp` re-exports
 //! this module at `mpp::store`.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -430,6 +431,56 @@ pub struct CommittedDelivery {
     /// written before retention was tracked; those are kept.
     #[serde(default, rename = "retainUntil")]
     pub retain_until: i64,
+
+    /// The resource handler's response, cached so a replay of this exact
+    /// authorization can return the purchased representation itself — not
+    /// just [`Self::settlement_response`] layered on top of it. `None` for
+    /// records predating this field, or whose response exceeded the calling
+    /// scheme's size cap for caching (a settlement-only replay still answers
+    /// correctly in that case; only the original representation is lost).
+    #[serde(
+        default,
+        rename = "cachedResponse",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cached_response: Option<CachedUpstreamResponse>,
+}
+
+/// A resource handler's response body, held verbatim for idempotent replay.
+/// See [`CommittedDelivery::cached_response`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedUpstreamResponse {
+    pub status: u16,
+    #[serde(
+        default,
+        rename = "contentType",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_type: Option<String>,
+    /// End-to-end representation metadata needed to reproduce the response.
+    /// Hop-by-hop and payment protocol headers are deliberately excluded by
+    /// the HTTP adapter before persistence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
+    #[serde(with = "cached_response_body_base64")]
+    pub body: Vec<u8>,
+}
+
+mod cached_response_body_base64 {
+    use base64::Engine;
+
+    pub fn serialize<S: serde::Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 /// A setup transaction the server has validated and taken responsibility for,
@@ -575,6 +626,10 @@ pub struct ChannelState {
     #[serde(default)]
     pub settled_on_chain: u64,
 
+    /// Highest cumulative amount confirmed distributed from escrow on-chain.
+    #[serde(default)]
+    pub distributed_on_chain: u64,
+
     /// Exactly-once operator-use results keyed by HTTP idempotency key.
     #[serde(default)]
     pub processed_uses: Vec<ProcessedUse>,
@@ -595,7 +650,7 @@ pub struct ChannelState {
 
     /// Recently committed deliveries, kept for idempotent commit replay.
     #[serde(default)]
-    pub committed_deliveries: Vec<CommittedDelivery>,
+    pub committed_deliveries: VecDeque<CommittedDelivery>,
 
     /// A validated setup transaction awaiting broadcast and confirmation.
     ///
@@ -907,16 +962,26 @@ impl ChannelState {
         self.spent_amount = self.spent_amount.max(cumulative);
         self.highest_voucher_signature = Some(voucher_signature.to_string());
         self.highest_voucher_expires_at = Some(voucher_expires_at);
-        self.committed_deliveries.push(CommittedDelivery {
+        // Keep expiry non-decreasing with insertion order. This preserves the
+        // deque's O(1) expired-prefix pruning even if a later voucher carries
+        // an earlier expiry than its predecessor.
+        let retain_until = voucher_expires_at
+            .max(now)
+            .saturating_add(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64)
+            .max(
+                self.committed_deliveries
+                    .back()
+                    .map_or(0, |entry| entry.retain_until),
+            );
+        self.committed_deliveries.push_back(CommittedDelivery {
             delivery_id: authorization_id.to_string(),
             amount: charged,
             cumulative,
             voucher_signature: voucher_signature.to_string(),
             request_fingerprint: Some(request_fingerprint.to_string()),
             settlement_response: None,
-            retain_until: voucher_expires_at
-                .max(now)
-                .saturating_add(DEFAULT_CHARGE_RECORD_RETENTION.as_secs() as i64),
+            cached_response: None,
+            retain_until,
         });
         self.prune_authorizations(now);
         let stored = response(self);
@@ -928,6 +993,30 @@ impl ChannelState {
             self.committed_deliveries[index].settlement_response = stored;
         }
         Ok(())
+    }
+
+    /// Attach a resource handler's response to an already-committed
+    /// authorization, for [`CommittedDelivery::cached_response`].
+    ///
+    /// A separate step from [`Self::commit_authorization`] because the
+    /// caller (the HTTP adapter) only has the response bytes available after
+    /// the handler has already returned and the commit has already run — see
+    /// `settle_batch`'s post-response hook. A missing target record (already
+    /// pruned, or committed by a different, since-superseded request) is not
+    /// an error: caching is a best-effort improvement to a future replay,
+    /// never a requirement for this request's own success.
+    pub fn attach_cached_response(
+        &mut self,
+        authorization_id: &str,
+        cached: CachedUpstreamResponse,
+    ) {
+        if let Some(entry) = self
+            .committed_deliveries
+            .iter_mut()
+            .find(|entry| entry.delivery_id == authorization_id)
+        {
+            entry.cached_response = Some(cached);
+        }
     }
 
     /// Whether this record is carrying work that has not reached an outcome.
@@ -942,8 +1031,8 @@ impl ChannelState {
         self.pending_setup.is_some() || !self.pending_deliveries.is_empty()
     }
 
-    /// Drop committed records past their retention, then bound the committed
-    /// tail to [`MAX_COMMITTED_AUTHORIZATIONS`].
+    /// Drop the expired committed prefix, then bound the committed tail to
+    /// [`MAX_COMMITTED_AUTHORIZATIONS`].
     ///
     /// Reservations are never dropped. A reservation is removed only by the
     /// request that owns it, releasing or committing it; anything left behind
@@ -952,15 +1041,19 @@ impl ChannelState {
     /// a second time. They accumulate one per crashed or overrunning request,
     /// which is bounded by how often that happens rather than by traffic.
     pub fn prune_authorizations(&mut self, now: i64) {
-        self.committed_deliveries
-            .retain(|entry| entry.retain_until == 0 || entry.retain_until > now);
-        if self.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
-            // The newest records are the ones a client could still be retrying,
-            // and `cumulative` is monotonic per channel, so it orders them.
-            let excess = self.committed_deliveries.len() - MAX_COMMITTED_AUTHORIZATIONS;
-            self.committed_deliveries
-                .sort_by_key(|entry| entry.cumulative);
-            self.committed_deliveries.drain(..excess);
+        while self
+            .committed_deliveries
+            .front()
+            .is_some_and(|entry| entry.retain_until != 0 && entry.retain_until <= now)
+        {
+            self.committed_deliveries.pop_front();
+        }
+        // Commits append in non-decreasing cumulative order, so the front is
+        // always the oldest authorization. A deque makes steady-state pruning
+        // O(1); the previous Vec retained, sorted, and shifted up to 256 large
+        // replay records on every paid request.
+        while self.committed_deliveries.len() > MAX_COMMITTED_AUTHORIZATIONS {
+            self.committed_deliveries.pop_front();
         }
     }
 }
@@ -983,6 +1076,25 @@ pub trait ChannelStore: Send + Sync {
     fn list_channels(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>>;
+
+    /// Return the channel ids in this store without cloning channel records.
+    ///
+    /// Embedded lifecycle loops use this to apply a bounded scan budget before
+    /// reading state. The default preserves compatibility for custom stores;
+    /// in-memory stores override it so growing delivery histories never get
+    /// copied merely to choose the next reconciliation candidates.
+    fn list_channel_ids(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, StoreError>> + Send + '_>> {
+        Box::pin(async move {
+            Ok(self
+                .list_channels()
+                .await?
+                .into_iter()
+                .map(|state| state.channel_id)
+                .collect())
+        })
+    }
 
     fn get_channel(
         &self,
@@ -1108,6 +1220,12 @@ where
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ChannelState>, StoreError>> + Send + '_>> {
         (**self).list_channels()
+    }
+
+    fn list_channel_ids(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, StoreError>> + Send + '_>> {
+        (**self).list_channel_ids()
     }
 
     fn get_channel(
@@ -1240,6 +1358,16 @@ impl ChannelStore for MemoryChannelStore {
             .map(|entry| entry.value().clone())
             .collect();
         Box::pin(async move { Ok(channels) })
+    }
+
+    fn list_channel_ids(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, StoreError>> + Send + '_>> {
+        // Copy only the map keys. Channel records contain growing delivery
+        // histories, so cloning every value for candidate selection makes a
+        // lifecycle sweep increasingly expensive as traffic accumulates.
+        let channel_ids = self.data.iter().map(|entry| entry.key().clone()).collect();
+        Box::pin(async move { Ok(channel_ids) })
     }
 
     fn get_channel(
@@ -2188,11 +2316,12 @@ mod tests {
             last_activity_at: 0,
             spent_amount: 0,
             settled_on_chain: 0,
+            distributed_on_chain: 0,
             processed_uses: vec![],
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: None,
@@ -2401,6 +2530,31 @@ mod tests {
         assert!(state.committed_deliveries.is_empty());
     }
 
+    #[test]
+    fn committed_authorization_expiry_remains_ordered() {
+        let mut state = make_state("c1", 10_000_000);
+        for (step, voucher_expiry) in [(1, 1_000), (2, 500), (3, 1_500)] {
+            let cumulative = step * 1_000;
+            let id = format!("access:c1:{cumulative}");
+            state.reserve_authorization(&id, "fp", 1_000, LEASE, 100);
+            state
+                .mark_authorization_handler_succeeded(&id, "fp")
+                .unwrap();
+            state
+                .commit_authorization(&id, "fp", cumulative, "sig", voucher_expiry, 100, |_| None)
+                .unwrap();
+        }
+
+        let expiries: Vec<_> = state
+            .committed_deliveries
+            .iter()
+            .map(|entry| entry.retain_until)
+            .collect();
+        assert!(expiries.windows(2).all(|pair| pair[0] <= pair[1]));
+        state.prune_authorizations(expiries[1]);
+        assert_eq!(state.committed_deliveries.len(), 1);
+    }
+
     #[tokio::test]
     async fn channel_store_put_and_get() {
         let store = MemoryChannelStore::new();
@@ -2414,6 +2568,7 @@ mod tests {
         assert_eq!(state.cumulative, 0);
         assert!(!state.sealed);
         assert_eq!(store.list_channels().await.unwrap().len(), 1);
+        assert_eq!(store.list_channel_ids().await.unwrap(), ["c1"]);
     }
 
     #[tokio::test]
@@ -2550,6 +2705,7 @@ mod tests {
             store.get_channel("c1").await.unwrap().unwrap().deposit,
             1_000_000
         );
+        assert_eq!(store.list_channel_ids().await.unwrap(), ["c1"]);
     }
 
     #[tokio::test]

@@ -70,7 +70,13 @@ fn read_state(
     runtime: Arc<tokio::runtime::Runtime>,
 ) -> Result<UptoHarnessState, Box<dyn std::error::Error + Send + Sync>> {
     let rpc_url = read_required_env("X402_HARNESS_RPC_URL")?;
-    let network = env::var("X402_HARNESS_NETWORK").unwrap_or_else(|_| "devnet".to_string());
+    // This harness runs against a local Surfpool validator whose
+    // payment-channels build has its treasury-owner sentinel patched to the
+    // *mainnet* constant (see .github/actions/build-payment-channels) — it
+    // is not real Solana devnet, so the label must not be "devnet" or
+    // "solana-devnet": treasury_owner_for_cluster() would then look up the
+    // real devnet treasury and mismatch this harness's mainnet-patched one.
+    let network = env::var("X402_HARNESS_NETWORK").unwrap_or_else(|_| "localnet".to_string());
     let mint = env::var("X402_HARNESS_MINT")
         .unwrap_or_else(|_| "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU".to_string());
     let pay_to = read_required_env("X402_HARNESS_PAY_TO")?;

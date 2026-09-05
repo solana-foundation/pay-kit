@@ -854,11 +854,12 @@ impl<S: ChannelStore> SessionServer<S> {
             last_activity_at: now_ms,
             spent_amount: 0,
             settled_on_chain: 0,
+            distributed_on_chain: 0,
             processed_uses: vec![],
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: Some(ChannelLifecycle {
@@ -1630,7 +1631,7 @@ impl<S: ChannelStore> SessionServer<S> {
                                 owner: lifecycle_owner.clone(),
                                 close_after: now_ms.saturating_add(u64::from(seconds) * 1_000),
                             });
-                        state.committed_deliveries.push(CommittedDelivery {
+                        state.committed_deliveries.push_back(CommittedDelivery {
                             delivery_id: delivery_id.clone(),
                             amount: actual_amount,
                             cumulative: new_cumulative,
@@ -1640,6 +1641,7 @@ impl<S: ChannelStore> SessionServer<S> {
                             // response and no retention clock to run.
                             request_fingerprint: None,
                             settlement_response: None,
+                            cached_response: None,
                             retain_until: 0,
                         });
                         *commit_outcome.lock().unwrap() =
@@ -2481,11 +2483,12 @@ mod tests {
             last_activity_at: 1,
             spent_amount: 0,
             settled_on_chain: 0,
+            distributed_on_chain: 0,
             processed_uses: vec![],
             processed_topup_signatures: vec![],
             next_delivery_sequence: 0,
             pending_deliveries: vec![],
-            committed_deliveries: vec![],
+            committed_deliveries: Default::default(),
             pending_setup: None,
             onchain_checked_at: 0,
             lifecycle: None,
