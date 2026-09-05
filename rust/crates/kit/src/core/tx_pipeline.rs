@@ -344,8 +344,30 @@ async fn run_confirmation_tracker(
         }
 
         let signatures = pending.keys().copied().collect::<Vec<_>>();
-        for chunk in signatures.chunks(CONFIRM_BATCH_LIMIT) {
-            let Ok(statuses) = rpc.get_signature_statuses(chunk).await else {
+        let mut chunks = signatures
+            .chunks(CONFIRM_BATCH_LIMIT)
+            .map(<[Signature]>::to_vec);
+        let mut status_requests = tokio::task::JoinSet::new();
+        let status_concurrency = config.max_send_concurrency.clamp(1, 32);
+        for _ in 0..status_concurrency {
+            let Some(chunk) = chunks.next() else {
+                break;
+            };
+            let rpc = Arc::clone(&rpc);
+            status_requests.spawn(async move {
+                let statuses = rpc.get_signature_statuses(&chunk).await;
+                (chunk, statuses)
+            });
+        }
+        while let Some(joined) = status_requests.join_next().await {
+            if let Some(chunk) = chunks.next() {
+                let rpc = Arc::clone(&rpc);
+                status_requests.spawn(async move {
+                    let statuses = rpc.get_signature_statuses(&chunk).await;
+                    (chunk, statuses)
+                });
+            }
+            let Ok((chunk, Ok(statuses))) = joined else {
                 continue;
             };
             for (signature, status) in chunk.iter().zip(statuses.value) {
@@ -515,6 +537,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct RpcState {
         status_calls: Arc<AtomicUsize>,
+        status_in_flight: Arc<AtomicUsize>,
+        status_peak: Arc<AtomicUsize>,
         account_batches: AccountBatchObservations,
     }
 
@@ -522,6 +546,10 @@ mod tests {
         let result = match request["method"].as_str().unwrap() {
             "getSignatureStatuses" => {
                 state.status_calls.fetch_add(1, Ordering::SeqCst);
+                let in_flight = state.status_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                state.status_peak.fetch_max(in_flight, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                state.status_in_flight.fetch_sub(1, Ordering::SeqCst);
                 let values = request["params"][0]
                     .as_array()
                     .unwrap()
@@ -606,6 +634,7 @@ mod tests {
             assert_eq!(confirmation.await.unwrap().slot, 77);
         }
         assert_eq!(state.status_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(state.status_peak.load(Ordering::SeqCst), 2);
         server.abort();
     }
 
