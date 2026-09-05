@@ -13,17 +13,17 @@
 //! `PAY_VERIFY_BATCH_MAX`, `PAY_VERIFY_BATCH_WINDOW_US`. When off, the caller
 //! verifies inline with `verify_strict` (unchanged behavior).
 //!
-//! Semantics note: the batched fast path uses cofactored verification (the
-//! standard batch equation), whereas the inline path uses `verify_strict`.
-//! Cofactored verification alone is a real gap, not just an edge case:
+//! Semantics note: the batched fast path uses a randomized aggregate equation,
+//! whereas the inline path uses `verify_strict`. Batch verification alone has
+//! a real gap, not just an edge case:
 //! `R = identity`/`s = H(R‖A‖M)·a mod L` satisfies the batch equation for any
 //! message under any key whose scalar the signer knows, no crafted key
-//! needed, while `verify_strict` rejects it outright. [`is_degenerate`]
-//! screens every batch input for exactly the two checks `verify_strict` makes
-//! beyond the batch equation (small-order `R`, small-order key) before the
-//! batch equation runs at all, so the two paths agree on every input, not
-//! just "normal" ones. The per-signature fallback on a failing batch restores
-//! `verify_strict` too.
+//! needed, while `verify_strict` rejects it outright. A mixed-order `R` can
+//! also pass when its deterministic batch coefficient annihilates the torsion
+//! component. [`is_degenerate`] therefore screens every batch input for weak
+//! keys and requires `R` to be torsion-free before the batch equation runs at
+//! all. The per-signature fallback on a failing batch restores `verify_strict`
+//! too.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -146,18 +146,18 @@ fn worker_loop(rx: mpsc::Receiver<Job>, max_batch: usize, window: Duration) {
     }
 }
 
-/// Whether `job` is degenerate the way `verify_strict` rejects but the raw
-/// cofactored batch equation does not: an `R` or verifying key of small order.
+/// Whether `job` can pass the raw batch equation while failing
+/// `verify_strict`: a non-prime-order `R` or a small-order verifying key.
 ///
-/// `ed25519_dalek::verify_batch` checks `[8]sB = [8]R + [8]hA`, which is blind
-/// to the curve's 8-torsion subgroup — multiplying by the cofactor 8 maps every
-/// small-order point to the identity on both sides. Concretely, `R = identity`
-/// (order 1, small-order) and `s = H(R‖A‖M)·a mod L` satisfies that equation
+/// `ed25519_dalek::verify_batch` checks one randomly weighted aggregate
+/// equation. `R = identity` (order 1, small-order) and
+/// `s = H(R‖A‖M)·a mod L` satisfies that equation
 /// for *any* message M, for any key whose private scalar `a` the signer knows
-/// — no weak/crafted key required. `verify_strict` closes this by explicitly
-/// rejecting a small-order `R` or verifying key before its own (cofactorless)
-/// check; batching must apply the same two checks before trusting the batch
-/// equation, or a holder of a legitimate signing key (e.g. the payer, in
+/// — no weak/crafted key required. A mixed-order `R` can likewise pass when
+/// the transcript-derived coefficient kills its torsion component.
+/// `verify_strict` rejects these through its small-order checks or exact
+/// per-signature equation; batching must exclude them before trusting the
+/// aggregate equation, or a holder of a legitimate signing key (e.g. the payer, in
 /// scheme variants where the payer is the channel's own voucher signer) can
 /// produce a signature this gate accepts but on-chain settlement — which
 /// verifies with `verify_strict` via the Ed25519 precompile — never will:
@@ -167,7 +167,7 @@ fn is_degenerate(key: &VerifyingKey, signature: &Signature) -> bool {
         return true;
     }
     match CompressedEdwardsY(*signature.r_bytes()).decompress() {
-        Some(point) => point.is_small_order(),
+        Some(point) => point.is_small_order() || !point.is_torsion_free(),
         // Doesn't even decompress to a curve point; verify_strict would also
         // reject it, by way of `InternalSignature::try_from` failing first.
         None => true,
@@ -258,7 +258,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use curve25519_dalek::constants::ED25519_BASEPOINT_POINT;
+    use curve25519_dalek::constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION};
     use curve25519_dalek::edwards::EdwardsPoint;
     use curve25519_dalek::scalar::Scalar;
     use curve25519_dalek::traits::Identity;
@@ -292,6 +292,24 @@ mod tests {
         hasher.update(message);
         let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
         let s = h * signer.to_scalar();
+        Signature::from_components(r_bytes, s.to_bytes())
+    }
+
+    /// Constructs a signature whose `R` has both prime-order and torsion
+    /// components. Some transcript-derived batch coefficients erase the
+    /// torsion component, while `verify_strict`'s exact equation rejects it.
+    fn forge_mixed_order_signature(signer: &SigningKey, message: &[u8], nonce: u64) -> Signature {
+        let verifying_key = signer.verifying_key();
+        let r = Scalar::from(nonce);
+        let r_bytes = (r * ED25519_BASEPOINT_POINT + EIGHT_TORSION[1])
+            .compress()
+            .to_bytes();
+        let mut hasher = Sha512::new();
+        hasher.update(r_bytes);
+        hasher.update(verifying_key.as_bytes());
+        hasher.update(message);
+        let h = Scalar::from_bytes_mod_order_wide(&hasher.finalize().into());
+        let s = r + h * signer.to_scalar();
         Signature::from_components(r_bytes, s.to_bytes())
     }
 
@@ -335,6 +353,40 @@ mod tests {
         assert!(!is_degenerate(&signer.verifying_key(), &honest));
 
         let forged = forge_degenerate_signature(&signer, message);
+        assert!(is_degenerate(&signer.verifying_key(), &forged));
+    }
+
+    #[test]
+    fn is_degenerate_rejects_mixed_order_r_accepted_by_batch_verification() {
+        let signer = keypair(2);
+        let message = b"mixed-order R";
+        let forged = (1..=1024)
+            .map(|nonce| forge_mixed_order_signature(&signer, message, nonce))
+            .find(|signature| {
+                ed25519_dalek::verify_batch(
+                    &[message.as_slice()],
+                    &[*signature],
+                    &[signer.verifying_key()],
+                )
+                .is_ok()
+            })
+            .expect("a batch coefficient should annihilate the torsion component");
+        let point = CompressedEdwardsY(*forged.r_bytes())
+            .decompress()
+            .expect("constructed R is on the curve");
+
+        assert!(!point.is_small_order());
+        assert!(!point.is_torsion_free());
+        assert!(signer
+            .verifying_key()
+            .verify_strict(message, &forged)
+            .is_err());
+        assert!(ed25519_dalek::verify_batch(
+            &[message.as_slice()],
+            &[forged],
+            &[signer.verifying_key()]
+        )
+        .is_ok());
         assert!(is_degenerate(&signer.verifying_key(), &forged));
     }
 
