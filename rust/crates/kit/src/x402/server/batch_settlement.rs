@@ -3011,16 +3011,13 @@ fn request_fingerprint(voucher_signature: &str, requirements: &BatchRequirements
         hasher.update((field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
     }
-    bs58::encode(hasher.finalize()).into_string()
+    let digest: [u8; 32] = hasher.finalize().into();
+    crate::core::base58::encode_32(&digest)
 }
 
 fn decode_signature(signature_b58: &str) -> Result<[u8; 64], Error> {
-    let bytes = bs58::decode(signature_b58)
-        .into_vec()
-        .map_err(|e| Error::Other(format!("invalid voucher signature: {e}")))?;
-    bytes
-        .try_into()
-        .map_err(|_| Error::Other("voucher signature is not 64 bytes".into()))
+    crate::core::base58::decode_64(signature_b58)
+        .map_err(|e| Error::Other(format!("invalid voucher signature: {e}")))
 }
 
 fn encode_json<T: serde::Serialize>(value: &T) -> Result<String, Error> {

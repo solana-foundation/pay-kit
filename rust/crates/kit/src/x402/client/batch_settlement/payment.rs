@@ -357,7 +357,7 @@ pub async fn sign_voucher(
         // Never-expiring: the forced-close grace period is the only clock that
         // bounds redemption.
         expires_at: VOUCHER_EXPIRES_AT,
-        signature: bs58::encode(signature).into_string(),
+        signature: crate::core::base58::encode_64(&signature),
     })
 }
 

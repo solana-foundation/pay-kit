@@ -279,7 +279,7 @@ pub fn parse_pubkey(value: &str) -> Result<Pubkey> {
 }
 
 pub fn pubkey_string(pubkey: &Pubkey) -> String {
-    bs58::encode(pubkey.as_ref()).into_string()
+    crate::core::base58::encode_32(&pubkey.to_bytes())
 }
 
 pub fn to_address(pubkey: &Pubkey) -> Address {

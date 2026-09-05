@@ -103,23 +103,14 @@ pub fn voucher_verify_parts(
         .map_err(|e| Error::Other(format!("invalid channelId: {e}")))?;
     let message = voucher_message_bytes(&channel, cumulative, expires_at)?;
 
-    let sig_bytes = bs58::decode(signature_b58)
-        .into_vec()
+    let sig_bytes = crate::core::base58::decode_64(signature_b58)
         .map_err(|e| Error::Other(format!("Invalid signature encoding: {e}")))?;
-    let pubkey_bytes = bs58::decode(authorized_signer_b58)
-        .into_vec()
+    let pubkey_bytes = crate::core::base58::decode_32(authorized_signer_b58)
         .map_err(|e| Error::Other(format!("Invalid authorized_signer: {e}")))?;
 
-    let key_arr: [u8; 32] = pubkey_bytes
-        .try_into()
-        .map_err(|_| Error::Other("Pubkey is not 32 bytes".to_string()))?;
-    let sig_arr: [u8; 64] = sig_bytes
-        .try_into()
-        .map_err(|_| Error::Other("Signature is not 64 bytes".to_string()))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&key_arr)
+    let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
         .map_err(|e| Error::Other(format!("Invalid authorized_signer key: {e}")))?;
-    let signature = Signature::from_bytes(&sig_arr);
+    let signature = Signature::from_bytes(&sig_bytes);
 
     Ok(VoucherVerifyParts {
         message,
