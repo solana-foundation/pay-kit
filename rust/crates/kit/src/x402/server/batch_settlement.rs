@@ -2363,6 +2363,12 @@ impl X402BatchSettlement {
         let mut groups = Vec::with_capacity(channel_ids.len());
         let mut claimed_watermarks = Vec::with_capacity(channel_ids.len());
         for (channel_id, onchain) in channel_ids.iter().zip(onchain_channels) {
+            // The lifecycle lookup removes local state for confirmed-absent
+            // accounts. Skip those entries before consulting that state so a
+            // reclaimed channel cannot abort claims for valid peers.
+            let Some(onchain) = onchain else {
+                continue;
+            };
             let mut state = self
                 .store
                 .get_channel(channel_id)
@@ -2375,9 +2381,6 @@ impl X402BatchSettlement {
                     )
                 })?;
             let channel = pc::parse_pubkey(channel_id)?;
-            let Some(onchain) = onchain else {
-                continue;
-            };
             if onchain.status != CHANNEL_STATUS_OPEN || onchain.closure_started_at != 0 {
                 continue;
             }
