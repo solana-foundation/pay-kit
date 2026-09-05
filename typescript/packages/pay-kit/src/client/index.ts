@@ -14,7 +14,7 @@
  */
 import type { KeyPairSigner } from '@solana/kit';
 import { Mppx, solana } from '@solana/mpp/client';
-import { x402Client, x402HTTPClient } from '@x402/core/client';
+import { type BeforePaymentCreationHook, x402Client, x402HTTPClient } from '@x402/core/client';
 import type { Network } from '@x402/core/types';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import { UptoSvmScheme } from '@x402/svm/upto/client';
@@ -29,6 +29,8 @@ const nativeFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 export type PayKitClientOptions = {
     /** Protocols the client will pay with. Defaults to `['x402', 'mpp']`. */
     readonly accept?: readonly Protocol[];
+    /** Called before x402 creates or signs a payment. Return `{ abort: true, reason }` to refuse. */
+    readonly onBeforeX402PaymentCreation?: BeforePaymentCreationHook;
     /** Progress callback, forwarded to the MPP charge/subscription methods. */
     readonly onProgress?: (event: unknown) => void;
     /** RPC endpoint used to build payments (sign transfers, open channels). */
@@ -84,6 +86,9 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
         const client = new x402Client();
         client.register('solana:*' as Network, new ExactSvmScheme(options.signer, svm));
         client.register('solana:*' as Network, new UptoSvmScheme(options.signer, svm));
+        if (options.onBeforeX402PaymentCreation) {
+            client.onBeforePaymentCreation(options.onBeforeX402PaymentCreation);
+        }
         http = new x402HTTPClient(client);
     }
 
