@@ -450,6 +450,65 @@ jobs:
         working-directory: html
         run: npm run test:e2e:rust
 
+  test-payment-links-lua:
+    name: "Payment links E2E: Lua"
+    needs: build-html
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Download HTML assets
+        uses: actions/download-artifact@v7
+        with:
+          name: html-assets
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        working-directory: .
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Install HTML dependencies & Playwright
+        working-directory: html
+        run: npm install && npx playwright install chromium
+      - name: Start Lua payment-link test server
+        working-directory: .
+        run: node lua/tests/e2e-server.mjs &
+      - name: Wait for Lua test server
+        working-directory: .
+        run: |
+          ready=0
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:3003/health; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+      - name: Run Playwright tests (Lua)
+        working-directory: html
+        run: npm run test:e2e:lua
+
   harness:
     name: "Harness: TypeScript harness"
     needs: build-html
