@@ -25,6 +25,7 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+use crate::core::rpc::{read_back, ChannelReadPolicy};
 use crate::core::session::VoucherAcceptance;
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels;
@@ -191,6 +192,20 @@ pub struct SessionConfig {
     /// Required by open and top-up processing. Missing RPC configuration is a
     /// hard error; funding is never inferred from payload claims.
     pub rpc_url: Option<String>,
+
+    /// Reads of a channel account after its open or top-up confirms, before it
+    /// is called absent. `None` or `0` keeps the default of 6.
+    ///
+    /// An RPC provider can serve transaction status and account state from
+    /// different replicas, so the account a confirmed transaction just wrote
+    /// can be missing from the very next read. One miss would otherwise fail a
+    /// payment whose funds are already escrowed on chain.
+    pub channel_read_max_attempts: Option<u32>,
+
+    /// Linear backoff step between those reads, in milliseconds: the wait
+    /// before attempt `n + 1` is `step * n`. `None` or `0` keeps the default
+    /// of 200ms.
+    pub channel_read_backoff_step_ms: Option<u64>,
 }
 
 impl std::fmt::Debug for SessionConfig {
@@ -222,6 +237,11 @@ impl std::fmt::Debug for SessionConfig {
             .field("idle_timeout_seconds", &self.idle_timeout_seconds)
             .field("grace_period_seconds", &self.grace_period_seconds)
             .field("rpc_url", &self.rpc_url.as_ref().map(|_| "[REDACTED]"))
+            .field("channel_read_max_attempts", &self.channel_read_max_attempts)
+            .field(
+                "channel_read_backoff_step_ms",
+                &self.channel_read_backoff_step_ms,
+            )
             .finish()
     }
 }
@@ -248,6 +268,8 @@ impl Default for SessionConfig {
             idle_timeout_seconds: 300,
             grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             rpc_url: None,
+            channel_read_max_attempts: None,
+            channel_read_backoff_step_ms: None,
         }
     }
 }
@@ -808,6 +830,7 @@ impl<S: ChannelStore> SessionServer<S> {
             &pipeline,
             fresh_open,
             self.config.fee_payer_signer.as_deref(),
+            channel_read_policy(&self.config),
         )
         .await?;
         #[cfg(not(feature = "server"))]
@@ -818,6 +841,7 @@ impl<S: ChannelStore> SessionServer<S> {
             &(),
             fresh_open,
             self.config.fee_payer_signer.as_deref(),
+            channel_read_policy(&self.config),
         )
         .await?;
 
@@ -1898,6 +1922,59 @@ fn unix_now_i64() -> i64 {
         .as_secs() as i64
 }
 
+/// The confirmed account must show at least the pre-top-up deposit plus this
+/// top-up's amount, on a still-`Open` channel.
+///
+/// Decided once, on the first read that sees the account, and never re-read.
+/// A non-`Open` status is terminal for the obvious reason: Closing, Closed or
+/// Sealed is not a state waiting to be undone. A short `deposit` is terminal
+/// for the opposite reason. `deposit` is monotonically non-decreasing, so a
+/// stale read of it is always LOW, which makes monotonicity the argument
+/// against re-reading it: re-sampling can only ever flip this rejection into
+/// an acceptance, never the reverse. And the money that flips it need not be
+/// this payer's. A concurrent top-up on the same channel raises the same
+/// `deposit`, and nothing here holds a per-channel lock across the read, so a
+/// retry loop would let someone else's deposit satisfy this request's minimum
+/// where a single read had correctly rejected it. Only the account's absence
+/// is worth another read; see the call site.
+fn assert_topup_reflected(state_deposit: u64, amount: u64, status: u8, deposit: u64) -> Result<()> {
+    let minimum = state_deposit
+        .checked_add(amount)
+        .ok_or_else(|| Error::Other("top-up deposit overflow".to_string()))?;
+    if status != 0 || deposit < minimum {
+        return Err(Error::Other(
+            "confirmed channel state does not reflect the submitted top-up".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the open-channel read policy for one call site and run the read
+/// under it: `None` is the pre-broadcast probe and gets a single read, `Some`
+/// is the post-broadcast read and gets the retry budget.
+///
+/// The reader is injected so a test can count the reads this site makes
+/// without standing up an RPC.
+async fn read_open_channel_account<T, E, Fut>(
+    read_policy: Option<ChannelReadPolicy>,
+    read: impl FnMut() -> Fut,
+) -> std::result::Result<Option<T>, E>
+where
+    Fut: std::future::Future<Output = std::result::Result<Option<T>, E>>,
+{
+    read_back(read_policy.unwrap_or(ChannelReadPolicy::SINGLE_READ), read).await
+}
+
+/// Retry budget for reading a channel account back right after the transaction
+/// that wrote it confirmed. Applied per call site, never to the reads that
+/// double as pre-broadcast existence probes.
+fn channel_read_policy(config: &SessionConfig) -> ChannelReadPolicy {
+    ChannelReadPolicy::from_config(
+        config.channel_read_max_attempts,
+        config.channel_read_backoff_step_ms,
+    )
+}
+
 #[cfg(feature = "server")]
 fn confirmed_rpc_client(rpc_url: &str) -> solana_rpc_client::rpc_client::RpcClient {
     solana_rpc_client::rpc_client::RpcClient::new_with_commitment(
@@ -1914,6 +1991,7 @@ async fn verify_submit_and_fetch_open(
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     fresh_open: bool,
     fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
+    read_policy: ChannelReadPolicy,
 ) -> Result<String> {
     let mut tx = payment_channels::decode_transaction(&payload.transaction)?;
     if tx
@@ -2014,7 +2092,7 @@ async fn verify_submit_and_fetch_open(
                 payment_channels::OPEN_SLOT_WINDOW
             )));
         }
-    } else if fetch_and_match_open_channel(pipeline, params, None)
+    } else if fetch_and_match_open_channel(pipeline, params, None, None)
         .await
         .is_ok()
     {
@@ -2034,7 +2112,8 @@ async fn verify_submit_and_fetch_open(
     // what the broadcast said.
     let submission = pipeline.submit_verified(&tx).await;
     let min_context_slot = submission.as_ref().ok().map(|confirmed| confirmed.slot);
-    let confirmed = fetch_and_match_open_channel(pipeline, params, min_context_slot).await;
+    let confirmed =
+        fetch_and_match_open_channel(pipeline, params, min_context_slot, Some(read_policy)).await;
     match (submission, confirmed) {
         (Ok(_), confirmed) => confirmed,
         (Err(_), Ok(())) => Ok(()),
@@ -2044,17 +2123,28 @@ async fn verify_submit_and_fetch_open(
 }
 
 #[cfg(feature = "server")]
+/// Read the confirmed channel account and check it against the verified open.
+///
+/// `read_policy` is `None` for the pre-broadcast resubmit-dedupe probe, where a
+/// missing account is the expected answer and re-reading it would charge every
+/// first-time open the whole retry budget for nothing. After a broadcast it
+/// carries the budget: the account can be missing from the replica this read
+/// lands on even though the transaction confirmed. Only that absence is
+/// retried - the field comparison below is a visible-and-wrong state, terminal
+/// on its first observation.
 async fn fetch_and_match_open_channel(
     pipeline: &crate::core::tx_pipeline::TxPipeline,
     params: &payment_channels::OpenChannelParams,
     min_context_slot: Option<u64>,
+    read_policy: Option<ChannelReadPolicy>,
 ) -> Result<()> {
     let channel_address = payment_channels::derive_channel_addresses(params).channel;
-    let account_data = pipeline
-        .read_account_data(channel_address, min_context_slot)
-        .await
-        .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?
-        .ok_or_else(|| Error::Rpc("confirmed channel account not found".to_string()))?;
+    let account_data = read_open_channel_account(read_policy, move || {
+        pipeline.read_account_data(channel_address, min_context_slot)
+    })
+    .await
+    .map_err(|error| Error::Rpc(format!("fetch confirmed channel failed: {error}")))?
+    .ok_or_else(|| Error::Rpc("confirmed channel account not found".to_string()))?;
     let channel =
         payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
             .map_err(|error| Error::Other(format!("decode confirmed channel: {error}")))?;
@@ -2216,23 +2306,30 @@ async fn verify_submit_and_fetch_topup(
         .submit_verified(&tx)
         .await
         .map_err(|error| Error::Rpc(format!("top-up submission failed: {error}")))?;
-    let account_data = pipeline
-        .read_account_data(channel, Some(confirmed.slot))
-        .await
-        .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
-        .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()))?;
+    // The top-up is confirmed, but the replica serving this read can lag the
+    // one that served the confirmation, so the account can still be missing.
+    // Only that absence is re-read: the loop stops at the first visible read,
+    // and the state it saw decides the request. A stale deposit on a VISIBLE
+    // account is NOT retried - re-sampling it over the retry window can only
+    // turn this rejection into an acceptance, and a concurrent top-up on the
+    // same channel is enough to do it, because nothing here holds a
+    // per-channel lock across the read. See `assert_topup_reflected`.
+    let confirmed_slot = confirmed.slot;
+    let account_data = read_back(channel_read_policy(config), move || {
+        pipeline.read_account_data(channel, Some(confirmed_slot))
+    })
+    .await
+    .map_err(|error| Error::Rpc(format!("fetch topped-up channel failed: {error}")))?
+    .ok_or_else(|| Error::Rpc("confirmed topped-up channel account not found".to_string()))?;
     let channel_state =
         payment_channels::generated::generated::accounts::Channel::from_bytes(&account_data)
             .map_err(|error| Error::Other(format!("decode topped-up channel: {error}")))?;
-    let minimum = state
-        .deposit
-        .checked_add(amount)
-        .ok_or_else(|| Error::Other("top-up deposit overflow".to_string()))?;
-    if channel_state.status != 0 || channel_state.deposit < minimum {
-        return Err(Error::Other(
-            "confirmed channel state does not reflect the submitted top-up".to_string(),
-        ));
-    }
+    assert_topup_reflected(
+        state.deposit,
+        amount,
+        channel_state.status,
+        channel_state.deposit,
+    )?;
     Ok(signature)
 }
 
@@ -2256,6 +2353,7 @@ async fn verify_submit_and_fetch_open(
     _pipeline: &(),
     _fresh_open: bool,
     _fee_payer_signer: Option<&dyn solana_keychain::SolanaSigner>,
+    _read_policy: ChannelReadPolicy,
 ) -> Result<String> {
     Err(Error::Other(
         "session open verification requires the `server` feature".to_string(),
@@ -4406,5 +4504,108 @@ mod tests {
         assert!(invalid.settle_instructions(&operator).is_err());
         invalid.voucher_signature = Some(bs58::encode([0_u8; 64]).into_string());
         assert!(invalid.settle_instructions(&operator).is_err());
+    }
+    #[test]
+    fn a_visible_channel_decides_the_topup_once_whatever_it_says() {
+        // 1_000 was already on chain and this request adds 500, so the
+        // confirmed account has to show at least 1_500.
+        //
+        // Exactly the minimum is enough, and so is more.
+        assert_topup_reflected(1_000, 500, 0, 1_500).unwrap();
+        assert_topup_reflected(1_000, 500, 0, 9_999).unwrap();
+        // One lamport short: rejected on the spot. Not re-read, because the
+        // only thing a second read could change is our answer, and a
+        // concurrent top-up on the same channel is enough to change it.
+        let short = assert_topup_reflected(1_000, 500, 0, 1_499).unwrap_err();
+        assert!(
+            short
+                .to_string()
+                .contains("confirmed channel state does not reflect the submitted top-up"),
+            "unexpected error: {short}"
+        );
+        // A deposit that ignores `amount` entirely is the double-credit hole:
+        // the pre-top-up balance alone must never satisfy a top-up that landed
+        // nothing.
+        assert!(assert_topup_reflected(1_000, 500, 0, 1_000).is_err());
+        // Not open: a rejection whatever the deposit says, since no amount of
+        // waiting undoes a Closing/Closed/Sealed channel.
+        for status in [1_u8, 2, 3, 255] {
+            assert!(assert_topup_reflected(1_000, 500, status, 1_500).is_err());
+            assert!(assert_topup_reflected(1_000, 500, status, u64::MAX).is_err());
+        }
+        // The minimum itself can overflow. That is an error, never a wrapped
+        // zero that any deposit clears.
+        let overflow = assert_topup_reflected(u64::MAX, 1, 0, u64::MAX).unwrap_err();
+        assert!(
+            overflow.to_string().contains("top-up deposit overflow"),
+            "unexpected error: {overflow}"
+        );
+    }
+
+    #[test]
+    fn channel_read_policy_follows_session_config() {
+        let mut config = SessionConfig::default();
+        let default = channel_read_policy(&config);
+        assert_eq!(default.max_attempts, 6);
+        assert_eq!(default.backoff_step, std::time::Duration::from_millis(200));
+
+        config.channel_read_max_attempts = Some(0);
+        config.channel_read_backoff_step_ms = Some(0);
+        let zeroed = channel_read_policy(&config);
+        assert_eq!(zeroed.max_attempts, default.max_attempts);
+        assert_eq!(zeroed.backoff_step, default.backoff_step);
+
+        config.channel_read_max_attempts = Some(3);
+        config.channel_read_backoff_step_ms = Some(25);
+        let tuned = channel_read_policy(&config);
+        assert_eq!(tuned.max_attempts, 3);
+        assert_eq!(tuned.backoff_step, std::time::Duration::from_millis(25));
+    }
+
+    #[tokio::test]
+    async fn the_open_probe_opts_out_of_the_retry() {
+        // `fetch_and_match_open_channel(.., None)` is the pre-broadcast
+        // resubmit-dedupe probe, where a missing channel is the right answer:
+        // one read, or every first-time open pays the whole retry budget.
+        let reads = std::cell::Cell::new(0);
+        let counter = &reads;
+        let probe: std::result::Result<Option<u8>, ()> =
+            read_open_channel_account(None, move || async move {
+                counter.set(counter.get() + 1);
+                Ok(None)
+            })
+            .await;
+        assert_eq!(probe, Ok(None));
+        assert_eq!(reads.get(), 1);
+
+        // After the broadcast the same read carries the budget and spends all
+        // of it on an account that never becomes visible.
+        let policy = ChannelReadPolicy {
+            max_attempts: 4,
+            backoff_step: std::time::Duration::from_millis(1),
+        };
+        let reads = std::cell::Cell::new(0);
+        let counter = &reads;
+        let missing: std::result::Result<Option<u8>, ()> =
+            read_open_channel_account(Some(policy), move || async move {
+                counter.set(counter.get() + 1);
+                Ok(None)
+            })
+            .await;
+        assert_eq!(missing, Ok(None));
+        assert_eq!(reads.get(), 4);
+
+        // A visible account ends the loop on the first read; the field
+        // comparison against the verified open then runs once, outside it.
+        let reads = std::cell::Cell::new(0);
+        let counter = &reads;
+        let visible: std::result::Result<Option<u8>, ()> =
+            read_open_channel_account(Some(policy), move || async move {
+                counter.set(counter.get() + 1);
+                Ok(Some(7))
+            })
+            .await;
+        assert_eq!(visible, Ok(Some(7)));
+        assert_eq!(reads.get(), 1);
     }
 }

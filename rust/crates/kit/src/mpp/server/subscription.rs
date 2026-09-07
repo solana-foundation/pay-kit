@@ -35,6 +35,7 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::Transaction;
 
+use crate::core::rpc::{read_back_blocking, ChannelReadPolicy};
 use crate::mpp::error::Error;
 use crate::mpp::expires;
 use crate::mpp::program::subscriptions::{
@@ -129,6 +130,21 @@ pub struct SubscriptionConfig {
     /// they're paying for. Typically the endpoint's `description:` YAML
     /// field.
     pub description: Option<String>,
+
+    /// Reads of the `SubscriptionDelegation` account after an activation
+    /// confirms, before it is called absent. `None` or `0` keeps the default
+    /// of 6.
+    ///
+    /// An RPC provider can serve transaction status and account state from
+    /// different replicas, so the delegation a confirmed activation just
+    /// created can be missing from the very next read. One miss would
+    /// otherwise fail an activation that already charged the subscriber.
+    pub channel_read_max_attempts: Option<u32>,
+
+    /// Linear backoff step between those reads, in milliseconds: the wait
+    /// before attempt `n + 1` is `step * n`. `None` or `0` keeps the default
+    /// of 200ms.
+    pub channel_read_backoff_step_ms: Option<u64>,
 }
 
 impl Default for SubscriptionConfig {
@@ -156,6 +172,8 @@ impl Default for SubscriptionConfig {
             plan_bump: None,
             plan_created_at: None,
             description: None,
+            channel_read_max_attempts: None,
+            channel_read_backoff_step_ms: None,
         }
     }
 }
@@ -469,7 +487,7 @@ impl SubscriptionServer {
                 let (delegation_pda, _) =
                     find_subscription_pda(&plan_pda, &subscriber, &program_id);
                 let delegation_already_exists = self
-                    .fetch_subscription_delegation(&delegation_pda)
+                    .fetch_subscription_delegation(&delegation_pda, None)
                     .await
                     .is_ok();
 
@@ -509,8 +527,11 @@ impl SubscriptionServer {
             .map_err(|e| VerificationError::new(e.to_string()))?;
         let (subscription_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
 
+        // The activation is confirmed, so re-read while the delegation is not
+        // yet visible; every terms check below stays terminal on its first
+        // observation.
         let delegation = self
-            .fetch_subscription_delegation(&subscription_pda)
+            .fetch_subscription_delegation(&subscription_pda, Some(self.channel_read_policy()))
             .await?;
 
         // ── Validate snapshotted terms ──────────────────────────────────
@@ -605,18 +626,52 @@ impl SubscriptionServer {
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
     }
 
+    /// Retry budget for reading a delegation back right after the activation
+    /// that created it confirmed.
+    fn channel_read_policy(&self) -> ChannelReadPolicy {
+        ChannelReadPolicy::from_config(
+            self.config.channel_read_max_attempts,
+            self.config.channel_read_backoff_step_ms,
+        )
+    }
+
+    /// Read and decode the `SubscriptionDelegation` PDA.
+    ///
+    /// `read_policy` is `None` for the pre-broadcast existence probe, where a
+    /// missing delegation is the expected answer and re-reading it would charge
+    /// every first-time activation the whole retry budget for nothing. After a
+    /// broadcast it carries the budget, and only the absence is retried: a
+    /// decode failure, an unreachable RPC and every terms check in the caller
+    /// are terminal on their first observation.
     async fn fetch_subscription_delegation(
         &self,
         subscription_pda: &Pubkey,
+        read_policy: Option<ChannelReadPolicy>,
     ) -> Result<SubscriptionDelegationView, VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
         use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let pda = *subscription_pda;
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
-            let account = rpc.get_account(&pda).map_err(|e| {
+            // The read commitment must match the broadcast's. `RpcClient::new`
+            // defaults to `finalized`, roughly 13s behind the `confirmed` the
+            // activation was confirmed at, so it cannot see the account that
+            // activation just wrote.
+            let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+            // `get_account` collapses a missing account into the same error as
+            // an unreachable RPC; only the former is worth another read.
+            let account = read_delegation_account(read_policy, || {
+                rpc.get_account_with_commitment(&pda, rpc.commitment())
+                    .map(|response| response.value)
+                    .map_err(|e| {
+                        VerificationError::not_found(format!(
+                            "SubscriptionDelegation account {pda} not found: {e}"
+                        ))
+                    })
+            })?
+            .ok_or_else(|| {
                 VerificationError::not_found(format!(
-                    "SubscriptionDelegation account {pda} not found: {e}"
+                    "SubscriptionDelegation account {pda} not found"
                 ))
             })?;
             decode_subscription_delegation(&account.data).map_err(VerificationError::new)
@@ -637,11 +692,15 @@ impl SubscriptionServer {
         &self,
         subscription_pda: &Pubkey,
     ) -> Result<String, VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
         use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let pda = *subscription_pda;
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
+            // Same read-after-confirm flow as the delegation fetch: the read
+            // commitment must match the broadcast's `confirmed`, not
+            // `RpcClient::new`'s `finalized` default.
+            let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let sigs = rpc.get_signatures_for_address(&pda).map_err(|e| {
                 VerificationError::network_error(format!(
                     "getSignaturesForAddress({pda}) failed: {e}"
@@ -695,6 +754,19 @@ impl SubscriptionServer {
 }
 
 // ── Verify helpers ──────────────────────────────────────────────────────────
+
+/// Resolve the delegation read policy for one call site and run the read under
+/// it: `None` is the pre-broadcast existence probe and gets a single read,
+/// `Some` is the post-broadcast read and gets the retry budget.
+///
+/// The reader is injected so a test can count the reads this site makes
+/// without standing up an RPC.
+fn read_delegation_account<T, E>(
+    read_policy: Option<ChannelReadPolicy>,
+    read: impl FnMut() -> Result<Option<T>, E>,
+) -> Result<Option<T>, E> {
+    read_back_blocking(read_policy.unwrap_or(ChannelReadPolicy::SINGLE_READ), read)
+}
 
 /// Pluck the `ActivatePayload` out of a credential's `payload` field,
 /// accepting both the raw `ActivatePayload` shape (the v0 spec) and the
@@ -1377,5 +1449,71 @@ mod tests {
             msg.contains("push-mode") || msg.contains("not yet supported"),
             "{err:?}"
         );
+    }
+    #[test]
+    fn channel_read_policy_follows_subscription_config() {
+        let mut config = make_config();
+        assert_eq!(config.channel_read_max_attempts, None);
+        assert_eq!(config.channel_read_backoff_step_ms, None);
+
+        let default = SubscriptionServer::new(config.clone())
+            .expect("server")
+            .channel_read_policy();
+        assert_eq!(default.max_attempts, 6);
+        assert_eq!(default.backoff_step, std::time::Duration::from_millis(200));
+
+        config.channel_read_max_attempts = Some(0);
+        config.channel_read_backoff_step_ms = Some(0);
+        let zeroed = SubscriptionServer::new(config.clone())
+            .expect("server")
+            .channel_read_policy();
+        assert_eq!(zeroed.max_attempts, default.max_attempts);
+        assert_eq!(zeroed.backoff_step, default.backoff_step);
+
+        config.channel_read_max_attempts = Some(2);
+        config.channel_read_backoff_step_ms = Some(30);
+        let tuned = SubscriptionServer::new(config)
+            .expect("server")
+            .channel_read_policy();
+        assert_eq!(tuned.max_attempts, 2);
+        assert_eq!(tuned.backoff_step, std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn the_delegation_existence_probe_opts_out_of_the_retry() {
+        // `fetch_subscription_delegation(.., None)` runs before the broadcast,
+        // where a missing delegation is the correct answer. Retrying it would
+        // charge every first-time activation the whole budget for nothing.
+        let mut reads = 0;
+        let probe: Result<Option<u8>, ()> = read_delegation_account(None, || {
+            reads += 1;
+            Ok(None)
+        });
+        assert_eq!(probe, Ok(None));
+        assert_eq!(reads, 1);
+
+        // After the broadcast the same read carries the budget and spends all
+        // of it on a delegation that never becomes visible.
+        let policy = ChannelReadPolicy {
+            max_attempts: 4,
+            backoff_step: std::time::Duration::from_millis(1),
+        };
+        let mut reads = 0;
+        let missing: Result<Option<u8>, ()> = read_delegation_account(Some(policy), || {
+            reads += 1;
+            Ok(None)
+        });
+        assert_eq!(missing, Ok(None));
+        assert_eq!(reads, 4);
+
+        // Visible on the first read: the loop stops there, and every terms
+        // check in the caller runs once against that state.
+        let mut reads = 0;
+        let visible: Result<Option<u8>, ()> = read_delegation_account(Some(policy), || {
+            reads += 1;
+            Ok(Some(3))
+        });
+        assert_eq!(visible, Ok(Some(3)));
+        assert_eq!(reads, 1);
     }
 }
