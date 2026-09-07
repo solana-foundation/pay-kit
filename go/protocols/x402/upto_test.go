@@ -1435,6 +1435,9 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 		FeePayerSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
+		// The post-broadcast read retries the not-found account: a 1ms step
+		// keeps the full 6-attempt schedule under 15ms instead of 3s.
+		ChannelReadBackoffStepMs: 1,
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
@@ -1446,6 +1449,85 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 	_, err := engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
 	if err == nil || !strings.Contains(err.Error(), "channel account fetch") {
 		t.Fatalf("expected channel fetch error, got %v", err)
+	}
+}
+
+// laggingChannelRPC hides the channel account for the first misses reads of it,
+// the shape of a provider whose account replica trails the one that answered
+// the confirmation. Reads of any other account (the mint owner lookup) pass
+// straight through.
+type laggingChannelRPC struct {
+	*uptoTestRPC
+	channelID solana.PublicKey
+	misses    int
+	reads     int
+}
+
+func (r *laggingChannelRPC) GetAccountInfoWithOpts(ctx context.Context, account solana.PublicKey, opts *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	if account.Equals(r.channelID) {
+		r.reads++
+		if r.reads <= r.misses {
+			return nil, rpc.ErrNotFound
+		}
+	}
+	return r.uptoTestRPC.GetAccountInfoWithOpts(ctx, account, opts)
+}
+
+// TestUptoVerifyOpenSurvivesLaggingReplica is the end-to-end guard for the
+// whole branch: VerifyOpen must go through the retrying post-broadcast read,
+// not a single fetchChannel. Swapping the call back to fetchChannel makes the
+// first not-found fail the payment, and this test with it.
+func TestUptoVerifyOpenSurvivesLaggingReplica(t *testing.T) {
+	operatorKey := testutil.NewPrivateKey()
+	payerKey := testutil.NewPrivateKey()
+	payee := operatorKey.PublicKey()
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	salt := uint64(7)
+	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt, 55_555)
+	params := paymentchannels.OpenChannelParams{
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Salt: salt, OpenSlot: 55_555, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	openIx, _ := paymentchannels.BuildOpenInstruction(params)
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	solanatx.SignTransaction(tx, payerSigner{payerKey})
+	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
+	distHashArr := distributionHash(singleSplitTo(payee))
+	fakeRPC := newUptoTestRPC()
+	fakeRPC.addChannel(channel, &pcgen.Channel{
+		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
+		Salt: salt, Deposit: 1_000_000, GracePeriod: 900, DistributionHash: distHashArr,
+		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: mint,
+	})
+	laggingRPC := &laggingChannelRPC{uptoTestRPC: fakeRPC, channelID: channel, misses: 1}
+	engine, _ := NewX402Upto(UptoConfig{
+		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
+		FeePayerSigner:          signerSigner{operatorKey},
+		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
+		// 1ms step: the one backoff this test sleeps stays invisible.
+		ChannelReadBackoffStepMs: 1,
+	})
+	engine.SetRPCForTests(laggingRPC)
+	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
+		Nonce: "7", OpenSlot: "55555", AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
+	}}
+	raw, _ := json.Marshal(env)
+	verified, err := engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
+	if err != nil {
+		t.Fatalf("VerifyOpen through a lagging replica: %v", err)
+	}
+	if verified.ChannelID != channel {
+		t.Fatalf("channel = %s, want %s", verified.ChannelID, channel)
+	}
+	if verified.Deposit != 1_000_000 {
+		t.Fatalf("deposit = %d, want the on-chain 1000000", verified.Deposit)
+	}
+	if laggingRPC.reads != 2 {
+		t.Fatalf("channel reads = %d, want the miss plus the retry", laggingRPC.reads)
 	}
 }
 

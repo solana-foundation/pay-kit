@@ -240,6 +240,11 @@ type UptoConfig struct {
 	// extra.recentSlot (deterministic tests). Nil fetches via the RPC client's
 	// getSlot.
 	RecentSlotProvider func() (uint64, error)
+	// ChannelReadMaxAttempts and ChannelReadBackoffStepMs bound the
+	// post-broadcast channel re-read (see fetchChannelAfterBroadcast).
+	// Zero or negative resolves to the package defaults.
+	ChannelReadMaxAttempts   int
+	ChannelReadBackoffStepMs int
 }
 
 // X402Upto is the server-side x402 upto payment-channel engine.
@@ -541,7 +546,7 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err := solanatx.WaitForConfirmation(ctx, u.rpc, sig); err != nil {
 		return nil, fmt.Errorf("open confirmation failed: %w", err)
 	}
-	channel, err := u.fetchChannel(ctx, channelID)
+	channel, err := u.fetchChannelAfterBroadcast(ctx, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -719,6 +724,64 @@ func (u *X402Upto) fetchChannel(ctx context.Context, channelID solana.PublicKey)
 		return nil, fmt.Errorf("channel decode failed: %w", err)
 	}
 	return channel, nil
+}
+
+// Post-broadcast channel read bounds. The delay before attempt N+1 is
+// backoffStep * N, so the defaults schedule 200/400/600/800/1000ms: five
+// sleeps, 3.0s in total, 1s worst single wait. The backoff is linear rather
+// than exponential because replica lag is a small multiple of Solana's ~400ms
+// slot time, so doubling spends the same budget on single waits far longer
+// than the lag it has to absorb.
+const (
+	defaultChannelReadMaxAttempts = 6
+	defaultChannelReadBackoffStep = 200 * time.Millisecond
+)
+
+// fetchChannelAfterBroadcast reads the channel account once the open
+// transaction is confirmed, re-reading while the account is not yet visible.
+// An RPC provider can serve signature status and account state from different
+// replicas, so the replica answering this read can still be behind the one
+// that reported the confirmation; a single miss would hard-fail a payment
+// whose deposit is already escrowed on chain.
+//
+// Only rpc.ErrNotFound is retried: that is the not-yet-visible answer. Every
+// other outcome is a visible state (a transport failure, an account that
+// decodes wrong) and is returned on the first read, as is the not-found error
+// itself once the attempts run out, so the caller's error surface is
+// unchanged. Callers that probe for absence must keep using fetchChannel.
+//
+// The in-flight reservation for this channel is held across the whole loop, so
+// a concurrent request for the SAME channel sees "channel is already being
+// processed" for up to the full budget longer. That is acceptable:
+// WaitForConfirmation above already blocks under the same reservation with no
+// deadline of its own.
+func (u *X402Upto) fetchChannelAfterBroadcast(ctx context.Context, channelID solana.PublicKey) (*pcgen.Channel, error) {
+	maxAttempts := u.cfg.ChannelReadMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultChannelReadMaxAttempts
+	}
+	backoffStep := time.Duration(u.cfg.ChannelReadBackoffStepMs) * time.Millisecond
+	if backoffStep <= 0 {
+		backoffStep = defaultChannelReadBackoffStep
+	}
+	for attempt := 1; ; attempt++ {
+		channel, err := u.fetchChannel(ctx, channelID)
+		if err == nil || !errors.Is(err, rpc.ErrNotFound) || attempt >= maxAttempts {
+			return channel, err
+		}
+		// Context first, like solanatx.WaitForConfirmation: a disconnected
+		// client must not hold its channel reservation for the full budget.
+		timer := time.NewTimer(backoffStep * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			// Both, not either: the message keeps the not-found detail while
+			// errors.Is(err, context.Canceled) lets the caller tell a
+			// disconnected client from a genuinely absent channel.
+			return nil, fmt.Errorf("%w: %w", err, ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // recentLifetime returns the challenge lifetime pair: a recent blockhash and

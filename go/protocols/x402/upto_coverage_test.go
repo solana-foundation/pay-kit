@@ -3,10 +3,10 @@ package x402
 // Focused branch-coverage tests for the upto engine: the accepted-object and
 // settlement-header serializers, the in-flight guard, the distribution split
 // derivation, the challenge lifetime (blockhash + recentSlot) resolution, the
-// SettleActual failure paths, the channel-account fetch failure paths, and the
-// open-instruction validator mismatch branches. The happy-path engine flow is
-// pinned by TestUptoVerifyOpenAndSettle; these tests lock the error surfaces
-// around it.
+// SettleActual failure paths, the channel-account fetch failure paths, the
+// post-broadcast channel read retry, and the open-instruction validator
+// mismatch branches. The happy-path engine flow is pinned by
+// TestUptoVerifyOpenAndSettle; these tests lock the error surfaces around it.
 
 import (
 	"context"
@@ -331,14 +331,17 @@ func TestUptoSettleActualErrorPaths(t *testing.T) {
 
 // ── channel account fetch ──
 
-// accountRPC overrides GetAccountInfoWithOpts with a canned result/error.
+// accountRPC overrides GetAccountInfoWithOpts with a canned result/error and
+// counts the reads, so the retry loop's attempt count is observable.
 type accountRPC struct {
 	*testutil.FakeRPC
-	out *rpc.GetAccountInfoResult
-	err error
+	out   *rpc.GetAccountInfoResult
+	err   error
+	reads int
 }
 
 func (r *accountRPC) GetAccountInfoWithOpts(context.Context, solana.PublicKey, *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	r.reads++
 	return r.out, r.err
 }
 
@@ -376,6 +379,125 @@ func TestUptoFetchChannelErrorPaths(t *testing.T) {
 	if _, err := engine.fetchChannel(context.Background(), channel); err == nil ||
 		!strings.Contains(err.Error(), "channel decode failed") {
 		t.Fatalf("error = %v, want decode failure", err)
+	}
+}
+
+// ── post-broadcast channel read retry ──
+
+// TestUptoFetchChannelAfterBroadcastRetriesNotFound pins the retry schedule:
+// six reads, linear 10/20/30/40/50ms backoff, no sleep after the last attempt.
+func TestUptoFetchChannelAfterBroadcastRetriesNotFound(t *testing.T) {
+	engine := newCoverageUptoEngine(t, nil)
+	engine.cfg.ChannelReadBackoffStepMs = 10
+	stub := &accountRPC{FakeRPC: testutil.NewFakeRPC(), err: rpc.ErrNotFound}
+	engine.SetRPCForTests(stub)
+
+	start := time.Now()
+	_, err := engine.fetchChannelAfterBroadcast(context.Background(), testutil.NewPrivateKey().PublicKey())
+	elapsed := time.Since(start)
+
+	if err == nil || !errors.Is(err, rpc.ErrNotFound) {
+		t.Fatalf("error = %v, want a wrapped rpc.ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "channel account fetch failed") {
+		t.Fatalf("error = %v, want the unchanged fetch error message", err)
+	}
+	if stub.reads != defaultChannelReadMaxAttempts {
+		t.Fatalf("reads = %d, want %d", stub.reads, defaultChannelReadMaxAttempts)
+	}
+	// Linear: 10+20+30+40+50 = 150ms. Exponential doubling off the same step
+	// would sleep 10+20+40+80+160 = 310ms, and a flat step only 50ms.
+	if elapsed < 150*time.Millisecond || elapsed >= 300*time.Millisecond {
+		t.Fatalf("elapsed = %v, want the linear 150ms schedule", elapsed)
+	}
+}
+
+// TestUptoFetchChannelAfterBroadcastKeepsVisibleErrors proves a visible state
+// is never re-read: a wrong answer must fail on the first attempt.
+func TestUptoFetchChannelAfterBroadcastKeepsVisibleErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		stub    *accountRPC
+		wantErr string
+	}{
+		{"transport failure", &accountRPC{FakeRPC: testutil.NewFakeRPC(), err: errors.New("rpc boom")}, "channel account fetch failed"},
+		{"missing account data", &accountRPC{FakeRPC: testutil.NewFakeRPC(), out: &rpc.GetAccountInfoResult{}}, "missing account data"},
+		{"undecodable account", &accountRPC{FakeRPC: testutil.NewFakeRPC(), out: &rpc.GetAccountInfoResult{
+			Value: &rpc.Account{Data: rpc.DataBytesOrJSONFromBytes([]byte{1, 2, 3})},
+		}}, "channel decode failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := newCoverageUptoEngine(t, nil)
+			engine.cfg.ChannelReadBackoffStepMs = 10
+			engine.SetRPCForTests(tc.stub)
+			start := time.Now()
+			_, err := engine.fetchChannelAfterBroadcast(context.Background(), testutil.NewPrivateKey().PublicKey())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tc.wantErr)
+			}
+			if tc.stub.reads != 1 {
+				t.Fatalf("reads = %d, want a single read", tc.stub.reads)
+			}
+			if elapsed := time.Since(start); elapsed >= 10*time.Millisecond {
+				t.Fatalf("elapsed = %v, want no backoff", elapsed)
+			}
+		})
+	}
+}
+
+// TestUptoFetchChannelAfterBroadcastHonoursConfig covers the attempt override
+// (which also leaves the default 200ms step unslept) and a canceled context
+// releasing the loop, and pins fetchChannel itself as the single-read probe.
+func TestUptoFetchChannelAfterBroadcastHonoursConfig(t *testing.T) {
+	channel := testutil.NewPrivateKey().PublicKey()
+
+	single := newCoverageUptoEngine(t, nil)
+	single.cfg.ChannelReadMaxAttempts = 1
+	singleStub := &accountRPC{FakeRPC: testutil.NewFakeRPC(), err: rpc.ErrNotFound}
+	single.SetRPCForTests(singleStub)
+	if _, err := single.fetchChannelAfterBroadcast(context.Background(), channel); !errors.Is(err, rpc.ErrNotFound) {
+		t.Fatalf("error = %v, want rpc.ErrNotFound", err)
+	}
+	if singleStub.reads != 1 {
+		t.Fatalf("reads = %d, want the configured single attempt", singleStub.reads)
+	}
+
+	canceled := newCoverageUptoEngine(t, nil)
+	canceled.cfg.ChannelReadBackoffStepMs = 50
+	canceledStub := &accountRPC{FakeRPC: testutil.NewFakeRPC(), err: rpc.ErrNotFound}
+	canceled.SetRPCForTests(canceledStub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, cancelErr := canceled.fetchChannelAfterBroadcast(ctx, channel)
+	if !errors.Is(cancelErr, rpc.ErrNotFound) {
+		t.Fatalf("error = %v, want the not-found error preserved on cancel", cancelErr)
+	}
+	// The cancellation rides along with it: a disconnected client must not look
+	// like an absent channel to the caller.
+	if !errors.Is(cancelErr, context.Canceled) {
+		t.Fatalf("error = %v, want a joined context.Canceled", cancelErr)
+	}
+	if !strings.Contains(cancelErr.Error(), "channel account fetch failed") {
+		t.Fatalf("error = %v, want the fetch detail kept in the message", cancelErr)
+	}
+	if canceledStub.reads != 1 {
+		t.Fatalf("reads = %d, want the loop to stop on the canceled context", canceledStub.reads)
+	}
+
+	// fetchChannel stays a single read for pre-broadcast existence probes. Its
+	// own engine keeps the default attempt count (with a 1ms step so the check
+	// stays fast), so putting the probe on the retry loop would read six times
+	// here instead of once.
+	probe := newCoverageUptoEngine(t, nil)
+	probe.cfg.ChannelReadBackoffStepMs = 1
+	probeStub := &accountRPC{FakeRPC: testutil.NewFakeRPC(), err: rpc.ErrNotFound}
+	probe.SetRPCForTests(probeStub)
+	if _, err := probe.fetchChannel(context.Background(), channel); !errors.Is(err, rpc.ErrNotFound) {
+		t.Fatalf("error = %v, want rpc.ErrNotFound", err)
+	}
+	if probeStub.reads != 1 {
+		t.Fatalf("reads = %d, want fetchChannel to read once", probeStub.reads)
 	}
 }
 
