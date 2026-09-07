@@ -27,6 +27,11 @@ from solders.signature import Signature  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.rpc import (
+    CHANNEL_READ_BACKOFF_STEP_SECONDS,
+    read_with_replica_retry,
+    resolve_channel_read_policy,
+)
 from solana_pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
@@ -87,8 +92,9 @@ TopUpTxVerifier = Callable[[TopUpPayload], Awaitable[None]]
 
 class OpenVerifierConfig(Protocol):
     """The subset of the session config :func:`new_open_tx_verifier` reads:
-    the challenge currency/network/recipient, minimum deposit, and optional
-    payment-channels program override."""
+    the challenge currency/network/recipient, minimum deposit, optional
+    payment-channels program override, and the post-confirmation channel-read
+    retry knobs."""
 
     currency: str
     network: str
@@ -99,6 +105,8 @@ class OpenVerifierConfig(Protocol):
     grace_period_seconds: int | None
     fee_payer: bool
     fee_payer_key: str | None
+    channel_read_max_attempts: int | None
+    channel_read_backoff_step_ms: int | None
 
 
 @dataclass
@@ -512,10 +520,19 @@ def new_open_tx_verifier(
                 await confirm_transaction_signature(rpc_client, str(sent.value), "open")
             except Exception as exc:  # noqa: BLE001 — resolved against the confirmed account below
                 broadcast_error = exc
+        # The open is confirmed, so the deposit is already escrowed on chain: a
+        # single unretried read that lands on a lagging replica would hard-fail
+        # a payment that actually succeeded.
+        read_attempts, read_backoff_step_seconds = resolve_channel_read_policy(
+            config.channel_read_max_attempts,
+            config.channel_read_backoff_step_ms,
+        )
         try:
             await _verify_channel_account(
                 rpc_client,
                 verified.channel_id,
+                attempts=read_attempts,
+                backoff_step_seconds=read_backoff_step_seconds,
                 program_id=program_id,
                 expected={
                     "authorized_signer": payload.authorized_signer,
@@ -621,9 +638,19 @@ def new_top_up_tx_verifier(
         await confirm_transaction_signature(rpc_client, signature, "top-up")
         if amount > _U64_MAX - state.deposit:
             raise PaymentError("top-up deposit overflows u64", code="invalid-payload")
+        # The top-up is confirmed, so escrow is already funded: a single
+        # unretried read that lands on a lagging replica would hard-fail a
+        # payment that actually succeeded. Only the not-yet-visible account is
+        # retried; a STALE deposit on a VISIBLE account is not.
+        read_attempts, read_backoff_step_seconds = resolve_channel_read_policy(
+            config.channel_read_max_attempts,
+            config.channel_read_backoff_step_ms,
+        )
         await _verify_channel_account(
             rpc_client,
             state.channel_id,
+            attempts=read_attempts,
+            backoff_step_seconds=read_backoff_step_seconds,
             program_id=program_id,
             expected={"deposit": state.deposit + amount},
         )
@@ -640,17 +667,44 @@ async def _verify_channel_account(
     *,
     program_id: Pubkey,
     expected: dict[str, Any],
+    attempts: int = 1,
+    backoff_step_seconds: float = CHANNEL_READ_BACKOFF_STEP_SECONDS,
 ) -> None:
-    """Fetch and compare the authoritative channel account after confirmation."""
+    """Fetch and compare the authoritative channel account after confirmation.
+
+    Single-read by default; a post-broadcast caller opts into the replica-lag
+    retry by passing ``attempts``. Only the not-yet-visible account is retried.
+    """
     from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 
-    response = await rpc_client.get_account_info(Pubkey.from_string(channel_id), commitment="confirmed")
-    info = getattr(response, "value", None)
-    if info is None:
+    async def read_channel() -> Any | None:
+        response = await rpc_client.get_account_info(Pubkey.from_string(channel_id), commitment="confirmed")
+        info = getattr(response, "value", None)
+        if info is None:
+            # The only lag symptom that is retried, on both the open and the
+            # top-up path: the transaction confirmed but the replica answering
+            # this read has not seen the account yet.
+            return None
+        if str(info.owner) != str(program_id):
+            raise PaymentError("channel account is owned by the wrong program", code="invalid-payload")
+        return Channel.decode(bytes(info.data))
+
+    # A STALE deposit on a VISIBLE account is NOT retried. Deposit is
+    # monotonically non-decreasing, so re-reading it can only ever flip reject
+    # into accept: a concurrent top-up on this same channel raises the deposit,
+    # and re-sampling over the backoff window would let another top-up's money
+    # satisfy this one's expectation, where the single read below rejects.
+    # Python holds a per-channel asyncio.Lock across this read, which makes
+    # that race unlikely here, but the four SDKs ship ONE predicate and Rust and
+    # TypeScript hold no such lock. So the loop stops at the first VISIBLE read
+    # and the deposit and status are decided once, below, on that read.
+    channel = await read_with_replica_retry(
+        read_channel,
+        attempts=attempts,
+        backoff_step_seconds=backoff_step_seconds,
+    )
+    if channel is None:
         raise PaymentError("confirmed channel account was not found", code="transaction-not-found")
-    if str(info.owner) != str(program_id):
-        raise PaymentError("channel account is owned by the wrong program", code="invalid-payload")
-    channel = Channel.decode(bytes(info.data))
     actual = {
         "authorized_signer": str(channel.authorizedSigner),
         "deposit": channel.deposit,

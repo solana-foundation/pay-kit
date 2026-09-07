@@ -147,6 +147,10 @@ class SessionOptions:
     # on-chain settle-at-close (and the server-broadcast open) transactions.
     # None (or no RPC) leaves close a pure state-flip with settledSignature unset.
     signer: LocalSigner | None = None
+    # Post-confirmation channel-read retry knobs; see SessionConfig. Unset or
+    # non-positive takes the defaults (6 attempts, 200ms step).
+    channel_read_max_attempts: int | None = None
+    channel_read_backoff_step_ms: int | None = None
 
 
 @dataclass
@@ -733,6 +737,8 @@ def new_session(options: SessionOptions) -> Session:
         idle_timeout_options_seconds=options.idle_timeout_options_seconds,
         idle_timeout_seconds=options.idle_timeout_seconds,
         current_slot_provider=lambda: rpc.get_slot(),
+        channel_read_max_attempts=options.channel_read_max_attempts,
+        channel_read_backoff_step_ms=options.channel_read_backoff_step_ms,
     )
     config.verify_open_tx = new_open_tx_verifier(
         config,

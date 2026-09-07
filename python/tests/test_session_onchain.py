@@ -345,10 +345,20 @@ async def test_verify_open_tx_rejects_bad_encoding_and_fee_payer() -> None:
 class _MainnetLikeRpc:
     """Mock RPC that, like mainnet, rejects a duplicate send at preflight."""
 
-    def __init__(self, *, account: object | None, status: dict | None) -> None:
+    def __init__(
+        self,
+        *,
+        account: object | None,
+        status: dict | None,
+        sequence: list[object | None] | None = None,
+    ) -> None:
         self.sent: list[bytes] = []
         self.account = account
         self.status = status
+        # ``sequence`` serves one reply per read (replica-lag scenarios);
+        # ``account`` answers every read once it is drained.
+        self.sequence = sequence or []
+        self.reads = 0
 
     async def send_raw_transaction(self, raw_tx: bytes) -> object:
         if raw_tx in self.sent:
@@ -369,6 +379,9 @@ class _MainnetLikeRpc:
         del commitment
         from types import SimpleNamespace
 
+        self.reads += 1
+        if self.sequence:
+            return SimpleNamespace(value=self.sequence.pop(0))
         return SimpleNamespace(value=self.account)
 
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> object:
@@ -393,6 +406,10 @@ def _open_config(fixture: _Fixture) -> SessionConfig:
         token_program=TOKEN_PROGRAM,
         grace_period_seconds=900,
         minimum_deposit=100,
+        # Default attempt count, 1ms backoff step: the suite exercises the
+        # retry loop without sleeping for real seconds. The default schedule
+        # is pinned in test_rpc_methods.
+        channel_read_backoff_step_ms=1,
     )
 
 
@@ -457,6 +474,21 @@ async def test_open_verifier_still_fails_on_account_mismatch_after_clean_broadca
     verifier = new_open_tx_verifier(_open_config(fixture), rpc)
     with pytest.raises(PaymentError, match="confirmed channel account was not found"):
         await verifier(fixture.payload, _context())
+    # The retry exhausts its attempt budget before raising the unchanged error.
+    assert rpc.reads == 6
+
+
+async def test_open_verifier_retries_missing_channel_account_through_replica_lag() -> None:
+    # The open confirmed, so the deposit is escrowed on chain. An RPC provider
+    # can serve transaction status and account state from different replicas,
+    # so the follow-up read can briefly miss the account; re-reading absorbs
+    # exactly that, and only that.
+    fixture = _fixture()
+    account = _channel_account(fixture)
+    rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN, sequence=[None, None, account])
+    verifier = new_open_tx_verifier(_open_config(fixture), rpc)
+    await verifier(fixture.payload, _context())
+    assert rpc.reads == 3
 
 
 def _top_up_scenario(*, deposit_after: int) -> tuple[TopUpPayload, ChannelState, object]:
@@ -514,10 +546,21 @@ def _top_up_scenario(*, deposit_after: int) -> tuple[TopUpPayload, ChannelState,
     return payload, state, account
 
 
-async def _seeded_top_up_verifier(rpc: _MainnetLikeRpc, state: ChannelState) -> TopUpTxVerifier:
+async def _seeded_top_up_verifier(
+    rpc: _MainnetLikeRpc,
+    state: ChannelState,
+    *,
+    max_attempts: int | None = None,
+) -> TopUpTxVerifier:
     store = MemoryChannelStore()
     await store.update_channel(state.channel_id, lambda _: state)
-    config = SessionConfig(currency="USDC", network="mainnet", channel_program=str(PROGRAM_ID))
+    config = SessionConfig(
+        currency="USDC",
+        network="mainnet",
+        channel_program=str(PROGRAM_ID),
+        channel_read_max_attempts=max_attempts,
+        channel_read_backoff_step_ms=1,
+    )
     return new_top_up_tx_verifier(config, store, rpc)
 
 
@@ -552,3 +595,41 @@ async def test_top_up_verifier_keeps_broadcast_error_when_signature_never_landed
     verifier = await _seeded_top_up_verifier(rpc, state)
     with pytest.raises(RuntimeError, match="already been processed"):
         await verifier(payload)
+
+
+async def test_top_up_verifier_retries_missing_channel_account_through_replica_lag() -> None:
+    # The top-up path retries exactly what the open path does: the account the
+    # answering replica has not seen yet.
+    payload, state, account = _top_up_scenario(deposit_after=1_250)
+    rpc = _MainnetLikeRpc(account=account, status=_LANDED_CLEAN, sequence=[None, account])
+    verifier = await _seeded_top_up_verifier(rpc, state)
+    await verifier(payload)
+    assert rpc.reads == 2
+
+
+async def test_top_up_verifier_rejects_a_visible_mismatched_deposit_on_the_first_read() -> None:
+    # A STALE deposit on a VISIBLE account is NOT retried. Deposit is
+    # monotonically non-decreasing, so re-reading a low deposit can only ever
+    # flip reject into accept - and the money that flips it may belong to a
+    # CONCURRENT top-up on this same channel rather than to this one. Low
+    # (stale) and high (someone else's top-up landed) are both answers, not
+    # lag: each raises on the first observation.
+    payload, state, _account = _top_up_scenario(deposit_after=1_250)
+    for deposit_after in (1_000, 1_500):
+        _p, _s, mismatched = _top_up_scenario(deposit_after=deposit_after)
+        rpc = _MainnetLikeRpc(account=mismatched, status=_LANDED_CLEAN)
+        verifier = await _seeded_top_up_verifier(rpc, state)
+        with pytest.raises(PaymentError, match="deposit does not match confirmed transaction"):
+            await verifier(payload)
+        assert rpc.reads == 1
+
+
+async def test_top_up_verifier_channel_read_budget_comes_from_config() -> None:
+    # Both knobs must reach the retry loop, not just the defaults: a two
+    # attempt budget spends exactly two reads on a never-visible account.
+    payload, state, _account = _top_up_scenario(deposit_after=1_250)
+    rpc = _MainnetLikeRpc(account=None, status=_LANDED_CLEAN)
+    verifier = await _seeded_top_up_verifier(rpc, state, max_attempts=2)
+    with pytest.raises(PaymentError, match="confirmed channel account was not found"):
+        await verifier(payload)
+    assert rpc.reads == 2
