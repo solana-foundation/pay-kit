@@ -34,6 +34,7 @@ import type {
     SignedVoucher,
 } from '../shared/session-types.js';
 import { encodeVoucherMessageLoose, normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
+import type { ChannelReadRetryOptions } from '../utils/account-read.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
     OPEN_SLOT_WINDOW,
@@ -157,6 +158,13 @@ export function session(parameters: session.Parameters) {
         throw new Error('decimals must be an integer from 0 to 9');
     }
     const tokenProgram = parameters.tokenProgram ?? defaultTokenProgramForCurrency(currency, network);
+    // Replica-lag tolerance for the post-confirm channel re-reads in
+    // submitOpenTx / submitTopUpTx. Both knobs fall back to their defaults
+    // when unset or non-positive.
+    const channelRead: ChannelReadRetryOptions = {
+        channelReadBackoffStepMs: parameters.channelReadBackoffStepMs,
+        channelReadMaxAttempts: parameters.channelReadMaxAttempts,
+    };
     const lifecycleRef: { value: Lifecycle | undefined } = { value: undefined };
 
     // Note: lifecycle's closeOnIdle would normally drive an on-chain settle.
@@ -263,6 +271,7 @@ export function session(parameters: session.Parameters) {
                     assertChallengeOpenNotExpired(cred.challenge.expires);
                     return await handleOpen({
                         challengeId: cred.challenge.id,
+                        channelRead,
                         currency: resolvedMint,
                         distributionSplits,
                         externalId: cred.challenge.request.externalId,
@@ -318,6 +327,7 @@ export function session(parameters: session.Parameters) {
                     return await handleTopUp({
                         challengeId: cred.challenge.id,
                         channelProgram: resolvedProgramId.toString(),
+                        channelRead,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
                         payload: cred.payload,
@@ -511,6 +521,8 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
 
 interface HandleOpenArgs {
     readonly challengeId: string | undefined;
+    /** Replica-lag tolerance for the post-confirm channel re-read. */
+    readonly channelRead: ChannelReadRetryOptions | undefined;
     readonly currency: string;
     /** Server-configured splits the challenge advertised; the open must encode exactly these. */
     readonly distributionSplits: readonly SessionSplit[] | undefined;
@@ -670,6 +682,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             return { ...current, lastActivityAt: Date.now() };
         }
         await submitOpenTx({
+            channelRead: args.channelRead,
             expected,
             openPayload: payload,
             payerSigner: args.feePayer ? args.feePayerSigner : undefined,
@@ -860,6 +873,8 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
 interface HandleTopUpArgs {
     readonly challengeId: string | undefined;
     readonly channelProgram: string;
+    /** Replica-lag tolerance for the post-confirm channel re-read. */
+    readonly channelRead: ChannelReadRetryOptions | undefined;
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
     readonly payload: {
@@ -901,6 +916,7 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
         additionalAmount,
         channelId: args.payload.channelId,
         channelProgram: args.channelProgram,
+        channelRead: args.channelRead,
         currentDeposit: existing.deposit,
         payer: existing.payer,
         rpc: args.rpc as SubmitOpenRpc,
@@ -1511,6 +1527,42 @@ export declare namespace session {
         readonly blockhashCache?: BlockhashCache;
         /** Payment-channels program ID. */
         readonly channelProgram?: Address | string;
+        /**
+         * Linear backoff step in ms for the post-confirm channel re-read.
+         * Defaults to 200, giving a 200/400/600/800/1000ms schedule.
+         * Unset or non-positive resolves to the default.
+         *
+         * Linear on purpose: replica lag is a small multiple of Solana's
+         * ~400ms slot time, so an exponential schedule would spend the same
+         * budget on single waits far longer than the lag it absorbs.
+         */
+        readonly channelReadBackoffStepMs?: number;
+        /**
+         * Total post-confirm channel reads, including the first, before an
+         * open or top-up gives up. Defaults to 6, which at the default step is
+         * 3.0s of added worst-case latency. Unset or non-positive
+         * resolves to the default.
+         *
+         * A read is only repeated while the account is absent
+         * (`getAccountInfo` returned null). Once the account is visible the
+         * loop stops and its fields decide the outcome on the spot. A
+         * top-up's stale deposit is NOT a retry signal: deposit only grows,
+         * so re-sampling it could clear the threshold with a concurrent
+         * top-up's money.
+         *
+         * LOCK: `handleOpen` calls `submitOpenTx` from INSIDE
+         * `store.updateChannel(...)`, and `createMemorySessionStore`
+         * serializes `updateChannel` per channel id, so up to
+         * `(maxAttempts - 1) * maxAttempts / 2 * backoffStep` of sleeping
+         * runs while that channel's lock is held. That is deliberate: the
+         * confirmed read is what authorizes the persist, and moving it
+         * outside the mutator would reopen the concurrent open-replay race
+         * the existence check inside the mutator closes. `SessionStore` is
+         * a public interface, so a third-party store may hold a real
+         * distributed lock here. Size these knobs against that lock's lease,
+         * not just against RPC latency.
+         */
+        readonly channelReadMaxAttempts?: number;
         /** Currency identifier (e.g. 'USDC' or an SPL mint address). */
         readonly currency: string;
         /** Token decimals (default 6). */
