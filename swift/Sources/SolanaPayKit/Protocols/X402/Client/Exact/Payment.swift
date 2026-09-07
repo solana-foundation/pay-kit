@@ -12,9 +12,6 @@ let X402ComputeUnitLimit: UInt32 = 20_000
 /// ComputeBudget SetComputeUnitPrice micro-lamports.
 let X402ComputeUnitPrice: UInt64 = 1
 
-/// Default SPL decimals when the offer omits `extra.decimals`.
-let X402DefaultDecimals: UInt8 = 6
-
 // MARK: - Challenge parsing
 
 /// A selected x402 offer together with the protocol version the server's
@@ -317,11 +314,24 @@ private func _buildPaymentPayload(
             ?? Mints.defaultTokenProgram(currency: assetStr, cluster: clusterLabel)
         let tokenProgram = try Pubkey(base58: tokenProgramStr)
         let mint = try Pubkey(base58: mintStr)
+        // A spec-compliant x402 offer may legally omit extra.decimals; when
+        // absent, read the authoritative value from the on-chain mint over the
+        // RPC connection this client already holds. When present, the offer
+        // value stays an RPC-saving hint. On-chain transferChecked still
+        // verifies the byte against the mint, so a lying hint remains
+        // fail-closed. Defaulting blindly to six would silently sign a wrong
+        // decimals byte / wrong divisor for any non-6-decimal mint.
         let decimals: UInt8
         if let d = offer.effectiveDecimals, d >= 0, d <= 255 {
             decimals = UInt8(d)
         } else {
-            decimals = X402DefaultDecimals
+            do {
+                decimals = try await rpc.getMintDecimals(pubkeyBase58: mintStr)
+            } catch {
+                throw PayKitError.invalidTransaction(
+                    "extra.decimals is absent and fetching mint \(mintStr) failed: \(error)"
+                )
+            }
         }
         let sourceAta = try AssociatedTokenAccount.address(
             owner: signerPubkey, mint: mint, tokenProgram: tokenProgram

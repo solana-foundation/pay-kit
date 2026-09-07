@@ -195,6 +195,32 @@ func ResolveTokenProgram(ctx context.Context, rpcClient RPCClient, mint solana.P
 	}
 }
 
+// ResolveMintDecimals reads the authoritative decimals of an SPL mint over
+// RPC. Byte 44 of the base SPL Mint layout holds decimals (4-byte COption tag
+// + 32-byte authority + 8-byte supply precede it); token-2022 keeps that
+// prefix, so the offset holds for both token programs.
+func ResolveMintDecimals(ctx context.Context, rpcClient RPCClient, mintStr string) (uint8, error) {
+	mint, err := solana.PublicKeyFromBase58(mintStr)
+	if err != nil {
+		return 0, fmt.Errorf("mint %q: %w", mintStr, err)
+	}
+	account, err := rpcClient.GetAccountInfoWithOpts(ctx, mint, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("extra.decimals is absent and fetching mint %s failed: %w", mintStr, err)
+	}
+	if account.Value == nil {
+		return 0, fmt.Errorf("extra.decimals is absent and mint %s was not found on chain", mintStr)
+	}
+	data := account.Value.Data.GetBinary()
+	if len(data) < 45 {
+		return 0, fmt.Errorf("mint %s data too short to contain decimals", mintStr)
+	}
+	return data[44], nil
+}
+
 // ResolveRecentBlockhash returns the provided blockhash or fetches one from RPC.
 func ResolveRecentBlockhash(ctx context.Context, rpcClient RPCClient, provided string) (solana.Hash, error) {
 	if provided != "" {

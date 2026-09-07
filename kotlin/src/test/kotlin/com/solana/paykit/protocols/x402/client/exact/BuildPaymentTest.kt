@@ -73,7 +73,7 @@ class BuildPaymentTest {
         assertEquals(Programs.TOKEN_2022_PROGRAM, defaultTokenProgramForCurrency("USDG", "devnet"))
 
         val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
-            """"amount":"1000","asset":"USDC","payTo":"$devnetRecipient"}]}"""
+            """"amount":"1000","asset":"USDC","payTo":"$devnetRecipient","extra":{"decimals":6}}]}"""
         val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
         assertNotNull(requirement)
         // Previously threw on the symbol asset / missing token program.
@@ -312,6 +312,46 @@ class BuildPaymentTest {
     }
 
     @Test
+    fun fetchesDecimalsFromProviderWhenOfferOmitsThem() {
+        // Wrapped SPL carries nine decimals; a spec-compliant offer omitting
+        // decimals must resolve them from the on-chain mint (via the injected
+        // provider) instead of rejecting or silently defaulting to six.
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_MAINNET,
+            asset = "So11111111111111111111111111111111111111112",
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(
+                tokenProgram = Programs.TOKEN_PROGRAM,
+                decimals = null,
+                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+            ),
+        )
+        val envelope = buildPayment(signer, offer, fixedBlockhash, rpcDecimalsProvider = { 9.toUByte() })
+        assertTrue(envelope.payload.transaction!!.isNotEmpty())
+    }
+
+    fun errorsWhenDecimalsAbsentAndNoDecimalsProvider() {
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_MAINNET,
+            asset = "So11111111111111111111111111111111111111112",
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(
+                tokenProgram = Programs.TOKEN_PROGRAM,
+                decimals = null,
+                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+            ),
+        )
+        val error = assertFailsWith<IllegalArgumentException> {
+            buildPayment(signer, offer, fixedBlockhash)
+        }
+        assertTrue(error.message!!.contains("rpcDecimalsProvider"))
+    }
+
+    @Test
     fun splOfferMissingTokenProgramDefaultsFromCurrency() {
         // A known stablecoin offer that omits the token program defaults it
         // from the currency (rust `default_token_program_for_currency`) rather
@@ -322,7 +362,7 @@ class BuildPaymentTest {
             asset = Mints.USDC_DEVNET,
             amount = "1000",
             payTo = devnetRecipient,
-            extra = X402Extra(tokenProgram = null),
+            extra = X402Extra(tokenProgram = null, decimals = 6),
         )
         val envelope = buildPayment(signer, offer, fixedBlockhash)
         assertNotNull(envelope.payload.transaction)

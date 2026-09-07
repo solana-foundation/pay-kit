@@ -13,7 +13,10 @@
         "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         "maxTimeoutSeconds": 60,
-        "extra": { "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ" }
+        "extra": {
+          "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ",
+          "decimals": 6
+        }
       },
       "x402PinnedTransaction": "AA=="
     },
@@ -41,7 +44,10 @@
         "amount": "10000",
         "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "maxTimeoutSeconds": 300
+        "maxTimeoutSeconds": 300,
+        "extra": {
+          "decimals": 6
+        }
       },
       "x402PinnedTransaction": "AA=="
     },
@@ -69,7 +75,9 @@
         "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         "maxTimeoutSeconds": 300,
-        "extra": { "decimals": 6 }
+        "extra": {
+          "decimals": 6
+        }
       },
       "x402PinnedTransaction": "AA=="
     },

@@ -63,8 +63,6 @@ private const val COMPUTE_UNIT_LIMIT = 20_000
 /** ComputeBudget SetComputeUnitPrice microlamports. */
 private const val COMPUTE_UNIT_PRICE = 1L
 
-/** Default SPL decimals when the offer omits ``extra.decimals``. */
-private const val DEFAULT_DECIMALS = 6
 
 /**
  * x402 memo byte cap. INVARIANT: 256 (rust ``MAX_MEMO_BYTES``). This is
@@ -239,6 +237,7 @@ fun buildPayment(
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
     nonceProvider: () -> String = ::defaultMemoNonce,
+    rpcDecimalsProvider: (() -> UByte)? = null,
 ): X402Envelope {
     val asset = requirement.effectiveAsset
         ?: throw IllegalArgumentException("x402 offer is missing `asset`")
@@ -284,7 +283,20 @@ fun buildPayment(
         val mintStr = resolveStablecoinMint(asset, label) ?: asset
         val tokenProgramStr = requirement.effectiveTokenProgram
             ?: defaultTokenProgramForCurrency(asset, label)
-        val decimals = requirement.effectiveDecimals ?: DEFAULT_DECIMALS
+        // A spec-compliant x402 offer may legally omit extra.decimals; when
+        // absent, resolve the authoritative value via rpcDecimalsProvider (the
+        // on-chain mint over the RPC connection the caller already holds).
+        // When present, the offer value stays an RPC-saving hint. On-chain
+        // transferChecked still verifies the byte against the mint, so a lying
+        // hint remains fail-closed. Defaulting blindly to six would silently
+        // sign a wrong transferChecked decimals byte for any non-6-decimal
+        // mint.
+        val decimals: Int = requirement.effectiveDecimals?.also {
+            require(it in 0..255) { "extra.decimals must be between 0 and 255" }
+        } ?: rpcDecimalsProvider?.invoke()?.toInt()
+            ?: throw IllegalArgumentException(
+                "extra.decimals is absent and no rpcDecimalsProvider was provided to fetch it from the mint"
+            )
         val tokenProgramKey = PublicKey.fromBase58(tokenProgramStr)
         val mintKey = PublicKey.fromBase58(mintStr)
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgramKey)
@@ -376,8 +388,9 @@ fun buildPaymentHeader(
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
     nonceProvider: () -> String = ::defaultMemoNonce,
+    rpcDecimalsProvider: (() -> UByte)? = null,
 ): String {
-    val envelope = buildPayment(signer, requirement, rpcBlockhashProvider, nonceProvider)
+    val envelope = buildPayment(signer, requirement, rpcBlockhashProvider, nonceProvider, rpcDecimalsProvider)
     // Echo the offered object verbatim when it was parsed off the wire so the
     // rust verifier's structural match sees every server-specific field; fall
     // back to the typed entry for offers built in code.

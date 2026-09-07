@@ -28,7 +28,9 @@ func parseEntry(t *testing.T, raw string) x402.AcceptsEntry {
 // USDC offer with no tokenProgram must still build a valid transferChecked.
 func TestBuildSPLDefaultsTokenProgramForCurrency(t *testing.T) {
 	signer := testutil.NewPrivateKey()
-	e := parseEntry(t, `{"protocol":"x402","scheme":"exact","network":"`+mainnetCAIP2+`","asset":"`+paycore.USDCMainnetMint+`","amount":"100000","payTo":"`+testutil.NewPrivateKey().PublicKey().String()+`","extra":{}}`)
+	// Decimals are supplied because they are required for SPL payments; this
+	// test targets token-program defaulting, not decimals fallback.
+	e := parseEntry(t, `{"protocol":"x402","scheme":"exact","network":"`+mainnetCAIP2+`","asset":"`+paycore.USDCMainnetMint+`","amount":"100000","payTo":"`+testutil.NewPrivateKey().PublicKey().String()+`","extra":{"decimals":6}}`)
 
 	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
 	if err != nil {
