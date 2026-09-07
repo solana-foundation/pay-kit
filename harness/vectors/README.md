@@ -232,6 +232,15 @@ Vectors across the divergence classes from the audit:
   idempotent ATA creation + memo).
 - `canonical-bytes.json` — RFC 8785 JCS canonical JSON + base64url,
   48-byte base64url, UTF-8 base64url.
+- `rfc8785-vectors.json` — RFC 8785 JCS vectors imported verbatim from the
+  [cyberphone/json-canonicalization](https://github.com/cyberphone/json-canonicalization)
+  reference suite (issue #110). The vendored input/output pairs live under
+  `rfc8785/{input,output}/`; the vector file is regenerated from them by
+  `pnpm run jcs:generate-vectors` (or `just jcs-generate-vectors`). One
+  vector per cyberphone file — the top-level JSON value is the input, the
+  sibling output is the expected canonical form. This is the cross-SDK
+  byte-for-byte JCS oracle the per-SDK `json_canonical_rfc8785` unit
+  tests no longer need to hand-author.
 - `wire-bytes.json` — byte-exact canonical wire vectors. Five MPP charge
   challenge-id HMAC vectors (`base64url(HMAC-SHA256(secret, realm|method|
   intent|request|expires|digest|opaque))`, required-only through all-fields,

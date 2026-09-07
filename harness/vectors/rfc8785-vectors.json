@@ -1,0 +1,154 @@
+[
+  {
+    "id": "rfc8785-arrays",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "cyberphone/json-canonicalization testdata/arrays",
+    "input": {
+      "value": [
+        56,
+        {
+          "1": [],
+          "10": null,
+          "d": true
+        }
+      ]
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "[56,{\"1\":[],\"10\":null,\"d\":true}]",
+        "base64Url": "WzU2LHsiMSI6W10sIjEwIjpudWxsLCJkIjp0cnVlfV0"
+      }
+    }
+  },
+  {
+    "id": "rfc8785-french",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "cyberphone/json-canonicalization testdata/french",
+    "input": {
+      "value": {
+        "peach": "This sorting order",
+        "péché": "is wrong according to French",
+        "pêche": "but canonicalization MUST",
+        "sin": "ignore locale"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"peach\":\"This sorting order\",\"péché\":\"is wrong according to French\",\"pêche\":\"but canonicalization MUST\",\"sin\":\"ignore locale\"}",
+        "base64Url": "eyJwZWFjaCI6IlRoaXMgc29ydGluZyBvcmRlciIsInDDqWNow6kiOiJpcyB3cm9uZyBhY2NvcmRpbmcgdG8gRnJlbmNoIiwicMOqY2hlIjoiYnV0IGNhbm9uaWNhbGl6YXRpb24gTVVTVCIsInNpbiI6Imlnbm9yZSBsb2NhbGUifQ"
+      }
+    }
+  },
+  {
+    "id": "rfc8785-structures",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "cyberphone/json-canonicalization testdata/structures",
+    "input": {
+      "value": {
+        "1": {
+          "f": {
+            "f": "hi",
+            "F": 5
+          },
+          "\n": 56
+        },
+        "10": {},
+        "111": [
+          {
+            "e": "yes",
+            "E": "no"
+          }
+        ],
+        "": "empty",
+        "a": {},
+        "A": {}
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"\":\"empty\",\"1\":{\"\\n\":56,\"f\":{\"F\":5,\"f\":\"hi\"}},\"10\":{},\"111\":[{\"E\":\"no\",\"e\":\"yes\"}],\"A\":{},\"a\":{}}",
+        "base64Url": "eyIiOiJlbXB0eSIsIjEiOnsiXG4iOjU2LCJmIjp7IkYiOjUsImYiOiJoaSJ9fSwiMTAiOnt9LCIxMTEiOlt7IkUiOiJubyIsImUiOiJ5ZXMifV0sIkEiOnt9LCJhIjp7fX0"
+      }
+    }
+  },
+  {
+    "id": "rfc8785-unicode",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "cyberphone/json-canonicalization testdata/unicode",
+    "input": {
+      "value": {
+        "Unnormalized Unicode": "Å"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"Unnormalized Unicode\":\"Å\"}",
+        "base64Url": "eyJVbm5vcm1hbGl6ZWQgVW5pY29kZSI6IkHMiiJ9"
+      }
+    }
+  },
+  {
+    "id": "rfc8785-values",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "cyberphone/json-canonicalization testdata/values",
+    "input": {
+      "value": {
+        "numbers": [
+          333333333.3333333,
+          1e+30,
+          4.5,
+          0.002,
+          1e-27
+        ],
+        "string": "€$\u000f\nA'B\"\\\\\"/",
+        "literals": [
+          null,
+          true,
+          false
+        ]
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+        "base64Url": "eyJsaXRlcmFscyI6W251bGwsdHJ1ZSxmYWxzZV0sIm51bWJlcnMiOlszMzMzMzMzMzMuMzMzMzMzMywxZSszMCw0LjUsMC4wMDIsMWUtMjddLCJzdHJpbmciOiLigqwkXHUwMDBmXG5BJ0JcIlxcXFxcIi8ifQ"
+      }
+    }
+  },
+  {
+    "id": "rfc8785-weird",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "cyberphone/json-canonicalization testdata/weird",
+    "input": {
+      "value": {
+        "1": "One",
+        "€": "Euro Sign",
+        "\r": "Carriage Return",
+        "\n": "Newline",
+        "": "Control",
+        "😂": "Smiley",
+        "ö": "Latin Small Letter O With Diaeresis",
+        "דּ": "Hebrew Letter Dalet With Dagesh",
+        "</script>": "Browser Challenge"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"\\n\":\"Newline\",\"\\r\":\"Carriage Return\",\"1\":\"One\",\"</script>\":\"Browser Challenge\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😂\":\"Smiley\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}",
+        "base64Url": "eyJcbiI6Ik5ld2xpbmUiLCJcciI6IkNhcnJpYWdlIFJldHVybiIsIjEiOiJPbmUiLCI8L3NjcmlwdD4iOiJCcm93c2VyIENoYWxsZW5nZSIsIsKAIjoiQ29udHJvbH8iLCLDtiI6IkxhdGluIFNtYWxsIExldHRlciBPIFdpdGggRGlhZXJlc2lzIiwi4oKsIjoiRXVybyBTaWduIiwi8J-YgiI6IlNtaWxleSIsIu-ssyI6IkhlYnJldyBMZXR0ZXIgRGFsZXQgV2l0aCBEYWdlc2gifQ"
+      }
+    }
+  }
+]

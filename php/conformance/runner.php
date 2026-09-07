@@ -933,7 +933,11 @@ function run_vector(array $vector): array
 }
 
 try {
-    $vector = json_decode(read_stdin(), true, flags: JSON_THROW_ON_ERROR);
+    // Decode via the SDK's preserving decoder so an empty `{}` stays
+    // distinct from an empty `[]` for the JCS round-trip. PHP's native
+    // json_decode($x, true) collapses both into a zero-length array and
+    // we can't recover the distinction later. See Json::decodePreservingObject.
+    $vector = Json::decodePreservingObject(read_stdin());
     if (!is_array($vector)) {
         throw new InvalidArgumentException('vector must be a JSON object');
     }
