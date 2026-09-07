@@ -35,6 +35,7 @@ use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
+use crate::core::rpc::{read_back_blocking, ChannelReadPolicy};
 // The ComputeBudget wire format is identical wherever it appears, so the
 // charge verifier's policy-free decoder is reused here rather than duplicated.
 
@@ -176,6 +177,10 @@ pub struct X402Upto {
     /// handler `Clone` while sharing one worker. Mirrors the mpp session path.
     settlement_worker:
         Arc<tokio::sync::OnceCell<crate::core::settlement::worker::SettlementHandle>>,
+    /// How hard [`verify_open`](Self::verify_open) re-reads the channel account
+    /// after the open confirms, before calling it absent. See
+    /// [`with_channel_read_retry`](Self::with_channel_read_retry).
+    channel_read: ChannelReadPolicy,
 }
 
 fn now_unix() -> i64 {
@@ -229,6 +234,7 @@ impl X402Upto {
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             blockhash_cache: None,
             settlement_worker: Arc::new(tokio::sync::OnceCell::new()),
+            channel_read: ChannelReadPolicy::default(),
         })
     }
 
@@ -237,6 +243,23 @@ impl X402Upto {
     /// fetch. Falls back to a direct fetch when the cache is empty or stale.
     pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
+        self
+    }
+
+    /// Tune the post-broadcast channel read in
+    /// [`verify_open`](Self::verify_open). A confirmed `open` can still be
+    /// invisible to the next account read when the RPC provider serves status
+    /// and account state from different replicas, so that read is retried on a
+    /// linear backoff. `None` or a zero value keeps the default (6 reads,
+    /// 200ms step). Offered as a builder rather than as `UptoConfig` fields
+    /// because `UptoConfig` has no `Default`, so new fields would break every
+    /// existing struct-literal construction site.
+    pub fn with_channel_read_retry(
+        mut self,
+        max_attempts: Option<u32>,
+        backoff_step_ms: Option<u64>,
+    ) -> Self {
+        self.channel_read = ChannelReadPolicy::from_config(max_attempts, backoff_step_ms);
         self
     }
 
@@ -591,8 +614,22 @@ impl X402Upto {
             .send_and_confirm_transaction(&tx)
             .map_err(|e| Error::Rpc(format!("open broadcast failed: {e}")))?;
 
-        // Read the confirmed channel state and bind it.
-        let channel = self.fetch_channel(&channel_id)?;
+        // Read the confirmed channel state and bind it. The open is confirmed,
+        // but the replica serving this read can still lag the one that served
+        // the confirmation, so re-read while the account is not yet visible.
+        // Every bind check below stays terminal on its first observation - the
+        // funds are already escrowed, and a visible-and-wrong channel is never
+        // going to become right. The blocking client would otherwise sleep on a
+        // Tokio worker, so the whole loop runs on a blocking thread.
+        let rpc = Arc::clone(&self.rpc);
+        let read_policy = self.channel_read;
+        let channel = tokio::task::spawn_blocking(move || {
+            read_opened_channel(read_policy, &channel_id, || {
+                rpc_lookup_channel(&rpc, &channel_id)
+            })
+        })
+        .await
+        .map_err(|e| Error::Other(format!("channel read task failed: {e}")))??;
         if channel.status != CHANNEL_STATUS_OPEN {
             return Err(Error::Other(
                 "channel is not open after broadcast".to_string(),
@@ -934,14 +971,46 @@ impl X402Upto {
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         Ok(())
     }
+}
 
-    fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
-        let data = self
-            .rpc
-            .get_account_data(channel_id)
-            .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?;
-        Channel::from_bytes(&data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
-    }
+/// Read the channel back after the open confirms, re-reading only while it is
+/// not yet visible and mapping an exhausted budget to this site's "not found".
+///
+/// The reader is injected so a test can count the reads this site makes
+/// without standing up an RPC.
+fn read_opened_channel<T>(
+    policy: ChannelReadPolicy,
+    channel_id: &Pubkey,
+    read: impl FnMut() -> Result<Option<T>, Error>,
+) -> Result<T, Error> {
+    read_back_blocking(policy, read)?.ok_or_else(|| {
+        Error::Rpc(format!(
+            "channel account fetch failed: account {} not found",
+            pc::pubkey_string(channel_id)
+        ))
+    })
+}
+
+/// Read a channel account, separating a confirmed absence from a transient RPC
+/// or decode failure.
+///
+/// `Ok(None)` is the account not being there; anything else - an unreachable
+/// RPC, an undecodable account - is an error and never an absence. Only the
+/// absence is worth re-reading, so `get_account_data`, which collapses the two
+/// into one `ClientError`, is not usable here. Kept separate from the
+/// `batch-settlement` reader of the same shape: the two return different error
+/// types.
+fn rpc_lookup_channel(rpc: &RpcClient, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
+    let account = rpc
+        .get_account_with_commitment(channel_id, rpc.commitment())
+        .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?
+        .value;
+    account
+        .map(|account| {
+            Channel::from_bytes(&account.data)
+                .map_err(|e| Error::Other(format!("channel decode failed: {e}")))
+        })
+        .transpose()
 }
 
 /// Co-sign the operator's (fee-payer) slot of a partially-signed transaction.
@@ -2236,5 +2305,79 @@ mod tests {
         assert!(serde_json::to_value(&req).unwrap()["extra"]
             .get("facilitatorAddress")
             .is_none());
+    }
+    #[test]
+    fn channel_read_retry_is_configurable_and_defaults_to_the_linear_schedule() {
+        // The `open` is confirmed before this read, so a missing account is
+        // replica lag rather than an answer. Six reads, 200ms linear step.
+        let engine = multi_currency_engine(&["USDC"]);
+        assert_eq!(engine.channel_read.max_attempts, 6);
+        assert_eq!(
+            engine.channel_read.backoff_step,
+            std::time::Duration::from_millis(200)
+        );
+
+        // Zero means "unset", so an operator that always passes a value can.
+        let zeroed = multi_currency_engine(&["USDC"]).with_channel_read_retry(Some(0), Some(0));
+        assert_eq!(zeroed.channel_read.max_attempts, 6);
+        assert_eq!(
+            zeroed.channel_read.backoff_step,
+            std::time::Duration::from_millis(200)
+        );
+
+        let tuned = multi_currency_engine(&["USDC"]).with_channel_read_retry(Some(2), Some(10));
+        assert_eq!(tuned.channel_read.max_attempts, 2);
+        assert_eq!(
+            tuned.channel_read.backoff_step,
+            std::time::Duration::from_millis(10)
+        );
+    }
+
+    #[test]
+    fn only_a_missing_channel_is_re_read_after_the_open_confirms() {
+        let policy = ChannelReadPolicy {
+            max_attempts: 4,
+            backoff_step: std::time::Duration::from_millis(1),
+        };
+        let channel_id = Pubkey::new_unique();
+
+        // Absent: re-read until it shows up, then stop.
+        let mut reads = 0;
+        let found = read_opened_channel(policy, &channel_id, || {
+            reads += 1;
+            Ok((reads == 3).then_some(1_u8))
+        });
+        assert_eq!(reads, 3);
+        assert!(matches!(found, Ok(1)));
+
+        // Visible on the first read: one read, and every bind check in the
+        // caller then runs against that one state, outside the loop.
+        let mut reads = 0;
+        let visible = read_opened_channel(policy, &channel_id, || {
+            reads += 1;
+            Ok(Some(2_u8))
+        });
+        assert_eq!(reads, 1);
+        assert!(matches!(visible, Ok(2)));
+
+        // Never visible: the whole budget, then this site's not-found.
+        let mut reads = 0;
+        let missing: Result<u8, Error> = read_opened_channel(policy, &channel_id, || {
+            reads += 1;
+            Ok(None)
+        });
+        assert_eq!(reads, 4);
+        assert!(matches!(missing, Err(Error::Rpc(_))));
+
+        // A decode failure or an RPC error is visible-and-wrong, or a read that
+        // did not happen. Neither is re-read: the funds are already escrowed
+        // and a bad bind must fail now, not in three seconds.
+        let mut reads = 0;
+        let failed: Result<u8, Error> = read_opened_channel(policy, &channel_id, || {
+            reads += 1;
+            Err(Error::Other("channel decode failed".to_string()))
+        });
+        assert_eq!(reads, 1);
+        assert!(failed.is_err());
     }
 }

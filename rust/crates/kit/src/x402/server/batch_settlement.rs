@@ -44,6 +44,7 @@ use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
+use crate::core::rpc::{read_back_blocking, ChannelReadPolicy};
 use crate::core::settlement::packing::{pack, ChannelInstructionGroup};
 use crate::core::store::{
     BatchReservation, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
@@ -202,6 +203,25 @@ fn spawn_next_submission(
     });
 }
 
+/// Read the escrow channel back after the deposit confirms, re-reading only
+/// while it is not yet visible and mapping an exhausted budget to this site's
+/// "does not exist".
+///
+/// The reader is injected so a test can count the reads this site makes
+/// without standing up an RPC.
+fn read_deposited_channel<T>(
+    policy: ChannelReadPolicy,
+    channel_id: &Pubkey,
+    read: impl FnMut() -> Result<Option<T>, Error>,
+) -> Result<T, Error> {
+    read_back_blocking(policy, read)?.ok_or_else(|| {
+        batch_err(
+            codes::INVALID_CHANNEL_STATE,
+            format!("channel {} does not exist", pc::pubkey_string(channel_id)),
+        )
+    })
+}
+
 /// Fetch and decode a channel account with the blocking RPC client. Factored out
 /// of [`X402BatchSettlement::lookup_channel`] so the reconcile path can run it on
 /// a blocking thread (via `spawn_blocking`) instead of stalling an async worker:
@@ -326,6 +346,18 @@ pub struct BatchConfig {
     /// default because a forced close cannot seal until its grace period —
     /// at least 900 seconds — has run.
     pub channel_snapshot_max_age_seconds: u64,
+    /// Reads of the escrow account after a deposit confirms, before it is
+    /// called absent. `None` or `0` keeps the default of 6.
+    ///
+    /// An RPC provider can serve transaction status and account state from
+    /// different replicas, so the account a confirmed deposit just funded can
+    /// be missing from the very next read. One miss would otherwise fail a
+    /// payment whose funds are already escrowed on chain.
+    pub channel_read_max_attempts: Option<u32>,
+    /// Linear backoff step between those reads, in milliseconds: the wait
+    /// before attempt `n + 1` is `step * n`. `None` or `0` keeps the default
+    /// of 200ms.
+    pub channel_read_backoff_step_ms: Option<u64>,
 }
 
 impl BatchConfig {
@@ -352,6 +384,8 @@ impl BatchConfig {
             fee_payer_signer,
             program_id: None,
             channel_snapshot_max_age_seconds: 30,
+            channel_read_max_attempts: None,
+            channel_read_backoff_step_ms: None,
         }
     }
 }
@@ -1636,7 +1670,22 @@ impl X402BatchSettlement {
                 let signature = self
                     .broadcast_client_transaction(&deposit.transaction)
                     .await?;
-                let channel = self.fetch_channel(&pc::parse_pubkey(&outcome.channel_id)?)?;
+                // The deposit is confirmed, but the replica serving this read
+                // can still lag the one that served the confirmation. Re-read
+                // while the account is not yet visible; the binding checks
+                // below stay terminal on their first observation. The blocking
+                // client would otherwise sleep on a Tokio worker, so the whole
+                // loop runs on one blocking thread.
+                let channel_id = pc::parse_pubkey(&outcome.channel_id)?;
+                let rpc = Arc::clone(&self.rpc);
+                let read_policy = self.channel_read_policy();
+                let channel = tokio::task::spawn_blocking(move || {
+                    read_deposited_channel(read_policy, &channel_id, || {
+                        rpc_lookup_channel(&rpc, &channel_id)
+                    })
+                })
+                .await
+                .map_err(|e| Error::Other(format!("channel read task failed: {e}")))??;
                 self.check_channel_bindings(
                     &channel,
                     outcome.payload.channel_config(),
@@ -2275,6 +2324,16 @@ impl X402BatchSettlement {
     /// clear, because it holds the only copy of this server's charge watermark.
     fn lookup_channel(&self, channel_id: &Pubkey) -> Result<Option<Channel>, Error> {
         rpc_lookup_channel(&self.rpc, channel_id)
+    }
+
+    /// Retry budget for reading an escrow account back right after its deposit
+    /// confirmed. Opt-in per call site: `lookup_channel` itself also answers
+    /// "does this channel exist yet", where absence is the correct answer.
+    fn channel_read_policy(&self) -> ChannelReadPolicy {
+        ChannelReadPolicy::from_config(
+            self.config.channel_read_max_attempts,
+            self.config.channel_read_backoff_step_ms,
+        )
     }
 
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
@@ -4103,5 +4162,81 @@ mod tests {
             3_000,
         )
         .expect("the client accepts the proof");
+    }
+    #[test]
+    fn channel_read_policy_follows_batch_config() {
+        let signer = TestSigner::new(3);
+        let mut config = BatchConfig::new(PAY_TO, "localnet", Arc::new(signer));
+        // Unset: the escrow read-back after a deposit confirms gets six reads
+        // on a 200ms linear step.
+        assert_eq!(config.channel_read_max_attempts, None);
+        assert_eq!(config.channel_read_backoff_step_ms, None);
+
+        let engine = X402BatchSettlement::new(config.clone()).expect("engine should build");
+        let default = engine.channel_read_policy();
+        assert_eq!(default.max_attempts, 6);
+        assert_eq!(default.backoff_step, std::time::Duration::from_millis(200));
+
+        config.channel_read_max_attempts = Some(0);
+        config.channel_read_backoff_step_ms = Some(0);
+        let zeroed = X402BatchSettlement::new(config.clone())
+            .expect("engine should build")
+            .channel_read_policy();
+        assert_eq!(zeroed.max_attempts, default.max_attempts);
+        assert_eq!(zeroed.backoff_step, default.backoff_step);
+
+        config.channel_read_max_attempts = Some(2);
+        config.channel_read_backoff_step_ms = Some(15);
+        let tuned = X402BatchSettlement::new(config)
+            .expect("engine should build")
+            .channel_read_policy();
+        assert_eq!(tuned.max_attempts, 2);
+        assert_eq!(tuned.backoff_step, std::time::Duration::from_millis(15));
+    }
+
+    #[test]
+    fn only_a_missing_escrow_is_re_read_after_the_deposit_confirms() {
+        let policy = ChannelReadPolicy {
+            max_attempts: 4,
+            backoff_step: std::time::Duration::from_millis(1),
+        };
+        let channel_id = Pubkey::new_unique();
+
+        let mut reads = 0;
+        let found = read_deposited_channel(policy, &channel_id, || {
+            reads += 1;
+            Ok((reads == 2).then_some(1_u8))
+        });
+        assert_eq!(reads, 2);
+        assert!(matches!(found, Ok(1)));
+
+        // Visible on the first read: the binding checks in `finish_commit` run
+        // once, against a channel that is visible and therefore final.
+        let mut reads = 0;
+        let visible = read_deposited_channel(policy, &channel_id, || {
+            reads += 1;
+            Ok(Some(2_u8))
+        });
+        assert_eq!(reads, 1);
+        assert!(matches!(visible, Ok(2)));
+
+        // Never visible: the whole budget, then this site's "does not exist".
+        let mut reads = 0;
+        let missing: Result<u8, Error> = read_deposited_channel(policy, &channel_id, || {
+            reads += 1;
+            Ok(None)
+        });
+        assert_eq!(reads, 4);
+        assert!(missing.is_err());
+
+        // `rpc_lookup_channel` already separates absence from failure, and only
+        // the absence is re-read.
+        let mut reads = 0;
+        let failed: Result<u8, Error> = read_deposited_channel(policy, &channel_id, || {
+            reads += 1;
+            Err(Error::Rpc("channel account fetch failed".to_string()))
+        });
+        assert_eq!(reads, 1);
+        assert!(failed.is_err());
     }
 }
