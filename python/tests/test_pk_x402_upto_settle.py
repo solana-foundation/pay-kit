@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from typing import Any
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
@@ -30,7 +31,8 @@ from solana_pay_kit import (
 )
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import Distribution
-from solana_pay_kit.config import reset
+from solana_pay_kit._paycore.rpc import MalformedAccountError
+from solana_pay_kit.config import X402Config, reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
@@ -52,9 +54,11 @@ def _clean(monkeypatch: pytest.MonkeyPatch):
 class _FakeRpc:
     """Async RPC stub matching the SolanaRpc surface the engine uses."""
 
-    def __init__(self, holder: dict[str, tuple[bytes, str] | None]) -> None:
+    def __init__(self, holder: dict[str, Any]) -> None:
         self._holder = holder
         self.sent: list[bytes] = []
+        # Channel-account reads, so the replica-lag retry can be pinned.
+        self.reads = 0
 
     async def send_raw_transaction(self, raw: bytes):
         self.sent.append(raw)
@@ -68,7 +72,16 @@ class _FakeRpc:
         return None
 
     async def get_account_info(self, _addr: str, commitment: str = "confirmed"):
-        return self._holder["account"]
+        self.reads += 1
+        # "sequence" serves one reply per read (replica-lag scenarios); the
+        # plain "account" holder answers every read.
+        sequence = self._holder.get("sequence")
+        reply = sequence.pop(0) if sequence else self._holder["account"]
+        # An exception reply is raised, mirroring the RPC client on a visible
+        # account whose object it cannot read.
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
 
     async def get_latest_blockhash(self, commitment: str = "confirmed"):
         class _V:
@@ -83,7 +96,7 @@ class _FakeRpc:
         return None
 
 
-def _engine(monkeypatch) -> tuple[X402Upto, Config, dict[str, tuple[bytes, str] | None]]:
+def _engine(monkeypatch, x402: X402Config | None = None) -> tuple[X402Upto, Config, dict[str, Any]]:
     op = Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey()))
     cfg = configure(
         network="solana_localnet",
@@ -91,10 +104,20 @@ def _engine(monkeypatch) -> tuple[X402Upto, Config, dict[str, tuple[bytes, str] 
         accept=(Protocol.X402,),
         operator=op,
         rpc_url="http://127.0.0.1:8899",
+        # Keep the post-confirmation channel-read retry on its default attempt
+        # count but drop the backoff step to 1ms so the suite never sleeps for
+        # real seconds. The default schedule is pinned in test_rpc_methods.
+        x402=x402 if x402 is not None else X402Config(channel_read_backoff_step_ms=1),
     )
     eng = X402Upto(cfg, recent_state_provider=lambda: (BH, RECENT_SLOT))
-    holder: dict[str, tuple[bytes, str] | None] = {"account": None}
-    monkeypatch.setattr(upto_mod, "SolanaRpc", lambda *_a, **_k: _FakeRpc(holder))
+    holder: dict[str, Any] = {"account": None}
+
+    def _rpc(*_a, **_k) -> _FakeRpc:
+        rpc = _FakeRpc(holder)
+        holder["rpc"] = rpc
+        return rpc
+
+    monkeypatch.setattr(upto_mod, "SolanaRpc", _rpc)
     return eng, cfg, holder
 
 
@@ -510,6 +533,62 @@ async def test_verify_open_channel_missing(monkeypatch) -> None:
     holder["account"] = None
     with pytest.raises(InvalidProofError, match="missing account data"):
         await eng.verify_open(_gate(cfg), _Req(header))
+    # The retry exhausts its attempt budget and then raises the unchanged
+    # error; it never gives up after the first miss.
+    assert holder["rpc"].reads == 6
+
+
+@pytest.mark.asyncio
+async def test_verify_open_reads_a_malformed_channel_account_exactly_once(monkeypatch) -> None:
+    # A VISIBLE account the RPC client cannot read (no owner, or a data field
+    # of an unexpected shape) is an answer, not replica lag: it fails on the
+    # first read with the unchanged error instead of spending the retry budget.
+    eng, cfg, holder = _engine(monkeypatch)
+    header, _pk, _req = _client_header(eng, cfg)
+    holder["account"] = MalformedAccountError(
+        "getAccountInfo returned an account with no owner", code="payment_invalid"
+    )
+    with pytest.raises(InvalidProofError, match="missing account data"):
+        await eng.verify_open(_gate(cfg), _Req(header))
+    assert holder["rpc"].reads == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_open_channel_read_budget_comes_from_config(monkeypatch) -> None:
+    # Both knobs must reach the retry loop, not just the defaults: a two
+    # attempt budget spends exactly two reads on a never-visible account.
+    eng, cfg, holder = _engine(
+        monkeypatch,
+        X402Config(channel_read_max_attempts=2, channel_read_backoff_step_ms=1),
+    )
+    header, _pk, _req = _client_header(eng, cfg)
+    holder["account"] = None
+    with pytest.raises(InvalidProofError, match="missing account data"):
+        await eng.verify_open(_gate(cfg), _Req(header))
+    assert holder["rpc"].reads == 2
+
+
+@pytest.mark.asyncio
+async def test_verify_open_retries_channel_read_through_replica_lag(monkeypatch) -> None:
+    # The open is confirmed, so the deposit is escrowed; an RPC provider can
+    # still serve the account read from a replica that has not caught up. Two
+    # misses must not fail a payment whose funds already moved.
+    eng, cfg, holder = _engine(monkeypatch)
+    header, client_pk, req = _client_header(eng, cfg)
+    operator = _op_pubkey(cfg)
+    account = _fake_channel(
+        payer=client_pk,
+        payee=operator,
+        mint=req["asset"],
+        operator=operator,
+        deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), operator),
+    )
+    holder["sequence"] = [None, None, account]
+    verified = await eng.verify_open(_gate(cfg), _Req(header))
+    assert verified.deposit == 100000
+    assert holder["rpc"].reads == 3
+    verified.release()
 
 
 @pytest.mark.asyncio
@@ -528,6 +607,9 @@ async def test_verify_open_owner_mismatch(monkeypatch) -> None:
     holder["account"] = (data, str(Keypair().pubkey()))  # wrong owner
     with pytest.raises(InvalidProofError, match="not owned by"):
         await eng.verify_open(_gate(cfg), _Req(header))
+    # A visible-but-wrong account is an answer, not replica lag: rejected on
+    # the first read, never retried.
+    assert holder["rpc"].reads == 1
 
 
 def test_reserve_channel_concurrent(monkeypatch) -> None:

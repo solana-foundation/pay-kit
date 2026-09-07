@@ -99,6 +99,19 @@ class X402Config(pydantic.BaseModel):
     facilitator_url: str | None = None
     scheme: Literal["exact"] = "exact"
     signer: LocalSigner | None = None
+    # ``upto`` re-reads the channel account after the open is confirmed, because
+    # an RPC provider can serve transaction status and account state from
+    # different replicas. Unset or non-positive takes the defaults (6 attempts,
+    # 200ms step: 200/400/600/800/1000ms, 3.0s worst case).
+    #
+    # Worst-case latency is not free everywhere: ``django._run`` detects a
+    # running loop and then does ``thread.start(); thread.join()`` on the event
+    # loop thread, so under ASGI ``verify_open`` already stalls the whole loop
+    # and this extends that stall by up to 3.0s. Flask's ``_run`` is
+    # ``asyncio.run``, so it pins one WSGI worker thread. FastAPI is genuinely
+    # async and unaffected. Fixing the Django stall is separate work.
+    channel_read_max_attempts: int | None = None
+    channel_read_backoff_step_ms: int | None = None
 
     def is_delegated(self) -> bool:
         """``True`` when a non-empty facilitator URL routes verify/settle off-host."""
