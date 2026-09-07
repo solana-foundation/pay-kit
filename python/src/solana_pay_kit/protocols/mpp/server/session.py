@@ -215,6 +215,20 @@ class SessionConfig:
     # challenge was issued. It may return the slot directly or awaitably.
     current_slot_provider: Callable[[], Awaitable[int] | int] | None = None
 
+    # After an open or top-up confirms, the channel account is re-read to
+    # compare it against the transaction. An RPC provider can serve transaction
+    # status and account state from different replicas, so that read can miss
+    # an account the confirmed transaction already wrote; the missing account
+    # is retried. A visible account is decided on that first visible read,
+    # stale deposit included. Unset or non-positive takes the defaults
+    # (6 attempts, 200ms step: 200/400/600/800/1000ms, 3.0s worst case).
+    #
+    # Both entrances hold the per-channel asyncio.Lock across the retry sleeps
+    # (process_open and process_top_up). The lock is per-channel, not global,
+    # so a slow read delays only further actions on that same channel.
+    channel_read_max_attempts: int | None = None
+    channel_read_backoff_step_ms: int | None = None
+
 
 @dataclass
 class DeliveryRequest:

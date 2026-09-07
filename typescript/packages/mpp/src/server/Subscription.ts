@@ -19,6 +19,7 @@ import {
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
+import { type ChannelReadRetryOptions, readUntilVisible } from '../utils/account-read.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
 
 /**
@@ -71,6 +72,13 @@ export function subscription(parameters: subscription.Parameters) {
         splits,
         subscriptionExpires,
     } = parameters;
+
+    // Replica-lag tolerance for the post-activation delegation read. Both
+    // knobs fall back to their defaults when unset or non-positive.
+    const channelRead: ChannelReadRetryOptions = {
+        channelReadBackoffStepMs: parameters.channelReadBackoffStepMs,
+        channelReadMaxAttempts: parameters.channelReadMaxAttempts,
+    };
 
     if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
         throw new Error(`tokenProgram must be ${TOKEN_PROGRAM} or ${TOKEN_2022_PROGRAM}`);
@@ -172,7 +180,7 @@ export function subscription(parameters: subscription.Parameters) {
                 Number(challenge.periodCount),
             );
 
-            const delegation = await fetchSubscriptionDelegation(rpcUrl, subscriptionPda);
+            const delegation = await fetchSubscriptionDelegation(rpcUrl, subscriptionPda, channelRead);
             if (!delegation) {
                 throw new Error('SubscriptionDelegation account not found after activation');
             }
@@ -410,12 +418,29 @@ type SubscriptionDelegation = {
     subscriber: string;
 };
 
+/**
+ * Read the on-chain `SubscriptionDelegation`, or `null` when the account is
+ * absent.
+ *
+ * `channelRead` opts this read into replica-lag tolerance: RPC providers can
+ * serve transaction status and account state from different replicas, so the
+ * delegation an activation just created can read back missing for a few
+ * hundred ms. Only the absent account is retried: every field check lives
+ * in `verify()`, outside this function, so a delegation that exists but does
+ * not match the challenge is still rejected on the first read. Omitting
+ * `channelRead` keeps single-read semantics.
+ */
 async function fetchSubscriptionDelegation(
     rpcUrl: string,
     subscriptionPda: { toString(): string },
+    channelRead?: ChannelReadRetryOptions,
 ): Promise<SubscriptionDelegation | null> {
     const rpc = createSolanaRpc(rpcUrl);
-    const account = await rpc.getAccountInfo(address(subscriptionPda.toString()), { encoding: 'base64' }).send();
+    const account = await readUntilVisible(
+        () => rpc.getAccountInfo(address(subscriptionPda.toString()), { encoding: 'base64' }).send(),
+        result => result.value !== null,
+        channelRead,
+    );
     if (!account.value) return null;
     const [b64] = account.value.data;
     const data = new Uint8Array(getBase64Codec().encode(b64));
@@ -681,11 +706,34 @@ export const __testing = {
     decodeSubscriptionDelegation,
     encodeBase58,
     extractSubscriberFromTransaction,
+    fetchSubscriptionDelegation,
     validateActivationInstructions,
 };
 
 export declare namespace subscription {
     type Parameters = {
+        /**
+         * Linear backoff step in ms for the post-activation delegation
+         * re-read. Defaults to 200, giving a 200/400/600/800/1000ms
+         * schedule. Unset or non-positive resolves to the default.
+         *
+         * Linear on purpose: replica lag is a small multiple of Solana's
+         * ~400ms slot time, so an exponential schedule would spend the same
+         * budget on single waits far longer than the lag it absorbs.
+         */
+        channelReadBackoffStepMs?: number;
+        /**
+         * Total post-activation delegation reads, including the first,
+         * before activation fails. Defaults to 6, which at the default step is
+         * 3.0s of added worst-case latency. Unset or non-positive
+         * resolves to the default. Named to match the session method's
+         * knobs; the account read here is the `SubscriptionDelegation`.
+         *
+         * A read is only repeated while the account is absent. A delegation
+         * that exists but does not match the challenge is rejected on the
+         * first read, never retried.
+         */
+        channelReadMaxAttempts?: number;
         /** Token decimals for the mint. */
         decimals: number;
         /** Base58 of the SPL token mint. MUST match the on-chain plan.mint. */

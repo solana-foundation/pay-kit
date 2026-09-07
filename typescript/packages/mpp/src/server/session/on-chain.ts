@@ -17,6 +17,7 @@ import {
     type AccountMeta,
     type Address,
     address,
+    assertAccountExists,
     getAddressEncoder,
     getBase58Encoder,
     getBase64Codec,
@@ -38,7 +39,7 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
-import { fetchChannel } from '../../generated/payment-channels/accounts/channel.js';
+import { fetchMaybeChannel } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
 import { getOpenInstructionDataDecoder } from '../../generated/payment-channels/instructions/open.js';
 import { getReclaimInstruction } from '../../generated/payment-channels/instructions/reclaim.js';
@@ -50,6 +51,7 @@ import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channe
 import { ChannelStatus } from '../../generated/payment-channels/types/channelStatus.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { VOUCHER_MAGIC } from '../../shared/voucher.js';
+import { type ChannelReadRetryOptions, readUntilVisible } from '../../utils/account-read.js';
 import { coSignBase64Transaction } from '../../utils/transactions.js';
 
 /**
@@ -748,6 +750,11 @@ export async function submitTopUpTx(args: {
     readonly additionalAmount: bigint;
     readonly channelId: string;
     readonly channelProgram: string;
+    /**
+     * Opt-in replica-lag tolerance for the post-confirm channel re-read.
+     * Omit it and the re-read stays a single RPC call.
+     */
+    readonly channelRead?: ChannelReadRetryOptions | undefined;
     /** Deposit recorded before this top-up, for the post-confirm re-check. */
     readonly currentDeposit: bigint;
     readonly payer: string;
@@ -804,7 +811,28 @@ export async function submitTopUpTx(args: {
     // Post-confirm re-check, mirroring Rust: the confirmed channel account
     // must be open and reflect at least the recorded deposit plus this
     // top-up before the deposit cap is raised.
-    const account = await fetchChannel(args.rpc as never, address(args.channelId), { commitment: 'confirmed' });
+    //
+    // Status and account state can come from different replicas, so the
+    // account can still read as missing right after the transaction
+    // confirms. An absent account is the ONLY not-yet-visible signal; the
+    // loop stops at the first read that sees the account at all.
+    //
+    // A stale deposit on a VISIBLE account is deliberately NOT retried.
+    // Deposit only ever grows, so re-sampling it can only flip reject into
+    // accept, and a concurrent top-up on this same channel is what would
+    // raise it. Nothing holds a per-channel lock across this read, so a
+    // retry loop could clear our threshold with someone else's money where
+    // a single read correctly rejected. Status and deposit are therefore
+    // decided once, below, on the first visible read, exactly as they were
+    // before this re-read grew a retry loop.
+    const account = await readUntilVisible(
+        () => fetchMaybeChannel(args.rpc as never, address(args.channelId), { commitment: 'confirmed' }),
+        maybeAccount => maybeAccount.exists,
+        args.channelRead,
+    );
+    // Preserves the SolanaError a missing account raised before the re-read
+    // grew a retry loop.
+    assertAccountExists(account);
     if (
         account.data.status !== Number(ChannelStatus.Open) ||
         account.data.deposit < args.currentDeposit + args.additionalAmount
@@ -875,6 +903,11 @@ export async function waitForSignatureConfirmation(args: {
  * for a transaction that never landed.
  */
 export interface SubmitOpenTxArgs extends VerifyOpenTxArgs {
+    /**
+     * Opt-in replica-lag tolerance for the post-confirm channel re-read.
+     * Omit it and the re-read stays a single RPC call.
+     */
+    readonly channelRead?: ChannelReadRetryOptions | undefined;
     /** Confirmation polling overrides (timeout, poll interval, abort). */
     readonly confirm?: ConfirmSignatureOptions | undefined;
     /**
@@ -914,9 +947,20 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
         }
     }
     const assertConfirmedChannelMatchesOpen = async (): Promise<void> => {
-        const account = await fetchChannel(args.rpc as never, address(verified.channelId), {
-            commitment: 'confirmed',
-        });
+        // Signature status and account state can be served by different
+        // replicas, so a channel whose open just confirmed can read back
+        // missing for a few hundred ms. `exists === false` (getAccountInfo
+        // returned `value: null`) is the ONLY retryable signal: a decode
+        // failure or any field mismatch below is a visible-and-wrong state
+        // and stays authoritative on the first read.
+        const account = await readUntilVisible(
+            () => fetchMaybeChannel(args.rpc as never, address(verified.channelId), { commitment: 'confirmed' }),
+            maybeAccount => maybeAccount.exists,
+            args.channelRead,
+        );
+        // Preserves the SolanaError a missing account raised before the
+        // re-read grew a retry loop.
+        assertAccountExists(account);
         const channel = account.data;
         const expectedMint =
             args.expected.mint ??

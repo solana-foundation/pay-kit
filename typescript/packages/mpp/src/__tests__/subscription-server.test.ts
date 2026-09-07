@@ -872,6 +872,11 @@ describe('subscription().verify() (push mode)', () => {
             }
         };
         const method = subscription({
+            // An absent delegation is the retried state, so the default
+            // 6-attempt schedule would sleep ~3s of real time here. The
+            // replica-lag schedule itself is covered in
+            // session-replica-lag.test.ts.
+            channelReadMaxAttempts: 1,
             decimals: 6,
             mint: MINT,
             network: 'devnet',

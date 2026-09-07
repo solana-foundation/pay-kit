@@ -66,6 +66,14 @@ impl Default for ChannelReadPolicy {
 }
 
 impl ChannelReadPolicy {
+    /// One read, no waiting. Several of these reads double as pre-broadcast
+    /// existence probes, where absence is the correct answer and retrying would
+    /// charge every first-time request the whole budget for nothing.
+    pub(crate) const SINGLE_READ: Self = Self {
+        max_attempts: 1,
+        backoff_step: Duration::ZERO,
+    };
+
     /// Resolve operator configuration. Unset or non-positive means "default",
     /// so a caller that always passes a value can pass zero.
     pub(crate) fn from_config(max_attempts: Option<u32>, backoff_step_ms: Option<u64>) -> Self {
@@ -108,6 +116,28 @@ pub(crate) fn read_back_blocking<T, E>(
         }
         match policy.backoff_after(attempt) {
             Some(wait) => std::thread::sleep(wait),
+            None => break,
+        }
+    }
+    Ok(None)
+}
+
+/// Asynchronous [`read_back_blocking`], for reads that already run on the
+/// transaction pipeline instead of a blocking client. Same contract: only
+/// `Ok(None)` is retried.
+pub(crate) async fn read_back<T, E, Fut>(
+    policy: ChannelReadPolicy,
+    mut read: impl FnMut() -> Fut,
+) -> Result<Option<T>, E>
+where
+    Fut: std::future::Future<Output = Result<Option<T>, E>>,
+{
+    for attempt in 1..=policy.max_attempts {
+        if let Some(value) = read().await? {
+            return Ok(Some(value));
+        }
+        match policy.backoff_after(attempt) {
+            Some(wait) => tokio::time::sleep(wait).await,
             None => break,
         }
     }
@@ -173,6 +203,20 @@ mod tests {
     }
 
     #[test]
+    fn single_read_never_retries_or_sleeps() {
+        let mut reads = 0;
+        let found: Result<Option<u8>, ()> =
+            read_back_blocking(ChannelReadPolicy::SINGLE_READ, || {
+                reads += 1;
+                Ok(None)
+            });
+
+        assert_eq!(found, Ok(None));
+        assert_eq!(reads, 1);
+        assert_eq!(ChannelReadPolicy::SINGLE_READ.backoff_after(1), None);
+    }
+
+    #[test]
     fn read_back_blocking_retries_absence_and_stops_at_the_first_hit() {
         let policy = ChannelReadPolicy {
             max_attempts: 6,
@@ -218,5 +262,34 @@ mod tests {
 
         assert_eq!(found, Err("visible and wrong"));
         assert_eq!(reads, 1);
+    }
+
+    #[tokio::test]
+    async fn read_back_retries_only_absence() {
+        let policy = ChannelReadPolicy {
+            max_attempts: 6,
+            backoff_step: Duration::from_millis(1),
+        };
+        let reads = std::cell::Cell::new(0);
+        let read_counter = &reads;
+        let found: Result<Option<u8>, ()> = read_back(policy, move || async move {
+            read_counter.set(read_counter.get() + 1);
+            Ok((read_counter.get() == 2).then_some(9))
+        })
+        .await;
+
+        assert_eq!(found, Ok(Some(9)));
+        assert_eq!(reads.get(), 2);
+
+        let errors = std::cell::Cell::new(0);
+        let error_counter = &errors;
+        let failed: Result<Option<u8>, &str> = read_back(policy, move || async move {
+            error_counter.set(error_counter.get() + 1);
+            Err("visible and wrong")
+        })
+        .await;
+
+        assert_eq!(failed, Err("visible and wrong"));
+        assert_eq!(errors.get(), 1);
     }
 }
