@@ -108,46 +108,13 @@ jobs:
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: go
-      - name: Checkout payment channels program
-        uses: actions/checkout@v5
-        with:
-          repository: Moonsong-Labs/solana-payment-channels
-          ref: 0c07d5751c8972abf6a219570a3f39a72f46f879
-          path: _payment-channels
-          fetch-depth: 1
-      - name: Install Anza CLI
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-      - name: Patch payment channels localnet artifact
-        working-directory: _payment-channels
-        run: |
-          old_program_id="CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg"
-          new_program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
-          sentinel_file="program/payment_channels/src/constants.rs"
-          sentinel_prefix="    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,"
-          sentinel_suffix="    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,"
-          grep_args=(--exclude-dir=.git --exclude-dir=target)
-          mapfile -t id_files < <(grep -RIl "${grep_args[@]}" "$old_program_id" .)
-          if [ "${#id_files[@]}" -gt 0 ]; then
-            sed -i "s/$old_program_id/$new_program_id/g" "${id_files[@]}"
-          fi
-          perl -0pi -e 's/const TREASURY_OWNER_SENTINEL: \[u8; 32\] = \[\n.*?\n\];/const TREASURY_OWNER_SENTINEL: [u8; 32] = [\n    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,\n    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,\n];/s' "$sentinel_file"
-          if ! grep -R "${grep_args[@]}" "$new_program_id" . >/dev/null; then
-            echo "::error::payment-channels program id patch did not write $new_program_id"
-            exit 1
-          fi
-          if grep -R "${grep_args[@]}" "$old_program_id" . >/dev/null; then
-            echo "::error::payment-channels program id patch left $old_program_id in the checkout"
-            exit 1
-          fi
-          if ! grep -Fq "$sentinel_prefix" "$sentinel_file" || ! grep -Fq "$sentinel_suffix" "$sentinel_file"; then
-            echo "::error::payment-channels treasury sentinel patch did not apply"
-            exit 1
-          fi
+      # x402 upto settles on the canonical payment-channels program; the upto
+      # e2e deploys this localnet SBF artifact onto the embedded surfnet. The
+      # composite action carries the checkout, the sentinel patch, and the
+      # build, and caches the resulting .so on the pinned ref, so a warm run
+      # skips the Anza CLI install and the platform-tools download entirely.
       - name: Build payment channels program
-        working-directory: _payment-channels/program/payment_channels
-        run: cargo build-sbf --tools-version v1.52 --arch v1
+        uses: ./.github/actions/build-payment-channels
       - name: Build Go paykit harness server
         working-directory: harness/go-server
         run: go build -o paykit-server .
