@@ -63,7 +63,11 @@ _RESPONSE_HEADER = "payment-response"
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
 _REPLAY_PREFIX = "x402-svm-exact:consumed:"
-_PENDING_LEASE_SECONDS = 60
+# `SolanaRpc.await_confirmation` performs at most 40 requests, each with the
+# client's 30-second timeout, plus polling delays. Keep the recovery lease past
+# that complete worst-case window so a takeover cannot overlap the original
+# confirmation coroutine.
+_PENDING_LEASE_SECONDS = 21 * 60
 
 
 class X402Adapter:
@@ -271,7 +275,24 @@ class X402Adapter:
                             "solana_pay_kit: signature_consumed: settlement recovery is in progress",
                             code="signature_consumed",
                         )
-                    await self._store.put(replay_key, replay_record)
+                    # The original request may have confirmed between the first
+                    # read and our recovery claim. Re-read before replacing a
+                    # pending record so confirmed state can never regress.
+                    latest = await self._store.get(replay_key)
+                    if not isinstance(latest, dict):
+                        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+                    latest_record = cast("dict[str, object]", latest)
+                    if latest_record.get("binding") != binding:
+                        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+                    if latest_record.get("state") == "confirmed":
+                        skip_confirmation = True
+                    elif latest_record.get("state") == "pending" and latest_record.get("leaseUntil") == lease_until:
+                        await self._store.put(replay_key, replay_record)
+                    else:
+                        raise InvalidProofError(
+                            "solana_pay_kit: signature_consumed: settlement recovery state changed",
+                            code="signature_consumed",
+                        )
                 else:
                     raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 

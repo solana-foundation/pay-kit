@@ -92,6 +92,21 @@ class _FakeRpc:
         return None
 
 
+class _ConfirmDuringRecoveryStore(MemoryStore):
+    """Simulate the original request confirming as a retry claims recovery."""
+
+    confirm_during_recovery = False
+
+    async def put_if_absent(self, key, value):
+        inserted = await super().put_if_absent(key, value)
+        if inserted and self.confirm_during_recovery and ":recovery:" in key:
+            replay_key = key.split(":recovery:", 1)[0]
+            current = await self.get(replay_key)
+            assert isinstance(current, dict)
+            await self.put(replay_key, {**current, "state": "confirmed"})
+        return inserted
+
+
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     reset()
@@ -259,7 +274,7 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
         await adapter.verify_and_settle(gate, _Req(retry))
     assert retry_exc.value.code == "signature_consumed"
 
-    now[0] += 61
+    now[0] += 21 * 60 + 1
     recovered_rpcs: list = []
 
     def _recovery_factory(*_a, **_k):
@@ -274,6 +289,41 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     confirmed_record = await store.get("x402-svm-exact:consumed:SIG-timeout")
     assert isinstance(confirmed_record, dict)
     assert confirmed_record["state"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_replace_concurrently_confirmed_state(monkeypatch):
+    from solana_pay_kit._paycore.errors import PaymentError
+
+    now = [1_000.0]
+    monkeypatch.setattr(xmod.time, "time", lambda: now[0])
+    store = _ConfirmDuringRecoveryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        signature="SIG-confirm-race",
+        confirm_error=PaymentError("timed out", code="transaction-not-found"),
+        monkeypatch=monkeypatch,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(InvalidProofError):
+        await adapter.verify_and_settle(gate, _Req(header))
+
+    now[0] += 21 * 60 + 1
+    store.confirm_during_recovery = True
+    recovery_rpcs: list = []
+
+    def _recovery_factory(*_a, **_k):
+        rpc = _FakeRpc(signature="SIG-confirm-race")
+        recovery_rpcs.append(rpc)
+        return rpc
+
+    monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == "SIG-confirm-race"
+    assert recovery_rpcs[0].confirm_calls == 0
+    record = await store.get("x402-svm-exact:consumed:SIG-confirm-race")
+    assert isinstance(record, dict)
+    assert record["state"] == "confirmed"
 
 
 @pytest.mark.asyncio
