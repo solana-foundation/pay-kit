@@ -195,11 +195,22 @@ helper.test('x402 verify_and_settle: cosigns + broadcasts + reserves signature',
   helper.assert_equal(payment.scheme,   'exact')
   helper.assert_equal(payment.transaction, 'fakeSignatureBase58')
   helper.assert_equal(#broadcast_calls, 1)
+
+  local recovered, retry_err = pay_kit.try_payment('paid-resource', {
+    method = 'GET',
+    path   = '/paid-resource',
+    headers = {['payment-signature'] = cred_b64},
+    query  = {},
+  })
+  helper.assert_true(recovered ~= nil,
+    'expected an identical retry to recover settlement; err=' .. tostring(retry_err))
+  helper.assert_equal(recovered.transaction, 'fakeSignatureBase58')
+  helper.assert_equal(#broadcast_calls, 2)
 end)
 
-helper.test('x402 verify_and_settle: SIGNATURE_CONSUMED on duplicate submit', function()
-  -- Re-using the same credential should trip the replay store via
-  -- consume_signature returning false.
+helper.test('x402 verify_and_settle: duplicate proof uses recovery path', function()
+  -- Duplicate proofs are confirmed again and reconstruct the same receipt;
+  -- this test keeps the isolated module-reset path covered.
   pay_kit._reset_for_tests()
   -- Re-install the same stub since reset clears the dispatcher.
   package.loaded['pay_kit.solana.rpc'] = {

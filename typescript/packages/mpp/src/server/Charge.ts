@@ -27,7 +27,7 @@ import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
-import { reserveReplayKey } from './replay.js';
+import { claimReplayKey, confirmReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -785,15 +785,20 @@ async function verifyTransaction(
     // pays but the signature is never recorded, so a retry re-broadcasts (double
     // charge) or replays. Reserving here closes the replay window; the
     // post-timeout status recovery below rescues the false-negative case.
-    if (!(await reserveReplayKey(store, `solana-charge:consumed:${signature}`))) {
+    const replayKey = `solana-charge:consumed:${signature}`;
+    const replayBinding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
+    const replayClaim = await claimReplayKey(store, replayKey, replayBinding);
+    if (replayClaim === 'conflict') {
         throw new Error('Transaction signature already consumed');
     }
+    if (replayClaim === 'pending') throw new Error('Transaction settlement is already in progress; retry shortly');
 
     // Wait for on-chain confirmation (with a definitive post-timeout status check).
     await waitForConfirmation(rpcUrl, signature);
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);
+    await confirmReplayKey(store, replayKey, replayBinding);
 
     return Receipt.from({
         method: 'solana',

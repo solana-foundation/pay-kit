@@ -245,14 +245,15 @@ class X402Adapter:
             # ``transaction-failed`` (included but reverted) or
             # ``transaction-not-found`` (never confirmed inside the window).
             #
-            # On failure roll the reservation back: the transaction did not
-            # land, so the same signature must remain replayable for an honest
-            # retry. Mirrors the confirmation gate the MPP charge flow runs
-            # (protocols/mpp/server/charge.py).
+            # Keep the reservation after broadcast even when confirmation
+            # fails. A timeout or transport error is ambiguous: the transaction
+            # may still land after this request returns. Releasing the key here
+            # would let the same signed payment race a later request and produce
+            # multiple fulfillments. This mirrors the durable post-broadcast
+            # reservation in the MPP charge flow.
             try:
                 await rpc.await_confirmation(signature)
             except Exception as exc:  # noqa: BLE001
-                await self._store.delete(replay_key)
                 raise InvalidProofError(
                     f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
                 ) from exc

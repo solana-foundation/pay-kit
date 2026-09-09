@@ -22,6 +22,7 @@ import {
     setTransactionMessageFeePayerSigner,
     setTransactionMessageLifetimeUsingBlockhash,
 } from '@solana/kit';
+import { findAssociatedTokenPda } from '@solana-program/token';
 import { Store } from 'mppx/server';
 
 import {
@@ -95,6 +96,7 @@ async function buildActivationTransactionBase64(
             | 'no-transfer';
         feePayerKey?: string;
         memo?: string;
+        receiver?: string;
     } = {},
 ): Promise<{ subscriberAddress: string; transaction: string }> {
     const subscriber = await generateKeyPairSigner();
@@ -103,8 +105,25 @@ async function buildActivationTransactionBase64(
         data: new Uint8Array([SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR]),
         programAddress: address(SUBSCRIPTIONS_PROGRAM),
     };
+    const [recipientAta] = await findAssociatedTokenPda({
+        mint: address(MINT),
+        owner: address(options.receiver ?? RECIPIENT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
     const transferIx: Instruction = {
-        accounts: [{ address: subscriber.address, role: AccountRole.READONLY }],
+        // Previous nine-account client layout. The verifier also accepts the
+        // Codama v0.5 ten-account layout and binds receiver_ata at slot 4.
+        accounts: [
+            { address: subscriber.address, role: AccountRole.READONLY },
+            { address: address(PLAN_ID), role: AccountRole.READONLY },
+            { address: subscriber.address, role: AccountRole.READONLY },
+            { address: subscriber.address, role: AccountRole.READONLY },
+            { address: subscriber.address, role: AccountRole.READONLY },
+            { address: subscriber.address, role: AccountRole.READONLY },
+            { address: recipientAta, role: AccountRole.WRITABLE },
+            { address: address(MINT), role: AccountRole.READONLY },
+            { address: address(TOKEN_PROGRAM), role: AccountRole.READONLY },
+        ],
         data: new Uint8Array([SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR]),
         programAddress: address(SUBSCRIPTIONS_PROGRAM),
     };
@@ -385,54 +404,89 @@ describe('subscription().request()', () => {
 
 describe('validateActivationInstructions', () => {
     const challenge = {
-        methodDetails: { programId: SUBSCRIPTIONS_PROGRAM },
+        amount: '10000000',
+        methodDetails: {
+            mint: MINT,
+            programId: SUBSCRIPTIONS_PROGRAM,
+            tokenProgram: TOKEN_PROGRAM,
+        },
+        recipient: RECIPIENT,
     } as never;
 
     test('accepts a well-formed [subscribe, transfer_subscription] sequence', async () => {
-        const { transaction } = await buildActivationTransactionBase64();
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).not.toThrow();
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64();
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).resolves.toBeUndefined();
     });
 
     test('rejects a transaction missing subscribe', async () => {
-        const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'no-subscribe' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(/missing subscribe/);
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            extraInstructions: 'no-subscribe',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/missing subscribe/);
     });
 
     test('rejects a transaction missing transfer_subscription', async () => {
-        const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'no-transfer' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(
-            /missing transfer_subscription/,
-        );
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            extraInstructions: 'no-transfer',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/missing transfer_subscription/);
     });
 
     test('rejects multiple subscribe instructions', async () => {
-        const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'duplicate-subscribe' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(/Multiple subscribe/);
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            extraInstructions: 'duplicate-subscribe',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/Multiple subscribe/);
     });
 
     test('rejects multiple transfer_subscription instructions', async () => {
-        const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'duplicate-transfer' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(
-            /Multiple transfer_subscription/,
-        );
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            extraInstructions: 'duplicate-transfer',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/Multiple transfer_subscription/);
     });
 
     test('rejects an extra instruction to another program', async () => {
-        const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'foreign-program' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(/Unsupported program/);
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            extraInstructions: 'foreign-program',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/Unsupported program/);
     });
 
     test('rejects when transfer_subscription precedes subscribe', async () => {
-        const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'reorder' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(
-            /subscribe must precede/,
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            extraInstructions: 'reorder',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/subscribe must precede/);
+    });
+
+    test('rejects an undecodable base64 input', async () => {
+        await expect(__testing.validateActivationInstructions('not-a-real-tx', challenge, RECIPIENT)).rejects.toThrow(
+            /Invalid transaction/,
         );
     });
 
-    test('rejects an undecodable base64 input', () => {
-        expect(() => __testing.validateActivationInstructions('not-a-real-tx', challenge)).toThrow(
-            /Invalid transaction/,
-        );
+    test('rejects transfer_subscription to an ATA owned by another recipient', async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({
+            receiver: '11111111111111111111111111111111',
+        });
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow(/receiver does not match the challenge recipient/);
     });
 });
 
@@ -770,33 +824,37 @@ describe('subscription().verify() (push mode)', () => {
             rpcUrl: 'https://mock-rpc',
             tokenProgram: TOKEN_PROGRAM,
         });
-        const receipt = await method.verify!({
-            credential: {
-                challenge: {
-                    id: 'test-challenge',
-                    request: {
-                        amount: '10000000',
-                        currency: MINT,
-                        externalId: 'order-99',
-                        methodDetails: {
-                            decimals: 6,
-                            mint: MINT,
-                            network: 'devnet',
-                            planId: PLAN_ID,
-                            programId: SUBSCRIPTIONS_PROGRAM,
-                            puller: PULLER,
-                            tokenProgram: TOKEN_PROGRAM,
-                        },
-                        periodCount: '30',
-                        periodUnit: 'day',
-                        recipient: RECIPIENT,
+        const credential = {
+            challenge: {
+                id: 'test-challenge',
+                request: {
+                    amount: '10000000',
+                    currency: MINT,
+                    externalId: 'order-99',
+                    methodDetails: {
+                        decimals: 6,
+                        mint: MINT,
+                        network: 'devnet',
+                        planId: PLAN_ID,
+                        programId: SUBSCRIPTIONS_PROGRAM,
+                        puller: PULLER,
+                        tokenProgram: TOKEN_PROGRAM,
                     },
+                    periodCount: '30',
+                    periodUnit: 'day',
+                    recipient: RECIPIENT,
                 },
-                payload: { transaction, type: 'transaction' },
-            } as never,
+            },
+            payload: { transaction, type: 'transaction' },
+        } as never;
+        const receipt = await method.verify!({
+            credential,
             request: {} as never,
         });
         expect((receipt as { status: string }).status).toBe('success');
+
+        const recovered = await method.verify!({ credential, request: {} as never });
+        expect((recovered as { reference: string }).reference).toBe((receipt as { reference: string }).reference);
     });
 
     test('rejects when on-chain delegation references a different plan', async () => {

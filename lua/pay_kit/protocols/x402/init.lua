@@ -364,13 +364,27 @@ local function build_rpc(config)
   return rpc_mod.new({url = config.rpc_url, transport = rpc_transport.new()})
 end
 
-local function consume_signature(store, signature)
-  if not store then return true end
-  local key = 'x402-svm-exact:consumed:' .. signature
-  if store.put_if_absent then
-    return store:put_if_absent(key)
+local function claim_signature(store, signature)
+  if not store or not store.put_if_absent then return 'claimed' end
+  local prefix = 'x402-svm-exact:' .. signature
+  if store:get(prefix .. ':confirmed') then return 'confirmed' end
+
+  -- A short lease prevents concurrent requests from both returning success,
+  -- while allowing a later request to recover after a crashed or timed-out
+  -- confirmation attempt. The durable consumed marker still records that the
+  -- transaction has been broadcast.
+  if store:put_if_absent(prefix .. ':pending', 15) then
+    store:put_if_absent(prefix .. ':consumed')
+    return 'claimed'
   end
-  return true
+  return 'pending'
+end
+
+local function confirm_signature(store, signature)
+  if not store or not store.put_if_absent then return end
+  local prefix = 'x402-svm-exact:' .. signature
+  store:put_if_absent(prefix .. ':confirmed')
+  store:delete(prefix .. ':pending')
 end
 
 local function sleep_seconds(seconds)
@@ -613,16 +627,20 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.INVALID_PROOF .. ': empty broadcast result'
   end
 
-  if not consume_signature(self._store, signature) then
-    return nil, errors.SIGNATURE_CONSUMED
+  local replay_state = claim_signature(self._store, signature)
+  if replay_state == 'pending' then
+    return nil, errors.SIGNATURE_CONSUMED .. ': settlement confirmation is pending'
   end
 
-  local call_ok, confirmed, confirm_err = pcall(await_confirmation, rpc, signature)
-  if not call_ok then
-    return nil, errors.INVALID_PROOF .. ': confirmation failed: ' .. tostring(confirmed)
-  end
-  if not confirmed then
-    return nil, errors.INVALID_PROOF .. ': confirmation failed: ' .. tostring(confirm_err)
+  if replay_state ~= 'confirmed' then
+    local call_ok, confirmed, confirm_err = pcall(await_confirmation, rpc, signature)
+    if not call_ok then
+      return nil, errors.INVALID_PROOF .. ': confirmation failed: ' .. tostring(confirmed)
+    end
+    if not confirmed then
+      return nil, errors.INVALID_PROOF .. ': confirmation failed: ' .. tostring(confirm_err)
+    end
+    confirm_signature(self._store, signature)
   end
 
   -- Settlement response. v1 emits X-PAYMENT-RESPONSE carrying the plain SVM

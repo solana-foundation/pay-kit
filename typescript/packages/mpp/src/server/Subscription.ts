@@ -8,6 +8,7 @@ import {
     type TransactionPartialSigner,
 } from '@solana/kit';
 import { getSubscriptionDelegationDecoder, SUBSCRIPTION_SIZE } from '@solana/subscriptions';
+import { findAssociatedTokenPda } from '@solana-program/token';
 import { Method, Receipt, Store } from 'mppx';
 
 import {
@@ -15,8 +16,8 @@ import {
     COMPUTE_BUDGET_PROGRAM,
     DEFAULT_RPC_URLS,
     MEMO_PROGRAM,
-    SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
+    SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
     SYSTEM_PROGRAM,
@@ -26,7 +27,7 @@ import {
 import * as Methods from '../Methods.js';
 import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
-import { reserveReplayKey } from './replay.js';
+import { claimReplayKey, confirmReplayKey, reserveReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `subscription` method for usage on the server.
@@ -166,7 +167,8 @@ export function subscription(parameters: subscription.Parameters) {
                 throw new Error('type="signature" credentials cannot be used with fee sponsorship (feePayer: true)');
             }
 
-            const subscriberAddress = await settleActivation(cred, challenge, rpcUrl, store, signer, payloadType);
+            const settlement = await settleActivation(cred, challenge, rpcUrl, store, signer, payloadType);
+            const subscriberAddress = settlement.subscriberAddress;
 
             const subscriptionPda = await deriveSubscriptionPda({
                 planPda: address(challenge.methodDetails.planId),
@@ -201,6 +203,10 @@ export function subscription(parameters: subscription.Parameters) {
             }
             if (delegation.amountPulledInPeriod !== challenge.amount) {
                 throw new Error('Activation transaction did not execute the first-period charge');
+            }
+
+            if (settlement.replay) {
+                await confirmReplayKey(store, settlement.replay.key, settlement.replay.binding);
             }
 
             const periodLengthSeconds = expectedPeriodHours * 3600;
@@ -256,7 +262,7 @@ async function settleActivation(
     store: Store.Store,
     signer: TransactionPartialSigner | undefined,
     payloadType: 'signature' | 'transaction',
-): Promise<string> {
+): Promise<{ replay?: { binding: string; key: string }; subscriberAddress: string }> {
     if (payloadType === 'transaction') {
         const { transaction: clientTxBase64 } = credential.payload;
         if (!clientTxBase64) {
@@ -264,7 +270,7 @@ async function settleActivation(
         }
 
         const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
-        validateActivationInstructions(clientTxBase64, challenge, subscriber);
+        await validateActivationInstructions(clientTxBase64, challenge, subscriber);
 
         let txToSend = clientTxBase64;
         if (signer) {
@@ -276,11 +282,15 @@ async function settleActivation(
 
         await simulateTransaction(rpcUrl, txToSend);
         const signature = await broadcastTransaction(rpcUrl, txToSend);
-        if (!(await reserveReplayKey(store, `solana-subscription:consumed:${signature}`))) {
+        const key = `solana-subscription:consumed:${signature}`;
+        const binding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
+        const replayClaim = await claimReplayKey(store, key, binding);
+        if (replayClaim === 'conflict') {
             throw new Error('Activation signature already consumed');
         }
+        if (replayClaim === 'pending') throw new Error('Activation settlement is already in progress; retry shortly');
         await waitForConfirmation(rpcUrl, signature);
-        return subscriber;
+        return { replay: { binding, key }, subscriberAddress: subscriber };
     }
 
     // ── Push mode (type="signature") ──
@@ -297,12 +307,12 @@ async function settleActivation(
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
     const [transactionBase64] = tx.transaction;
     const subscriber = extractSubscriberFromTransaction(transactionBase64, challenge);
-    validateActivationInstructions(transactionBase64, challenge, subscriber);
+    await validateActivationInstructions(transactionBase64, challenge, subscriber);
 
     if (!(await reserveReplayKey(store, consumedKey))) {
         throw new Error('Activation signature already consumed');
     }
-    return subscriber;
+    return { subscriberAddress: subscriber };
 }
 
 // ── Transaction parsing (lightweight, pre-broadcast) ──
@@ -364,11 +374,11 @@ function extractSubscriberFromTransaction(clientTxBase64: string, challenge: Cha
     return firstAccount;
 }
 
-function validateActivationInstructions(
+async function validateActivationInstructions(
     clientTxBase64: string,
     challenge: ChallengeRequest,
     subscriber?: string,
-): void {
+): Promise<void> {
     const message = decodeCompiledMessage(clientTxBase64);
 
     if (message.addressTableLookups?.length) {
@@ -448,6 +458,39 @@ function validateActivationInstructions(
             subscribeIndex = index;
         } else if (ix.data[0] === SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR) {
             if (sawTransferSubscription) throw new Error('Multiple transfer_subscription instructions found');
+            if (!subscriber) throw new Error('Cannot validate transfer_subscription without subscriber');
+            const expectedRecipientAta = (
+                await findAssociatedTokenPda({
+                    mint: address(challenge.methodDetails.mint),
+                    owner: address(challenge.recipient),
+                    tokenProgram: address(challenge.methodDetails.tokenProgram),
+                })
+            )[0];
+            // Codama v0.5 uses receiver_ata at account 4. Retain the previous
+            // nine-account client layout at account 6 during its migration,
+            // but bind either accepted shape to the challenged recipient ATA.
+            const receiverPosition = ix.accountIndices.length === 10 ? 4 : ix.accountIndices.length === 9 ? 6 : -1;
+            if (
+                receiverPosition < 0 ||
+                message.staticAccounts[ix.accountIndices[receiverPosition]] !== expectedRecipientAta
+            ) {
+                throw new Error('transfer_subscription receiver does not match the challenge recipient');
+            }
+            // Codama v0.5 TransferData is discriminator + amount + delegator +
+            // mint. Validate it whenever the current schema is presented.
+            if (ix.data.length === 73) {
+                if (readU64Le(ix.data, 1) !== BigInt(challenge.amount)) {
+                    throw new Error('transfer_subscription amount does not match the challenge');
+                }
+                if (encodeBase58(ix.data.slice(9, 41)) !== subscriber) {
+                    throw new Error('transfer_subscription delegator does not match subscriber');
+                }
+                if (encodeBase58(ix.data.slice(41, 73)) !== challenge.methodDetails.mint) {
+                    throw new Error('transfer_subscription mint does not match the challenge');
+                }
+            } else if (ix.data.length !== 1) {
+                throw new Error('Invalid transfer_subscription instruction data');
+            }
             sawTransferSubscription = true;
             transferIndex = index;
         } else {

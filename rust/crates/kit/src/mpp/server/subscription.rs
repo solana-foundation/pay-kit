@@ -38,7 +38,8 @@ use solana_transaction::Transaction;
 use crate::mpp::error::Error;
 use crate::mpp::expires;
 use crate::mpp::program::subscriptions::{
-    find_subscription_pda, parse_pubkey, ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID,
+    find_event_authority_pda, find_subscription_authority_pda, find_subscription_pda, parse_pubkey,
+    ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID,
     INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY, INSTRUCTION_SUBSCRIBE,
     INSTRUCTION_TRANSFER_SUBSCRIPTION, MEMO_PROGRAM_ID, SUBSCRIPTIONS_PROGRAM_ID,
     SYSTEM_PROGRAM_ID,
@@ -493,16 +494,25 @@ impl SubscriptionServer {
                 };
                 if let Some(signature) = sig.as_deref() {
                     let key = format!("solana-subscription:consumed:{signature}");
+                    let binding = serde_json::json!({
+                        "challengeId": credential.challenge.id,
+                    });
                     let inserted = self
                         .store
-                        .put_if_absent(&key, serde_json::Value::Bool(true))
+                        .put_if_absent(&key, binding.clone())
                         .await
                         .map_err(|e| {
                             VerificationError::new(format!(
                                 "Failed to reserve activation signature: {e}"
                             ))
                         })?;
-                    if !inserted {
+                    if !inserted
+                        && self.store.get(&key).await.map_err(|e| {
+                            VerificationError::new(format!(
+                                "Failed to load activation reservation: {e}"
+                            ))
+                        })? != Some(binding)
+                    {
                         return Err(VerificationError::signature_consumed(
                             "Activation signature already consumed",
                         ));
@@ -866,6 +876,8 @@ fn validate_activation_scope(
         parse_pubkey(&config.mint, "mint").map_err(|e| VerificationError::new(e.to_string()))?;
     let token_program = parse_pubkey(&config.token_program, "token_program")
         .map_err(|e| VerificationError::new(e.to_string()))?;
+    let puller = parse_pubkey(&config.puller, "puller")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
 
     let mut subscribe_idx: Option<usize> = None;
     let mut transfer_idx: Option<usize> = None;
@@ -985,6 +997,62 @@ fn validate_activation_scope(
             if transfer_idx.is_some() {
                 return Err(VerificationError::invalid_payload(
                     "Activation tx contains multiple transfer_subscription instructions",
+                ));
+            }
+            if ix.accounts.len() != 10 || ix.data.len() != 73 {
+                return Err(VerificationError::invalid_payload(
+                    "transfer_subscription does not match the Codama v0.5 schema",
+                ));
+            }
+            let account = |position: usize| -> Option<Pubkey> {
+                ix.accounts
+                    .get(position)
+                    .and_then(|index| keys.get(*index as usize))
+                    .copied()
+            };
+            let recipient = parse_pubkey(&request.recipient, "recipient")
+                .map_err(|e| VerificationError::new(e.to_string()))?;
+            let plan_pda = parse_pubkey(&config.plan_id, "plan_id")
+                .map_err(|e| VerificationError::new(e.to_string()))?;
+            let expected_subscription =
+                find_subscription_pda(&plan_pda, &subscriber, &program_id).0;
+            let expected_authority =
+                find_subscription_authority_pda(&subscriber, &mint, &program_id).0;
+            let expected_delegator_ata = Pubkey::find_program_address(
+                &[subscriber.as_ref(), token_program.as_ref(), mint.as_ref()],
+                &associated_token_program,
+            )
+            .0;
+            let expected_receiver_ata = Pubkey::find_program_address(
+                &[recipient.as_ref(), token_program.as_ref(), mint.as_ref()],
+                &associated_token_program,
+            )
+            .0;
+            let expected_event_authority = find_event_authority_pda(&program_id).0;
+            if account(0) != Some(expected_subscription)
+                || account(1) != Some(plan_pda)
+                || account(2) != Some(expected_authority)
+                || account(3) != Some(expected_delegator_ata)
+                || account(4) != Some(expected_receiver_ata)
+                || account(5) != Some(puller)
+                || account(6) != Some(mint)
+                || account(7) != Some(token_program)
+                || account(8) != Some(expected_event_authority)
+                || account(9) != Some(program_id)
+            {
+                return Err(VerificationError::invalid_payload(
+                    "transfer_subscription accounts do not match the challenged activation",
+                ));
+            }
+            let amount = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
+            let delegator = Pubkey::new_from_array(ix.data[9..41].try_into().unwrap());
+            let transfer_mint = Pubkey::new_from_array(ix.data[41..73].try_into().unwrap());
+            let expected_amount = request.amount.parse::<u64>().map_err(|_| {
+                VerificationError::invalid_payload("Challenge amount must be a u64")
+            })?;
+            if amount != expected_amount || delegator != subscriber || transfer_mint != mint {
+                return Err(VerificationError::invalid_payload(
+                    "transfer_subscription data does not match the challenged activation",
                 ));
             }
             transfer_idx = Some(i);
@@ -1462,6 +1530,98 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message.contains("Unsupported program"));
+    }
+
+    #[test]
+    fn activation_scope_rejects_transfer_to_wrong_recipient_ata() {
+        use crate::mpp::program::subscriptions::{
+            build_subscribe_ix, build_transfer_subscription_ix, SubscribeAccounts, SubscribeData,
+            TransferData, TransferSubscriptionAccounts,
+        };
+
+        let subscriber = Pubkey::new_unique();
+        let merchant = Pubkey::new_unique();
+        let puller = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let attacker = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let token_program =
+            Pubkey::from_str_const(crate::mpp::protocol::solana::programs::TOKEN_PROGRAM);
+        let program_id = Pubkey::new_unique();
+        let plan_pda = Pubkey::new_unique();
+        let subscription_pda = find_subscription_pda(&plan_pda, &subscriber, &program_id).0;
+        let authority = find_subscription_authority_pda(&subscriber, &mint, &program_id).0;
+        let event_authority = find_event_authority_pda(&program_id).0;
+        let associated_token_program = Pubkey::from_str_const(ASSOCIATED_TOKEN_PROGRAM_ID);
+        let ata = |owner: &Pubkey| {
+            Pubkey::find_program_address(
+                &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+                &associated_token_program,
+            )
+            .0
+        };
+        let amount = 10_000_000;
+        let subscribe = build_subscribe_ix(
+            program_id,
+            SubscribeAccounts {
+                subscriber,
+                merchant,
+                plan_pda,
+                subscription_pda,
+                subscription_authority_pda: authority,
+                event_authority,
+                payer: None,
+            },
+            &SubscribeData {
+                plan_id: 1,
+                plan_bump: 1,
+                expected_mint: mint,
+                expected_amount: amount,
+                expected_period_hours: 720,
+                expected_created_at: 1,
+                expected_subscription_authority_init_id: 1,
+            },
+        );
+        let transfer = build_transfer_subscription_ix(
+            program_id,
+            TransferSubscriptionAccounts {
+                subscription_pda,
+                plan_pda,
+                subscription_authority: authority,
+                delegator_ata: ata(&subscriber),
+                receiver_ata: ata(&attacker),
+                caller: puller,
+                token_mint: mint,
+                token_program,
+                event_authority,
+            },
+            &TransferData {
+                amount,
+                delegator: subscriber,
+                mint,
+            },
+        );
+        let tx = Transaction::new_unsigned(Message::new(&[subscribe, transfer], Some(&subscriber)));
+        let config = SubscriptionConfig {
+            plan_id: plan_pda.to_string(),
+            mint: mint.to_string(),
+            token_program: token_program.to_string(),
+            puller: puller.to_string(),
+            recipient: recipient.to_string(),
+            challenge_binding_secret: "test-secret".into(),
+            realm: "test-realm".into(),
+            ..Default::default()
+        };
+        let request = SubscriptionRequest {
+            amount: amount.to_string(),
+            recipient: recipient.to_string(),
+            ..Default::default()
+        };
+
+        let err =
+            validate_activation_scope(&tx, &request, &program_id.to_string(), subscriber, &config)
+                .unwrap_err();
+        assert!(err.message.contains("accounts do not match"));
     }
 
     #[test]

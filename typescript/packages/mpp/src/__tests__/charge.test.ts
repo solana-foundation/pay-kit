@@ -1728,6 +1728,24 @@ test('pull: accepts valid native SOL transfer', async () => {
     expect(receipt.reference).toBe(SIGNATURE);
 });
 
+test('pull: identical challenge-bound retry recovers the settled receipt', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const credential = transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), {
+        amount: '1000000',
+    });
+
+    const first = await method.verify({ credential, request: {} as any });
+    const recovered = await method.verify({ credential, request: {} as any });
+
+    expect(recovered.reference).toBe(first.reference);
+});
+
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
     const method = charge({
         recipient: RECIPIENT,

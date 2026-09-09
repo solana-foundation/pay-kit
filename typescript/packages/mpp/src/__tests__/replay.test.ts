@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { Store } from 'mppx/server';
 
-import { reserveReplayKey } from '../server/replay.js';
+import { claimReplayKey, confirmReplayKey, reserveReplayKey } from '../server/replay.js';
 
 describe('reserveReplayKey', () => {
     test('allows exactly one concurrent claimant', async () => {
@@ -11,5 +11,20 @@ describe('reserveReplayKey', () => {
         );
 
         expect(results.filter(Boolean)).toHaveLength(1);
+    });
+});
+
+describe('challenge-bound replay recovery', () => {
+    test('allows the same challenge to resume and rejects a different challenge', async () => {
+        const store = Store.memory();
+        const key = 'solana-charge:consumed:same-signature';
+
+        await expect(claimReplayKey(store, key, 'challenge-a')).resolves.toBe('reserved');
+        await expect(claimReplayKey(store, key, 'challenge-a')).resolves.toBe('pending');
+        await expect(claimReplayKey(store, key, 'challenge-b')).resolves.toBe('conflict');
+
+        await confirmReplayKey(store, key, 'challenge-a');
+        await expect(claimReplayKey(store, key, 'challenge-a')).resolves.toBe('retry');
+        await expect(claimReplayKey(store, key, 'challenge-b')).resolves.toBe('conflict');
     });
 });
