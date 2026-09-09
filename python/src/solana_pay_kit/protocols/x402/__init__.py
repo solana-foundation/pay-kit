@@ -16,7 +16,9 @@ facilitator URL is configured. Self-hosted is the only x402 path that ships.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -61,6 +63,7 @@ _RESPONSE_HEADER = "payment-response"
 # X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
 _RESPONSE_HEADER_LEGACY = "x-payment-response"
 _REPLAY_PREFIX = "x402-svm-exact:consumed:"
+_PENDING_LEASE_SECONDS = 60
 
 
 class X402Adapter:
@@ -230,13 +233,47 @@ class X402Adapter:
             if not signature:
                 raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
 
-            # Replay reservation. Namespace is distinct from the MPP charge key
-            # so an x402 signature can never satisfy an MPP route and vice
-            # versa. Reserve BEFORE confirmation so a concurrent resubmit of the
-            # same signature loses the race and is rejected as consumed.
+            # Replay reservation. Bind the signature to the exact cosigned wire
+            # and distinguish pending from confirmed settlement. A deterministic
+            # recovery key lets exactly one retry take over an expired lease,
+            # even when the store only exposes atomic put-if-absent.
             replay_key = _REPLAY_PREFIX + signature
-            if not await self._store.put_if_absent(replay_key, True):
-                raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+            binding = hashlib.sha256(cosigned_wire).hexdigest()
+            now = time.time()
+            replay_record = {
+                "binding": binding,
+                "leaseUntil": now + _PENDING_LEASE_SECONDS,
+                "state": "pending",
+            }
+            inserted = await self._store.put_if_absent(replay_key, replay_record)
+            skip_confirmation = False
+            if not inserted:
+                current = await self._store.get(replay_key)
+                if not isinstance(current, dict):
+                    raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+                current_record = cast("dict[str, object]", current)
+                if current_record.get("binding") != binding:
+                    raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+                if current_record.get("state") == "confirmed":
+                    skip_confirmation = True
+                elif current_record.get("state") == "pending" and isinstance(
+                    current_record.get("leaseUntil"), int | float
+                ):
+                    lease_until = float(cast("int | float", current_record["leaseUntil"]))
+                    if lease_until > now:
+                        raise InvalidProofError(
+                            "solana_pay_kit: signature_consumed: settlement confirmation is pending",
+                            code="signature_consumed",
+                        )
+                    recovery_key = f"{replay_key}:recovery:{lease_until}"
+                    if not await self._store.put_if_absent(recovery_key, True):
+                        raise InvalidProofError(
+                            "solana_pay_kit: signature_consumed: settlement recovery is in progress",
+                            code="signature_consumed",
+                        )
+                    await self._store.put(replay_key, replay_record)
+                else:
+                    raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
 
             # Await on-chain confirmation BEFORE returning success. Without this
             # the adapter returned a settlement header for a transaction that
@@ -245,18 +282,21 @@ class X402Adapter:
             # ``transaction-failed`` (included but reverted) or
             # ``transaction-not-found`` (never confirmed inside the window).
             #
-            # Keep the reservation after broadcast even when confirmation
-            # fails. A timeout or transport error is ambiguous: the transaction
-            # may still land after this request returns. Releasing the key here
-            # would let the same signed payment race a later request and produce
-            # multiple fulfillments. This mirrors the durable post-broadcast
-            # reservation in the MPP charge flow.
-            try:
-                await rpc.await_confirmation(signature)
-            except Exception as exc:  # noqa: BLE001
-                raise InvalidProofError(
-                    f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
-                ) from exc
+            if not skip_confirmation:
+                try:
+                    await rpc.await_confirmation(signature)
+                    await self._store.put(
+                        replay_key,
+                        {"binding": binding, "leaseUntil": replay_record["leaseUntil"], "state": "confirmed"},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Keep the pending lease after an ambiguous failure. A retry
+                    # can atomically take over after expiry and determine whether
+                    # the transaction landed, without permitting two concurrent
+                    # requests to return successful fulfillment.
+                    raise InvalidProofError(
+                        f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
+                    ) from exc
         finally:
             await rpc.aclose()
 

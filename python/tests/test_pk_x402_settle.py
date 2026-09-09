@@ -184,12 +184,23 @@ async def test_verify_and_settle_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_replay_same_signature_rejected(monkeypatch):
+async def test_replay_same_transaction_recovers_confirmed_settlement(monkeypatch):
+    store = MemoryStore()
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(store=store, signature="SIG-dupe", monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    first = await adapter.verify_and_settle(gate, _Req(header))
+    recovered = await adapter.verify_and_settle(gate, _Req(header))
+    assert recovered.transaction == first.transaction
+    assert rpcs[0].confirm_calls == 1
+    assert rpcs[1].confirm_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_same_signature_with_different_transaction_rejected(monkeypatch):
     store = MemoryStore()
     adapter, gate, op_kp = _adapter(store=store, signature="SIG-dupe", monkeypatch=monkeypatch)
-    header = _build_envelope(adapter, gate, op_kp)
-    await adapter.verify_and_settle(gate, _Req(header))
-    # Second submit of a credential that broadcasts the same signature: consumed.
+    await adapter.verify_and_settle(gate, _Req(_build_envelope(adapter, gate, op_kp)))
     header2 = _build_envelope(adapter, gate, op_kp)
     with pytest.raises(InvalidProofError) as exc:
         await adapter.verify_and_settle(gate, _Req(header2))
@@ -224,6 +235,8 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     from solana_pay_kit._paycore.errors import PaymentError
 
     store = MemoryStore()
+    now = [1_000.0]
+    monkeypatch.setattr(xmod.time, "time", lambda: now[0])
     adapter, gate, op_kp = _adapter(
         store=store,
         signature="SIG-timeout",
@@ -237,12 +250,30 @@ async def test_confirmation_timeout_raises_and_keeps_replay_reservation(monkeypa
     assert "confirmation failed" in str(exc.value)
     # Broadcast was accepted, so a timeout is ambiguous: the transaction may
     # still land. Keep the reservation to prevent a later duplicate fulfillment.
-    assert await store.get("x402-svm-exact:consumed:SIG-timeout") is True
+    record = await store.get("x402-svm-exact:consumed:SIG-timeout")
+    assert isinstance(record, dict)
+    assert record["state"] == "pending"
 
     retry = _build_envelope(adapter, gate, op_kp)
     with pytest.raises(InvalidProofError) as retry_exc:
         await adapter.verify_and_settle(gate, _Req(retry))
     assert retry_exc.value.code == "signature_consumed"
+
+    now[0] += 61
+    recovered_rpcs: list = []
+
+    def _recovery_factory(*_a, **_k):
+        rpc = _FakeRpc(signature="SIG-timeout")
+        recovered_rpcs.append(rpc)
+        return rpc
+
+    monkeypatch.setattr(xmod, "SolanaRpc", _recovery_factory)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == "SIG-timeout"
+    assert recovered_rpcs[0].confirm_calls == 1
+    confirmed_record = await store.get("x402-svm-exact:consumed:SIG-timeout")
+    assert isinstance(confirmed_record, dict)
+    assert confirmed_record["state"] == "confirmed"
 
 
 @pytest.mark.asyncio
@@ -259,7 +290,9 @@ async def test_confirmation_onchain_failure_keeps_replay_reservation(monkeypatch
     header = _build_envelope(adapter, gate, op_kp)
     with pytest.raises(InvalidProofError):
         await adapter.verify_and_settle(gate, _Req(header))
-    assert await store.get("x402-svm-exact:consumed:SIG-revert") is True
+    record = await store.get("x402-svm-exact:consumed:SIG-revert")
+    assert isinstance(record, dict)
+    assert record["state"] == "pending"
 
 
 # -- sub-microunit price truncation (149-2) ----------------------------------
