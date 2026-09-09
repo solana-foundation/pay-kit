@@ -172,6 +172,9 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
         run: |
+          # The hosted runner's unrelated Chrome apt index can briefly serve a
+          # stale hash and block installation of Ubuntu-hosted Lua packages.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
           luajit -v
