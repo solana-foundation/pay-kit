@@ -6,6 +6,7 @@
 //!
 
 pub(crate) mod r#cancel_subscription;
+pub(crate) mod r#cancel_subscription_now;
 pub(crate) mod r#close_subscription_authority;
 pub(crate) mod r#create_fixed_delegation;
 pub(crate) mod r#create_plan;
@@ -13,7 +14,10 @@ pub(crate) mod r#create_recurring_delegation;
 pub(crate) mod r#delete_plan;
 pub(crate) mod r#init_subscription_authority;
 pub(crate) mod r#resume_subscription;
+pub(crate) mod r#revoke_abandoned_delegation;
+pub(crate) mod r#revoke_abandoned_subscription;
 pub(crate) mod r#revoke_delegation;
+pub(crate) mod r#revoke_subscription_authority;
 pub(crate) mod r#subscribe;
 pub(crate) mod r#transfer_fixed;
 pub(crate) mod r#transfer_recurring;
@@ -21,6 +25,7 @@ pub(crate) mod r#transfer_subscription;
 pub(crate) mod r#update_plan;
 
 pub use self::r#cancel_subscription::*;
+pub use self::r#cancel_subscription_now::*;
 pub use self::r#close_subscription_authority::*;
 pub use self::r#create_fixed_delegation::*;
 pub use self::r#create_plan::*;
@@ -28,7 +33,10 @@ pub use self::r#create_recurring_delegation::*;
 pub use self::r#delete_plan::*;
 pub use self::r#init_subscription_authority::*;
 pub use self::r#resume_subscription::*;
+pub use self::r#revoke_abandoned_delegation::*;
+pub use self::r#revoke_abandoned_subscription::*;
 pub use self::r#revoke_delegation::*;
+pub use self::r#revoke_subscription_authority::*;
 pub use self::r#subscribe::*;
 pub use self::r#transfer_fixed::*;
 pub use self::r#transfer_recurring::*;

@@ -31,6 +31,7 @@ local tx_cosign  = require('pay_kit.solana.tx_cosign')
 local x402_verify = require('pay_kit.protocols.x402.exact.verify')
 local tx_mod     = require('pay_kit.solana.transaction')
 local network_check = require('pay_kit.solana.network_check')
+local json        = require('pay_kit.util.json')
 
 local M = {}
 local Adapter = {}
@@ -63,6 +64,8 @@ local LEGACY_PAYMENT_RESPONSE_HEADER = 'x-payment-response'
 local DEFAULT_FIXTURE_SETTLEMENT_HEADER = 'x-payment-settlement-signature'
 local DEFAULT_MAX_TIMEOUT_SECONDS = 60
 local DEFAULT_DECIMALS = 6
+local DEFAULT_CONFIRMATION_ATTEMPTS = 40
+local DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
 local TOKEN_PROGRAM_BASE58 = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 
 local CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
@@ -370,6 +373,39 @@ local function consume_signature(store, signature)
   return true
 end
 
+local function sleep_seconds(seconds)
+  local ngx_global = rawget(_G, 'ngx')
+  if ngx_global and type(ngx_global.sleep) == 'function' then
+    return ngx_global.sleep(seconds)
+  end
+  local ok, socket = pcall(require, 'socket')
+  if ok and socket and type(socket.sleep) == 'function' then
+    return socket.sleep(seconds)
+  end
+  local deadline = os.clock() + seconds
+  while os.clock() < deadline do end
+end
+
+local function await_confirmation(rpc, signature)
+  for attempt = 1, DEFAULT_CONFIRMATION_ATTEMPTS do
+    local statuses = rpc:signature_statuses({signature})
+    local status = statuses and statuses[1]
+    if type(status) == 'table' then
+      if status.err ~= nil and status.err ~= json.null then
+        return nil, 'transaction failed on-chain: ' .. tostring(status.err)
+      end
+      if status.confirmationStatus == 'confirmed' or
+         status.confirmationStatus == 'finalized' then
+        return true
+      end
+    end
+    if attempt < DEFAULT_CONFIRMATION_ATTEMPTS then
+      sleep_seconds(DEFAULT_CONFIRMATION_DELAY_SECONDS)
+    end
+  end
+  return nil, 'timed out waiting for transaction confirmation'
+end
+
 -- --- public API -----------------------------------------------------
 
 function M.new(opts)
@@ -581,6 +617,14 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.SIGNATURE_CONSUMED
   end
 
+  local call_ok, confirmed, confirm_err = pcall(await_confirmation, rpc, signature)
+  if not call_ok then
+    return nil, errors.INVALID_PROOF .. ': confirmation failed: ' .. tostring(confirmed)
+  end
+  if not confirmed then
+    return nil, errors.INVALID_PROOF .. ': confirmation failed: ' .. tostring(confirm_err)
+  end
+
   -- Settlement response. v1 emits X-PAYMENT-RESPONSE carrying the plain SVM
   -- network slug and the payer pubkey (rust v1 settlement shape
   -- { success, transaction, network, payer }); v2 emits PAYMENT-RESPONSE
@@ -630,6 +674,7 @@ M._private = {
   PAYMENT_IDENTIFIER_KEY       = PAYMENT_IDENTIFIER_KEY,
   caip2_network_for_cluster    = caip2_network_for_cluster,
   legacy_network_slug          = legacy_network_slug,
+  await_confirmation           = await_confirmation,
   LEGACY_PAYMENT_HEADER          = LEGACY_PAYMENT_HEADER,
   LEGACY_PAYMENT_RESPONSE_HEADER = LEGACY_PAYMENT_RESPONSE_HEADER,
 }

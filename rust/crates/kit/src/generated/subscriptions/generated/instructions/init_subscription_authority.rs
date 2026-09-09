@@ -25,6 +25,8 @@ pub struct InitSubscriptionAuthority {
     pub system_program: solana_address::Address,
     /// Token program
     pub token_program: solana_address::Address,
+    /// Optional sponsor that funds the account rent. Defaults to the owner/signer when omitted.
+    pub payer: Option<solana_address::Address>,
 }
 
 impl InitSubscriptionAuthority {
@@ -37,7 +39,7 @@ impl InitSubscriptionAuthority {
         &self,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(7 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.owner, true));
         accounts.push(solana_instruction::AccountMeta::new(
             self.subscription_authority,
@@ -56,6 +58,9 @@ impl InitSubscriptionAuthority {
             self.token_program,
             false,
         ));
+        if let Some(payer) = self.payer {
+            accounts.push(solana_instruction::AccountMeta::new(payer, true));
+        }
         accounts.extend_from_slice(remaining_accounts);
         let data = InitSubscriptionAuthorityInstructionData::new()
             .try_to_vec()
@@ -100,6 +105,7 @@ impl Default for InitSubscriptionAuthorityInstructionData {
 ///   3. `[writable]` user_ata
 ///   4. `[optional]` system_program (default to `11111111111111111111111111111111`)
 ///   5. `[]` token_program
+///   6. `[writable, signer, optional]` payer
 #[derive(Clone, Debug, Default)]
 pub struct InitSubscriptionAuthorityBuilder {
     owner: Option<solana_address::Address>,
@@ -108,6 +114,7 @@ pub struct InitSubscriptionAuthorityBuilder {
     user_ata: Option<solana_address::Address>,
     system_program: Option<solana_address::Address>,
     token_program: Option<solana_address::Address>,
+    payer: Option<solana_address::Address>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
@@ -155,6 +162,13 @@ impl InitSubscriptionAuthorityBuilder {
         self.token_program = Some(token_program);
         self
     }
+    /// `[optional account]`
+    /// Optional sponsor that funds the account rent. Defaults to the owner/signer when omitted.
+    #[inline(always)]
+    pub fn payer(&mut self, payer: Option<solana_address::Address>) -> &mut Self {
+        self.payer = payer;
+        self
+    }
     /// Add an additional account to the instruction.
     #[inline(always)]
     pub fn add_remaining_account(&mut self, account: solana_instruction::AccountMeta) -> &mut Self {
@@ -183,6 +197,7 @@ impl InitSubscriptionAuthorityBuilder {
                 .system_program
                 .unwrap_or(solana_address::address!("11111111111111111111111111111111")),
             token_program: self.token_program.expect("token_program is not set"),
+            payer: self.payer,
         };
 
         accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
@@ -203,6 +218,8 @@ pub struct InitSubscriptionAuthorityCpiAccounts<'a, 'b> {
     pub system_program: &'b solana_account_info::AccountInfo<'a>,
     /// Token program
     pub token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Optional sponsor that funds the account rent. Defaults to the owner/signer when omitted.
+    pub payer: Option<&'b solana_account_info::AccountInfo<'a>>,
 }
 
 /// `init_subscription_authority` CPI instruction.
@@ -221,6 +238,8 @@ pub struct InitSubscriptionAuthorityCpi<'a, 'b> {
     pub system_program: &'b solana_account_info::AccountInfo<'a>,
     /// Token program
     pub token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Optional sponsor that funds the account rent. Defaults to the owner/signer when omitted.
+    pub payer: Option<&'b solana_account_info::AccountInfo<'a>>,
 }
 
 impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
@@ -236,6 +255,7 @@ impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
             user_ata: accounts.user_ata,
             system_program: accounts.system_program,
             token_program: accounts.token_program,
+            payer: accounts.payer,
         }
     }
     #[inline(always)]
@@ -261,7 +281,7 @@ impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(7 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(*self.owner.key, true));
         accounts.push(solana_instruction::AccountMeta::new(
             *self.subscription_authority.key,
@@ -283,11 +303,14 @@ impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
             *self.token_program.key,
             false,
         ));
+        if let Some(payer) = self.payer {
+            accounts.push(solana_instruction::AccountMeta::new(*payer.key, true));
+        }
         remaining_accounts.iter().for_each(|remaining_account| {
             accounts.push(solana_instruction::AccountMeta {
                 pubkey: *remaining_account.0.key,
-                is_signer: remaining_account.1,
-                is_writable: remaining_account.2,
+                is_writable: remaining_account.1,
+                is_signer: remaining_account.2,
             })
         });
         let data = InitSubscriptionAuthorityInstructionData::new()
@@ -299,7 +322,7 @@ impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(7 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(8 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.owner.clone());
         account_infos.push(self.subscription_authority.clone());
@@ -307,6 +330,9 @@ impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
         account_infos.push(self.user_ata.clone());
         account_infos.push(self.system_program.clone());
         account_infos.push(self.token_program.clone());
+        if let Some(payer) = self.payer {
+            account_infos.push(payer.clone());
+        }
         remaining_accounts
             .iter()
             .for_each(|remaining_account| account_infos.push(remaining_account.0.clone()));
@@ -329,6 +355,7 @@ impl<'a, 'b> InitSubscriptionAuthorityCpi<'a, 'b> {
 ///   3. `[writable]` user_ata
 ///   4. `[]` system_program
 ///   5. `[]` token_program
+///   6. `[writable, signer, optional]` payer
 #[derive(Clone, Debug)]
 pub struct InitSubscriptionAuthorityCpiBuilder<'a, 'b> {
     instruction: Box<InitSubscriptionAuthorityCpiBuilderInstruction<'a, 'b>>,
@@ -344,6 +371,7 @@ impl<'a, 'b> InitSubscriptionAuthorityCpiBuilder<'a, 'b> {
             user_ata: None,
             system_program: None,
             token_program: None,
+            payer: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
@@ -394,6 +422,13 @@ impl<'a, 'b> InitSubscriptionAuthorityCpiBuilder<'a, 'b> {
         token_program: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.token_program = Some(token_program);
+        self
+    }
+    /// `[optional account]`
+    /// Optional sponsor that funds the account rent. Defaults to the owner/signer when omitted.
+    #[inline(always)]
+    pub fn payer(&mut self, payer: Option<&'b solana_account_info::AccountInfo<'a>>) -> &mut Self {
+        self.instruction.payer = payer;
         self
     }
     /// Add an additional account to the instruction.
@@ -453,6 +488,8 @@ impl<'a, 'b> InitSubscriptionAuthorityCpiBuilder<'a, 'b> {
                 .instruction
                 .token_program
                 .expect("token_program is not set"),
+
+            payer: self.instruction.payer,
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -470,6 +507,7 @@ struct InitSubscriptionAuthorityCpiBuilderInstruction<'a, 'b> {
     user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
     system_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
+    payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

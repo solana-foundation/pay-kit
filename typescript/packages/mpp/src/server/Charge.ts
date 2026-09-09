@@ -27,6 +27,7 @@ import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
+import { reserveReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -784,7 +785,9 @@ async function verifyTransaction(
     // pays but the signature is never recorded, so a retry re-broadcasts (double
     // charge) or replays. Reserving here closes the replay window; the
     // post-timeout status recovery below rescues the false-negative case.
-    await store.put(`solana-charge:consumed:${signature}`, true);
+    if (!(await reserveReplayKey(store, `solana-charge:consumed:${signature}`))) {
+        throw new Error('Transaction signature already consumed');
+    }
 
     // Wait for on-chain confirmation (with a definitive post-timeout status check).
     await waitForConfirmation(rpcUrl, signature);

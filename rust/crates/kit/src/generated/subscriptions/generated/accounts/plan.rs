@@ -38,7 +38,7 @@ impl Plan {
             &[
                 "plan".as_bytes(),
                 owner.as_ref(),
-                plan_id.to_string().as_ref(),
+                &plan_id.to_le_bytes(),
                 &[bump],
             ],
             &crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -47,11 +47,7 @@ impl Plan {
 
     pub fn find_pda(owner: &Address, plan_id: u64) -> (solana_address::Address, u8) {
         solana_address::Address::find_program_address(
-            &[
-                "plan".as_bytes(),
-                owner.as_ref(),
-                plan_id.to_string().as_ref(),
-            ],
+            &["plan".as_bytes(), owner.as_ref(), &plan_id.to_le_bytes()],
             &crate::generated::subscriptions::SUBSCRIPTIONS_ID,
         )
     }

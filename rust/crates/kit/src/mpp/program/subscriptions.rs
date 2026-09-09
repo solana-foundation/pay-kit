@@ -373,6 +373,7 @@ pub fn build_create_plan_ix(
         token_mint: to_addr(&accounts.token_mint),
         system_program: to_addr(&system_program),
         token_program: to_addr(&accounts.token_program),
+        payer: None,
     }
     .instruction(CreatePlanInstructionArgs { plan_data });
     ix.program_id = to_addr(&program_id);
@@ -418,17 +419,9 @@ pub fn build_subscribe_ix(
         system_program: to_addr(&system_program),
         event_authority: to_addr(&accounts.event_authority),
         self_program: to_addr(&program_id),
+        payer: accounts.payer.map(|payer| to_addr(&payer)),
     };
-    // The optional payer rides as a trailing (writable, signer) account, exactly
-    // as the program's `resolve_optional_payer` expects.
-    let remaining: Vec<AccountMeta> = accounts
-        .payer
-        .map(|payer| vec![AccountMeta::new(to_addr(&payer), true)])
-        .unwrap_or_default();
-    let mut ix = gen.instruction_with_remaining_accounts(
-        SubscribeInstructionArgs { subscribe_data },
-        &remaining,
-    );
+    let mut ix = gen.instruction(SubscribeInstructionArgs { subscribe_data });
     ix.program_id = to_addr(&program_id);
     ix
 }
@@ -535,6 +528,7 @@ pub fn build_initialize_subscription_authority_ix(
         user_ata: to_addr(&accounts.user_ata),
         system_program: to_addr(&system_program),
         token_program: to_addr(&accounts.token_program),
+        payer: None,
     }
     .instruction();
     ix.program_id = to_addr(&program_id);

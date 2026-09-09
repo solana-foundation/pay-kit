@@ -44,7 +44,7 @@ impl FixedDelegation {
                 subscription_authority.as_ref(),
                 delegator.as_ref(),
                 delegatee.as_ref(),
-                nonce.to_string().as_ref(),
+                &nonce.to_le_bytes(),
                 &[bump],
             ],
             &crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -63,7 +63,7 @@ impl FixedDelegation {
                 subscription_authority.as_ref(),
                 delegator.as_ref(),
                 delegatee.as_ref(),
-                nonce.to_string().as_ref(),
+                &nonce.to_le_bytes(),
             ],
             &crate::generated::subscriptions::SUBSCRIPTIONS_ID,
         )

@@ -5,19 +5,22 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
+use crate::generated::subscriptions::generated::types::CancelSubscriptionNowData;
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const CANCEL_SUBSCRIPTION_DISCRIMINATOR: u8 = 12;
+pub const CANCEL_SUBSCRIPTION_NOW_DISCRIMINATOR: u8 = 17;
 
 /// Accounts.
 #[derive(Debug)]
-pub struct CancelSubscription {
+pub struct CancelSubscriptionNow {
     /// The subscriber cancelling the subscription
     pub subscriber: solana_address::Address,
+    /// The owner of the subscription plan approving immediate cancellation
+    pub merchant: solana_address::Address,
     /// The plan PDA for the subscription
     pub plan_pda: solana_address::Address,
-    /// The subscription PDA being cancelled
+    /// The subscription PDA being cancelled immediately
     pub subscription_pda: solana_address::Address,
     /// The event authority PDA
     pub event_authority: solana_address::Address,
@@ -25,19 +28,27 @@ pub struct CancelSubscription {
     pub self_program: solana_address::Address,
 }
 
-impl CancelSubscription {
-    pub fn instruction(&self) -> solana_instruction::Instruction {
-        self.instruction_with_remaining_accounts(&[])
+impl CancelSubscriptionNow {
+    pub fn instruction(
+        &self,
+        args: CancelSubscriptionNowInstructionArgs,
+    ) -> solana_instruction::Instruction {
+        self.instruction_with_remaining_accounts(args, &[])
     }
     #[allow(clippy::arithmetic_side_effects)]
     #[allow(clippy::vec_init_then_push)]
     pub fn instruction_with_remaining_accounts(
         &self,
+        args: CancelSubscriptionNowInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.subscriber,
+            true,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.merchant,
             true,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
@@ -57,9 +68,11 @@ impl CancelSubscription {
             false,
         ));
         accounts.extend_from_slice(remaining_accounts);
-        let data = CancelSubscriptionInstructionData::new()
+        let mut data = CancelSubscriptionNowInstructionData::new()
             .try_to_vec()
             .unwrap();
+        let mut args = args.try_to_vec().unwrap();
+        data.append(&mut args);
 
         solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -70,13 +83,13 @@ impl CancelSubscription {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct CancelSubscriptionInstructionData {
+pub struct CancelSubscriptionNowInstructionData {
     discriminator: u8,
 }
 
-impl CancelSubscriptionInstructionData {
+impl CancelSubscriptionNowInstructionData {
     pub fn new() -> Self {
-        Self { discriminator: 12 }
+        Self { discriminator: 17 }
     }
 
     pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
@@ -84,32 +97,46 @@ impl CancelSubscriptionInstructionData {
     }
 }
 
-impl Default for CancelSubscriptionInstructionData {
+impl Default for CancelSubscriptionNowInstructionData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Instruction builder for `CancelSubscription`.
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
+pub struct CancelSubscriptionNowInstructionArgs {
+    pub cancel_subscription_now_data: CancelSubscriptionNowData,
+}
+
+impl CancelSubscriptionNowInstructionArgs {
+    pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
+        borsh::to_vec(self)
+    }
+}
+
+/// Instruction builder for `CancelSubscriptionNow`.
 ///
 /// ### Accounts:
 ///
 ///   0. `[signer]` subscriber
-///   1. `[]` plan_pda
-///   2. `[writable]` subscription_pda
-///   3. `[]` event_authority
-///   4. `[optional]` self_program (default to `De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44`)
+///   1. `[signer]` merchant
+///   2. `[]` plan_pda
+///   3. `[writable]` subscription_pda
+///   4. `[]` event_authority
+///   5. `[optional]` self_program (default to `De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44`)
 #[derive(Clone, Debug, Default)]
-pub struct CancelSubscriptionBuilder {
+pub struct CancelSubscriptionNowBuilder {
     subscriber: Option<solana_address::Address>,
+    merchant: Option<solana_address::Address>,
     plan_pda: Option<solana_address::Address>,
     subscription_pda: Option<solana_address::Address>,
     event_authority: Option<solana_address::Address>,
     self_program: Option<solana_address::Address>,
+    cancel_subscription_now_data: Option<CancelSubscriptionNowData>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl CancelSubscriptionBuilder {
+impl CancelSubscriptionNowBuilder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -119,13 +146,19 @@ impl CancelSubscriptionBuilder {
         self.subscriber = Some(subscriber);
         self
     }
+    /// The owner of the subscription plan approving immediate cancellation
+    #[inline(always)]
+    pub fn merchant(&mut self, merchant: solana_address::Address) -> &mut Self {
+        self.merchant = Some(merchant);
+        self
+    }
     /// The plan PDA for the subscription
     #[inline(always)]
     pub fn plan_pda(&mut self, plan_pda: solana_address::Address) -> &mut Self {
         self.plan_pda = Some(plan_pda);
         self
     }
-    /// The subscription PDA being cancelled
+    /// The subscription PDA being cancelled immediately
     #[inline(always)]
     pub fn subscription_pda(&mut self, subscription_pda: solana_address::Address) -> &mut Self {
         self.subscription_pda = Some(subscription_pda);
@@ -142,6 +175,14 @@ impl CancelSubscriptionBuilder {
     #[inline(always)]
     pub fn self_program(&mut self, self_program: solana_address::Address) -> &mut Self {
         self.self_program = Some(self_program);
+        self
+    }
+    #[inline(always)]
+    pub fn cancel_subscription_now_data(
+        &mut self,
+        cancel_subscription_now_data: CancelSubscriptionNowData,
+    ) -> &mut Self {
+        self.cancel_subscription_now_data = Some(cancel_subscription_now_data);
         self
     }
     /// Add an additional account to the instruction.
@@ -161,8 +202,9 @@ impl CancelSubscriptionBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = CancelSubscription {
+        let accounts = CancelSubscriptionNow {
             subscriber: self.subscriber.expect("subscriber is not set"),
+            merchant: self.merchant.expect("merchant is not set"),
             plan_pda: self.plan_pda.expect("plan_pda is not set"),
             subscription_pda: self.subscription_pda.expect("subscription_pda is not set"),
             event_authority: self.event_authority.expect("event_authority is not set"),
@@ -170,18 +212,26 @@ impl CancelSubscriptionBuilder {
                 "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
             )),
         };
+        let args = CancelSubscriptionNowInstructionArgs {
+            cancel_subscription_now_data: self
+                .cancel_subscription_now_data
+                .clone()
+                .expect("cancel_subscription_now_data is not set"),
+        };
 
-        accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
+        accounts.instruction_with_remaining_accounts(args, &self.__remaining_accounts)
     }
 }
 
-/// `cancel_subscription` CPI accounts.
-pub struct CancelSubscriptionCpiAccounts<'a, 'b> {
+/// `cancel_subscription_now` CPI accounts.
+pub struct CancelSubscriptionNowCpiAccounts<'a, 'b> {
     /// The subscriber cancelling the subscription
     pub subscriber: &'b solana_account_info::AccountInfo<'a>,
+    /// The owner of the subscription plan approving immediate cancellation
+    pub merchant: &'b solana_account_info::AccountInfo<'a>,
     /// The plan PDA for the subscription
     pub plan_pda: &'b solana_account_info::AccountInfo<'a>,
-    /// The subscription PDA being cancelled
+    /// The subscription PDA being cancelled immediately
     pub subscription_pda: &'b solana_account_info::AccountInfo<'a>,
     /// The event authority PDA
     pub event_authority: &'b solana_account_info::AccountInfo<'a>,
@@ -189,34 +239,41 @@ pub struct CancelSubscriptionCpiAccounts<'a, 'b> {
     pub self_program: &'b solana_account_info::AccountInfo<'a>,
 }
 
-/// `cancel_subscription` CPI instruction.
-pub struct CancelSubscriptionCpi<'a, 'b> {
+/// `cancel_subscription_now` CPI instruction.
+pub struct CancelSubscriptionNowCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
     /// The subscriber cancelling the subscription
     pub subscriber: &'b solana_account_info::AccountInfo<'a>,
+    /// The owner of the subscription plan approving immediate cancellation
+    pub merchant: &'b solana_account_info::AccountInfo<'a>,
     /// The plan PDA for the subscription
     pub plan_pda: &'b solana_account_info::AccountInfo<'a>,
-    /// The subscription PDA being cancelled
+    /// The subscription PDA being cancelled immediately
     pub subscription_pda: &'b solana_account_info::AccountInfo<'a>,
     /// The event authority PDA
     pub event_authority: &'b solana_account_info::AccountInfo<'a>,
     /// This program (for self-CPI)
     pub self_program: &'b solana_account_info::AccountInfo<'a>,
+    /// The arguments for the instruction.
+    pub __args: CancelSubscriptionNowInstructionArgs,
 }
 
-impl<'a, 'b> CancelSubscriptionCpi<'a, 'b> {
+impl<'a, 'b> CancelSubscriptionNowCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: CancelSubscriptionCpiAccounts<'a, 'b>,
+        accounts: CancelSubscriptionNowCpiAccounts<'a, 'b>,
+        args: CancelSubscriptionNowInstructionArgs,
     ) -> Self {
         Self {
             __program: program,
             subscriber: accounts.subscriber,
+            merchant: accounts.merchant,
             plan_pda: accounts.plan_pda,
             subscription_pda: accounts.subscription_pda,
             event_authority: accounts.event_authority,
             self_program: accounts.self_program,
+            __args: args,
         }
     }
     #[inline(always)]
@@ -242,9 +299,13 @@ impl<'a, 'b> CancelSubscriptionCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.subscriber.key,
+            true,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.merchant.key,
             true,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
@@ -270,18 +331,21 @@ impl<'a, 'b> CancelSubscriptionCpi<'a, 'b> {
                 is_signer: remaining_account.2,
             })
         });
-        let data = CancelSubscriptionInstructionData::new()
+        let mut data = CancelSubscriptionNowInstructionData::new()
             .try_to_vec()
             .unwrap();
+        let mut args = self.__args.try_to_vec().unwrap();
+        data.append(&mut args);
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(6 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(7 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.subscriber.clone());
+        account_infos.push(self.merchant.clone());
         account_infos.push(self.plan_pda.clone());
         account_infos.push(self.subscription_pda.clone());
         account_infos.push(self.event_authority.clone());
@@ -298,29 +362,32 @@ impl<'a, 'b> CancelSubscriptionCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `CancelSubscription` via CPI.
+/// Instruction builder for `CancelSubscriptionNow` via CPI.
 ///
 /// ### Accounts:
 ///
 ///   0. `[signer]` subscriber
-///   1. `[]` plan_pda
-///   2. `[writable]` subscription_pda
-///   3. `[]` event_authority
-///   4. `[]` self_program
+///   1. `[signer]` merchant
+///   2. `[]` plan_pda
+///   3. `[writable]` subscription_pda
+///   4. `[]` event_authority
+///   5. `[]` self_program
 #[derive(Clone, Debug)]
-pub struct CancelSubscriptionCpiBuilder<'a, 'b> {
-    instruction: Box<CancelSubscriptionCpiBuilderInstruction<'a, 'b>>,
+pub struct CancelSubscriptionNowCpiBuilder<'a, 'b> {
+    instruction: Box<CancelSubscriptionNowCpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> CancelSubscriptionCpiBuilder<'a, 'b> {
+impl<'a, 'b> CancelSubscriptionNowCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(CancelSubscriptionCpiBuilderInstruction {
+        let instruction = Box::new(CancelSubscriptionNowCpiBuilderInstruction {
             __program: program,
             subscriber: None,
+            merchant: None,
             plan_pda: None,
             subscription_pda: None,
             event_authority: None,
             self_program: None,
+            cancel_subscription_now_data: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
@@ -334,13 +401,19 @@ impl<'a, 'b> CancelSubscriptionCpiBuilder<'a, 'b> {
         self.instruction.subscriber = Some(subscriber);
         self
     }
+    /// The owner of the subscription plan approving immediate cancellation
+    #[inline(always)]
+    pub fn merchant(&mut self, merchant: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
+        self.instruction.merchant = Some(merchant);
+        self
+    }
     /// The plan PDA for the subscription
     #[inline(always)]
     pub fn plan_pda(&mut self, plan_pda: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
         self.instruction.plan_pda = Some(plan_pda);
         self
     }
-    /// The subscription PDA being cancelled
+    /// The subscription PDA being cancelled immediately
     #[inline(always)]
     pub fn subscription_pda(
         &mut self,
@@ -365,6 +438,14 @@ impl<'a, 'b> CancelSubscriptionCpiBuilder<'a, 'b> {
         self_program: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.self_program = Some(self_program);
+        self
+    }
+    #[inline(always)]
+    pub fn cancel_subscription_now_data(
+        &mut self,
+        cancel_subscription_now_data: CancelSubscriptionNowData,
+    ) -> &mut Self {
+        self.instruction.cancel_subscription_now_data = Some(cancel_subscription_now_data);
         self
     }
     /// Add an additional account to the instruction.
@@ -401,10 +482,19 @@ impl<'a, 'b> CancelSubscriptionCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let instruction = CancelSubscriptionCpi {
+        let args = CancelSubscriptionNowInstructionArgs {
+            cancel_subscription_now_data: self
+                .instruction
+                .cancel_subscription_now_data
+                .clone()
+                .expect("cancel_subscription_now_data is not set"),
+        };
+        let instruction = CancelSubscriptionNowCpi {
             __program: self.instruction.__program,
 
             subscriber: self.instruction.subscriber.expect("subscriber is not set"),
+
+            merchant: self.instruction.merchant.expect("merchant is not set"),
 
             plan_pda: self.instruction.plan_pda.expect("plan_pda is not set"),
 
@@ -422,6 +512,7 @@ impl<'a, 'b> CancelSubscriptionCpiBuilder<'a, 'b> {
                 .instruction
                 .self_program
                 .expect("self_program is not set"),
+            __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -431,13 +522,15 @@ impl<'a, 'b> CancelSubscriptionCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct CancelSubscriptionCpiBuilderInstruction<'a, 'b> {
+struct CancelSubscriptionNowCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     subscriber: Option<&'b solana_account_info::AccountInfo<'a>>,
+    merchant: Option<&'b solana_account_info::AccountInfo<'a>>,
     plan_pda: Option<&'b solana_account_info::AccountInfo<'a>>,
     subscription_pda: Option<&'b solana_account_info::AccountInfo<'a>>,
     event_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     self_program: Option<&'b solana_account_info::AccountInfo<'a>>,
+    cancel_subscription_now_data: Option<CancelSubscriptionNowData>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

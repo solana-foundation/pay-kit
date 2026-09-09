@@ -5,53 +5,52 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
-use crate::generated::subscriptions::generated::types::UpdatePlanData;
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const UPDATE_PLAN_DISCRIMINATOR: u8 = 8;
+pub const REVOKE_ABANDONED_SUBSCRIPTION_DISCRIMINATOR: u8 = 16;
 
 /// Accounts.
 #[derive(Debug)]
-pub struct UpdatePlan {
-    /// The plan owner updating the plan
-    pub owner: solana_address::Address,
-    /// The plan PDA being updated
+pub struct RevokeAbandonedSubscription {
+    /// The recorded payer reclaiming rent
+    pub payer: solana_address::Address,
+    /// The abandoned subscription PDA to close
+    pub subscription_account: solana_address::Address,
+    /// The subscriber's recorded SubscriptionAuthority PDA for the plan's mint (may be closed)
+    pub subscription_authority: solana_address::Address,
+    /// The plan the subscription belongs to; provides the mint
     pub plan_pda: solana_address::Address,
-    /// The event authority PDA
-    pub event_authority: solana_address::Address,
-    /// This program (for self-CPI)
-    pub self_program: solana_address::Address,
 }
 
-impl UpdatePlan {
-    pub fn instruction(&self, args: UpdatePlanInstructionArgs) -> solana_instruction::Instruction {
-        self.instruction_with_remaining_accounts(args, &[])
+impl RevokeAbandonedSubscription {
+    pub fn instruction(&self) -> solana_instruction::Instruction {
+        self.instruction_with_remaining_accounts(&[])
     }
     #[allow(clippy::arithmetic_side_effects)]
     #[allow(clippy::vec_init_then_push)]
     pub fn instruction_with_remaining_accounts(
         &self,
-        args: UpdatePlanInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
         let mut accounts = Vec::with_capacity(4 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
-            self.owner, true,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new(self.plan_pda, false));
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
-            self.event_authority,
+        accounts.push(solana_instruction::AccountMeta::new(self.payer, true));
+        accounts.push(solana_instruction::AccountMeta::new(
+            self.subscription_account,
             false,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
-            self.self_program,
+            self.subscription_authority,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.plan_pda,
             false,
         ));
         accounts.extend_from_slice(remaining_accounts);
-        let mut data = UpdatePlanInstructionData::new().try_to_vec().unwrap();
-        let mut args = args.try_to_vec().unwrap();
-        data.append(&mut args);
+        let data = RevokeAbandonedSubscriptionInstructionData::new()
+            .try_to_vec()
+            .unwrap();
 
         solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -62,13 +61,13 @@ impl UpdatePlan {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct UpdatePlanInstructionData {
+pub struct RevokeAbandonedSubscriptionInstructionData {
     discriminator: u8,
 }
 
-impl UpdatePlanInstructionData {
+impl RevokeAbandonedSubscriptionInstructionData {
     pub fn new() -> Self {
-        Self { discriminator: 8 }
+        Self { discriminator: 16 }
     }
 
     pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
@@ -76,73 +75,61 @@ impl UpdatePlanInstructionData {
     }
 }
 
-impl Default for UpdatePlanInstructionData {
+impl Default for RevokeAbandonedSubscriptionInstructionData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct UpdatePlanInstructionArgs {
-    pub update_plan_data: UpdatePlanData,
-}
-
-impl UpdatePlanInstructionArgs {
-    pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
-        borsh::to_vec(self)
-    }
-}
-
-/// Instruction builder for `UpdatePlan`.
+/// Instruction builder for `RevokeAbandonedSubscription`.
 ///
 /// ### Accounts:
 ///
-///   0. `[signer]` owner
-///   1. `[writable]` plan_pda
-///   2. `[]` event_authority
-///   3. `[optional]` self_program (default to `De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44`)
+///   0. `[writable, signer]` payer
+///   1. `[writable]` subscription_account
+///   2. `[]` subscription_authority
+///   3. `[]` plan_pda
 #[derive(Clone, Debug, Default)]
-pub struct UpdatePlanBuilder {
-    owner: Option<solana_address::Address>,
+pub struct RevokeAbandonedSubscriptionBuilder {
+    payer: Option<solana_address::Address>,
+    subscription_account: Option<solana_address::Address>,
+    subscription_authority: Option<solana_address::Address>,
     plan_pda: Option<solana_address::Address>,
-    event_authority: Option<solana_address::Address>,
-    self_program: Option<solana_address::Address>,
-    update_plan_data: Option<UpdatePlanData>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl UpdatePlanBuilder {
+impl RevokeAbandonedSubscriptionBuilder {
     pub fn new() -> Self {
         Self::default()
     }
-    /// The plan owner updating the plan
+    /// The recorded payer reclaiming rent
     #[inline(always)]
-    pub fn owner(&mut self, owner: solana_address::Address) -> &mut Self {
-        self.owner = Some(owner);
+    pub fn payer(&mut self, payer: solana_address::Address) -> &mut Self {
+        self.payer = Some(payer);
         self
     }
-    /// The plan PDA being updated
+    /// The abandoned subscription PDA to close
+    #[inline(always)]
+    pub fn subscription_account(
+        &mut self,
+        subscription_account: solana_address::Address,
+    ) -> &mut Self {
+        self.subscription_account = Some(subscription_account);
+        self
+    }
+    /// The subscriber's recorded SubscriptionAuthority PDA for the plan's mint (may be closed)
+    #[inline(always)]
+    pub fn subscription_authority(
+        &mut self,
+        subscription_authority: solana_address::Address,
+    ) -> &mut Self {
+        self.subscription_authority = Some(subscription_authority);
+        self
+    }
+    /// The plan the subscription belongs to; provides the mint
     #[inline(always)]
     pub fn plan_pda(&mut self, plan_pda: solana_address::Address) -> &mut Self {
         self.plan_pda = Some(plan_pda);
-        self
-    }
-    /// The event authority PDA
-    #[inline(always)]
-    pub fn event_authority(&mut self, event_authority: solana_address::Address) -> &mut Self {
-        self.event_authority = Some(event_authority);
-        self
-    }
-    /// `[optional account, default to 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44']`
-    /// This program (for self-CPI)
-    #[inline(always)]
-    pub fn self_program(&mut self, self_program: solana_address::Address) -> &mut Self {
-        self.self_program = Some(self_program);
-        self
-    }
-    #[inline(always)]
-    pub fn update_plan_data(&mut self, update_plan_data: UpdatePlanData) -> &mut Self {
-        self.update_plan_data = Some(update_plan_data);
         self
     }
     /// Add an additional account to the instruction.
@@ -162,66 +149,58 @@ impl UpdatePlanBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = UpdatePlan {
-            owner: self.owner.expect("owner is not set"),
+        let accounts = RevokeAbandonedSubscription {
+            payer: self.payer.expect("payer is not set"),
+            subscription_account: self
+                .subscription_account
+                .expect("subscription_account is not set"),
+            subscription_authority: self
+                .subscription_authority
+                .expect("subscription_authority is not set"),
             plan_pda: self.plan_pda.expect("plan_pda is not set"),
-            event_authority: self.event_authority.expect("event_authority is not set"),
-            self_program: self.self_program.unwrap_or(solana_address::address!(
-                "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
-            )),
-        };
-        let args = UpdatePlanInstructionArgs {
-            update_plan_data: self
-                .update_plan_data
-                .clone()
-                .expect("update_plan_data is not set"),
         };
 
-        accounts.instruction_with_remaining_accounts(args, &self.__remaining_accounts)
+        accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
     }
 }
 
-/// `update_plan` CPI accounts.
-pub struct UpdatePlanCpiAccounts<'a, 'b> {
-    /// The plan owner updating the plan
-    pub owner: &'b solana_account_info::AccountInfo<'a>,
-    /// The plan PDA being updated
+/// `revoke_abandoned_subscription` CPI accounts.
+pub struct RevokeAbandonedSubscriptionCpiAccounts<'a, 'b> {
+    /// The recorded payer reclaiming rent
+    pub payer: &'b solana_account_info::AccountInfo<'a>,
+    /// The abandoned subscription PDA to close
+    pub subscription_account: &'b solana_account_info::AccountInfo<'a>,
+    /// The subscriber's recorded SubscriptionAuthority PDA for the plan's mint (may be closed)
+    pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
+    /// The plan the subscription belongs to; provides the mint
     pub plan_pda: &'b solana_account_info::AccountInfo<'a>,
-    /// The event authority PDA
-    pub event_authority: &'b solana_account_info::AccountInfo<'a>,
-    /// This program (for self-CPI)
-    pub self_program: &'b solana_account_info::AccountInfo<'a>,
 }
 
-/// `update_plan` CPI instruction.
-pub struct UpdatePlanCpi<'a, 'b> {
+/// `revoke_abandoned_subscription` CPI instruction.
+pub struct RevokeAbandonedSubscriptionCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
-    /// The plan owner updating the plan
-    pub owner: &'b solana_account_info::AccountInfo<'a>,
-    /// The plan PDA being updated
+    /// The recorded payer reclaiming rent
+    pub payer: &'b solana_account_info::AccountInfo<'a>,
+    /// The abandoned subscription PDA to close
+    pub subscription_account: &'b solana_account_info::AccountInfo<'a>,
+    /// The subscriber's recorded SubscriptionAuthority PDA for the plan's mint (may be closed)
+    pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
+    /// The plan the subscription belongs to; provides the mint
     pub plan_pda: &'b solana_account_info::AccountInfo<'a>,
-    /// The event authority PDA
-    pub event_authority: &'b solana_account_info::AccountInfo<'a>,
-    /// This program (for self-CPI)
-    pub self_program: &'b solana_account_info::AccountInfo<'a>,
-    /// The arguments for the instruction.
-    pub __args: UpdatePlanInstructionArgs,
 }
 
-impl<'a, 'b> UpdatePlanCpi<'a, 'b> {
+impl<'a, 'b> RevokeAbandonedSubscriptionCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: UpdatePlanCpiAccounts<'a, 'b>,
-        args: UpdatePlanInstructionArgs,
+        accounts: RevokeAbandonedSubscriptionCpiAccounts<'a, 'b>,
     ) -> Self {
         Self {
             __program: program,
-            owner: accounts.owner,
+            payer: accounts.payer,
+            subscription_account: accounts.subscription_account,
+            subscription_authority: accounts.subscription_authority,
             plan_pda: accounts.plan_pda,
-            event_authority: accounts.event_authority,
-            self_program: accounts.self_program,
-            __args: args,
         }
     }
     #[inline(always)]
@@ -248,20 +227,17 @@ impl<'a, 'b> UpdatePlanCpi<'a, 'b> {
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
         let mut accounts = Vec::with_capacity(4 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
-            *self.owner.key,
-            true,
-        ));
+        accounts.push(solana_instruction::AccountMeta::new(*self.payer.key, true));
         accounts.push(solana_instruction::AccountMeta::new(
+            *self.subscription_account.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.subscription_authority.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.plan_pda.key,
-            false,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
-            *self.event_authority.key,
-            false,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
-            *self.self_program.key,
             false,
         ));
         remaining_accounts.iter().for_each(|remaining_account| {
@@ -271,9 +247,9 @@ impl<'a, 'b> UpdatePlanCpi<'a, 'b> {
                 is_signer: remaining_account.2,
             })
         });
-        let mut data = UpdatePlanInstructionData::new().try_to_vec().unwrap();
-        let mut args = self.__args.try_to_vec().unwrap();
-        data.append(&mut args);
+        let data = RevokeAbandonedSubscriptionInstructionData::new()
+            .try_to_vec()
+            .unwrap();
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -282,10 +258,10 @@ impl<'a, 'b> UpdatePlanCpi<'a, 'b> {
         };
         let mut account_infos = Vec::with_capacity(5 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
-        account_infos.push(self.owner.clone());
+        account_infos.push(self.payer.clone());
+        account_infos.push(self.subscription_account.clone());
+        account_infos.push(self.subscription_authority.clone());
         account_infos.push(self.plan_pda.clone());
-        account_infos.push(self.event_authority.clone());
-        account_infos.push(self.self_program.clone());
         remaining_accounts
             .iter()
             .for_each(|remaining_account| account_infos.push(remaining_account.0.clone()));
@@ -298,65 +274,59 @@ impl<'a, 'b> UpdatePlanCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `UpdatePlan` via CPI.
+/// Instruction builder for `RevokeAbandonedSubscription` via CPI.
 ///
 /// ### Accounts:
 ///
-///   0. `[signer]` owner
-///   1. `[writable]` plan_pda
-///   2. `[]` event_authority
-///   3. `[]` self_program
+///   0. `[writable, signer]` payer
+///   1. `[writable]` subscription_account
+///   2. `[]` subscription_authority
+///   3. `[]` plan_pda
 #[derive(Clone, Debug)]
-pub struct UpdatePlanCpiBuilder<'a, 'b> {
-    instruction: Box<UpdatePlanCpiBuilderInstruction<'a, 'b>>,
+pub struct RevokeAbandonedSubscriptionCpiBuilder<'a, 'b> {
+    instruction: Box<RevokeAbandonedSubscriptionCpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> UpdatePlanCpiBuilder<'a, 'b> {
+impl<'a, 'b> RevokeAbandonedSubscriptionCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(UpdatePlanCpiBuilderInstruction {
+        let instruction = Box::new(RevokeAbandonedSubscriptionCpiBuilderInstruction {
             __program: program,
-            owner: None,
+            payer: None,
+            subscription_account: None,
+            subscription_authority: None,
             plan_pda: None,
-            event_authority: None,
-            self_program: None,
-            update_plan_data: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
     }
-    /// The plan owner updating the plan
+    /// The recorded payer reclaiming rent
     #[inline(always)]
-    pub fn owner(&mut self, owner: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
-        self.instruction.owner = Some(owner);
+    pub fn payer(&mut self, payer: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
+        self.instruction.payer = Some(payer);
         self
     }
-    /// The plan PDA being updated
+    /// The abandoned subscription PDA to close
+    #[inline(always)]
+    pub fn subscription_account(
+        &mut self,
+        subscription_account: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.subscription_account = Some(subscription_account);
+        self
+    }
+    /// The subscriber's recorded SubscriptionAuthority PDA for the plan's mint (may be closed)
+    #[inline(always)]
+    pub fn subscription_authority(
+        &mut self,
+        subscription_authority: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.subscription_authority = Some(subscription_authority);
+        self
+    }
+    /// The plan the subscription belongs to; provides the mint
     #[inline(always)]
     pub fn plan_pda(&mut self, plan_pda: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
         self.instruction.plan_pda = Some(plan_pda);
-        self
-    }
-    /// The event authority PDA
-    #[inline(always)]
-    pub fn event_authority(
-        &mut self,
-        event_authority: &'b solana_account_info::AccountInfo<'a>,
-    ) -> &mut Self {
-        self.instruction.event_authority = Some(event_authority);
-        self
-    }
-    /// This program (for self-CPI)
-    #[inline(always)]
-    pub fn self_program(
-        &mut self,
-        self_program: &'b solana_account_info::AccountInfo<'a>,
-    ) -> &mut Self {
-        self.instruction.self_program = Some(self_program);
-        self
-    }
-    #[inline(always)]
-    pub fn update_plan_data(&mut self, update_plan_data: UpdatePlanData) -> &mut Self {
-        self.instruction.update_plan_data = Some(update_plan_data);
         self
     }
     /// Add an additional account to the instruction.
@@ -393,30 +363,22 @@ impl<'a, 'b> UpdatePlanCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let args = UpdatePlanInstructionArgs {
-            update_plan_data: self
-                .instruction
-                .update_plan_data
-                .clone()
-                .expect("update_plan_data is not set"),
-        };
-        let instruction = UpdatePlanCpi {
+        let instruction = RevokeAbandonedSubscriptionCpi {
             __program: self.instruction.__program,
 
-            owner: self.instruction.owner.expect("owner is not set"),
+            payer: self.instruction.payer.expect("payer is not set"),
+
+            subscription_account: self
+                .instruction
+                .subscription_account
+                .expect("subscription_account is not set"),
+
+            subscription_authority: self
+                .instruction
+                .subscription_authority
+                .expect("subscription_authority is not set"),
 
             plan_pda: self.instruction.plan_pda.expect("plan_pda is not set"),
-
-            event_authority: self
-                .instruction
-                .event_authority
-                .expect("event_authority is not set"),
-
-            self_program: self
-                .instruction
-                .self_program
-                .expect("self_program is not set"),
-            __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -426,13 +388,12 @@ impl<'a, 'b> UpdatePlanCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct UpdatePlanCpiBuilderInstruction<'a, 'b> {
+struct RevokeAbandonedSubscriptionCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
-    owner: Option<&'b solana_account_info::AccountInfo<'a>>,
+    payer: Option<&'b solana_account_info::AccountInfo<'a>>,
+    subscription_account: Option<&'b solana_account_info::AccountInfo<'a>>,
+    subscription_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     plan_pda: Option<&'b solana_account_info::AccountInfo<'a>>,
-    event_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
-    self_program: Option<&'b solana_account_info::AccountInfo<'a>>,
-    update_plan_data: Option<UpdatePlanData>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

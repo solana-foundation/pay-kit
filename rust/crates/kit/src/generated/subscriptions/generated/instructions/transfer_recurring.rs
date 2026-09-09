@@ -143,7 +143,7 @@ impl TransferRecurringInstructionArgs {
 ///   4. `[]` token_mint
 ///   5. `[]` token_program
 ///   6. `[signer]` delegatee
-///   7. `[optional]` event_authority (default to `3Hnj4BYoDgtpBuqXfiy7Y8cNa3jXaNd4oqgSXBzkMcH7`)
+///   7. `[]` event_authority
 ///   8. `[optional]` self_program (default to `De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44`)
 #[derive(Clone, Debug, Default)]
 pub struct TransferRecurringBuilder {
@@ -209,7 +209,6 @@ impl TransferRecurringBuilder {
         self.delegatee = Some(delegatee);
         self
     }
-    /// `[optional account, default to '3Hnj4BYoDgtpBuqXfiy7Y8cNa3jXaNd4oqgSXBzkMcH7']`
     /// The event authority PDA
     #[inline(always)]
     pub fn event_authority(&mut self, event_authority: solana_address::Address) -> &mut Self {
@@ -255,9 +254,7 @@ impl TransferRecurringBuilder {
             token_mint: self.token_mint.expect("token_mint is not set"),
             token_program: self.token_program.expect("token_program is not set"),
             delegatee: self.delegatee.expect("delegatee is not set"),
-            event_authority: self.event_authority.unwrap_or(solana_address::address!(
-                "3Hnj4BYoDgtpBuqXfiy7Y8cNa3jXaNd4oqgSXBzkMcH7"
-            )),
+            event_authority: self.event_authority.expect("event_authority is not set"),
             self_program: self.self_program.unwrap_or(solana_address::address!(
                 "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
             )),
@@ -404,8 +401,8 @@ impl<'a, 'b> TransferRecurringCpi<'a, 'b> {
         remaining_accounts.iter().for_each(|remaining_account| {
             accounts.push(solana_instruction::AccountMeta {
                 pubkey: *remaining_account.0.key,
-                is_signer: remaining_account.1,
-                is_writable: remaining_account.2,
+                is_writable: remaining_account.1,
+                is_signer: remaining_account.2,
             })
         });
         let mut data = TransferRecurringInstructionData::new()

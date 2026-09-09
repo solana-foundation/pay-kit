@@ -7,16 +7,8 @@
 
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
-use solana_address::Address;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct UpdatePlanData {
-    pub status: u8,
-    pub end_ts: i64,
-    pub pullers: [Address; 4],
-    pub metadata_uri: [u8; 128],
-    pub expected_created_at: i64,
-    pub expected_end_ts: i64,
-    pub expected_pullers: [Address; 4],
-    pub expected_metadata_uri: [u8; 128],
+pub struct ResumeData {
+    pub expected_expires_at_ts: i64,
 }

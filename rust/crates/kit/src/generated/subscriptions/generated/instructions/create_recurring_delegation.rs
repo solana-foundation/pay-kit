@@ -24,6 +24,8 @@ pub struct CreateRecurringDelegation {
     pub delegatee: solana_address::Address,
     /// The system program
     pub system_program: solana_address::Address,
+    /// Optional sponsor that funds the account rent. Defaults to the delegator/signer when omitted.
+    pub payer: Option<solana_address::Address>,
 }
 
 impl CreateRecurringDelegation {
@@ -40,7 +42,7 @@ impl CreateRecurringDelegation {
         args: CreateRecurringDelegationInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.delegator, true));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.subscription_authority,
@@ -58,6 +60,9 @@ impl CreateRecurringDelegation {
             self.system_program,
             false,
         ));
+        if let Some(payer) = self.payer {
+            accounts.push(solana_instruction::AccountMeta::new(payer, true));
+        }
         accounts.extend_from_slice(remaining_accounts);
         let mut data = CreateRecurringDelegationInstructionData::new()
             .try_to_vec()
@@ -114,6 +119,7 @@ impl CreateRecurringDelegationInstructionArgs {
 ///   2. `[writable]` delegation_account
 ///   3. `[]` delegatee
 ///   4. `[optional]` system_program (default to `11111111111111111111111111111111`)
+///   5. `[writable, signer, optional]` payer
 #[derive(Clone, Debug, Default)]
 pub struct CreateRecurringDelegationBuilder {
     delegator: Option<solana_address::Address>,
@@ -121,6 +127,7 @@ pub struct CreateRecurringDelegationBuilder {
     delegation_account: Option<solana_address::Address>,
     delegatee: Option<solana_address::Address>,
     system_program: Option<solana_address::Address>,
+    payer: Option<solana_address::Address>,
     recurring_delegation: Option<CreateRecurringDelegationData>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
@@ -163,6 +170,13 @@ impl CreateRecurringDelegationBuilder {
         self.system_program = Some(system_program);
         self
     }
+    /// `[optional account]`
+    /// Optional sponsor that funds the account rent. Defaults to the delegator/signer when omitted.
+    #[inline(always)]
+    pub fn payer(&mut self, payer: Option<solana_address::Address>) -> &mut Self {
+        self.payer = payer;
+        self
+    }
     #[inline(always)]
     pub fn recurring_delegation(
         &mut self,
@@ -200,6 +214,7 @@ impl CreateRecurringDelegationBuilder {
             system_program: self
                 .system_program
                 .unwrap_or(solana_address::address!("11111111111111111111111111111111")),
+            payer: self.payer,
         };
         let args = CreateRecurringDelegationInstructionArgs {
             recurring_delegation: self
@@ -224,6 +239,8 @@ pub struct CreateRecurringDelegationCpiAccounts<'a, 'b> {
     pub delegatee: &'b solana_account_info::AccountInfo<'a>,
     /// The system program
     pub system_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Optional sponsor that funds the account rent. Defaults to the delegator/signer when omitted.
+    pub payer: Option<&'b solana_account_info::AccountInfo<'a>>,
 }
 
 /// `create_recurring_delegation` CPI instruction.
@@ -240,6 +257,8 @@ pub struct CreateRecurringDelegationCpi<'a, 'b> {
     pub delegatee: &'b solana_account_info::AccountInfo<'a>,
     /// The system program
     pub system_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Optional sponsor that funds the account rent. Defaults to the delegator/signer when omitted.
+    pub payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// The arguments for the instruction.
     pub __args: CreateRecurringDelegationInstructionArgs,
 }
@@ -257,6 +276,7 @@ impl<'a, 'b> CreateRecurringDelegationCpi<'a, 'b> {
             delegation_account: accounts.delegation_account,
             delegatee: accounts.delegatee,
             system_program: accounts.system_program,
+            payer: accounts.payer,
             __args: args,
         }
     }
@@ -283,7 +303,7 @@ impl<'a, 'b> CreateRecurringDelegationCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(
             *self.delegator.key,
             true,
@@ -304,11 +324,14 @@ impl<'a, 'b> CreateRecurringDelegationCpi<'a, 'b> {
             *self.system_program.key,
             false,
         ));
+        if let Some(payer) = self.payer {
+            accounts.push(solana_instruction::AccountMeta::new(*payer.key, true));
+        }
         remaining_accounts.iter().for_each(|remaining_account| {
             accounts.push(solana_instruction::AccountMeta {
                 pubkey: *remaining_account.0.key,
-                is_signer: remaining_account.1,
-                is_writable: remaining_account.2,
+                is_writable: remaining_account.1,
+                is_signer: remaining_account.2,
             })
         });
         let mut data = CreateRecurringDelegationInstructionData::new()
@@ -322,13 +345,16 @@ impl<'a, 'b> CreateRecurringDelegationCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(6 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(7 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.delegator.clone());
         account_infos.push(self.subscription_authority.clone());
         account_infos.push(self.delegation_account.clone());
         account_infos.push(self.delegatee.clone());
         account_infos.push(self.system_program.clone());
+        if let Some(payer) = self.payer {
+            account_infos.push(payer.clone());
+        }
         remaining_accounts
             .iter()
             .for_each(|remaining_account| account_infos.push(remaining_account.0.clone()));
@@ -350,6 +376,7 @@ impl<'a, 'b> CreateRecurringDelegationCpi<'a, 'b> {
 ///   2. `[writable]` delegation_account
 ///   3. `[]` delegatee
 ///   4. `[]` system_program
+///   5. `[writable, signer, optional]` payer
 #[derive(Clone, Debug)]
 pub struct CreateRecurringDelegationCpiBuilder<'a, 'b> {
     instruction: Box<CreateRecurringDelegationCpiBuilderInstruction<'a, 'b>>,
@@ -364,6 +391,7 @@ impl<'a, 'b> CreateRecurringDelegationCpiBuilder<'a, 'b> {
             delegation_account: None,
             delegatee: None,
             system_program: None,
+            payer: None,
             recurring_delegation: None,
             __remaining_accounts: Vec::new(),
         });
@@ -406,6 +434,13 @@ impl<'a, 'b> CreateRecurringDelegationCpiBuilder<'a, 'b> {
         system_program: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.system_program = Some(system_program);
+        self
+    }
+    /// `[optional account]`
+    /// Optional sponsor that funds the account rent. Defaults to the delegator/signer when omitted.
+    #[inline(always)]
+    pub fn payer(&mut self, payer: Option<&'b solana_account_info::AccountInfo<'a>>) -> &mut Self {
+        self.instruction.payer = payer;
         self
     }
     #[inline(always)]
@@ -478,6 +513,8 @@ impl<'a, 'b> CreateRecurringDelegationCpiBuilder<'a, 'b> {
                 .instruction
                 .system_program
                 .expect("system_program is not set"),
+
+            payer: self.instruction.payer,
             __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
@@ -495,6 +532,7 @@ struct CreateRecurringDelegationCpiBuilderInstruction<'a, 'b> {
     delegation_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     delegatee: Option<&'b solana_account_info::AccountInfo<'a>>,
     system_program: Option<&'b solana_account_info::AccountInfo<'a>>,
+    payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     recurring_delegation: Option<CreateRecurringDelegationData>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,

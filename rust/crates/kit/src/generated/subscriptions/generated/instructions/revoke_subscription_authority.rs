@@ -8,20 +8,26 @@
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const CLOSE_SUBSCRIPTION_AUTHORITY_DISCRIMINATOR: u8 = 6;
+pub const REVOKE_SUBSCRIPTION_AUTHORITY_DISCRIMINATOR: u8 = 14;
 
 /// Accounts.
 #[derive(Debug)]
-pub struct CloseSubscriptionAuthority {
-    /// The user who owns the SubscriptionAuthority PDA (receives rent)
+pub struct RevokeSubscriptionAuthority {
+    /// The ATA owner: revokes the program's delegate and, when still open, closes the SubscriptionAuthority PDA (receives rent when self-funded)
     pub user: solana_address::Address,
-    /// The SubscriptionAuthority PDA to close
+    /// The user's ATA whose delegate is being revoked
+    pub user_ata: solana_address::Address,
+    /// The token mint of the user's ATA
+    pub token_mint: solana_address::Address,
+    /// Token program
+    pub token_program: solana_address::Address,
+    /// The SubscriptionAuthority PDA. Closed when still open; ignored when already closed.
     pub subscription_authority: solana_address::Address,
-    /// Optional rent recipient, required when the recorded payer differs from the user. Must match the stored payer.
+    /// Optional rent recipient, required when the SubscriptionAuthority is still open and its recorded payer differs from the user. Must match the stored payer.
     pub receiver: Option<solana_address::Address>,
 }
 
-impl CloseSubscriptionAuthority {
+impl RevokeSubscriptionAuthority {
     pub fn instruction(&self) -> solana_instruction::Instruction {
         self.instruction_with_remaining_accounts(&[])
     }
@@ -31,8 +37,17 @@ impl CloseSubscriptionAuthority {
         &self,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(3 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.user, true));
+        accounts.push(solana_instruction::AccountMeta::new(self.user_ata, false));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.token_mint,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.token_program,
+            false,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(
             self.subscription_authority,
             false,
@@ -41,7 +56,7 @@ impl CloseSubscriptionAuthority {
             accounts.push(solana_instruction::AccountMeta::new(receiver, false));
         }
         accounts.extend_from_slice(remaining_accounts);
-        let data = CloseSubscriptionAuthorityInstructionData::new()
+        let data = RevokeSubscriptionAuthorityInstructionData::new()
             .try_to_vec()
             .unwrap();
 
@@ -54,13 +69,13 @@ impl CloseSubscriptionAuthority {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct CloseSubscriptionAuthorityInstructionData {
+pub struct RevokeSubscriptionAuthorityInstructionData {
     discriminator: u8,
 }
 
-impl CloseSubscriptionAuthorityInstructionData {
+impl RevokeSubscriptionAuthorityInstructionData {
     pub fn new() -> Self {
-        Self { discriminator: 6 }
+        Self { discriminator: 14 }
     }
 
     pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
@@ -68,38 +83,62 @@ impl CloseSubscriptionAuthorityInstructionData {
     }
 }
 
-impl Default for CloseSubscriptionAuthorityInstructionData {
+impl Default for RevokeSubscriptionAuthorityInstructionData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Instruction builder for `CloseSubscriptionAuthority`.
+/// Instruction builder for `RevokeSubscriptionAuthority`.
 ///
 /// ### Accounts:
 ///
 ///   0. `[writable, signer]` user
-///   1. `[writable]` subscription_authority
-///   2. `[writable, optional]` receiver
+///   1. `[writable]` user_ata
+///   2. `[]` token_mint
+///   3. `[]` token_program
+///   4. `[writable]` subscription_authority
+///   5. `[writable, optional]` receiver
 #[derive(Clone, Debug, Default)]
-pub struct CloseSubscriptionAuthorityBuilder {
+pub struct RevokeSubscriptionAuthorityBuilder {
     user: Option<solana_address::Address>,
+    user_ata: Option<solana_address::Address>,
+    token_mint: Option<solana_address::Address>,
+    token_program: Option<solana_address::Address>,
     subscription_authority: Option<solana_address::Address>,
     receiver: Option<solana_address::Address>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl CloseSubscriptionAuthorityBuilder {
+impl RevokeSubscriptionAuthorityBuilder {
     pub fn new() -> Self {
         Self::default()
     }
-    /// The user who owns the SubscriptionAuthority PDA (receives rent)
+    /// The ATA owner: revokes the program's delegate and, when still open, closes the SubscriptionAuthority PDA (receives rent when self-funded)
     #[inline(always)]
     pub fn user(&mut self, user: solana_address::Address) -> &mut Self {
         self.user = Some(user);
         self
     }
-    /// The SubscriptionAuthority PDA to close
+    /// The user's ATA whose delegate is being revoked
+    #[inline(always)]
+    pub fn user_ata(&mut self, user_ata: solana_address::Address) -> &mut Self {
+        self.user_ata = Some(user_ata);
+        self
+    }
+    /// The token mint of the user's ATA
+    #[inline(always)]
+    pub fn token_mint(&mut self, token_mint: solana_address::Address) -> &mut Self {
+        self.token_mint = Some(token_mint);
+        self
+    }
+    /// Token program
+    #[inline(always)]
+    pub fn token_program(&mut self, token_program: solana_address::Address) -> &mut Self {
+        self.token_program = Some(token_program);
+        self
+    }
+    /// The SubscriptionAuthority PDA. Closed when still open; ignored when already closed.
     #[inline(always)]
     pub fn subscription_authority(
         &mut self,
@@ -109,7 +148,7 @@ impl CloseSubscriptionAuthorityBuilder {
         self
     }
     /// `[optional account]`
-    /// Optional rent recipient, required when the recorded payer differs from the user. Must match the stored payer.
+    /// Optional rent recipient, required when the SubscriptionAuthority is still open and its recorded payer differs from the user. Must match the stored payer.
     #[inline(always)]
     pub fn receiver(&mut self, receiver: Option<solana_address::Address>) -> &mut Self {
         self.receiver = receiver;
@@ -132,8 +171,11 @@ impl CloseSubscriptionAuthorityBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = CloseSubscriptionAuthority {
+        let accounts = RevokeSubscriptionAuthority {
             user: self.user.expect("user is not set"),
+            user_ata: self.user_ata.expect("user_ata is not set"),
+            token_mint: self.token_mint.expect("token_mint is not set"),
+            token_program: self.token_program.expect("token_program is not set"),
             subscription_authority: self
                 .subscription_authority
                 .expect("subscription_authority is not set"),
@@ -144,36 +186,51 @@ impl CloseSubscriptionAuthorityBuilder {
     }
 }
 
-/// `close_subscription_authority` CPI accounts.
-pub struct CloseSubscriptionAuthorityCpiAccounts<'a, 'b> {
-    /// The user who owns the SubscriptionAuthority PDA (receives rent)
+/// `revoke_subscription_authority` CPI accounts.
+pub struct RevokeSubscriptionAuthorityCpiAccounts<'a, 'b> {
+    /// The ATA owner: revokes the program's delegate and, when still open, closes the SubscriptionAuthority PDA (receives rent when self-funded)
     pub user: &'b solana_account_info::AccountInfo<'a>,
-    /// The SubscriptionAuthority PDA to close
+    /// The user's ATA whose delegate is being revoked
+    pub user_ata: &'b solana_account_info::AccountInfo<'a>,
+    /// The token mint of the user's ATA
+    pub token_mint: &'b solana_account_info::AccountInfo<'a>,
+    /// Token program
+    pub token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// The SubscriptionAuthority PDA. Closed when still open; ignored when already closed.
     pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
-    /// Optional rent recipient, required when the recorded payer differs from the user. Must match the stored payer.
+    /// Optional rent recipient, required when the SubscriptionAuthority is still open and its recorded payer differs from the user. Must match the stored payer.
     pub receiver: Option<&'b solana_account_info::AccountInfo<'a>>,
 }
 
-/// `close_subscription_authority` CPI instruction.
-pub struct CloseSubscriptionAuthorityCpi<'a, 'b> {
+/// `revoke_subscription_authority` CPI instruction.
+pub struct RevokeSubscriptionAuthorityCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
-    /// The user who owns the SubscriptionAuthority PDA (receives rent)
+    /// The ATA owner: revokes the program's delegate and, when still open, closes the SubscriptionAuthority PDA (receives rent when self-funded)
     pub user: &'b solana_account_info::AccountInfo<'a>,
-    /// The SubscriptionAuthority PDA to close
+    /// The user's ATA whose delegate is being revoked
+    pub user_ata: &'b solana_account_info::AccountInfo<'a>,
+    /// The token mint of the user's ATA
+    pub token_mint: &'b solana_account_info::AccountInfo<'a>,
+    /// Token program
+    pub token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// The SubscriptionAuthority PDA. Closed when still open; ignored when already closed.
     pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
-    /// Optional rent recipient, required when the recorded payer differs from the user. Must match the stored payer.
+    /// Optional rent recipient, required when the SubscriptionAuthority is still open and its recorded payer differs from the user. Must match the stored payer.
     pub receiver: Option<&'b solana_account_info::AccountInfo<'a>>,
 }
 
-impl<'a, 'b> CloseSubscriptionAuthorityCpi<'a, 'b> {
+impl<'a, 'b> RevokeSubscriptionAuthorityCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: CloseSubscriptionAuthorityCpiAccounts<'a, 'b>,
+        accounts: RevokeSubscriptionAuthorityCpiAccounts<'a, 'b>,
     ) -> Self {
         Self {
             __program: program,
             user: accounts.user,
+            user_ata: accounts.user_ata,
+            token_mint: accounts.token_mint,
+            token_program: accounts.token_program,
             subscription_authority: accounts.subscription_authority,
             receiver: accounts.receiver,
         }
@@ -201,8 +258,20 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(3 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(*self.user.key, true));
+        accounts.push(solana_instruction::AccountMeta::new(
+            *self.user_ata.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.token_mint.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.token_program.key,
+            false,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(
             *self.subscription_authority.key,
             false,
@@ -217,7 +286,7 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpi<'a, 'b> {
                 is_signer: remaining_account.2,
             })
         });
-        let data = CloseSubscriptionAuthorityInstructionData::new()
+        let data = RevokeSubscriptionAuthorityInstructionData::new()
             .try_to_vec()
             .unwrap();
 
@@ -226,9 +295,12 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(4 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(7 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.user.clone());
+        account_infos.push(self.user_ata.clone());
+        account_infos.push(self.token_mint.clone());
+        account_infos.push(self.token_program.clone());
         account_infos.push(self.subscription_authority.clone());
         if let Some(receiver) = self.receiver {
             account_infos.push(receiver.clone());
@@ -245,36 +317,66 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `CloseSubscriptionAuthority` via CPI.
+/// Instruction builder for `RevokeSubscriptionAuthority` via CPI.
 ///
 /// ### Accounts:
 ///
 ///   0. `[writable, signer]` user
-///   1. `[writable]` subscription_authority
-///   2. `[writable, optional]` receiver
+///   1. `[writable]` user_ata
+///   2. `[]` token_mint
+///   3. `[]` token_program
+///   4. `[writable]` subscription_authority
+///   5. `[writable, optional]` receiver
 #[derive(Clone, Debug)]
-pub struct CloseSubscriptionAuthorityCpiBuilder<'a, 'b> {
-    instruction: Box<CloseSubscriptionAuthorityCpiBuilderInstruction<'a, 'b>>,
+pub struct RevokeSubscriptionAuthorityCpiBuilder<'a, 'b> {
+    instruction: Box<RevokeSubscriptionAuthorityCpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> CloseSubscriptionAuthorityCpiBuilder<'a, 'b> {
+impl<'a, 'b> RevokeSubscriptionAuthorityCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(CloseSubscriptionAuthorityCpiBuilderInstruction {
+        let instruction = Box::new(RevokeSubscriptionAuthorityCpiBuilderInstruction {
             __program: program,
             user: None,
+            user_ata: None,
+            token_mint: None,
+            token_program: None,
             subscription_authority: None,
             receiver: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
     }
-    /// The user who owns the SubscriptionAuthority PDA (receives rent)
+    /// The ATA owner: revokes the program's delegate and, when still open, closes the SubscriptionAuthority PDA (receives rent when self-funded)
     #[inline(always)]
     pub fn user(&mut self, user: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
         self.instruction.user = Some(user);
         self
     }
-    /// The SubscriptionAuthority PDA to close
+    /// The user's ATA whose delegate is being revoked
+    #[inline(always)]
+    pub fn user_ata(&mut self, user_ata: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
+        self.instruction.user_ata = Some(user_ata);
+        self
+    }
+    /// The token mint of the user's ATA
+    #[inline(always)]
+    pub fn token_mint(
+        &mut self,
+        token_mint: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.token_mint = Some(token_mint);
+        self
+    }
+    /// Token program
+    #[inline(always)]
+    pub fn token_program(
+        &mut self,
+        token_program: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.token_program = Some(token_program);
+        self
+    }
+    /// The SubscriptionAuthority PDA. Closed when still open; ignored when already closed.
     #[inline(always)]
     pub fn subscription_authority(
         &mut self,
@@ -284,7 +386,7 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpiBuilder<'a, 'b> {
         self
     }
     /// `[optional account]`
-    /// Optional rent recipient, required when the recorded payer differs from the user. Must match the stored payer.
+    /// Optional rent recipient, required when the SubscriptionAuthority is still open and its recorded payer differs from the user. Must match the stored payer.
     #[inline(always)]
     pub fn receiver(
         &mut self,
@@ -327,10 +429,19 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let instruction = CloseSubscriptionAuthorityCpi {
+        let instruction = RevokeSubscriptionAuthorityCpi {
             __program: self.instruction.__program,
 
             user: self.instruction.user.expect("user is not set"),
+
+            user_ata: self.instruction.user_ata.expect("user_ata is not set"),
+
+            token_mint: self.instruction.token_mint.expect("token_mint is not set"),
+
+            token_program: self
+                .instruction
+                .token_program
+                .expect("token_program is not set"),
 
             subscription_authority: self
                 .instruction
@@ -347,9 +458,12 @@ impl<'a, 'b> CloseSubscriptionAuthorityCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct CloseSubscriptionAuthorityCpiBuilderInstruction<'a, 'b> {
+struct RevokeSubscriptionAuthorityCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     user: Option<&'b solana_account_info::AccountInfo<'a>>,
+    user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
+    token_mint: Option<&'b solana_account_info::AccountInfo<'a>>,
+    token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     subscription_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     receiver: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.

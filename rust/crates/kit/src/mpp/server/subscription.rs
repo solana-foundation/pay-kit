@@ -38,8 +38,10 @@ use solana_transaction::Transaction;
 use crate::mpp::error::Error;
 use crate::mpp::expires;
 use crate::mpp::program::subscriptions::{
-    find_subscription_pda, parse_pubkey, INSTRUCTION_SUBSCRIBE, INSTRUCTION_TRANSFER_SUBSCRIPTION,
-    SUBSCRIPTIONS_PROGRAM_ID,
+    find_subscription_pda, parse_pubkey, ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID,
+    INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY, INSTRUCTION_SUBSCRIBE,
+    INSTRUCTION_TRANSFER_SUBSCRIPTION, MEMO_PROGRAM_ID, SUBSCRIPTIONS_PROGRAM_ID,
+    SYSTEM_PROGRAM_ID,
 };
 use crate::mpp::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt, ReceiptKind,
@@ -448,7 +450,13 @@ impl SubscriptionServer {
                 })?;
                 let mut tx = decode_base64_transaction(tx_b64)?;
                 let subscriber = extract_subscriber_from_tx(&tx, &request, &self.config)?;
-                validate_activation_scope(&tx, &request, &self.program_id)?;
+                validate_activation_scope(
+                    &tx,
+                    &request,
+                    &self.program_id,
+                    subscriber,
+                    &self.config,
+                )?;
 
                 if fee_payer_configured {
                     co_sign_as_fee_payer(&mut tx, self.config.fee_payer_signer.as_ref().unwrap())
@@ -479,9 +487,27 @@ impl SubscriptionServer {
                     self.fetch_subscription_creation_signature(&delegation_pda)
                         .await
                         .ok()
+                        .or_else(|| tx.signatures.first().map(ToString::to_string))
                 } else {
                     Some(self.broadcast_and_confirm(&tx).await?.to_string())
                 };
+                if let Some(signature) = sig.as_deref() {
+                    let key = format!("solana-subscription:consumed:{signature}");
+                    let inserted = self
+                        .store
+                        .put_if_absent(&key, serde_json::Value::Bool(true))
+                        .await
+                        .map_err(|e| {
+                            VerificationError::new(format!(
+                                "Failed to reserve activation signature: {e}"
+                            ))
+                        })?;
+                    if !inserted {
+                        return Err(VerificationError::signature_consumed(
+                            "Activation signature already consumed",
+                        ));
+                    }
+                }
                 (subscriber, sig)
             }
             "signature" => {
@@ -768,7 +794,8 @@ fn extract_subscriber_from_tx(
         // account_keys[0] is the fee-payer (the server's wallet); the
         // subscriber is the next signer that's neither the fee-payer
         // nor the puller.
-        for k in keys.iter().skip(1) {
+        let required_signers = tx.message.header.num_required_signatures as usize;
+        for k in keys.iter().take(required_signers).skip(1) {
             if *k != puller && *k != fp {
                 return Ok(*k);
             }
@@ -794,27 +821,160 @@ fn extract_subscriber_from_tx(
 /// program, with Subscribe ordered before TransferSubscription.
 fn validate_activation_scope(
     tx: &Transaction,
-    _request: &SubscriptionRequest,
+    request: &SubscriptionRequest,
     program_id_str: &str,
+    subscriber: Pubkey,
+    config: &SubscriptionConfig,
 ) -> Result<(), VerificationError> {
     let program_id = parse_pubkey(program_id_str, "program_id")
         .map_err(|e| VerificationError::new(e.to_string()))?;
     let keys = &tx.message.account_keys;
 
+    if config.fee_payer {
+        let expected_fee_payer = config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| signer.pubkey())
+            .or_else(|| {
+                config
+                    .fee_payer_pubkey
+                    .as_deref()
+                    .and_then(|key| parse_pubkey(key, "fee_payer_key").ok())
+            })
+            .ok_or_else(|| {
+                VerificationError::invalid_payload(
+                    "fee_payer=true requires a configured fee-payer pubkey",
+                )
+            })?;
+        if keys.first() != Some(&expected_fee_payer) {
+            return Err(VerificationError::invalid_payload(format!(
+                "Activation transaction fee payer must be {expected_fee_payer}"
+            )));
+        }
+    }
+
+    let compute_budget_program = parse_pubkey(COMPUTE_BUDGET_PROGRAM_ID, "compute_budget_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let associated_token_program =
+        parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "associated_token_program")
+            .map_err(|e| VerificationError::new(e.to_string()))?;
+    let memo_program = parse_pubkey(MEMO_PROGRAM_ID, "memo_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let system_program = parse_pubkey(SYSTEM_PROGRAM_ID, "system_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let mint =
+        parse_pubkey(&config.mint, "mint").map_err(|e| VerificationError::new(e.to_string()))?;
+    let token_program = parse_pubkey(&config.token_program, "token_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+
     let mut subscribe_idx: Option<usize> = None;
     let mut transfer_idx: Option<usize> = None;
+    let mut init_idx: Option<usize> = None;
+    let mut ata_idx: Option<usize> = None;
+    let mut saw_memo = false;
+    let mut saw_compute_limit = false;
+    let mut saw_compute_price = false;
     for (i, ix) in tx.message.instructions.iter().enumerate() {
         let prog_idx = ix.program_id_index as usize;
         if prog_idx >= keys.len() {
+            return Err(VerificationError::invalid_payload(
+                "Activation instruction has an invalid program index",
+            ));
+        }
+        let instruction_program = keys[prog_idx];
+
+        if instruction_program == compute_budget_program {
+            match ix.data.as_slice() {
+                [2, units @ ..] if units.len() == 4 => {
+                    if saw_compute_limit {
+                        return Err(VerificationError::invalid_payload(
+                            "Activation tx contains multiple compute-unit-limit instructions",
+                        ));
+                    }
+                    saw_compute_limit = true;
+                    let units = u32::from_le_bytes(units.try_into().unwrap());
+                    if units > 400_000 {
+                        return Err(VerificationError::invalid_payload(
+                            "Activation compute unit limit exceeds 400000",
+                        ));
+                    }
+                }
+                [3, price @ ..] if price.len() == 8 => {
+                    if saw_compute_price {
+                        return Err(VerificationError::invalid_payload(
+                            "Activation tx contains multiple compute-unit-price instructions",
+                        ));
+                    }
+                    saw_compute_price = true;
+                    let price = u64::from_le_bytes(price.try_into().unwrap());
+                    let max_price = if config.fee_payer { 10_000 } else { 5_000_000 };
+                    if price > max_price {
+                        return Err(VerificationError::invalid_payload(
+                            "Activation compute unit price exceeds cap",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(VerificationError::invalid_payload(
+                        "Unsupported compute-budget instruction in activation tx",
+                    ))
+                }
+            }
             continue;
         }
-        if keys[prog_idx] != program_id {
+
+        if instruction_program == memo_program {
+            if saw_memo || request.external_id.as_deref() != std::str::from_utf8(&ix.data).ok() {
+                return Err(VerificationError::invalid_payload(
+                    "Activation memo does not match challenge externalId",
+                ));
+            }
+            saw_memo = true;
             continue;
+        }
+
+        if instruction_program == associated_token_program {
+            if ata_idx.is_some() || ix.data.as_slice() != [1] || ix.accounts.len() != 6 {
+                return Err(VerificationError::invalid_payload(
+                    "Only one idempotent subscriber ATA creation is allowed in activation tx",
+                ));
+            }
+            let account = |position: usize| -> Option<Pubkey> {
+                ix.accounts
+                    .get(position)
+                    .and_then(|index| keys.get(*index as usize))
+                    .copied()
+            };
+            if account(2) != Some(subscriber)
+                || account(3) != Some(mint)
+                || account(4) != Some(system_program)
+                || account(5) != Some(token_program)
+            {
+                return Err(VerificationError::invalid_payload(
+                    "ATA creation does not match the activation subscriber and mint",
+                ));
+            }
+            ata_idx = Some(i);
+            continue;
+        }
+
+        if instruction_program != program_id {
+            return Err(VerificationError::invalid_payload(format!(
+                "Unsupported program {instruction_program} in activation tx"
+            )));
         }
         let Some(disc) = ix.data.first().copied() else {
-            continue;
+            return Err(VerificationError::invalid_payload(
+                "Activation tx contains an empty subscriptions-program instruction",
+            ));
         };
-        if disc == INSTRUCTION_SUBSCRIBE {
+        if disc == INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY {
+            if init_idx.replace(i).is_some() {
+                return Err(VerificationError::invalid_payload(
+                    "Activation tx contains multiple initialize_subscription_authority instructions",
+                ));
+            }
+        } else if disc == INSTRUCTION_SUBSCRIBE {
             if subscribe_idx.is_some() {
                 return Err(VerificationError::invalid_payload(
                     "Activation tx contains multiple subscribe instructions",
@@ -828,6 +988,10 @@ fn validate_activation_scope(
                 ));
             }
             transfer_idx = Some(i);
+        } else {
+            return Err(VerificationError::invalid_payload(format!(
+                "Unsupported subscriptions instruction {disc} in activation tx"
+            )));
         }
     }
 
@@ -844,6 +1008,16 @@ fn validate_activation_scope(
             "subscribe must precede transfer_subscription in activation tx",
         ));
     }
+    if init_idx.is_some_and(|idx| idx > subscribe) || ata_idx.is_some_and(|idx| idx > subscribe) {
+        return Err(VerificationError::invalid_payload(
+            "Activation setup instructions must precede subscribe",
+        ));
+    }
+    if request.external_id.is_some() != saw_memo {
+        return Err(VerificationError::invalid_payload(
+            "Activation transaction memo does not match challenge externalId",
+        ));
+    }
     Ok(())
 }
 
@@ -856,16 +1030,12 @@ async fn co_sign_as_fee_payer(
     signer: &Arc<dyn solana_keychain::SolanaSigner>,
 ) -> Result<(), VerificationError> {
     let pubkey = signer.pubkey();
-    let idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| *k == pubkey)
-        .ok_or_else(|| {
-            VerificationError::invalid_payload(
-                "Fee payer pubkey not present in activation transaction",
-            )
-        })?;
+    if tx.message.account_keys.first() != Some(&pubkey) {
+        return Err(VerificationError::invalid_payload(
+            "Configured fee payer must occupy account_keys[0]",
+        ));
+    }
+    let idx = 0;
     let msg_bytes = tx.message_data();
     let sig_bytes = signer
         .sign_message(&msg_bytes)
@@ -997,6 +1167,8 @@ fn now_unix_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_message::Message;
     use solana_pubkey::Pubkey;
 
     fn keypair_base58() -> String {
@@ -1255,6 +1427,60 @@ mod tests {
     fn decode_subscription_delegation_rejects_short_data() {
         let short = vec![0u8; 50];
         assert!(decode_subscription_delegation(&short).is_err());
+    }
+
+    #[test]
+    fn activation_scope_rejects_extra_instruction_to_another_program() {
+        let subscriber = Pubkey::new_unique();
+        let program_id = Pubkey::new_unique();
+        let subscribe = Instruction {
+            program_id,
+            accounts: vec![AccountMeta::new(subscriber, true)],
+            data: vec![INSTRUCTION_SUBSCRIBE],
+        };
+        let foreign = Instruction {
+            program_id: Pubkey::from_str_const(SYSTEM_PROGRAM_ID),
+            accounts: vec![AccountMeta::new(subscriber, true)],
+            data: vec![2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        };
+        let transfer = Instruction {
+            program_id,
+            accounts: vec![AccountMeta::new_readonly(subscriber, false)],
+            data: vec![INSTRUCTION_TRANSFER_SUBSCRIPTION],
+        };
+        let tx = Transaction::new_unsigned(Message::new(
+            &[subscribe, foreign, transfer],
+            Some(&subscriber),
+        ));
+        let config = make_config();
+        let err = validate_activation_scope(
+            &tx,
+            &SubscriptionRequest::default(),
+            &program_id.to_string(),
+            subscriber,
+            &config,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Unsupported program"));
+    }
+
+    #[test]
+    fn sponsored_subscriber_must_be_a_required_signer() {
+        let fee_payer = Pubkey::new_unique();
+        let non_signer = Pubkey::new_unique();
+        let instruction = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta::new_readonly(non_signer, false)],
+            data: vec![INSTRUCTION_SUBSCRIBE],
+        };
+        let tx = Transaction::new_unsigned(Message::new(&[instruction], Some(&fee_payer)));
+        let mut config = make_config();
+        config.fee_payer = true;
+        config.fee_payer_pubkey = Some(fee_payer.to_string());
+
+        let err =
+            extract_subscriber_from_tx(&tx, &SubscriptionRequest::default(), &config).unwrap_err();
+        assert!(err.message.contains("Could not identify subscriber"));
     }
 
     #[test]

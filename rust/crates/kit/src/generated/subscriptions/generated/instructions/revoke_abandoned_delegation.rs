@@ -8,18 +8,20 @@
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const REVOKE_DELEGATION_DISCRIMINATOR: u8 = 3;
+pub const REVOKE_ABANDONED_DELEGATION_DISCRIMINATOR: u8 = 15;
 
 /// Accounts.
 #[derive(Debug)]
-pub struct RevokeDelegation {
-    /// The delegator revoking the delegation (receives rent)
-    pub authority: solana_address::Address,
-    /// The delegation PDA to close
+pub struct RevokeAbandonedDelegation {
+    /// The recorded payer reclaiming rent
+    pub payer: solana_address::Address,
+    /// The fixed or recurring delegation PDA to close
     pub delegation_account: solana_address::Address,
+    /// The delegation's recorded SubscriptionAuthority PDA (may be closed)
+    pub subscription_authority: solana_address::Address,
 }
 
-impl RevokeDelegation {
+impl RevokeAbandonedDelegation {
     pub fn instruction(&self) -> solana_instruction::Instruction {
         self.instruction_with_remaining_accounts(&[])
     }
@@ -29,14 +31,20 @@ impl RevokeDelegation {
         &self,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(2 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(self.authority, true));
+        let mut accounts = Vec::with_capacity(3 + remaining_accounts.len());
+        accounts.push(solana_instruction::AccountMeta::new(self.payer, true));
         accounts.push(solana_instruction::AccountMeta::new(
             self.delegation_account,
             false,
         ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.subscription_authority,
+            false,
+        ));
         accounts.extend_from_slice(remaining_accounts);
-        let data = RevokeDelegationInstructionData::new().try_to_vec().unwrap();
+        let data = RevokeAbandonedDelegationInstructionData::new()
+            .try_to_vec()
+            .unwrap();
 
         solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -47,13 +55,13 @@ impl RevokeDelegation {
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct RevokeDelegationInstructionData {
+pub struct RevokeAbandonedDelegationInstructionData {
     discriminator: u8,
 }
 
-impl RevokeDelegationInstructionData {
+impl RevokeAbandonedDelegationInstructionData {
     pub fn new() -> Self {
-        Self { discriminator: 3 }
+        Self { discriminator: 15 }
     }
 
     pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
@@ -61,39 +69,50 @@ impl RevokeDelegationInstructionData {
     }
 }
 
-impl Default for RevokeDelegationInstructionData {
+impl Default for RevokeAbandonedDelegationInstructionData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Instruction builder for `RevokeDelegation`.
+/// Instruction builder for `RevokeAbandonedDelegation`.
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` authority
+///   0. `[writable, signer]` payer
 ///   1. `[writable]` delegation_account
+///   2. `[]` subscription_authority
 #[derive(Clone, Debug, Default)]
-pub struct RevokeDelegationBuilder {
-    authority: Option<solana_address::Address>,
+pub struct RevokeAbandonedDelegationBuilder {
+    payer: Option<solana_address::Address>,
     delegation_account: Option<solana_address::Address>,
+    subscription_authority: Option<solana_address::Address>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl RevokeDelegationBuilder {
+impl RevokeAbandonedDelegationBuilder {
     pub fn new() -> Self {
         Self::default()
     }
-    /// The delegator revoking the delegation (receives rent)
+    /// The recorded payer reclaiming rent
     #[inline(always)]
-    pub fn authority(&mut self, authority: solana_address::Address) -> &mut Self {
-        self.authority = Some(authority);
+    pub fn payer(&mut self, payer: solana_address::Address) -> &mut Self {
+        self.payer = Some(payer);
         self
     }
-    /// The delegation PDA to close
+    /// The fixed or recurring delegation PDA to close
     #[inline(always)]
     pub fn delegation_account(&mut self, delegation_account: solana_address::Address) -> &mut Self {
         self.delegation_account = Some(delegation_account);
+        self
+    }
+    /// The delegation's recorded SubscriptionAuthority PDA (may be closed)
+    #[inline(always)]
+    pub fn subscription_authority(
+        &mut self,
+        subscription_authority: solana_address::Address,
+    ) -> &mut Self {
+        self.subscription_authority = Some(subscription_authority);
         self
     }
     /// Add an additional account to the instruction.
@@ -113,44 +132,52 @@ impl RevokeDelegationBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = RevokeDelegation {
-            authority: self.authority.expect("authority is not set"),
+        let accounts = RevokeAbandonedDelegation {
+            payer: self.payer.expect("payer is not set"),
             delegation_account: self
                 .delegation_account
                 .expect("delegation_account is not set"),
+            subscription_authority: self
+                .subscription_authority
+                .expect("subscription_authority is not set"),
         };
 
         accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
     }
 }
 
-/// `revoke_delegation` CPI accounts.
-pub struct RevokeDelegationCpiAccounts<'a, 'b> {
-    /// The delegator revoking the delegation (receives rent)
-    pub authority: &'b solana_account_info::AccountInfo<'a>,
-    /// The delegation PDA to close
+/// `revoke_abandoned_delegation` CPI accounts.
+pub struct RevokeAbandonedDelegationCpiAccounts<'a, 'b> {
+    /// The recorded payer reclaiming rent
+    pub payer: &'b solana_account_info::AccountInfo<'a>,
+    /// The fixed or recurring delegation PDA to close
     pub delegation_account: &'b solana_account_info::AccountInfo<'a>,
+    /// The delegation's recorded SubscriptionAuthority PDA (may be closed)
+    pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
 }
 
-/// `revoke_delegation` CPI instruction.
-pub struct RevokeDelegationCpi<'a, 'b> {
+/// `revoke_abandoned_delegation` CPI instruction.
+pub struct RevokeAbandonedDelegationCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
-    /// The delegator revoking the delegation (receives rent)
-    pub authority: &'b solana_account_info::AccountInfo<'a>,
-    /// The delegation PDA to close
+    /// The recorded payer reclaiming rent
+    pub payer: &'b solana_account_info::AccountInfo<'a>,
+    /// The fixed or recurring delegation PDA to close
     pub delegation_account: &'b solana_account_info::AccountInfo<'a>,
+    /// The delegation's recorded SubscriptionAuthority PDA (may be closed)
+    pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
 }
 
-impl<'a, 'b> RevokeDelegationCpi<'a, 'b> {
+impl<'a, 'b> RevokeAbandonedDelegationCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: RevokeDelegationCpiAccounts<'a, 'b>,
+        accounts: RevokeAbandonedDelegationCpiAccounts<'a, 'b>,
     ) -> Self {
         Self {
             __program: program,
-            authority: accounts.authority,
+            payer: accounts.payer,
             delegation_account: accounts.delegation_account,
+            subscription_authority: accounts.subscription_authority,
         }
     }
     #[inline(always)]
@@ -176,13 +203,14 @@ impl<'a, 'b> RevokeDelegationCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(2 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(
-            *self.authority.key,
-            true,
-        ));
+        let mut accounts = Vec::with_capacity(3 + remaining_accounts.len());
+        accounts.push(solana_instruction::AccountMeta::new(*self.payer.key, true));
         accounts.push(solana_instruction::AccountMeta::new(
             *self.delegation_account.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.subscription_authority.key,
             false,
         ));
         remaining_accounts.iter().for_each(|remaining_account| {
@@ -192,17 +220,20 @@ impl<'a, 'b> RevokeDelegationCpi<'a, 'b> {
                 is_signer: remaining_account.2,
             })
         });
-        let data = RevokeDelegationInstructionData::new().try_to_vec().unwrap();
+        let data = RevokeAbandonedDelegationInstructionData::new()
+            .try_to_vec()
+            .unwrap();
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(3 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(4 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
-        account_infos.push(self.authority.clone());
+        account_infos.push(self.payer.clone());
         account_infos.push(self.delegation_account.clone());
+        account_infos.push(self.subscription_authority.clone());
         remaining_accounts
             .iter()
             .for_each(|remaining_account| account_infos.push(remaining_account.0.clone()));
@@ -215,40 +246,51 @@ impl<'a, 'b> RevokeDelegationCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `RevokeDelegation` via CPI.
+/// Instruction builder for `RevokeAbandonedDelegation` via CPI.
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` authority
+///   0. `[writable, signer]` payer
 ///   1. `[writable]` delegation_account
+///   2. `[]` subscription_authority
 #[derive(Clone, Debug)]
-pub struct RevokeDelegationCpiBuilder<'a, 'b> {
-    instruction: Box<RevokeDelegationCpiBuilderInstruction<'a, 'b>>,
+pub struct RevokeAbandonedDelegationCpiBuilder<'a, 'b> {
+    instruction: Box<RevokeAbandonedDelegationCpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> RevokeDelegationCpiBuilder<'a, 'b> {
+impl<'a, 'b> RevokeAbandonedDelegationCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(RevokeDelegationCpiBuilderInstruction {
+        let instruction = Box::new(RevokeAbandonedDelegationCpiBuilderInstruction {
             __program: program,
-            authority: None,
+            payer: None,
             delegation_account: None,
+            subscription_authority: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
     }
-    /// The delegator revoking the delegation (receives rent)
+    /// The recorded payer reclaiming rent
     #[inline(always)]
-    pub fn authority(&mut self, authority: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
-        self.instruction.authority = Some(authority);
+    pub fn payer(&mut self, payer: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
+        self.instruction.payer = Some(payer);
         self
     }
-    /// The delegation PDA to close
+    /// The fixed or recurring delegation PDA to close
     #[inline(always)]
     pub fn delegation_account(
         &mut self,
         delegation_account: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.delegation_account = Some(delegation_account);
+        self
+    }
+    /// The delegation's recorded SubscriptionAuthority PDA (may be closed)
+    #[inline(always)]
+    pub fn subscription_authority(
+        &mut self,
+        subscription_authority: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.subscription_authority = Some(subscription_authority);
         self
     }
     /// Add an additional account to the instruction.
@@ -285,15 +327,20 @@ impl<'a, 'b> RevokeDelegationCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let instruction = RevokeDelegationCpi {
+        let instruction = RevokeAbandonedDelegationCpi {
             __program: self.instruction.__program,
 
-            authority: self.instruction.authority.expect("authority is not set"),
+            payer: self.instruction.payer.expect("payer is not set"),
 
             delegation_account: self
                 .instruction
                 .delegation_account
                 .expect("delegation_account is not set"),
+
+            subscription_authority: self
+                .instruction
+                .subscription_authority
+                .expect("subscription_authority is not set"),
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -303,10 +350,11 @@ impl<'a, 'b> RevokeDelegationCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct RevokeDelegationCpiBuilderInstruction<'a, 'b> {
+struct RevokeAbandonedDelegationCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
-    authority: Option<&'b solana_account_info::AccountInfo<'a>>,
+    payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     delegation_account: Option<&'b solana_account_info::AccountInfo<'a>>,
+    subscription_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

@@ -24,6 +24,8 @@ pub struct CreatePlan {
     pub system_program: solana_address::Address,
     /// The token program
     pub token_program: solana_address::Address,
+    /// Optional sponsor that funds the plan rent. Defaults to the merchant/signer when omitted; delete_plan refunds the owner, not the payer.
+    pub payer: Option<solana_address::Address>,
 }
 
 impl CreatePlan {
@@ -37,7 +39,7 @@ impl CreatePlan {
         args: CreatePlanInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.merchant, true));
         accounts.push(solana_instruction::AccountMeta::new(self.plan_pda, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
@@ -52,6 +54,9 @@ impl CreatePlan {
             self.token_program,
             false,
         ));
+        if let Some(payer) = self.payer {
+            accounts.push(solana_instruction::AccountMeta::new(payer, true));
+        }
         accounts.extend_from_slice(remaining_accounts);
         let mut data = CreatePlanInstructionData::new().try_to_vec().unwrap();
         let mut args = args.try_to_vec().unwrap();
@@ -106,6 +111,7 @@ impl CreatePlanInstructionArgs {
 ///   2. `[]` token_mint
 ///   3. `[optional]` system_program (default to `11111111111111111111111111111111`)
 ///   4. `[optional]` token_program (default to `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`)
+///   5. `[writable, signer, optional]` payer
 #[derive(Clone, Debug, Default)]
 pub struct CreatePlanBuilder {
     merchant: Option<solana_address::Address>,
@@ -113,6 +119,7 @@ pub struct CreatePlanBuilder {
     token_mint: Option<solana_address::Address>,
     system_program: Option<solana_address::Address>,
     token_program: Option<solana_address::Address>,
+    payer: Option<solana_address::Address>,
     plan_data: Option<PlanData>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
@@ -153,6 +160,13 @@ impl CreatePlanBuilder {
         self.token_program = Some(token_program);
         self
     }
+    /// `[optional account]`
+    /// Optional sponsor that funds the plan rent. Defaults to the merchant/signer when omitted; delete_plan refunds the owner, not the payer.
+    #[inline(always)]
+    pub fn payer(&mut self, payer: Option<solana_address::Address>) -> &mut Self {
+        self.payer = payer;
+        self
+    }
     #[inline(always)]
     pub fn plan_data(&mut self, plan_data: PlanData) -> &mut Self {
         self.plan_data = Some(plan_data);
@@ -185,6 +199,7 @@ impl CreatePlanBuilder {
             token_program: self.token_program.unwrap_or(solana_address::address!(
                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
             )),
+            payer: self.payer,
         };
         let args = CreatePlanInstructionArgs {
             plan_data: self.plan_data.clone().expect("plan_data is not set"),
@@ -206,6 +221,8 @@ pub struct CreatePlanCpiAccounts<'a, 'b> {
     pub system_program: &'b solana_account_info::AccountInfo<'a>,
     /// The token program
     pub token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Optional sponsor that funds the plan rent. Defaults to the merchant/signer when omitted; delete_plan refunds the owner, not the payer.
+    pub payer: Option<&'b solana_account_info::AccountInfo<'a>>,
 }
 
 /// `create_plan` CPI instruction.
@@ -222,6 +239,8 @@ pub struct CreatePlanCpi<'a, 'b> {
     pub system_program: &'b solana_account_info::AccountInfo<'a>,
     /// The token program
     pub token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Optional sponsor that funds the plan rent. Defaults to the merchant/signer when omitted; delete_plan refunds the owner, not the payer.
+    pub payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// The arguments for the instruction.
     pub __args: CreatePlanInstructionArgs,
 }
@@ -239,6 +258,7 @@ impl<'a, 'b> CreatePlanCpi<'a, 'b> {
             token_mint: accounts.token_mint,
             system_program: accounts.system_program,
             token_program: accounts.token_program,
+            payer: accounts.payer,
             __args: args,
         }
     }
@@ -265,7 +285,7 @@ impl<'a, 'b> CreatePlanCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(
             *self.merchant.key,
             true,
@@ -286,11 +306,14 @@ impl<'a, 'b> CreatePlanCpi<'a, 'b> {
             *self.token_program.key,
             false,
         ));
+        if let Some(payer) = self.payer {
+            accounts.push(solana_instruction::AccountMeta::new(*payer.key, true));
+        }
         remaining_accounts.iter().for_each(|remaining_account| {
             accounts.push(solana_instruction::AccountMeta {
                 pubkey: *remaining_account.0.key,
-                is_signer: remaining_account.1,
-                is_writable: remaining_account.2,
+                is_writable: remaining_account.1,
+                is_signer: remaining_account.2,
             })
         });
         let mut data = CreatePlanInstructionData::new().try_to_vec().unwrap();
@@ -302,13 +325,16 @@ impl<'a, 'b> CreatePlanCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(6 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(7 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.merchant.clone());
         account_infos.push(self.plan_pda.clone());
         account_infos.push(self.token_mint.clone());
         account_infos.push(self.system_program.clone());
         account_infos.push(self.token_program.clone());
+        if let Some(payer) = self.payer {
+            account_infos.push(payer.clone());
+        }
         remaining_accounts
             .iter()
             .for_each(|remaining_account| account_infos.push(remaining_account.0.clone()));
@@ -330,6 +356,7 @@ impl<'a, 'b> CreatePlanCpi<'a, 'b> {
 ///   2. `[]` token_mint
 ///   3. `[]` system_program
 ///   4. `[]` token_program
+///   5. `[writable, signer, optional]` payer
 #[derive(Clone, Debug)]
 pub struct CreatePlanCpiBuilder<'a, 'b> {
     instruction: Box<CreatePlanCpiBuilderInstruction<'a, 'b>>,
@@ -344,6 +371,7 @@ impl<'a, 'b> CreatePlanCpiBuilder<'a, 'b> {
             token_mint: None,
             system_program: None,
             token_program: None,
+            payer: None,
             plan_data: None,
             __remaining_accounts: Vec::new(),
         });
@@ -386,6 +414,13 @@ impl<'a, 'b> CreatePlanCpiBuilder<'a, 'b> {
         token_program: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.token_program = Some(token_program);
+        self
+    }
+    /// `[optional account]`
+    /// Optional sponsor that funds the plan rent. Defaults to the merchant/signer when omitted; delete_plan refunds the owner, not the payer.
+    #[inline(always)]
+    pub fn payer(&mut self, payer: Option<&'b solana_account_info::AccountInfo<'a>>) -> &mut Self {
+        self.instruction.payer = payer;
         self
     }
     #[inline(always)]
@@ -452,6 +487,8 @@ impl<'a, 'b> CreatePlanCpiBuilder<'a, 'b> {
                 .instruction
                 .token_program
                 .expect("token_program is not set"),
+
+            payer: self.instruction.payer,
             __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
@@ -469,6 +506,7 @@ struct CreatePlanCpiBuilderInstruction<'a, 'b> {
     token_mint: Option<&'b solana_account_info::AccountInfo<'a>>,
     system_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
+    payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     plan_data: Option<PlanData>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,

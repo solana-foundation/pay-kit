@@ -6,23 +6,27 @@
 //!
 
 pub(crate) mod r#account_discriminator;
+pub(crate) mod r#cancel_subscription_now_data;
 pub(crate) mod r#create_fixed_delegation_data;
 pub(crate) mod r#create_recurring_delegation_data;
 pub(crate) mod r#header;
 pub(crate) mod r#plan_data;
 pub(crate) mod r#plan_status;
 pub(crate) mod r#plan_terms;
+pub(crate) mod r#resume_data;
 pub(crate) mod r#subscribe_data;
 pub(crate) mod r#transfer_data;
 pub(crate) mod r#update_plan_data;
 
 pub use self::r#account_discriminator::*;
+pub use self::r#cancel_subscription_now_data::*;
 pub use self::r#create_fixed_delegation_data::*;
 pub use self::r#create_recurring_delegation_data::*;
 pub use self::r#header::*;
 pub use self::r#plan_data::*;
 pub use self::r#plan_status::*;
 pub use self::r#plan_terms::*;
+pub use self::r#resume_data::*;
 pub use self::r#subscribe_data::*;
 pub use self::r#transfer_data::*;
 pub use self::r#update_plan_data::*;

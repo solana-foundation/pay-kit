@@ -5,6 +5,7 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
+use crate::generated::subscriptions::generated::types::ResumeData;
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
@@ -19,6 +20,8 @@ pub struct ResumeSubscription {
     pub plan_pda: solana_address::Address,
     /// The subscription PDA being resumed
     pub subscription_pda: solana_address::Address,
+    /// The subscriber's SubscriptionAuthority PDA for the plan's mint
+    pub subscription_authority: solana_address::Address,
     /// The event authority PDA
     pub event_authority: solana_address::Address,
     /// This program (for self-CPI)
@@ -26,16 +29,20 @@ pub struct ResumeSubscription {
 }
 
 impl ResumeSubscription {
-    pub fn instruction(&self) -> solana_instruction::Instruction {
-        self.instruction_with_remaining_accounts(&[])
+    pub fn instruction(
+        &self,
+        args: ResumeSubscriptionInstructionArgs,
+    ) -> solana_instruction::Instruction {
+        self.instruction_with_remaining_accounts(args, &[])
     }
     #[allow(clippy::arithmetic_side_effects)]
     #[allow(clippy::vec_init_then_push)]
     pub fn instruction_with_remaining_accounts(
         &self,
+        args: ResumeSubscriptionInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.subscriber,
             true,
@@ -49,6 +56,10 @@ impl ResumeSubscription {
             false,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.subscription_authority,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.event_authority,
             false,
         ));
@@ -57,9 +68,11 @@ impl ResumeSubscription {
             false,
         ));
         accounts.extend_from_slice(remaining_accounts);
-        let data = ResumeSubscriptionInstructionData::new()
+        let mut data = ResumeSubscriptionInstructionData::new()
             .try_to_vec()
             .unwrap();
+        let mut args = args.try_to_vec().unwrap();
+        data.append(&mut args);
 
         solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
@@ -90,6 +103,17 @@ impl Default for ResumeSubscriptionInstructionData {
     }
 }
 
+#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
+pub struct ResumeSubscriptionInstructionArgs {
+    pub resume_data: ResumeData,
+}
+
+impl ResumeSubscriptionInstructionArgs {
+    pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
+        borsh::to_vec(self)
+    }
+}
+
 /// Instruction builder for `ResumeSubscription`.
 ///
 /// ### Accounts:
@@ -97,15 +121,18 @@ impl Default for ResumeSubscriptionInstructionData {
 ///   0. `[signer]` subscriber
 ///   1. `[]` plan_pda
 ///   2. `[writable]` subscription_pda
-///   3. `[optional]` event_authority (default to `3Hnj4BYoDgtpBuqXfiy7Y8cNa3jXaNd4oqgSXBzkMcH7`)
-///   4. `[optional]` self_program (default to `De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44`)
+///   3. `[]` subscription_authority
+///   4. `[]` event_authority
+///   5. `[optional]` self_program (default to `De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44`)
 #[derive(Clone, Debug, Default)]
 pub struct ResumeSubscriptionBuilder {
     subscriber: Option<solana_address::Address>,
     plan_pda: Option<solana_address::Address>,
     subscription_pda: Option<solana_address::Address>,
+    subscription_authority: Option<solana_address::Address>,
     event_authority: Option<solana_address::Address>,
     self_program: Option<solana_address::Address>,
+    resume_data: Option<ResumeData>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
@@ -131,7 +158,15 @@ impl ResumeSubscriptionBuilder {
         self.subscription_pda = Some(subscription_pda);
         self
     }
-    /// `[optional account, default to '3Hnj4BYoDgtpBuqXfiy7Y8cNa3jXaNd4oqgSXBzkMcH7']`
+    /// The subscriber's SubscriptionAuthority PDA for the plan's mint
+    #[inline(always)]
+    pub fn subscription_authority(
+        &mut self,
+        subscription_authority: solana_address::Address,
+    ) -> &mut Self {
+        self.subscription_authority = Some(subscription_authority);
+        self
+    }
     /// The event authority PDA
     #[inline(always)]
     pub fn event_authority(&mut self, event_authority: solana_address::Address) -> &mut Self {
@@ -143,6 +178,11 @@ impl ResumeSubscriptionBuilder {
     #[inline(always)]
     pub fn self_program(&mut self, self_program: solana_address::Address) -> &mut Self {
         self.self_program = Some(self_program);
+        self
+    }
+    #[inline(always)]
+    pub fn resume_data(&mut self, resume_data: ResumeData) -> &mut Self {
+        self.resume_data = Some(resume_data);
         self
     }
     /// Add an additional account to the instruction.
@@ -166,15 +206,19 @@ impl ResumeSubscriptionBuilder {
             subscriber: self.subscriber.expect("subscriber is not set"),
             plan_pda: self.plan_pda.expect("plan_pda is not set"),
             subscription_pda: self.subscription_pda.expect("subscription_pda is not set"),
-            event_authority: self.event_authority.unwrap_or(solana_address::address!(
-                "3Hnj4BYoDgtpBuqXfiy7Y8cNa3jXaNd4oqgSXBzkMcH7"
-            )),
+            subscription_authority: self
+                .subscription_authority
+                .expect("subscription_authority is not set"),
+            event_authority: self.event_authority.expect("event_authority is not set"),
             self_program: self.self_program.unwrap_or(solana_address::address!(
                 "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
             )),
         };
+        let args = ResumeSubscriptionInstructionArgs {
+            resume_data: self.resume_data.clone().expect("resume_data is not set"),
+        };
 
-        accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
+        accounts.instruction_with_remaining_accounts(args, &self.__remaining_accounts)
     }
 }
 
@@ -186,6 +230,8 @@ pub struct ResumeSubscriptionCpiAccounts<'a, 'b> {
     pub plan_pda: &'b solana_account_info::AccountInfo<'a>,
     /// The subscription PDA being resumed
     pub subscription_pda: &'b solana_account_info::AccountInfo<'a>,
+    /// The subscriber's SubscriptionAuthority PDA for the plan's mint
+    pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
     /// The event authority PDA
     pub event_authority: &'b solana_account_info::AccountInfo<'a>,
     /// This program (for self-CPI)
@@ -202,24 +248,31 @@ pub struct ResumeSubscriptionCpi<'a, 'b> {
     pub plan_pda: &'b solana_account_info::AccountInfo<'a>,
     /// The subscription PDA being resumed
     pub subscription_pda: &'b solana_account_info::AccountInfo<'a>,
+    /// The subscriber's SubscriptionAuthority PDA for the plan's mint
+    pub subscription_authority: &'b solana_account_info::AccountInfo<'a>,
     /// The event authority PDA
     pub event_authority: &'b solana_account_info::AccountInfo<'a>,
     /// This program (for self-CPI)
     pub self_program: &'b solana_account_info::AccountInfo<'a>,
+    /// The arguments for the instruction.
+    pub __args: ResumeSubscriptionInstructionArgs,
 }
 
 impl<'a, 'b> ResumeSubscriptionCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
         accounts: ResumeSubscriptionCpiAccounts<'a, 'b>,
+        args: ResumeSubscriptionInstructionArgs,
     ) -> Self {
         Self {
             __program: program,
             subscriber: accounts.subscriber,
             plan_pda: accounts.plan_pda,
             subscription_pda: accounts.subscription_pda,
+            subscription_authority: accounts.subscription_authority,
             event_authority: accounts.event_authority,
             self_program: accounts.self_program,
+            __args: args,
         }
     }
     #[inline(always)]
@@ -245,7 +298,7 @@ impl<'a, 'b> ResumeSubscriptionCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(5 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(6 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.subscriber.key,
             true,
@@ -259,6 +312,10 @@ impl<'a, 'b> ResumeSubscriptionCpi<'a, 'b> {
             false,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.subscription_authority.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.event_authority.key,
             false,
         ));
@@ -269,24 +326,27 @@ impl<'a, 'b> ResumeSubscriptionCpi<'a, 'b> {
         remaining_accounts.iter().for_each(|remaining_account| {
             accounts.push(solana_instruction::AccountMeta {
                 pubkey: *remaining_account.0.key,
-                is_signer: remaining_account.1,
-                is_writable: remaining_account.2,
+                is_writable: remaining_account.1,
+                is_signer: remaining_account.2,
             })
         });
-        let data = ResumeSubscriptionInstructionData::new()
+        let mut data = ResumeSubscriptionInstructionData::new()
             .try_to_vec()
             .unwrap();
+        let mut args = self.__args.try_to_vec().unwrap();
+        data.append(&mut args);
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::generated::subscriptions::SUBSCRIPTIONS_ID,
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(6 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(7 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.subscriber.clone());
         account_infos.push(self.plan_pda.clone());
         account_infos.push(self.subscription_pda.clone());
+        account_infos.push(self.subscription_authority.clone());
         account_infos.push(self.event_authority.clone());
         account_infos.push(self.self_program.clone());
         remaining_accounts
@@ -308,8 +368,9 @@ impl<'a, 'b> ResumeSubscriptionCpi<'a, 'b> {
 ///   0. `[signer]` subscriber
 ///   1. `[]` plan_pda
 ///   2. `[writable]` subscription_pda
-///   3. `[]` event_authority
-///   4. `[]` self_program
+///   3. `[]` subscription_authority
+///   4. `[]` event_authority
+///   5. `[]` self_program
 #[derive(Clone, Debug)]
 pub struct ResumeSubscriptionCpiBuilder<'a, 'b> {
     instruction: Box<ResumeSubscriptionCpiBuilderInstruction<'a, 'b>>,
@@ -322,8 +383,10 @@ impl<'a, 'b> ResumeSubscriptionCpiBuilder<'a, 'b> {
             subscriber: None,
             plan_pda: None,
             subscription_pda: None,
+            subscription_authority: None,
             event_authority: None,
             self_program: None,
+            resume_data: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
@@ -352,6 +415,15 @@ impl<'a, 'b> ResumeSubscriptionCpiBuilder<'a, 'b> {
         self.instruction.subscription_pda = Some(subscription_pda);
         self
     }
+    /// The subscriber's SubscriptionAuthority PDA for the plan's mint
+    #[inline(always)]
+    pub fn subscription_authority(
+        &mut self,
+        subscription_authority: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.subscription_authority = Some(subscription_authority);
+        self
+    }
     /// The event authority PDA
     #[inline(always)]
     pub fn event_authority(
@@ -368,6 +440,11 @@ impl<'a, 'b> ResumeSubscriptionCpiBuilder<'a, 'b> {
         self_program: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.self_program = Some(self_program);
+        self
+    }
+    #[inline(always)]
+    pub fn resume_data(&mut self, resume_data: ResumeData) -> &mut Self {
+        self.instruction.resume_data = Some(resume_data);
         self
     }
     /// Add an additional account to the instruction.
@@ -404,6 +481,13 @@ impl<'a, 'b> ResumeSubscriptionCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
+        let args = ResumeSubscriptionInstructionArgs {
+            resume_data: self
+                .instruction
+                .resume_data
+                .clone()
+                .expect("resume_data is not set"),
+        };
         let instruction = ResumeSubscriptionCpi {
             __program: self.instruction.__program,
 
@@ -416,6 +500,11 @@ impl<'a, 'b> ResumeSubscriptionCpiBuilder<'a, 'b> {
                 .subscription_pda
                 .expect("subscription_pda is not set"),
 
+            subscription_authority: self
+                .instruction
+                .subscription_authority
+                .expect("subscription_authority is not set"),
+
             event_authority: self
                 .instruction
                 .event_authority
@@ -425,6 +514,7 @@ impl<'a, 'b> ResumeSubscriptionCpiBuilder<'a, 'b> {
                 .instruction
                 .self_program
                 .expect("self_program is not set"),
+            __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -439,8 +529,10 @@ struct ResumeSubscriptionCpiBuilderInstruction<'a, 'b> {
     subscriber: Option<&'b solana_account_info::AccountInfo<'a>>,
     plan_pda: Option<&'b solana_account_info::AccountInfo<'a>>,
     subscription_pda: Option<&'b solana_account_info::AccountInfo<'a>>,
+    subscription_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     event_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     self_program: Option<&'b solana_account_info::AccountInfo<'a>>,
+    resume_data: Option<ResumeData>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

@@ -121,6 +121,9 @@ pub enum SubscriptionsError {
     /// 136 - Delegation init_id does not match current SubscriptionAuthority
     #[error("Delegation init_id does not match current SubscriptionAuthority")]
     StaleSubscriptionAuthority = 0x88,
+    /// 137 - Too many transfer hook accounts provided
+    #[error("Too many transfer hook accounts provided")]
+    TransferHookTooManyAccounts = 0x89,
     /// 300 - Transfer amount exceeds delegation limit
     #[error("Transfer amount exceeds delegation limit")]
     AmountExceedsLimit = 0x12C,
@@ -154,6 +157,9 @@ pub enum SubscriptionsError {
     /// 407 - Delegation period has not started yet
     #[error("Delegation period has not started yet")]
     DelegationNotStarted = 0x197,
+    /// 408 - start_ts of 0 (start on landing) requires a non-zero expiry
+    #[error("start_ts of 0 (start on landing) requires a non-zero expiry")]
+    RecurringDelegationStartOnLandingRequiresExpiry = 0x198,
     /// 500 - Plan is in sunset status
     #[error("Plan is in sunset status")]
     PlanSunset = 0x1F4,
@@ -214,6 +220,15 @@ pub enum SubscriptionsError {
     /// 519 - Subscription plan terms do not match the current plan
     #[error("Subscription plan terms do not match the current plan")]
     PlanTermsMismatch = 0x207,
+    /// 520 - A finite plan end timestamp can only be shortened, not removed or extended
+    #[error("A finite plan end timestamp can only be shortened, not removed or extended")]
+    PlanEndTsCannotExtend = 0x208,
+    /// 521 - Subscription approval does not match the current subscription
+    #[error("Subscription approval does not match the current subscription")]
+    StaleSubscriptionApproval = 0x209,
+    /// 522 - Plan update approval does not match the current plan state
+    #[error("Plan update approval does not match the current plan state")]
+    StalePlanApproval = 0x20A,
     /// 600 - Invalid event authority PDA
     #[error("Invalid event authority PDA")]
     InvalidEventAuthority = 0x258,
@@ -226,6 +241,9 @@ pub enum SubscriptionsError {
     /// 603 - Unknown event discriminator
     #[error("Unknown event discriminator")]
     InvalidEventDiscriminator = 0x25B,
+    /// 604 - Self program account does not match this program
+    #[error("Self program account does not match this program")]
+    InvalidSelfProgram = 0x25C,
 }
 
 impl From<SubscriptionsError> for solana_program_error::ProgramError {

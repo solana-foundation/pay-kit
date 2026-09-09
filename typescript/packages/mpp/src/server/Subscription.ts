@@ -7,19 +7,26 @@ import {
     isTransactionPartialSigner,
     type TransactionPartialSigner,
 } from '@solana/kit';
+import { getSubscriptionDelegationDecoder, SUBSCRIPTION_SIZE } from '@solana/subscriptions';
 import { Method, Receipt, Store } from 'mppx';
 
 import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    COMPUTE_BUDGET_PROGRAM,
     DEFAULT_RPC_URLS,
+    MEMO_PROGRAM,
     SUBSCRIPTIONS_PROGRAM,
+    SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
+    SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
+import { reserveReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `subscription` method for usage on the server.
@@ -182,11 +189,6 @@ export function subscription(parameters: subscription.Parameters) {
                     `SubscriptionDelegation plan mismatch: expected ${challenge.methodDetails.planId}, got ${delegation.planPda}`,
                 );
             }
-            if (delegation.mint !== challenge.methodDetails.mint) {
-                throw new Error(
-                    `SubscriptionDelegation mint mismatch: expected ${challenge.methodDetails.mint}, got ${delegation.mint}`,
-                );
-            }
             if (delegation.amountPerPeriod !== challenge.amount) {
                 throw new Error(
                     `SubscriptionDelegation amount mismatch: expected ${challenge.amount}, got ${delegation.amountPerPeriod}`,
@@ -262,18 +264,22 @@ async function settleActivation(
         }
 
         const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
-        validateActivationInstructions(clientTxBase64, challenge);
+        validateActivationInstructions(clientTxBase64, challenge, subscriber);
 
         let txToSend = clientTxBase64;
         if (signer) {
+            if (challenge.methodDetails.feePayerKey !== signer.address) {
+                throw new Error('Configured fee-payer signer does not match challenge feePayerKey');
+            }
             txToSend = await coSignBase64Transaction(signer, clientTxBase64);
         }
 
         await simulateTransaction(rpcUrl, txToSend);
         const signature = await broadcastTransaction(rpcUrl, txToSend);
+        if (!(await reserveReplayKey(store, `solana-subscription:consumed:${signature}`))) {
+            throw new Error('Activation signature already consumed');
+        }
         await waitForConfirmation(rpcUrl, signature);
-
-        await store.put(`solana-subscription:consumed:${signature}`, true);
         return subscriber;
     }
 
@@ -283,39 +289,33 @@ async function settleActivation(
         throw new Error('Missing signature in credential payload');
     }
     const consumedKey = `solana-subscription:consumed:${signature}`;
-    if (await store.get(consumedKey)) {
+    if ((await store.get(consumedKey)) !== null) {
         throw new Error('Activation signature already consumed');
     }
-
     const tx = await fetchTransactionRaw(rpcUrl, signature);
     if (!tx) throw new Error('Transaction not found or not yet confirmed');
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
+    const [transactionBase64] = tx.transaction;
+    const subscriber = extractSubscriberFromTransaction(transactionBase64, challenge);
+    validateActivationInstructions(transactionBase64, challenge, subscriber);
 
-    // The subscriber is the first signer that is not the fee payer (when
-    // fee sponsorship is in play) or simply the fee payer otherwise.
-    const accountKeys = tx.transaction.message.accountKeys ?? [];
-    if (accountKeys.length === 0) {
-        throw new Error('Transaction has no account keys');
+    if (!(await reserveReplayKey(store, consumedKey))) {
+        throw new Error('Activation signature already consumed');
     }
-    const firstAccount = typeof accountKeys[0] === 'string' ? accountKeys[0] : accountKeys[0].pubkey;
-    const subscriber = firstAccount;
-
-    await store.put(consumedKey, true);
     return subscriber;
 }
 
 // ── Transaction parsing (lightweight, pre-broadcast) ──
 //
-// v0: we extract the subscriber and assert the transaction touches the
-// subscriptions program identified by `methodDetails.programId`. Full
-// instruction allowlist enforcement (one subscribe, one transfer_subscription,
-// in order, with re-derived PDAs) lives in `validateActivationInstructions`
-// and is intentionally lightweight in v0; on-chain enforcement is the source
-// of truth for amount/period/destination correctness.
+// Decode once at this boundary so subscriber extraction and the instruction
+// allowlist operate on the same canonical compiled-message representation.
+// Account-state correctness is verified against the resulting delegation
+// after confirmation.
 
 type CompiledMessage = {
     addressTableLookups?: readonly unknown[];
     instructions: readonly CompiledInstruction[];
+    signerAccounts: readonly string[];
     staticAccounts: readonly string[];
 };
 
@@ -329,7 +329,11 @@ function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
-        return getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
+        const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as Omit<
+            CompiledMessage,
+            'signerAccounts'
+        >;
+        return { ...message, signerAccounts: Object.keys(decoded.signatures) };
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -340,24 +344,31 @@ function extractSubscriberFromTransaction(clientTxBase64: string, challenge: Cha
     if (message.staticAccounts.length === 0) {
         throw new Error('Transaction has no static accounts');
     }
+    const firstAccount = message.staticAccounts[0];
 
     // When fee sponsorship is in play, the first signer is the server's fee
     // payer; the subscriber is the next signer that is not the puller.
     if (challenge.methodDetails.feePayer && challenge.methodDetails.feePayerKey) {
-        for (const account of message.staticAccounts.slice(1)) {
+        if (firstAccount !== challenge.methodDetails.feePayerKey) {
+            throw new Error(`Transaction fee payer must be ${challenge.methodDetails.feePayerKey}`);
+        }
+        for (const account of message.signerAccounts.slice(1)) {
             if (account !== challenge.methodDetails.puller) return account;
         }
         throw new Error('Could not identify subscriber among transaction signers');
     }
 
-    const firstAccount = message.staticAccounts[0];
     if (challenge.methodDetails.puller && firstAccount === challenge.methodDetails.puller) {
         throw new Error('Subscriber cannot be the server puller');
     }
     return firstAccount;
 }
 
-function validateActivationInstructions(clientTxBase64: string, challenge: ChallengeRequest): void {
+function validateActivationInstructions(
+    clientTxBase64: string,
+    challenge: ChallengeRequest,
+    subscriber?: string,
+): void {
     const message = decodeCompiledMessage(clientTxBase64);
 
     if (message.addressTableLookups?.length) {
@@ -370,12 +381,68 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
     let sawTransferSubscription = false;
     let subscribeIndex = -1;
     let transferIndex = -1;
+    let sawInitializeAuthority = false;
+    let sawMemo = false;
+    let sawComputeUnitLimit = false;
+    let sawComputeUnitPrice = false;
 
     for (const [index, ix] of message.instructions.entries()) {
         const program = message.staticAccounts[ix.programAddressIndex];
-        if (program !== programId) continue;
-        if (ix.data.length === 0) continue;
-        if (ix.data[0] === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
+        if (program === COMPUTE_BUDGET_PROGRAM) {
+            if (ix.data[0] === 2 && ix.data.length === 5) {
+                if (sawComputeUnitLimit) throw new Error('Multiple compute-unit-limit instructions found');
+                sawComputeUnitLimit = true;
+                if (readU32Le(ix.data, 1) > 400_000) throw new Error('Activation compute unit limit exceeds 400000');
+                continue;
+            }
+            if (ix.data[0] === 3 && ix.data.length === 9) {
+                if (sawComputeUnitPrice) throw new Error('Multiple compute-unit-price instructions found');
+                sawComputeUnitPrice = true;
+                const maxPrice = challenge.methodDetails.feePayer ? 10_000n : 5_000_000n;
+                if (readU64Le(ix.data, 1) > maxPrice) throw new Error('Activation compute unit price exceeds cap');
+                continue;
+            }
+            throw new Error('Unsupported compute-budget instruction in activation transaction');
+        }
+
+        if (program === MEMO_PROGRAM) {
+            if (sawMemo) throw new Error('Multiple memo instructions found');
+            sawMemo = true;
+            const expectedMemo = challenge.externalId;
+            if (!expectedMemo || new TextDecoder().decode(ix.data) !== expectedMemo) {
+                throw new Error('Activation memo does not match challenge externalId');
+            }
+            continue;
+        }
+
+        if (program === ASSOCIATED_TOKEN_PROGRAM) {
+            if (ix.data.length !== 1 || ix.data[0] !== 1) {
+                throw new Error('Only idempotent ATA creation is allowed in activation transaction');
+            }
+            if (!subscriber || ix.accountIndices.length !== 6) {
+                throw new Error('Invalid ATA creation instruction in activation transaction');
+            }
+            const account = (position: number) => message.staticAccounts[ix.accountIndices[position]];
+            if (
+                account(2) !== subscriber ||
+                account(3) !== challenge.methodDetails.mint ||
+                account(4) !== SYSTEM_PROGRAM ||
+                account(5) !== challenge.methodDetails.tokenProgram
+            ) {
+                throw new Error('ATA creation does not match the activation subscriber and mint');
+            }
+            continue;
+        }
+
+        if (program !== programId) {
+            throw new Error(`Unsupported program ${program ?? '<invalid>'} in activation transaction`);
+        }
+        if (ix.data.length === 0) throw new Error('Empty subscriptions-program instruction');
+        if (ix.data[0] === SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR) {
+            if (sawInitializeAuthority)
+                throw new Error('Multiple initialize_subscription_authority instructions found');
+            sawInitializeAuthority = true;
+        } else if (ix.data[0] === SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR) {
             if (sawSubscribe) throw new Error('Multiple subscribe instructions found');
             sawSubscribe = true;
             subscribeIndex = index;
@@ -383,6 +450,8 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
             if (sawTransferSubscription) throw new Error('Multiple transfer_subscription instructions found');
             sawTransferSubscription = true;
             transferIndex = index;
+        } else {
+            throw new Error(`Unsupported subscriptions instruction ${ix.data[0]} in activation transaction`);
         }
     }
 
@@ -392,19 +461,20 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
     if (transferIndex < subscribeIndex) {
         throw new Error('subscribe must precede transfer_subscription in activation transaction');
     }
+    if (challenge.externalId && !sawMemo) {
+        throw new Error('Activation transaction is missing challenge externalId memo');
+    }
 }
 
-// ── On-chain SubscriptionDelegation decoding (v0) ──
+// ── On-chain SubscriptionDelegation decoding ──
 //
-// v0 deserialization reads the fields this profile needs by offset. The
-// definitive schema lives in the subscriptions program's Codama client; a
-// follow-up should adopt that typed client and replace this manual decoder.
+// Keep account layout handling in the official Codama-generated SDK. This
+// avoids duplicating offsets here when the subscription program evolves.
 
 type SubscriptionDelegation = {
     amountPerPeriod: string;
     amountPulledInPeriod: string;
     currentPeriodStartTs: number;
-    mint: string;
     periodHours: number;
     planPda: string;
     subscriber: string;
@@ -422,45 +492,21 @@ async function fetchSubscriptionDelegation(
     return decodeSubscriptionDelegation(data);
 }
 
-// Offsets correspond to the subscriptions program's
-// SubscriptionDelegation layout (see /Users/ludo/Coding/solana-program/
-// subscriptions/program/src/state/subscription_delegation.rs). This is a
-// minimum-viable decoder: it reads only the fields needed for activation
-// verification. Replace with the Codama client in v0.1.
-const SUBSCRIPTION_DELEGATION_DISCRIMINATOR_LEN = 1;
-const PUBKEY_LEN = 32;
-
 function decodeSubscriptionDelegation(data: Uint8Array): SubscriptionDelegation {
-    let offset = SUBSCRIPTION_DELEGATION_DISCRIMINATOR_LEN;
-    // Header: delegator (subscriber), delegatee, payer (sponsor), init_id (u64)
-    const subscriber = encodeBase58(data.subarray(offset, offset + PUBKEY_LEN));
-    offset += PUBKEY_LEN;
-    // delegatee
-    offset += PUBKEY_LEN;
-    // payer
-    offset += PUBKEY_LEN;
-    // init_id u64
-    offset += 8;
-    const planPda = encodeBase58(data.subarray(offset, offset + PUBKEY_LEN));
-    offset += PUBKEY_LEN;
-    const mint = encodeBase58(data.subarray(offset, offset + PUBKEY_LEN));
-    offset += PUBKEY_LEN;
-    const amountPerPeriod = readU64Le(data, offset).toString();
-    offset += 8;
-    const periodHours = Number(readU64Le(data, offset));
-    offset += 8;
-    const currentPeriodStartTs = Number(readI64Le(data, offset));
-    offset += 8;
-    const amountPulledInPeriod = readU64Le(data, offset).toString();
+    if (data.length !== SUBSCRIPTION_SIZE) {
+        throw new Error(
+            `Unexpected SubscriptionDelegation account length: ${data.length} bytes (expected ${SUBSCRIPTION_SIZE})`,
+        );
+    }
+    const decoded = getSubscriptionDelegationDecoder().decode(data);
 
     return {
-        amountPerPeriod,
-        amountPulledInPeriod,
-        currentPeriodStartTs,
-        mint,
-        periodHours,
-        planPda,
-        subscriber,
+        amountPerPeriod: decoded.terms.amount.toString(),
+        amountPulledInPeriod: decoded.amountPulledInPeriod.toString(),
+        currentPeriodStartTs: Number(decoded.currentPeriodStartTs),
+        periodHours: Number(decoded.terms.periodHours),
+        planPda: decoded.header.delegatee,
+        subscriber: decoded.header.delegator,
     };
 }
 
@@ -472,9 +518,8 @@ function readU64Le(data: Uint8Array, offset: number): bigint {
     return value;
 }
 
-function readI64Le(data: Uint8Array, offset: number): bigint {
-    const u = readU64Le(data, offset);
-    return u >= 1n << 63n ? u - (1n << 64n) : u;
+function readU32Le(data: Uint8Array, offset: number): number {
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(offset, true);
 }
 
 // ── Base58/base64url helpers (minimal, dependency-free) ──
@@ -541,11 +586,7 @@ function base64UrlEncodeNoPadding(bytes: Uint8Array): string {
 
 type RawTransaction = {
     meta: { err: unknown } | null;
-    transaction: {
-        message: {
-            accountKeys: Array<string | { pubkey: string }>;
-        };
-    };
+    transaction: [string, 'base64'];
 };
 
 async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<RawTransaction | null> {
@@ -554,7 +595,7 @@ async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<R
             id: 1,
             jsonrpc: '2.0',
             method: 'getTransaction',
-            params: [signature, { commitment: 'confirmed', encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }],
+            params: [signature, { commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 0 }],
         }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',

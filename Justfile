@@ -4,7 +4,7 @@ set shell := ["bash", "-uc"]
 # reproducibility doesn't depend on whatever `main` happens to be when
 # the `*-pull-idl` recipes were last run.
 subscriptions_repo     := "solana-foundation/subscriptions"
-subscriptions_ref      := "30a6f7cbd1c53862cc598d93cb771c2c86a10cbf"
+subscriptions_ref      := "5a347ffaa969036061d274d3c91e0277962e2b51"
 payment_channels_repo  := "Moonsong-Labs/solana-payment-channels"
 payment_channels_ref   := "0c07d5751c8972abf6a219570a3f39a72f46f879"
 

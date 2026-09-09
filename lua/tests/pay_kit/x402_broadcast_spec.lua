@@ -42,7 +42,9 @@ package.loaded['pay_kit.solana.rpc'] = {
       end,
       latest_blockhash    = function() return string.rep('0', 32) end,
       simulate_transaction = function() return {err = nil} end,
-      signature_statuses   = function() return {} end,
+      signature_statuses   = function()
+        return {{confirmationStatus = 'confirmed'}}
+      end,
     }
   end,
   Rpc                = {},
@@ -206,8 +208,22 @@ helper.test('x402 verify_and_settle: SIGNATURE_CONSUMED on duplicate submit', fu
         send_raw_transaction = function() return 'fakeSignatureBase58' end,
         latest_blockhash    = function() return string.rep('0', 32) end,
         simulate_transaction = function() return {err = nil} end,
+        signature_statuses = function()
+          return {{confirmationStatus = 'confirmed', err = cjson.null}}
+        end,
       }
     end,
   }
   helper.assert_true(true)  -- exercise the require path
+end)
+
+helper.test('x402 verify_and_settle: rejects a failed on-chain transaction', function()
+  local confirmed, err = require('pay_kit.protocols.x402')._private.await_confirmation({
+    signature_statuses = function()
+      return {{confirmationStatus = 'confirmed', err = {InstructionError = {0, 'Custom'}}}}
+    end,
+  }, 'failedSignatureBase58')
+
+  helper.assert_true(confirmed == nil)
+  helper.assert_true(tostring(err):match('transaction failed on%-chain') ~= nil)
 end)
