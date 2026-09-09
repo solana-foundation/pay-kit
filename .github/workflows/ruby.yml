@@ -57,6 +57,9 @@ jobs:
           bundler-cache: true
           working-directory: ruby
       - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "paykit-harness-bins:x402_harness_client"
+          cargo-cache-key: ruby
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
       # the same ruby adapter binary. The harness's harnessEnv exposes
