@@ -2,9 +2,16 @@ import {
     type Base64EncodedWireTransaction,
     getBase64Codec,
     getBase64EncodedWireTransaction,
+    getSignatureFromTransaction,
     getTransactionDecoder,
+    type Signature,
     type TransactionPartialSigner,
 } from '@solana/kit';
+
+/** Return the deterministic transaction signature from a base64 wire transaction. */
+export function transactionSignatureFromBase64(transaction: string): Signature {
+    return getSignatureFromTransaction(getTransactionDecoder().decode(getBase64Codec().encode(transaction)));
+}
 
 /**
  * Decode a base64 wire transaction, co-sign it with a TransactionPartialSigner,

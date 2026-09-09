@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { Store } from 'mppx/server';
 
-import { claimReplayKey, confirmReplayKey, reserveReplayKey } from '../server/replay.js';
+import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } from '../server/replay.js';
 
 describe('reserveReplayKey', () => {
     test('allows exactly one concurrent claimant', async () => {
@@ -26,5 +26,17 @@ describe('challenge-bound replay recovery', () => {
         await confirmReplayKey(store, key, 'challenge-a');
         await expect(claimReplayKey(store, key, 'challenge-a')).resolves.toBe('retry');
         await expect(claimReplayKey(store, key, 'challenge-b')).resolves.toBe('conflict');
+    });
+
+    test('distinguishes confirmed and expired records before settlement RPCs', async () => {
+        const store = Store.memory();
+        const key = 'solana-charge:consumed:recovery-signature';
+
+        await store.put(key, { binding: 'challenge-a', leaseUntil: 0, state: 'pending' });
+        await expect(inspectReplayKey(store, key, 'challenge-a')).resolves.toBe('expired');
+
+        await store.put(key, { binding: 'challenge-a', leaseUntil: 0, state: 'confirmed' });
+        await expect(inspectReplayKey(store, key, 'challenge-a')).resolves.toBe('retry');
+        await expect(inspectReplayKey(store, key, 'challenge-b')).resolves.toBe('conflict');
     });
 });

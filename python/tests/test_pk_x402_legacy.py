@@ -323,12 +323,13 @@ async def test_server_accepts_legacy_x_payment_header(monkeypatch):
     header = _legacy_envelope(adapter, gate, op_kp)
     payment = await adapter.verify_and_settle(gate, _LegacyReq(header))
     assert payment.protocol is Protocol.X402
-    assert payment.transaction == "SIG-legacy-ok"
+    assert payment.transaction
     # A v1 credential gets the legacy X-PAYMENT-RESPONSE receipt header, NOT the
     # v2 payment-response (rust X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
     assert "payment-response" not in payment.settlement_headers
     resp = json.loads(base64.b64decode(payment.settlement_headers["x-payment-response"]))
     assert resp["network"] == SOLANA_DEVNET_CAIP2
+    assert resp["transaction"] == payment.transaction
 
 
 @pytest.mark.asyncio
@@ -338,7 +339,7 @@ async def test_server_accepts_legacy_header_from_dict_request(monkeypatch):
     header = _legacy_envelope(adapter, gate, op_kp)
     req = {"path": "/report", "headers": {"X-Payment": header}}
     payment = await adapter.verify_and_settle(gate, req)
-    assert payment.transaction == "SIG-dict"
+    assert payment.transaction
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ type ReplayRecord = {
 };
 
 export type ReplayClaim = 'conflict' | 'pending' | 'reserved' | 'retry';
+export type ReplayStatus = 'available' | 'conflict' | 'expired' | 'pending' | 'retry';
 
 const PENDING_LEASE_MS = 45_000;
 
@@ -27,6 +28,15 @@ function isReplayRecord(value: unknown): value is ReplayRecord {
         typeof record.leaseUntil === 'number' &&
         (record.state === 'pending' || record.state === 'confirmed')
     );
+}
+
+/** Inspect a challenge-bound proof without renewing an expired settlement lease. */
+export async function inspectReplayKey(store: Store.Store, key: string, binding: string): Promise<ReplayStatus> {
+    const current = await store.get(key);
+    if (current === null) return 'available';
+    if (!isReplayRecord(current) || current.binding !== binding) return 'conflict';
+    if (current.state === 'confirmed') return 'retry';
+    return current.leaseUntil <= Date.now() ? 'expired' : 'pending';
 }
 
 /**

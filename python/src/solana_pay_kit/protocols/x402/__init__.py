@@ -224,77 +224,44 @@ class X402Adapter:
 
         # Cosign as the facilitator fee payer (slot-splice, version aware).
         cosigned_wire = _co_sign(tx_base64, signer)
+        signature = _transaction_signature(cosigned_wire)
+        replay_key = _REPLAY_PREFIX + signature
+        binding = hashlib.sha256(cosigned_wire).hexdigest()
+        now = time.time()
+        replay_record: dict[str, object] = {
+            "binding": binding,
+            "leaseUntil": now + _PENDING_LEASE_SECONDS,
+            "state": "pending",
+        }
 
-        rpc = SolanaRpc(rpc_url)
+        current = await self._store.get(replay_key)
+        should_broadcast = current is None
+        skip_confirmation = False
+        if current is not None:
+            skip_confirmation = await _recover_replay_record(
+                self._store, replay_key, binding, replay_record, current, now
+            )
+
+        rpc: SolanaRpc | None = None
         try:
-            try:
-                response = await rpc.send_raw_transaction(cosigned_wire)
-                signature = str(response.value if hasattr(response, "value") else response)
-            except Exception as exc:  # noqa: BLE001
-                raise InvalidProofError(
-                    f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
-                ) from exc
-            if not signature:
-                raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
+            if should_broadcast:
+                rpc = SolanaRpc(rpc_url)
+                try:
+                    response = await rpc.send_raw_transaction(cosigned_wire)
+                    broadcast_signature = str(response.value if hasattr(response, "value") else response)
+                except Exception as exc:  # noqa: BLE001
+                    raise InvalidProofError(
+                        f"solana_pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
+                    ) from exc
+                if not broadcast_signature:
+                    raise InvalidProofError("solana_pay_kit: empty broadcast result", code="payment_invalid")
 
-            # Replay reservation. Bind the signature to the exact cosigned wire
-            # and distinguish pending from confirmed settlement. A deterministic
-            # recovery key lets exactly one retry take over an expired lease,
-            # even when the store only exposes atomic put-if-absent.
-            replay_key = _REPLAY_PREFIX + signature
-            binding = hashlib.sha256(cosigned_wire).hexdigest()
-            now = time.time()
-            replay_record = {
-                "binding": binding,
-                "leaseUntil": now + _PENDING_LEASE_SECONDS,
-                "state": "pending",
-            }
-            inserted = await self._store.put_if_absent(replay_key, replay_record)
-            skip_confirmation = False
-            if not inserted:
-                current = await self._store.get(replay_key)
-                if not isinstance(current, dict):
-                    raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-                current_record = cast("dict[str, object]", current)
-                if current_record.get("binding") != binding:
-                    raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-                if current_record.get("state") == "confirmed":
-                    skip_confirmation = True
-                elif current_record.get("state") == "pending" and isinstance(
-                    current_record.get("leaseUntil"), int | float
-                ):
-                    lease_until = float(cast("int | float", current_record["leaseUntil"]))
-                    if lease_until > now:
-                        raise InvalidProofError(
-                            "solana_pay_kit: signature_consumed: settlement confirmation is pending",
-                            code="signature_consumed",
-                        )
-                    recovery_key = f"{replay_key}:recovery:{lease_until}"
-                    if not await self._store.put_if_absent(recovery_key, True):
-                        raise InvalidProofError(
-                            "solana_pay_kit: signature_consumed: settlement recovery is in progress",
-                            code="signature_consumed",
-                        )
-                    # The original request may have confirmed between the first
-                    # read and our recovery claim. Re-read before replacing a
-                    # pending record so confirmed state can never regress.
-                    latest = await self._store.get(replay_key)
-                    if not isinstance(latest, dict):
-                        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-                    latest_record = cast("dict[str, object]", latest)
-                    if latest_record.get("binding") != binding:
-                        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
-                    if latest_record.get("state") == "confirmed":
-                        skip_confirmation = True
-                    elif latest_record.get("state") == "pending" and latest_record.get("leaseUntil") == lease_until:
-                        await self._store.put(replay_key, replay_record)
-                    else:
-                        raise InvalidProofError(
-                            "solana_pay_kit: signature_consumed: settlement recovery state changed",
-                            code="signature_consumed",
-                        )
-                else:
-                    raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+                inserted = await self._store.put_if_absent(replay_key, replay_record)
+                if not inserted:
+                    current = await self._store.get(replay_key)
+                    skip_confirmation = await _recover_replay_record(
+                        self._store, replay_key, binding, replay_record, current, now
+                    )
 
             # Await on-chain confirmation BEFORE returning success. Without this
             # the adapter returned a settlement header for a transaction that
@@ -304,6 +271,8 @@ class X402Adapter:
             # ``transaction-not-found`` (never confirmed inside the window).
             #
             if not skip_confirmation:
+                if rpc is None:
+                    rpc = SolanaRpc(rpc_url)
                 try:
                     await rpc.await_confirmation(signature)
                     await self._store.put(
@@ -319,7 +288,8 @@ class X402Adapter:
                         f"solana_pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
                     ) from exc
         finally:
-            await rpc.aclose()
+            if rpc is not None:
+                await rpc.aclose()
 
         accepted_network = accepted.get("network")
         response_body: X402ResponseEnvelope = {
@@ -520,6 +490,79 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     sig_start = 1 + idx * 64
     serialized[sig_start : sig_start + 64] = sig_bytes
     return bytes(serialized)
+
+
+def _transaction_signature(transaction_wire: bytes) -> str:
+    """Return the deterministic first signature from a signed wire transaction."""
+    from solders.transaction import Transaction, VersionedTransaction
+
+    from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+
+    try:
+        if is_v0_wire_bytes(transaction_wire):
+            signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
+        else:
+            try:
+                signatures = Transaction.from_bytes(transaction_wire).signatures
+            except Exception:  # noqa: BLE001 - accept other solders versioned variants
+                signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
+    except Exception as exc:  # noqa: BLE001
+        raise InvalidProofError(
+            "invalid_exact_svm_payload_transaction_parse",
+            code="invalid_exact_svm_payload_transaction_parse",
+        ) from exc
+    if not signatures:
+        raise InvalidProofError("solana_pay_kit: transaction has no signature", code="payment_invalid")
+    return str(signatures[0])
+
+
+async def _recover_replay_record(
+    store: Store,
+    replay_key: str,
+    binding: str,
+    replay_record: dict[str, object],
+    current: object,
+    now: float,
+) -> bool:
+    """Claim an expired settlement for confirmation, or return a confirmed replay."""
+    if not isinstance(current, dict):
+        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+    current_record = cast("dict[str, object]", current)
+    if current_record.get("binding") != binding:
+        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+    if current_record.get("state") == "confirmed":
+        return True
+    if current_record.get("state") != "pending" or not isinstance(current_record.get("leaseUntil"), int | float):
+        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+
+    lease_until = float(cast("int | float", current_record["leaseUntil"]))
+    if lease_until > now:
+        raise InvalidProofError(
+            "solana_pay_kit: signature_consumed: settlement confirmation is pending",
+            code="signature_consumed",
+        )
+    recovery_key = f"{replay_key}:recovery:{lease_until}"
+    if not await store.put_if_absent(recovery_key, True):
+        raise InvalidProofError(
+            "solana_pay_kit: signature_consumed: settlement recovery is in progress",
+            code="signature_consumed",
+        )
+
+    latest = await store.get(replay_key)
+    if not isinstance(latest, dict):
+        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+    latest_record = cast("dict[str, object]", latest)
+    if latest_record.get("binding") != binding:
+        raise InvalidProofError("solana_pay_kit: signature_consumed", code="signature_consumed")
+    if latest_record.get("state") == "confirmed":
+        return True
+    if latest_record.get("state") == "pending" and latest_record.get("leaseUntil") == lease_until:
+        await store.put(replay_key, replay_record)
+        return False
+    raise InvalidProofError(
+        "solana_pay_kit: signature_consumed: settlement recovery state changed",
+        code="signature_consumed",
+    )
 
 
 def _recent_blockhash_of(transaction_b64: str) -> str | None:

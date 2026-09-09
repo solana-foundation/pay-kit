@@ -23,11 +23,11 @@ import {
     validateNetwork,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
+import { coSignBase64Transaction, transactionSignatureFromBase64 } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
-import { claimReplayKey, confirmReplayKey } from './replay.js';
+import { claimReplayKey, confirmReplayKey, inspectReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -773,28 +773,40 @@ async function verifyTransaction(
         txToSend = await coSignBase64Transaction(signer, clientTxBase64);
     }
 
-    // Simulate before broadcast to catch failures without wasting fees.
-    await simulateTransaction(rpcUrl, txToSend);
-
-    // Broadcast the (now fully-signed) transaction.
-    const signature = await broadcastTransaction(rpcUrl, txToSend);
-
-    // Audit #3: reserve the signature BETWEEN broadcast and confirmation polling.
-    // If we only marked it consumed after confirmation+verify (as before), a tx
-    // that landed during a confirmation-poll timeout could be lost — the user
-    // pays but the signature is never recorded, so a retry re-broadcasts (double
-    // charge) or replays. Reserving here closes the replay window; the
-    // post-timeout status recovery below rescues the false-negative case.
+    const signature = transactionSignatureFromBase64(txToSend);
     const replayKey = `solana-charge:consumed:${signature}`;
     const replayBinding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
-    const replayClaim = await claimReplayKey(store, replayKey, replayBinding);
-    if (replayClaim === 'conflict') {
+    const replayStatus = await inspectReplayKey(store, replayKey, replayBinding);
+    if (replayStatus === 'conflict') {
         throw new Error('Transaction signature already consumed');
     }
-    if (replayClaim === 'pending') throw new Error('Transaction settlement is already in progress; retry shortly');
+    if (replayStatus === 'pending') throw new Error('Transaction settlement is already in progress; retry shortly');
 
-    // Wait for on-chain confirmation (with a definitive post-timeout status check).
-    await waitForConfirmation(rpcUrl, signature);
+    let needsConfirmation = replayStatus !== 'retry';
+    if (replayStatus === 'expired') {
+        const recoveryClaim = await claimReplayKey(store, replayKey, replayBinding);
+        if (recoveryClaim === 'conflict') throw new Error('Transaction signature already consumed');
+        if (recoveryClaim === 'pending') {
+            throw new Error('Transaction settlement is already in progress; retry shortly');
+        }
+        needsConfirmation = recoveryClaim !== 'retry';
+    } else if (replayStatus === 'available') {
+        // Only a transaction with no prior settlement state reaches preflight
+        // and broadcast. Exact-wire retries recover by signature above, even
+        // after their blockhash or account-state preconditions have changed.
+        await simulateTransaction(rpcUrl, txToSend);
+        await broadcastTransaction(rpcUrl, txToSend);
+        const replayClaim = await claimReplayKey(store, replayKey, replayBinding);
+        if (replayClaim === 'conflict') throw new Error('Transaction signature already consumed');
+        if (replayClaim === 'pending') {
+            throw new Error('Transaction settlement is already in progress; retry shortly');
+        }
+        needsConfirmation = replayClaim !== 'retry';
+    }
+
+    if (needsConfirmation) {
+        await waitForConfirmation(rpcUrl, signature);
+    }
 
     // Verify the confirmed transaction matches the challenge.
     await verifyOnChain(rpcUrl, signature, challenge, recipient);

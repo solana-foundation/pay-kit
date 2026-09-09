@@ -764,7 +764,7 @@ async def test_transport_402_then_pay_then_200(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert resp.headers["x-fixture-settlement"] == "SIG-client-harness"
+    assert resp.headers["x-fixture-settlement"] == resp.json()["transaction"]
 
 
 @pytest.mark.asyncio

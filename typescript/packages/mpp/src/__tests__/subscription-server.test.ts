@@ -788,8 +788,10 @@ describe('subscription().verify() (push mode)', () => {
         const data = buildDelegationData(subscriberAddress, PLAN_ID, 10_000_000n);
         const accountB64 = Buffer.from(data).toString('base64');
 
+        const rpcMethods: string[] = [];
         globalThis.fetch = async (_input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
+            if (body.method) rpcMethods.push(body.method);
             switch (body.method) {
                 case 'simulateTransaction':
                     return rpcSuccess({ value: { err: null, logs: [] } });
@@ -855,6 +857,8 @@ describe('subscription().verify() (push mode)', () => {
 
         const recovered = await method.verify!({ credential, request: {} as never });
         expect((recovered as { reference: string }).reference).toBe((receipt as { reference: string }).reference);
+        expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
+        expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
     });
 
     test('rejects when on-chain delegation references a different plan', async () => {

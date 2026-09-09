@@ -31,6 +31,7 @@ import {
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
 import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
+import { transactionSignatureFromBase64 } from '../utils/transactions.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,
@@ -1682,17 +1683,18 @@ test('signature: throws when no TransferChecked instruction found (SPL)', async 
  *   2. getSignatureStatuses → returns confirmed
  *   3. getTransaction → returns parsed tx for verification
  */
-function mockServerBroadcastFetch(txResult: unknown, signature: string = SIGNATURE) {
+function mockServerBroadcastFetch(txResult: unknown, rpcMethods?: string[]) {
     globalThis.fetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
         const body = JSON.parse(init?.body as string);
         const method = body.method;
+        rpcMethods?.push(method);
 
         if (method === 'simulateTransaction') {
             return rpcSuccess({ value: { err: null, logs: [] } });
         }
 
         if (method === 'sendTransaction') {
-            return rpcSuccess(signature);
+            return rpcSuccess(SIGNATURE);
         }
 
         if (method === 'getSignatureStatuses') {
@@ -1718,14 +1720,15 @@ test('pull: accepts valid native SOL transfer', async () => {
     });
 
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const transaction = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
 
     const receipt = await method.verify({
-        credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), { amount: '1000000' }),
+        credential: transactionCredential(transaction, { amount: '1000000' }),
         request: {} as any,
     });
 
     expect(receipt.status).toBe('success');
-    expect(receipt.reference).toBe(SIGNATURE);
+    expect(receipt.reference).toBe(transactionSignatureFromBase64(transaction));
 });
 
 test('pull: identical challenge-bound retry recovers the settled receipt', async () => {
@@ -1735,7 +1738,8 @@ test('pull: identical challenge-bound retry recovers the settled receipt', async
         rpcUrl: 'https://mock-rpc',
         store,
     });
-    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const rpcMethods: string[] = [];
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000), rpcMethods);
     const credential = transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), {
         amount: '1000000',
     });
@@ -1744,6 +1748,8 @@ test('pull: identical challenge-bound retry recovers the settled receipt', async
     const recovered = await method.verify({ credential, request: {} as any });
 
     expect(recovered.reference).toBe(first.reference);
+    expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
+    expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
 });
 
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
@@ -1869,8 +1875,9 @@ test('pull: accepts valid SPL token transfer', async () => {
 
     mockServerBroadcastFetch(splTransferTx(expectedAta, USDC_MINT, '1000000'));
 
+    const transaction = await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '1000000');
     const receipt = await method.verify({
-        credential: transactionCredential(await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '1000000'), {
+        credential: transactionCredential(transaction, {
             amount: '1000000',
             currency: USDC_MINT,
             decimals: 6,
@@ -1879,7 +1886,7 @@ test('pull: accepts valid SPL token transfer', async () => {
     });
 
     expect(receipt.status).toBe('success');
-    expect(receipt.reference).toBe(SIGNATURE);
+    expect(receipt.reference).toBe(transactionSignatureFromBase64(transaction));
 });
 
 test('pull: accepts SPL externalId memo pre-broadcast and on-chain', async () => {
@@ -2070,7 +2077,7 @@ test('client buildChargeTransaction creates verifier-compatible SPL transaction'
     });
 
     expect(receipt.status).toBe('success');
-    expect(receipt.reference).toBe(SIGNATURE);
+    expect(receipt.reference).toBe(transactionSignatureFromBase64(tx));
 });
 
 test('pull: accepts fee payer split recipient ATA creation', async () => {

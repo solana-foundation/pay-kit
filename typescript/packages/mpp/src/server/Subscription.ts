@@ -26,8 +26,8 @@ import {
 } from '../constants.js';
 import * as Methods from '../Methods.js';
 import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
-import { coSignBase64Transaction } from '../utils/transactions.js';
-import { claimReplayKey, confirmReplayKey, reserveReplayKey } from './replay.js';
+import { coSignBase64Transaction, transactionSignatureFromBase64 } from '../utils/transactions.js';
+import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
 
 /**
  * Creates a Solana `subscription` method for usage on the server.
@@ -280,16 +280,38 @@ async function settleActivation(
             txToSend = await coSignBase64Transaction(signer, clientTxBase64);
         }
 
-        await simulateTransaction(rpcUrl, txToSend);
-        const signature = await broadcastTransaction(rpcUrl, txToSend);
+        const signature = transactionSignatureFromBase64(txToSend);
         const key = `solana-subscription:consumed:${signature}`;
         const binding = JSON.stringify({ challengeId: credential.challenge.id ?? null, request: challenge });
-        const replayClaim = await claimReplayKey(store, key, binding);
-        if (replayClaim === 'conflict') {
+        const replayStatus = await inspectReplayKey(store, key, binding);
+        if (replayStatus === 'conflict') {
             throw new Error('Activation signature already consumed');
         }
-        if (replayClaim === 'pending') throw new Error('Activation settlement is already in progress; retry shortly');
-        await waitForConfirmation(rpcUrl, signature);
+        if (replayStatus === 'pending') {
+            throw new Error('Activation settlement is already in progress; retry shortly');
+        }
+
+        let needsConfirmation = replayStatus !== 'retry';
+        if (replayStatus === 'expired') {
+            const recoveryClaim = await claimReplayKey(store, key, binding);
+            if (recoveryClaim === 'conflict') throw new Error('Activation signature already consumed');
+            if (recoveryClaim === 'pending') {
+                throw new Error('Activation settlement is already in progress; retry shortly');
+            }
+            needsConfirmation = recoveryClaim !== 'retry';
+        } else if (replayStatus === 'available') {
+            await simulateTransaction(rpcUrl, txToSend);
+            await broadcastTransaction(rpcUrl, txToSend);
+            const replayClaim = await claimReplayKey(store, key, binding);
+            if (replayClaim === 'conflict') throw new Error('Activation signature already consumed');
+            if (replayClaim === 'pending') {
+                throw new Error('Activation settlement is already in progress; retry shortly');
+            }
+            needsConfirmation = replayClaim !== 'retry';
+        }
+        if (needsConfirmation) {
+            await waitForConfirmation(rpcUrl, signature);
+        }
         return { replay: { binding, key }, subscriberAddress: subscriber };
     }
 
