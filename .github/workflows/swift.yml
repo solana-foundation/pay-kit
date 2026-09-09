@@ -22,7 +22,41 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      swift: ${{ steps.filter.outputs.swift }}
+      harness: ${{ steps.filter.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            swift:
+              - 'swift/**'
+              - 'Package.swift'
+              - '.github/**'
+            harness:
+              - 'swift/**'
+              - 'Package.swift'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   test-swift:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.swift == 'true'
     name: Swift tests
     runs-on: macos-latest
     steps:
@@ -40,6 +74,8 @@ jobs:
           if-no-files-found: ignore
 
   harness-swift:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true'
     name: "Harness: Swift client to TypeScript + Rust servers"
     runs-on: macos-latest
     steps:
@@ -70,6 +106,8 @@ jobs:
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays rust server"
 
   harness-swift-x402:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true'
     name: "Harness: Swift x402 client to Rust x402 server"
     runs-on: macos-latest
     steps:
@@ -105,6 +143,8 @@ jobs:
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000
 
   harness-swift-x402-upto:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true'
     name: "Harness: Swift x402 upto client to Rust x402 upto server"
     runs-on: macos-latest
     steps:

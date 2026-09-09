@@ -22,7 +22,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which parts of the tree this pull request touches. Every other job in
+  # this workflow gates on these outputs for pull_request events; pushes to
+  # main and workflow_call runs are never filtered. A harness leg's filter
+  # lists every language that participates in the leg, not just the server
+  # language, so a cross-SDK change still runs the pairs it can break (#261).
+  # Any change under .github/ invalidates every filter.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      kotlin: ${{ steps.filter.outputs.kotlin }}
+      harness: ${{ steps.filter.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            kotlin:
+              - 'kotlin/**'
+              - '.github/**'
+            harness:
+              - 'kotlin/**'
+              - 'harness/**'
+              - 'typescript/**'
+              - 'rust/**'
+              - 'package.json'
+              - '.node-version'
+              - '.github/**'
+
   test-kotlin:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.kotlin == 'true'
     name: Kotlin tests
     runs-on: ubuntu-latest
     steps:
@@ -53,7 +85,8 @@ jobs:
 
   harness-kotlin:
     name: "Harness: Kotlin client to TypeScript server"
-    needs: test-kotlin
+    needs: [changes, test-kotlin]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true') && (needs['test-kotlin'].result == 'success' || needs['test-kotlin'].result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -85,7 +118,8 @@ jobs:
 
   harness-kotlin-x402:
     name: "Harness: Kotlin x402 client to Rust x402 server"
-    needs: test-kotlin
+    needs: [changes, test-kotlin]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true') && (needs['test-kotlin'].result == 'success' || needs['test-kotlin'].result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -124,7 +158,8 @@ jobs:
 
   harness-kotlin-x402-upto:
     name: "Harness: Kotlin x402 upto client to Rust upto server"
-    needs: test-kotlin
+    needs: [changes, test-kotlin]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && (github.event_name != 'pull_request' || needs.changes.outputs.harness == 'true') && (needs['test-kotlin'].result == 'success' || needs['test-kotlin'].result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
