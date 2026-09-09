@@ -18,7 +18,10 @@ type ReplayRecord = {
 export type ReplayClaim = 'conflict' | 'pending' | 'reserved' | 'retry';
 export type ReplayStatus = 'available' | 'conflict' | 'expired' | 'pending' | 'retry';
 
-const PENDING_LEASE_MS = 45_000;
+// Keep recovery outside the complete settlement window, including confirmation
+// polling and post-confirmation account verification. This matches the Python
+// adapter's worst-case lease and prevents a retry from overlapping its owner.
+const PENDING_LEASE_MS = 21 * 60 * 1_000;
 
 function isReplayRecord(value: unknown): value is ReplayRecord {
     if (typeof value !== 'object' || value === null) return false;
