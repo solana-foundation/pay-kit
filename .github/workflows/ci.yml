@@ -296,25 +296,6 @@ jobs:
         uses: actions/download-artifact@v7
         with:
           name: html-assets
-      - name: Install Surfnet helper dependencies
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Start Surfnet
-        working-directory: .
-        run: |
-          node harness/start-surfnet-proxy.mjs &
-          ready=0
-          for i in $(seq 1 50); do
-            if curl -sf -X POST http://localhost:8899 \
-              -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
-              | grep -q '"result":"ok"'; then
-              ready=1
-              break
-            fi
-            sleep 0.2
-          done
-          test "$ready" -eq 1
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:integration
 
@@ -383,6 +364,77 @@ jobs:
       - name: Run Playwright tests (Playground)
         working-directory: html
         run: npm run test:e2e:demo
+
+  test-playground-e2e:
+    name: "Playground E2E: all payment patterns"
+    needs: build-html
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: |
+            typescript/pnpm-lock.yaml
+            playground/pnpm-lock.yaml
+      - name: Download HTML assets
+        uses: actions/download-artifact@v7
+        with:
+          name: html-assets
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        working-directory: .
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Install branch TypeScript dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build branch SDK
+        working-directory: typescript
+        run: pnpm build
+      - name: Install playground dependencies
+        working-directory: playground
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright Chromium
+        working-directory: playground
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run all playground payment patterns
+        working-directory: playground
+        run: pnpm test:e2e
+        env:
+          PLAYGROUND_DISABLE_SIDECAR: "1"
+          # The hosted payment sandbox has the canonical payment-channel and
+          # subscription programs deployed; the lightweight CI Surfnet used by
+          # unit tests intentionally does not.
+          RPC_URL: https://402.surfnet.dev:8899
+          VITE_RPC_URL: https://402.surfnet.dev:8899
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playground-playwright-report
+          path: |
+            playground/playwright-report/
+            playground/test-results/
+          if-no-files-found: ignore
 
   test-payment-links-rust:
     name: "Payment links E2E: Rust"

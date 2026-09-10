@@ -14,9 +14,11 @@
     "start": "pnpm -C ../typescript/examples/playground-api start",
     "docs:gen": "tsx scripts/gen-docs.ts",
     "gen-snippets": "node scripts/gen-snippets.mjs",
-    "check-snippets": "pnpm -C ../typescript/examples/playground-api exec tsc -p tsconfig.snippets.json"
+    "check-snippets": "pnpm -C ../typescript/examples/playground-api exec tsc -p tsconfig.snippets.json",
+    "test:e2e": "playwright test --config playwright.config.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "concurrently": "^9.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

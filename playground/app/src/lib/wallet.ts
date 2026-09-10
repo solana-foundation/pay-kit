@@ -12,7 +12,7 @@ const STORAGE_KEY = 'paykit-playground:secret-key'
 // Hosted Solana Payment Sandbox — same RPC the playground server defaults to.
 // Used for in-browser balance queries + signing previews. Surfnet exposes a
 // CORS-friendly endpoint, so the browser can call it directly.
-const RPC_URL = 'https://402.surfnet.dev:8899'
+const RPC_URL = import.meta.env.VITE_RPC_URL ?? 'https://402.surfnet.dev:8899'
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 
