@@ -21,8 +21,9 @@ pub use session::{
     SESSION_AUTHENTICATION_DOMAIN,
 };
 pub use subscription::{
-    ActivatePayload, SubscriptionAction, SubscriptionMethodDetails, SubscriptionPeriodUnit,
-    SubscriptionReceiptExtensions, SubscriptionRequest,
+    ActivatePayload, SubscriptionAccessPayload, SubscriptionAction, SubscriptionAuthentication,
+    SubscriptionAuthenticationType, SubscriptionMethodDetails, SubscriptionPeriodUnit,
+    SubscriptionReceiptExtensions, SubscriptionRequest, SUBSCRIPTION_AUTHENTICATION_DOMAIN,
 };
 
 /// Upper bound on the `decimals` argument to [`parse_units`].

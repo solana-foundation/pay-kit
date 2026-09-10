@@ -49,8 +49,8 @@ use crate::mpp::protocol::core::{
 };
 use crate::mpp::protocol::intents::SubscriptionMethodDetails;
 use crate::mpp::protocol::intents::{
-    ActivatePayload, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
-    SubscriptionRequest,
+    ActivatePayload, SubscriptionAccessPayload, SubscriptionAction, SubscriptionAuthentication,
+    SubscriptionPeriodUnit, SubscriptionReceiptExtensions, SubscriptionRequest,
 };
 use crate::mpp::protocol::solana::default_rpc_url;
 use crate::mpp::server::charge::VerificationError;
@@ -214,6 +214,20 @@ impl SubscriptionServer {
 
         // Validate the period mapping.
         config.period_unit.to_period_hours(config.period_count)?;
+        if let Some(subscription_expires) = config.subscription_expires.as_deref() {
+            let subscription_expires = time::OffsetDateTime::parse(
+                subscription_expires,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map_err(|error| {
+                Error::InvalidConfig(format!("subscription_expires must be RFC3339: {error}"))
+            })?;
+            if subscription_expires <= time::OffsetDateTime::now_utc() {
+                return Err(Error::InvalidConfig(
+                    "subscription_expires must be in the future".into(),
+                ));
+            }
+        }
 
         let program_id = config
             .program_id
@@ -288,7 +302,7 @@ impl SubscriptionServer {
             .ok();
 
         let method_details = SubscriptionMethodDetails {
-            plan_id: self.config.plan_id.clone(),
+            plan_address: self.config.plan_id.clone(),
             mint: self.config.mint.clone(),
             token_program: self.config.token_program.clone(),
             decimals: Some(self.config.decimals),
@@ -302,7 +316,7 @@ impl SubscriptionServer {
             merchant: Some(self.config.puller.clone()),
             recipient: Some(self.config.recipient.clone()),
             amount: Some(amount_base_units.to_string()),
-            program_id: Some(self.program_id.clone()),
+            subscription_program: Some(self.program_id.clone()),
             network: Some(self.config.network.clone()),
             fee_payer: self.config.fee_payer,
             fee_payer_key,
@@ -426,6 +440,68 @@ impl SubscriptionServer {
             ));
         }
 
+        let method_details = request
+            .method_details
+            .as_ref()
+            .ok_or_else(|| {
+                VerificationError::invalid_payload("Subscription request is missing methodDetails")
+            })
+            .and_then(|value| {
+                SubscriptionMethodDetails::from_json(value)
+                    .map_err(|error| VerificationError::invalid_payload(error.to_string()))
+            })?;
+        method_details
+            .validate()
+            .map_err(|error| VerificationError::invalid_payload(error.to_string()))?;
+        if method_details.subscription_program.as_deref() != Some(self.program_id.as_str()) {
+            return Err(VerificationError::credential_mismatch(
+                "methodDetails.subscriptionProgram does not match this server",
+            ));
+        }
+        if method_details.plan_address != self.config.plan_id {
+            return Err(VerificationError::credential_mismatch(
+                "methodDetails.planAddress does not match this server",
+            ));
+        }
+
+        if credential
+            .payload
+            .get("type")
+            .and_then(|value| value.as_str())
+            == Some("proof")
+        {
+            let access: SubscriptionAccessPayload =
+                serde_json::from_value(credential.payload.clone()).map_err(|error| {
+                    VerificationError::invalid_payload(format!(
+                        "Failed to decode proof payload: {error}"
+                    ))
+                })?;
+            return self
+                .verify_access_credential(credential, &request, access)
+                .await;
+        }
+
+        // Challenge expiry limits creation of the durable bearer binding. An
+        // already-bound `type="proof"` credential is intentionally handled
+        // above so it remains reusable for the active subscription.
+        let activation_challenge_expired =
+            credential
+                .challenge
+                .expires
+                .as_deref()
+                .is_some_and(|value| {
+                    time::OffsetDateTime::parse(
+                        value,
+                        &time::format_description::well_known::Rfc3339,
+                    )
+                    .map_or(true, |expires| expires <= time::OffsetDateTime::now_utc())
+                });
+        if activation_challenge_expired {
+            return Err(VerificationError::invalid_payload(
+                "Subscription activation challenge has expired",
+            ));
+        }
+
         // ── Decode the activation payload ───────────────────────────────
         // The credential's `payload` may carry either a raw `ActivatePayload`
         // (the spec's intended shape per draft-solana-subscription-00) or a
@@ -451,6 +527,17 @@ impl SubscriptionServer {
                 })?;
                 let mut tx = decode_base64_transaction(tx_b64)?;
                 let subscriber = extract_subscriber_from_tx(&tx, &request, &self.config)?;
+                let program_id = parse_pubkey(&self.program_id, "program_id")
+                    .map_err(|e| VerificationError::new(e.to_string()))?;
+                let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
+                    .map_err(|e| VerificationError::new(e.to_string()))?;
+                let delegation_pda = find_subscription_pda(&plan_pda, &subscriber, &program_id).0;
+                verify_activation_authentication(
+                    activate.authentication.as_ref(),
+                    &credential.challenge.id,
+                    subscriber,
+                    &delegation_pda,
+                )?;
                 validate_activation_scope(
                     &tx,
                     &request,
@@ -490,32 +577,53 @@ impl SubscriptionServer {
                         .ok()
                         .or_else(|| tx.signatures.first().map(ToString::to_string))
                 } else {
-                    Some(self.broadcast_and_confirm(&tx).await?.to_string())
-                };
-                if let Some(signature) = sig.as_deref() {
+                    let signature = tx.signatures.first().ok_or_else(|| {
+                        VerificationError::invalid_payload(
+                            "Activation transaction has no signature slot",
+                        )
+                    })?;
                     let key = format!("solana-subscription:consumed:{signature}");
                     let binding = serde_json::json!({
                         "challengeId": credential.challenge.id,
                     });
-                    let inserted = self
-                        .store
-                        .put_if_absent(&key, binding.clone())
-                        .await
-                        .map_err(|e| {
-                            VerificationError::new(format!(
-                                "Failed to reserve activation signature: {e}"
-                            ))
-                        })?;
-                    if !inserted
-                        && self.store.get(&key).await.map_err(|e| {
-                            VerificationError::new(format!(
-                                "Failed to load activation reservation: {e}"
-                            ))
-                        })? != Some(binding)
-                    {
+                    let inserted = self.store.put_if_absent(&key, binding).await.map_err(|e| {
+                        VerificationError::new(format!(
+                            "Failed to reserve activation signature: {e}"
+                        ))
+                    })?;
+                    if !inserted {
                         return Err(VerificationError::signature_consumed(
-                            "Activation signature already consumed",
+                            "Activation signature already consumed or in progress",
                         ));
+                    }
+                    Some(self.broadcast_and_confirm(&tx).await?.to_string())
+                };
+                if delegation_already_exists {
+                    if let Some(signature) = sig.as_deref() {
+                        let key = format!("solana-subscription:consumed:{signature}");
+                        let binding = serde_json::json!({
+                            "challengeId": credential.challenge.id,
+                        });
+                        let inserted = self
+                            .store
+                            .put_if_absent(&key, binding.clone())
+                            .await
+                            .map_err(|e| {
+                                VerificationError::new(format!(
+                                    "Failed to reserve activation signature: {e}"
+                                ))
+                            })?;
+                        if !inserted
+                            && self.store.get(&key).await.map_err(|e| {
+                                VerificationError::new(format!(
+                                    "Failed to load activation reservation: {e}"
+                                ))
+                            })? != Some(binding)
+                        {
+                            return Err(VerificationError::signature_consumed(
+                                "Activation signature already consumed",
+                            ));
+                        }
                     }
                 }
                 (subscriber, sig)
@@ -578,12 +686,56 @@ impl SubscriptionServer {
                 delegation.plan_pda
             )));
         }
+        if delegation.subscriber != subscriber {
+            return Err(VerificationError::credential_mismatch(
+                "SubscriptionDelegation subscriber does not match the activation signer",
+            ));
+        }
         // Mint isn't stored on the delegation — the on-chain `Subscribe`
         // ix binds the delegation's terms to the parent Plan's mint, and
         // we already validated `plan_pda` matches the configured plan.
         if delegation.amount_pulled_in_period != expected_amount {
             return Err(VerificationError::new(
                 "Activation transaction did not execute the first-period charge",
+            ));
+        }
+
+        let authentication = activate.authentication.as_ref().ok_or_else(|| {
+            VerificationError::invalid_payload(
+                "Subscription activation is missing authentication.type=\"proof\"",
+            )
+        })?;
+        let binding_key = subscription_binding_key(&subscription_pda);
+        let subscription_id = derive_subscription_id(&subscription_pda, &credential.challenge.id);
+        let activation_reference = activation_signature.clone().ok_or_else(|| {
+            VerificationError::transaction_failed("Activation transaction signature is unavailable")
+        })?;
+        let binding = serde_json::json!({
+            "activationSignature": activation_reference,
+            "authentication": authentication,
+            "challengeId": credential.challenge.id,
+            "periodStartTs": delegation.current_period_start_ts,
+            "subscriptionId": subscription_id,
+            "subscriptionExpires": request.subscription_expires,
+        });
+        let inserted = self
+            .store
+            .put_if_absent(&binding_key, binding.clone())
+            .await
+            .map_err(|error| {
+                VerificationError::new(format!(
+                    "Failed to store subscription authentication binding: {error}"
+                ))
+            })?;
+        if !inserted
+            && self.store.get(&binding_key).await.map_err(|error| {
+                VerificationError::new(format!(
+                    "Failed to load subscription authentication binding: {error}"
+                ))
+            })? != Some(binding)
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription bearer proof conflicts with the activation binding",
             ));
         }
 
@@ -596,20 +748,197 @@ impl SubscriptionServer {
                 status: crate::mpp::protocol::core::ReceiptStatus::Success,
                 method: METHOD_NAME.into(),
                 timestamp: format_rfc3339_seconds(now_unix_secs()),
-                reference: subscription_pda.to_string(),
+                reference: activation_reference,
                 challenge_id: credential.challenge.id.clone(),
             },
             extensions: SubscriptionReceiptExtensions {
-                subscription_id: subscription_pda.to_string(),
-                plan_id: self.config.plan_id.clone(),
-                period_index: "0".to_string(),
-                period_start_ts: format_rfc3339_seconds(period_start_secs),
-                period_end_ts: format_rfc3339_seconds(period_end_secs),
+                subscription_id,
+                subscription_delegation: subscription_pda.to_string(),
+                period_index: 0,
+                period_start: format_rfc3339_seconds(period_start_secs),
+                period_end: format_rfc3339_seconds(period_end_secs),
                 expires_at: request.subscription_expires.clone(),
-                activation_signature,
             },
         };
         Ok(receipt)
+    }
+
+    async fn verify_access_credential(
+        &self,
+        credential: &PaymentCredential,
+        request: &SubscriptionRequest,
+        access: SubscriptionAccessPayload,
+    ) -> Result<ReceiptKind, VerificationError> {
+        if access.authentication.challenge_id != credential.challenge.id {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription proof challengeId does not match the activation challenge",
+            ));
+        }
+        let payer = parse_pubkey(&access.authentication.payer, "authentication.payer")
+            .map_err(|error| VerificationError::invalid_payload(error.to_string()))?;
+        let program_id = parse_pubkey(&self.program_id, "program_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let expected_delegation = find_subscription_pda(&plan_pda, &payer, &program_id).0;
+        if access.subscription_delegation != expected_delegation.to_string() {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription proof delegation does not match the plan and payer",
+            ));
+        }
+        if !access
+            .authentication
+            .verify(&access.subscription_delegation)
+            .map_err(|error| {
+                VerificationError::invalid_payload(format!(
+                    "Invalid subscription authentication proof: {error}"
+                ))
+            })?
+        {
+            return Err(VerificationError::invalid_payload(
+                "Invalid subscription authentication proof",
+            ));
+        }
+
+        let binding_key = subscription_binding_key(&expected_delegation);
+        let binding = self
+            .store
+            .get(&binding_key)
+            .await
+            .map_err(|error| {
+                VerificationError::new(format!(
+                    "Failed to load subscription authentication binding: {error}"
+                ))
+            })?
+            .ok_or_else(|| {
+                VerificationError::credential_mismatch(
+                    "Subscription has no bound authentication proof",
+                )
+            })?;
+        if binding.get("challengeId").and_then(|value| value.as_str())
+            != Some(credential.challenge.id.as_str())
+            || binding.get("authentication")
+                != Some(
+                    &serde_json::to_value(&access.authentication).map_err(|error| {
+                        VerificationError::new(format!(
+                            "Failed to encode subscription authentication: {error}"
+                        ))
+                    })?,
+                )
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription proof does not match the activation binding",
+            ));
+        }
+
+        let delegation = self
+            .fetch_subscription_delegation(&expected_delegation)
+            .await?;
+        if delegation.plan_pda != plan_pda || delegation.subscriber != payer {
+            return Err(VerificationError::credential_mismatch(
+                "SubscriptionDelegation does not match the bound plan and payer",
+            ));
+        }
+        let mint = parse_pubkey(&self.config.mint, "mint")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        let authority_pda = find_subscription_authority_pda(&payer, &mint, &program_id).0;
+        let authority_init_id = self
+            .fetch_subscription_authority_init_id(&authority_pda)
+            .await?;
+        if authority_init_id != delegation.authority_init_id {
+            return Err(VerificationError::credential_mismatch(
+                "Subscription authority has been invalidated",
+            ));
+        }
+        let expected_amount = request.amount.parse::<u64>().map_err(|_| {
+            VerificationError::invalid_payload("Subscription amount must be an unsigned integer")
+        })?;
+        let period_hours = request
+            .period_hours()
+            .map_err(|error| VerificationError::invalid_payload(error.to_string()))?;
+        let now = now_unix_secs();
+        let period_end = delegation
+            .current_period_start_ts
+            .saturating_add(period_hours as i64 * 3600);
+        if delegation.amount_per_period != expected_amount
+            || delegation.period_hours != period_hours
+            || delegation.amount_pulled_in_period != expected_amount
+            || now < delegation.current_period_start_ts
+            || now >= period_end
+        {
+            return Err(VerificationError::transaction_failed(
+                "Subscription is not paid for the current billing period",
+            ));
+        }
+        if delegation.expires_at_ts != 0 && now >= delegation.expires_at_ts {
+            return Err(VerificationError::transaction_failed(
+                "Subscription cancellation has taken effect",
+            ));
+        }
+        if let Some(expires_at) = request.subscription_expires.as_deref() {
+            let expires_at = time::OffsetDateTime::parse(
+                expires_at,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .map_err(|error| {
+                VerificationError::invalid_payload(format!("Invalid subscriptionExpires: {error}"))
+            })?;
+            if expires_at.unix_timestamp() <= now {
+                return Err(VerificationError::transaction_failed(
+                    "Subscription has expired",
+                ));
+            }
+        }
+
+        let anchor = binding
+            .get("periodStartTs")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| {
+                VerificationError::new("Subscription authentication binding is malformed")
+            })?;
+        let subscription_id = binding
+            .get("subscriptionId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                VerificationError::new("Subscription authentication binding is malformed")
+            })?;
+        let activation_reference = binding
+            .get("activationSignature")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                VerificationError::new("Subscription authentication binding is malformed")
+            })?;
+        let period_seconds = period_hours as i64 * 3600;
+        let elapsed = delegation
+            .current_period_start_ts
+            .checked_sub(anchor)
+            .ok_or_else(|| {
+                VerificationError::new("Subscription billing anchor is after the current period")
+            })?;
+        if elapsed % period_seconds != 0 {
+            return Err(VerificationError::new(
+                "Subscription billing anchor does not align with the current period",
+            ));
+        }
+        let period_index = u64::try_from(elapsed / period_seconds)
+            .map_err(|_| VerificationError::new("Subscription billing period index is invalid"))?;
+        Ok(ReceiptKind::Subscription {
+            base: Receipt {
+                status: crate::mpp::protocol::core::ReceiptStatus::Success,
+                method: METHOD_NAME.into(),
+                timestamp: format_rfc3339_seconds(now),
+                reference: activation_reference.to_string(),
+                challenge_id: credential.challenge.id.clone(),
+            },
+            extensions: SubscriptionReceiptExtensions {
+                subscription_id: subscription_id.to_string(),
+                subscription_delegation: expected_delegation.to_string(),
+                period_index,
+                period_start: format_rfc3339_seconds(delegation.current_period_start_ts),
+                period_end: format_rfc3339_seconds(period_end),
+                expires_at: request.subscription_expires.clone(),
+            },
+        })
     }
 
     /// Broadcast a signed transaction and wait for `confirmed` (NOT
@@ -648,6 +977,8 @@ impl SubscriptionServer {
         use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let pda = *subscription_pda;
+        let expected_owner = parse_pubkey(&self.program_id, "program_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
         tokio::task::spawn_blocking(move || {
             let rpc = RpcClient::new(rpc_url);
             let account = rpc.get_account(&pda).map_err(|e| {
@@ -655,10 +986,44 @@ impl SubscriptionServer {
                     "SubscriptionDelegation account {pda} not found: {e}"
                 ))
             })?;
+            if account.owner != expected_owner {
+                return Err(VerificationError::credential_mismatch(format!(
+                    "SubscriptionDelegation owner mismatch: expected {expected_owner}, got {}",
+                    account.owner
+                )));
+            }
             decode_subscription_delegation(&account.data).map_err(VerificationError::new)
         })
         .await
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
+    }
+
+    async fn fetch_subscription_authority_init_id(
+        &self,
+        authority_pda: &Pubkey,
+    ) -> Result<i64, VerificationError> {
+        use solana_rpc_client::rpc_client::RpcClient;
+        let rpc_url = self.rpc_url.clone();
+        let pda = *authority_pda;
+        let expected_owner = parse_pubkey(&self.program_id, "program_id")
+            .map_err(|error| VerificationError::new(error.to_string()))?;
+        tokio::task::spawn_blocking(move || {
+            let rpc = RpcClient::new(rpc_url);
+            let account = rpc.get_account(&pda).map_err(|error| {
+                VerificationError::not_found(format!(
+                    "SubscriptionAuthority account {pda} not found: {error}"
+                ))
+            })?;
+            if account.owner != expected_owner {
+                return Err(VerificationError::credential_mismatch(format!(
+                    "SubscriptionAuthority owner mismatch: expected {expected_owner}, got {}",
+                    account.owner
+                )));
+            }
+            decode_subscription_authority_init_id(&account.data).map_err(VerificationError::new)
+        })
+        .await
+        .map_err(|error| VerificationError::network_error(format!("RPC task join: {error}")))?
     }
 
     /// Look up the activation transaction signature for an existing
@@ -744,6 +1109,52 @@ fn decode_activate_payload(
     }
     serde_json::from_value::<ActivatePayload>(credential.payload.clone())
         .map_err(|e| VerificationError::invalid_payload(format!("Failed to decode payload: {e}")))
+}
+
+fn verify_activation_authentication(
+    authentication: Option<&SubscriptionAuthentication>,
+    challenge_id: &str,
+    subscriber: Pubkey,
+    subscription_delegation: &Pubkey,
+) -> Result<(), VerificationError> {
+    let authentication = authentication.ok_or_else(|| {
+        VerificationError::invalid_payload(
+            "Subscription activation is missing authentication.type=\"proof\"",
+        )
+    })?;
+    if authentication.challenge_id != challenge_id {
+        return Err(VerificationError::credential_mismatch(
+            "Subscription proof challengeId does not match the activation challenge",
+        ));
+    }
+    if authentication.payer != subscriber.to_string() {
+        return Err(VerificationError::credential_mismatch(
+            "Subscription proof payer does not match the activation subscriber",
+        ));
+    }
+    if !authentication
+        .verify(&subscription_delegation.to_string())
+        .map_err(|error| VerificationError::invalid_payload(error.to_string()))?
+    {
+        return Err(VerificationError::invalid_payload(
+            "Invalid subscription authentication proof",
+        ));
+    }
+    Ok(())
+}
+
+fn subscription_binding_key(subscription_delegation: &Pubkey) -> String {
+    format!("solana-subscription:authentication:{subscription_delegation}")
+}
+
+fn derive_subscription_id(subscription_delegation: &Pubkey, challenge_id: &str) -> String {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(format!(
+        "mpp-subscription-id-v1:{challenge_id}:{subscription_delegation}"
+    ));
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest[..18])
 }
 
 /// Base64-decode + bincode-deserialise the activation transaction. The
@@ -1148,10 +1559,12 @@ async fn co_sign_as_fee_payer(
 pub struct SubscriptionDelegationView {
     pub subscriber: Pubkey,
     pub plan_pda: Pubkey,
+    pub authority_init_id: i64,
     pub amount_per_period: u64,
     pub period_hours: u64,
     pub current_period_start_ts: i64,
     pub amount_pulled_in_period: u64,
+    pub expires_at_ts: i64,
 }
 
 const SUBSCRIPTION_DELEGATION_LEN: usize = 1  // discriminator
@@ -1168,11 +1581,40 @@ const SUBSCRIPTION_DELEGATION_LEN: usize = 1  // discriminator
     + 8  // current_period_start_ts
     + 8; // expires_at_ts
 
-fn decode_subscription_delegation(data: &[u8]) -> Result<SubscriptionDelegationView, String> {
-    if data.len() < SUBSCRIPTION_DELEGATION_LEN {
+const SUBSCRIPTION_AUTHORITY_LEN: usize = 106;
+const SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET: usize = 98;
+
+fn decode_subscription_authority_init_id(data: &[u8]) -> Result<i64, String> {
+    if data.len() != SUBSCRIPTION_AUTHORITY_LEN {
         return Err(format!(
-            "SubscriptionDelegation account too short: {} bytes (need >= {SUBSCRIPTION_DELEGATION_LEN})",
+            "Unexpected SubscriptionAuthority length: got {}, expected {SUBSCRIPTION_AUTHORITY_LEN}",
             data.len()
+        ));
+    }
+    if data[0] != 0 {
+        return Err(format!(
+            "Invalid SubscriptionAuthority discriminator: {}",
+            data[0]
+        ));
+    }
+    Ok(i64::from_le_bytes(
+        data[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET + 8]
+            .try_into()
+            .expect("8-byte slice"),
+    ))
+}
+
+fn decode_subscription_delegation(data: &[u8]) -> Result<SubscriptionDelegationView, String> {
+    if data.len() != SUBSCRIPTION_DELEGATION_LEN {
+        return Err(format!(
+            "Unexpected SubscriptionDelegation length: {} bytes (expected {SUBSCRIPTION_DELEGATION_LEN})",
+            data.len()
+        ));
+    }
+    if data[0] != 4 || data[1] != 1 {
+        return Err(format!(
+            "Invalid SubscriptionDelegation discriminator/version: {}/{}",
+            data[0], data[1]
         ));
     }
     // header.discriminator(1) + version(1) + bump(1) = 3 bytes before delegator.
@@ -1182,7 +1624,8 @@ fn decode_subscription_delegation(data: &[u8]) -> Result<SubscriptionDelegationV
     let plan_pda = Pubkey::try_from(&data[off..off + 32]).map_err(|e| e.to_string())?;
     off += 32;
     off += 32; // payer
-    off += 8; // init_id
+    let authority_init_id = i64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+    off += 8;
     let amount_per_period = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
     off += 8;
     let period_hours = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
@@ -1191,14 +1634,18 @@ fn decode_subscription_delegation(data: &[u8]) -> Result<SubscriptionDelegationV
     let amount_pulled_in_period = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
     off += 8;
     let current_period_start_ts = i64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+    off += 8;
+    let expires_at_ts = i64::from_le_bytes(data[off..off + 8].try_into().unwrap());
 
     Ok(SubscriptionDelegationView {
         subscriber,
         plan_pda,
+        authority_init_id,
         amount_per_period,
         period_hours,
         current_period_start_ts,
         amount_pulled_in_period,
+        expires_at_ts,
     })
 }
 
@@ -1305,7 +1752,7 @@ mod tests {
         assert_eq!(parsed.period_unit, SubscriptionPeriodUnit::Day);
         assert_eq!(parsed.period_count, "30");
         let md = parsed.method_details.as_ref().unwrap();
-        assert_eq!(md.get("planId").unwrap().as_str().unwrap(), plan_id);
+        assert_eq!(md.get("planAddress").unwrap().as_str().unwrap(), plan_id);
     }
 
     #[test]
@@ -1464,7 +1911,7 @@ mod tests {
         // the on-chain `#[repr(C, packed)]` layout: header(107) +
         // terms(24) + amount_pulled(8) + period_start(8) + expires(8).
         let mut data = Vec::with_capacity(SUBSCRIPTION_DELEGATION_LEN);
-        data.push(2); // header.discriminator
+        data.push(4); // header.discriminator
         data.push(1); // header.version
         data.push(255); // header.bump
         let subscriber = [1u8; 32];
@@ -1485,10 +1932,24 @@ mod tests {
         let view = decode_subscription_delegation(&data).unwrap();
         assert_eq!(view.subscriber.to_bytes(), subscriber);
         assert_eq!(view.plan_pda.to_bytes(), plan_pda);
+        assert_eq!(view.authority_init_id, 77);
         assert_eq!(view.amount_per_period, 9_990_000);
         assert_eq!(view.period_hours, 720);
         assert_eq!(view.current_period_start_ts, 1_700_000_000);
         assert_eq!(view.amount_pulled_in_period, 9_990_000);
+        assert_eq!(view.expires_at_ts, 0);
+    }
+
+    #[test]
+    fn account_decoders_reject_wrong_discriminators() {
+        let mut delegation = vec![0u8; SUBSCRIPTION_DELEGATION_LEN];
+        delegation[0] = 2;
+        delegation[1] = 1;
+        assert!(decode_subscription_delegation(&delegation).is_err());
+
+        let mut authority = vec![0u8; SUBSCRIPTION_AUTHORITY_LEN];
+        authority[0] = 1;
+        assert!(decode_subscription_authority_init_id(&authority).is_err());
     }
 
     #[test]
@@ -1663,6 +2124,7 @@ mod tests {
                 payload_type: "transaction".to_string(),
                 transaction: Some("AQAAAA==".to_string()),
                 signature: None,
+                authentication: None,
             },
         );
         let payload = decode_activate_payload(&credential).expect("decode");
@@ -1679,6 +2141,7 @@ mod tests {
                 payload_type: "transaction".to_string(),
                 transaction: Some("AQAAAA==".to_string()),
                 signature: None,
+                authentication: None,
             }),
         );
         let payload = decode_activate_payload(&credential).expect("decode");
@@ -1729,6 +2192,7 @@ mod tests {
                 payload_type: "transaction".to_string(),
                 transaction: Some("AQAAAA==".to_string()),
                 signature: None,
+                authentication: None,
             },
         );
         let err = server
@@ -1752,6 +2216,7 @@ mod tests {
                 payload_type: "signature".into(),
                 transaction: None,
                 signature: Some("5J8Sig".into()),
+                authentication: None,
             },
         );
         let err = server

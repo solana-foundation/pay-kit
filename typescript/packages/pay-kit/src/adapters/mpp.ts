@@ -1,4 +1,4 @@
-import { resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
+import { resolveStablecoinMint, SUBSCRIPTIONS_PROGRAM, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
 
@@ -85,6 +85,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             puller,
                             recipient: gate.payTo,
                             rpcUrl: config.rpcUrl,
+                            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                             tokenProgram: TOKEN_PROGRAM,
                             ...signer,
                         }),
@@ -100,8 +101,9 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             decimals: 6,
                             mint,
                             network,
-                            planId,
+                            planAddress: planId,
                             puller,
+                            subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                             tokenProgram: TOKEN_PROGRAM,
                         },
                         periodCount: String(periodCount),

@@ -458,12 +458,11 @@ mod tests {
         };
         let extensions = SubscriptionReceiptExtensions {
             subscription_id: "BXQGmO5VwTrl5RfFr6Y8XQZ4nPj9QqMOiKkRn3pZ4ZE".into(),
-            plan_id: "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT".into(),
-            period_index: "0".into(),
-            period_start_ts: "2026-01-15T12:03:10Z".into(),
-            period_end_ts: "2026-02-14T12:03:10Z".into(),
+            subscription_delegation: "De1egation".into(),
+            period_index: 0,
+            period_start: "2026-01-15T12:03:10Z".into(),
+            period_end: "2026-02-14T12:03:10Z".into(),
             expires_at: Some("2026-07-14T12:00:00Z".into()),
-            activation_signature: None,
         };
         let header = format_receipt(&ReceiptKind::Subscription {
             base: base.clone(),
@@ -479,7 +478,7 @@ mod tests {
             } => {
                 assert_eq!(parsed_base.reference, base.reference);
                 assert_eq!(parsed_ext.subscription_id, extensions.subscription_id);
-                assert_eq!(parsed_ext.period_index, "0");
+                assert_eq!(parsed_ext.period_index, 0);
                 assert_eq!(
                     parsed_ext.expires_at.as_deref(),
                     Some("2026-07-14T12:00:00Z")
@@ -583,12 +582,11 @@ mod tests {
             base: charge_receipt,
             extensions: SubscriptionReceiptExtensions {
                 subscription_id: "S".into(),
-                plan_id: "P".into(),
-                period_index: "0".into(),
-                period_start_ts: "t0".into(),
-                period_end_ts: "t1".into(),
+                subscription_delegation: "D".into(),
+                period_index: 0,
+                period_start: "t0".into(),
+                period_end: "t1".into(),
                 expires_at: None,
-                activation_signature: None,
             },
         };
         assert_eq!(sub.base().reference, "abc");

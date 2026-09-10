@@ -372,7 +372,8 @@ pub enum ReceiptKind {
     /// subscription-specific fields defined in
     /// `draft-solana-subscription-00`. Listed first so untagged
     /// deserialisation prefers the strictly-richer shape when the
-    /// `subscriptionId`/`planId`/`periodIndex`/`periodStartTs`/`periodEndTs`
+    /// `subscriptionId`/`subscriptionDelegation`/`periodIndex`/
+    /// `periodStart`/`periodEnd`
     /// keys are present.
     Subscription {
         #[serde(flatten)]
@@ -429,10 +430,10 @@ impl<'de> Deserialize<'de> for ReceiptKind {
 
         let is_subscription = [
             "subscriptionId",
-            "planId",
+            "subscriptionDelegation",
             "periodIndex",
-            "periodStartTs",
-            "periodEndTs",
+            "periodStart",
+            "periodEnd",
         ]
         .iter()
         .any(|field| value.get(field).is_some());

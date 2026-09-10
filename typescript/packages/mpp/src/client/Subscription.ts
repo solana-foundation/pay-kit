@@ -5,10 +5,15 @@ import {
     appendTransactionMessageInstructions,
     type Base64EncodedWireTransaction,
     type Blockhash,
+    createSignableMessage,
     createSolanaRpc,
     createTransactionMessage,
+    getBase58Decoder,
+    getBase58Encoder,
     getBase64EncodedWireTransaction,
+    getPublicKeyFromAddress,
     type Instruction,
+    type MessagePartialSigner,
     partiallySignTransactionMessageWithSigners,
     pipe,
     prependTransactionMessageInstructions,
@@ -16,9 +21,11 @@ import {
     setTransactionMessageFeePayerSigner,
     setTransactionMessageLifetimeUsingBlockhash,
     type TransactionSigner,
+    verifySignature,
 } from '@solana/kit';
 import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
 import { findAssociatedTokenPda } from '@solana-program/token';
+import type { Challenge as MppxChallenge } from 'mppx';
 import { Credential, Method } from 'mppx';
 
 import {
@@ -26,7 +33,6 @@ import {
     MEMO_PROGRAM,
     normalizeNetwork,
     SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
-    SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
     SYSTEM_PROGRAM,
@@ -38,6 +44,96 @@ import {
     deriveSubscriptionPda,
     mapSubscriptionPeriodToHours,
 } from '../shared/subscription.js';
+
+/** Domain separator for reusable subscription authentication proofs. */
+export const SUBSCRIPTION_AUTHENTICATION_DOMAIN = 'mpp-subscription-auth-v1';
+
+/** Reusable payer proof bound to one activation challenge and delegation. */
+export interface SubscriptionAuthentication {
+    readonly challengeId: string;
+    readonly payer: string;
+    readonly signature: string;
+    readonly type: 'proof';
+}
+
+/** A signer that can authorize both the activation transaction and bearer proof. */
+export type SubscriptionSigner = MessagePartialSigner & TransactionSigner;
+
+/** Canonical JCS bytes signed by a reusable subscription proof. */
+export function subscriptionAuthenticationMessage(parameters: {
+    readonly challengeId: string;
+    readonly payer: string;
+    readonly subscriptionDelegation: string;
+}): Uint8Array {
+    return new TextEncoder().encode(
+        JSON.stringify({
+            domain: SUBSCRIPTION_AUTHENTICATION_DOMAIN,
+            payer: parameters.payer,
+            subscriptionChallengeId: parameters.challengeId,
+            subscriptionDelegation: parameters.subscriptionDelegation,
+        }),
+    );
+}
+
+/** Creates a reusable payer proof for access under an active subscription. */
+export async function signSubscriptionAuthentication(parameters: {
+    readonly challengeId: string;
+    readonly signer: MessagePartialSigner;
+    readonly subscriptionDelegation: string;
+}): Promise<SubscriptionAuthentication> {
+    const message = subscriptionAuthenticationMessage({
+        challengeId: parameters.challengeId,
+        payer: parameters.signer.address,
+        subscriptionDelegation: parameters.subscriptionDelegation,
+    });
+    const [signatures] = await parameters.signer.signMessages([createSignableMessage(message)]);
+    const signature = signatures?.[parameters.signer.address];
+    if (!signature) throw new Error(`Signer ${parameters.signer.address} did not return a subscription proof`);
+    return {
+        challengeId: parameters.challengeId,
+        payer: parameters.signer.address,
+        signature: getBase58Decoder().decode(new Uint8Array(signature)),
+        type: 'proof',
+    };
+}
+
+/** Verifies a reusable payer proof against its bound delegation. */
+export async function verifySubscriptionAuthentication(
+    authentication: SubscriptionAuthentication,
+    subscriptionDelegation: string,
+): Promise<boolean> {
+    try {
+        const publicKey = await getPublicKeyFromAddress(authentication.payer as Address);
+        const signature = getBase58Encoder().encode(authentication.signature);
+        return await verifySignature(
+            publicKey,
+            signature as Parameters<typeof verifySignature>[1],
+            subscriptionAuthenticationMessage({
+                challengeId: authentication.challengeId,
+                payer: authentication.payer,
+                subscriptionDelegation,
+            }),
+        );
+    } catch {
+        return false;
+    }
+}
+
+/** Serializes a later-use credential from the proof retained at activation. */
+export function serializeSubscriptionAccessCredential(parameters: {
+    readonly authentication: SubscriptionAuthentication;
+    readonly challenge: MppxChallenge.Challenge;
+    readonly subscriptionDelegation: string;
+}): string {
+    return Credential.serialize({
+        challenge: parameters.challenge,
+        payload: {
+            authentication: parameters.authentication,
+            subscriptionDelegation: parameters.subscriptionDelegation,
+            type: 'proof',
+        },
+    });
+}
 
 /**
  * Creates a Solana `subscription` method for usage on the client.
@@ -70,6 +166,22 @@ export function subscription(parameters: subscription.Parameters) {
                 throw new Error('broadcast=true cannot be used with fee sponsorship (feePayer: true)');
             }
 
+            const subscriptionDelegation = await deriveSubscriptionPda({
+                planPda: address(challenge.request.methodDetails.planAddress),
+                programId: address(challenge.request.methodDetails.subscriptionProgram),
+                subscriber: signer.address,
+            });
+            const authentication = await signSubscriptionAuthentication({
+                challengeId: challenge.id,
+                signer,
+                subscriptionDelegation,
+            });
+            parameters.onAuthentication?.({
+                authentication,
+                challenge,
+                subscriptionDelegation,
+            });
+
             const encodedTx = await buildSubscriptionActivationTransaction({
                 computeUnitLimit: parameters.computeUnitLimit,
                 computeUnitPrice: parameters.computeUnitPrice,
@@ -99,14 +211,14 @@ export function subscription(parameters: subscription.Parameters) {
 
                 return Credential.serialize({
                     challenge,
-                    payload: { signature, type: 'signature' },
+                    payload: { authentication, signature, type: 'signature' },
                 });
             }
 
             onProgress?.({ transaction: encodedTx, type: 'signed' });
             return Credential.serialize({
                 challenge,
-                payload: { transaction: encodedTx, type: 'transaction' },
+                payload: { authentication, transaction: encodedTx, type: 'transaction' },
             });
         },
     });
@@ -136,8 +248,8 @@ export async function buildSubscriptionActivationTransaction(
     const {
         network,
         mint,
-        planId,
-        programId = SUBSCRIPTIONS_PROGRAM,
+        planAddress: planId,
+        subscriptionProgram,
         tokenProgram,
         feePayer: serverPaysFees,
         feePayerKey,
@@ -168,7 +280,7 @@ export async function buildSubscriptionActivationTransaction(
     const subscriberAddress = signer.address;
     const mintAddress = address(mint);
     const planPda = address(planId);
-    const programAddress = address(programId);
+    const programAddress = address(subscriptionProgram);
     const tokenProgramAddress = address(tokenProgram);
     const recipientAddress = address(recipient);
 
@@ -399,12 +511,18 @@ export declare namespace subscription {
         computeUnitLimit?: number;
         /** Compute unit price in micro-lamports for priority fees. Defaults to 1. */
         computeUnitPrice?: bigint;
+        /** Receives the reusable access proof. Store it as a secret bearer credential. */
+        onAuthentication?: (access: {
+            authentication: SubscriptionAuthentication;
+            challenge: MppxChallenge.Challenge;
+            subscriptionDelegation: Address;
+        }) => void;
         /** Called at each step of the activation process. */
         onProgress?: (event: ProgressEvent) => void;
         /** Custom RPC URL. If not set, inferred from the challenge's network field. */
         rpcUrl?: string;
         /** Solana transaction signer. The subscriber's funding key. */
-        signer: TransactionSigner;
+        signer: SubscriptionSigner;
     };
 
     type ProgressEvent =
@@ -453,11 +571,11 @@ export declare namespace buildSubscriptionActivationTransaction {
                 feePayerKey?: string;
                 mint: string;
                 network?: string;
-                planId: string;
-                programId?: string;
+                planAddress: string;
                 puller: string;
                 recentBlockhash?: string;
                 splits?: Array<{ bps: number; recipient: string }>;
+                subscriptionProgram: string;
                 tokenProgram: string;
             };
             periodCount: string;
@@ -468,6 +586,6 @@ export declare namespace buildSubscriptionActivationTransaction {
         /** Custom RPC URL. If not set, inferred from the challenge network field. */
         rpcUrl?: string;
         /** Solana transaction signer (the subscriber). */
-        signer: TransactionSigner;
+        signer: SubscriptionSigner;
     };
 }

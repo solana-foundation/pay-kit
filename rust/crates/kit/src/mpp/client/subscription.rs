@@ -20,7 +20,12 @@ use solana_transaction::Transaction;
 
 use crate::mpp::error::Error;
 use crate::mpp::program::subscriptions::{
-    default_program_id, find_subscription_authority_pda, find_subscription_pda, parse_pubkey,
+    find_subscription_authority_pda, find_subscription_pda, parse_pubkey,
+};
+use crate::mpp::protocol::core::{PaymentChallenge, PaymentCredential};
+use crate::mpp::protocol::intents::{
+    ActivatePayload, SubscriptionAccessPayload, SubscriptionAuthentication,
+    SubscriptionAuthenticationType, SubscriptionRequest,
 };
 use crate::mpp::protocol::solana::CredentialPayload;
 
@@ -50,6 +55,117 @@ pub struct BuildSubscriptionActivationOptions {
     pub subscription_authority_init_id: Option<i64>,
 }
 
+/// Activation credential plus the reusable proof needed for later access.
+#[derive(Debug, Clone)]
+pub struct SubscriptionActivation {
+    /// Credential sent to activate and pay the first period.
+    pub credential: PaymentCredential,
+    /// Proof that must be retained as a bearer secret for later access.
+    pub authentication: SubscriptionAuthentication,
+    /// Delegation PDA bound into `authentication`.
+    pub subscription_delegation: String,
+}
+
+/// Sign the canonical reusable subscription authentication message.
+pub async fn sign_subscription_authentication(
+    signer: &dyn SolanaSigner,
+    challenge_id: &str,
+    subscription_delegation: &str,
+) -> Result<SubscriptionAuthentication, Error> {
+    let mut authentication = SubscriptionAuthentication {
+        kind: SubscriptionAuthenticationType::Proof,
+        challenge_id: challenge_id.to_string(),
+        payer: signer.pubkey().to_string(),
+        signature: String::new(),
+    };
+    let signature = signer
+        .sign_message(&authentication.message_bytes(subscription_delegation)?)
+        .await
+        .map_err(|error| Error::Other(format!("Signing subscription proof failed: {error}")))?;
+    authentication.signature = bs58::encode(signature.as_ref()).into_string();
+    Ok(authentication)
+}
+
+/// Build a later-access credential from the proof retained at activation.
+pub fn build_subscription_access_credential(
+    challenge: &PaymentChallenge,
+    subscription_delegation: impl Into<String>,
+    authentication: SubscriptionAuthentication,
+) -> PaymentCredential {
+    PaymentCredential::new(
+        challenge.to_echo(),
+        SubscriptionAccessPayload {
+            payload_type: SubscriptionAuthenticationType::Proof,
+            subscription_delegation: subscription_delegation.into(),
+            authentication,
+        },
+    )
+}
+
+/// Build the activation transaction and bind a reusable proof to its delegation.
+pub async fn build_subscription_activation_credential(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    challenge: &PaymentChallenge,
+) -> Result<SubscriptionActivation, Error> {
+    let request: SubscriptionRequest = challenge.request.decode()?;
+    let method_details = request
+        .method_details
+        .as_ref()
+        .ok_or_else(|| Error::Other("Subscription request is missing methodDetails".into()))?;
+    let method_details = SubscriptionMethodDetails::from_json(method_details)?;
+    method_details.validate()?;
+    let program_id = parse_pubkey(
+        method_details
+            .subscription_program
+            .as_deref()
+            .ok_or_else(|| Error::Other("methodDetails.subscriptionProgram is required".into()))?,
+        "subscriptionProgram",
+    )?;
+    let plan_id = parse_pubkey(&method_details.plan_address, "planAddress")?;
+    let subscription_delegation = find_subscription_pda(&plan_id, &signer.pubkey(), &program_id)
+        .0
+        .to_string();
+    let authentication =
+        sign_subscription_authentication(signer, &challenge.id, &subscription_delegation).await?;
+    let transaction = build_subscription_activation_transaction_with_options(
+        signer,
+        rpc,
+        &method_details,
+        BuildSubscriptionActivationOptions {
+            external_id: request.external_id,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let payload = match transaction {
+        CredentialPayload::Transaction { transaction } => ActivatePayload {
+            payload_type: "transaction".into(),
+            transaction: Some(transaction),
+            signature: None,
+            authentication: Some(authentication.clone()),
+        },
+        _ => {
+            return Err(Error::Other(
+                "Subscription activation builder returned an unexpected payload".into(),
+            ))
+        }
+    };
+    let credential = PaymentCredential::with_source(
+        challenge.to_echo(),
+        PaymentCredential::solana_did(
+            method_details.network.as_deref().unwrap_or("mainnet"),
+            &signer.pubkey().to_string(),
+        ),
+        payload,
+    );
+    Ok(SubscriptionActivation {
+        credential,
+        authentication,
+        subscription_delegation,
+    })
+}
+
 /// Build the subscription activation transaction.
 ///
 /// The returned payload is a `CredentialPayload::Transaction` carrying the
@@ -77,15 +193,18 @@ pub async fn build_subscription_activation_transaction_with_options(
     method_details: &SubscriptionMethodDetails,
     options: BuildSubscriptionActivationOptions,
 ) -> Result<CredentialPayload, Error> {
-    let program_id = match method_details.program_id.as_deref() {
-        Some(p) => parse_pubkey(p, "programId")?,
-        None => default_program_id(),
-    };
+    let program_id = parse_pubkey(
+        method_details
+            .subscription_program
+            .as_deref()
+            .ok_or_else(|| Error::Other("methodDetails.subscriptionProgram is required".into()))?,
+        "subscriptionProgram",
+    )?;
 
     let subscriber = signer.pubkey();
     let mint = parse_pubkey(&method_details.mint, "mint")?;
     let token_program = parse_pubkey(&method_details.token_program, "tokenProgram")?;
-    let plan_pda = parse_pubkey(&method_details.plan_id, "planId")?;
+    let plan_pda = parse_pubkey(&method_details.plan_address, "planAddress")?;
     let puller = parse_pubkey(&method_details.puller, "puller")?;
     // Plan owner — defaults to the puller when the operator publishes
     // its own plan and is its own puller (the common pay-server case).
@@ -485,7 +604,7 @@ mod tests {
     #[test]
     fn method_details_parse_required_fields() {
         let value = serde_json::json!({
-            "planId": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
             "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
             "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
@@ -494,7 +613,10 @@ mod tests {
         });
         let md = SubscriptionMethodDetails::from_json(&value).unwrap();
         assert!(md.fee_payer);
-        assert_eq!(md.plan_id, "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT");
+        assert_eq!(
+            md.plan_address,
+            "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT"
+        );
         assert_eq!(
             md.fee_payer_key.as_deref(),
             Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h")
@@ -559,7 +681,7 @@ mod tests {
         fee_payer_key: Option<&str>,
     ) -> SubscriptionMethodDetails {
         SubscriptionMethodDetails {
-            plan_id: "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT".into(),
+            plan_address: "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT".into(),
             mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
             token_program: crate::mpp::protocol::solana::programs::TOKEN_PROGRAM.into(),
             decimals: Some(6),
@@ -567,7 +689,7 @@ mod tests {
             merchant: Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()),
             recipient: Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()),
             amount: Some("10000000".into()),
-            program_id: None,
+            subscription_program: Some(SUBSCRIPTIONS_PROGRAM_ID.into()),
             network: Some("mainnet".into()),
             fee_payer,
             fee_payer_key: fee_payer_key.map(str::to_string),
@@ -733,7 +855,7 @@ mod tests {
         let signer = make_signer();
         let rpc = RpcClient::new_mock("succeeds".to_string());
         let mut md = make_method_details(false, None);
-        md.program_id = Some(SUBSCRIPTIONS_PROGRAM_ID.into());
+        md.subscription_program = Some(SUBSCRIPTIONS_PROGRAM_ID.into());
         let payload = build_subscription_activation_transaction_with_options(
             &*signer,
             &rpc,
@@ -763,32 +885,36 @@ mod tests {
     }
 
     #[test]
-    fn method_details_default_program_id_when_absent() {
+    fn method_details_requires_subscription_program() {
         let value = serde_json::json!({
-            "planId": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
             "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
             "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
         });
         let md = SubscriptionMethodDetails::from_json(&value).unwrap();
-        assert!(md.program_id.is_none());
+        assert!(md.subscription_program.is_none());
+        assert!(md.validate().is_err());
         assert!(!md.fee_payer);
         assert!(md.fee_payer_key.is_none());
         assert!(md.recent_blockhash.is_none());
     }
 
     #[test]
-    fn method_details_parses_recent_blockhash_and_program_id() {
+    fn method_details_parses_recent_blockhash_and_subscription_program() {
         let value = serde_json::json!({
-            "planId": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
+            "planAddress": "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT",
             "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
             "puller": "5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h",
-            "programId": SUBSCRIPTIONS_PROGRAM_ID,
+            "subscriptionProgram": SUBSCRIPTIONS_PROGRAM_ID,
             "recentBlockhash": "11111111111111111111111111111111",
         });
         let md = SubscriptionMethodDetails::from_json(&value).unwrap();
-        assert_eq!(md.program_id.as_deref(), Some(SUBSCRIPTIONS_PROGRAM_ID));
+        assert_eq!(
+            md.subscription_program.as_deref(),
+            Some(SUBSCRIPTIONS_PROGRAM_ID)
+        );
         assert_eq!(
             md.recent_blockhash.as_deref(),
             Some("11111111111111111111111111111111")

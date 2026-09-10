@@ -25,7 +25,8 @@ pub use session::{
 };
 pub use session_consumer::*;
 pub use subscription::{
+    build_subscription_access_credential, build_subscription_activation_credential,
     build_subscription_activation_transaction,
-    build_subscription_activation_transaction_with_options, BuildSubscriptionActivationOptions,
-    SubscriptionMethodDetails,
+    build_subscription_activation_transaction_with_options, sign_subscription_authentication,
+    BuildSubscriptionActivationOptions, SubscriptionActivation, SubscriptionMethodDetails,
 };

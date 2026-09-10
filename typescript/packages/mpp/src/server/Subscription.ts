@@ -1,4 +1,5 @@
 import {
+    type Address,
     address,
     createSolanaRpc,
     getBase64Codec,
@@ -7,10 +8,15 @@ import {
     isTransactionPartialSigner,
     type TransactionPartialSigner,
 } from '@solana/kit';
-import { getSubscriptionDelegationDecoder, SUBSCRIPTION_SIZE } from '@solana/subscriptions';
+import {
+    getSubscriptionAuthorityDecoder,
+    getSubscriptionDelegationDecoder,
+    SUBSCRIPTION_SIZE,
+} from '@solana/subscriptions';
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { Method, Receipt, Store } from 'mppx';
 
+import { type SubscriptionAuthentication, verifySubscriptionAuthentication } from '../client/Subscription.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     COMPUTE_BUDGET_PROGRAM,
@@ -25,7 +31,11 @@ import {
     TOKEN_PROGRAM,
 } from '../constants.js';
 import * as Methods from '../Methods.js';
-import { deriveSubscriptionPda, mapSubscriptionPeriodToHours } from '../shared/subscription.js';
+import {
+    deriveSubscriptionAuthorityPda,
+    deriveSubscriptionPda,
+    mapSubscriptionPeriodToHours,
+} from '../shared/subscription.js';
 import { coSignBase64Transaction, transactionSignatureFromBase64 } from '../utils/transactions.js';
 import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
 
@@ -33,7 +43,7 @@ import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } 
  * Creates a Solana `subscription` method for usage on the server.
  *
  * The server publishes a `Plan` on-chain out of band; the 402 challenge
- * pins the `planId` along with the period and amount. On activation the
+ * pins the `planAddress` along with the period and amount. On activation the
  * client signs a transaction containing `subscribe` + `transfer_subscription`
  * (and optionally `initialize_subscription_authority`), the server
  * (optionally co-signing as fee payer) broadcasts, and on confirmation the
@@ -73,7 +83,7 @@ export function subscription(parameters: subscription.Parameters) {
         periodUnit,
         periodCount,
         network = 'mainnet-beta',
-        programId = SUBSCRIPTIONS_PROGRAM,
+        subscriptionProgram = SUBSCRIPTIONS_PROGRAM,
         signer,
         store = Store.memory(),
         splits,
@@ -91,6 +101,15 @@ export function subscription(parameters: subscription.Parameters) {
     // Validate the period mapping up front so misconfigured servers fail at boot,
     // not on the first challenge.
     mapSubscriptionPeriodToHours(periodUnit, periodCount);
+    if (subscriptionExpires) {
+        const subscriptionExpiryMs = Date.parse(subscriptionExpires);
+        if (!Number.isFinite(subscriptionExpiryMs)) {
+            throw new Error('subscriptionExpires must be an RFC3339 timestamp');
+        }
+        if (subscriptionExpiryMs <= Date.now()) {
+            throw new Error('subscriptionExpires must be in the future');
+        }
+    }
 
     const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'];
 
@@ -101,8 +120,9 @@ export function subscription(parameters: subscription.Parameters) {
             methodDetails: {
                 decimals,
                 mint,
-                planId,
+                planAddress: planId,
                 puller,
+                subscriptionProgram,
                 tokenProgram,
             },
             periodCount: String(periodCount),
@@ -143,9 +163,9 @@ export function subscription(parameters: subscription.Parameters) {
                     decimals,
                     mint,
                     network,
-                    planId,
-                    programId,
+                    planAddress: planId,
                     puller,
+                    subscriptionProgram,
                     tokenProgram,
                     ...(signer ? { feePayer: true, feePayerKey: signer.address } : {}),
                     ...(splits?.length ? { splits } : {}),
@@ -163,6 +183,12 @@ export function subscription(parameters: subscription.Parameters) {
             const challenge = cred.challenge.request;
             const payloadType = resolvePayloadType(cred.payload);
 
+            if (payloadType === 'proof') {
+                return await verifySubscriptionAccess(cred, challenge, rpcUrl, store);
+            }
+
+            assertActivationChallengeNotExpired(cred.challenge.expires);
+
             if (payloadType === 'signature' && challenge.methodDetails.feePayer) {
                 throw new Error('type="signature" credentials cannot be used with fee sponsorship (feePayer: true)');
             }
@@ -171,8 +197,8 @@ export function subscription(parameters: subscription.Parameters) {
             const subscriberAddress = settlement.subscriberAddress;
 
             const subscriptionPda = await deriveSubscriptionPda({
-                planPda: address(challenge.methodDetails.planId),
-                programId: address(challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM),
+                planPda: address(challenge.methodDetails.planAddress),
+                programId: address(challenge.methodDetails.subscriptionProgram),
                 subscriber: address(subscriberAddress),
             });
 
@@ -181,14 +207,23 @@ export function subscription(parameters: subscription.Parameters) {
                 Number(challenge.periodCount),
             );
 
-            const delegation = await fetchSubscriptionDelegation(rpcUrl, subscriptionPda);
+            const delegation = await fetchSubscriptionDelegation(
+                rpcUrl,
+                subscriptionPda,
+                address(challenge.methodDetails.subscriptionProgram),
+            );
             if (!delegation) {
                 throw new Error('SubscriptionDelegation account not found after activation');
             }
 
-            if (delegation.planPda !== challenge.methodDetails.planId) {
+            if (delegation.planPda !== challenge.methodDetails.planAddress) {
                 throw new Error(
-                    `SubscriptionDelegation plan mismatch: expected ${challenge.methodDetails.planId}, got ${delegation.planPda}`,
+                    `SubscriptionDelegation plan mismatch: expected ${challenge.methodDetails.planAddress}, got ${delegation.planPda}`,
+                );
+            }
+            if (delegation.subscriber !== subscriberAddress) {
+                throw new Error(
+                    `SubscriptionDelegation subscriber mismatch: expected ${subscriberAddress}, got ${delegation.subscriber}`,
                 );
             }
             if (delegation.amountPerPeriod !== challenge.amount) {
@@ -209,11 +244,26 @@ export function subscription(parameters: subscription.Parameters) {
                 await confirmReplayKey(store, settlement.replay.key, settlement.replay.binding);
             }
 
+            const authentication = requireSubscriptionAuthentication(cred.payload);
+            const bindingKey = subscriptionBindingKey(subscriptionPda.toString());
+            const subscriptionId = await deriveSubscriptionId(subscriptionPda.toString(), authentication.challengeId);
+            const binding = {
+                activationSignature: settlement.activationSignature,
+                authentication,
+                challengeId: authentication.challengeId,
+                periodStartTs: delegation.currentPeriodStartTs,
+                subscriptionExpires: challenge.subscriptionExpires,
+                subscriptionId,
+            } satisfies SubscriptionBinding;
+            const existingBinding = await store.get(bindingKey);
+            if (existingBinding !== null && JSON.stringify(existingBinding) !== JSON.stringify(binding)) {
+                throw new Error('Subscription bearer proof conflicts with the existing activation binding');
+            }
+            if (existingBinding === null) await store.put(bindingKey, binding);
+
             const periodLengthSeconds = expectedPeriodHours * 3600;
             const periodStartTs = delegation.currentPeriodStartTs;
             const periodEndTs = periodStartTs + periodLengthSeconds;
-
-            const subscriptionId = base64UrlEncodeNoPadding(decodeBase58(subscriptionPda.toString()));
 
             return Receipt.from({
                 method: 'solana',
@@ -224,14 +274,14 @@ export function subscription(parameters: subscription.Parameters) {
                 // fields as opaque metadata.
                 expiresAt: challenge.subscriptionExpires,
 
-                periodEndTs: new Date(periodEndTs * 1000).toISOString(),
+                periodEnd: new Date(periodEndTs * 1000).toISOString(),
 
-                periodIndex: '0',
+                periodIndex: 0,
 
-                periodStartTs: new Date(periodStartTs * 1000).toISOString(),
-                planId: challenge.methodDetails.planId,
-                reference: subscriptionPda.toString(),
+                periodStart: new Date(periodStartTs * 1000).toISOString(),
+                reference: settlement.activationSignature,
                 status: 'success',
+                subscriptionDelegation: subscriptionPda.toString(),
                 subscriptionId,
                 timestamp: new Date().toISOString(),
             });
@@ -241,16 +291,24 @@ export function subscription(parameters: subscription.Parameters) {
     return method;
 }
 
+function assertActivationChallengeNotExpired(expires: string | undefined): void {
+    if (expires === undefined) return;
+    const expiresAt = Date.parse(expires);
+    if (Number.isNaN(expiresAt)) throw new Error('challenge expires must be an RFC3339 timestamp');
+    if (expiresAt <= Date.now()) throw new Error(`challenge expired at ${expires}`);
+}
+
 // ── Payload type resolution ──
 
 function resolvePayloadType(payload: {
     signature?: string;
     transaction?: string;
     type?: string;
-}): 'signature' | 'transaction' {
+}): 'proof' | 'signature' | 'transaction' {
+    if (payload.type === 'proof') return 'proof';
     if (payload.type === 'signature') return 'signature';
     if (payload.type === 'transaction') return 'transaction';
-    throw new Error('Missing or invalid payload type: must be "transaction" or "signature"');
+    throw new Error('Missing or invalid payload type: must be "transaction", "signature", or "proof"');
 }
 
 // ── Activation settlement ──
@@ -262,7 +320,11 @@ async function settleActivation(
     store: Store.Store,
     signer: TransactionPartialSigner | undefined,
     payloadType: 'signature' | 'transaction',
-): Promise<{ replay?: { binding: string; key: string }; subscriberAddress: string }> {
+): Promise<{
+    activationSignature: string;
+    replay?: { binding: string; key: string };
+    subscriberAddress: string;
+}> {
     if (payloadType === 'transaction') {
         const { transaction: clientTxBase64 } = credential.payload;
         if (!clientTxBase64) {
@@ -270,6 +332,7 @@ async function settleActivation(
         }
 
         const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
+        await verifyActivationAuthentication(credential, challenge, subscriber);
         await validateActivationInstructions(clientTxBase64, challenge, subscriber);
 
         let txToSend = clientTxBase64;
@@ -300,19 +363,30 @@ async function settleActivation(
             }
             needsConfirmation = recoveryClaim !== 'retry';
         } else if (replayStatus === 'available') {
-            await simulateTransaction(rpcUrl, txToSend);
-            await broadcastTransaction(rpcUrl, txToSend);
             const replayClaim = await claimReplayKey(store, key, binding);
             if (replayClaim === 'conflict') throw new Error('Activation signature already consumed');
             if (replayClaim === 'pending') {
                 throw new Error('Activation settlement is already in progress; retry shortly');
             }
             needsConfirmation = replayClaim !== 'retry';
+            if (replayClaim === 'reserved') {
+                try {
+                    await simulateTransaction(rpcUrl, txToSend);
+                } catch (error) {
+                    // No transaction was submitted, so releasing this reservation
+                    // is safe and lets the client correct and retry the activation.
+                    await store.delete(key);
+                    throw error;
+                }
+                // Keep the reservation on an ambiguous send failure: the RPC may
+                // have accepted the transaction even if the response was lost.
+                await broadcastTransaction(rpcUrl, txToSend);
+            }
         }
         if (needsConfirmation) {
             await waitForConfirmation(rpcUrl, signature);
         }
-        return { replay: { binding, key }, subscriberAddress: subscriber };
+        return { activationSignature: signature, replay: { binding, key }, subscriberAddress: subscriber };
     }
 
     // ── Push mode (type="signature") ──
@@ -329,12 +403,162 @@ async function settleActivation(
     if (tx.meta?.err) throw new Error('Transaction failed on-chain');
     const [transactionBase64] = tx.transaction;
     const subscriber = extractSubscriberFromTransaction(transactionBase64, challenge);
+    await verifyActivationAuthentication(credential, challenge, subscriber);
     await validateActivationInstructions(transactionBase64, challenge, subscriber);
 
     if (!(await reserveReplayKey(store, consumedKey))) {
         throw new Error('Activation signature already consumed');
     }
-    return { subscriberAddress: subscriber };
+    return { activationSignature: signature, subscriberAddress: subscriber };
+}
+
+async function verifyActivationAuthentication(
+    credential: CredentialPayload,
+    challenge: ChallengeRequest,
+    subscriber: string,
+): Promise<void> {
+    const authentication = requireSubscriptionAuthentication(credential.payload);
+    if (!credential.challenge.id || authentication.challengeId !== credential.challenge.id) {
+        throw new Error('Subscription proof challengeId does not match the activation challenge');
+    }
+    if (authentication.payer !== subscriber) {
+        throw new Error('Subscription proof payer does not match the activation subscriber');
+    }
+    const subscriptionDelegation = await deriveSubscriptionPda({
+        planPda: address(challenge.methodDetails.planAddress),
+        programId: address(challenge.methodDetails.subscriptionProgram),
+        subscriber: address(subscriber),
+    });
+    if (!(await verifySubscriptionAuthentication(authentication, subscriptionDelegation.toString()))) {
+        throw new Error('Invalid subscription authentication proof');
+    }
+}
+
+async function verifySubscriptionAccess(
+    credential: CredentialPayload,
+    challenge: ChallengeRequest,
+    rpcUrl: string,
+    store: Store.Store,
+) {
+    const authentication = requireSubscriptionAuthentication(credential.payload);
+    const subscriptionDelegation = credential.payload.subscriptionDelegation;
+    if (!subscriptionDelegation) throw new Error('Subscription proof payload is missing subscriptionDelegation');
+    if (!credential.challenge.id || authentication.challengeId !== credential.challenge.id) {
+        throw new Error('Subscription proof challengeId does not match the activation challenge');
+    }
+
+    const programId = challenge.methodDetails.subscriptionProgram;
+    const expectedDelegation = await deriveSubscriptionPda({
+        planPda: address(challenge.methodDetails.planAddress),
+        programId: address(programId),
+        subscriber: address(authentication.payer),
+    });
+    if (subscriptionDelegation !== expectedDelegation.toString()) {
+        throw new Error('Subscription proof delegation does not match the plan and payer');
+    }
+    if (!(await verifySubscriptionAuthentication(authentication, subscriptionDelegation))) {
+        throw new Error('Invalid subscription authentication proof');
+    }
+
+    const stored = await store.get(subscriptionBindingKey(subscriptionDelegation));
+    const binding = parseSubscriptionBinding(stored);
+    if (
+        binding.challengeId !== credential.challenge.id ||
+        JSON.stringify(binding.authentication) !== JSON.stringify(authentication)
+    ) {
+        throw new Error('Subscription proof does not match the activation binding');
+    }
+
+    const delegation = await fetchSubscriptionDelegation(rpcUrl, expectedDelegation, address(programId));
+    if (!delegation) throw new Error('SubscriptionDelegation account not found');
+    if (delegation.planPda !== challenge.methodDetails.planAddress || delegation.subscriber !== authentication.payer) {
+        throw new Error('SubscriptionDelegation does not match the bound plan and payer');
+    }
+    const authorityPda = await deriveSubscriptionAuthorityPda({
+        mint: address(challenge.methodDetails.mint),
+        programId: address(programId),
+        subscriber: address(authentication.payer),
+    });
+    const authorityInitId = await fetchSubscriptionAuthorityInitId(rpcUrl, authorityPda, address(programId));
+    if (authorityInitId !== delegation.authorityInitId) {
+        throw new Error('Subscription authority has been invalidated');
+    }
+
+    const expectedPeriodHours = mapSubscriptionPeriodToHours(challenge.periodUnit, Number(challenge.periodCount));
+    if (
+        delegation.amountPerPeriod !== challenge.amount ||
+        delegation.periodHours !== expectedPeriodHours ||
+        delegation.amountPulledInPeriod !== challenge.amount
+    ) {
+        throw new Error('Subscription is not paid for the current billing period');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const periodLengthSeconds = expectedPeriodHours * 3600;
+    const periodEndTs = delegation.currentPeriodStartTs + periodLengthSeconds;
+    if (now < delegation.currentPeriodStartTs || now >= periodEndTs) {
+        throw new Error('Subscription is not paid for the current billing period');
+    }
+    if (delegation.expiresAtTs !== 0 && now >= delegation.expiresAtTs) {
+        throw new Error('Subscription cancellation has taken effect');
+    }
+    if (binding.subscriptionExpires && Date.parse(binding.subscriptionExpires) <= Date.now()) {
+        throw new Error('Subscription has expired');
+    }
+
+    const elapsed = delegation.currentPeriodStartTs - binding.periodStartTs;
+    if (elapsed < 0 || elapsed % periodLengthSeconds !== 0) {
+        throw new Error('Subscription billing anchor does not align with the current period');
+    }
+    const periodIndex = elapsed / periodLengthSeconds;
+    return Receipt.from({
+        challengeId: credential.challenge.id,
+        expiresAt: binding.subscriptionExpires,
+        method: 'solana',
+        periodEnd: new Date(periodEndTs * 1000).toISOString(),
+        periodIndex,
+        periodStart: new Date(delegation.currentPeriodStartTs * 1000).toISOString(),
+        reference: binding.activationSignature,
+        status: 'success',
+        subscriptionDelegation,
+        subscriptionId: binding.subscriptionId,
+        timestamp: new Date().toISOString(),
+    });
+}
+
+function requireSubscriptionAuthentication(payload: CredentialPayload['payload']): SubscriptionAuthentication {
+    const authentication = payload.authentication;
+    if (!authentication || authentication.type !== 'proof') {
+        throw new Error('Subscription credential is missing authentication.type="proof"');
+    }
+    return authentication;
+}
+
+function subscriptionBindingKey(subscriptionDelegation: string): string {
+    return `solana-subscription:authentication:${subscriptionDelegation}`;
+}
+
+async function deriveSubscriptionId(subscriptionDelegation: string, challengeId: string): Promise<string> {
+    const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(`mpp-subscription-id-v1:${challengeId}:${subscriptionDelegation}`),
+    );
+    return base64UrlEncodeNoPadding(new Uint8Array(digest).slice(0, 18));
+}
+
+function parseSubscriptionBinding(value: unknown): SubscriptionBinding {
+    if (!value || typeof value !== 'object') throw new Error('Subscription has no bound authentication proof');
+    const binding = value as Partial<SubscriptionBinding>;
+    if (
+        !binding.authentication ||
+        typeof binding.activationSignature !== 'string' ||
+        typeof binding.challengeId !== 'string' ||
+        typeof binding.periodStartTs !== 'number' ||
+        typeof binding.subscriptionId !== 'string'
+    ) {
+        throw new Error('Subscription authentication binding is malformed');
+    }
+    return binding as SubscriptionBinding;
 }
 
 // ── Transaction parsing (lightweight, pre-broadcast) ──
@@ -407,7 +631,7 @@ async function validateActivationInstructions(
         throw new Error('v0 transactions with address lookup tables are not supported in activation flow');
     }
 
-    const programId = challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM;
+    const programId = challenge.methodDetails.subscriptionProgram;
 
     let sawSubscribe = false;
     let sawTransferSubscription = false;
@@ -539,7 +763,9 @@ async function validateActivationInstructions(
 type SubscriptionDelegation = {
     amountPerPeriod: string;
     amountPulledInPeriod: string;
+    authorityInitId: bigint;
     currentPeriodStartTs: number;
+    expiresAtTs: number;
     periodHours: number;
     planPda: string;
     subscriber: string;
@@ -548,13 +774,33 @@ type SubscriptionDelegation = {
 async function fetchSubscriptionDelegation(
     rpcUrl: string,
     subscriptionPda: { toString(): string },
+    expectedOwner?: Address,
 ): Promise<SubscriptionDelegation | null> {
     const rpc = createSolanaRpc(rpcUrl);
     const account = await rpc.getAccountInfo(address(subscriptionPda.toString()), { encoding: 'base64' }).send();
     if (!account.value) return null;
+    if (expectedOwner && account.value.owner !== expectedOwner) {
+        throw new Error(`SubscriptionDelegation owner mismatch: expected ${expectedOwner}, got ${account.value.owner}`);
+    }
     const [b64] = account.value.data;
     const data = new Uint8Array(getBase64Codec().encode(b64));
     return decodeSubscriptionDelegation(data);
+}
+
+async function fetchSubscriptionAuthorityInitId(
+    rpcUrl: string,
+    authorityPda: { toString(): string },
+    expectedOwner: Address,
+): Promise<bigint> {
+    const rpc = createSolanaRpc(rpcUrl);
+    const account = await rpc.getAccountInfo(address(authorityPda.toString()), { encoding: 'base64' }).send();
+    if (!account.value) throw new Error('SubscriptionAuthority account not found');
+    if (account.value.owner !== expectedOwner) {
+        throw new Error(`SubscriptionAuthority owner mismatch: expected ${expectedOwner}, got ${account.value.owner}`);
+    }
+    const [b64] = account.value.data;
+    const data = new Uint8Array(getBase64Codec().encode(b64));
+    return getSubscriptionAuthorityDecoder().decode(data).initId;
 }
 
 function decodeSubscriptionDelegation(data: Uint8Array): SubscriptionDelegation {
@@ -568,7 +814,9 @@ function decodeSubscriptionDelegation(data: Uint8Array): SubscriptionDelegation 
     return {
         amountPerPeriod: decoded.terms.amount.toString(),
         amountPulledInPeriod: decoded.amountPulledInPeriod.toString(),
+        authorityInitId: decoded.header.initId,
         currentPeriodStartTs: Number(decoded.currentPeriodStartTs),
+        expiresAtTs: Number(decoded.expiresAtTs),
         periodHours: Number(decoded.terms.periodHours),
         planPda: decoded.header.delegatee,
         subscriber: decoded.header.delegator,
@@ -742,14 +990,26 @@ async function waitForConfirmation(rpcUrl: string, signature: string, timeoutMs 
 
 type CredentialPayload = {
     challenge: {
+        expires?: string;
         id?: string;
         request: ChallengeRequest;
     };
     payload: {
+        authentication?: SubscriptionAuthentication;
         signature?: string;
+        subscriptionDelegation?: string;
         transaction?: string;
         type?: string;
     };
+};
+
+type SubscriptionBinding = {
+    activationSignature: string;
+    authentication: SubscriptionAuthentication;
+    challengeId: string;
+    periodStartTs: number;
+    subscriptionExpires?: string;
+    subscriptionId: string;
 };
 
 type ChallengeRequest = {
@@ -763,11 +1023,11 @@ type ChallengeRequest = {
         feePayerKey?: string;
         mint: string;
         network?: string;
-        planId: string;
-        programId?: string;
+        planAddress: string;
         puller: string;
         recentBlockhash?: string;
         splits?: Array<{ bps: number; recipient: string }>;
+        subscriptionProgram: string;
         tokenProgram: string;
     };
     periodCount: string;
@@ -804,8 +1064,6 @@ export declare namespace subscription {
         periodUnit: 'day' | 'week';
         /** Base58 of the on-chain Plan PDA. */
         planId: string;
-        /** Base58 of the subscriptions program ID. Defaults to the canonical deployment. */
-        programId?: string;
         /** Base58 of the server's puller pubkey (must be in plan.pullers or plan.owner). */
         puller: string;
         /** Base58 of the primary recipient wallet. MUST match what plan.destinations resolves to. */
@@ -820,6 +1078,8 @@ export declare namespace subscription {
         store?: Store.Store;
         /** Optional {@link https://datatracker.ietf.org/doc/html/rfc3339 | RFC3339} expiry of the recurring authorization. */
         subscriptionExpires?: string;
+        /** Base58 of the subscriptions program ID. Defaults to the canonical deployment. */
+        subscriptionProgram?: string;
         /** Base58 of the SPL Token or Token-2022 program ID. */
         tokenProgram: string;
     };

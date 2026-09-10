@@ -10,6 +10,69 @@ use serde::{Deserialize, Serialize};
 
 use crate::mpp::error::Error;
 
+/// Domain separator for reusable subscription authentication proofs.
+pub const SUBSCRIPTION_AUTHENTICATION_DOMAIN: &str = "mpp-subscription-auth-v1";
+
+/// Reusable payer proof bound to one activation challenge and delegation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionAuthentication {
+    /// Always `proof` on the wire.
+    #[serde(rename = "type")]
+    pub kind: SubscriptionAuthenticationType,
+    /// Activation challenge identifier signed into the proof.
+    pub challenge_id: String,
+    /// Subscriber public key (base58).
+    pub payer: String,
+    /// Ed25519 signature over the canonical authentication message (base58).
+    pub signature: String,
+}
+
+/// Discriminator for a reusable subscription proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubscriptionAuthenticationType {
+    /// An Ed25519 payer proof.
+    Proof,
+}
+
+impl SubscriptionAuthentication {
+    /// Return the RFC 8785/JCS message bytes signed by the subscriber.
+    pub fn message_bytes(&self, subscription_delegation: &str) -> Result<Vec<u8>, Error> {
+        let value = serde_json::json!({
+            "domain": SUBSCRIPTION_AUTHENTICATION_DOMAIN,
+            "payer": self.payer,
+            "subscriptionChallengeId": self.challenge_id,
+            "subscriptionDelegation": subscription_delegation,
+        });
+        serde_json_canonicalizer::to_vec(&value).map_err(|error| Error::Other(error.to_string()))
+    }
+
+    /// Verify this proof against its payer and bound delegation.
+    pub fn verify(&self, subscription_delegation: &str) -> Result<bool, Error> {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let payer: [u8; 32] = bs58::decode(&self.payer)
+            .into_vec()
+            .map_err(|error| Error::Other(error.to_string()))?
+            .try_into()
+            .map_err(|_| Error::Other("payer must be 32 bytes".to_string()))?;
+        let signature: [u8; 64] = bs58::decode(&self.signature)
+            .into_vec()
+            .map_err(|error| Error::Other(error.to_string()))?
+            .try_into()
+            .map_err(|_| Error::Other("signature must be 64 bytes".to_string()))?;
+        let key =
+            VerifyingKey::from_bytes(&payer).map_err(|error| Error::Other(error.to_string()))?;
+        Ok(key
+            .verify(
+                &self.message_bytes(subscription_delegation)?,
+                &Signature::from_bytes(&signature),
+            )
+            .is_ok())
+    }
+}
+
 /// Billing period unit. The Solana profile supports `day` and `week` only;
 /// `month` is rejected because the on-chain program uses fixed elapsed
 /// seconds and cannot represent calendar-month cadence exactly.
@@ -149,6 +212,24 @@ pub struct ActivatePayload {
     /// Base58 of the on-chain transaction signature (when `type="signature"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+
+    /// Reusable subscriber proof bound to the activation challenge and
+    /// resulting `SubscriptionDelegation` PDA.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<SubscriptionAuthentication>,
+}
+
+/// Credential payload for later access under an active subscription.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionAccessPayload {
+    /// Always `proof` on the wire.
+    #[serde(rename = "type")]
+    pub payload_type: SubscriptionAuthenticationType,
+    /// Base58 `SubscriptionDelegation` PDA bound by the proof.
+    pub subscription_delegation: String,
+    /// Reusable subscriber proof retained from activation.
+    pub authentication: SubscriptionAuthentication,
 }
 
 /// Extension fields placed on the standard Receipt's metadata for a
@@ -156,28 +237,19 @@ pub struct ActivatePayload {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionReceiptExtensions {
-    /// base64url (no padding) of the on-chain SubscriptionDelegation PDA.
+    /// Server-issued opaque base64url subscription identifier.
     pub subscription_id: String,
-    /// base58 of the on-chain Plan PDA.
-    pub plan_id: String,
+    /// Base58 address of the on-chain SubscriptionDelegation account.
+    pub subscription_delegation: String,
     /// Decimal index of the billing period (0 for activation).
-    pub period_index: String,
+    pub period_index: u64,
     /// RFC3339 timestamp of the current period's start.
-    pub period_start_ts: String,
+    pub period_start: String,
     /// RFC3339 timestamp of the current period's end (exclusive).
-    pub period_end_ts: String,
+    pub period_end: String,
     /// RFC3339 effective subscription expiry, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
-    /// base58 of the activation transaction signature — the on-chain
-    /// transaction that created the SubscriptionDelegation. When the
-    /// verifier broadcasts a fresh activation tx, this carries that
-    /// signature; on idempotent retries (delegation already on-chain) it
-    /// reflects the original landing tx looked up via
-    /// `getSignaturesForAddress`. Omitted when neither path could
-    /// determine a sig.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub activation_signature: Option<String>,
 }
 
 /// Typed `methodDetails` payload for the Solana subscription intent.
@@ -196,8 +268,8 @@ pub struct SubscriptionReceiptExtensions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionMethodDetails {
-    /// Base58 of the on-chain `Plan` PDA (the spec's `externalId`).
-    pub plan_id: String,
+    /// Base58 address of the on-chain `Plan` account.
+    pub plan_address: String,
     /// Base58 of the SPL token mint. MUST equal the on-chain `plan.mint`.
     pub mint: String,
     /// Base58 of the SPL Token / Token-2022 program id used for the
@@ -229,10 +301,9 @@ pub struct SubscriptionMethodDetails {
     /// without re-parsing the parent request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<String>,
-    /// Subscriptions program ID. Omit for the canonical mainnet
-    /// deployment.
+    /// Base58 address of the subscriptions program deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub program_id: Option<String>,
+    pub subscription_program: Option<String>,
     /// Solana network slug — `mainnet`, `devnet`, `testnet`,
     /// `localnet`. Servers MAY accept `mainnet-beta` as a legacy alias
     /// of `mainnet` but MUST emit `mainnet`.
@@ -278,8 +349,8 @@ impl SubscriptionMethodDetails {
     /// supply defaults), so callers that need a settle-able activation
     /// must run this check.
     pub fn validate(&self) -> Result<(), Error> {
-        if self.plan_id.is_empty() {
-            return Err(Error::Other("methodDetails.planId is required".into()));
+        if self.plan_address.is_empty() {
+            return Err(Error::Other("methodDetails.planAddress is required".into()));
         }
         if self.mint.is_empty() {
             return Err(Error::Other("methodDetails.mint is required".into()));
@@ -291,6 +362,15 @@ impl SubscriptionMethodDetails {
         }
         if self.puller.is_empty() {
             return Err(Error::Other("methodDetails.puller is required".into()));
+        }
+        if self
+            .subscription_program
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(Error::Other(
+                "methodDetails.subscriptionProgram is required".into(),
+            ));
         }
         if self.fee_payer && self.fee_payer_key.is_none() {
             return Err(Error::Other(
@@ -304,6 +384,33 @@ impl SubscriptionMethodDetails {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    #[test]
+    fn subscription_authentication_uses_canonical_message_and_binds_delegation() {
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let payer = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
+        let delegation = "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT";
+        let mut authentication = SubscriptionAuthentication {
+            kind: SubscriptionAuthenticationType::Proof,
+            challenge_id: "challenge-1".into(),
+            payer: payer.clone(),
+            signature: String::new(),
+        };
+        let message = authentication.message_bytes(delegation).unwrap();
+        assert_eq!(
+            String::from_utf8(message.clone()).unwrap(),
+            format!(
+                "{{\"domain\":\"mpp-subscription-auth-v1\",\"payer\":\"{payer}\",\"subscriptionChallengeId\":\"challenge-1\",\"subscriptionDelegation\":\"{delegation}\"}}"
+            )
+        );
+        authentication.signature =
+            bs58::encode(signing_key.sign(&message).to_bytes()).into_string();
+        assert!(authentication.verify(delegation).unwrap());
+        assert!(!authentication
+            .verify("9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ")
+            .unwrap());
+    }
 
     #[test]
     fn day_period_maps_to_hours() {
@@ -389,6 +496,7 @@ mod tests {
             payload_type: "transaction".into(),
             transaction: Some("AQAAAA==".into()),
             signature: None,
+            authentication: None,
         });
         let json = serde_json::to_string(&action).unwrap();
         assert!(json.contains("\"action\":\"activate\""));
@@ -403,6 +511,7 @@ mod tests {
             payload_type: "signature".into(),
             transaction: None,
             signature: Some("5J8KKKKK".into()),
+            authentication: None,
         });
         let json = serde_json::to_string(&action).unwrap();
         assert!(json.contains("\"type\":\"signature\""));
@@ -472,7 +581,7 @@ mod tests {
     fn receipt_extensions_default() {
         let ext = SubscriptionReceiptExtensions::default();
         assert_eq!(ext.subscription_id, "");
-        assert_eq!(ext.plan_id, "");
+        assert_eq!(ext.subscription_delegation, "");
         assert!(ext.expires_at.is_none());
     }
 
@@ -480,19 +589,18 @@ mod tests {
     fn receipt_extensions_serialize() {
         let ext = SubscriptionReceiptExtensions {
             subscription_id: "BXQGmO5VwTrl5RfFr6Y8XQZ4nPj9QqMOiKkRn3pZ4ZE".into(),
-            plan_id: "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT".into(),
-            period_index: "0".into(),
-            period_start_ts: "2026-01-15T12:03:10Z".into(),
-            period_end_ts: "2026-02-14T12:03:10Z".into(),
+            subscription_delegation: "De1egation".into(),
+            period_index: 0,
+            period_start: "2026-01-15T12:03:10Z".into(),
+            period_end: "2026-02-14T12:03:10Z".into(),
             expires_at: Some("2026-07-14T12:00:00Z".into()),
-            activation_signature: None,
         };
         let json = serde_json::to_string(&ext).unwrap();
         assert!(json.contains("\"subscriptionId\""));
-        assert!(json.contains("\"planId\""));
-        assert!(json.contains("\"periodIndex\":\"0\""));
-        assert!(json.contains("\"periodStartTs\""));
-        assert!(json.contains("\"periodEndTs\""));
+        assert!(json.contains("\"subscriptionDelegation\""));
+        assert!(json.contains("\"periodIndex\":0"));
+        assert!(json.contains("\"periodStart\""));
+        assert!(json.contains("\"periodEnd\""));
         assert!(json.contains("\"expiresAt\""));
     }
 }

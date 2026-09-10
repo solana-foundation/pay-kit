@@ -85,7 +85,16 @@ export type {
 } from './SessionFetch.js';
 export { createSessionUsageMeter, SessionUsageMeter } from './SessionUsageMeter.js';
 export type { SessionUsagePrice, SessionUsagePricer, SessionUsagePricingContext } from './SessionUsageMeter.js';
-export { buildSubscriptionActivationTransaction, subscription } from './Subscription.js';
+export {
+    buildSubscriptionActivationTransaction,
+    serializeSubscriptionAccessCredential,
+    signSubscriptionAuthentication,
+    subscription,
+    SUBSCRIPTION_AUTHENTICATION_DOMAIN,
+    subscriptionAuthenticationMessage,
+    verifySubscriptionAuthentication,
+} from './Subscription.js';
+export type { SubscriptionAuthentication, SubscriptionSigner } from './Subscription.js';
 export {
     assertPeriodHoursInRange,
     deriveSubscriptionAuthorityPda,

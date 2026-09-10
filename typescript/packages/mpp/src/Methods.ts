@@ -8,6 +8,13 @@ const sessionAuthentication = z.object({
     type: z.literal('proof'),
 });
 
+const subscriptionAuthentication = z.object({
+    challengeId: z.string(),
+    payer: z.string(),
+    signature: z.string(),
+    type: z.literal('proof'),
+});
+
 /**
  * `expiresAt` is an i64 on the wire, but JSON numbers above 2^53 - 1 lose
  * precision in JavaScript — reject those at the parse boundary instead of
@@ -135,14 +142,29 @@ export const subscription = Method.from({
     name: 'solana',
     schema: {
         credential: {
-            payload: z.object({
-                /** Base58 transaction signature (when type="signature"). */
-                signature: z.optional(z.string()),
-                /** Base64-encoded serialized activation transaction (when type="transaction"). */
-                transaction: z.optional(z.string()),
-                /** Payload type: "transaction" (server broadcasts) or "signature" (client already broadcast). */
-                type: z.string(),
-            }),
+            payload: z.discriminatedUnion('type', [
+                z.object({
+                    /** Reusable payer proof bound to this activation. */
+                    authentication: subscriptionAuthentication,
+                    /** Base64-encoded serialized activation transaction. */
+                    transaction: z.string(),
+                    type: z.literal('transaction'),
+                }),
+                z.object({
+                    /** Reusable payer proof bound to this activation. */
+                    authentication: subscriptionAuthentication,
+                    /** Base58 activation transaction signature. */
+                    signature: z.string(),
+                    type: z.literal('signature'),
+                }),
+                z.object({
+                    /** Reusable payer proof retained from activation. */
+                    authentication: subscriptionAuthentication,
+                    /** Base58 SubscriptionDelegation PDA bound by the proof. */
+                    subscriptionDelegation: z.string(),
+                    type: z.literal('proof'),
+                }),
+            ]),
         },
         request: z.object({
             /** Per-period token amount in base units. */
@@ -164,14 +186,15 @@ export const subscription = Method.from({
                 mint: z.string(),
                 /** Solana network: mainnet, devnet, or localnet. */
                 network: z.optional(z.string()),
-                /** Base58 of the on-chain Plan PDA. */
-                planId: z.string(),
-                /** Base58 of the subscriptions program ID. */
-                programId: z.optional(z.string()),
+                /** Base58 address of the on-chain Plan account. */
+                planAddress: z.string(),
+
                 /** Base58 of the server's puller pubkey (must be in plan.pullers or plan.owner). */
                 puller: z.string(),
+
                 /** Pre-fetched recent blockhash to bind to the activation transaction. */
                 recentBlockhash: z.optional(z.string()),
+
                 /** Advisory distribution splits (on-chain split is governed by plan.destinations). */
                 splits: z.optional(
                     z.array(
@@ -183,6 +206,9 @@ export const subscription = Method.from({
                         }),
                     ),
                 ),
+
+                /** Base58 of the subscriptions program deployment. */
+                subscriptionProgram: z.string(),
                 /** Base58 of the SPL Token or Token-2022 program ID. */
                 tokenProgram: z.string(),
             }),

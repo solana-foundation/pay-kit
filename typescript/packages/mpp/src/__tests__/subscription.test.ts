@@ -8,6 +8,11 @@ import { describe, expect, test } from 'vitest';
 import { address, generateKeyPairSigner } from '@solana/kit';
 
 import {
+    signSubscriptionAuthentication,
+    subscriptionAuthenticationMessage,
+    verifySubscriptionAuthentication,
+} from '../client/Subscription.js';
+import {
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
@@ -34,7 +39,8 @@ describe('Methods.subscription', () => {
             methodDetails: {
                 decimals: 6,
                 mint: MINT,
-                planId: PLAN_ID,
+                planAddress: PLAN_ID,
+                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                 puller: PULLER,
                 tokenProgram: TOKEN_PROGRAM,
             },
@@ -52,7 +58,8 @@ describe('Methods.subscription', () => {
             methodDetails: {
                 decimals: 6,
                 mint: MINT,
-                planId: PLAN_ID,
+                planAddress: PLAN_ID,
+                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                 puller: PULLER,
                 tokenProgram: TOKEN_PROGRAM,
             },
@@ -71,7 +78,8 @@ describe('Methods.subscription', () => {
             methodDetails: {
                 decimals: 6,
                 mint: MINT,
-                planId: PLAN_ID,
+                planAddress: PLAN_ID,
+                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
                 puller: PULLER,
                 tokenProgram: TOKEN_PROGRAM,
             },
@@ -96,19 +104,61 @@ describe('Methods.subscription', () => {
         expect(parsed.success).toBe(false);
     });
 
-    test('accepts both pull and push credential payloads', () => {
+    test('accepts activation and reusable proof credential payloads', () => {
+        const authentication = {
+            challengeId: 'challenge-1',
+            payer: RECIPIENT,
+            signature: 'proof-signature',
+            type: 'proof',
+        };
         expect(
             subscriptionMethod.schema.credential.payload.safeParse({
+                authentication,
                 transaction: 'AQAAAA...base64...',
                 type: 'transaction',
             }).success,
         ).toBe(true);
         expect(
             subscriptionMethod.schema.credential.payload.safeParse({
+                authentication,
                 signature: '5J8Kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk',
                 type: 'signature',
             }).success,
         ).toBe(true);
+        expect(
+            subscriptionMethod.schema.credential.payload.safeParse({
+                authentication,
+                subscriptionDelegation: PLAN_ID,
+                type: 'proof',
+            }).success,
+        ).toBe(true);
+    });
+});
+
+describe('subscription authentication', () => {
+    test('uses the canonical JCS message shape', () => {
+        expect(
+            new TextDecoder().decode(
+                subscriptionAuthenticationMessage({
+                    challengeId: 'challenge-1',
+                    payer: RECIPIENT,
+                    subscriptionDelegation: PLAN_ID,
+                }),
+            ),
+        ).toBe(
+            `{"domain":"mpp-subscription-auth-v1","payer":"${RECIPIENT}","subscriptionChallengeId":"challenge-1","subscriptionDelegation":"${PLAN_ID}"}`,
+        );
+    });
+
+    test('verifies only for the delegation bound by the payer', async () => {
+        const signer = await generateKeyPairSigner();
+        const proof = await signSubscriptionAuthentication({
+            challengeId: 'challenge-1',
+            signer,
+            subscriptionDelegation: PLAN_ID,
+        });
+        await expect(verifySubscriptionAuthentication(proof, PLAN_ID)).resolves.toBe(true);
+        await expect(verifySubscriptionAuthentication(proof, RECIPIENT)).resolves.toBe(false);
     });
 });
 
