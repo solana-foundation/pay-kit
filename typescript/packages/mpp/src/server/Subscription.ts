@@ -188,6 +188,7 @@ export function subscription(parameters: subscription.Parameters) {
             }
 
             assertActivationChallengeNotExpired(cred.challenge.expires);
+            assertSubscriptionNotExpired(challenge.subscriptionExpires);
 
             if (payloadType === 'signature' && challenge.methodDetails.feePayer) {
                 throw new Error('type="signature" credentials cannot be used with fee sponsorship (feePayer: true)');
@@ -296,6 +297,13 @@ function assertActivationChallengeNotExpired(expires: string | undefined): void 
     const expiresAt = Date.parse(expires);
     if (Number.isNaN(expiresAt)) throw new Error('challenge expires must be an RFC3339 timestamp');
     if (expiresAt <= Date.now()) throw new Error(`challenge expired at ${expires}`);
+}
+
+function assertSubscriptionNotExpired(expires: string | undefined): void {
+    if (expires === undefined) return;
+    const expiresAt = Date.parse(expires);
+    if (Number.isNaN(expiresAt)) throw new Error('subscriptionExpires must be an RFC3339 timestamp');
+    if (expiresAt <= Date.now()) throw new Error(`subscription expired at ${expires}`);
 }
 
 // ── Payload type resolution ──

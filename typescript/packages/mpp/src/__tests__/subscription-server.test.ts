@@ -989,6 +989,49 @@ describe('subscription().verify() (push mode)', () => {
         ).rejects.toThrow(/challenge expired/);
     });
 
+    test('rejects an expired subscription before attempting activation', async () => {
+        const method = subscription({
+            decimals: 6,
+            mint: MINT,
+            network: 'devnet',
+            periodCount: 30,
+            periodUnit: 'day',
+            planId: PLAN_ID,
+            puller: PULLER,
+            recipient: RECIPIENT,
+            rpcUrl: 'https://mock-rpc',
+            tokenProgram: TOKEN_PROGRAM,
+        });
+
+        await expect(
+            method.verify!({
+                credential: {
+                    challenge: {
+                        id: 'expired-subscription',
+                        request: {
+                            amount: '10000000',
+                            currency: MINT,
+                            methodDetails: {
+                                decimals: 6,
+                                mint: MINT,
+                                planAddress: PLAN_ID,
+                                puller: PULLER,
+                                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                                tokenProgram: TOKEN_PROGRAM,
+                            },
+                            periodCount: '30',
+                            periodUnit: 'day',
+                            recipient: RECIPIENT,
+                            subscriptionExpires: '2000-01-01T00:00:00Z',
+                        },
+                    },
+                    payload: { transaction: 'not-a-transaction', type: 'transaction' },
+                } as never,
+                request: {} as never,
+            }),
+        ).rejects.toThrow(/subscription expired/);
+    });
+
     test('rejects when on-chain delegation references a different plan', async () => {
         const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64();
         const authentication = await buildAuthentication('wrong-plan-challenge', subscriber);

@@ -501,6 +501,7 @@ impl SubscriptionServer {
                 "Subscription activation challenge has expired",
             ));
         }
+        validate_activation_subscription_expiry(request.subscription_expires.as_deref())?;
 
         // ── Decode the activation payload ───────────────────────────────
         // The credential's `payload` may carry either a raw `ActivatePayload`
@@ -586,16 +587,7 @@ impl SubscriptionServer {
                     let binding = serde_json::json!({
                         "challengeId": credential.challenge.id,
                     });
-                    let inserted = self.store.put_if_absent(&key, binding).await.map_err(|e| {
-                        VerificationError::new(format!(
-                            "Failed to reserve activation signature: {e}"
-                        ))
-                    })?;
-                    if !inserted {
-                        return Err(VerificationError::signature_consumed(
-                            "Activation signature already consumed or in progress",
-                        ));
-                    }
+                    reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
                     Some(self.broadcast_and_confirm(&tx).await?.to_string())
                 };
                 if delegation_already_exists {
@@ -604,26 +596,7 @@ impl SubscriptionServer {
                         let binding = serde_json::json!({
                             "challengeId": credential.challenge.id,
                         });
-                        let inserted = self
-                            .store
-                            .put_if_absent(&key, binding.clone())
-                            .await
-                            .map_err(|e| {
-                                VerificationError::new(format!(
-                                    "Failed to reserve activation signature: {e}"
-                                ))
-                            })?;
-                        if !inserted
-                            && self.store.get(&key).await.map_err(|e| {
-                                VerificationError::new(format!(
-                                    "Failed to load activation reservation: {e}"
-                                ))
-                            })? != Some(binding)
-                        {
-                            return Err(VerificationError::signature_consumed(
-                                "Activation signature already consumed",
-                            ));
-                        }
+                        reserve_activation_signature(self.store.as_ref(), &key, binding).await?;
                     }
                 }
                 (subscriber, sig)
@@ -1100,6 +1073,56 @@ impl SubscriptionServer {
 }
 
 // ── Verify helpers ──────────────────────────────────────────────────────────
+
+fn validate_activation_subscription_expiry(
+    subscription_expires: Option<&str>,
+) -> Result<(), VerificationError> {
+    let Some(subscription_expires) = subscription_expires else {
+        return Ok(());
+    };
+    let expires_at = time::OffsetDateTime::parse(
+        subscription_expires,
+        &time::format_description::well_known::Rfc3339,
+    )
+    .map_err(|error| {
+        VerificationError::invalid_payload(format!("Invalid subscriptionExpires: {error}"))
+    })?;
+    if expires_at <= time::OffsetDateTime::now_utc() {
+        return Err(VerificationError::transaction_failed(
+            "Subscription has expired",
+        ));
+    }
+    Ok(())
+}
+
+async fn reserve_activation_signature(
+    store: &dyn Store,
+    key: &str,
+    binding: serde_json::Value,
+) -> Result<(), VerificationError> {
+    let inserted = store
+        .put_if_absent(key, binding.clone())
+        .await
+        .map_err(|error| {
+            VerificationError::new(format!("Failed to reserve activation signature: {error}"))
+        })?;
+    if inserted {
+        return Ok(());
+    }
+
+    // Re-broadcasting the same signed transaction is idempotent on Solana.
+    // Accept only the original challenge binding so an ambiguous RPC failure
+    // can be retried without making the signature reusable by another request.
+    let existing = store.get(key).await.map_err(|error| {
+        VerificationError::new(format!("Failed to load activation reservation: {error}"))
+    })?;
+    if existing != Some(binding) {
+        return Err(VerificationError::signature_consumed(
+            "Activation signature already consumed",
+        ));
+    }
+    Ok(())
+}
 
 /// Pluck the `ActivatePayload` out of a credential's `payload` field,
 /// accepting both the raw `ActivatePayload` shape (the v0 spec) and the
@@ -1809,6 +1832,39 @@ mod tests {
         let mut cfg = make_config();
         cfg.realm = String::new();
         assert!(SubscriptionServer::new(cfg).is_err());
+    }
+
+    #[test]
+    fn activation_rejects_expired_subscription() {
+        let err = validate_activation_subscription_expiry(Some("2000-01-01T00:00:00Z"))
+            .expect_err("expired subscriptions must not activate");
+        assert!(err
+            .message
+            .to_lowercase()
+            .contains("subscription has expired"));
+    }
+
+    #[tokio::test]
+    async fn activation_signature_reservation_allows_matching_retry() {
+        let store = MemoryStore::new();
+        let key = "solana-subscription:consumed:test-signature";
+        let binding = serde_json::json!({ "challengeId": "challenge-a" });
+
+        reserve_activation_signature(&store, key, binding.clone())
+            .await
+            .expect("first attempt reserves the signature");
+        reserve_activation_signature(&store, key, binding)
+            .await
+            .expect("the same activation may retry after an ambiguous broadcast failure");
+
+        let err = reserve_activation_signature(
+            &store,
+            key,
+            serde_json::json!({ "challengeId": "challenge-b" }),
+        )
+        .await
+        .expect_err("another challenge must not reuse the signature");
+        assert!(err.message.to_lowercase().contains("consumed"));
     }
 
     #[test]
