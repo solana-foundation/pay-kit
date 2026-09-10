@@ -1,6 +1,12 @@
-import { createPaymentChannelSessionOpener, createSessionFetch, type SessionFetchClient } from '@solana/mpp/client'
+import {
+  createPaymentChannelSessionOpener,
+  createSessionFetch,
+  initializeSubscriptionAuthority,
+  SUBSCRIPTIONS_PROGRAM,
+  type SessionFetchClient,
+} from '@solana/mpp/client'
 import { createPayKitClient, type PayKitClient } from '@solana/pay-kit/client'
-import { getSigner, RPC_URL } from './wallet'
+import { getSigner, RPC_URL, TOKEN_PROGRAM, USDC_MINT } from './wallet'
 import type { FlowProgress } from '../types'
 
 // Capture the native fetch BEFORE Mppx.create() runs anywhere — Mppx polyfills
@@ -24,7 +30,25 @@ interface ProgressEvent {
 
 let payKitClient: PayKitClient | null = null
 let sessionFetch: SessionFetchClient | null = null
+let subscriptionAuthorityPromise: Promise<bigint> | null = null
 let progressCallback: ((e: ProgressEvent) => void) | null = null
+
+function ensureSubscriptionAuthority(): Promise<bigint> {
+  return (subscriptionAuthorityPromise ??= getSigner()
+    .then((signer) =>
+      initializeSubscriptionAuthority({
+        mint: USDC_MINT,
+        programId: SUBSCRIPTIONS_PROGRAM,
+        rpcUrl: RPC_URL,
+        signer,
+        tokenProgram: TOKEN_PROGRAM,
+      }),
+    )
+    .catch((error) => {
+      subscriptionAuthorityPromise = null
+      throw error
+    }))
+}
 
 /**
  * The unified pay-kit client: pays a 402 over x402 (`exact`/`upto`) or MPP
@@ -246,7 +270,13 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
         ? // SessionFetchClient resolves its delivery-reservation URL against
           // the resource URL, so sessions need an absolute URL.
           getSessionFetch().fetch(new URL(url, location.origin).toString(), opts.init)
-        : (await getPayKitClient()).fetch(url, opts.init, opts.protocol)
+        : (async () => {
+            // Pull-mode subscription activation never broadcasts setup as a
+            // hidden side effect. The playground opts into authority setup
+            // explicitly so its zero-config demo still works for a new wallet.
+            if (opts.primitive === 'subscription') await ensureSubscriptionAuthority()
+            return (await getPayKitClient()).fetch(url, opts.init, opts.protocol)
+          })()
 
     while (true) {
       if (queue.length > 0) {
@@ -358,4 +388,5 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
 export function resetMppxClients() {
   payKitClient = null
   sessionFetch = null
+  subscriptionAuthorityPromise = null
 }

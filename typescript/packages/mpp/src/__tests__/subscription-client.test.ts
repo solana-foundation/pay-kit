@@ -386,6 +386,22 @@ describe('subscription() client wrapper', () => {
         expect(calls).not.toContain('sendTransaction');
     });
 
+    test('requires explicit authority initialization in pull mode', async () => {
+        const calls: string[] = [];
+        globalThis.fetch = async (input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string };
+            calls.push(body.method ?? '');
+            return defaultMockFetch({ authorityExists: false })(input, init);
+        };
+        const signer = await generateKeyPairSigner();
+        const method = subscriptionClient({ rpcUrl: 'https://mock-rpc', signer });
+
+        await expect(method.createCredential!({ challenge: await buildChallenge() })).rejects.toThrow(
+            /initializeSubscriptionAuthority/,
+        );
+        expect(calls).not.toContain('sendTransaction');
+    });
+
     test('broadcasts and emits a type="signature" credential when broadcast=true', async () => {
         const calls: string[] = [];
         globalThis.fetch = async (input, init) => {

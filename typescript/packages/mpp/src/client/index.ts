@@ -87,6 +87,7 @@ export { createSessionUsageMeter, SessionUsageMeter } from './SessionUsageMeter.
 export type { SessionUsagePrice, SessionUsagePricer, SessionUsagePricingContext } from './SessionUsageMeter.js';
 export {
     buildSubscriptionActivationTransaction,
+    initializeSubscriptionAuthority,
     serializeSubscriptionAccessCredential,
     signSubscriptionAuthentication,
     subscription,

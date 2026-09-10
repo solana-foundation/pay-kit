@@ -138,8 +138,9 @@ export function serializeSubscriptionAccessCredential(parameters: {
 /**
  * Creates a Solana `subscription` method for usage on the client.
  *
- * Initializes the subscription authority when needed, then builds the
- * activation transaction (subscribe, transfer_subscription) and signs as the subscriber.
+ * Builds the activation transaction (subscribe, transfer_subscription) and
+ * signs as the subscriber. Pull mode requires callers to initialize the
+ * authority explicitly; push mode initializes it when needed.
  * When `feePayer: true` is advertised in the challenge, the server's
  * `feePayerKey` is used as fee payer and the transaction is partially
  * signed; the server completes the signature before broadcasting.
@@ -186,13 +187,22 @@ export function subscription(parameters: subscription.Parameters) {
                 parameters.rpcUrl ??
                 DEFAULT_RPC_URLS[normalizeNetwork(network ?? 'mainnet')] ??
                 DEFAULT_RPC_URLS.mainnet;
-            const subscriptionAuthorityInitId = await initializeSubscriptionAuthority({
+            const authorityParameters = {
                 mint: methodDetails.mint,
                 programId: methodDetails.subscriptionProgram,
                 rpcUrl,
                 signer,
                 tokenProgram: methodDetails.tokenProgram,
-            });
+            };
+            let subscriptionAuthorityInitId = await readSubscriptionAuthorityInitId(authorityParameters);
+            if (subscriptionAuthorityInitId === null) {
+                if (!broadcast) {
+                    throw new Error(
+                        'SubscriptionAuthority is not initialized; call initializeSubscriptionAuthority before using pull mode',
+                    );
+                }
+                subscriptionAuthorityInitId = await initializeSubscriptionAuthority(authorityParameters);
+            }
 
             const encodedTx = await buildSubscriptionActivationTransaction({
                 computeUnitLimit: parameters.computeUnitLimit,
@@ -427,7 +437,7 @@ export async function buildSubscriptionActivationTransaction(
     return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
 }
 
-/** Initialize the subscriber authority separately so subscribe can bind its live init id. */
+/** Explicitly initialize the subscriber authority and return its live init id. */
 export async function initializeSubscriptionAuthority(parameters: {
     mint: string;
     programId: string;
@@ -478,6 +488,23 @@ export async function initializeSubscriptionAuthority(parameters: {
     const initialized = await fetchAuthorityInitId(rpc, authority, programAddress);
     if (initialized === null) throw new Error('SubscriptionAuthority account missing after initialization');
     return initialized;
+}
+
+async function readSubscriptionAuthorityInitId(parameters: {
+    mint: string;
+    programId: string;
+    rpcUrl: string;
+    signer: SubscriptionSigner;
+    tokenProgram: string;
+}): Promise<bigint | null> {
+    const rpc = createSolanaRpc(parameters.rpcUrl);
+    const programAddress = address(parameters.programId);
+    const authority = await deriveSubscriptionAuthorityPda({
+        mint: address(parameters.mint),
+        programId: programAddress,
+        subscriber: parameters.signer.address,
+    });
+    return await fetchAuthorityInitId(rpc, authority, programAddress);
 }
 
 function remoteSigner(remoteAddress: Address): TransactionSigner {
