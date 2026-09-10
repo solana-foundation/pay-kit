@@ -70,7 +70,7 @@ vi.mock('@x402/svm/upto/facilitator', async importOriginal => {
     };
 });
 
-import { encodePaymentSignatureHeader } from '@x402/core/http';
+import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402/core/http';
 
 import { createX402ExactAdapter } from '../adapters/x402.js';
 import { Charge, X402Upto } from '../adapters/x402-upto.js';
@@ -115,9 +115,11 @@ describe('x402 exact adapter', () => {
     it('emits the PAYMENT-REQUIRED challenge header', async () => {
         const config = await testConfig();
         const adapter = createX402ExactAdapter(config);
-        const headers = await adapter.challengeHeaders(gateFor(config), new Request('http://localhost/r'));
+        const requestUrl = 'http://playground.test/api/v1/quote/SPCX';
+        const headers = await adapter.challengeHeaders(gateFor(config), new Request(requestUrl));
         expect(typeof headers['payment-required']).toBe('string');
         expect(headers['payment-required'].length).toBeGreaterThan(0);
+        expect(decodePaymentRequiredHeader(headers['payment-required']).resource.url).toBe(requestUrl);
     });
 });
 
@@ -211,8 +213,10 @@ describe('x402 upto engine', () => {
         const upto = new X402Upto(config);
         expect(upto.detect(new Request('http://localhost/u'))).toBe(false);
         expect(upto.detect(new Request('http://localhost/u', { headers: { 'x-payment': 'abc' } }))).toBe(true);
-        const headers = await upto.challengeHeaders(usd('1.00'), new Request('http://localhost/u'));
+        const requestUrl = 'http://playground.test/api/v1/compute';
+        const headers = await upto.challengeHeaders(usd('1.00'), new Request(requestUrl));
         expect(typeof headers['payment-required']).toBe('string');
+        expect(decodePaymentRequiredHeader(headers['payment-required']).resource.url).toBe(requestUrl);
     });
 
     // verifyOpen binds the authorization's openSlot to the challenged

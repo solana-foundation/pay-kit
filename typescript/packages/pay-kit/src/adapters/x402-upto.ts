@@ -128,7 +128,8 @@ export class X402Upto {
     ): Promise<Readonly<Record<string, string>>> {
         const paymentRequired: PaymentRequired = {
             accepts: [...(accepts ?? (await this.accepts(maxPrice)))],
-            resource: { url: new URL(request.url).pathname },
+            // x402 v2 requires an exact match with the response's absolute URL.
+            resource: { url: request.url },
             x402Version: X402_VERSION,
         };
         return { [PAYMENT_REQUIRED_HEADER]: encodePaymentRequiredHeader(paymentRequired) };

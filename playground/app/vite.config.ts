@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 // server (pay-web-ui, etc.) — e.g. `PLAYGROUND_PORT=3050 pnpm dev`.
 const PLAYGROUND_PORT = process.env.PLAYGROUND_PORT || '3000'
 const target = process.env.PAYKIT_PLAYGROUND_API_URL || `http://localhost:${PLAYGROUND_PORT}`
+const proxy = { target, changeOrigin: false }
 
 export default defineConfig({
   plugins: [react()],
@@ -25,10 +26,13 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/openapi.json': target,
-      '/api': target, // priced routes (/api/v1/*) + meta (health, faucet, docs)
-      '^/x402/': target, // legacy x402 demo API routes kept for compatibility
-      '/__402': target, // session side-channels: delivery reserve + settle-receipt poll
+      // Preserve the browser-facing Host. x402 v2 binds PAYMENT-REQUIRED's
+      // absolute resource URL to Response.url, so rewriting Host to the API's
+      // internal origin makes every proxied challenge invalid.
+      '/openapi.json': proxy,
+      '/api': proxy, // priced routes (/api/v1/*) + meta (health, faucet, docs)
+      '^/x402/': proxy, // legacy x402 demo API routes kept for compatibility
+      '/__402': proxy, // session side-channels: delivery reserve + settle-receipt poll
     },
   },
 })

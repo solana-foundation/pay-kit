@@ -107,7 +107,10 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
         async challengeHeaders(gate: Gate, request: Request): Promise<Readonly<Record<string, string>>> {
             const paymentRequired: PaymentRequired = {
                 accepts: [await challengeRequirements(gate)],
-                resource: { url: new URL(request.url).pathname },
+                // x402 v2 clients bind the challenge to Response.url exactly.
+                // Keep the browser-facing origin supplied by the HTTP adapter;
+                // a pathname-only value fails that validation behind a proxy.
+                resource: { url: request.url },
                 x402Version: X402_VERSION,
             };
             return { [PAYMENT_REQUIRED_HEADER]: encodePaymentRequiredHeader(paymentRequired) };
