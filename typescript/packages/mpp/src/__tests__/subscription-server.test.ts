@@ -25,7 +25,8 @@ import {
     type TransactionSigner,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
-import { Store } from 'mppx/server';
+import { Challenge, Credential } from 'mppx';
+import { Mppx, Store } from 'mppx/server';
 
 import {
     SUBSCRIPTIONS_PROGRAM,
@@ -825,7 +826,7 @@ describe('subscription().verify() (push mode)', () => {
         ).rejects.toThrow(/payload type/);
     });
 
-    test('returns a successful receipt when on-chain state matches the challenge (pull mode)', async () => {
+    test('rotates a stale bearer binding after a confirmed re-subscription', async () => {
         const { subscriber, transaction, subscriberAddress } = await buildActivationTransactionBase64({
             memo: 'order-99',
         });
@@ -871,6 +872,7 @@ describe('subscription().verify() (push mode)', () => {
             }
         };
 
+        const store = Store.memory();
         const method = subscription({
             decimals: 6,
             mint: MINT,
@@ -881,6 +883,7 @@ describe('subscription().verify() (push mode)', () => {
             puller: PULLER,
             recipient: RECIPIENT,
             rpcUrl: 'https://mock-rpc',
+            store,
             tokenProgram: TOKEN_PROGRAM,
         });
         const credential = {
@@ -906,22 +909,34 @@ describe('subscription().verify() (push mode)', () => {
             },
             payload: { authentication, transaction, type: 'transaction' },
         };
+        const subscriptionDelegation = await deriveSubscriptionPda({
+            planPda: address(PLAN_ID),
+            programId: address(SUBSCRIPTIONS_PROGRAM),
+            subscriber: subscriber.address,
+        });
+        const bindingKey = `solana-subscription:authentication:${subscriptionDelegation}`;
+        await store.put(bindingKey, {
+            activationSignature: 'old-activation',
+            authentication: { ...authentication, challengeId: 'old-challenge' },
+            challengeId: 'old-challenge',
+            periodStartTs: 0,
+            subscriptionId: 'old-subscription',
+        });
         const receipt = await method.verify!({
             credential: credential as never,
             request: {} as never,
         });
         expect((receipt as { status: string }).status).toBe('success');
+        expect(await store.get(bindingKey)).toMatchObject({
+            authentication,
+            challengeId: 'test-challenge',
+        });
 
         const recovered = await method.verify!({ credential: credential as never, request: {} as never });
         expect((recovered as { reference: string }).reference).toBe((receipt as { reference: string }).reference);
         expect(rpcMethods.filter(method => method === 'simulateTransaction')).toHaveLength(1);
         expect(rpcMethods.filter(method => method === 'sendTransaction')).toHaveLength(1);
 
-        const subscriptionDelegation = await deriveSubscriptionPda({
-            planPda: address(PLAN_ID),
-            programId: address(SUBSCRIPTIONS_PROGRAM),
-            subscriber: subscriber.address,
-        });
         const accessCredential = {
             challenge: {
                 ...credential.challenge,
@@ -944,6 +959,110 @@ describe('subscription().verify() (push mode)', () => {
             reference: (receipt as { reference: string }).reference,
             subscriptionDelegation: subscriptionDelegation.toString(),
         });
+    });
+
+    test('public Mppx handler accepts a bound proof after activation challenge expiry', async () => {
+        const subscriber = await generateKeyPairSigner();
+        const periodStart = BigInt(Math.floor(Date.now() / 1000) - 60);
+        const delegationData = buildDelegationData(subscriber.address, PLAN_ID, 10_000_000n, periodStart);
+        const delegationB64 = Buffer.from(delegationData).toString('base64');
+        const authorityB64 = Buffer.from(buildAuthorityData()).toString('base64');
+        const authorityPda = await deriveSubscriptionAuthorityPda({
+            mint: address(MINT),
+            programId: address(SUBSCRIPTIONS_PROGRAM),
+            subscriber: subscriber.address,
+        });
+
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string; params?: [string] };
+            if (body.method === 'getAccountInfo') {
+                return rpcSuccess({
+                    value: {
+                        data: [body.params?.[0] === authorityPda.toString() ? authorityB64 : delegationB64, 'base64'],
+                        executable: false,
+                        lamports: 0,
+                        owner: SUBSCRIPTIONS_PROGRAM,
+                        rentEpoch: 0,
+                    },
+                });
+            }
+            return rpcSuccess({});
+        };
+
+        const store = Store.memory();
+        const method = subscription({
+            decimals: 6,
+            mint: MINT,
+            network: 'devnet',
+            periodCount: 30,
+            periodUnit: 'day',
+            planId: PLAN_ID,
+            puller: PULLER,
+            recipient: RECIPIENT,
+            rpcUrl: 'https://mock-rpc',
+            store,
+            tokenProgram: TOKEN_PROGRAM,
+        });
+        const mppx = Mppx.create({
+            methods: [method],
+            realm: 'api.example.com',
+            secretKey: 'subscription-proof-test-secret-at-least-32-bytes',
+        });
+        const route = {
+            amount: '10000000',
+            currency: MINT,
+            methodDetails: {
+                decimals: 6,
+                mint: MINT,
+                planAddress: PLAN_ID,
+                puller: PULLER,
+                subscriptionProgram: SUBSCRIPTIONS_PROGRAM,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+            periodCount: '30',
+            periodUnit: 'day' as const,
+            recipient: RECIPIENT,
+        };
+        const expiredRoute = mppx.subscription({
+            ...route,
+            expires: '2000-01-01T00:00:00Z',
+        });
+        const challengeResult = await expiredRoute(new Request('https://api.example.com/member'));
+        expect(challengeResult.status).toBe(402);
+        if (challengeResult.status !== 402) throw new Error('expected subscription challenge');
+        const challenge = Challenge.fromResponse(challengeResult.challenge);
+        const subscriptionDelegation = await deriveSubscriptionPda({
+            planPda: address(PLAN_ID),
+            programId: address(SUBSCRIPTIONS_PROGRAM),
+            subscriber: subscriber.address,
+        });
+        const authentication = await buildAuthentication(challenge.id, subscriber);
+        await store.put(`solana-subscription:authentication:${subscriptionDelegation}`, {
+            activationSignature: 'confirmed-activation',
+            authentication,
+            challengeId: challenge.id,
+            periodStartTs: Number(periodStart),
+            subscriptionId: 'bound-subscription',
+        });
+        const proof = Credential.from({
+            challenge,
+            payload: {
+                authentication,
+                subscriptionDelegation: subscriptionDelegation.toString(),
+                type: 'proof',
+            },
+        });
+
+        const result = await mppx.subscription(route)(
+            new Request('https://api.example.com/member', {
+                headers: { Authorization: Credential.serialize(proof) },
+            }),
+        );
+
+        expect(result.status).toBe(200);
+        if (result.status === 200) {
+            expect(result.withReceipt(new Response('member content')).headers.get('Payment-Receipt')).toBeTruthy();
+        }
     });
 
     test('rejects an expired challenge before attempting activation', async () => {

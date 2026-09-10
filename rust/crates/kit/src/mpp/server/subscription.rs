@@ -691,26 +691,11 @@ impl SubscriptionServer {
             "subscriptionId": subscription_id,
             "subscriptionExpires": request.subscription_expires,
         });
-        let inserted = self
-            .store
-            .put_if_absent(&binding_key, binding.clone())
-            .await
-            .map_err(|error| {
-                VerificationError::new(format!(
-                    "Failed to store subscription authentication binding: {error}"
-                ))
-            })?;
-        if !inserted
-            && self.store.get(&binding_key).await.map_err(|error| {
-                VerificationError::new(format!(
-                    "Failed to load subscription authentication binding: {error}"
-                ))
-            })? != Some(binding)
-        {
-            return Err(VerificationError::credential_mismatch(
-                "Subscription bearer proof conflicts with the activation binding",
-            ));
-        }
+        // A cancelled or revoked subscription can later reuse the same PDA.
+        // Reaching this point proves the new activation confirmed and its
+        // on-chain delegation matches the challenge, so rotate the bearer
+        // binding and invalidate any proof from the prior lifecycle.
+        rotate_subscription_binding(self.store.as_ref(), &binding_key, binding).await?;
 
         // ── Build the receipt ───────────────────────────────────────────
         let period_start_secs = delegation.current_period_start_ts;
@@ -1122,6 +1107,18 @@ async fn reserve_activation_signature(
         ));
     }
     Ok(())
+}
+
+async fn rotate_subscription_binding(
+    store: &dyn Store,
+    key: &str,
+    binding: serde_json::Value,
+) -> Result<(), VerificationError> {
+    store.put(key, binding).await.map_err(|error| {
+        VerificationError::new(format!(
+            "Failed to store subscription authentication binding: {error}"
+        ))
+    })
 }
 
 /// Pluck the `ActivatePayload` out of a credential's `payload` field,
@@ -1865,6 +1862,23 @@ mod tests {
         .await
         .expect_err("another challenge must not reuse the signature");
         assert!(err.message.to_lowercase().contains("consumed"));
+    }
+
+    #[tokio::test]
+    async fn confirmed_reactivation_replaces_the_prior_bearer_binding() {
+        let store = MemoryStore::new();
+        let key = "solana-subscription:authentication:test-delegation";
+        store
+            .put(key, serde_json::json!({ "challengeId": "old-challenge" }))
+            .await
+            .expect("seed old lifecycle binding");
+
+        let new_binding = serde_json::json!({ "challengeId": "new-challenge" });
+        rotate_subscription_binding(&store, key, new_binding.clone())
+            .await
+            .expect("confirmed reactivation rotates the binding");
+
+        assert_eq!(store.get(key).await.unwrap(), Some(new_binding));
     }
 
     #[test]

@@ -13,7 +13,7 @@
  * x402 `ClientSvmSigner` and the MPP client methods).
  */
 import type { KeyPairSigner } from '@solana/kit';
-import { Mppx, solana } from '@solana/mpp/client';
+import { Mppx, serializeSubscriptionAccessCredential, solana } from '@solana/mpp/client';
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import type { Network } from '@x402/core/types';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
@@ -51,6 +51,17 @@ export type PayKitClient = {
 /** Parse the `intent` from an MPP `www-authenticate` challenge value. */
 function mppIntent(header: string | null): string | undefined {
     return header?.match(/intent="([^"]+)"/)?.[1];
+}
+
+function resourceUrl(input: RequestInfo | URL): string {
+    return input instanceof Request ? input.url : String(input);
+}
+
+function withAuthorization(input: RequestInfo | URL, init: RequestInit | undefined, value: string): RequestInit {
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((headerValue, name) => headers.set(name, headerValue));
+    headers.set('Authorization', value);
+    return { ...init, headers };
 }
 
 /**
@@ -91,19 +102,32 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     // hence the captured `nativeFetch` above). Charge + subscription are
     // 402→pay→retry; the instance's own `fetch` handles that loop.
     let chargeMppx: ReturnType<typeof Mppx.create> | undefined;
-    let subscriptionMppx: ReturnType<typeof Mppx.create> | undefined;
+    const subscriptionCredentials = new Map<string, string>();
     const forward = onProgress ? (event: unknown) => onProgress(event) : undefined;
     const chargeClient = (): ReturnType<typeof Mppx.create> =>
         (chargeMppx ??= Mppx.create({
             methods: [solana.charge({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })],
         }));
-    const subscriptionClient = (): ReturnType<typeof Mppx.create> =>
-        (subscriptionMppx ??= Mppx.create({
-            methods: [solana.subscription({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })],
-        }));
+    const subscriptionClient = (resource: string): ReturnType<typeof Mppx.create> =>
+        Mppx.create({
+            methods: [
+                solana.subscription({
+                    onAuthentication: access => {
+                        subscriptionCredentials.set(resource, serializeSubscriptionAccessCredential(access));
+                    },
+                    onProgress: forward,
+                    rpcUrl: options.rpcUrl,
+                    signer: options.signer,
+                }),
+            ],
+        });
 
     async function payFetch(input: RequestInfo | URL, init?: RequestInit, protocol?: Protocol): Promise<Response> {
-        const probe = await nativeFetch(input, init);
+        const resource = resourceUrl(input);
+        const subscriptionCredential = subscriptionCredentials.get(resource);
+        const probe = subscriptionCredential
+            ? await nativeFetch(input, withAuthorization(input, init, subscriptionCredential))
+            : await nativeFetch(input, init);
         if (probe.status !== 402) return probe;
 
         // `protocol` (optional) forces a rail when the server offers both;
@@ -119,7 +143,7 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
                     'Session payments are streaming; use the dedicated session client (createSessionFetch), not client.fetch.',
                 );
             }
-            const mppx = intent === 'subscription' ? subscriptionClient() : chargeClient();
+            const mppx = intent === 'subscription' ? subscriptionClient(resource) : chargeClient();
             return await mppx.fetch(input as string, init);
         }
 

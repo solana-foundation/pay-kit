@@ -14,7 +14,8 @@ import {
     SUBSCRIPTION_SIZE,
 } from '@solana/subscriptions';
 import { findAssociatedTokenPda } from '@solana-program/token';
-import { Method, Receipt, Store } from 'mppx';
+import { Challenge, type Credential, Method, Receipt, Store } from 'mppx';
+import { Transport } from 'mppx/server';
 
 import { type SubscriptionAuthentication, verifySubscriptionAuthentication } from '../client/Subscription.js';
 import {
@@ -112,6 +113,19 @@ export function subscription(parameters: subscription.Parameters) {
     }
 
     const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const pendingAccessProofs = new WeakMap<Request, { credential: Credential.Credential; secretKey?: string }>();
+    const httpTransport = Transport.http();
+    const subscriptionTransport = Transport.from({
+        ...httpTransport,
+        getCredential(input: Request) {
+            const credential = httpTransport.getCredential(input);
+            if (credential?.payload && (credential.payload as { type?: unknown }).type === 'proof') {
+                pendingAccessProofs.set(input, { credential });
+                return null;
+            }
+            return credential;
+        },
+    });
 
     const method = Method.toServer(Methods.subscription, {
         defaults: {
@@ -129,6 +143,37 @@ export function subscription(parameters: subscription.Parameters) {
             periodUnit,
             recipient,
         },
+
+        // Durable proofs authorize access rather than activate a payment. The
+        // HTTP transport hides them from mppx's activation credential path so
+        // its five-minute challenge expiry does not terminate a paid term.
+        transport: subscriptionTransport,
+
+        preflight({ input, secretKey }) {
+            const pending = pendingAccessProofs.get(input);
+            if (pending) pending.secretKey = secretKey;
+            return undefined;
+        },
+
+        async authorize({ challenge, input }) {
+            const pending = pendingAccessProofs.get(input);
+            if (!pending) return undefined;
+            pendingAccessProofs.delete(input);
+
+            const { credential, secretKey } = pending;
+            if (!secretKey || !Challenge.verify(credential.challenge, { secretKey })) {
+                throw new Error('Subscription proof challenge was not issued by this server');
+            }
+            assertAccessChallengeMatchesRoute(credential.challenge, challenge);
+            const payload = Methods.subscription.schema.credential.payload.parse(credential.payload);
+            const boundCredential = { ...credential, payload } as unknown as CredentialPayload;
+            const boundRequest = credential.challenge.request as ChallengeRequest;
+            return {
+                receipt: await verifySubscriptionAccess(boundCredential, boundRequest, rpcUrl, store),
+            };
+        },
+
+        stableBinding: subscriptionStableBinding,
 
         async request({ credential, request }) {
             // Build the canonical request from the route's server config so the
@@ -256,11 +301,11 @@ export function subscription(parameters: subscription.Parameters) {
                 subscriptionExpires: challenge.subscriptionExpires,
                 subscriptionId,
             } satisfies SubscriptionBinding;
-            const existingBinding = await store.get(bindingKey);
-            if (existingBinding !== null && JSON.stringify(existingBinding) !== JSON.stringify(binding)) {
-                throw new Error('Subscription bearer proof conflicts with the existing activation binding');
-            }
-            if (existingBinding === null) await store.put(bindingKey, binding);
+            // A cancelled or revoked subscription can later reuse the same PDA.
+            // Reaching this point proves the new activation confirmed and its
+            // on-chain delegation matches the challenge, so rotate the bearer
+            // binding and invalidate any proof from the prior lifecycle.
+            await store.put(bindingKey, binding);
 
             const periodLengthSeconds = expectedPeriodHours * 3600;
             const periodStartTs = delegation.currentPeriodStartTs;
@@ -304,6 +349,32 @@ function assertSubscriptionNotExpired(expires: string | undefined): void {
     const expiresAt = Date.parse(expires);
     if (Number.isNaN(expiresAt)) throw new Error('subscriptionExpires must be an RFC3339 timestamp');
     if (expiresAt <= Date.now()) throw new Error(`subscription expired at ${expires}`);
+}
+
+function assertAccessChallengeMatchesRoute(issued: Challenge.Challenge, current: Challenge.Challenge): void {
+    if (
+        issued.method !== current.method ||
+        issued.intent !== current.intent ||
+        issued.realm !== current.realm ||
+        issued.opaque !== current.opaque ||
+        JSON.stringify(subscriptionStableBinding(issued.request as ChallengeRequest)) !==
+            JSON.stringify(subscriptionStableBinding(current.request as ChallengeRequest))
+    ) {
+        throw new Error('Subscription proof challenge does not match this route');
+    }
+}
+
+function subscriptionStableBinding(request: ChallengeRequest) {
+    const { recentBlockhash: _, ...methodDetails } = request.methodDetails;
+    return {
+        amount: request.amount,
+        currency: request.currency,
+        methodDetails,
+        periodCount: request.periodCount,
+        periodUnit: request.periodUnit,
+        recipient: request.recipient,
+        subscriptionExpires: request.subscriptionExpires,
+    };
 }
 
 // ── Payload type resolution ──
@@ -687,8 +758,17 @@ async function validateActivationInstructions(
                 throw new Error('Invalid ATA creation instruction in activation transaction');
             }
             const account = (position: number) => message.staticAccounts[ix.accountIndices[position]];
+            const ataOwner = account(2);
+            if (ataOwner !== subscriber && ataOwner !== challenge.recipient) {
+                throw new Error('ATA creation owner does not match the activation subscriber or recipient');
+            }
+            const [expectedAta] = await findAssociatedTokenPda({
+                mint: address(challenge.methodDetails.mint),
+                owner: address(ataOwner),
+                tokenProgram: address(challenge.methodDetails.tokenProgram),
+            });
             if (
-                account(2) !== subscriber ||
+                account(1) !== expectedAta ||
                 account(3) !== challenge.methodDetails.mint ||
                 account(4) !== SYSTEM_PROGRAM ||
                 account(5) !== challenge.methodDetails.tokenProgram
