@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test'
 
-const baseURL = process.env.PLAYGROUND_BASE_URL ?? 'http://127.0.0.1:5173'
+// Match Vite's default listener name. On Ubuntu, `localhost` may bind only
+// IPv6, so probing 127.0.0.1 can time out even while the server is healthy.
+const baseURL = process.env.PLAYGROUND_BASE_URL ?? 'http://localhost:5173'
 
 export default defineConfig({
   forbidOnly: !!process.env.CI,
