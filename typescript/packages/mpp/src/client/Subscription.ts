@@ -7,9 +7,9 @@ import {
     createSignableMessage,
     createSolanaRpc,
     createTransactionMessage,
-    getBase64Codec,
     getBase58Decoder,
     getBase58Encoder,
+    getBase64Codec,
     getBase64EncodedWireTransaction,
     getPublicKeyFromAddress,
     type Instruction,
@@ -23,8 +23,6 @@ import {
     type TransactionSigner,
     verifySignature,
 } from '@solana/kit';
-import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
-import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction } from '@solana-program/token';
 import {
     findEventAuthorityPda,
     getInitSubscriptionAuthorityInstructionAsync,
@@ -33,6 +31,8 @@ import {
     getSubscriptionAuthorityDecoder,
     getTransferSubscriptionInstruction,
 } from '@solana/subscriptions';
+import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } from '@solana-program/compute-budget';
+import { findAssociatedTokenPda, getCreateAssociatedTokenIdempotentInstruction } from '@solana-program/token';
 import type { Challenge as MppxChallenge } from 'mppx';
 import { Credential, Method } from 'mppx';
 
@@ -531,11 +531,6 @@ function buildMemoInstruction(memo: string): Instruction {
         data,
         programAddress: address(MEMO_PROGRAM),
     };
-}
-
-async function checkAccountExists(rpc: ReturnType<typeof createSolanaRpc>, accountAddress: Address): Promise<boolean> {
-    const account = await rpc.getAccountInfo(accountAddress, { encoding: 'base64' }).send();
-    return account.value !== null;
 }
 
 async function confirmTransaction(

@@ -128,33 +128,6 @@ export function subscription(parameters: subscription.Parameters) {
     });
 
     const method = Method.toServer(Methods.subscription, {
-        defaults: {
-            amount: '0',
-            currency: mint,
-            methodDetails: {
-                decimals,
-                mint,
-                planAddress: planId,
-                puller,
-                subscriptionProgram,
-                tokenProgram,
-            },
-            periodCount: String(periodCount),
-            periodUnit,
-            recipient,
-        },
-
-        // Durable proofs authorize access rather than activate a payment. The
-        // HTTP transport hides them from mppx's activation credential path so
-        // its five-minute challenge expiry does not terminate a paid term.
-        transport: subscriptionTransport,
-
-        preflight({ input, secretKey }) {
-            const pending = pendingAccessProofs.get(input);
-            if (pending) pending.secretKey = secretKey;
-            return undefined;
-        },
-
         async authorize({ challenge, input }) {
             const pending = pendingAccessProofs.get(input);
             if (!pending) return undefined;
@@ -173,7 +146,27 @@ export function subscription(parameters: subscription.Parameters) {
             };
         },
 
-        stableBinding: subscriptionStableBinding,
+        defaults: {
+            amount: '0',
+            currency: mint,
+            methodDetails: {
+                decimals,
+                mint,
+                planAddress: planId,
+                puller,
+                subscriptionProgram,
+                tokenProgram,
+            },
+            periodCount: String(periodCount),
+            periodUnit,
+            recipient,
+        },
+
+        preflight({ input, secretKey }) {
+            const pending = pendingAccessProofs.get(input);
+            if (pending) pending.secretKey = secretKey;
+            return undefined;
+        },
 
         async request({ credential, request }) {
             // Build the canonical request from the route's server config so the
@@ -222,6 +215,13 @@ export function subscription(parameters: subscription.Parameters) {
                 ...(subscriptionExpires ? { subscriptionExpires } : {}),
             };
         },
+
+        stableBinding: subscriptionStableBinding,
+
+        // Durable proofs authorize access rather than activate a payment. The
+        // HTTP transport hides them from mppx's activation credential path so
+        // its five-minute challenge expiry does not terminate a paid term.
+        transport: subscriptionTransport,
 
         async verify({ credential }) {
             const cred = credential as unknown as CredentialPayload;
@@ -365,7 +365,8 @@ function assertAccessChallengeMatchesRoute(issued: Challenge.Challenge, current:
 }
 
 function subscriptionStableBinding(request: ChallengeRequest) {
-    const { recentBlockhash: _, ...methodDetails } = request.methodDetails;
+    const methodDetails = { ...request.methodDetails };
+    delete methodDetails.recentBlockhash;
     return {
         amount: request.amount,
         currency: request.currency,
