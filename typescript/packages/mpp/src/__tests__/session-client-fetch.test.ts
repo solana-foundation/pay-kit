@@ -48,6 +48,7 @@ interface GatewayMock {
     /** Successfully committed vouchers. */
     readonly commits: CommitAttempt[];
     readonly deliveries: DeliveryLog[];
+    readonly requestedUrls: string[];
     failNextCommits: number;
     readonly fetch: typeof globalThis.fetch;
 }
@@ -75,17 +76,20 @@ function sessionChallenge(): SessionChallenge {
     };
 }
 
-function createGatewayMock(): GatewayMock {
+function createGatewayMock(commitUrl = 'https://api.test/session/commit'): GatewayMock {
     const commitAttempts: CommitAttempt[] = [];
     const commits: CommitAttempt[] = [];
     const deliveries: DeliveryLog[] = [];
+    const requestedUrls: string[] = [];
     const gateway: GatewayMock = {
         commitAttempts,
         commits,
         deliveries,
+        requestedUrls,
         failNextCommits: 0,
         fetch: async (input, init) => {
             const url = new URL(fetchUrl(input));
+            requestedUrls.push(url.href);
             const headers = new Headers(init?.headers);
 
             if (url.pathname === '/v1/work') {
@@ -108,7 +112,7 @@ function createGatewayMock(): GatewayMock {
                 deliveries.push(delivery);
                 return Response.json({
                     amount: delivery.amount,
-                    commitUrl: 'https://api.test/session/commit',
+                    commitUrl,
                     currency: 'USDC',
                     deliveryId: delivery.deliveryId,
                     expiresAt: DIRECTIVE_EXPIRES_AT,
@@ -117,7 +121,7 @@ function createGatewayMock(): GatewayMock {
                 });
             }
 
-            if (url.pathname === '/session/commit') {
+            if (url.pathname.endsWith('/session/commit')) {
                 const body = parseJsonBody(init);
                 const voucher = body.voucher as SignedVoucher;
                 const attempt: CommitAttempt = {
@@ -170,6 +174,16 @@ function makeOpener(sessions: ActiveSession[]): SessionOpener {
 }
 
 describe('SessionFetchClient watermark isolation', () => {
+    test('resolves a path-only commit URL against the public resource origin', async () => {
+        const gateway = createGatewayMock('/edge/__402/session/commit');
+        const client = createSessionFetch({ fetch: gateway.fetch, opener: makeOpener([]) });
+
+        await client.fetch('https://public.test/v1/work');
+        await client.commitCumulative(10);
+
+        expect(gateway.requestedUrls).toContain('https://public.test/edge/__402/session/commit');
+    });
+
     test('re-opening on a new channel flushes the old channel and resets the watermark', async () => {
         const gateway = createGatewayMock();
         const sessions: ActiveSession[] = [];

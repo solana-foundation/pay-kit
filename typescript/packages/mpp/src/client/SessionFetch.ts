@@ -435,7 +435,11 @@ export class SessionFetchClient {
         parameters: CommitSessionDeliveryParameters,
         fallbackCommitUrl: string,
     ): Promise<CommitReceipt> {
-        const response = await this.#fetch(parameters.directive.commitUrl ?? fallbackCommitUrl, {
+        // Servers may intentionally advertise a path-only URL so reverse
+        // proxy internals never leak into the directive. Resolve it against
+        // the browser-facing resource URL captured when the session opened.
+        const commitUrl = new URL(parameters.directive.commitUrl ?? fallbackCommitUrl, fallbackCommitUrl);
+        const response = await this.#fetch(commitUrl, {
             body: JSON.stringify({
                 amount: parameters.amount,
                 deliveryId: parameters.directive.deliveryId,

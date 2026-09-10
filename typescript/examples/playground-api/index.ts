@@ -86,7 +86,10 @@ const pay = await createPayKit({
     // drive (they expect GET /api/v1/fortune → 402 → `{ "fortune": ... }`).
     fortune: { amount: usd('0.01'), description: 'A fortune cookie' },
     quote: { amount: usd('0.01'), description: 'Stock quote' },
-    stream: session(usd('1.00'), { closeDelayMs: 2000, description: 'Metered token stream', unitPrice: usd('0.0001') }),
+    // Leave enough room for a cold sandbox channel-open before the first
+    // streamed voucher arrives. Two seconds was racy in browser E2E: the idle
+    // close could start while the client was reserving its first delivery.
+    stream: session(usd('1.00'), { closeDelayMs: 5000, description: 'Metered token stream', unitPrice: usd('0.0001') }),
     summarize: usage(usd('0.1'), { description: 'Summarize text, billed per token' }),
   },
   rpcUrl: RPC_URL,

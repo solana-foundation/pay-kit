@@ -488,13 +488,15 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
             if (amount === 0n) return jsonError(400, 'amount must be positive');
 
             try {
+                const deliveriesUrl = new URL(request.url);
+                // Advertise a path-only sibling URL: the client resolves it
+                // against its public resource origin. This avoids leaking an
+                // internal reverse-proxy origin and preserves mount prefixes
+                // such as `/gateway/__402/session/*`.
+                const commitPath = deliveriesUrl.pathname.replace(/\/deliveries\/?$/, '/commit');
                 const directive = await reserveDelivery(store, {
                     amount,
-                    // The client supplies the opened resource URL as its
-                    // fallback, but voucher bodies belong on the canonical
-                    // commit side-channel. Keep the request origin so reverse
-                    // proxies (including the playground's Vite proxy) work.
-                    commitUrl: new URL('/__402/session/commit', request.url).toString(),
+                    commitUrl: commitPath,
                     currency,
                     deliveryId: body.deliveryId,
                     expiresAt: body.expiresAt ?? DEFAULT_DIRECTIVE_EXPIRES_AT,
