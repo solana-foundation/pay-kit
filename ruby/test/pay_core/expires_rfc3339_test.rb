@@ -5,6 +5,7 @@
 # (canonical JSON) and RFC 3339 (expires) live in dedicated files.
 # Battle-tested vector imports are tracked separately (see follow-up
 # issue referenced on the same PR thread).
+require "json"
 require_relative "../test_helper"
 
 class ExpiresRfc3339Test < Minitest::Test
@@ -80,5 +81,58 @@ class ExpiresRfc3339Test < Minitest::Test
     # seconds = 61 stays rejected.
     c7 = PayKit::Protocols::Mpp::Protocol::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:00:61Z")
     assert c7.expired?
+  end
+end
+
+# ── Cross-SDK RFC 3339 conformance corpus (issue #111) ──
+#
+# Vectors live in `harness/vectors/mpp-protocol/expires.json` under the
+# `expires.parse` operation. Every SDK asserts the same ACCEPT / REJECT verdict
+# against the same vectors, so a divergence between two SDKs shows up as a
+# failing test in exactly one of them rather than as silence.
+#
+# Every scenario in the file runs. There is no slice to select and no scenario
+# to skip.
+#
+# The verdict comes straight out of `PayCore::Rfc3339Parser.parse`, which
+# returns a `Time` on success and `nil` on any parse failure. That is the
+# parser `Challenge#expired?` delegates to, so it is the grammar an `expires`
+# field is actually checked against.
+class ExpiresRfc3339CorpusTest < Minitest::Test
+  CORPUS_PATH = File.expand_path(
+    "../../../harness/vectors/mpp-protocol/expires.json", __dir__
+  )
+
+  def self.vectors
+    JSON.parse(File.read(CORPUS_PATH)).fetch("scenarios")
+  end
+
+  VECTORS = vectors.freeze
+
+  # Guard the loader so a regression in it cannot go silent: every scenario in
+  # the file is exercised, and a truncated or empty read fails here rather than
+  # passing quietly with nothing to run.
+  def test_every_corpus_scenario_is_exercised
+    all = JSON.parse(File.read(CORPUS_PATH)).fetch("scenarios")
+    assert_equal all.length, VECTORS.length
+    assert_operator VECTORS.length, :>, 0
+  end
+
+  VECTORS.each do |scenario|
+    # `"tests": {"parse": true}` is ACCEPT; `{"parse": {"success": false, …}}`
+    # is REJECT. Identical to the encoding the other vector files in the same
+    # directory use.
+    expect_accept = scenario.dig("tests", "parse") == true
+
+    define_method(:"test_corpus_#{scenario.fetch("name")}") do
+      parsed = ::PayCore::Rfc3339Parser.parse(scenario.fetch("input"))
+      accepted = !parsed.nil?
+      assert_equal expect_accept, accepted,
+        format(
+          "%s (%s): input %p — corpus expects %s, Rfc3339Parser.parse reports %s",
+          scenario.fetch("name"), scenario.fetch("description"), scenario.fetch("input"),
+          expect_accept ? "ACCEPT" : "REJECT", accepted ? "ACCEPT" : "REJECT"
+        )
+    end
   end
 end

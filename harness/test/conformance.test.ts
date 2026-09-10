@@ -25,6 +25,7 @@ import {
 } from "../src/conformance/contract-schema";
 import { discoverRunners } from "../src/conformance/runners";
 import { parseLanguageAllowlist } from "../src/conformance/select";
+import { collectExpiresCases, loadExpires } from "../src/protocol/vectors";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -359,4 +360,83 @@ describe("cross-SDK conformance vectors", () => {
       }
     });
   }
+});
+
+// ── RFC 3339 `expires` corpus collector (issue #111) ──
+//
+// `collectExpiresCases()` (harness/src/protocol/vectors.ts) is the TypeScript
+// side of the cross-SDK `expires` contract. No adapter implements
+// `expires.parse` yet, so its cases sit deliberately outside
+// `collectProtocolCases()` — folding them into the protocol driver would add
+// one red case per vector to a green suite. That also means nothing dispatches
+// the collector, so its ACCEPT/REJECT mapping would regress silently. It is
+// asserted directly here instead.
+//
+// This block spawns no runner and contributes no vector to the driver above.
+// It reads the vendored corpus and checks the collector's output against it.
+// Every count is derived at runtime from the scenario list, so a corpus edit
+// moves the expectation with it rather than turning this red for the wrong
+// reason.
+describe("mpp-protocol RFC 3339 expires corpus collector", () => {
+  const corpus = loadExpires();
+  const scenarios = corpus.scenarios;
+  const cases = collectExpiresCases();
+
+  it("emits a case for every scenario in the file", () => {
+    // A collector that silently degrades to emitting nothing, or that drops a
+    // scenario, fails here rather than reporting a smaller green suite.
+    expect(scenarios.length).toBeGreaterThan(0);
+    expect(cases).toHaveLength(scenarios.length);
+    expect(cases.map((testCase) => testCase.scenario).sort()).toEqual(
+      scenarios.map((scenario) => scenario.name).sort(),
+    );
+  });
+
+  it("tags every admitted case with the expires.parse op", () => {
+    for (const testCase of cases) {
+      expect(testCase.op, testCase.scenario).toBe("expires.parse");
+    }
+  });
+
+  it("maps every ACCEPT and REJECT verdict faithfully", () => {
+    const byScenario = new Map(cases.map((testCase) => [testCase.scenario, testCase]));
+
+    let accepts = 0;
+    let rejects = 0;
+    for (const scenario of scenarios) {
+      const testCase = byScenario.get(scenario.name);
+      expect(testCase, `no case emitted for ${scenario.name}`).toBeDefined();
+      if (!testCase) continue;
+
+      const parse = scenario.tests.parse;
+      if (parse === true) {
+        accepts += 1;
+        expect(testCase.expectSuccess, scenario.name).toBe(true);
+        if (testCase.expectSuccess) {
+          expect(testCase.golden, scenario.name).toEqual({ valid: true });
+        }
+        expect(testCase.input, scenario.name).toEqual({ expires: scenario.input });
+        continue;
+      }
+
+      expect(
+        typeof parse === "object" && parse.success === false,
+        `${scenario.name}: unexpected tests.parse encoding`,
+      ).toBe(true);
+      if (typeof parse !== "object") continue;
+
+      rejects += 1;
+      expect(testCase.expectSuccess, scenario.name).toBe(false);
+      if (!testCase.expectSuccess) {
+        expect(testCase.errorType, scenario.name).toBe(parse.error_type);
+      }
+      expect(testCase.input, scenario.name).toEqual({ expires: scenario.input });
+    }
+
+    // Both verdicts must actually be represented: a mapping that collapsed one
+    // direction into the other would otherwise pass every assertion above.
+    expect(accepts).toBeGreaterThan(0);
+    expect(rejects).toBeGreaterThan(0);
+    expect(accepts + rejects).toBe(scenarios.length);
+  });
 });
