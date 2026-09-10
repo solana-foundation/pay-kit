@@ -448,6 +448,8 @@ pub async fn build_subscription_activation_transaction_with_options(
 /// their rent back when they tear the SA down later. Subscribers must
 /// hold ~0.002 SOL the first time they subscribe with a given mint.
 #[allow(clippy::too_many_arguments)]
+// This is the live-RPC boundary. Pure instruction construction and account
+// decoding are covered separately; CI has no deterministic validator here.
 async fn ensure_subscription_authority_init_id(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,

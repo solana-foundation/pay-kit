@@ -947,6 +947,7 @@ impl SubscriptionServer {
     /// supermajority observed it (~1-2 slots, ~400-800ms); finalisation
     /// happens behind the scenes regardless and the subscription will
     /// still be honoured on the next request.
+    // Live-RPC boundary; transaction shape is covered before this call.
     async fn broadcast_and_confirm(
         &self,
         tx: &Transaction,
@@ -970,6 +971,7 @@ impl SubscriptionServer {
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
     }
 
+    // Live-RPC boundary; ownership and the decoder are covered independently.
     async fn fetch_subscription_delegation(
         &self,
         subscription_pda: &Pubkey,
@@ -998,6 +1000,7 @@ impl SubscriptionServer {
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
     }
 
+    // Live-RPC boundary; ownership and the decoder are covered independently.
     async fn fetch_subscription_authority_init_id(
         &self,
         authority_pda: &Pubkey,
@@ -1034,6 +1037,7 @@ impl SubscriptionServer {
     /// reasonable limit — for a freshly-activated subscription this is
     /// just one entry, and a long-lived subscription with many renewals
     /// would still yield the activation tx as the oldest record.
+    // Live-RPC boundary; only pagination/transport behavior lives here.
     async fn fetch_subscription_creation_signature(
         &self,
         subscription_pda: &Pubkey,
@@ -2228,5 +2232,282 @@ mod tests {
             msg.contains("push-mode") || msg.contains("not yet supported"),
             "{err:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_rejects_each_pinned_or_payload_mismatch() {
+        fn rebound(
+            request: SubscriptionRequest,
+            realm: &str,
+            method: &str,
+            intent: &str,
+            expires: Option<&str>,
+        ) -> PaymentChallenge {
+            PaymentChallenge::with_challenge_binding_secret_full(
+                "test-secret",
+                realm,
+                method,
+                intent,
+                Base64UrlJson::from_typed(&request).unwrap(),
+                expires,
+                None,
+                None,
+                None,
+            )
+        }
+
+        let server = SubscriptionServer::new(make_config()).unwrap();
+        let issued = server.subscription_challenge("10000000").unwrap();
+        let request: SubscriptionRequest = issued.request.decode().unwrap();
+        let payload = serde_json::json!({"type": "transaction"});
+        let cases = [
+            rebound(request.clone(), "test-realm", "other", "subscription", None),
+            rebound(request.clone(), "test-realm", "solana", "charge", None),
+            rebound(
+                request.clone(),
+                "other-realm",
+                "solana",
+                "subscription",
+                None,
+            ),
+            {
+                let mut value = request.clone();
+                value.currency = Pubkey::new_unique().to_string();
+                rebound(value, "test-realm", "solana", "subscription", None)
+            },
+            {
+                let mut value = request.clone();
+                value.recipient = Pubkey::new_unique().to_string();
+                rebound(value, "test-realm", "solana", "subscription", None)
+            },
+            {
+                let mut value = request.clone();
+                value.method_details = None;
+                rebound(value, "test-realm", "solana", "subscription", None)
+            },
+            rebound(
+                request.clone(),
+                "test-realm",
+                "solana",
+                "subscription",
+                Some("1970-01-01T00:00:00Z"),
+            ),
+        ];
+        for challenge in cases {
+            let credential = PaymentCredential::new(challenge.to_echo(), payload.clone());
+            assert!(server.verify_credential(&credential).await.is_err());
+        }
+
+        let malformed_proof =
+            PaymentCredential::new(issued.to_echo(), serde_json::json!({"type": "proof"}));
+        assert!(server.verify_credential(&malformed_proof).await.is_err());
+        let missing_tx = PaymentCredential::new(issued.to_echo(), payload);
+        assert!(server.verify_credential(&missing_tx).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn activation_builder_output_passes_complete_scope_validation() {
+        use crate::mpp::client::{
+            build_subscription_activation_transaction_with_options,
+            BuildSubscriptionActivationOptions,
+        };
+        use crate::mpp::protocol::solana::CredentialPayload;
+        use solana_keychain::MemorySigner;
+        use solana_keychain::SolanaSigner;
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[23u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        let signer = MemorySigner::from_bytes(&keypair).unwrap();
+        let config = make_config();
+        let details = SubscriptionMethodDetails {
+            plan_address: config.plan_id.clone(),
+            mint: config.mint.clone(),
+            token_program: config.token_program.clone(),
+            puller: config.puller.clone(),
+            merchant: Some(config.puller.clone()),
+            recipient: Some(config.recipient.clone()),
+            amount: Some("10000000".into()),
+            subscription_program: Some(SUBSCRIPTIONS_PROGRAM_ID.into()),
+            recent_blockhash: Some("11111111111111111111111111111111".into()),
+            plan_id_numeric: Some(1),
+            plan_bump: Some(255),
+            expected_period_hours: Some(720),
+            expected_created_at: Some(1_700_000_000),
+            ..Default::default()
+        };
+        let payload = build_subscription_activation_transaction_with_options(
+            &signer,
+            &solana_rpc_client::rpc_client::RpcClient::new_mock("succeeds"),
+            &details,
+            BuildSubscriptionActivationOptions {
+                subscription_authority_init_id: Some(77),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected transaction")
+        };
+        let tx = decode_base64_transaction(&transaction).unwrap();
+        let request = SubscriptionRequest {
+            amount: "10000000".into(),
+            recipient: config.recipient.clone(),
+            ..Default::default()
+        };
+        validate_activation_scope(
+            &tx,
+            &request,
+            SUBSCRIPTIONS_PROGRAM_ID,
+            signer.pubkey(),
+            &config,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn confirmed_activation_binds_and_reuses_subscription_proof() {
+        use crate::mpp::client::{
+            build_subscription_access_credential,
+            build_subscription_activation_transaction_with_options,
+            sign_subscription_authentication, BuildSubscriptionActivationOptions,
+        };
+        use crate::mpp::protocol::solana::CredentialPayload;
+        use axum::{routing::post, Json, Router};
+        use base64::Engine;
+        use solana_keychain::{MemorySigner, SolanaSigner};
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[29u8; 32]);
+        let mut keypair = [0u8; 64];
+        keypair[..32].copy_from_slice(signing_key.as_bytes());
+        keypair[32..].copy_from_slice(signing_key.verifying_key().as_bytes());
+        let signer = MemorySigner::from_bytes(&keypair).unwrap();
+        let subscriber = signer.pubkey();
+        let program_id = Pubkey::from_str_const(SUBSCRIPTIONS_PROGRAM_ID);
+        let plan = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let puller = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let delegation = find_subscription_pda(&plan, &subscriber, &program_id).0;
+        let authority = find_subscription_authority_pda(&subscriber, &mint, &program_id).0;
+        let period_start = now_unix_secs() - 60;
+
+        let mut delegation_data = vec![4, 1, 255];
+        delegation_data.extend_from_slice(subscriber.as_ref());
+        delegation_data.extend_from_slice(plan.as_ref());
+        delegation_data.extend_from_slice(Pubkey::new_unique().as_ref());
+        delegation_data.extend_from_slice(&77i64.to_le_bytes());
+        delegation_data.extend_from_slice(&10_000_000u64.to_le_bytes());
+        delegation_data.extend_from_slice(&720u64.to_le_bytes());
+        delegation_data.extend_from_slice(&1_700_000_000i64.to_le_bytes());
+        delegation_data.extend_from_slice(&10_000_000u64.to_le_bytes());
+        delegation_data.extend_from_slice(&period_start.to_le_bytes());
+        delegation_data.extend_from_slice(&0i64.to_le_bytes());
+        let mut authority_data = vec![0u8; SUBSCRIPTION_AUTHORITY_LEN];
+        authority_data[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..]
+            .copy_from_slice(&77i64.to_le_bytes());
+
+        let owner = program_id.to_string();
+        let delegation_b64 = base64::engine::general_purpose::STANDARD.encode(delegation_data);
+        let authority_b64 = base64::engine::general_purpose::STANDARD.encode(authority_data);
+        let authority_string = authority.to_string();
+        let app = Router::new().route(
+            "/",
+            post(move |Json(request): Json<serde_json::Value>| {
+                let owner = owner.clone();
+                let delegation_b64 = delegation_b64.clone();
+                let authority_b64 = authority_b64.clone();
+                let authority_string = authority_string.clone();
+                async move {
+                    let result = match request["method"].as_str().unwrap() {
+                        "getLatestBlockhash" => serde_json::json!({
+                            "context": {"slot": 1},
+                            "value": {"blockhash": "11111111111111111111111111111111", "lastValidBlockHeight": 100}
+                        }),
+                        "getAccountInfo" => {
+                            let address = request["params"][0].as_str().unwrap();
+                            let data = if address == authority_string { &authority_b64 } else { &delegation_b64 };
+                            serde_json::json!({"context": {"slot": 1}, "value": {
+                                "data": [data, "base64"], "executable": false, "lamports": 1,
+                                "owner": owner, "rentEpoch": 0, "space": 155
+                            }})
+                        }
+                        "getSignaturesForAddress" => serde_json::json!([{
+                            "signature": Signature::default().to_string(), "slot": 1,
+                            "err": null, "memo": null, "blockTime": period_start
+                        }]),
+                        method => panic!("unexpected RPC method {method}"),
+                    };
+                    Json(serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+        let rpc_task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let config = SubscriptionConfig {
+            plan_id: plan.to_string(),
+            mint: mint.to_string(),
+            token_program: crate::mpp::protocol::solana::programs::TOKEN_PROGRAM.into(),
+            puller: puller.to_string(),
+            recipient: recipient.to_string(),
+            rpc_url: Some(rpc_url),
+            challenge_binding_secret: "test-secret".into(),
+            realm: "test-realm".into(),
+            plan_id_numeric: Some(1),
+            plan_bump: Some(255),
+            plan_created_at: Some(1_700_000_000),
+            ..Default::default()
+        };
+        let server = SubscriptionServer::new(config).unwrap();
+        let challenge = server.subscription_challenge("10000000").unwrap();
+        let request: SubscriptionRequest = challenge.request.decode().unwrap();
+        let details =
+            SubscriptionMethodDetails::from_json(request.method_details.as_ref().unwrap()).unwrap();
+        let transaction = build_subscription_activation_transaction_with_options(
+            &signer,
+            &solana_rpc_client::rpc_client::RpcClient::new_mock("succeeds"),
+            &details,
+            BuildSubscriptionActivationOptions {
+                subscription_authority_init_id: Some(77),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let CredentialPayload::Transaction { transaction } = transaction else {
+            panic!("transaction")
+        };
+        let authentication =
+            sign_subscription_authentication(&signer, &challenge.id, &delegation.to_string())
+                .await
+                .unwrap();
+        let activation = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(transaction),
+                signature: None,
+                authentication: Some(authentication.clone()),
+            },
+        );
+        assert!(matches!(
+            server.verify_credential(&activation).await.unwrap(),
+            ReceiptKind::Subscription { .. }
+        ));
+
+        let access = build_subscription_access_credential(
+            &challenge,
+            delegation.to_string(),
+            authentication,
+        );
+        assert!(matches!(
+            server.verify_credential(&access).await.unwrap(),
+            ReceiptKind::Subscription { .. }
+        ));
+        rpc_task.abort();
     }
 }
