@@ -8,7 +8,14 @@
  * it just makes the playground work zero-config.
  */
 import type { Express, Request, Response } from 'express'
-import { generateKeyPairSigner } from '@solana/kit'
+import {
+  address,
+  getAddressEncoder,
+  getI64Encoder,
+  getProgramDerivedAddress,
+  getU64Encoder,
+  type KeyPairSigner,
+} from '@solana/kit'
 import { TOKEN_PROGRAM_ADDRESS } from '@solana-program/token'
 import { resolveStablecoinMint, SUBSCRIPTIONS_PROGRAM } from '@solana/mpp'
 
@@ -70,22 +77,47 @@ async function rpcCall(rpcUrl: string, method: string, params: unknown[]): Promi
 }
 
 /**
- * Stuff a synthetic subscription Plan account on the local sandbox and return
- * its address (the `planId`), or `null` if the sandbox is unreachable.
- *
- * The plan lives at a fresh random address owned by the subscriptions program
- * so the server can issue a subscription challenge that pins it — exercising the
- * full challenge → sign → submit handshake. (On-chain activation needs the real
- * program deployed; this stub just makes the playground self-contained.) The
- * address is distinct from the operator/recipient so reassigning its owner can't
- * break fee-payer eligibility for the other gates.
+ * Install a valid Plan account at its canonical PDA on the local sandbox.
+ * Surfnet's account cheatcode keeps startup zero-config while the encoded state
+ * is the same state the deployed program's create_plan instruction produces.
  */
-export async function bootstrapPlan(rpcUrl: string): Promise<string | null> {
+export async function bootstrapPlan(
+  rpcUrl: string,
+  merchant: KeyPairSigner,
+  recipient: string,
+): Promise<string | null> {
   try {
-    const planId = (await generateKeyPairSigner()).address
+    const planIdNumeric = BigInt(Date.now())
+    const addressEncoder = getAddressEncoder()
+    const [planId, bump] = await getProgramDerivedAddress({
+      programAddress: address(SUBSCRIPTIONS_PROGRAM),
+      seeds: [
+        new TextEncoder().encode('plan'),
+        addressEncoder.encode(merchant.address),
+        getU64Encoder().encode(planIdNumeric),
+      ],
+    })
+    const bytes = new Uint8Array(491)
+    bytes[0] = 1 // AccountDiscriminator::Plan
+    bytes.set(addressEncoder.encode(merchant.address), 1)
+    bytes[33] = bump
+    bytes[34] = 1 // PlanStatus::Active
+    bytes.set(getU64Encoder().encode(planIdNumeric), 35)
+    bytes.set(addressEncoder.encode(address(USDC_MINT)), 43)
+    bytes.set(getU64Encoder().encode(100_000n), 75)
+    bytes.set(getU64Encoder().encode(24n), 83)
+    bytes.set(getI64Encoder().encode(BigInt(Math.floor(Date.now() / 1000))), 91)
+    bytes.set(addressEncoder.encode(address(recipient)), 107)
+    bytes.set(addressEncoder.encode(merchant.address), 235)
     await rpcCall(rpcUrl, 'surfnet_setAccount', [
       planId,
-      { lamports: 1_000_000_000, data: '', executable: false, owner: SUBSCRIPTIONS_PROGRAM, rentEpoch: 0 },
+      {
+        lamports: 1_000_000_000,
+        data: Buffer.from(bytes).toString('hex'),
+        executable: false,
+        owner: SUBSCRIPTIONS_PROGRAM,
+        rentEpoch: 0,
+      },
     ])
     return planId
   } catch (err) {
@@ -107,7 +139,7 @@ export function registerFaucet(app: Express, rpcUrl: string): void {
       return
     }
     try {
-      await fundUsdc(rpcUrl, address)
+      await fundSandbox(rpcUrl, address)
       res.json({ ok: true, usdc: '100 USDC' })
     } catch (err) {
       res.status(500).json({ error: 'Airdrop failed', details: err instanceof Error ? err.message : String(err) })

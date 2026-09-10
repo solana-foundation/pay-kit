@@ -41,9 +41,17 @@ const RECIPIENT = process.env.RECIPIENT ?? operator.address
 // A second recipient for the marketplace-split demo (the platform's cut).
 const PLATFORM = (await generateKeyPairSigner()).address
 
+// Fund the generated operator before creating sandbox state. Client wallets are
+// funded through the faucet after onboarding.
+if (NETWORK === 'localnet') {
+  await fundSandbox(RPC_URL, operator.address, RECIPIENT)
+  await fundUsdc(RPC_URL, PLATFORM)
+}
+
 // Subscription plan PDA: bootstrapped on the sandbox (or supplied via env). The
 // subscription route is only mounted when one is available.
-const PLAN_ID = NETWORK === 'localnet' ? await bootstrapPlan(RPC_URL) : process.env.PLAN_ID ?? null
+const PLAN_ID =
+  NETWORK === 'localnet' ? await bootstrapPlan(RPC_URL, operator, RECIPIENT) : (process.env.PLAN_ID ?? null)
 
 // ── PayKit: one config object declares the server + the priced routes ──
 const pay = await createPayKit({
@@ -119,8 +127,6 @@ app.use(cors({ exposedHeaders: ['www-authenticate', 'payment-required', 'x-payme
 
 // Local sandbox funding + faucet (no-op on real networks).
 if (NETWORK === 'localnet') {
-  await fundSandbox(RPC_URL, operator.address, RECIPIENT)
-  await fundUsdc(RPC_URL, PLATFORM) // the split recipient needs a USDC account to receive its cut
   registerFaucet(app, RPC_URL)
 }
 

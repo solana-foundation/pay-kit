@@ -4,8 +4,9 @@
   "type": "module",
   "packageManager": "pnpm@11.13.0",
   "scripts": {
-    "predev": "node scripts/gen-snippets.mjs",
-    "prebuild": "node scripts/gen-snippets.mjs",
+    "prepare:api": "pnpm -C ../typescript/examples/playground-api install --frozen-lockfile",
+    "predev": "pnpm prepare:api && node scripts/gen-snippets.mjs",
+    "prebuild": "pnpm prepare:api && node scripts/gen-snippets.mjs",
     "dev": "if [ -n \"$PAYKIT_PLAYGROUND_API_URL\" ]; then echo \"Using external playground API at $PAYKIT_PLAYGROUND_API_URL\"; pnpm -C app dev; else PLAYGROUND_PORT=${PLAYGROUND_PORT:-3000} concurrently -n api,app -c cyan,magenta \"PORT=$PLAYGROUND_PORT pnpm -C ../typescript/examples/playground-api dev\" \"PLAYGROUND_PORT=$PLAYGROUND_PORT pnpm -C app dev\"; fi",
     "dev:api": "pnpm -C ../typescript/examples/playground-api dev",
     "dev:app": "pnpm -C app dev",

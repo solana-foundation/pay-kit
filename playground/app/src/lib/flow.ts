@@ -66,10 +66,13 @@ function getSessionFetch(): SessionFetchClient {
           case 'challenge':
             progressCallback?.({
               type: 'challenge',
-              amount: event.challenge.request.cap,
+              amount:
+                event.challenge.request.suggestedDeposit ??
+                event.challenge.request.minimumDeposit ??
+                event.challenge.request.amount,
               currency: event.challenge.request.currency,
               recipient: event.challenge.request.recipient,
-              decimals: event.challenge.request.decimals,
+              decimals: event.challenge.request.methodDetails.decimals,
             })
             break
           case 'open':

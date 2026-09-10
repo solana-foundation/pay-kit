@@ -15,7 +15,7 @@
     "@solana/pay-kit": "file:../../packages/pay-kit",
     "cors": "^2.8.5",
     "express": "^4.21.0",
-    "mppx": "^0.5.8"
+    "mppx": "^0.8.15"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
