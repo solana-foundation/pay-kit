@@ -262,6 +262,41 @@ describe('server open verification binds to the challenged recentSlot', () => {
         );
     });
 
+    test('does not reject when getSlot briefly trails the challenged context slot', async () => {
+        const { method, signer: merchant } = await methodFor({
+            rpc: blockhashRpc({ currentSlot: CHALLENGED_SLOT - 1n }),
+        });
+        const payer = await generateKeyPairSigner();
+        const sessionSigner = await generateKeyPairSigner();
+        const request = challengeRequest(merchant.address) as unknown as SessionRequest;
+        const open = await buildOpenPaymentChannelTransaction({
+            authorizedSigner: sessionSigner.address,
+            request,
+            salt: 7n,
+            signer: payer,
+        });
+        const credential = openCredential(request as unknown as Record<string, unknown>, {
+            authorizedSigner: sessionSigner.address,
+            channelId: open.channelId,
+            depositAmount: open.deposit,
+            gracePeriodSeconds: open.gracePeriod,
+            mint: open.mint,
+            openSlot: open.openSlot,
+            payee: open.payee,
+            payer: open.payer,
+            salt: open.salt,
+            transaction: open.transaction,
+        });
+
+        let failure: unknown;
+        try {
+            await method.verify({ credential, request: credential.challenge.request } as never);
+        } catch (error) {
+            failure = error;
+        }
+        expect(String(failure)).not.toMatch(/ahead of the current cluster slot/);
+    });
+
     test('rejects an off-curve authorizedSigner', async () => {
         const { method, signer } = await methodFor({ rpc: blockhashRpc() });
         const [offCurveSigner] = await getProgramDerivedAddress({

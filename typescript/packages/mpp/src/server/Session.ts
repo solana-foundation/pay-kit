@@ -490,7 +490,11 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
             try {
                 const directive = await reserveDelivery(store, {
                     amount,
-                    commitUrl: body.commitUrl,
+                    // The client supplies the opened resource URL as its
+                    // fallback, but voucher bodies belong on the canonical
+                    // commit side-channel. Keep the request origin so reverse
+                    // proxies (including the playground's Vite proxy) work.
+                    commitUrl: new URL('/__402/session/commit', request.url).toString(),
                     currency,
                     deliveryId: body.deliveryId,
                     expiresAt: body.expiresAt ?? DEFAULT_DIRECTIVE_EXPIRES_AT,
@@ -591,13 +595,15 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     const verified = await verifyOpenTx({ expected, openPayload: payload });
     const existingChannel = await args.store.getChannel(verified.channelId);
     if (!existingChannel) {
-        const currentSlot = await currentClusterSlot(args.rpc);
-        if (openSlot > currentSlot) {
-            throw new Error(`open openSlot ${openSlot.toString()} is ahead of the current cluster slot ${currentSlot}`);
-        }
-        if (currentSlot - openSlot > OPEN_SLOT_WINDOW) {
+        const observedSlot = await currentClusterSlot(args.rpc);
+        // A load-balanced RPC can serve getSlot from a replica one slot behind
+        // the getLatestBlockhash context used for this server-signed challenge.
+        // The challenge already bounds openSlot <= recentSlot, so use the newer
+        // observation without weakening the future-slot or freshness checks.
+        const verificationSlot = observedSlot < recentSlot ? recentSlot : observedSlot;
+        if (verificationSlot - openSlot > OPEN_SLOT_WINDOW) {
             throw new Error(
-                `open openSlot ${openSlot.toString()} is outside the ${OPEN_SLOT_WINDOW.toString()}-slot freshness window of the current cluster slot ${currentSlot.toString()}`,
+                `open openSlot ${openSlot.toString()} is outside the ${OPEN_SLOT_WINDOW.toString()}-slot freshness window of the current cluster slot ${verificationSlot.toString()}`,
             );
         }
     }
