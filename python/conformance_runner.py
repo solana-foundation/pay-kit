@@ -266,10 +266,12 @@ def _shape_from_transaction(transaction_b64: str) -> dict[str, Any]:
     from solders.transaction import Transaction, VersionedTransaction  # type: ignore[import-untyped]
 
     raw = base64.b64decode(transaction_b64)
+    # Versioned first: the legacy parser accepts a v0 wire and misreads it
+    # (the 0x80 prefix lands in the header), so it is only the fallback.
     try:
-        message = Transaction.from_bytes(raw).message
-    except Exception:
         message = VersionedTransaction.from_bytes(raw).message
+    except Exception:
+        message = Transaction.from_bytes(raw).message
 
     keys = [str(k) for k in message.account_keys]
     if not keys:
