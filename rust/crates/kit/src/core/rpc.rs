@@ -47,7 +47,7 @@ pub(crate) const SKIP_PREFLIGHT_SEND: RpcSendPolicy = RpcSendPolicy {
 
 /// Node-default preflight at the client's commitment: what
 /// `RpcClient::send_transaction` does.
-pub(crate) fn preflight_config(rpc: &RpcClient) -> RpcSendTransactionConfig {
+pub fn preflight_config(rpc: &RpcClient) -> RpcSendTransactionConfig {
     RpcSendTransactionConfig {
         preflight_commitment: Some(rpc.commitment().commitment),
         ..RpcSendTransactionConfig::default()
@@ -60,7 +60,7 @@ fn encoded(tx: &VersionedTransaction) -> Result<String, ClientError> {
 }
 
 /// Broadcast `tx` with `config`, returning its signature.
-pub(crate) fn send_transaction(
+pub fn send_transaction(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
     config: RpcSendTransactionConfig,
@@ -77,7 +77,7 @@ pub(crate) fn send_transaction(
 
 /// Simulate `tx` at the client's commitment, signatures unchecked: what
 /// `RpcClient::simulate_transaction` does.
-pub(crate) fn simulate_transaction(
+pub fn simulate_transaction(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
 ) -> Result<Response<RpcSimulateTransactionResult>, ClientError> {
@@ -95,7 +95,7 @@ pub(crate) fn simulate_transaction(
 /// Broadcast with node preflight, then poll the signature at the client's
 /// commitment every 500 ms until it lands, fails, or its blockhash expires:
 /// what `RpcClient::send_and_confirm_transaction` does.
-pub(crate) fn send_and_confirm_transaction(
+pub fn send_and_confirm_transaction(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
 ) -> Result<Signature, ClientError> {
