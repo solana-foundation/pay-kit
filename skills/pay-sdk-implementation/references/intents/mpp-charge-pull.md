@@ -54,7 +54,8 @@ Payment id="<echo>", request="<b64u-echo>",
 ```
 
 The `payload.transaction` value is **standard-alphabet base64 (with
-padding)** of the bincode-serialized `Transaction` or `VersionedTransaction`.
+padding)** of the canonical wire encoding of a version-0 or version-1
+`VersionedTransaction` (see "Transaction versions" below; legacy is rejected).
 Everything else moves through **base64url-no-pad** of canonical JSON.
 
 ### Receipt (server → client) — `Payment-Receipt` header
@@ -89,9 +90,11 @@ Implement these steps in `server::charge::verify` (mirror
 5. **Network blockhash gate.** Before broadcasting, call
    `check_network_blockhash(network, tx.message.recent_blockhash())`
    to reject mainnet keys pointed at a sandbox server (and vice versa).
-6. **Pre-broadcast verifier.** Decode the transaction (accept legacy
-   bincode `Transaction`, then fall back to `VersionedTransaction`);
-   walk the instructions; verify:
+6. **Pre-broadcast verifier.** Decode the transaction as a
+   `VersionedTransaction` (canonical encoding; reject legacy, address
+   lookup tables, a version the challenge did not advertise, and an
+   over-size message; on version 1 bound the header compute config with the
+   ComputeBudget caps); walk the instructions; verify:
    - Only system-transfer / SPL-transfer / SPL-create-ATA /
      ComputeBudget / Memo instructions.
    - Transfer amounts sum to `amount` (primary + splits).
@@ -203,3 +206,20 @@ Integration test:
 Harness scenario: `charge-basic` and `charge-split-ata` in
 `harness/src/contracts.ts`. Both must pass against the Rust
 server before the new SDK is enabled by default.
+
+## Transaction versions
+
+Solana message versions `0` and `1` (SIMD-0385) are accepted; legacy
+messages are rejected before any instruction is inspected. The server
+advertises the versions it accepts as `transactionVersions` (an array of
+`0` and/or `1`) — in MPP `methodDetails`, in x402 `extra` — and omits the
+field when it accepts version 0 only. Clients build the highest advertised
+version, `0` when the field is absent, and never use address lookup
+tables. Version 1 carries its compute budget in the message header:
+`computeUnitLimit` and `loadedAccountsDataSizeLimit` MUST be set, the
+priority fee is a total in lamports, ComputeBudget instructions are
+rejected, and the size limit is 4096 bytes (1232 for version 0). Verifiers
+hold the header config to the same caps they apply to ComputeBudget
+instructions on version 0. Wire bytes are the canonical (wincode) encoding,
+base64 standard alphabet with padding; bincode cannot encode version 1. The
+Rust reference is `rust/crates/kit/src/core/tx/`.
