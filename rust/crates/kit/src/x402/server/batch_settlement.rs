@@ -2583,7 +2583,7 @@ impl X402BatchSettlement {
         if groups.is_empty() {
             return Ok(vec![]);
         }
-        let batches = pack(self.tx_version(), groups, &self.fee_payer, max_per_tx);
+        let batches = pack(self.tx_version(), groups, &self.fee_payer, None, max_per_tx);
 
         // Build instruction batches first. Each bounded task below fetches a
         // fresh blockhash, signs, and broadcasts its own transaction so slow

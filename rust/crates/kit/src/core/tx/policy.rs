@@ -5,7 +5,7 @@
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction::versioned::{TransactionVersion, VersionedTransaction};
 
 use super::budget::DeclaredBudget;
 use super::build::check_limits;
@@ -65,6 +65,33 @@ impl TxV1Mode {
 /// `accepted`: the highest one.
 pub fn highest(accepted: &[TxVersion]) -> TxVersion {
     accepted.iter().copied().max().unwrap_or(TxVersion::V0)
+}
+
+/// The version a client builds: the highest one the challenge accepts
+/// (`[0]` when it advertises none) that the signer can also sign. A signer
+/// that cannot sign anything the server accepts is an error up front rather
+/// than a device rejection at signing time.
+pub fn negotiate(
+    advertised: Option<&[TxVersion]>,
+    max_signable: Option<TxVersion>,
+) -> Result<TxVersion> {
+    let accepted = super::version::accepted_versions(advertised);
+    accepted
+        .iter()
+        .copied()
+        .filter(|v| max_signable.is_none_or(|max| *v <= max))
+        .max()
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "the server accepts transaction versions [{}] but the signer signs up to version {}",
+                accepted
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                max_signable.map(|v| v.to_string()).unwrap_or_default()
+            ))
+        })
 }
 
 /// For a version-1 message, bound the header compute config with the caps a
@@ -144,9 +171,85 @@ pub fn check_envelope(tx: &VersionedTransaction, accepted: &[TxVersion]) -> Resu
     Ok(version)
 }
 
+/// Version policy for a transaction read back from the RPC by signature.
+/// `maxSupportedTransactionVersion` only bounds what the node returns; the
+/// server still accepts only its configured versions, exactly as for a
+/// transaction credential. Legacy is refused, and so is a missing version:
+/// nodes report one for every versioned transaction once asked.
+pub fn check_reported_version(
+    reported: Option<&TransactionVersion>,
+    accepted: &[TxVersion],
+) -> Result<TxVersion> {
+    let version = match reported {
+        Some(TransactionVersion::Number(n)) => TxVersion::try_from(*n).map_err(Error::Other)?,
+        Some(TransactionVersion::Legacy(_)) => {
+            return Err(Error::Other(
+                "legacy transactions are not supported; use a version 0 or version 1 message"
+                    .into(),
+            ))
+        }
+        None => {
+            return Err(Error::Other(
+                "RPC did not report the transaction version".into(),
+            ))
+        }
+    };
+    if !accepted.contains(&version) {
+        return Err(Error::Other(format!(
+            "transaction version {version} is not accepted; accepted versions: {}",
+            accepted
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negotiate_picks_the_highest_version_the_signer_can_sign() {
+        let both = [TxVersion::V0, TxVersion::V1];
+        assert_eq!(negotiate(Some(&both), None).unwrap(), TxVersion::V1);
+        assert_eq!(
+            negotiate(Some(&both), Some(TxVersion::V0)).unwrap(),
+            TxVersion::V0
+        );
+        assert_eq!(negotiate(None, Some(TxVersion::V0)).unwrap(), TxVersion::V0);
+        let err = negotiate(Some(&[TxVersion::V1]), Some(TxVersion::V0))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("signs up to version 0"), "{err}");
+    }
+
+    #[test]
+    fn reported_version_follows_the_accepted_set() {
+        use solana_transaction::versioned::Legacy;
+        let v0_only = [TxVersion::V0];
+        let both = [TxVersion::V0, TxVersion::V1];
+        assert_eq!(
+            check_reported_version(Some(&TransactionVersion::Number(0)), &v0_only).unwrap(),
+            TxVersion::V0
+        );
+        assert_eq!(
+            check_reported_version(Some(&TransactionVersion::Number(1)), &both).unwrap(),
+            TxVersion::V1
+        );
+        let err = check_reported_version(Some(&TransactionVersion::Number(1)), &v0_only)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("version 1 is not accepted"), "{err}");
+        assert!(
+            check_reported_version(Some(&TransactionVersion::Legacy(Legacy::Legacy)), &both)
+                .is_err()
+        );
+        assert!(check_reported_version(None, &both).is_err());
+        assert!(check_reported_version(Some(&TransactionVersion::Number(7)), &both).is_err());
+    }
     use crate::core::tx::budget::ComputeBudget;
     use crate::core::tx::build::build_unsigned;
     use solana_hash::Hash;

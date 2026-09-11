@@ -791,6 +791,11 @@ impl X402 {
             }
             PaymentProof::Signature { signature } => {
                 let tx = fetch_transaction(&self.rpc, &signature)?;
+                crate::core::tx::check_reported_version(
+                    tx.transaction.version.as_ref(),
+                    &self.accepted_versions,
+                )
+                .map_err(|e| Error::Other(format!("Invalid transaction: {e}")))?;
                 verify_transaction_details(&tx, requirements)?;
                 Ok(VerifiedExactPayment::Signature(signature))
             }

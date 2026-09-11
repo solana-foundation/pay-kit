@@ -69,6 +69,7 @@ pub struct BatchTerms {
 pub fn resolve_terms_with_token_program(
     requirements: &BatchRequirements,
     token_program: Pubkey,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<BatchTerms, Error> {
     let extra = &requirements.extra;
     crate::x402::protocol::schemes::batch_settlement::check_payment_flow(
@@ -103,9 +104,10 @@ pub fn resolve_terms_with_token_program(
         withdraw_delay: extra.withdraw_delay,
         amount: requirements.amount()?,
         memo,
-        tx_version: crate::core::tx::highest(crate::core::tx::accepted_versions(
+        tx_version: crate::core::tx::negotiate(
             extra.transaction_versions.as_deref(),
-        )),
+            max_tx_version,
+        )?,
     })
 }
 
@@ -118,12 +120,17 @@ pub fn resolve_terms_with_token_program(
 pub fn resolve_terms(
     rpc: &RpcClient,
     requirements: &BatchRequirements,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<BatchTerms, Error> {
     let mint = pc::parse_pubkey(&requirements.asset)?;
     let account = rpc
         .get_account(&mint)
         .map_err(|e| Error::Rpc(format!("mint fetch failed: {e}")))?;
-    resolve_terms_with_token_program(requirements, pc::from_address(&account.owner))
+    resolve_terms_with_token_program(
+        requirements,
+        pc::from_address(&account.owner),
+        max_tx_version,
+    )
 }
 
 fn random_hex_nonce() -> String {
@@ -695,6 +702,7 @@ mod tests {
         resolve_terms_with_token_program(
             requirements,
             pc::parse_pubkey(programs::TOKEN_PROGRAM).unwrap(),
+            None,
         )
         .expect("terms resolve")
     }
@@ -706,6 +714,7 @@ mod tests {
         let err = resolve_terms_with_token_program(
             &requirements,
             pc::parse_pubkey(programs::TOKEN_2022_PROGRAM).unwrap(),
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains(codes::INVALID_TOKEN_PROGRAM));

@@ -1279,10 +1279,11 @@ impl Mpp {
                                 skip_preflight = SKIP_PREFLIGHT_SEND.skip_preflight,
                                 "broadcast_pull retrying without preflight after blockhash preflight failure"
                             );
-                            match self
-                                .rpc
-                                .send_transaction_with_config(&tx, SKIP_PREFLIGHT_SEND.config())
-                            {
+                            match crate::core::rpc::send_transaction(
+                                &self.rpc,
+                                &tx,
+                                SKIP_PREFLIGHT_SEND.config(),
+                            ) {
                                 Ok(signature) => {
                                     broadcast_signature = Some(signature);
                                     break;
@@ -1435,6 +1436,14 @@ impl Mpp {
                     VerificationError::network_error(format!("RPC error: {e}"))
                 }
             })?;
+
+        // The RPC returns whatever version we asked for; the server decides
+        // what it accepts, exactly as for a transaction credential.
+        crate::core::tx::check_reported_version(
+            tx.transaction.version.as_ref(),
+            &self.accepted_versions,
+        )
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
 
         // Check for on-chain error.
         if let Some(meta) = &tx.transaction.meta {

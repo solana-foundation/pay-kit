@@ -40,6 +40,10 @@ pub use crate::mpp::protocol::intents::SubscriptionMethodDetails;
 /// Options for building a Solana subscription activation transaction.
 #[derive(Debug, Clone, Default)]
 pub struct BuildSubscriptionActivationOptions {
+    /// Highest message version the signer can sign, when that is below what
+    /// the challenge accepts. The Ledger Solana app signs version 0 but not
+    /// yet version 1. `None` takes the highest version the challenge accepts.
+    pub max_tx_version: Option<crate::core::tx::TxVersion>,
     /// Optional memo with the merchant's external reference, embedded as a
     /// trailing memo instruction.
     pub external_id: Option<String>,
@@ -419,9 +423,10 @@ pub async fn build_subscription_activation_transaction_with_options(
     // Blockhash was already parsed above for the SA-init pre-step; reuse it
     // for the activation tx. Both transactions share the same recentBlockhash
     // so they land in the same ~150-slot window.
-    let version = crate::core::tx::highest(crate::core::tx::accepted_versions(
+    let version = crate::core::tx::negotiate(
         method_details.transaction_versions.as_deref(),
-    ));
+        options.max_tx_version,
+    )?;
     let mut tx = crate::core::tx::build_unsigned(
         version,
         &fee_payer_pubkey,

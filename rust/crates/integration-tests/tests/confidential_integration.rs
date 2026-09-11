@@ -49,11 +49,12 @@ use spl_token_2022::{
         BaseStateWithExtensions, ExtensionType, StateWithExtensions,
     },
     instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
-    solana_zk_sdk::encryption::pod::{
-        auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
-        elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy,
-    },
     state::{Account as TokenAccount, Mint},
+};
+// spl-token-2022 11 builds its confidential-transfer ABI on solana-zk-sdk-pod.
+use solana_zk_sdk_pod::encryption::{
+    auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
+    elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy,
 };
 use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
 use surfpool_sdk::{Keypair, Signer, Surfnet};

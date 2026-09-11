@@ -44,6 +44,10 @@ pub async fn build_charge_transaction(
 /// Options for building a Solana charge transaction.
 #[derive(Debug, Clone, Default)]
 pub struct BuildChargeTransactionOptions {
+    /// Highest message version the signer can sign, when that is below what
+    /// the challenge accepts. The Ledger Solana app signs version 0 but not
+    /// yet version 1. `None` takes the highest version the challenge accepts.
+    pub max_tx_version: Option<crate::core::tx::TxVersion>,
     /// Optional root payment memo. Spec-aligned callers pass `ChargeRequest.externalId`.
     pub external_id: Option<String>,
     /// Opt-in: sign for an unknown Token-2022 mint.
@@ -359,11 +363,10 @@ pub async fn build_prepared_charge(
     let blockhash = resolve_blockhash(rpc, method_details)?;
 
     let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
-    // Build the highest message version the challenge advertises (`[0]` when
-    // it advertises none).
-    let version = crate::core::tx::highest(crate::core::tx::accepted_versions(
+    let version = crate::core::tx::negotiate(
         method_details.transaction_versions.as_deref(),
-    ));
+        options.max_tx_version,
+    )?;
     let transaction = crate::core::tx::build_unsigned_unchecked(
         version,
         &fee_payer,
@@ -459,9 +462,10 @@ pub async fn build_charge_transaction_with_options(
                 recipient,
                 &fee_payer,
                 blockhash,
-                crate::core::tx::highest(crate::core::tx::accepted_versions(
+                crate::core::tx::negotiate(
                     method_details.transaction_versions.as_deref(),
-                )),
+                    options.max_tx_version,
+                )?,
             )
             .await;
         }

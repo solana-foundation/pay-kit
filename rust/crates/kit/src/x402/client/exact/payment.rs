@@ -26,6 +26,7 @@ pub async fn build_payment(
     signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<PaymentPayload, Error> {
     let amount: u64 = requirements
         .amount
@@ -83,9 +84,8 @@ pub async fn build_payment(
     };
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
-    let version = crate::core::tx::highest(crate::core::tx::accepted_versions(
-        requirements.transaction_versions.as_deref(),
-    ));
+    let version =
+        crate::core::tx::negotiate(requirements.transaction_versions.as_deref(), max_tx_version)?;
     let mut tx = crate::core::tx::build_unsigned(
         version,
         &actual_fee_payer,
@@ -123,8 +123,9 @@ pub async fn build_payment_header(
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
     extensions: Option<PaymentExtensions>,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<String, Error> {
-    let payload = build_payment(signer, rpc, requirements).await?;
+    let payload = build_payment(signer, rpc, requirements, max_tx_version).await?;
     let envelope = PaymentSignatureEnvelope {
         scheme: None,
         network: None,
@@ -143,8 +144,9 @@ pub async fn build_payment_header_v1(
     signer: &dyn TransactionSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
+    max_tx_version: Option<crate::core::tx::TxVersion>,
 ) -> Result<String, Error> {
-    let payload = build_payment(signer, rpc, requirements).await?;
+    let payload = build_payment(signer, rpc, requirements, max_tx_version).await?;
     let envelope = PaymentSignatureEnvelope {
         scheme: Some(EXACT_SCHEME.to_string()),
         network: Some(v1_network_for_requirements(requirements).to_string()),
@@ -991,7 +993,9 @@ mod tests {
         let rpc = RpcClient::new("http://localhost:8899".to_string());
         let requirements = test_requirements("SOL");
 
-        let payload = build_payment(&signer, &rpc, &requirements).await.unwrap();
+        let payload = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
         assert_eq!(payload.network, SOLANA_DEVNET);
         let PaymentProof::Transaction { transaction } = payload.proof else {
             panic!("expected transaction payload");
@@ -1020,7 +1024,9 @@ mod tests {
         requirements.fee_payer = Some(true);
         requirements.fee_payer_key = Some(sponsor.to_string());
 
-        let payload = build_payment(&signer, &rpc, &requirements).await.unwrap();
+        let payload = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
         let PaymentProof::Transaction { transaction } = payload.proof else {
             panic!("expected transaction payload");
         };
@@ -1048,7 +1054,9 @@ mod tests {
         let rpc = RpcClient::new("http://localhost:8899".to_string());
         let requirements = test_requirements("USDC");
 
-        let payload = build_payment(&signer, &rpc, &requirements).await.unwrap();
+        let payload = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
         let PaymentProof::Transaction { transaction } = payload.proof else {
             panic!("expected transaction payload");
         };
@@ -1069,7 +1077,9 @@ mod tests {
         let mut requirements = test_requirements("USDC");
         requirements.extra = Some(serde_json::json!({ "memo": "order_12345" }));
 
-        let payload = build_payment(&signer, &rpc, &requirements).await.unwrap();
+        let payload = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
         let PaymentProof::Transaction { transaction } = payload.proof else {
             panic!("expected transaction payload");
         };
@@ -1089,8 +1099,12 @@ mod tests {
         let rpc = RpcClient::new("http://localhost:8899".to_string());
         let requirements = test_requirements("USDC");
 
-        let first = build_payment(&signer, &rpc, &requirements).await.unwrap();
-        let second = build_payment(&signer, &rpc, &requirements).await.unwrap();
+        let first = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
+        let second = build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .unwrap();
         let PaymentProof::Transaction { transaction: first } = first.proof else {
             panic!("expected transaction payload");
         };
@@ -1122,7 +1136,7 @@ mod tests {
         let rpc = RpcClient::new("http://localhost:8899".to_string());
         let requirements = test_requirements("SOL");
 
-        let header = build_payment_header(&signer, &rpc, &requirements, None)
+        let header = build_payment_header(&signer, &rpc, &requirements, None, None)
             .await
             .unwrap();
         let decoded =
@@ -1145,7 +1159,9 @@ mod tests {
         let mut requirements = test_requirements("SOL");
         requirements.amount = "abc".to_string();
 
-        assert!(build_payment(&signer, &rpc, &requirements).await.is_err());
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1158,7 +1174,9 @@ mod tests {
         let mut requirements = test_requirements("SOL");
         requirements.recipient = "not-a-pubkey".to_string();
 
-        assert!(build_payment(&signer, &rpc, &requirements).await.is_err());
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1172,7 +1190,9 @@ mod tests {
         requirements.fee_payer = Some(true);
         requirements.fee_payer_key = Some("not-a-pubkey".to_string());
 
-        assert!(build_payment(&signer, &rpc, &requirements).await.is_err());
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1185,7 +1205,9 @@ mod tests {
         let mut requirements = test_requirements("SOL");
         requirements.recent_blockhash = Some("bad-blockhash".to_string());
 
-        assert!(build_payment(&signer, &rpc, &requirements).await.is_err());
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1200,7 +1222,7 @@ mod tests {
             "memo": "x".repeat(MAX_MEMO_BYTES + 1)
         }));
 
-        let err = build_payment(&signer, &rpc, &requirements)
+        let err = build_payment(&signer, &rpc, &requirements, None)
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Other(message) if message.contains("extra.memo exceeds")));
@@ -1215,7 +1237,9 @@ mod tests {
         let rpc = RpcClient::new("http://localhost:8899".to_string());
         let requirements = test_requirements("SOL");
 
-        assert!(build_payment(&signer, &rpc, &requirements).await.is_err());
+        assert!(build_payment(&signer, &rpc, &requirements, None)
+            .await
+            .is_err());
     }
 
     #[test]

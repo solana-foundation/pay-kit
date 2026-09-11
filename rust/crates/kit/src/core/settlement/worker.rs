@@ -219,6 +219,7 @@ fn spawn_flush(
             units,
             cfg.tx_version,
             &cfg.operator,
+            cfg.compute_budget.as_ref(),
             cfg.max_voucher_settlements_per_tx,
         ) {
             // One permit per settle transaction (not per flush, which may
@@ -243,6 +244,7 @@ fn regroup(
     units: Vec<SettlementUnit>,
     version: TxVersion,
     payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
     max_per_tx: usize,
 ) -> Vec<Vec<SettlementUnit>> {
     let mut out: Vec<Vec<SettlementUnit>> = Vec::new();
@@ -259,6 +261,7 @@ fn regroup(
                 cur.len(),
                 &u.instructions,
                 payer,
+                budget,
                 max_per_tx,
             ) {
                 out.push(std::mem::take(&mut cur));
@@ -308,7 +311,13 @@ async fn settle_group(
             .collect();
         span.record(
             "tx_bytes",
-            tx_size(cfg.tx_version, &flat, &cfg.operator).unwrap_or(0),
+            tx_size(
+                cfg.tx_version,
+                &flat,
+                &cfg.operator,
+                cfg.compute_budget.as_ref(),
+            )
+            .unwrap_or(0),
         );
 
         // Build + sign + broadcast.
@@ -625,7 +634,7 @@ mod tests {
             assert_eq!(ixs.len(), 2, "settle+seal with voucher = ed25519 + settle");
             // Each channel's own tx must be packet-legal.
             assert!(
-                tx_size(TxVersion::V0, &ixs, &operator).unwrap()
+                tx_size(TxVersion::V0, &ixs, &operator, None).unwrap()
                     <= TxVersion::V0.limits().max_bytes
             );
             channels.push((channel.to_string(), ixs));

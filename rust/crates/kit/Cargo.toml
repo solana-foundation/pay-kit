@@ -70,7 +70,13 @@ otel = [
 # of `SolanaSigner` into the `TransactionSigner` capability trait and moved it to
 # `VersionedTransaction`; see core::signing for how the kit adapts. `sdk-v4` is
 # what signs and wire-encodes Transaction V1 (SIMD-0385).
-solana-keychain = { version = "2.0.0-beta.1", default-features = false, features = ["memory", "sdk-v4"] }
+# solana-keychain 2.0.0-beta.1 on crates.io compiles `sdk-v4` against wincode
+# 0.4; solana-message/-transaction 4.1+ (Transaction V1) use wincode 0.5.
+# keychain main carries the bump but has no release yet, so depend on that
+# commit directly: path and git consumers of the kit inherit it (a workspace
+# `[patch]` would not reach them). `cargo publish` strips the git source and
+# resolves beta.1, which does not compile; publishing waits for beta.2.
+solana-keychain = { version = "2.0.0-beta.1", git = "https://github.com/solana-foundation/solana-keychain", rev = "6461a18cc39d4700d589b1eb981f8ddd71c09e8d", default-features = false, features = ["memory", "sdk-v4"] }
 
 # Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
 # which solana-keypair/solana-signature rely on.

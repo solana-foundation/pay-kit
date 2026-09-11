@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .ok_or_else(|| "server did not return a supported SVM x402 challenge".to_string())?;
 
     let rpc = RpcClient::new(rpc_url);
-    let payment_header = build_payment_header(&signer, &rpc, &requirements, None).await?;
+    let payment_header = build_payment_header(&signer, &rpc, &requirements, None, None).await?;
 
     let paid_response = http
         .get(&target_url)

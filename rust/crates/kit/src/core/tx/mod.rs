@@ -24,8 +24,8 @@ pub use budget::{
 };
 pub use build::{build_unsigned, build_unsigned_unchecked, check_limits, measure};
 pub use policy::{
-    advertised, check_envelope, check_v1_budget_caps, highest, require_static_accounts,
-    tx_v1_active, TxV1Mode, TX_V1_FEATURE_GATE,
+    advertised, check_envelope, check_reported_version, check_v1_budget_caps, highest, negotiate,
+    require_static_accounts, tx_v1_active, TxV1Mode, TX_V1_FEATURE_GATE,
 };
 pub use version::{accepted_versions, TxLimits, TxVersion, DEFAULT_ACCEPTED_VERSIONS};
 pub use wire::{decode, decode_bytes, encode, serialize, serialized_size};

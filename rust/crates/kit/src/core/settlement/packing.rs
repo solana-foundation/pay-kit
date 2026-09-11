@@ -12,7 +12,7 @@
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
-use crate::core::tx::{measure, TxVersion};
+use crate::core::tx::{measure, ComputeBudget, TxVersion};
 use crate::core::Result;
 
 /// One channel operation's instructions, tagged with its id for tracing,
@@ -27,8 +27,13 @@ pub struct ChannelInstructionGroup {
 /// fee-paid by `payer`, with no compute budget. Exact for the signed
 /// transaction: signatures are fixed-size and the blockhash does not change
 /// the length. Errors only when the instructions cannot be compiled at all.
-pub fn tx_size(version: TxVersion, instructions: &[Instruction], payer: &Pubkey) -> Result<usize> {
-    measure(version, payer, instructions, None)
+pub fn tx_size(
+    version: TxVersion,
+    instructions: &[Instruction],
+    payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
+) -> Result<usize> {
+    measure(version, payer, instructions, budget)
 }
 
 /// The shared batch-boundary rule for greedy packing: whether appending a
@@ -48,6 +53,7 @@ pub fn would_overflow_tx(
     cur_group_count: usize,
     next: &[Instruction],
     payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
     max_groups_per_tx: usize,
 ) -> bool {
     if cur_group_count >= max_groups_per_tx.max(1) {
@@ -55,7 +61,7 @@ pub fn would_overflow_tx(
     }
     let mut probe: Vec<Instruction> = cur.to_vec();
     probe.extend_from_slice(next);
-    match tx_size(version, &probe, payer) {
+    match tx_size(version, &probe, payer, budget) {
         Ok(size) => size > version.limits().max_bytes,
         Err(_) => true,
     }
@@ -70,6 +76,7 @@ pub fn pack(
     version: TxVersion,
     channels: Vec<ChannelInstructionGroup>,
     payer: &Pubkey,
+    budget: Option<&ComputeBudget>,
     max_groups_per_tx: usize,
 ) -> Vec<Vec<ChannelInstructionGroup>> {
     let mut out: Vec<Vec<ChannelInstructionGroup>> = Vec::new();
@@ -87,6 +94,7 @@ pub fn pack(
                 cur.len(),
                 &ch.instructions,
                 payer,
+                budget,
                 max_groups_per_tx,
             ) {
                 out.push(std::mem::take(&mut cur));
@@ -212,7 +220,7 @@ mod tests {
         let channels: Vec<_> = (0..10).map(voucher_settlement_instructions).collect();
 
         // Byte-bounded packing (generous count cap).
-        let batches = pack(TxVersion::V0, channels.clone(), &operator, 1000);
+        let batches = pack(TxVersion::V0, channels.clone(), &operator, None, 1000);
         assert!(!batches.is_empty());
         for b in &batches {
             let flat: Vec<Instruction> = b
@@ -220,7 +228,7 @@ mod tests {
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
             assert!(
-                tx_size(TxVersion::V0, &flat, &operator).unwrap()
+                tx_size(TxVersion::V0, &flat, &operator, None).unwrap()
                     <= TxVersion::V0.limits().max_bytes,
                 "batch exceeds packet size"
             );
@@ -228,7 +236,7 @@ mod tests {
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 10);
 
         // Count cap of 1 ⇒ one channel per batch.
-        let singles = pack(TxVersion::V0, channels, &operator, 1);
+        let singles = pack(TxVersion::V0, channels, &operator, None, 1);
         assert_eq!(singles.len(), 10);
         assert!(singles.iter().all(|b| b.len() == 1));
     }
