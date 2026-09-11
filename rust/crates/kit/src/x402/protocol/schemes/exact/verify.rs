@@ -7,7 +7,7 @@ use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInstruction, UiMessage,
-    UiParsedInstruction, UiTransactionEncoding,
+    UiParsedInstruction,
 };
 
 use super::{programs, resolve_stablecoin_mint, PaymentRequirements};
@@ -326,7 +326,7 @@ pub fn fetch_transaction(
     let signature = Signature::from_str(signature_str)
         .map_err(|e| Error::Other(format!("Invalid signature: {e}")))?;
 
-    rpc.get_transaction(&signature, UiTransactionEncoding::JsonParsed)
+    rpc.get_transaction_with_config(&signature, crate::core::rpc::parsed_transaction_config())
         .map_err(|e| {
             if e.to_string().contains("not found") {
                 Error::TransactionNotFound

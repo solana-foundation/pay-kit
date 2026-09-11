@@ -1,9 +1,17 @@
 //! Client-side construction of a Token-2022 confidential transfer bundle.
 //!
 //! Produces the ordered set of signed transactions (`CredentialPayload::Bundle`)
-//! that settle a confidential charge: pre-verify the equality, ciphertext-
-//! validity, and range proofs into context state accounts, then reference them
-//! from the Token-2022 `transfer` instruction, then close the accounts.
+//! that settle a confidential charge.
+//!
+//! When the challenge accepts transaction version 1 (SIMD-0385, 4096 bytes),
+//! the bundle is a single transaction: every proof is verified inline by the
+//! ZK ElGamal Proof program and the Token-2022 `transfer` reads them by
+//! instruction offset. Nothing is created, so nothing has to be closed or swept.
+//!
+//! Under version 0 (1232 bytes) the proofs do not fit next to the transfer:
+//! the equality, ciphertext-validity, and range proofs are pre-verified into
+//! context state accounts, referenced from the `transfer` instruction, then
+//! closed.
 //!
 //! Proofs are generated with `spl-token-confidential-transfer-proof-generation`
 //! (zk-sdk 7.0.1) and byte-cast to spl-token-2022 10.0.0's zk-sdk-4.0 POD types
@@ -27,6 +35,7 @@ use solana_signature::Signature;
 use solana_signer::Signer;
 use solana_system_interface::instruction as system_instruction;
 use std::mem::size_of;
+use std::num::NonZeroI8;
 use std::str::FromStr;
 
 use solana_zk_elgamal_proof_interface::{
@@ -69,9 +78,11 @@ use solana_zk_sdk_pod::encryption::{
 };
 use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
 use spl_token_confidential_transfer_proof_generation::{
-    transfer::transfer_split_proof_data, transfer_with_fee::transfer_with_fee_split_proof_data,
+    transfer::{transfer_split_proof_data, TransferProofData},
+    transfer_with_fee::{transfer_with_fee_split_proof_data, TransferWithFeeProofData},
 };
 
+use crate::core::tx::{ComputeBudget, TxVersion};
 use crate::mpp::error::Error;
 use crate::mpp::protocol::confidential::{derive_confidential_keys, ConfidentialKeys};
 use crate::mpp::protocol::solana::CredentialPayload;
@@ -85,6 +96,12 @@ const ZK_PROOF_PROGRAM_ID: &str = "ZkE1Gama1Proof11111111111111111111111111111";
 /// server's allow-list cap). Requesting a limit only raises the ceiling — with
 /// no priority price set it costs nothing extra (fee is charged on CU used).
 const CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT: u32 = 500_000;
+
+/// CU limit requested on the single version-1 transaction, which verifies every
+/// proof inline. LiteSVM measures it at ~238k CU
+/// (`recipient_recovers_confidential_transfer_amount_in_litesvm`); with no
+/// priority price the limit only raises the ceiling, so leave headroom.
+pub(crate) const CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT: u32 = 400_000;
 
 /// Byte offset of the proof inside an spl-record account
 /// (`RecordData::WRITABLE_START_INDEX`: 1-byte version + 32-byte authority).
@@ -110,6 +127,10 @@ pub struct ConfidentialTransferParams<'a> {
     /// Recent blockhash to sign all bundle transactions with. The gateway must
     /// submit the bundle while this blockhash is still valid.
     pub blockhash: Hash,
+    /// Transaction version to build (the highest the challenge advertises).
+    /// Version 1 verifies every proof inline in a single transaction; version
+    /// 0 emits the multi-transaction bundle.
+    pub tx_version: TxVersion,
 }
 
 /// Create a fresh ZK proof context-state account sized for proof type `T`,
@@ -343,6 +364,32 @@ pub async fn build_confidential_transfer_bundle(
     )
     .map_err(|e| Error::Other(format!("transfer_split_proof_data: {e}")))?;
 
+    if params.tx_version == TxVersion::V1 {
+        let new_decryptable =
+            cast_ae_ciphertext_v7_to_legacy(&sender_keys.ae.encrypt(new_plaintext));
+        let ixs = inline_transfer_instructions(
+            &token_program,
+            &sender_token_account,
+            params.mint,
+            &recipient_token_account,
+            &sender_pubkey,
+            &proof_data,
+            &new_decryptable,
+        )?;
+        let budget = ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+        let tx = partial_sign_tx(
+            TxVersion::V1,
+            signer,
+            fee_payer,
+            &[],
+            &ixs,
+            params.blockhash,
+            Some(&budget),
+        )
+        .await?;
+        return Ok(vec![tx]);
+    }
+
     let mut bundle: Vec<String> = Vec::new();
 
     // ----- 1. Equality proof context account -----
@@ -359,6 +406,7 @@ pub async fn build_confidential_transfer_bundle(
         )?;
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[&equality_account],
@@ -388,6 +436,7 @@ pub async fn build_confidential_transfer_bundle(
     )?;
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[&validity_account],
@@ -474,8 +523,7 @@ pub async fn build_confidential_transfer_bundle(
     // Request a CU limit up front: the confidential transfer + in-tx closes
     // exceed the 200k default, so without this the gateway's simulation step
     // would reject the bundle (or validators would drop it on mainnet).
-    let final_budget =
-        crate::core::tx::ComputeBudget::new(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+    let final_budget = ComputeBudget::new(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
     let final_ixs = vec![
         transfer_ix,
         close(&equality_account.pubkey()),
@@ -485,6 +533,7 @@ pub async fn build_confidential_transfer_bundle(
     ];
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[],
@@ -540,6 +589,32 @@ async fn build_confidential_transfer_with_fee_bundle(
     )
     .map_err(|e| Error::Other(format!("transfer_with_fee_split_proof_data: {e}")))?;
 
+    if params.tx_version == TxVersion::V1 {
+        let new_decryptable =
+            cast_ae_ciphertext_v7_to_legacy(&sender_keys.ae.encrypt(new_plaintext));
+        let ixs = inline_transfer_with_fee_instructions(
+            token_program,
+            sender_token_account,
+            params.mint,
+            recipient_token_account,
+            &sender_pubkey,
+            &proof_data,
+            &new_decryptable,
+        )?;
+        let budget = ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+        let tx = partial_sign_tx(
+            TxVersion::V1,
+            signer,
+            fee_payer,
+            &[],
+            &ixs,
+            params.blockhash,
+            Some(&budget),
+        )
+        .await?;
+        return Ok(vec![tx]);
+    }
+
     let mut bundle: Vec<String> = Vec::new();
 
     // ----- 1. Equality proof context account -----
@@ -556,6 +631,7 @@ async fn build_confidential_transfer_with_fee_bundle(
         )?;
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[&equality_account],
@@ -585,6 +661,7 @@ async fn build_confidential_transfer_with_fee_bundle(
     )?;
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[&validity_account],
@@ -608,6 +685,7 @@ async fn build_confidential_transfer_with_fee_bundle(
     )?;
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[&fee_sigma_account],
@@ -632,6 +710,7 @@ async fn build_confidential_transfer_with_fee_bundle(
         )?;
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[&fee_validity_account],
@@ -712,8 +791,7 @@ async fn build_confidential_transfer_with_fee_bundle(
             &fee_payer_addr,
         )
     };
-    let final_budget =
-        crate::core::tx::ComputeBudget::new(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+    let final_budget = ComputeBudget::new(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
     let final_ixs = vec![
         transfer_ix,
         close(&equality_account.pubkey()),
@@ -725,6 +803,7 @@ async fn build_confidential_transfer_with_fee_bundle(
     ];
     bundle.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             fee_payer,
             &[],
@@ -741,6 +820,7 @@ async fn build_confidential_transfer_with_fee_bundle(
 /// Charge-path adapter: build the confidential transfer bundle and wrap it as a
 /// `CredentialPayload::Bundle`. Called from the charge credential builder when
 /// `methodDetails.confidential` is set.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn confidential_charge_payload(
     signer: &dyn TransactionSigner,
     rpc: &RpcClient,
@@ -749,6 +829,7 @@ pub(crate) async fn confidential_charge_payload(
     recipient: &str,
     fee_payer: &Pubkey,
     blockhash: Hash,
+    tx_version: TxVersion,
 ) -> Result<CredentialPayload, Error> {
     let mint_pk =
         Pubkey::from_str(mint).map_err(|e| Error::Other(format!("invalid mint `{mint}`: {e}")))?;
@@ -763,10 +844,106 @@ pub(crate) async fn confidential_charge_payload(
             amount,
             fee_payer,
             blockhash,
+            tx_version,
         },
     )
     .await?;
     Ok(CredentialPayload::Bundle { transactions })
+}
+
+/// Instructions for a single-transaction confidential transfer: the three
+/// proofs verified inline (no context account), then the Token-2022 `transfer`
+/// reading them by relative instruction offset. Needs a version-1 transaction.
+pub(crate) fn inline_transfer_instructions(
+    token_program: &Pubkey,
+    sender_token_account: &Pubkey,
+    mint: &Pubkey,
+    recipient_token_account: &Pubkey,
+    sender: &Pubkey,
+    proof_data: &TransferProofData,
+    new_decryptable: &PodAeCiphertextLegacy,
+) -> Result<Vec<Instruction>, Error> {
+    let validity = &proof_data.ciphertext_validity_proof_data_with_ciphertext;
+    let auditor_lo = cast_elgamal_ciphertext_v7_to_legacy(&validity.ciphertext_lo);
+    let auditor_hi = cast_elgamal_ciphertext_v7_to_legacy(&validity.ciphertext_hi);
+    let transfer = inner_transfer(
+        token_program,
+        sender_token_account,
+        mint,
+        recipient_token_account,
+        new_decryptable,
+        &auditor_lo,
+        &auditor_hi,
+        sender,
+        &[],
+        ProofLocation::InstructionOffset(offset(-3), &proof_data.equality_proof_data),
+        ProofLocation::InstructionOffset(offset(-2), &validity.proof_data),
+        ProofLocation::InstructionOffset(offset(-1), &proof_data.range_proof_data),
+    )
+    .map_err(|e| Error::Other(format!("build transfer instruction: {e}")))?;
+    Ok(vec![
+        ProofInstruction::VerifyCiphertextCommitmentEquality
+            .encode_verify_proof(None, &proof_data.equality_proof_data),
+        ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
+            .encode_verify_proof(None, &validity.proof_data),
+        ProofInstruction::VerifyBatchedRangeProofU128
+            .encode_verify_proof(None, &proof_data.range_proof_data),
+        transfer,
+    ])
+}
+
+/// Fee-bearing counterpart of [`inline_transfer_instructions`]: five inline
+/// proofs, then the Token-2022 `transfer_with_fee`.
+pub(crate) fn inline_transfer_with_fee_instructions(
+    token_program: &Pubkey,
+    sender_token_account: &Pubkey,
+    mint: &Pubkey,
+    recipient_token_account: &Pubkey,
+    sender: &Pubkey,
+    proof_data: &TransferWithFeeProofData,
+    new_decryptable: &PodAeCiphertextLegacy,
+) -> Result<Vec<Instruction>, Error> {
+    let validity = &proof_data.transfer_amount_ciphertext_validity_proof_data_with_ciphertext;
+    let auditor_lo = cast_elgamal_ciphertext_v7_to_legacy(&validity.ciphertext_lo);
+    let auditor_hi = cast_elgamal_ciphertext_v7_to_legacy(&validity.ciphertext_hi);
+    let transfer = inner_transfer_with_fee(
+        token_program,
+        sender_token_account,
+        mint,
+        recipient_token_account,
+        new_decryptable,
+        &auditor_lo,
+        &auditor_hi,
+        sender,
+        &[],
+        ProofLocation::InstructionOffset(offset(-5), &proof_data.equality_proof_data),
+        ProofLocation::InstructionOffset(offset(-4), &validity.proof_data),
+        ProofLocation::InstructionOffset(offset(-3), &proof_data.percentage_with_cap_proof_data),
+        ProofLocation::InstructionOffset(
+            offset(-2),
+            &proof_data.fee_ciphertext_validity_proof_data,
+        ),
+        ProofLocation::InstructionOffset(offset(-1), &proof_data.range_proof_data),
+    )
+    .map_err(|e| Error::Other(format!("build transfer_with_fee instruction: {e}")))?;
+    Ok(vec![
+        ProofInstruction::VerifyCiphertextCommitmentEquality
+            .encode_verify_proof(None, &proof_data.equality_proof_data),
+        ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
+            .encode_verify_proof(None, &validity.proof_data),
+        ProofInstruction::VerifyPercentageWithCap
+            .encode_verify_proof(None, &proof_data.percentage_with_cap_proof_data),
+        ProofInstruction::VerifyBatchedGroupedCiphertext2HandlesValidity
+            .encode_verify_proof(None, &proof_data.fee_ciphertext_validity_proof_data),
+        ProofInstruction::VerifyBatchedRangeProofU256
+            .encode_verify_proof(None, &proof_data.range_proof_data),
+        transfer,
+    ])
+}
+
+/// Relative instruction offset of an inline proof (never zero here).
+fn offset(n: i8) -> NonZeroI8 {
+    NonZeroI8::new(n).expect("inline proof offsets are non-zero")
 }
 
 /// Stage `proof_bytes` into a fresh spl-record account in tx-sized chunks. The
@@ -803,6 +980,7 @@ async fn stage_range_proof_record(
     // tx 1: create + initialize + write first chunk.
     txs.push(
         partial_sign_tx(
+            TxVersion::V0,
             signer,
             payer,
             &[record_account],
@@ -840,7 +1018,9 @@ async fn stage_range_proof_record(
             extra.extend_from_slice(trailing_signers);
             trailing_attached = true;
         }
-        txs.push(partial_sign_tx(signer, payer, &extra, &ixs, blockhash, None).await?);
+        txs.push(
+            partial_sign_tx(TxVersion::V0, signer, payer, &extra, &ixs, blockhash, None).await?,
+        );
         offset += chunk.len() as u64;
     }
 
@@ -848,6 +1028,7 @@ async fn stage_range_proof_record(
     if !trailing_attached {
         txs.push(
             partial_sign_tx(
+                TxVersion::V0,
                 signer,
                 payer,
                 trailing_signers,
@@ -869,23 +1050,16 @@ async fn stage_range_proof_record(
 /// left empty (all-zero) for the gateway to co-sign at settlement. Returns the
 /// base64-encoded serialized partially-signed transaction.
 async fn partial_sign_tx(
+    version: TxVersion,
     signer: &dyn TransactionSigner,
     fee_payer: &Pubkey,
     extra: &[&Keypair],
     instructions: &[Instruction],
     blockhash: Hash,
-    budget: Option<&crate::core::tx::ComputeBudget>,
+    budget: Option<&ComputeBudget>,
 ) -> Result<String, Error> {
-    // The confidential bundle stays on version 0: its shape is the
-    // record-chunked proof staging that the 1232-byte limit forces, and
-    // collapsing it into one version-1 transaction is a separate change.
-    let mut tx = crate::core::tx::build_unsigned(
-        crate::core::tx::TxVersion::V0,
-        fee_payer,
-        instructions,
-        blockhash,
-        budget,
-    )?;
+    let mut tx =
+        crate::core::tx::build_unsigned(version, fee_payer, instructions, blockhash, budget)?;
 
     // Sign the sender slot only when the sender is a required signer on this tx
     // (the final transfer's authority). The proof/record-account txs have no
@@ -1076,6 +1250,7 @@ mod tests {
             &Pubkey::new_unique(),
         );
         let b64 = partial_sign_tx(
+            TxVersion::V0,
             signer.as_ref(),
             &gateway,
             &[&eph],
@@ -1104,9 +1279,17 @@ mod tests {
         let gateway = Pubkey::new_unique();
         // Transfer makes `sender` a required signer; gateway is the fee payer.
         let ix = system_instruction::transfer(&sender, &gateway, 1);
-        let b64 = partial_sign_tx(&signer, &gateway, &[], &[ix], Hash::default(), None)
-            .await
-            .unwrap();
+        let b64 = partial_sign_tx(
+            TxVersion::V0,
+            &signer,
+            &gateway,
+            &[],
+            &[ix],
+            Hash::default(),
+            None,
+        )
+        .await
+        .unwrap();
         let tx = decode_tx(&b64);
         let keys = tx.message.static_account_keys();
 

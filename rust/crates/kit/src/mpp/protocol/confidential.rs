@@ -776,6 +776,135 @@ mod tests {
             Some(amount),
             "a non-recipient key must not recover the amount"
         );
+
+        // ---------------------------------------------------------------
+        // 6. Version 1: the same transfer as ONE transaction, every proof
+        //    verified inline. This is what the client emits when the challenge
+        //    accepts version 1: the server allow-list must admit it and it must
+        //    execute within the CU limit the client requests.
+        // ---------------------------------------------------------------
+        use crate::core::tx::{self as tx, ComputeBudget, TxVersion};
+        use crate::mpp::client::confidential::{
+            inline_transfer_instructions, CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT,
+        };
+
+        let sender_acc = svm.get_account(&sender_ata).unwrap();
+        let sender_state = StateWithExtensions::<TokenAccount>::unpack(&sender_acc.data).unwrap();
+        let sender_ext = sender_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        let current_available: solana_zk_sdk::encryption::elgamal::ElGamalCiphertext = {
+            let bytes: [u8; 64] = bytemuck::bytes_of(&sender_ext.available_balance)
+                .try_into()
+                .unwrap();
+            solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext(bytes)
+                .try_into()
+                .unwrap()
+        };
+        let current_decryptable =
+            solana_zk_sdk::encryption::auth_encryption::AeCiphertext::from_bytes(
+                bytemuck::bytes_of(&sender_ext.decryptable_available_balance),
+            )
+            .unwrap();
+        assert_eq!(current_decryptable.decrypt(&sender_ae), Some(new_avail));
+        let proof = transfer_split_proof_data(
+            &current_available,
+            &current_decryptable,
+            amount,
+            &sender_elgamal,
+            &sender_ae,
+            &recipient_elgamal_pubkey,
+            None,
+        )
+        .expect("generate split-transfer proofs");
+        let new_decryptable =
+            cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(new_avail - amount));
+        let ixs = inline_transfer_instructions(
+            &token_program,
+            &sender_ata,
+            &mint.pubkey(),
+            &recipient_ata,
+            &sender.pubkey(),
+            &proof,
+            &new_decryptable,
+        )
+        .unwrap();
+
+        let budget = ComputeBudget::new(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
+        let blockhash = svm.latest_blockhash();
+        assert!(
+            tx::build_unsigned(
+                TxVersion::V0,
+                &payer.pubkey(),
+                &ixs,
+                blockhash,
+                Some(&budget)
+            )
+            .is_err(),
+            "inline proofs must not fit a version-0 transaction"
+        );
+        let mut v1 = tx::build_unsigned(
+            TxVersion::V1,
+            &payer.pubkey(),
+            &ixs,
+            blockhash,
+            Some(&budget),
+        )
+        .unwrap();
+        let msg = v1.message.serialize();
+        for kp in [&payer, &sender] {
+            let idx = v1
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| *k == kp.pubkey())
+                .unwrap();
+            v1.signatures[idx] = kp.sign_message(&msg);
+        }
+        let size = tx::serialized_size(&v1).unwrap();
+        assert!(size > 1232 && size <= 4096, "{size}");
+
+        // The gateway's allow-list admits it as exactly one transfer to the recipient.
+        #[cfg(feature = "server")]
+        assert_eq!(
+            crate::mpp::server::confidential::verify_confidential_bundle_tx(
+                &v1,
+                &payer.pubkey(),
+                &token_program,
+                &recipient_ata,
+                &[TxVersion::V1],
+            )
+            .unwrap(),
+            1
+        );
+
+        let meta = svm
+            .send_transaction(v1)
+            .unwrap_or_else(|e| panic!("inline V1 confidential transfer failed: {:?}", e.err));
+        eprintln!(
+            "inline V1 confidential transfer: {size} bytes, {} CU",
+            meta.compute_units_consumed
+        );
+        assert!(
+            meta.compute_units_consumed
+                <= u64::from(CONFIDENTIAL_INLINE_TRANSFER_COMPUTE_UNIT_LIMIT)
+        );
+
+        let recipient_acc = svm.get_account(&recipient_ata).unwrap();
+        let recipient_state =
+            StateWithExtensions::<TokenAccount>::unpack(&recipient_acc.data).unwrap();
+        let recipient_ext = recipient_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        assert_eq!(
+            recover_split_amount(
+                &recipient_elgamal,
+                bytemuck::bytes_of(&recipient_ext.pending_balance_lo),
+                bytemuck::bytes_of(&recipient_ext.pending_balance_hi),
+            ),
+            Some(2 * amount),
+            "recipient recovers both transfers with its own key"
+        );
     }
 
     /// The auditor (verifying server) recovers the exact transferred amount

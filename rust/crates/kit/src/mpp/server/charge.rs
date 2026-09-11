@@ -37,7 +37,6 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::str::FromStr;
 
 use crate::core::tx::{TxV1Mode, TxVersion};
@@ -1428,7 +1427,7 @@ impl Mpp {
 
         let tx = self
             .rpc
-            .get_transaction(&signature, UiTransactionEncoding::JsonParsed)
+            .get_transaction_with_config(&signature, crate::core::rpc::parsed_transaction_config())
             .map_err(|e| {
                 if e.to_string().contains("not found") {
                     VerificationError::not_found("Transaction not found or not yet confirmed")
@@ -3893,6 +3892,41 @@ mod tests {
             &gateway,
         );
         assert_eq!(verify(&ok2).unwrap(), 1);
+
+        // OK (version 1): proofs verified inline with no context account —
+        // zero accounts, nothing persistent, so there is no authority to pin.
+        let zk_verify_no_context = Instruction {
+            program_id: zk,
+            accounts: vec![],
+            data: vec![1u8; 64],
+        };
+        let inline_v1 = crate::core::tx::build_unsigned_unchecked(
+            TxVersion::V1,
+            &gateway,
+            &[
+                zk_verify_no_context.clone(),
+                zk_verify_no_context.clone(),
+                zk_verify_no_context.clone(),
+                ct_transfer(recipient_ata),
+            ],
+            Hash::default(),
+            Some(&crate::core::tx::ComputeBudget::new(1_000_000, 0)),
+        )
+        .unwrap();
+        assert_eq!(verify(&inline_v1).unwrap(), 1);
+        assert_eq!(
+            verify(&vtx(vec![zk_verify_no_context], &gateway)).unwrap(),
+            0
+        );
+        // REJECT: a version-1 bundle when the server only accepts version 0.
+        assert!(verify_confidential_bundle_tx(
+            &inline_v1,
+            &gateway,
+            &token_program,
+            &recipient_ata,
+            &[TxVersion::V0],
+        )
+        .is_err());
 
         // REJECT: ZK verify (inline) that sets an attacker as context authority —
         // it could close the gateway-funded account externally and drain the rent.

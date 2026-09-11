@@ -51,12 +51,8 @@ testkit = ["dep:reqwest"]
 # Generated program-client account fetch helpers (RPC). Off by default — the
 # pay-kit protocol layers only use instruction/type builders.
 fetch = ["dep:solana-account"]
-# Opt-in gate for the in-tree confidential-transfer unit tests that drive the
-# real ZK ElGamal Proof program inside litesvm. These need `litesvm` as a
-# dev-dependency, which is deliberately NOT declared here: the on-chain tests
-# live in the unpublished `paykit-integration-tests` crate so `cargo publish`
-# stays lean. To run them, add litesvm as a dev-dep and build with
-# `--features confidential,litesvm-tests`.
+# Opt-in gate for the in-tree confidential-transfer tests that drive the real
+# ZK ElGamal Proof program inside litesvm: `--features confidential,litesvm-tests`.
 litesvm-tests = ["confidential"]
 # Reusable OpenTelemetry init (console + OTLP traces/metrics).
 otel = [
@@ -186,9 +182,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 thiserror = "2"
 
 [dev-dependencies]
-# Kept lean so `cargo publish` resolves without the workspace litesvm patch.
-# The on-chain (surfpool/litesvm) tests live in the separate, unpublished
-# `paykit-integration-tests` crate.
+# litesvm 0.16 shares the kit's solana-address pins, so it can be a plain
+# dev-dependency; it executes version-1 transactions and the ZK ElGamal Proof
+# program, which the `litesvm-tests` confidential tests rely on.
+litesvm = "0.16"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }

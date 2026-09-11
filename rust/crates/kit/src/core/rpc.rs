@@ -15,7 +15,9 @@
 use std::time::Duration;
 
 use serde_json::json;
-use solana_client::rpc_config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
+use solana_client::rpc_config::{
+    RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig,
+};
 use solana_client::rpc_request::RpcRequest;
 use solana_client::rpc_response::{Response, RpcSimulateTransactionResult};
 use solana_commitment_config::CommitmentConfig;
@@ -44,6 +46,18 @@ pub(crate) const SKIP_PREFLIGHT_SEND: RpcSendPolicy = RpcSendPolicy {
     name: "skip_preflight",
     skip_preflight: true,
 };
+
+/// `getTransaction` config for reading back a settlement: JSON-parsed, and
+/// explicitly accepting transaction version 1. Without
+/// `maxSupportedTransactionVersion` the RPC refuses to return any versioned
+/// transaction, and with `0` it refuses version 1.
+pub fn parsed_transaction_config() -> RpcTransactionConfig {
+    RpcTransactionConfig {
+        encoding: Some(UiTransactionEncoding::JsonParsed),
+        commitment: None,
+        max_supported_transaction_version: Some(1),
+    }
+}
 
 /// Node-default preflight at the client's commitment: what
 /// `RpcClient::send_transaction` does.

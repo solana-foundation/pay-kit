@@ -21,9 +21,10 @@ use super::charge::{
     VerificationError, COMPUTE_BUDGET_PROGRAM, MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
 };
 
-/// Upper bound on transactions in a gateway-paid confidential bundle. The
+/// Upper bound on transactions in a gateway-paid confidential bundle. A
+/// version-1 bundle is one transaction (proofs verified inline); the version-0
 /// builder emits ~5 (3 proof contexts + range-proof record staging + the
-/// transfer/close tx); the headroom covers multi-chunk range-proof writes.
+/// transfer/close tx), and the headroom covers multi-chunk range-proof writes.
 #[cfg(feature = "confidential")]
 pub(crate) const MAX_CONFIDENTIAL_BUNDLE_TXS: usize = 16;
 /// ZK ElGamal Proof program id (proof verification + close_context_state).
@@ -37,11 +38,24 @@ pub(crate) const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof111111111111111
 pub(crate) const MAX_CT_CREATE_ACCOUNT_SPACE: u64 = 4096;
 #[cfg(feature = "confidential")]
 pub(crate) const MAX_CT_CREATE_ACCOUNT_LAMPORTS: u64 = 50_000_000; // ~0.05 SOL
-/// Max base64 length of a single bundle transaction. Each tx must fit Solana's
-/// 1232-byte wire limit (~1644 base64 chars); this caps decode/deserialize
-/// allocation so a client can't force large allocations with oversized strings.
+/// Max base64 length of a single bundle transaction, by the largest accepted
+/// version: 1232 wire bytes (~1644 base64 chars) for version 0, 4096 (5464)
+/// for version 1. Caps decode/deserialize allocation so a client can't force
+/// large allocations with oversized strings; the exact per-version byte limit
+/// is enforced on the decoded transaction.
 #[cfg(feature = "confidential")]
 pub(crate) const MAX_BUNDLE_TX_BASE64_LEN: usize = 2048;
+#[cfg(feature = "confidential")]
+pub(crate) const MAX_BUNDLE_TX_BASE64_LEN_V1: usize = 5464;
+
+#[cfg(feature = "confidential")]
+pub(crate) fn max_bundle_tx_base64_len(accepted: &[crate::core::tx::TxVersion]) -> usize {
+    if accepted.contains(&crate::core::tx::TxVersion::V1) {
+        MAX_BUNDLE_TX_BASE64_LEN_V1
+    } else {
+        MAX_BUNDLE_TX_BASE64_LEN
+    }
+}
 /// Confirmation polling for confidential bundle submission and orphan close:
 /// poll `confirm_transaction` up to N times, sleeping between attempts.
 #[cfg(feature = "confidential")]
@@ -210,13 +224,14 @@ impl Mpp {
         // transfer destination is checked here — all before co-signing in pass 2.
         let mut decoded: Vec<VersionedTransaction> = Vec::with_capacity(transactions.len());
         let mut transfer_count = 0usize;
+        let max_b64 = max_bundle_tx_base64_len(&self.accepted_versions);
         for (idx, tx_b64) in transactions.iter().enumerate() {
             // Bound the per-tx string before decoding so a client can't force a
             // large allocation with a multi-MB base64 blob (each real bundle tx
-            // is well under the 1232-byte wire limit).
-            if tx_b64.len() > MAX_BUNDLE_TX_BASE64_LEN {
+            // is under the accepted versions' wire limit).
+            if tx_b64.len() > max_b64 {
                 return Err(VerificationError::invalid_payload(format!(
-                    "Bundle tx {idx} exceeds the {MAX_BUNDLE_TX_BASE64_LEN}-byte base64 cap"
+                    "Bundle tx {idx} exceeds the {max_b64}-byte base64 cap"
                 )));
             }
             let tx_bytes =
@@ -772,6 +787,11 @@ pub(crate) fn verify_confidential_bundle_tx(
                         "close_context_state must return rent to and be authorized by the gateway",
                     ));
                 }
+            } else if ix.accounts.is_empty() {
+                // Verify without a context account: the proof is checked from
+                // instruction data and nothing persistent is written, so there
+                // is no authority to pin. A version-1 bundle carries all of its
+                // proofs this way.
             } else {
                 // Verify-with-context. The context_state_authority sits at a
                 // fixed index that depends on where the proof is read from — the
@@ -781,9 +801,7 @@ pub(crate) fn verify_confidential_bundle_tx(
                 //   * proof in a separate account → [proof, context(w), authority]
                 // The from-account form is the one whose data is just the
                 // discriminant + a u32 byte offset (5 bytes); inline proof data
-                // is hundreds of bytes. A context-less verify writes no
-                // persistent account, so it has no authority slot at that index
-                // and is rejected (the builder always verifies into a context).
+                // is hundreds of bytes.
                 let authority_index = if ix.data.len() == 5 { 2 } else { 1 };
                 let auth = ix
                     .accounts

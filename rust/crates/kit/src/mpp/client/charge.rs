@@ -459,6 +459,9 @@ pub async fn build_charge_transaction_with_options(
                 recipient,
                 &fee_payer,
                 blockhash,
+                crate::core::tx::highest(crate::core::tx::accepted_versions(
+                    method_details.transaction_versions.as_deref(),
+                )),
             )
             .await;
         }
