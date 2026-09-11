@@ -486,8 +486,8 @@ def _top_up_scenario(*, deposit_after: int) -> tuple[TopUpPayload, ChannelState,
             program_id=PROGRAM_ID,
         )
     )
-    transaction = Transaction(
-        [payer], Message.new_with_blockhash([instruction], payer.pubkey(), Hash.default()), Hash.default()
+    transaction = VersionedTransaction(
+        MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default()), [payer]
     )
     payload = TopUpPayload(str(channel), "250", base64.b64encode(bytes(transaction)).decode())
     body = Channel.layout.build(

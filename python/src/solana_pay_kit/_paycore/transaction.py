@@ -2,10 +2,14 @@
 
 Lives in ``_paycore`` (the shared core, mirroring the Rust ``core`` crate) so
 neither protocol package depends on the other: x402 and MPP both import the v0
-detector from here rather than reaching across into each other.
+detector and the v0 client builder from here rather than reaching across into
+each other.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from typing import Any
 
 
 def is_v0_wire_bytes(raw: bytes) -> bool:
@@ -50,3 +54,37 @@ def is_v0_wire_bytes(raw: bytes) -> bool:
     # MessageV0 prefix is 0x80 | version; legacy header byte
     # (num_required_signatures) never sets the MSB for any realistic tx.
     return (raw[msg_start] & 0x80) != 0
+
+
+def build_partially_signed_v0_transaction(
+    instructions: Sequence[Any],
+    fee_payer: Any,
+    blockhash: Any,
+    signer_pubkey: Any,
+    sign: Callable[[bytes], bytes],
+) -> bytes:
+    """Compile a v0 message, sign only ``signer_pubkey``'s slot, return the wire.
+
+    ``fee_payer`` becomes ``account_keys[0]``; every other required-signer slot
+    is left as the zero placeholder for a server-side cosign. The signature
+    covers ``to_bytes_versioned(message)`` (``0x80`` prefix + v0 body), which
+    is what the wire carries. Legacy ``Message`` encodings are rejected by the
+    Rust servers, so every client path emits through here.
+    """
+    from solders.message import MessageV0, to_bytes_versioned  # type: ignore[import-untyped]
+    from solders.signature import Signature  # type: ignore[import-untyped]
+    from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
+
+    message = MessageV0.try_compile(fee_payer, list(instructions), [], blockhash)
+    num_required = int(message.header.num_required_signatures)
+    signer_keys = list(message.account_keys)[:num_required]
+    try:
+        signer_index = signer_keys.index(signer_pubkey)
+    except ValueError as exc:
+        raise ValueError("solana_pay_kit: signer is not a required signer of the transaction") from exc
+    sig = bytes(sign(bytes(to_bytes_versioned(message))))
+    if len(sig) != 64:
+        raise ValueError(f"solana_pay_kit: signature length {len(sig)}, want 64")
+    signatures = [Signature.default() for _ in range(num_required)]
+    signatures[signer_index] = Signature.from_bytes(sig)
+    return bytes(VersionedTransaction.populate(message, signatures))

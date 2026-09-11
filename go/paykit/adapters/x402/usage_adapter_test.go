@@ -316,7 +316,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
 	blockhash := solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
-	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(operatorKey.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(operatorKey.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}

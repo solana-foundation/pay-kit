@@ -354,9 +354,9 @@ public enum Charge {
             )
         }
 
-        // Compile + sign (legacy message form, matching the spine).
+        // Compile + sign as a v0 message; the Rust servers reject legacy.
         let message = try TransactionBuilder.compile(
-            version: .legacy,
+            version: .v0,
             feePayer: actualFeePayer,
             instructions: instructions,
             recentBlockhash: blockhash

@@ -69,7 +69,7 @@ func TestSignEncodeDecodeTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, blockhash, solana.TransactionPayer(signer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx failed: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestWaitSimulateSendFetchTransaction(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	transfer, _ := BuildSOLTransfer(signer.PublicKey(), recipient, 1000)
-	tx, _ := solana.NewTransaction([]solana.Instruction{transfer}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{transfer}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
 	_ = SignTransaction(tx, signer)
 	if err := SimulateTransaction(context.Background(), rpcClient, tx); err != nil {
 		t.Fatalf("simulate failed: %v", err)
@@ -361,7 +361,7 @@ func TestSignTransactionRejectsSignerFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx failed: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestSignTransactionRejectsUnexpectedSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx failed: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestSignTransactionSignerError(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(payer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err := SignTransaction(tx, signerErr{pub: payer.PublicKey()}); err == nil {
 		t.Fatal("expected signer error")
 	}
@@ -578,7 +578,7 @@ func TestSignTransactionWrongSigner(t *testing.T) {
 	stranger := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(payer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err := SignTransaction(tx, stranger); err == nil {
 		t.Fatal("expected signer-not-required error")
 	}
@@ -590,7 +590,7 @@ func TestSimulateTransactionRPCError(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(signer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
 	_ = SignTransaction(tx, signer)
 	if err := SimulateTransaction(context.Background(), rpcClient, tx); err == nil {
 		t.Fatal("expected simulate rpc error")
@@ -609,7 +609,7 @@ func TestSimulateTransactionValueError(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	ix, _ := BuildSOLTransfer(signer.PublicKey(), recipient, 1)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	tx, _ := NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(signer.PublicKey()))
 	_ = SignTransaction(tx, signer)
 	if err := SimulateTransaction(context.Background(), rpcClient, tx); err == nil {
 		t.Fatal("expected simulate value error")
@@ -719,3 +719,49 @@ func TestBuildCreateAssociatedTokenAccountFindError(t *testing.T) {
 // Reference rpc to silence unused import in older Go versions.
 var _ = rpc.CommitmentConfirmed
 var _ = paycore.MemoProgram
+
+func TestNewV0TransactionEmitsVersionedWire(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	transfer, err := BuildSOLTransfer(signer.PublicKey(), recipient, 1000)
+	if err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	if err != nil {
+		t.Fatalf("tx failed: %v", err)
+	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("version = %v, want v0", tx.Message.GetVersion())
+	}
+	if err := SignTransaction(tx, signer); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal message: %v", err)
+	}
+	if message[0] != 0x80 {
+		t.Fatalf("message prefix = %#x, want 0x80 (v0)", message[0])
+	}
+	if message[len(message)-1] != 0 {
+		t.Fatalf("trailing address-table-lookups count = %d, want 0", message[len(message)-1])
+	}
+	encoded, err := EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	decoded, err := DecodeTransactionBase64(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("decoded version = %v, want v0", decoded.Message.GetVersion())
+	}
+	if len(decoded.Message.AddressTableLookups) != 0 {
+		t.Fatalf("lookups = %d, want 0", len(decoded.Message.AddressTableLookups))
+	}
+	if !decoded.Signatures[0].Verify(signer.PublicKey(), message) {
+		t.Fatal("signature does not verify against the v0 message bytes")
+	}
+}

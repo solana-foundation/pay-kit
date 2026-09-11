@@ -610,7 +610,7 @@ func TestCosignPassthroughWhenOperatorAbsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	bh := solana.MustHashFromBase58(testutil.NewPrivateKey().PublicKey().String())
-	tx, err := solana.NewTransaction([]solana.Instruction{memo}, bh, solana.TransactionPayer(payer))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{memo}, bh, solana.TransactionPayer(payer))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -92,7 +92,7 @@ class PaymentChannelsOpenAccountsTest {
         // rentPayer (operator) leads the writable-signer bucket at index 0, the
         // payer follows at index 1. A single operator signature covers both the
         // fee-payer and rentPayer signer roles, so feePayer appears exactly once.
-        val message = Transaction.buildLegacyMessage(
+        val message = Transaction.buildV0Message(
             feePayer,
             ByteArray(32) { 0x11 },
             listOf(
@@ -119,7 +119,11 @@ class PaymentChannelsOpenAccountsTest {
         assertEquals(PublicKey(payerSigner.publicKeyBytes).toBase58(), message.accountKeys[1].toBase58())
         assertEquals(1, message.accountKeys.count { it.bytes.contentEquals(feePayer.bytes) })
 
-        // The serialized tx is well-formed and decodes back to base64.
-        assertTrue(tx.transaction.isNotEmpty())
+        // The serialized tx is well-formed: two signature slots followed by a
+        // v0 versioned message (0x80 prefix), never a legacy message.
+        val raw = java.util.Base64.getDecoder().decode(tx.transaction)
+        assertEquals(2.toByte(), raw[0])
+        assertEquals(0x80.toByte(), raw[1 + 2 * 64], "open transaction must be a v0 message")
+        assertEquals(0.toByte(), raw.last(), "v0 message must end with zero address-table lookups")
     }
 }

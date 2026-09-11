@@ -1231,7 +1231,7 @@ func buildServerCompletedOpenFixture(t *testing.T, operator solana.PrivateKey) o
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
 	blockhash := solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(operator.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(operator.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}

@@ -62,10 +62,15 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = fee_payer.pubkey()
 
-    # Try legacy transaction first (the common path); fall back to versioned.
-    try:
-        tx = Transaction.from_bytes(raw)
-    except Exception:
+    # Route v0 wire bytes straight to VersionedTransaction: the legacy parser
+    # is lenient and can mis-parse a v0 message (see is_v0_wire_bytes).
+    tx = None
+    if not is_v0_wire_bytes(raw):
+        try:
+            tx = Transaction.from_bytes(raw)
+        except Exception:
+            tx = None
+    if tx is None:
         try:
             vtx = VersionedTransaction.from_bytes(raw)
         except Exception as exc:

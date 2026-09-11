@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.instruction import Instruction  # type: ignore[import-untyped]
-from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.paymentchannels import (
@@ -29,6 +28,7 @@ from solana_pay_kit._paycore.paymentchannels import (
     find_channel_pda,
 )
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_PROGRAM
+from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
 from solana_pay_kit.protocols.x402.upto.types import (
     UPTO_SCHEME,
@@ -228,19 +228,7 @@ def _build_payer_signed_open(
     blockhash: Hash,
     signer: LocalSigner,
 ) -> str:
-    """Assemble the open transaction with the advertised fee payer, signed only
-    in the client's (payer) slot. Returns base64 wire."""
-    message = Message.new_with_blockhash(instructions, fee_payer, blockhash)
-    account_keys = list(message.account_keys)
-    num_required = int(message.header.num_required_signatures)
-    try:
-        payer_idx = account_keys.index(payer)
-    except ValueError as exc:  # pragma: no cover - the open instruction always includes the payer
-        raise ValueError("x402 client: payer not present in open transaction accounts") from exc
-    message_bytes = bytes(message)
-    payer_sig = bytes(signer.sign(message_bytes))
-    signatures = bytearray(64 * num_required)
-    signatures[payer_idx * 64 : payer_idx * 64 + 64] = payer_sig
-    # Single-byte shortvec count (num_required is always small).
-    wire = bytes([num_required]) + bytes(signatures) + message_bytes
+    """Assemble the v0 open transaction with the advertised fee payer, signed
+    only in the client's (payer) slot. Returns base64 wire."""
+    wire = build_partially_signed_v0_transaction(instructions, fee_payer, blockhash, payer, signer.sign)
     return base64.b64encode(wire).decode("ascii")

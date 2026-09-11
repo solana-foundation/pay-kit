@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from solders.hash import Hash
 from solders.keypair import Keypair
-from solders.transaction import Transaction
+from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from solana_pay_kit._paycore.solana import (
@@ -18,6 +18,7 @@ from solana_pay_kit._paycore.solana import (
     MethodDetails,
     Split,
 )
+from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
 from solana_pay_kit.protocols.mpp.client.charge import (
     build_charge_transaction,
     build_credential_header,
@@ -31,7 +32,7 @@ BLOCKHASH = "11111111111111111111111111111111"
 
 def _spl_transfers(transaction_b64: str, token_program: str) -> list[tuple[str, int, int]]:
     """Return (dest_ata, amount, decimals) for each TransferChecked (disc 12)."""
-    tx = Transaction.from_bytes(base64.b64decode(transaction_b64))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
     keys = tx.message.account_keys
     out: list[tuple[str, int, int]] = []
     for ix in tx.message.instructions:
@@ -48,7 +49,7 @@ def _spl_transfers(transaction_b64: str, token_program: str) -> list[tuple[str, 
 
 
 def _has_create_ata(transaction_b64: str) -> bool:
-    tx = Transaction.from_bytes(base64.b64decode(transaction_b64))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
     keys = tx.message.account_keys
     return any(
         str(keys[ix.program_id_index]) == ASSOCIATED_TOKEN_PROGRAM and bytes(ix.data) == bytes([1])
@@ -57,7 +58,7 @@ def _has_create_ata(transaction_b64: str) -> bool:
 
 
 def _memo_texts(transaction_b64: str) -> list[str]:
-    tx = Transaction.from_bytes(base64.b64decode(transaction_b64))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
     account_keys = tx.message.account_keys
     memos: list[str] = []
     for instruction in tx.message.instructions:
@@ -164,8 +165,8 @@ async def test_build_charge_transaction_rejects_splits_that_exhaust_total():
 COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
 
 
-def _instructions(transaction_b64: str) -> tuple[Transaction, list]:
-    tx = Transaction.from_bytes(base64.b64decode(transaction_b64))
+def _instructions(transaction_b64: str) -> tuple[VersionedTransaction, list]:
+    tx = VersionedTransaction.from_bytes(base64.b64decode(transaction_b64))
     return tx, list(tx.message.instructions)
 
 
@@ -215,7 +216,7 @@ async def test_build_charge_transaction_sponsored_fee_payer_is_message_slot_zero
             fee_payer_key=fee_payer,
         ),
     )
-    tx = Transaction.from_bytes(base64.b64decode(payload.transaction))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(payload.transaction))
     keys = [str(k) for k in tx.message.account_keys]
     assert keys[0] == fee_payer
     # Two required signers (fee payer slot + client); the client slot is signed,
@@ -227,6 +228,27 @@ async def test_build_charge_transaction_sponsored_fee_payer_is_message_slot_zero
     client_index = keys.index(str(signer.pubkey()))
     assert sigs[fee_payer_index] == sigs[fee_payer_index].default()
     assert sigs[client_index] != sigs[client_index].default()
+
+
+async def test_build_charge_transaction_emits_v0_message():
+    # The Rust servers reject legacy messages: the wire must carry the v0
+    # version prefix (0x80) as the first message byte after the signatures.
+    signer = Keypair()
+    payload = await build_charge_transaction(
+        signer=signer,
+        rpc_client=None,
+        amount="1000",
+        currency="sol",
+        recipient=str(Keypair().pubkey()),
+        method_details=MethodDetails(recent_blockhash=BLOCKHASH),
+    )
+    raw = base64.b64decode(payload.transaction)
+    assert is_v0_wire_bytes(raw)
+    num_signatures = raw[0]
+    assert raw[1 + 64 * num_signatures] == 0x80
+    # And it round-trips through the versioned decoder as a real v0 message.
+    tx = VersionedTransaction.from_bytes(raw)
+    assert type(tx.message).__name__ == "MessageV0"
 
 
 async def test_build_charge_transaction_unsponsored_signs_signer_at_slot_zero():
@@ -241,7 +263,7 @@ async def test_build_charge_transaction_unsponsored_signs_signer_at_slot_zero():
         recipient=recipient,
         method_details=MethodDetails(recent_blockhash=BLOCKHASH),
     )
-    tx = Transaction.from_bytes(base64.b64decode(payload.transaction))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(payload.transaction))
     keys = [str(k) for k in tx.message.account_keys]
     assert keys[0] == str(signer.pubkey())
     assert int(tx.message.header.num_required_signatures) == 1
@@ -375,7 +397,7 @@ async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
         method_details=MethodDetails(recent_blockhash=BLOCKHASH, decimals=6),
     )
 
-    tx = Transaction.from_bytes(base64.b64decode(payload.transaction))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(payload.transaction))
     transfer_checked = [bytes(ix.data) for ix in tx.message.instructions if bytes(ix.data)[:1] == b"\x0c"]
     assert len(transfer_checked) == 1
     data = transfer_checked[0]

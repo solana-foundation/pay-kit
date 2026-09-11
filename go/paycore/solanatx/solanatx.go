@@ -120,6 +120,18 @@ func FindAssociatedTokenAddressWithProgram(wallet, mint, tokenProgram solana.Pub
 	return address, err
 }
 
+// NewV0Transaction assembles a version 0 transaction with only static
+// account keys (no address-table lookups). Servers reject legacy messages,
+// so every client path builds through here.
+func NewV0Transaction(instructions []solana.Instruction, recentBlockhash solana.Hash, opts ...solana.TransactionOption) (*solana.Transaction, error) {
+	tx, err := solana.NewTransaction(instructions, recentBlockhash, opts...)
+	if err != nil {
+		return nil, err
+	}
+	tx.Message.SetVersion(solana.MessageVersionV0)
+	return tx, nil
+}
+
 // EncodeTransactionBase64 returns a base64 wire transaction.
 func EncodeTransactionBase64(tx *solana.Transaction) (string, error) {
 	wire, err := tx.MarshalBinary()

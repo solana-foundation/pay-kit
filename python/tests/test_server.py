@@ -8,10 +8,11 @@ import pytest
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
-from solders.message import Message
+from solders.message import MessageV0
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.system_program import TransferParams, transfer
-from solders.transaction import Transaction
+from solders.transaction import VersionedTransaction
 
 from solana_pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
@@ -78,9 +79,8 @@ def _build_sol_transaction(recipient: str, lamports: int, memo: str = "") -> str
         instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
     blockhash = Hash.from_string(TEST_BLOCKHASH)
-    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-    transaction = Transaction.new_unsigned(message)
-    transaction.sign([signer], blockhash)
+    message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+    transaction = VersionedTransaction(message, [signer])
 
     import base64
 
@@ -116,9 +116,8 @@ def _build_spl_transfer_checked_transaction(
         instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
     blockhash = Hash.from_string(TEST_BLOCKHASH)
-    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-    transaction = Transaction.new_unsigned(message)
-    transaction.sign([signer], blockhash)
+    message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+    transaction = VersionedTransaction(message, [signer])
 
     import base64
 
@@ -889,9 +888,8 @@ class TestMemoV1Rejected:
             ),
         ]
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([signer], blockhash)
+        message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [signer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1186,10 +1184,8 @@ class TestCoSignSplitBounds:
         from solders.hash import Hash
         from solders.instruction import AccountMeta, Instruction
         from solders.keypair import Keypair
-        from solders.message import Message
         from solders.pubkey import Pubkey
         from solders.system_program import TransferParams, transfer
-        from solders.transaction import Transaction
 
         from solana_pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
@@ -1219,9 +1215,8 @@ class TestCoSignSplitBounds:
         )
 
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([transfer_ix, touch_rogue], real_signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([real_signer], blockhash)
+        message = MessageV0.try_compile(real_signer.pubkey(), [transfer_ix, touch_rogue], [], blockhash)
+        transaction = VersionedTransaction(message, [real_signer])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1238,10 +1233,8 @@ class TestCoSignSplitBounds:
         # check did not regress the happy path.
         from solders.hash import Hash
         from solders.keypair import Keypair
-        from solders.message import Message
         from solders.pubkey import Pubkey
         from solders.system_program import TransferParams, transfer
-        from solders.transaction import Transaction
 
         from solana_pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
@@ -1256,9 +1249,9 @@ class TestCoSignSplitBounds:
             )
         )
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([ix], fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
+        message = MessageV0.try_compile(fee_payer.pubkey(), [ix], [], blockhash)
         # Leave the signature slot zeroed so cosign can fill it.
+        transaction = VersionedTransaction.populate(message, [Signature.default()])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1282,10 +1275,8 @@ class TestCoSignSplitBounds:
         """
         from solders.hash import Hash
         from solders.keypair import Keypair
-        from solders.message import Message
         from solders.pubkey import Pubkey
         from solders.system_program import TransferParams, transfer
-        from solders.transaction import Transaction
 
         from solana_pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
@@ -1307,9 +1298,8 @@ class TestCoSignSplitBounds:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
         # payer=real_signer keeps account_keys[0] = real_signer; the
         # transfer source becomes a second required signer at slot 1.
-        message = Message.new_with_blockhash([ix], real_signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([real_signer, rogue_fee_payer], blockhash)
+        message = MessageV0.try_compile(real_signer.pubkey(), [ix], [], blockhash)
+        transaction = VersionedTransaction(message, [real_signer, rogue_fee_payer])
 
         import base64
 
@@ -1344,9 +1334,8 @@ class TestComputeBudgetGuard:
             ),
         ]
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([signer], blockhash)
+        message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [signer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1484,9 +1473,8 @@ class TestInstructionAllowlist:
 
     def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -1872,9 +1860,8 @@ class TestFeePayerSourceDrainProtection:
 
     def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2048,9 +2035,8 @@ class TestFeePayerSourceDrainProtection:
         # Build with fee_payer as the tx fee-payer; sender co-signs the
         # SPL authority slot.
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([legit], fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer, sender], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), [legit], [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer, sender])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2074,9 +2060,8 @@ class TestFeePayerPubkeySourceOfTruth:
 
     def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([fee_payer], blockhash)
+        message = MessageV0.try_compile(fee_payer.pubkey(), instructions, [], blockhash)
+        transaction = VersionedTransaction(message, [fee_payer])
         import base64
 
         return base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2219,9 +2204,8 @@ class TestFeePayerPubkeySourceOfTruth:
             )
         )
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([payment], server_fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([server_fee_payer, sender], blockhash)
+        message = MessageV0.try_compile(server_fee_payer.pubkey(), [payment], [], blockhash)
+        transaction = VersionedTransaction(message, [server_fee_payer, sender])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
@@ -2268,9 +2252,8 @@ class TestFeePayerPubkeySourceOfTruth:
             token_program=TOKEN_PROGRAM,
         )
         blockhash = Hash.from_string(TEST_BLOCKHASH)
-        message = Message.new_with_blockhash([legit], server_fee_payer.pubkey(), blockhash)
-        transaction = Transaction.new_unsigned(message)
-        transaction.sign([server_fee_payer, sender], blockhash)
+        message = MessageV0.try_compile(server_fee_payer.pubkey(), [legit], [], blockhash)
+        transaction = VersionedTransaction(message, [server_fee_payer, sender])
         import base64
 
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")

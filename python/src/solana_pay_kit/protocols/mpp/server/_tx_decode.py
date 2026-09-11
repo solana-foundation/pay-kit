@@ -325,14 +325,18 @@ def _status_ok(response: Any) -> bool:
 def _extract_recent_blockhash(transaction_b64: str) -> str:
     """Decode a base64 transaction and return its recent blockhash (base58).
 
-    Tries the legacy ``Transaction`` first (the most common shape from our
-    SDK clients) and falls back to ``VersionedTransaction``. Kept thin so
-    the surrounding network check can be exercised by tests without a full
-    verification pipeline in place.
+    Routes v0 wire bytes straight to ``VersionedTransaction`` (the lenient
+    legacy parser can mis-read a v0 message and return a bogus blockhash, see
+    ``is_v0_wire_bytes``); otherwise tries legacy ``Transaction`` first and
+    falls back to ``VersionedTransaction``. Kept thin so the surrounding
+    network check can be exercised by tests without a full verification
+    pipeline in place.
     """
     from solders.transaction import Transaction, VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
+    if is_v0_wire_bytes(raw):
+        return str(VersionedTransaction.from_bytes(raw).message.recent_blockhash)
     try:
         tx = Transaction.from_bytes(raw)
         return str(tx.message.recent_blockhash)

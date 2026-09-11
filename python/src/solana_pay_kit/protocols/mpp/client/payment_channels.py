@@ -21,13 +21,12 @@ from typing import Any, cast
 
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
-from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
-from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.mints import resolve_stablecoin_mint
 from solana_pay_kit._paycore.solana import default_token_program_for_currency
+from solana_pay_kit._paycore.transaction import build_partially_signed_v0_transaction
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     Distribution,
     OpenChannelParams,
@@ -450,7 +449,7 @@ def _build_open_payment_channel_tx(
 ) -> PaymentChannelOpenTransaction:
     """Assemble the open message and partial-sign only the payer slot.
 
-    Builds a legacy transaction whose fee payer is the operator (its signature
+    Builds a v0 transaction whose fee payer is the operator (its signature
     slot left as the default placeholder) and whose payer signature slot is
     filled in, serialized as standard-alphabet base64 with padding.
     """
@@ -459,21 +458,17 @@ def _build_open_payment_channel_tx(
     # rentPayer is pinned to the operator / fee payer already in scope.
     open_params.rent_payer = fee_payer
     ix = build_open_instruction(open_params)
-    message = Message.new_with_blockhash([ix], fee_payer, blockhash)
-    message_bytes = bytes(message)
-
-    payer = _signer_pubkey(signer)
-    num_required = message.header.num_required_signatures
-    signer_keys = list(message.account_keys)[:num_required]
     try:
-        payer_index = signer_keys.index(payer)
+        wire = build_partially_signed_v0_transaction(
+            [ix],
+            fee_payer,
+            blockhash,
+            _signer_pubkey(signer),
+            lambda message: bytes(_sign_message(signer, message)),
+        )
     except ValueError as exc:
         raise ValueError("payment-channel open signing failed: payer is not a transaction signer") from exc
-
-    signatures = [Signature.default() for _ in range(num_required)]
-    signatures[payer_index] = _sign_message(signer, message_bytes)
-    tx = Transaction.populate(message, signatures)
-    encoded = base64.b64encode(bytes(tx)).decode("ascii")
+    encoded = base64.b64encode(wire).decode("ascii")
     return PaymentChannelOpenTransaction(channel_id=open_.channel_id, transaction=encoded)
 
 

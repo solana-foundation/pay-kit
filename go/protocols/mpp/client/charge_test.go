@@ -52,6 +52,9 @@ func TestBuildChargeTransactionSOLPull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("transaction version = %v, want v0", tx.Message.GetVersion())
+	}
 	if len(tx.Message.Instructions) != 3 {
 		t.Fatalf("expected 3 instructions, got %d", len(tx.Message.Instructions))
 	}

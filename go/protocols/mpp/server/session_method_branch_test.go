@@ -545,7 +545,7 @@ func buildRawOpenPayload(t *testing.T, accounts []*solana.AccountMeta, data []by
 	payer := testutil.NewPrivateKey()
 	ix := solana.NewInstruction(paymentchannels.ProgramPubkey(), accounts, data)
 	blockhash := solana.MustHashFromBase58("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}

@@ -43,6 +43,9 @@ func decodeOpenTransaction(t *testing.T, encoded string) *solana.Transaction {
 	if err != nil {
 		t.Fatalf("decode open transaction: %v", err)
 	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("open transaction version = %v, want v0", tx.Message.GetVersion())
+	}
 	return tx
 }
 

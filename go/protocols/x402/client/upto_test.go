@@ -94,6 +94,18 @@ func TestBuildUptoPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeTransactionBase64: %v", err)
 	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("open transaction version = %v, want v0", tx.Message.GetVersion())
+	}
+	// Servers reject legacy messages: the raw wire must carry the v0 prefix
+	// (0x80) right after the signature array.
+	wire, err := base64.StdEncoding.DecodeString(payload.OpenTransaction)
+	if err != nil {
+		t.Fatalf("decode wire: %v", err)
+	}
+	if messageStart := 1 + 64*int(wire[0]); wire[messageStart] != 0x80 {
+		t.Fatalf("message prefix = %#x, want 0x80 (v0)", wire[messageStart])
+	}
 	if !tx.Message.AccountKeys[0].Equals(feePayer) {
 		t.Fatalf("fee payer = %s, want %s", tx.Message.AccountKeys[0], feePayer)
 	}

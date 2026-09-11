@@ -109,7 +109,8 @@ object Charge {
      * 4. Insert compute-budget prefix (price 1, limit 200_000) in that
      *    order so the wire bytes match Rust's instruction ordering.
      * 5. Build SPL or SOL instruction sequence.
-     * 6. Compile to a legacy Solana message with the recent blockhash.
+     * 6. Compile to a v0 versioned Solana message with the recent blockhash
+     *    (servers reject legacy messages).
      * 7. Sign the message bytes with the signer's Ed25519 key. When a
      *    fee payer is set, the local signer's signature slot is
      *    populated and the fee-payer slot is left zero so the server
@@ -142,15 +143,15 @@ object Charge {
         }
         val signatures = MutableList<ByteArray?>(built.message.header.numRequiredSignatures) { null }
         signatures[signerIndex] = signature
-        val txBytes = Transaction.serializeLegacyTransaction(built.message, signatures)
+        val txBytes = Transaction.serializeV0Transaction(built.message, signatures)
         return Base64.getEncoder().encodeToString(txBytes)
     }
 
     /**
      * Builds the unsigned transaction wire bytes for a charge request,
      * for callers that delegate signing to an external wallet (e.g.
-     * Mobile Wallet Adapter). The returned bytes are the canonical legacy
-     * Solana transaction wire format with zeroed signature slots; the
+     * Mobile Wallet Adapter). The returned bytes are the canonical v0
+     * versioned Solana transaction wire format with zeroed signature slots; the
      * caller is responsible for handing them to the wallet, replacing
      * the slot for `walletPublicKey` with the wallet's signature, and
      * base64-encoding the result for the MPP Authorization header.
@@ -179,7 +180,7 @@ object Charge {
             policy = policy,
         )
         val signatures = MutableList<ByteArray?>(built.message.header.numRequiredSignatures) { null }
-        return Transaction.serializeLegacyTransaction(built.message, signatures)
+        return Transaction.serializeV0Transaction(built.message, signatures)
     }
 
     /**
@@ -189,7 +190,7 @@ object Charge {
      * without re-deriving any wire-affecting state.
      */
     private data class UnsignedChargeMessage(
-        val message: Transaction.LegacyMessage,
+        val message: Transaction.V0Message,
         val messageBytes: ByteArray,
         val walletPublicKey: PublicKey,
     )
@@ -353,7 +354,7 @@ object Charge {
         }
 
         val actualFeePayer = feePayerKey ?: signerKey
-        val message = Transaction.buildLegacyMessage(
+        val message = Transaction.buildV0Message(
             feePayer = actualFeePayer,
             recentBlockhash = recentBlockhash,
             instructions = instructions,

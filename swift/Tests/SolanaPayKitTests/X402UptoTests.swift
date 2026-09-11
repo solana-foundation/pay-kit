@@ -58,10 +58,11 @@ private enum UptoFixture {
     }
 }
 
-// MARK: - Minimal legacy transaction decoder (test-only)
+// MARK: - Minimal v0 transaction decoder (test-only)
 
-/// Just enough of the legacy transaction wire format to assert the channel
-/// `open` instruction data the upto builder embeds (no version prefix byte).
+/// Just enough of the v0 transaction wire format to assert the channel
+/// `open` instruction data the upto builder embeds (0x80 version prefix,
+/// then header; the trailing address-table-lookup count is not read).
 private struct DecodedOpen {
     let salt: UInt64
     let deposit: UInt64
@@ -77,7 +78,7 @@ private struct DecodedOpen {
     let payerIndex: Int
 }
 
-private enum LegacyTxDecoder {
+private enum V0TxDecoder {
     static func shortVec(_ data: Data, _ off: inout Int) -> Int {
         var value = 0, shift = 0
         while true {
@@ -115,6 +116,9 @@ private enum LegacyTxDecoder {
             sigs.append(data.subdata(in: (data.startIndex + off)..<(data.startIndex + off + 64)))
             off += 64
         }
+        let prefix = data[data.startIndex + off]
+        #expect(prefix == 0x80, "expected v0 message prefix")
+        off += 1
         let numRequired = Int(data[data.startIndex + off]); off += 1
         _ = data[data.startIndex + off]; off += 1 // readonly signed
         _ = data[data.startIndex + off]; off += 1 // readonly unsigned
@@ -316,7 +320,7 @@ struct X402UptoBuildTests {
         )
         #expect(payload.channelId == expected.base58)
         #expect(payload.openSlot == "2222")
-        let decoded = try LegacyTxDecoder.decode(
+        let decoded = try V0TxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
         #expect(decoded.openSlot == 2222)
@@ -333,7 +337,7 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: 99
         )
         let payer = try Pubkey(bytes: signer.publicKey)
-        let decoded = try LegacyTxDecoder.decode(
+        let decoded = try V0TxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
         #expect(decoded.recipientBps == [10_000])
@@ -352,7 +356,7 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: 7
         )
         let payer = try Pubkey(bytes: signer.publicKey)
-        let decoded = try LegacyTxDecoder.decode(
+        let decoded = try V0TxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
         #expect(decoded.recipientBps == [10_000])
@@ -366,7 +370,7 @@ struct X402UptoBuildTests {
             signer: signer, requirements: req, expiresAt: 1000, salt: 7
         )
         let payer = try Pubkey(bytes: signer.publicKey)
-        let decoded = try LegacyTxDecoder.decode(
+        let decoded = try V0TxDecoder.decode(
             base64: try #require(payload.openTransaction), payer: payer
         )
         // fee payer is account index 0 and is unsigned; the

@@ -135,7 +135,7 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: build open instruction: %w", err)
 	}
-	tx, err := solana.NewTransaction(
+	tx, err := solanatx.NewV0Transaction(
 		[]solana.Instruction{openIx},
 		blockhash,
 		solana.TransactionPayer(feePayer),

@@ -24,6 +24,9 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+/** Versioned-message prefix byte for v0: high bit set, version 0. */
+private val V0_PREFIX: Byte = 0x80.toByte()
+
 class UptoPaymentTest {
     private val json = Json { ignoreUnknownKeys = true }
     private val encoder = Json { encodeDefaults = false; explicitNulls = false }
@@ -83,14 +86,15 @@ class UptoPaymentTest {
 
     // ── parse decode helpers ────────────────────────────────────────────────
 
-    // Extracts the single open instruction's data from a legacy transaction
-    // base64. All shortvec counts in the open transaction fixtures fit in one
-    // byte, so a single-byte reader is sufficient.
+    // Extracts the single open instruction's data from a v0 versioned
+    // transaction base64. All shortvec counts in the open transaction fixtures
+    // fit in one byte, so a single-byte reader is sufficient.
     private fun openInstructionData(txB64: String): ByteArray {
         val tx = Base64.getDecoder().decode(txB64)
         var p = 0
         val sigCount = tx[p++].toInt()
         p += sigCount * 64
+        assertEquals(V0_PREFIX, tx[p++], "open transaction message must carry the v0 prefix")
         p += 3 // message header
         val acctCount = tx[p++].toInt()
         p += acctCount * 32
@@ -108,6 +112,7 @@ class UptoPaymentTest {
         var p = 0
         val sigCount = tx[p++].toInt()
         p += sigCount * 64
+        assertEquals(V0_PREFIX, tx[p++], "open transaction message must carry the v0 prefix")
         p += 3 // header
         p++ // account count
         return tx.copyOfRange(p, p + 32)
@@ -264,6 +269,18 @@ class UptoPaymentTest {
             programId = PublicKey.fromBase58(PaymentChannels.PROGRAM_ID),
         )
         assertEquals(expected.toBase58(), payload.channelId)
+    }
+
+    @Test
+    fun open_transaction_message_is_v0() {
+        // Servers reject legacy messages: the byte after the signature block
+        // must be the v0 version prefix (1 << 7 | 0) and the message must end
+        // with an empty address-table-lookups list.
+        val payload = buildUptoPayload(signer, requirements(), expiresAt = 4_102_444_800L)
+        val tx = Base64.getDecoder().decode(payload.openTransaction!!)
+        val sigCount = tx[0].toInt()
+        assertEquals(V0_PREFIX, tx[1 + sigCount * 64])
+        assertEquals(0.toByte(), tx.last(), "v0 message must end with zero address-table lookups")
     }
 
     @Test

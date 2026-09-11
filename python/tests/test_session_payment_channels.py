@@ -8,9 +8,10 @@ import pytest
 from solders.hash import Hash  # type: ignore[import-untyped]
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
-from solders.transaction import Transaction  # type: ignore[import-untyped]
+from solders.transaction import VersionedTransaction  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
 from solana_pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID, find_channel_pda
 from solana_pay_kit.protocols.mpp.client.payment_channels import (
     PaymentChannelOpenOptions,
@@ -107,7 +108,11 @@ def test_build_open_transaction_is_payer_signed() -> None:
         Hash.default(),
         options=PaymentChannelOpenOptions(salt=7, open_slot=42),
     )
-    transaction = Transaction.from_bytes(base64.b64decode(built.transaction, validate=True))
+    raw = base64.b64decode(built.transaction, validate=True)
+    # v0 wire: [sig count][signatures][0x80 version prefix][message body].
+    assert is_v0_wire_bytes(raw)
+    assert raw[1 + 64 * raw[0]] == 0x80
+    transaction = VersionedTransaction.from_bytes(raw)
     assert transaction.message.account_keys[0] == payer.pubkey()
     assert transaction.signatures[0] != Signature.default()
 
@@ -122,7 +127,7 @@ def test_sponsored_open_leaves_only_fee_payer_signature_empty() -> None:
         Hash.default(),
         options=PaymentChannelOpenOptions(salt=7, open_slot=42),
     )
-    decoded = Transaction.from_bytes(base64.b64decode(transaction.transaction, validate=True))
+    decoded = VersionedTransaction.from_bytes(base64.b64decode(transaction.transaction, validate=True))
     assert decoded.message.account_keys[0] == sponsor.pubkey()
     assert decoded.signatures[0] == Signature.default()
     assert decoded.signatures[1] != Signature.default()
@@ -142,7 +147,7 @@ def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
         _kp(4).pubkey(),
         options=PaymentChannelOpenOptions(salt=7),
     )
-    decoded = Transaction.from_bytes(base64.b64decode(built.transaction, validate=True))
+    decoded = VersionedTransaction.from_bytes(base64.b64decode(built.transaction, validate=True))
     assert decoded.message.recent_blockhash == challenged
 
     # An explicit override still wins.
@@ -154,7 +159,7 @@ def test_build_open_transaction_defaults_to_challenged_blockhash() -> None:
         override,
         options=PaymentChannelOpenOptions(salt=7),
     )
-    decoded = Transaction.from_bytes(base64.b64decode(overridden.transaction, validate=True))
+    decoded = VersionedTransaction.from_bytes(base64.b64decode(overridden.transaction, validate=True))
     assert decoded.message.recent_blockhash == override
 
 
@@ -194,7 +199,7 @@ def test_session_opener_defaults_to_challenged_context() -> None:
     assert opened.open.open_slot == 42
     payload = opened.action.open
     assert payload is not None
-    decoded = Transaction.from_bytes(base64.b64decode(payload.transaction, validate=True))
+    decoded = VersionedTransaction.from_bytes(base64.b64decode(payload.transaction, validate=True))
     assert decoded.message.recent_blockhash == challenged
 
     request.method_details.recent_blockhash = None

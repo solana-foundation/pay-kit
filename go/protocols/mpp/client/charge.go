@@ -235,7 +235,7 @@ func BuildChargeTransaction(
 		}
 	}
 	txOpts = append(txOpts, solana.TransactionPayer(payer))
-	tx, err := solana.NewTransaction(instructions, blockhash, txOpts...)
+	tx, err := solanatx.NewV0Transaction(instructions, blockhash, txOpts...)
 	if err != nil {
 		return paycore.CredentialPayload{}, err
 	}

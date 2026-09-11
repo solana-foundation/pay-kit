@@ -661,9 +661,9 @@ async def test_top_up_credits_exactly_once_per_transaction_signature() -> None:
     import base64
 
     from solders.hash import Hash
-    from solders.message import Message
+    from solders.message import MessageV0
     from solders.system_program import TransferParams, transfer
-    from solders.transaction import Transaction
+    from solders.transaction import VersionedTransaction
 
     server, _, _ = await _server()
     payer = Keypair.from_seed(bytes([31] * 32))
@@ -673,7 +673,7 @@ async def test_top_up_credits_exactly_once_per_transaction_signature() -> None:
         # verifier seam is stubbed by _server(); the real transaction
         # verification is covered by the on-chain tests.
         ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=payer.pubkey(), lamports=1))
-        tx = Transaction([payer], Message.new_with_blockhash([ix], payer.pubkey(), blockhash), blockhash)
+        tx = VersionedTransaction(MessageV0.try_compile(payer.pubkey(), [ix], [], blockhash), [payer])
         return base64.b64encode(bytes(tx)).decode(), str(tx.signatures[0])
 
     first_wire, first_signature = wire(Hash.default())

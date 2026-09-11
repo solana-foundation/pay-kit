@@ -8,6 +8,7 @@ the engine's open-instruction validator with the matching expected pubkeys.
 
 from __future__ import annotations
 
+import base64
 import time
 
 import pytest
@@ -226,6 +227,9 @@ def test_client_open_tx_passes_engine_validator() -> None:
     payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
 
     open_tx = payload.get("openTransaction", "")
+    # The open transaction is a v0 message: 0x80 version prefix after the signatures.
+    raw = base64.b64decode(open_tx)
+    assert raw[1 + 64 * raw[0]] == 0x80
     account_keys, instructions = _decode_transaction(open_tx)
     # Fee payer slot 0 is the advertised fee payer; the client signed only its own slot.
     assert account_keys[0] == op
@@ -251,7 +255,6 @@ def test_client_open_tx_passes_engine_validator() -> None:
     )
 
     # Encode/decode the header round-trips and carries the payment-channel payload.
-    import base64
     import json
 
     header = encode_upto_header(req, payload)

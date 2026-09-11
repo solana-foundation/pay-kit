@@ -62,7 +62,7 @@ type testutilConfig struct {
 
 func newTestTransaction(t *testing.T, payer solana.PrivateKey, instructions ...solana.Instruction) *solana.Transaction {
 	t.Helper()
-	tx, err := solana.NewTransaction(
+	tx, err := solanatx.NewV0Transaction(
 		instructions,
 		solana.Hash{},
 		solana.TransactionPayer(payer.PublicKey()),
@@ -1541,7 +1541,7 @@ func buildSOLPullTransaction(t *testing.T, payer solana.PrivateKey, recipient so
 	if err != nil {
 		t.Fatalf("ix: %v", err)
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, err := solanatx.NewV0Transaction([]solana.Instruction{ix}, blockhash, solana.TransactionPayer(payer.PublicKey()))
 	if err != nil {
 		t.Fatalf("tx: %v", err)
 	}
@@ -1736,7 +1736,7 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 	}
 	payer := testutil.NewPrivateKey()
 	ix, _ := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient.PublicKey(), 1_000_000)
-	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	// Intentionally do NOT sign — zero signatures slot remains, primary is zero.
 	tx.Signatures = []solana.Signature{{}}
 	encoded, _ := solanatx.EncodeTransactionBase64(tx)

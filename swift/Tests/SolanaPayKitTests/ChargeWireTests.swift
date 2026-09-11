@@ -67,6 +67,8 @@ struct ChargeWireTests {
         let sig = txBytes.subdata(in: sigStart..<(sigStart + 64))
         offset += 64
         let messageBytes = txBytes.subdata(in: offset..<txBytes.count)
+        // The charge transaction is a v0 message (0x80 version prefix).
+        #expect(messageBytes.first == 0x80)
 
         #expect(try Ed25519.verify(signature: sig, message: messageBytes, publicKey: signer.publicKey))
     }

@@ -631,10 +631,14 @@ private func shapeFromTransaction(_ base64: String) throws -> TransactionShape {
     var cur = DecodeCursor(txData)
     let sigCount = try cur.shortVecLength()
     _ = try cur.take(sigCount * 64)
-    // Legacy messages carry no version prefix byte (the SDK always emits
-    // legacy for charge). Header is 3 bytes.
-    let header = try cur.take(3)
-    _ = header
+    // The SDK emits v0 messages: a 0x80 version prefix precedes the 3-byte
+    // header. Legacy messages (no prefix) start directly with the header.
+    let first = try cur.byte()
+    if (first & 0x80) == 0 {
+        _ = try cur.take(2)
+    } else {
+        _ = try cur.take(3)
+    }
     let keyCount = try cur.shortVecLength()
     var keys: [String] = []
     keys.reserveCapacity(keyCount)
