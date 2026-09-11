@@ -194,7 +194,7 @@ class SolanaRpc:
                 {
                     "encoding": "jsonParsed",
                     "commitment": "confirmed",
-                    "maxSupportedTransactionVersion": 0,
+                    "maxSupportedTransactionVersion": 1,
                 },
             ],
         )

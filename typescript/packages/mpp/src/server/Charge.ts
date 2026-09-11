@@ -1294,7 +1294,7 @@ async function fetchTransaction(rpcUrl: string, signature: string): Promise<Pars
                 {
                     commitment: 'confirmed',
                     encoding: 'jsonParsed',
-                    maxSupportedTransactionVersion: 0,
+                    maxSupportedTransactionVersion: 1,
                 },
             ],
         }),

@@ -594,7 +594,7 @@ class Mpp:
         # conversion is redundant work on the post-consume critical path.
         await self._rpc.await_confirmation(signature)
 
-        tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=1)
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
@@ -629,7 +629,7 @@ class Mpp:
         from solders.signature import Signature
 
         sig = Signature.from_string(payload.signature)
-        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=1)
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")

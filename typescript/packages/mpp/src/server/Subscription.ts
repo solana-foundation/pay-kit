@@ -997,7 +997,7 @@ async function fetchTransactionRaw(rpcUrl: string, signature: string): Promise<R
             id: 1,
             jsonrpc: '2.0',
             method: 'getTransaction',
-            params: [signature, { commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 0 }],
+            params: [signature, { commitment: 'confirmed', encoding: 'base64', maxSupportedTransactionVersion: 1 }],
         }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
