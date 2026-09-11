@@ -9,10 +9,19 @@ the 90 percent line coverage gate: the error branch in ``_call``, both
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from solana_pay_kit._paycore.errors import PaymentError
-from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
+from solana_pay_kit._paycore.rpc import (
+    MalformedAccountError,
+    SolanaRpc,
+    _RpcError,
+    _RpcResponse,
+    read_with_replica_retry,
+    resolve_channel_read_policy,
+)
 
 
 class _FakeResponse:
@@ -234,3 +243,129 @@ async def test_get_slot_returns_integer_and_rejects_garbage():
     assert await _rpc({"result": 12345, "id": 1}).get_slot() == 12345
     with pytest.raises(_RpcError):
         await _rpc({"result": "not-a-slot", "id": 1}).get_slot()
+
+
+# -- getAccountInfo shape ---------------------------------------------------
+
+
+async def test_get_account_info_returns_none_only_for_an_absent_account() -> None:
+    rpc = _rpc({"result": {"value": None}, "id": 1})
+    assert await rpc.get_account_info("Chan") is None
+
+
+async def test_get_account_info_decodes_both_data_shapes() -> None:
+    encoded = base64.b64encode(b"channel").decode("ascii")
+    assert await _rpc({"result": {"value": {"owner": "Prog", "data": [encoded, "base64"]}}, "id": 1}).get_account_info(
+        "Chan"
+    ) == (b"channel", "Prog")
+    assert await _rpc({"result": {"value": {"owner": "Prog", "data": encoded}}, "id": 1}).get_account_info("Chan") == (
+        b"channel",
+        "Prog",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"data": [base64.b64encode(b"channel").decode("ascii"), "base64"]},
+        {"owner": "", "data": [base64.b64encode(b"channel").decode("ascii"), "base64"]},
+        {"owner": "Prog"},
+        {"owner": "Prog", "data": {"parsed": {}}},
+        {"owner": "Prog", "data": []},
+    ],
+)
+async def test_get_account_info_raises_on_a_visible_but_malformed_account(value: dict) -> None:
+    # The account IS there, this client just cannot read it. That is an answer,
+    # not replica lag, so it must not come back as the retryable ``None``.
+    rpc = _rpc({"result": {"value": value}, "id": 1})
+    with pytest.raises(MalformedAccountError):
+        await rpc.get_account_info("Chan")
+    assert rpc._client.calls == 1  # type: ignore[attr-defined]
+
+
+async def test_read_with_replica_retry_reads_a_malformed_account_exactly_once() -> None:
+    # The retry wraps this read on the post-confirmation path: a malformed
+    # account must burn one attempt, not the whole backoff budget.
+    rpc = _rpc({"result": {"value": {"owner": "Prog", "data": {"parsed": {}}}}, "id": 1})
+    with pytest.raises(MalformedAccountError):
+        await read_with_replica_retry(lambda: rpc.get_account_info("Chan"), backoff_step_seconds=0.001)
+    assert rpc._client.calls == 1  # type: ignore[attr-defined]
+
+
+# -- channel-read replica-lag retry -----------------------------------------
+
+
+async def test_read_with_replica_retry_uses_linear_backoff_schedule(monkeypatch) -> None:
+    # The contract: 6 attempts, 200ms step, the wait before attempt N+1 is
+    # step * N, and no sleep after the final attempt. Linear, not exponential:
+    # replica lag is a small multiple of the ~400ms slot time, so doubling
+    # would spend the budget on single waits far longer than the lag absorbed.
+    import asyncio
+
+    real_sleep = asyncio.sleep
+    delays: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    reads = 0
+
+    async def _read() -> object | None:
+        nonlocal reads
+        reads += 1
+        return None
+
+    assert await read_with_replica_retry(_read) is None
+    assert reads == 6
+    assert delays == pytest.approx([0.2, 0.4, 0.6, 0.8, 1.0])
+    assert sum(delays) == pytest.approx(3.0)
+    assert max(delays) == pytest.approx(1.0)
+
+
+async def test_read_with_replica_retry_stops_at_the_first_visible_read() -> None:
+    values = [None, None, "channel"]
+
+    async def _read() -> object | None:
+        return values.pop(0)
+
+    assert await read_with_replica_retry(_read, backoff_step_seconds=0.001) == "channel"
+    assert values == []
+
+
+async def test_read_with_replica_retry_never_retries_a_visible_value() -> None:
+    # A visible value is an answer, not lag: returned on the first read, even
+    # when the caller is about to reject it.
+    reads = 0
+
+    async def _read() -> int:
+        nonlocal reads
+        reads += 1
+        return 1_500
+
+    assert await read_with_replica_retry(_read, backoff_step_seconds=0.001) == 1_500
+    assert reads == 1
+
+
+async def test_read_with_replica_retry_propagates_read_errors_without_retrying() -> None:
+    reads = 0
+
+    async def _read() -> object:
+        nonlocal reads
+        reads += 1
+        raise PaymentError("wrong owner", code="invalid-payload")
+
+    with pytest.raises(PaymentError, match="wrong owner"):
+        await read_with_replica_retry(_read, backoff_step_seconds=0.001)
+    assert reads == 1
+
+
+def test_resolve_channel_read_policy_defaults_on_unset_or_non_positive() -> None:
+    # Unset or non-positive resolves to the default, so a caller may pass a
+    # zero value without disabling the retry.
+    assert resolve_channel_read_policy(None, None) == (6, 0.2)
+    assert resolve_channel_read_policy(0, 0) == (6, 0.2)
+    assert resolve_channel_read_policy(-1, -5) == (6, 0.2)
+    assert resolve_channel_read_policy(3, 50) == (3, 0.05)

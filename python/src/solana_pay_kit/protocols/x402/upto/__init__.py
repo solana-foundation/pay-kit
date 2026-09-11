@@ -51,7 +51,13 @@ from solana_pay_kit._paycore.paymentchannels import (
     treasury_owner,
     voucher_message_bytes,
 )
-from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit._paycore.rpc import (
+    CHANNEL_READ_BACKOFF_STEP_SECONDS,
+    MalformedAccountError,
+    SolanaRpc,
+    read_with_replica_retry,
+    resolve_channel_read_policy,
+)
 from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
 from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
@@ -333,7 +339,20 @@ class X402Upto:
             sent = await rpc.send_raw_transaction(cosigned)
             await rpc.await_confirmation(str(sent.value))
 
-            channel = await self._fetch_channel(rpc, channel_id, program_id)
+            # The open is confirmed, so the funds are already escrowed on
+            # chain: a single unretried read that lands on a lagging replica
+            # would hard-fail a payment that actually succeeded.
+            read_attempts, read_backoff_step_seconds = resolve_channel_read_policy(
+                self._config.x402.channel_read_max_attempts,
+                self._config.x402.channel_read_backoff_step_ms,
+            )
+            channel = await self._fetch_channel(
+                rpc,
+                channel_id,
+                program_id,
+                attempts=read_attempts,
+                backoff_step_seconds=read_backoff_step_seconds,
+            )
             self._validate_channel_state(
                 channel,
                 fee_payer_pubkey,
@@ -518,8 +537,41 @@ class X402Upto:
         beneficiary = Pubkey.from_string(requirements["payTo"])
         return [Distribution(recipient=beneficiary, bps=10_000)]
 
-    async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Any:
-        account = await rpc.get_account_info(str(channel_id))
+    async def _fetch_channel(
+        self,
+        rpc: SolanaRpc,
+        channel_id: Pubkey,
+        program_id: Pubkey,
+        *,
+        attempts: int = 1,
+        backoff_step_seconds: float = CHANNEL_READ_BACKOFF_STEP_SECONDS,
+    ) -> Any:
+        # Single-read by default; the post-broadcast caller opts into the
+        # replica-lag retry. ``SolanaRpc.get_account_info`` returns ``None`` for
+        # one condition only: the envelope carried no account object (``value``
+        # is not a dict), which is how the genuinely absent account and the
+        # lagging replica both read. That is the sole retried case. A VISIBLE
+        # account this client cannot read - no non-empty ``owner`` string, or a
+        # ``data`` field of an unexpected shape - raises
+        # ``MalformedAccountError``, translated below to the unchanged error on
+        # the first read; an account whose base64 ``data`` does not decode
+        # raises ``binascii.Error`` straight out of the RPC client. Everything
+        # after the read stays single-shot too - wrong owner, empty data, decode
+        # failure, and every bind check in ``_validate_channel_state`` - since a
+        # visible-and-wrong account is an answer, not lag.
+        async def read_account() -> tuple[bytes, str] | None:
+            try:
+                return await rpc.get_account_info(str(channel_id))
+            except MalformedAccountError as exc:
+                raise InvalidProofError(
+                    "channel account fetch failed: missing account data", code="payment_invalid"
+                ) from exc
+
+        account = await read_with_replica_retry(
+            read_account,
+            attempts=attempts,
+            backoff_step_seconds=backoff_step_seconds,
+        )
         if account is None:
             raise InvalidProofError("channel account fetch failed: missing account data", code="payment_invalid")
         data, owner = account

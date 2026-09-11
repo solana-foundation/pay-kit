@@ -21,7 +21,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import itertools
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 import httpx
 
@@ -30,6 +31,13 @@ from solana_pay_kit._paycore.errors import PaymentError
 
 class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
+
+
+class MalformedAccountError(_RpcError):
+    """``getAccountInfo`` answered with an account object this client cannot
+    read: no non-empty ``owner`` string, or a ``data`` field of an unexpected
+    shape. The account is VISIBLE, so this is an answer and not replica lag -
+    callers must fail on it rather than re-read."""
 
 
 class _RpcResponse:
@@ -147,23 +155,32 @@ class SolanaRpc:
 
     async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
         """Fetch an account's raw data bytes and owner (base58), or ``None`` when
-        the account is missing. Used to read on-chain payment-channel state
-        during x402 ``upto`` verification; the generated ``Channel.decode`` then
-        parses the returned bytes."""
+        the envelope carried no account object. Used to read on-chain
+        payment-channel state during x402 ``upto`` verification; the generated
+        ``Channel.decode`` then parses the returned bytes.
+
+        ``None`` means one thing only: the account is not there. A genuinely
+        absent account and one a lagging replica has not seen yet answer the
+        same way, so ``None`` is the single read a caller may retry. A VISIBLE
+        account this client cannot read raises :class:`MalformedAccountError`,
+        which the caller must fail on straight away.
+        """
         result = await self._call("getAccountInfo", [address, {"encoding": "base64", "commitment": commitment}])
         value = (result or {}).get("value") if isinstance(result, dict) else None
         if not isinstance(value, dict):
             return None
         owner = value.get("owner")
         if not isinstance(owner, str) or not owner:
-            return None
+            raise MalformedAccountError("getAccountInfo returned an account with no owner", code="payment_invalid")
         data_field = value.get("data")
         if isinstance(data_field, list) and data_field and isinstance(data_field[0], str):
             raw = base64.b64decode(data_field[0])
         elif isinstance(data_field, str):
             raw = base64.b64decode(data_field)
         else:
-            return None
+            raise MalformedAccountError(
+                "getAccountInfo returned an account with an unreadable data field", code="payment_invalid"
+            )
         return raw, owner
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
@@ -236,3 +253,70 @@ class SolanaRpc:
             f"timed out awaiting confirmation for {signature}",
             code="transaction-not-found",
         )
+
+
+# -- channel-read replica lag -----------------------------------------------
+
+# An RPC provider can answer getSignatureStatuses and getAccountInfo from
+# different replicas, so an account written by a just-confirmed transaction can
+# still read back MISSING on the replica that serves the follow-up read.
+# Re-reading absorbs that, and only that: an account that is visible but does
+# not say what the caller expected is an answer, not lag.
+#
+# LINEAR backoff, not exponential: replica lag is a small multiple of Solana's
+# ~400ms slot time, so doubling spends the budget on single waits far longer
+# than the lag being absorbed. Six attempts at a 200ms step schedule
+# 200/400/600/800/1000ms - 3.0s total, 1s maximum single wait.
+CHANNEL_READ_ATTEMPTS = 6
+CHANNEL_READ_BACKOFF_STEP_SECONDS = 0.2
+
+_T = TypeVar("_T")
+
+
+def resolve_channel_read_policy(
+    max_attempts: int | None,
+    backoff_step_ms: int | None,
+) -> tuple[int, float]:
+    """Resolve the optional channel-read knobs to ``(attempts, step_seconds)``.
+
+    Unset or non-positive takes the default, so a caller may pass a zero value
+    (an unset field in a language without optionals) without disabling the
+    retry.
+    """
+    attempts = CHANNEL_READ_ATTEMPTS
+    if not isinstance(max_attempts, bool) and isinstance(max_attempts, int) and max_attempts > 0:
+        attempts = max_attempts
+    step_seconds = CHANNEL_READ_BACKOFF_STEP_SECONDS
+    if not isinstance(backoff_step_ms, bool) and isinstance(backoff_step_ms, int) and backoff_step_ms > 0:
+        step_seconds = backoff_step_ms / 1000
+    return attempts, step_seconds
+
+
+async def read_with_replica_retry(
+    read: Callable[[], Awaitable[_T]],
+    attempts: int = CHANNEL_READ_ATTEMPTS,
+    backoff_step_seconds: float = CHANNEL_READ_BACKOFF_STEP_SECONDS,
+) -> _T:
+    """Re-read until the read returns something (``value is not None``).
+
+    The not-yet-visible read is the ONLY lag symptom this absorbs, and there is
+    deliberately no hook to widen it. A visible-but-wrong value is an answer,
+    not lag: it is returned straight away and the caller raises on that first
+    observation. Re-sampling a wrong-but-visible value over the backoff window
+    can only ever flip reject into accept, on state a concurrent writer may
+    have moved in the meantime. Anything ``read`` raises propagates immediately
+    and is never retried.
+
+    The last read is returned as-is once ``attempts`` is exhausted, so the
+    caller keeps its own error for the still-invisible case. Sleeps only
+    *between* attempts: the wait before attempt N+1 is
+    ``backoff_step_seconds * N``, and there is no sleep after the final
+    attempt.
+    """
+    attempt = 1
+    while True:
+        value = await read()
+        if attempt >= attempts or value is not None:
+            return value
+        await asyncio.sleep(backoff_step_seconds * attempt)
+        attempt += 1
