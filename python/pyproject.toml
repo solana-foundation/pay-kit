@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.29.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -37,6 +37,14 @@ dev = [
     "pyright>=1.1",
     "pydoc-markdown>=4.8",
 ]
+# The publish job installs these from uv.lock before entering its privileged
+# build/upload steps; keep release tooling out of the runtime and dev extras.
+release = ["hatchling==1.29.0", "twine==6.2.0"]
+
+[tool.uv]
+# docspec-python 2.2.1 has a stale Black <24 cap. Keep the docs-only
+# dependency on a patched release and exercise compatibility via docs-py.
+override-dependencies = ["black==26.5.1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/solana_pay_kit"]

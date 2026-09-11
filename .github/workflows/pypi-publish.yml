@@ -49,6 +49,9 @@ jobs:
     environment:
       name: pypi
       url: https://pypi.org/project/solana-pay-kit/
+    env:
+      UV_MALWARE_CHECK: "1"
+      UV_PREVIEW_FEATURES: "audit-command,malware-check"
 
     steps:
       - name: Checkout repository
@@ -62,8 +65,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.26"
+
+      - name: Verify release lock
+        working-directory: python
+        run: uv lock --check
+
+      - name: Audit locked Python dependencies
+        working-directory: python
+        run: uv audit --frozen
+
+      - name: Install locked release tooling
+        working-directory: python
+        run: uv sync --frozen --no-install-project --extra release
 
       - name: Get version
         id: version
@@ -95,7 +116,7 @@ jobs:
         working-directory: python
         run: |
           rm -rf dist
-          uv build
+          uv build --no-build-isolation
           ls -la dist
 
       # Guard - the long description (README) must render on PyPI, and the
@@ -104,7 +125,7 @@ jobs:
       - name: Guard - README renders + package present
         working-directory: python
         run: |
-          uvx twine check --strict dist/*
+          uv run --frozen --no-sync twine check --strict dist/*
           tarball=$(ls dist/*.tar.gz)
           if ! tar -tzf "$tarball" | grep -q "/solana_pay_kit/__init__.py$"; then
             echo "FAIL: sdist is missing the solana_pay_kit package"
