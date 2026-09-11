@@ -57,14 +57,17 @@ use spl_token_2022::{
         transfer_fee::TransferFeeConfig,
         BaseStateWithExtensions, StateWithExtensions,
     },
-    solana_zk_sdk::encryption::pod::{
-        auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
-        elgamal::{
-            PodElGamalCiphertext as PodElGamalCiphertextLegacy,
-            PodElGamalPubkey as PodElGamalPubkeyLegacy,
-        },
-    },
     state::{Account as TokenAccount, Mint},
+};
+// spl-token-2022 11 builds its confidential-transfer ABI on `solana-zk-sdk-pod`
+// (10.x re-exported the zk-sdk 4.0 pod types); the `Legacy` aliases keep naming
+// the token program's ABI side of the cast helpers below.
+use solana_zk_sdk_pod::encryption::{
+    auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
+    elgamal::{
+        PodElGamalCiphertext as PodElGamalCiphertextLegacy,
+        PodElGamalPubkey as PodElGamalPubkeyLegacy,
+    },
 };
 use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
 use spl_token_confidential_transfer_proof_generation::{

@@ -332,9 +332,9 @@ mod tests {
                 BaseStateWithExtensions, ExtensionType, StateWithExtensions,
             },
             instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
-            solana_zk_sdk::encryption::pod::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy,
             state::{Account as TokenAccount, Mint},
         };
+        use solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy;
         use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
         use spl_token_confidential_transfer_proof_generation::transfer::transfer_split_proof_data;
 

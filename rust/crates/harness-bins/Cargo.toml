@@ -13,8 +13,8 @@ base64 = "0.22"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
 # RPC and transaction types are imported by their own crate names.
-solana-rpc-client = { version = "4", default-features = false }
-solana-transaction = { version = "3", default-features = false }
+solana-rpc-client = { version = "4.1", default-features = false }
+solana-transaction = { version = "~4.1", default-features = false }
 
 [[bin]]
 name = "mpp_harness_client"

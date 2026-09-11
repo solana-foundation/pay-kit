@@ -5,3 +5,12 @@ members = [
     "crates/harness-bins",
     "crates/integration-tests",
 ]
+
+# solana-keychain 2.0.0-beta.1 on crates.io compiles its `sdk-v4` feature
+# against wincode 0.4, while solana-message/-transaction 4.1+ (the line that
+# carries Transaction V1 and that litesvm 0.14+ requires) moved to wincode 0.5.
+# keychain main already carries the wincode 0.5 bump but has not been released.
+# TODO(txv1): drop this patch once solana-keychain 2.0.0-beta.2 ships; until
+# then `cargo publish` of the kit resolves against beta.1 and will not compile.
+[patch.crates-io]
+solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "6461a18cc39d4700d589b1eb981f8ddd71c09e8d" }

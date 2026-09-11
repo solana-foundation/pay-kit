@@ -620,6 +620,7 @@ mod tests {
                         recent_blockhash: "blockhash".to_string(),
                         instructions: vec![],
                         address_table_lookups: None,
+                        transaction_config: None,
                     }),
                 }),
                 meta: Some(UiTransactionStatusMeta {
