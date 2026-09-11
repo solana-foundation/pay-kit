@@ -596,6 +596,7 @@ mod tests {
             extra: None,
             accepted: None,
             resource_info: None,
+            transaction_versions: None,
         }
     }
 

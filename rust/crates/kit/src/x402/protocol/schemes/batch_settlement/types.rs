@@ -77,6 +77,11 @@ pub struct BatchExtra {
     /// transaction fee payer and signs channel lifecycle transactions.
     pub fee_payer: String,
 
+    /// Transaction message versions the server accepts (`0`, `1`). Absent
+    /// means `[0]`. See `core::tx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
+
     /// Base58 server-controlled key that authenticates an optional immediate
     /// cooperative close to the facilitator. Not a payment-channel account
     /// field.
@@ -567,6 +572,7 @@ mod tests {
             recent_slot: Some(341_000_000),
             channel_state: None,
             voucher_state: None,
+            transaction_versions: None,
         }
     }
 

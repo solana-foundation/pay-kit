@@ -14,14 +14,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::core::tx::TxVersion;
 use solana_instruction::Instruction;
 use solana_keychain::memory::MemorySigner;
 use solana_keychain::SolanaSigner;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_signature::Signature;
-use solana_transaction::Transaction;
 
 use super::worker::SettlementHandle;
 
@@ -87,16 +85,11 @@ pub async fn open_one(url: String, signer: Arc<MemorySigner>, ix: Instruction) {
     let rpc = RpcClient::new(url);
     let payer = signer.pubkey();
     let blockhash = rpc.get_latest_blockhash().await.expect("blockhash");
-    let message = Message::new_with_blockhash(&[ix], Some(&payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    let sig_bytes = signer.sign_message(&tx.message_data()).await.expect("sign");
-    let idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| k == &payer)
-        .unwrap();
-    tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
+    let mut tx = crate::core::tx::build_unsigned(TxVersion::V0, &payer, &[ix], blockhash, None)
+        .expect("build open");
+    crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx)
+        .await
+        .expect("sign");
     let sig = rpc.send_transaction(&tx).await.expect("open submit");
     for _ in 0..60 {
         if let Ok(r) = rpc.get_signature_statuses(&[sig]).await {
@@ -110,7 +103,7 @@ pub async fn open_one(url: String, signer: Arc<MemorySigner>, ix: Instruction) {
     panic!("open not confirmed");
 }
 
-/// Build + sign + send `ixs` as one legacy tx (fee-paid by `signer`), returning
+/// Build + sign + send `ixs` as one version-0 tx (fee-paid by `signer`), returning
 /// the raw RPC result. Unlike [`open_one`], it surfaces the error instead of
 /// asserting success — for negative tests that expect an on-chain program error.
 pub async fn try_send(
@@ -124,19 +117,11 @@ pub async fn try_send(
         .get_latest_blockhash()
         .await
         .map_err(|e| e.to_string())?;
-    let message = Message::new_with_blockhash(&ixs, Some(&payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    let sig_bytes = signer
-        .sign_message(&tx.message_data())
+    let mut tx = crate::core::tx::build_unsigned(TxVersion::V0, &payer, &ixs, blockhash, None)
+        .map_err(|e| e.to_string())?;
+    crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx)
         .await
         .map_err(|e| e.to_string())?;
-    let idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| k == &payer)
-        .unwrap();
-    tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
     rpc.send_transaction(&tx)
         .await
         .map(|s| s.to_string())

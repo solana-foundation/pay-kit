@@ -36,6 +36,11 @@ pub struct UptoExtra {
     /// Base58 voucher signer (the channel's `authorized_signer`).
     pub receiver_authorizer: String,
 
+    /// Transaction message versions the server accepts (`0`, `1`). Absent
+    /// means `[0]`. See `core::tx`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
+
     /// Channel forced-close delay, in seconds.
     pub withdraw_delay: u32,
 
@@ -247,6 +252,7 @@ mod tests {
                 recent_slot: None,
                 valid_after: None,
                 memo: None,
+                transaction_versions: None,
             },
         }
     }

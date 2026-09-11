@@ -316,6 +316,7 @@ mod tests {
             encryption::{auth_encryption::AeKey, elgamal::ElGamalKeypair},
             zk_elgamal_proof_program::pubkey_validity::build_pubkey_validity_proof_data,
         };
+        use solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy;
         use spl_associated_token_account::{
             get_associated_token_address_with_program_id,
             instruction::create_associated_token_account,
@@ -334,7 +335,6 @@ mod tests {
             instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
             state::{Account as TokenAccount, Mint},
         };
-        use solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy;
         use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
         use spl_token_confidential_transfer_proof_generation::transfer::transfer_split_proof_data;
 

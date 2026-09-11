@@ -417,6 +417,7 @@ mod tests {
                 recent_slot: None,
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: None,
             },
         };
         let config = BatchChannelConfig {

@@ -3,12 +3,9 @@ use std::str::FromStr;
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::TransactionSigner;
-use solana_message::{v0, VersionedMessage};
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
-use solana_transaction::versioned::VersionedTransaction;
 
 use crate::x402::{
     error::Error,
@@ -52,9 +49,9 @@ pub async fn build_payment(
 
     let mut instructions = Vec::new();
 
-    // Compute budget. Canonical SVM exact validates these by index.
-    instructions.push(compute_unit_limit_ix(20_000));
-    instructions.push(compute_unit_price_ix(1));
+    // Compute budget. Canonical SVM exact validates these by index; on version
+    // 0 they are the first two instructions, on version 1 the header config.
+    let budget = crate::core::tx::ComputeBudget::new(20_000, 1);
 
     let cluster = requirements
         .cluster
@@ -86,20 +83,17 @@ pub async fn build_payment(
     };
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
-    let v0_message = v0::Message::try_compile(&actual_fee_payer, &instructions, &[], blockhash)
-        .map_err(|e| Error::Other(format!("Failed to compile v0 message: {e}")))?;
-    let versioned_message = VersionedMessage::V0(v0_message);
-    let num_signers = versioned_message.header().num_required_signatures as usize;
-    let mut tx = VersionedTransaction {
-        signatures: vec![Signature::default(); num_signers],
-        message: versioned_message,
-    };
+    let mut tx = crate::core::tx::build_unsigned(
+        crate::core::tx::TxVersion::V0,
+        &actual_fee_payer,
+        &instructions,
+        blockhash,
+        Some(&budget),
+    )?;
 
     crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx).await?;
 
-    let serialized =
-        bincode::serialize(&tx).map_err(|e| Error::Other(format!("Serialization failed: {e}")))?;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &serialized);
+    let encoded = crate::core::tx::encode(&tx)?;
 
     Ok(PaymentPayload {
         network: requirements.network.clone(),
@@ -412,30 +406,6 @@ fn v1_network_for_requirements(requirements: &PaymentRequirements) -> &'static s
     }
 }
 
-// ── Compute budget instructions ──
-
-fn compute_unit_price_ix(micro_lamports: u64) -> Instruction {
-    let program_id = Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
-    let mut data = vec![3u8]; // SetComputeUnitPrice discriminator
-    data.extend_from_slice(&micro_lamports.to_le_bytes());
-    Instruction {
-        program_id,
-        accounts: vec![],
-        data,
-    }
-}
-
-fn compute_unit_limit_ix(units: u32) -> Instruction {
-    let program_id = Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap();
-    let mut data = vec![2u8]; // SetComputeUnitLimit discriminator
-    data.extend_from_slice(&units.to_le_bytes());
-    Instruction {
-        program_id,
-        accounts: vec![],
-        data,
-    }
-}
-
 // ── Private helpers ──
 
 fn build_sol_instructions(
@@ -544,6 +514,9 @@ mod tests {
     };
     use async_trait::async_trait;
     use solana_keychain::{SignerError, SolanaSigner};
+    use solana_message::VersionedMessage;
+    use solana_signature::Signature;
+    use solana_transaction::versioned::VersionedTransaction;
 
     struct MockSigner {
         pubkey: Pubkey,
@@ -621,13 +594,12 @@ mod tests {
             extra: None,
             accepted: None,
             resource_info: None,
+            transaction_versions: None,
         }
     }
 
     fn decode_tx(encoded: &str) -> VersionedTransaction {
-        let bytes =
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap();
-        bincode::deserialize(&bytes).unwrap()
+        crate::core::tx::decode(encoded).unwrap()
     }
 
     fn memo_instruction_from_tx(
@@ -1250,8 +1222,8 @@ mod tests {
         let mint = Pubkey::new_unique();
         let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
 
-        let price_ix = compute_unit_price_ix(123);
-        let limit_ix = compute_unit_limit_ix(456);
+        let price_ix = crate::core::tx::unit_price_instruction(123);
+        let limit_ix = crate::core::tx::unit_limit_instruction(456);
         assert_eq!(price_ix.data[0], 3);
         assert_eq!(limit_ix.data[0], 2);
 

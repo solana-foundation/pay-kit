@@ -708,6 +708,7 @@ mod tests {
                 idle_timeout_seconds: Some(300),
                 grace_period_seconds: Some(900),
                 distribution_splits: vec![],
+                transaction_versions: None,
             },
         }
     }

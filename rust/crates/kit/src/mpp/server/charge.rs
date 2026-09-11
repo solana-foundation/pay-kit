@@ -1163,14 +1163,8 @@ impl Mpp {
                     VerificationError::invalid_payload(format!("Invalid base64 transaction: {e}"))
                 })?;
 
-        // Accept legacy and v0 transactions. Decode straight to
-        // `VersionedTransaction` — its message deserializer dispatches on the
-        // version-prefix byte, so it handles both formats. (Trying legacy
-        // `Transaction` first is unsound: bincode ignores trailing bytes, so a
-        // long-enough v0 tx can deserialize as a *garbage* legacy tx — wrong
-        // account keys, e.g. a bogus fee payer — instead of failing through to
-        // the v0 path.)
-        let mut tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
+        // Canonical decode: version 0 or 1, no legacy, no trailing bytes.
+        let mut tx = crate::core::tx::decode_bytes(&tx_bytes)
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
         let t0 = std::time::Instant::now();
@@ -1211,7 +1205,11 @@ impl Mpp {
         let mut broadcast_signature: Option<Signature> = None;
         for attempt in 1..=SIMULATION_MAX_ATTEMPTS {
             let retrying = attempt < SIMULATION_MAX_ATTEMPTS;
-            match self.rpc.send_transaction(&tx) {
+            match crate::core::rpc::send_transaction(
+                &self.rpc,
+                &tx,
+                crate::core::rpc::preflight_config(&self.rpc),
+            ) {
                 Ok(signature) => {
                     broadcast_signature = Some(signature);
                     break;
@@ -2169,31 +2167,7 @@ fn validate_instruction_allowlist(
     Ok(())
 }
 
-/// A decoded ComputeBudget instruction we permit: a unit limit or a unit price.
-/// The on-chain wire format (tag 2 = `SetComputeUnitLimit`, 5 bytes, `u32`;
-/// tag 3 = `SetComputeUnitPrice`, 9 bytes, `u64`) is identical on the plaintext
-/// and confidential paths, so it is decoded once here. Each caller applies its
-/// own caps / error type (the two paths differ on both), so this returns the
-/// raw value and stays free of policy.
-pub(crate) enum ComputeBudgetOp {
-    UnitLimit(u32),
-    UnitPrice(u64),
-}
-
-/// Decode a `SetComputeUnitLimit` / `SetComputeUnitPrice` ComputeBudget
-/// instruction. Returns `None` for any other opcode or malformed length —
-/// callers decide whether that is an error and how to report it.
-pub(crate) fn decode_compute_budget_op(ix: &CompiledInstruction) -> Option<ComputeBudgetOp> {
-    match (ix.data.first().copied(), ix.data.len()) {
-        (Some(2), 5) => Some(ComputeBudgetOp::UnitLimit(u32::from_le_bytes(
-            ix.data[1..5].try_into().unwrap(),
-        ))),
-        (Some(3), 9) => Some(ComputeBudgetOp::UnitPrice(u64::from_le_bytes(
-            ix.data[1..9].try_into().unwrap(),
-        ))),
-        _ => None,
-    }
-}
+pub(crate) use crate::core::tx::{decode_compute_budget_op, ComputeBudgetOp};
 
 pub(crate) fn validate_compute_budget_instruction(
     ix: &CompiledInstruction,
@@ -2227,9 +2201,9 @@ pub(crate) fn validate_compute_budget_instruction(
             }
             Ok(())
         }
-        None => Err(VerificationError::invalid_payload(
-            "Unsupported compute budget instruction",
-        )),
+        Some(ComputeBudgetOp::LoadedAccountsDataSizeLimit(_)) | None => Err(
+            VerificationError::invalid_payload("Unsupported compute budget instruction"),
+        ),
     }
 }
 

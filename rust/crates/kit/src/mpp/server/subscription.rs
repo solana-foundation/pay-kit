@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
-use solana_transaction::Transaction;
+use solana_transaction::versioned::VersionedTransaction;
 
 use crate::mpp::error::Error;
 use crate::mpp::expires;
@@ -325,6 +325,7 @@ impl SubscriptionServer {
             plan_bump: self.config.plan_bump,
             expected_period_hours,
             expected_created_at: self.config.plan_created_at,
+            transaction_versions: None,
         };
         let method_details_value = serde_json::to_value(&method_details)
             .map_err(|e| Error::Other(format!("Failed to serialize methodDetails: {e}")))?;
@@ -908,20 +909,16 @@ impl SubscriptionServer {
     // Live-RPC boundary; transaction shape is covered before this call.
     async fn broadcast_and_confirm(
         &self,
-        tx: &Transaction,
+        tx: &VersionedTransaction,
     ) -> Result<Signature, VerificationError> {
         use solana_commitment_config::CommitmentConfig;
         use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
-        let serialized = bincode::serialize(tx).map_err(|e| {
-            VerificationError::invalid_payload(format!("Failed to serialise tx: {e}"))
-        })?;
+        let tx = tx.clone();
         // RpcClient is blocking; offload to a worker thread.
         tokio::task::spawn_blocking(move || {
             let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
-            let tx: Transaction = bincode::deserialize(&serialized)
-                .map_err(|e| VerificationError::invalid_payload(format!("tx round-trip: {e}")))?;
-            rpc.send_and_confirm_transaction(&tx).map_err(|e| {
+            crate::core::rpc::send_and_confirm_transaction(&rpc, &tx).map_err(|e| {
                 VerificationError::transaction_failed(format!("Broadcast failed: {e}"))
             })
         })
@@ -1183,11 +1180,9 @@ fn derive_subscription_id(subscription_delegation: &Pubkey, challenge_id: &str) 
 
 /// Base64-decode + bincode-deserialise the activation transaction. The
 /// client sends it in standard base64 per the spec.
-fn decode_base64_transaction(b64: &str) -> Result<Transaction, VerificationError> {
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-        .map_err(|e| VerificationError::invalid_payload(format!("Tx base64 decode: {e}")))?;
-    bincode::deserialize(&bytes)
-        .map_err(|e| VerificationError::invalid_payload(format!("Tx bincode decode: {e}")))
+fn decode_base64_transaction(b64: &str) -> Result<VersionedTransaction, VerificationError> {
+    crate::core::tx::decode(b64)
+        .map_err(|e| VerificationError::invalid_payload(format!("Tx decode: {e}")))
 }
 
 /// Extract the subscriber pubkey from the activation transaction.
@@ -1196,14 +1191,14 @@ fn decode_base64_transaction(b64: &str) -> Result<Transaction, VerificationError
 /// server; the subscriber is the next signer that isn't the puller.
 /// Otherwise the subscriber is `account_keys[0]`.
 fn extract_subscriber_from_tx(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     _request: &SubscriptionRequest,
     config: &SubscriptionConfig,
 ) -> Result<Pubkey, VerificationError> {
-    let keys = &tx.message.account_keys;
+    let keys = &tx.message.static_account_keys();
     if keys.is_empty() {
         return Err(VerificationError::invalid_payload(
-            "Transaction has no account keys",
+            "VersionedTransaction has no account keys",
         ));
     }
     let puller = parse_pubkey(&config.puller, "puller")
@@ -1239,7 +1234,7 @@ fn extract_subscriber_from_tx(
         // account_keys[0] is the fee-payer (the server's wallet); the
         // subscriber is the next signer that's neither the fee-payer
         // nor the puller.
-        let required_signers = tx.message.header.num_required_signatures as usize;
+        let required_signers = tx.message.header().num_required_signatures as usize;
         for k in keys.iter().take(required_signers).skip(1) {
             if *k != puller && *k != fp {
                 return Ok(*k);
@@ -1265,7 +1260,7 @@ fn extract_subscriber_from_tx(
 /// TransferSubscription instruction on the configured subscriptions
 /// program, with Subscribe ordered before TransferSubscription.
 fn validate_activation_scope(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     request: &SubscriptionRequest,
     program_id_str: &str,
     subscriber: Pubkey,
@@ -1273,7 +1268,7 @@ fn validate_activation_scope(
 ) -> Result<(), VerificationError> {
     let program_id = parse_pubkey(program_id_str, "program_id")
         .map_err(|e| VerificationError::new(e.to_string()))?;
-    let keys = &tx.message.account_keys;
+    let keys = &tx.message.static_account_keys();
 
     if config.fee_payer {
         let expected_fee_payer = config
@@ -1321,7 +1316,7 @@ fn validate_activation_scope(
     let mut saw_memo = false;
     let mut saw_compute_limit = false;
     let mut saw_compute_price = false;
-    for (i, ix) in tx.message.instructions.iter().enumerate() {
+    for (i, ix) in tx.message.instructions().iter().enumerate() {
         let prog_idx = ix.program_id_index as usize;
         if prog_idx >= keys.len() {
             return Err(VerificationError::invalid_payload(
@@ -1532,7 +1527,7 @@ fn validate_activation_scope(
 /// fee-payer signer works. Raw-signing `tx.message_data()` here is what used to
 /// restrict activation sponsorship to software keys.
 async fn co_sign_as_fee_payer(
-    tx: &mut Transaction,
+    tx: &mut VersionedTransaction,
     signer: &Arc<dyn solana_keychain::TransactionSigner>,
 ) -> Result<(), VerificationError> {
     let pubkey = signer.pubkey();
@@ -1540,17 +1535,17 @@ async fn co_sign_as_fee_payer(
     // client's transaction, so neither may read as a server fault. The fee payer
     // is account key zero by construction, and accepting the sponsor at a later
     // index would let a crafted transaction leave its actual fee payer unsigned.
-    if tx.message.account_keys.first() != Some(&pubkey) {
+    if tx.message.static_account_keys().first() != Some(&pubkey) {
         return Err(VerificationError::invalid_payload(
             "Fee payer pubkey not present in activation transaction",
         ));
     }
-    if tx.signatures.len() != tx.message.header.num_required_signatures as usize {
+    if tx.signatures.len() != tx.message.header().num_required_signatures as usize {
         return Err(VerificationError::invalid_payload(
-            "Transaction signatures vec is shorter than account_keys",
+            "VersionedTransaction signatures vec is shorter than account_keys",
         ));
     }
-    crate::core::signing::cosign_legacy_fee_payer(signer.as_ref(), &pubkey, tx)
+    crate::core::signing::cosign_versioned_fee_payer(signer.as_ref(), &pubkey, tx)
         .await
         .map_err(|e| VerificationError::new(format!("Fee-payer signing failed: {e}")))
 }
@@ -1709,7 +1704,6 @@ fn now_unix_secs() -> i64 {
 mod tests {
     use super::*;
     use solana_instruction::{AccountMeta, Instruction};
-    use solana_message::Message;
     use solana_pubkey::Pubkey;
 
     fn keypair_base58() -> String {
@@ -1885,12 +1879,14 @@ mod tests {
             &solana_pubkey::Pubkey::new_unique(),
             1,
         );
-        let message = solana_message::Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &fee_payer,
             &[instruction],
-            Some(&fee_payer),
-            &solana_hash::Hash::new_unique(),
-        );
-        let mut tx = Transaction::new_unsigned(message);
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
 
         co_sign_as_fee_payer(&mut tx, &signer)
             .await
@@ -1912,12 +1908,14 @@ mod tests {
             &solana_pubkey::Pubkey::new_unique(),
             1,
         );
-        let message = solana_message::Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &other_fee_payer,
             &[instruction],
-            Some(&other_fee_payer),
-            &solana_hash::Hash::new_unique(),
-        );
-        let mut tx = Transaction::new_unsigned(message);
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
 
         let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
         assert!(
@@ -2148,10 +2146,14 @@ mod tests {
             accounts: vec![AccountMeta::new_readonly(subscriber, false)],
             data: vec![INSTRUCTION_TRANSFER_SUBSCRIPTION],
         };
-        let tx = Transaction::new_unsigned(Message::new(
+        let tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &subscriber,
             &[subscribe, foreign, transfer],
-            Some(&subscriber),
-        ));
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap();
         let config = make_config();
         let err = validate_activation_scope(
             &tx,
@@ -2233,7 +2235,14 @@ mod tests {
                 mint,
             },
         );
-        let tx = Transaction::new_unsigned(Message::new(&[subscribe, transfer], Some(&subscriber)));
+        let tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &subscriber,
+            &[subscribe, transfer],
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap();
         let config = SubscriptionConfig {
             plan_id: plan_pda.to_string(),
             mint: mint.to_string(),
@@ -2265,7 +2274,14 @@ mod tests {
             accounts: vec![AccountMeta::new_readonly(non_signer, false)],
             data: vec![INSTRUCTION_SUBSCRIBE],
         };
-        let tx = Transaction::new_unsigned(Message::new(&[instruction], Some(&fee_payer)));
+        let tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &fee_payer,
+            &[instruction],
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap();
         let mut config = make_config();
         config.fee_payer = true;
         config.fee_payer_pubkey = Some(fee_payer.to_string());

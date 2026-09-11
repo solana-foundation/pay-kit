@@ -87,7 +87,7 @@ five8_core = { version = "=0.1.2", features = ["std"] }
 # message 4.x still consumes solana-instruction 3.x.
 solana-hash = { version = "4.4", default-features = false }
 solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "~4.4", default-features = false }
+solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-commitment-config = { version = "3.0", default-features = false }
 solana-rpc-client = { version = "4.1", default-features = false }
@@ -99,7 +99,9 @@ solana-rpc-client-api = { version = "4.1", default-features = false }
 solana-account-decoder-client-types = { version = "4.1", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "~4.1", default-features = false }
+solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
+# Canonical wire codec for every message version: bincode cannot encode V1.
+wincode = "0.5"
 # transaction-status 4.0 gates its whole lib behind `agave-unstable-api`; the
 # wire types we use live in the stable client-types crate.
 solana-transaction-status-client-types = { version = "4.1", default-features = false }
@@ -195,11 +197,11 @@ ed25519-dalek = "2"
 base64 = "0.22"
 # Atomic solana crates the in-tree examples / unit tests import directly.
 solana-hash = { version = "4.4", default-features = false }
-solana-message = { version = "~4.4", default-features = false }
+solana-message = { version = "~4.4", default-features = false, features = ["wincode"] }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "~4.1", default-features = false }
+solana-transaction = { version = "~4.1", default-features = false, features = ["wincode", "serde"] }
 
 [[example]]
 name = "axum_quickstart"

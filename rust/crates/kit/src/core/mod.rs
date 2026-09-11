@@ -28,6 +28,7 @@ pub mod session;
 pub mod settlement;
 pub mod signing;
 pub mod store;
+pub mod tx;
 pub mod tx_pipeline;
 pub mod units;
 pub mod voucher;

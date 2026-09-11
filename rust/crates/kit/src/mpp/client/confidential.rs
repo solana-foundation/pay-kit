@@ -16,13 +16,11 @@
 //! ephemeral account keypairs) and leaves the fee-payer slot for the gateway to
 //! co-sign at settlement, then the gateway submits the txs in order.
 
-use base64::Engine;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
 use solana_keychain::TransactionSigner;
 use solana_keypair::Keypair;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
@@ -80,9 +78,6 @@ use crate::mpp::protocol::solana::CredentialPayload;
 
 /// The native ZK ElGamal Proof program.
 const ZK_PROOF_PROGRAM_ID: &str = "ZkE1Gama1Proof11111111111111111111111111111";
-
-/// The ComputeBudget program (CU limit / priority fee).
-const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
 
 /// CU limit requested on the final transfer tx. The confidential `Transfer`
 /// reading three proof context-state accounts plus the in-tx account closes
@@ -477,15 +472,8 @@ pub async fn build_confidential_transfer_bundle(
     // Request a CU limit up front: the confidential transfer + in-tx closes
     // exceed the 200k default, so without this the gateway's simulation step
     // would reject the bundle (or validators would drop it on mainnet).
-    let compute_budget_program =
-        Pubkey::from_str(COMPUTE_BUDGET_PROGRAM_ID).expect("valid compute budget program id");
-    let mut cu_limit_data = vec![2u8]; // SetComputeUnitLimit
-    cu_limit_data.extend_from_slice(&CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT.to_le_bytes());
-    let cu_limit_ix = Instruction {
-        program_id: compute_budget_program,
-        accounts: vec![],
-        data: cu_limit_data,
-    };
+    let cu_limit_ix =
+        crate::core::tx::unit_limit_instruction(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT);
     let final_ixs = vec![
         cu_limit_ix,
         transfer_ix,
@@ -709,15 +697,8 @@ async fn build_confidential_transfer_with_fee_bundle(
             &fee_payer_addr,
         )
     };
-    let compute_budget_program =
-        Pubkey::from_str(COMPUTE_BUDGET_PROGRAM_ID).expect("valid compute budget program id");
-    let mut cu_limit_data = vec![2u8]; // SetComputeUnitLimit
-    cu_limit_data.extend_from_slice(&CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT.to_le_bytes());
-    let cu_limit_ix = Instruction {
-        program_id: compute_budget_program,
-        accounts: vec![],
-        data: cu_limit_data,
-    };
+    let cu_limit_ix =
+        crate::core::tx::unit_limit_instruction(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT);
     let final_ixs = vec![
         cu_limit_ix,
         transfer_ix,
@@ -859,45 +840,52 @@ async fn partial_sign_tx(
     instructions: &[Instruction],
     blockhash: Hash,
 ) -> Result<String, Error> {
-    use solana_transaction::Transaction;
-    let message = Message::new_with_blockhash(instructions, Some(fee_payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
+    let mut tx = crate::core::tx::build_unsigned(
+        crate::core::tx::TxVersion::V0,
+        fee_payer,
+        instructions,
+        blockhash,
+        None,
+    )?;
 
     // Sign the sender slot only when the sender is a required signer on this tx
     // (the final transfer's authority). The proof/record-account txs have no
     // sender signer — only the gateway (fee payer/authority) and the ephemeral
     // account. Never sign the gateway slot; the gateway co-signs at settlement.
     let sender_pubkey = signer.pubkey();
-    let num_signers = tx.message.header.num_required_signatures as usize;
-    if tx.message.account_keys[..num_signers].contains(&sender_pubkey) {
-        crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    let num_signers = tx.message.header().num_required_signatures as usize;
+    if tx.message.static_account_keys()[..num_signers].contains(&sender_pubkey) {
+        crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
             .await
             .map_err(|e| Error::Other(format!("signing failed: {e}")))?;
     }
 
-    // Ephemeral account keypairs sign synchronously.
-    let msg = tx.message_data();
+    // Ephemeral account keypairs sign synchronously over the versioned message
+    // bytes (the same bytes `sign_transaction` covers).
+    let msg = tx.message.serialize();
     for kp in extra {
         set_signature(&mut tx, &kp.pubkey(), kp.sign_message(&msg))?;
     }
 
-    let serialized =
-        bincode::serialize(&tx).map_err(|e| Error::Other(format!("serialize tx: {e}")))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(serialized))
+    Ok(crate::core::tx::encode(&tx)?)
 }
 
 fn set_signature(
-    tx: &mut solana_transaction::Transaction,
+    tx: &mut solana_transaction::versioned::VersionedTransaction,
     pubkey: &Pubkey,
     sig: Signature,
 ) -> Result<(), Error> {
     let idx = tx
         .message
-        .account_keys
+        .static_account_keys()
         .iter()
         .position(|k| k == pubkey)
         .ok_or_else(|| Error::Other(format!("signer {pubkey} not in transaction accounts")))?;
-    tx.signatures[idx] = sig;
+    let slot = tx
+        .signatures
+        .get_mut(idx)
+        .ok_or_else(|| Error::Other(format!("signer {pubkey} is not a required signer")))?;
+    *slot = sig;
     Ok(())
 }
 
@@ -1004,11 +992,8 @@ mod tests {
         }
     }
 
-    fn decode_tx(b64: &str) -> solana_transaction::Transaction {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .unwrap();
-        bincode::deserialize(&bytes).unwrap()
+    fn decode_tx(b64: &str) -> solana_transaction::versioned::VersionedTransaction {
+        crate::core::tx::decode(b64).unwrap()
     }
 
     #[test]
@@ -1055,7 +1040,7 @@ mod tests {
             .await
             .unwrap();
         let tx = decode_tx(&b64);
-        let keys = &tx.message.account_keys;
+        let keys = tx.message.static_account_keys();
 
         // Gateway is fee payer (index 0) and MUST be left unsigned.
         let gw = keys.iter().position(|k| *k == gateway).unwrap();
@@ -1077,7 +1062,7 @@ mod tests {
             .await
             .unwrap();
         let tx = decode_tx(&b64);
-        let keys = &tx.message.account_keys;
+        let keys = tx.message.static_account_keys();
 
         let gw = keys.iter().position(|k| *k == gateway).unwrap();
         assert_eq!(tx.signatures[gw], Signature::default());

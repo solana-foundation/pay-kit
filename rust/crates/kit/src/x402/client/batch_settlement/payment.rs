@@ -17,10 +17,8 @@ use std::str::FromStr;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
 use solana_keychain::{SolanaSigner, TransactionSigner};
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 
@@ -405,6 +403,7 @@ pub async fn build_deposit(
         blockhash,
         &pc::OpenTxOptions {
             memo: Some(terms.memo.clone()),
+            ..Default::default()
         },
     )
     .await?;
@@ -512,17 +511,17 @@ async fn sign_sponsored(
     instructions: &[Instruction],
     blockhash: Hash,
 ) -> Result<String, Error> {
-    let message = Message::new_with_blockhash(instructions, Some(fee_payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    let mut tx = crate::core::tx::build_unsigned(
+        crate::core::tx::TxVersion::V0,
+        fee_payer,
+        instructions,
+        blockhash,
+        None,
+    )?;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("transaction signing failed: {e}")))?;
-    let bytes = bincode::serialize(&tx)
-        .map_err(|e| Error::Other(format!("transaction serialization failed: {e}")))?;
-    Ok(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        bytes,
-    ))
+    Ok(crate::core::tx::encode(&tx)?)
 }
 
 /// Wrap a payload in a `PAYMENT-SIGNATURE` envelope and base64-encode it.
@@ -670,6 +669,7 @@ mod tests {
                 recent_slot: Some(341_000_000),
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: None,
             },
         }
     }

@@ -36,11 +36,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_instruction::Instruction;
 use solana_keychain::TransactionSigner;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
@@ -49,6 +47,7 @@ use crate::core::store::{
     BatchReservation, ChannelState, ChannelStore, MemoryChannelStore, PendingSetup,
     CHANNEL_STATE_SCHEMA_VERSION, CHARGE_RESERVATION_LEASE,
 };
+use crate::core::tx::TxVersion;
 use crate::core::tx_pipeline::{TxPipeline, TxPipelineConfig};
 
 use crate::x402::error::Error;
@@ -184,17 +183,18 @@ fn spawn_next_submission(
             .latest_blockhash()
             .await
             .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let message = Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned(
+            TxVersion::V0,
+            &fee_payer,
             &instructions,
-            Some(&pc::to_address(&fee_payer)),
-            &blockhash,
-        );
-        let mut tx = Transaction::new_unsigned(message);
-        crate::core::signing::sign_legacy_transaction(signer.as_ref(), &mut tx)
+            blockhash,
+            None,
+        )?;
+        crate::core::signing::sign_versioned_transaction_slot(signer.as_ref(), &mut tx)
             .await
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         pipeline
-            .submit_verified(&VersionedTransaction::from(tx))
+            .submit_verified(&tx)
             .await
             .map(|confirmed| confirmed.signature.to_string())
             .map_err(|e| Error::Rpc(format!("settlement submission failed: {e}")))
@@ -252,8 +252,7 @@ fn broadcast_and_confirm_deposit(
     // catches the rest — an unfunded payer, a frozen or wrong-owner token
     // account, a settlement path that would not be usable later — while
     // rejecting is still free.
-    let simulation = rpc
-        .simulate_transaction(tx)
+    let simulation = crate::core::rpc::simulate_transaction(rpc, tx)
         .map_err(|e| batch_err(codes::INVALID_SETTLEMENT_SIMULATION, e.to_string()))?;
     if let Some(err) = simulation.value.err {
         let logs = simulation.value.logs.unwrap_or_default().join(" | ");
@@ -265,7 +264,7 @@ fn broadcast_and_confirm_deposit(
             format!("simulation failed: {err:?}; program logs: {logs}"),
         ));
     }
-    match rpc.send_and_confirm_transaction(tx) {
+    match crate::core::rpc::send_and_confirm_transaction(rpc, tx) {
         Ok(confirmed) => Ok(confirmed.to_string()),
         Err(error) => {
             if await_ambiguous_deposit_confirmation(rpc, &signature)? {
@@ -670,6 +669,7 @@ impl X402BatchSettlement {
                 recent_slot: None,
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: None,
             },
         })
     }
@@ -2569,7 +2569,7 @@ impl X402BatchSettlement {
         if groups.is_empty() {
             return Ok(vec![]);
         }
-        let batches = pack(groups, &self.fee_payer, max_per_tx);
+        let batches = pack(TxVersion::V0, groups, &self.fee_payer, max_per_tx);
 
         // Build instruction batches first. Each bounded task below fetches a
         // fresh blockhash, signs, and broadcasts its own transaction so slow
@@ -3255,6 +3255,7 @@ mod tests {
                 recent_slot: None,
                 channel_state: None,
                 voucher_state: None,
+                transaction_versions: None,
             },
         };
         let (_, config, channel) = client(&fee_payer, &requirements);

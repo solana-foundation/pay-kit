@@ -249,6 +249,10 @@ pub struct PaymentRequirements {
     /// Server's fee payer public key.
     pub fee_payer_key: Option<String>,
 
+    /// Transaction message versions the sponsor accepts (`0`, `1`), carried
+    /// as `extra.transactionVersions` on the wire. Absent means `[0]`.
+    pub transaction_versions: Option<Vec<crate::core::tx::TxVersion>>,
+
     /// Extra protocol-specific data.
     pub extra: Option<serde_json::Value>,
 
@@ -319,6 +323,11 @@ impl PaymentRequirements {
                 .entry("decimals".to_string())
                 .or_insert_with(|| serde_json::Value::from(decimals));
         }
+        if let Some(versions) = &self.transaction_versions {
+            extra
+                .entry("transactionVersions".to_string())
+                .or_insert_with(|| serde_json::to_value(versions).unwrap_or_default());
+        }
 
         serde_json::Value::Object(extra)
     }
@@ -379,6 +388,14 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             .or_else(|| extra_object.and_then(|extra| string_field(extra, "feePayer")));
         let fee_payer =
             bool_field(object, "feePayer").or_else(|| fee_payer_key.as_ref().map(|_| true));
+        let transaction_versions = extra_object
+            .and_then(|extra| extra.get("transactionVersions"))
+            .map(|value| {
+                serde_json::from_value::<Vec<crate::core::tx::TxVersion>>(value.clone()).map_err(
+                    |e| serde::de::Error::custom(format!("extra.transactionVersions: {e}")),
+                )
+            })
+            .transpose()?;
         let max_age =
             u64_field(object, "maxAge").or_else(|| u64_field(object, "maxTimeoutSeconds"));
 
@@ -405,6 +422,7 @@ impl<'de> Deserialize<'de> for PaymentRequirements {
             recent_blockhash,
             fee_payer,
             fee_payer_key,
+            transaction_versions,
             extra,
             accepted,
             resource_info: None,
@@ -703,6 +721,7 @@ impl PaymentConfig {
                 description: self.description.clone(),
                 mime_type: None,
             }),
+            transaction_versions: None,
         }
     }
 }
@@ -1009,6 +1028,7 @@ mod tests {
                 extra: None,
                 accepted: None,
                 resource_info: None,
+                transaction_versions: None,
             }],
             error: Some("required".to_string()),
             extensions: Some(serde_json::json!({

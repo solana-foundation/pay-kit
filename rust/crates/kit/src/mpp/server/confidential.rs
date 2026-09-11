@@ -9,7 +9,7 @@
 use std::str::FromStr;
 
 use solana_pubkey::Pubkey;
-use solana_transaction::{versioned::VersionedTransaction, Transaction};
+use solana_transaction::versioned::VersionedTransaction;
 
 use crate::mpp::protocol::intents::ChargeRequest;
 use crate::mpp::protocol::solana::{programs, MethodDetails};
@@ -227,14 +227,11 @@ impl Mpp {
                             "Invalid base64 transaction at index {idx}: {e}"
                         ))
                     })?;
-            let tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
-                .map(VersionedTransaction::from)
-                .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
-                .map_err(|e| {
-                    VerificationError::invalid_payload(format!(
-                        "Invalid transaction at index {idx}: {e}"
-                    ))
-                })?;
+            let tx = crate::core::tx::decode_bytes(&tx_bytes).map_err(|e| {
+                VerificationError::invalid_payload(format!(
+                    "Invalid transaction at index {idx}: {e}"
+                ))
+            })?;
 
             check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
 
@@ -315,7 +312,7 @@ impl Mpp {
             })?;
 
             // Simulate before broadcasting to avoid fee loss / partial bundles.
-            let sim = self.rpc.simulate_transaction(&*tx).map_err(|e| {
+            let sim = crate::core::rpc::simulate_transaction(&self.rpc, &*tx).map_err(|e| {
                 VerificationError::network_error(format!(
                     "Simulation RPC error for bundle tx {idx}: {e}"
                 ))
@@ -340,7 +337,12 @@ impl Mpp {
                 )));
             }
 
-            let signature = self.rpc.send_transaction(&*tx).map_err(|e| {
+            let signature = crate::core::rpc::send_transaction(
+                &self.rpc,
+                &*tx,
+                crate::core::rpc::preflight_config(&self.rpc),
+            )
+            .map_err(|e| {
                 VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
             })?;
             let signature_str = signature.to_string();
@@ -549,29 +551,33 @@ impl Mpp {
             .rpc
             .get_latest_blockhash()
             .map_err(|e| VerificationError::network_error(format!("get_latest_blockhash: {e}")))?;
-        let message = solana_message::Message::new_with_blockhash(&[ix], Some(gateway), &blockhash);
-        let mut tx = Transaction::new_unsigned(message);
-        // The gateway is the sole signer and the fee payer, so this is the
-        // legacy fee-payer co-sign shape. Routing it through `sign_transaction`
-        // is what lets a hardware gateway run the orphan sweeper.
-        crate::core::signing::cosign_legacy_fee_payer(signer, gateway, &mut tx)
+        let mut tx = crate::core::tx::build_unsigned(
+            crate::core::tx::TxVersion::V0,
+            gateway,
+            &[ix],
+            blockhash,
+            None,
+        )
+        .map_err(|e| VerificationError::new(format!("build close: {e}")))?;
+        // The gateway is the sole signer and the fee payer. Routing it through
+        // `sign_transaction` is what lets a hardware gateway run the sweeper.
+        crate::core::signing::cosign_versioned_fee_payer(signer, gateway, &mut tx)
             .await
             .map_err(|e| VerificationError::new(format!("sign close: {e}")))?;
-        let tx = VersionedTransaction::from(tx);
 
-        let sim = self
-            .rpc
-            .simulate_transaction(&tx)
+        let sim = crate::core::rpc::simulate_transaction(&self.rpc, &tx)
             .map_err(|e| VerificationError::network_error(format!("simulate close: {e}")))?;
         if let Some(err) = sim.value.err {
             return Err(VerificationError::transaction_failed(format!(
                 "close simulation failed: {err}"
             )));
         }
-        let sig = self
-            .rpc
-            .send_transaction(&tx)
-            .map_err(|e| VerificationError::network_error(format!("broadcast close: {e}")))?;
+        let sig = crate::core::rpc::send_transaction(
+            &self.rpc,
+            &tx,
+            crate::core::rpc::preflight_config(&self.rpc),
+        )
+        .map_err(|e| VerificationError::network_error(format!("broadcast close: {e}")))?;
         for _ in 0..CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS {
             if let Ok(resp) = self
                 .rpc
@@ -838,7 +844,7 @@ pub(crate) fn verify_confidential_bundle_tx(
                         )));
                     }
                 }
-                None => {
+                Some(ComputeBudgetOp::LoadedAccountsDataSizeLimit(_)) | None => {
                     return Err(VerificationError::credential_mismatch(
                         "only SetComputeUnitLimit / SetComputeUnitPrice are allowed on ComputeBudget",
                     ));

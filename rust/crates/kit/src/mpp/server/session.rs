@@ -502,6 +502,7 @@ impl<S: ChannelStore> SessionServer<S> {
                         share_bps: split.bps,
                     })
                     .collect(),
+                transaction_versions: None,
             },
         })
     }
@@ -2916,7 +2917,6 @@ mod tests {
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn sponsored_open_advertises_cosigns_and_persists_rent_payer() {
-        use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
 
         let sponsor = shared_signer(8);
@@ -2986,8 +2986,7 @@ mod tests {
         let mut tampered = submitted;
         tampered.signatures[1] = Signature::default();
         let mut invalid_open = open;
-        invalid_open.transaction = base64::engine::general_purpose::STANDARD
-            .encode(bincode::serialize(&tampered).unwrap());
+        invalid_open.transaction = crate::core::tx::encode(&tampered).unwrap();
         let error = server
             .process_open(
                 &invalid_open,
@@ -3350,10 +3349,7 @@ mod tests {
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn confirmed_sponsored_topup_adds_only_the_declared_amount() {
-        use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
-        use solana_message::Message;
-        use solana_transaction::Transaction;
 
         let (mut server, _session, channel_id) = client_server().await;
         let payer = signer(5);
@@ -3388,18 +3384,19 @@ mod tests {
             &token_program,
             &program_id,
         );
-        let message = Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &sponsor.pubkey(),
             &[ix],
-            Some(&sponsor.pubkey()),
-            &solana_hash::Hash::new_unique(),
-        );
-        let mut tx = Transaction::new_unsigned(message);
-        crate::core::signing::sign_legacy_transaction(payer.as_ref(), &mut tx)
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
             .await
             .unwrap();
         assert_eq!(tx.signatures[0], Signature::default());
-        let transaction =
-            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+        let transaction = crate::core::tx::encode(&tx).unwrap();
         let account = payment_channels::generated::generated::accounts::Channel {
             discriminator: 1,
             version: 1,
@@ -3489,10 +3486,7 @@ mod tests {
     #[cfg(feature = "server")]
     #[tokio::test(flavor = "multi_thread")]
     async fn topup_whose_own_transaction_fails_is_not_credited_from_the_aggregate_deposit() {
-        use base64::Engine;
         use payment_channels::generated::generated::types::SettlementWatermarks;
-        use solana_message::Message;
-        use solana_transaction::Transaction;
 
         let (mut server, _session, channel_id) = client_server().await;
         let payer = signer(5);
@@ -3527,17 +3521,18 @@ mod tests {
             &token_program,
             &program_id,
         );
-        let message = Message::new_with_blockhash(
+        let mut tx = crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &sponsor.pubkey(),
             &[ix],
-            Some(&sponsor.pubkey()),
-            &solana_hash::Hash::new_unique(),
-        );
-        let mut tx = Transaction::new_unsigned(message);
-        crate::core::signing::sign_legacy_transaction(payer.as_ref(), &mut tx)
+            solana_hash::Hash::new_unique(),
+            None,
+        )
+        .unwrap();
+        crate::core::signing::sign_versioned_transaction_slot(payer.as_ref(), &mut tx)
             .await
             .unwrap();
-        let transaction =
-            base64::engine::general_purpose::STANDARD.encode(bincode::serialize(&tx).unwrap());
+        let transaction = crate::core::tx::encode(&tx).unwrap();
         // The on-chain account already reflects deposit=1_100 — as if a
         // *different* concurrent top-up already landed — even though THIS
         // request's own transaction is about to be reported as failed.

@@ -809,12 +809,15 @@ mod tests {
         /// Compile `instructions` with the sponsor as fee payer and the payer as
         /// the second signer, then sign the payer slot for real.
         fn sign(&self, instructions: &[Instruction]) -> String {
-            let message = Message::new_with_blockhash(
-                instructions,
-                Some(&self.fee_payer),
-                &Hash::new_unique(),
+            let message = VersionedMessage::V0(
+                solana_message::v0::Message::try_compile(
+                    &self.fee_payer,
+                    instructions,
+                    &[],
+                    Hash::new_unique(),
+                )
+                .unwrap(),
             );
-            let message = VersionedMessage::Legacy(message);
             let bytes = message.serialize();
             let signature = Signature::from(self.payer_key.sign(&bytes).to_bytes());
             let signer_index = message
@@ -833,10 +836,7 @@ mod tests {
     }
 
     fn encode(tx: &VersionedTransaction) -> String {
-        base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            bincode::serialize(tx).unwrap(),
-        )
+        crate::core::tx::encode(tx).unwrap()
     }
 
     fn memo_ix(text: &str) -> Instruction {
@@ -1052,11 +1052,10 @@ mod tests {
         ];
 
         // Fee payer is not the sponsor.
-        let message = VersionedMessage::Legacy(Message::new_with_blockhash(
-            &ixs,
-            Some(&f.payer),
-            &Hash::new_unique(),
-        ));
+        let message = VersionedMessage::V0(
+            solana_message::v0::Message::try_compile(&f.payer, &ixs, &[], Hash::new_unique())
+                .unwrap(),
+        );
         let signatures =
             vec![Signature::default(); message.header().num_required_signatures as usize];
         let tx = encode(&VersionedTransaction {
@@ -1070,11 +1069,10 @@ mod tests {
 
         // Valid layout, but the payer signature slot was never filled: the
         // sponsor must never co-sign a transaction the payer did not authorize.
-        let message = VersionedMessage::Legacy(Message::new_with_blockhash(
-            &ixs,
-            Some(&f.fee_payer),
-            &Hash::new_unique(),
-        ));
+        let message = VersionedMessage::V0(
+            solana_message::v0::Message::try_compile(&f.fee_payer, &ixs, &[], Hash::new_unique())
+                .unwrap(),
+        );
         let signatures =
             vec![Signature::default(); message.header().num_required_signatures as usize];
         let tx = encode(&VersionedTransaction {
@@ -1089,6 +1087,36 @@ mod tests {
             "{}",
             err.detail
         );
+    }
+
+    #[test]
+    fn rejects_a_legacy_envelope() {
+        let f = fixture();
+        let ixs = [
+            pc::build_open_instruction(&f.open_params(100_000)),
+            nonce_memo(),
+        ];
+        let message = VersionedMessage::Legacy(Message::new_with_blockhash(
+            &ixs,
+            Some(&f.fee_payer),
+            &Hash::new_unique(),
+        ));
+        let tx = VersionedTransaction {
+            signatures: vec![
+                Signature::default();
+                message.header().num_required_signatures as usize
+            ],
+            message,
+        };
+        // Legacy bytes are what a pre-cutover client would send.
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            bincode::serialize(&tx).unwrap(),
+        );
+        let err =
+            validate_setup_transaction(&encoded, SetupForm::Open, &f.expectations(), 100_000, None)
+                .unwrap_err();
+        assert!(err.detail.contains("legacy"), "{}", err.detail);
     }
 
     #[test]

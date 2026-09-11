@@ -98,6 +98,7 @@ mod tests {
                 recent_slot: None,
                 valid_after: None,
                 memo: None,
+                transaction_versions: None,
             },
         }
     }

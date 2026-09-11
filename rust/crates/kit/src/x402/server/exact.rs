@@ -664,8 +664,7 @@ impl X402 {
         // Preflight still rejects a bad tx before it lands, and on failure the
         // returned error carries the simulation error and program logs, so the
         // diagnostics that the explicit simulate used to surface survive.
-        self.rpc
-            .send_and_confirm_transaction(&tx)
+        crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map(|s| s.to_string())
             .map_err(|e| Error::Rpc(format!("exact settlement broadcast failed: {e}")))
     }
@@ -751,7 +750,7 @@ impl X402 {
                 let decoded =
                     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
                         .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
-                let tx: VersionedTransaction = bincode::deserialize(&decoded)
+                let tx = crate::core::tx::decode_bytes(&decoded)
                     .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
 
                 // Reject up-front if the client signed against the wrong

@@ -12,18 +12,16 @@
 
 use std::str::FromStr;
 
-use base64::Engine;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_instruction::AccountMeta;
 use solana_instruction::Instruction;
 use solana_keychain::TransactionSigner;
 use solana_message::compiled_instruction::CompiledInstruction;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::Transaction;
 
+use crate::core::tx::{ComputeBudget, TxVersion};
 use crate::core::{Error, Result};
 
 pub use crate::generated::payment_channels as generated;
@@ -60,10 +58,10 @@ pub const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 pub const LIGHTHOUSE_PROGRAM: &str = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 
 /// `SetComputeUnitLimit` instruction type byte in Compute Budget data.
-pub const COMPUTE_BUDGET_SET_UNIT_LIMIT: u8 = 2;
+pub const COMPUTE_BUDGET_SET_UNIT_LIMIT: u8 = crate::core::tx::budget::SET_UNIT_LIMIT_TAG;
 
 /// `SetComputeUnitPrice` instruction type byte in Compute Budget data.
-pub const COMPUTE_BUDGET_SET_UNIT_PRICE: u8 = 3;
+pub const COMPUTE_BUDGET_SET_UNIT_PRICE: u8 = crate::core::tx::budget::SET_UNIT_PRICE_TAG;
 
 /// Ceiling on `SetComputeUnitLimit` in a channel-`open` transaction. An
 /// observed open consumes ~51,000 CU; the ceiling is the runtime's own
@@ -99,14 +97,14 @@ pub const VOUCHER_MAGIC: [u8; 2] = [0x56, 0x01];
 /// rejected), and `reclaim` unlocks only once `clock.slot > open_slot + 1500`.
 pub const OPEN_SLOT_WINDOW: u64 = 1_500;
 
-/// Maximum voucher-backed settlement operations in one legacy transaction.
+/// Maximum voucher-backed settlement operations in one version-0 transaction.
 ///
 /// Each operation contributes an Ed25519 verification plus a `settle` or
 /// `settle_and_seal` instruction. Four fit below the 1,232-byte transaction
 /// limit; five do not.
 pub const MAX_VOUCHER_SETTLEMENTS_PER_TX: usize = 4;
 
-/// Maximum `reclaim` operations in one legacy transaction when the fee payer
+/// Maximum `reclaim` operations in one version-0 transaction when the fee payer
 /// is also the shared rent payer. Twenty-eight serialize to 1,230 bytes;
 /// twenty-nine require 1,268 bytes.
 ///
@@ -239,7 +237,7 @@ pub fn instructions_sysvar_id() -> Pubkey {
 }
 
 pub fn compute_budget_program_id() -> Pubkey {
-    Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).expect("valid compute budget program id")
+    crate::core::tx::COMPUTE_BUDGET_PROGRAM_ID
 }
 
 pub fn memo_program_id() -> Pubkey {
@@ -290,23 +288,11 @@ pub fn from_address(address: &Address) -> Pubkey {
     Pubkey::from(address.to_bytes())
 }
 
-/// Decode a base64 (standard) bincode transaction, accepting both legacy and v0
-/// versioned wire formats. Payment-channel opens are built by legacy clients
-/// (the pay Rust client) and v0 clients (the canonical pay-kit JS client, which
-/// builds `createTransactionMessage({ version: 0 })`), so any server that
-/// broadcasts a client-built open must accept either. Shared by x402
+/// Decode a base64 payload transaction: version 0 or version 1, canonical
+/// encoding, no legacy. See [`crate::core::tx::wire::decode`]. Shared by x402
 /// (`upto`/`batch-settlement`) and the MPP session opener.
-///
-/// Decodes straight to `VersionedTransaction` — its message deserializer
-/// dispatches on the version-prefix byte, so it handles both formats. (Trying
-/// legacy `Transaction` first is unsound: bincode ignores trailing bytes, so a
-/// long-enough v0 tx can deserialize as a *garbage* legacy tx — wrong account
-/// keys — instead of failing through to the v0 path.)
 pub fn decode_transaction(b64: &str) -> Result<VersionedTransaction> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| Error::Other(format!("invalid base64 transaction: {e}")))?;
-    bincode::deserialize(&bytes).map_err(|e| Error::Other(format!("invalid transaction: {e}")))
+    crate::core::tx::decode(b64)
 }
 
 /// Co-sign the operator's (fee-payer) slot of a partially-signed payment-channel
@@ -704,6 +690,11 @@ pub struct OpenTxOptions {
     /// requires exactly one matching Memo, so the text is passed through
     /// verbatim.
     pub memo: Option<String>,
+    /// Message version to build. Version 1 requires `compute_budget`.
+    pub version: TxVersion,
+    /// Compute budget: a ComputeBudget prefix on version 0, the header config
+    /// on version 1. `None` builds a version-0 transaction with no prefix.
+    pub compute_budget: Option<ComputeBudget>,
 }
 
 /// Build a payer-signed (fee-payer-unsigned) channel `open` transaction.
@@ -797,19 +788,19 @@ pub async fn build_open_payment_channel_tx_with_options(
             data: memo.as_bytes().to_vec(),
         });
     }
-    let message = Message::new_with_blockhash(&instructions, Some(fee_payer), &recent_blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-
-    crate::core::signing::sign_legacy_transaction(signer, &mut tx)
+    let mut tx = crate::core::tx::build_unsigned(
+        options.version,
+        fee_payer,
+        &instructions,
+        recent_blockhash,
+        options.compute_budget.as_ref(),
+    )?;
+    crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("payment-channel open signing failed: {e}")))?;
-
-    let bytes = bincode::serialize(&tx).map_err(|e| {
-        Error::Serialization(format!("payment-channel open tx serialization failed: {e}"))
-    })?;
     Ok(PaymentChannelOpenTransaction {
         channel_id,
-        transaction: base64::engine::general_purpose::STANDARD.encode(bytes),
+        transaction: crate::core::tx::encode(&tx)?,
     })
 }
 
@@ -824,34 +815,7 @@ pub async fn build_open_payment_channel_tx_with_options(
 // runs only after the signature has already authorized fee (and, for `open`,
 // rent) expenditure.
 
-/// A decoded ComputeBudget instruction the sponsor policy permits: a unit
-/// limit or a unit price.
-///
-/// The on-chain wire format (tag [`COMPUTE_BUDGET_SET_UNIT_LIMIT`], 5 bytes,
-/// `u32`; tag [`COMPUTE_BUDGET_SET_UNIT_PRICE`], 9 bytes, `u64`) is the same
-/// everywhere, so it is decoded once here. Callers apply their own caps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComputeBudgetOp {
-    /// `SetComputeUnitLimit(units)`.
-    UnitLimit(u32),
-    /// `SetComputeUnitPrice(microLamportsPerComputeUnit)`.
-    UnitPrice(u64),
-}
-
-/// Decode a `SetComputeUnitLimit` / `SetComputeUnitPrice` ComputeBudget
-/// instruction. Returns `None` for any other opcode or a malformed length —
-/// callers decide whether that is an error and how to report it.
-pub fn decode_compute_budget_op(ix: &CompiledInstruction) -> Option<ComputeBudgetOp> {
-    match (ix.data.first().copied(), ix.data.len()) {
-        (Some(COMPUTE_BUDGET_SET_UNIT_LIMIT), 5) => Some(ComputeBudgetOp::UnitLimit(
-            u32::from_le_bytes(ix.data[1..5].try_into().expect("4-byte slice")),
-        )),
-        (Some(COMPUTE_BUDGET_SET_UNIT_PRICE), 9) => Some(ComputeBudgetOp::UnitPrice(
-            u64::from_le_bytes(ix.data[1..9].try_into().expect("8-byte slice")),
-        )),
-        _ => None,
-    }
-}
+pub use crate::core::tx::{decode_compute_budget_op, ComputeBudgetOp};
 
 /// Minimum length of a random Memo nonce, in bytes, before hex encoding.
 ///
@@ -965,7 +929,9 @@ pub fn scan_channel_tx_layout<'tx>(
                 }
                 seen_price = true;
             }
-            None => {
+            // `SetLoadedAccountsDataSizeLimit` is not part of the accepted
+            // prefix: the sponsor bounds only the two opcodes the spec names.
+            Some(ComputeBudgetOp::LoadedAccountsDataSizeLimit(_)) | None => {
                 return Err(Error::Other(format!(
                     "{label} transaction has an unsupported ComputeBudget instruction"
                 )))
@@ -1247,6 +1213,7 @@ mod tests {
 
         let with_memo = build_open(&OpenTxOptions {
             memo: Some("order-4711".to_string()),
+            ..Default::default()
         })
         .await
         .expect("open transaction with a memo");
@@ -1262,6 +1229,7 @@ mod tests {
         // Over the cap the counterparty enforces, so it fails here instead.
         let err = build_open(&OpenTxOptions {
             memo: Some("x".repeat(OPEN_MAX_MEMO_BYTES + 1)),
+            ..Default::default()
         })
         .await
         .expect_err("an over-long memo must be rejected");

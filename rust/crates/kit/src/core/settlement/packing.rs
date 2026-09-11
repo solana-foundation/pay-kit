@@ -1,19 +1,19 @@
-//! Greedy, size-bounded packing of per-channel instruction groups into legacy
-//! transactions (no address lookup tables).
+//! Greedy, size-bounded packing of per-channel instruction groups into
+//! transactions of one message version, without address lookup tables.
 //!
 //! Callers supply an operation-specific count cap; this module independently
-//! enforces the Solana packet limit. A voucher settlement and a reclaim have
-//! different account and data footprints, so there is deliberately no global
-//! "channels per transaction" default here.
+//! enforces the version's wire limits through [`crate::core::tx::measure`]. A
+//! voucher settlement and a reclaim have different account and data
+//! footprints, so there is deliberately no global "channels per transaction"
+//! default here.
 //!
 //! Shared by both the mpp session and x402 settlement paths via the worker.
 
 use solana_instruction::Instruction;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 
-/// Max serialized transaction size (Solana packet limit).
-pub const MAX_TX_BYTES: usize = 1232;
+use crate::core::tx::{measure, TxVersion};
+use crate::core::Result;
 
 /// One channel operation's instructions, tagged with its id for tracing,
 /// metrics, and reconciliation.
@@ -23,26 +23,27 @@ pub struct ChannelInstructionGroup {
     pub instructions: Vec<Instruction>,
 }
 
-/// Serialized size of a legacy transaction carrying `instructions`, fee-paid by
-/// `payer`. Computed without signing: message bytes + the signature array
-/// (`num_required_signatures * 64`) + the compact-u16 length prefix.
-pub fn tx_size(instructions: &[Instruction], payer: &Pubkey) -> usize {
-    let msg = Message::new(instructions, Some(payer));
-    let sigs = msg.header.num_required_signatures as usize;
-    let sig_prefix = if sigs < 128 { 1 } else { 2 };
-    msg.serialize().len() + sigs * 64 + sig_prefix
+/// Serialized size of a `version` transaction carrying `instructions`,
+/// fee-paid by `payer`, with no compute budget. Exact for the signed
+/// transaction: signatures are fixed-size and the blockhash does not change
+/// the length. Errors only when the instructions cannot be compiled at all.
+pub fn tx_size(version: TxVersion, instructions: &[Instruction], payer: &Pubkey) -> Result<usize> {
+    measure(version, payer, instructions, None)
 }
 
 /// The shared batch-boundary rule for greedy packing: whether appending a
 /// group whose flattened instructions are `next` to a current batch holding
 /// `cur_group_count` groups (flattened to `cur`) would overflow the caller's
-/// operation-specific cap or the [`MAX_TX_BYTES`] byte limit.
+/// operation-specific cap or the version's size limit. A group that cannot be
+/// measured counts as overflowing, so it is sealed into its own batch and
+/// surfaces as an error at build time rather than being dropped.
 ///
 /// Used by both [`pack`] and the worker's `regroup` so the packing rule lives
 /// in one place. Note: it rebuilds and serializes the candidate message on each
 /// call, so a greedy packer built on it is O(n²) in instruction bytes — fine
 /// for realistic batch sizes (a handful of channels), not for large fan-in.
 pub fn would_overflow_tx(
+    version: TxVersion,
     cur: &[Instruction],
     cur_group_count: usize,
     next: &[Instruction],
@@ -54,15 +55,19 @@ pub fn would_overflow_tx(
     }
     let mut probe: Vec<Instruction> = cur.to_vec();
     probe.extend_from_slice(next);
-    tx_size(&probe, payer) > MAX_TX_BYTES
+    match tx_size(version, &probe, payer) {
+        Ok(size) => size > version.limits().max_bytes,
+        Err(_) => true,
+    }
 }
 
-/// Greedily group channel operations into legacy-tx-sized batches. Each
-/// returned batch's flattened instructions serialize to `<= MAX_TX_BYTES` and
+/// Greedily group channel operations into `version`-sized batches. Each
+/// returned batch's flattened instructions fit the version's size limit and
 /// hold at most `max_groups_per_tx` operations. A single operation that alone
 /// exceeds the limit is returned as its own over-size batch; the caller
 /// surfaces that as an error rather than silently dropping it.
 pub fn pack(
+    version: TxVersion,
     channels: Vec<ChannelInstructionGroup>,
     payer: &Pubkey,
     max_groups_per_tx: usize,
@@ -77,6 +82,7 @@ pub fn pack(
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
             if would_overflow_tx(
+                version,
                 &cur_ix,
                 cur.len(),
                 &ch.instructions,
@@ -147,12 +153,12 @@ mod tests {
                 .iter()
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
-            let size = tx_size(&flat, &operator);
+            let size = tx_size(TxVersion::V0, &flat, &operator).unwrap();
             eprintln!(
                 "channels={n:2}  tx_bytes={size:4}  fits={}",
-                size <= MAX_TX_BYTES
+                size <= TxVersion::V0.limits().max_bytes
             );
-            if size <= MAX_TX_BYTES {
+            if size <= TxVersion::V0.limits().max_bytes {
                 max_fit = n as usize;
             }
         }
@@ -171,7 +177,9 @@ mod tests {
             let instructions: Vec<_> = (0..n)
                 .map(|i| build_reclaim_instruction(&pk(0x03, i), &operator, &program_id))
                 .collect();
-            if tx_size(&instructions, &operator) <= MAX_TX_BYTES {
+            if tx_size(TxVersion::V0, &instructions, &operator).unwrap()
+                <= TxVersion::V0.limits().max_bytes
+            {
                 max_fit = n as usize;
             }
         }
@@ -187,7 +195,7 @@ mod tests {
         let channels: Vec<_> = (0..10).map(voucher_settlement_instructions).collect();
 
         // Byte-bounded packing (generous count cap).
-        let batches = pack(channels.clone(), &operator, 1000);
+        let batches = pack(TxVersion::V0, channels.clone(), &operator, 1000);
         assert!(!batches.is_empty());
         for b in &batches {
             let flat: Vec<Instruction> = b
@@ -195,14 +203,15 @@ mod tests {
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
             assert!(
-                tx_size(&flat, &operator) <= MAX_TX_BYTES,
+                tx_size(TxVersion::V0, &flat, &operator).unwrap()
+                    <= TxVersion::V0.limits().max_bytes,
                 "batch exceeds packet size"
             );
         }
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 10);
 
         // Count cap of 1 ⇒ one channel per batch.
-        let singles = pack(channels, &operator, 1);
+        let singles = pack(TxVersion::V0, channels, &operator, 1);
         assert_eq!(singles.len(), 10);
         assert!(singles.iter().all(|b| b.len() == 1));
     }

@@ -27,11 +27,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use solana_instruction::Instruction;
 use solana_keychain::{SolanaSigner, TransactionSigner};
 use solana_message::compiled_instruction::CompiledInstruction;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::Transaction;
 
 use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
@@ -387,6 +385,7 @@ impl X402Upto {
                 // No seller memo: the server accepts (but never requires) the
                 // client's own memo after `open`.
                 memo: None,
+                transaction_versions: None,
             },
         })
     }
@@ -595,8 +594,7 @@ impl X402Upto {
             &payload.open_slot,
         )?;
         self.cosign_fee_payer(&mut tx).await?;
-        self.rpc
-            .send_and_confirm_transaction(&tx)
+        crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("open broadcast failed: {e}")))?;
 
         // Read the confirmed channel state and bind it.
@@ -696,13 +694,16 @@ impl X402Upto {
             .rpc
             .get_latest_blockhash()
             .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let message = Message::new_with_blockhash(&instructions, Some(&self.fee_payer), &blockhash);
-        let mut tx = Transaction::new_unsigned(message);
+        let mut tx = crate::core::tx::build_unsigned(
+            crate::core::tx::TxVersion::V0,
+            &self.fee_payer,
+            &instructions,
+            blockhash,
+            None,
+        )?;
         self.sign_settlement_transaction(&mut tx).await?;
 
-        let signature = self
-            .rpc
-            .send_and_confirm_transaction(&tx)
+        let signature = crate::core::rpc::send_and_confirm_transaction(&self.rpc, &tx)
             .map_err(|e| Error::Rpc(format!("settle broadcast failed: {e}")))?;
 
         Ok(self.settlement_response(open, actual, signature.to_string()))
@@ -934,10 +935,16 @@ impl X402Upto {
     /// signer: it is both the transaction fee payer and the `settle_and_seal`
     /// payee signer, while the receiver authorizer's voucher rides inside the
     /// instruction data rather than as a transaction signature.
-    async fn sign_settlement_transaction(&self, tx: &mut Transaction) -> Result<(), Error> {
-        crate::core::signing::sign_legacy_transaction(self.config.fee_payer_signer.as_ref(), tx)
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
+    async fn sign_settlement_transaction(
+        &self,
+        tx: &mut VersionedTransaction,
+    ) -> Result<(), Error> {
+        crate::core::signing::sign_versioned_transaction_slot(
+            self.config.fee_payer_signer.as_ref(),
+            tx,
+        )
+        .await
+        .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         Ok(())
     }
 
@@ -1323,16 +1330,21 @@ mod tests {
     }
 
     fn unsigned_tx(instructions: &[solana_instruction::Instruction]) -> VersionedTransaction {
-        let msg = Message::new(instructions, Some(&Pubkey::new_unique()));
-        VersionedTransaction::from(Transaction::new_unsigned(msg))
+        unsigned_tx_with_fee_payer(instructions, Pubkey::new_unique())
     }
 
     fn unsigned_tx_with_fee_payer(
         instructions: &[solana_instruction::Instruction],
         fee_payer: Pubkey,
     ) -> VersionedTransaction {
-        let msg = Message::new(instructions, Some(&fee_payer));
-        VersionedTransaction::from(Transaction::new_unsigned(msg))
+        crate::core::tx::build_unsigned_unchecked(
+            crate::core::tx::TxVersion::V0,
+            &fee_payer,
+            instructions,
+            solana_hash::Hash::default(),
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1986,7 +1998,7 @@ mod tests {
 
         // Build an otherwise-valid open, then wrap it in a v0 message carrying a
         // non-empty address-table lookup.
-        let legacy = Message::new(&[build_open_instruction(&params)], Some(&payer));
+        let legacy = solana_message::Message::new(&[build_open_instruction(&params)], Some(&payer));
         let v0_msg = v0::Message {
             header: legacy.header,
             account_keys: legacy.account_keys,
