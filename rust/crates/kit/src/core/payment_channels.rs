@@ -104,6 +104,18 @@ pub const OPEN_SLOT_WINDOW: u64 = 1_500;
 /// limit; five do not.
 pub const MAX_VOUCHER_SETTLEMENTS_PER_TX: usize = 4;
 
+/// [`MAX_VOUCHER_SETTLEMENTS_PER_TX`] for a version-1 transaction: eighteen
+/// pairs fit in 4,096 bytes; nineteen do not. Size-bound, not account-bound.
+pub const MAX_VOUCHER_SETTLEMENTS_PER_TX_V1: usize = 18;
+
+/// Calibrated voucher-settlement cap for `version`.
+pub const fn max_voucher_settlements_per_tx(version: crate::core::tx::TxVersion) -> usize {
+    match version {
+        crate::core::tx::TxVersion::V0 => MAX_VOUCHER_SETTLEMENTS_PER_TX,
+        crate::core::tx::TxVersion::V1 => MAX_VOUCHER_SETTLEMENTS_PER_TX_V1,
+    }
+}
+
 /// Maximum `reclaim` operations in one version-0 transaction when the fee payer
 /// is also the shared rent payer. Twenty-eight serialize to 1,230 bytes;
 /// twenty-nine require 1,268 bytes.
@@ -111,6 +123,18 @@ pub const MAX_VOUCHER_SETTLEMENTS_PER_TX: usize = 4;
 /// Reclaim batches with distinct rent payers may fit fewer operations; the
 /// generic packer always enforces the serialized transaction-size limit too.
 pub const MAX_RECLAIMS_PER_TX: usize = 28;
+
+/// [`MAX_RECLAIMS_PER_TX`] for a version-1 transaction: sixty-two fit in the
+/// 64-address budget (each reclaim adds one channel PDA) and in 4,096 bytes.
+pub const MAX_RECLAIMS_PER_TX_V1: usize = 62;
+
+/// Calibrated reclaim cap for `version`.
+pub const fn max_reclaims_per_tx(version: crate::core::tx::TxVersion) -> usize {
+    match version {
+        crate::core::tx::TxVersion::V0 => MAX_RECLAIMS_PER_TX,
+        crate::core::tx::TxVersion::V1 => MAX_RECLAIMS_PER_TX_V1,
+    }
+}
 
 /// Channel PDA seed prefix.
 pub const CHANNEL_SEED: &[u8] = b"channel";

@@ -17,9 +17,8 @@ use crate::mpp::protocol::solana::{programs, MethodDetails};
 use crate::mpp::store::Store;
 
 use super::charge::{
-    check_network_blockhash, decode_compute_budget_op, reject_address_lookup_tables,
-    resolve_expected_mint, ComputeBudgetOp, Mpp, VerificationError, COMPUTE_BUDGET_PROGRAM,
-    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
+    check_network_blockhash, decode_compute_budget_op, resolve_expected_mint, ComputeBudgetOp, Mpp,
+    VerificationError, COMPUTE_BUDGET_PROGRAM, MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
 };
 
 /// Upper bound on transactions in a gateway-paid confidential bundle. The
@@ -238,11 +237,14 @@ impl Mpp {
             // Allow-list every instruction, assert the gateway is fee payer and
             // the only rent funder, and validate any confidential-transfer
             // destination — all before any co-sign/broadcast in pass 2.
-            transfer_count +=
-                verify_confidential_bundle_tx(&tx, &gateway_pubkey, &token_program, &recipient_ata)
-                    .map_err(|e| {
-                        VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
-                    })?;
+            transfer_count += verify_confidential_bundle_tx(
+                &tx,
+                &gateway_pubkey,
+                &token_program,
+                &recipient_ata,
+                &self.accepted_versions,
+            )
+            .map_err(|e| VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}")))?;
             if transfer_count > 1 {
                 return Err(VerificationError::credential_mismatch(
                     "Confidential bundle contains more than one transfer",
@@ -659,6 +661,7 @@ pub(crate) fn verify_confidential_bundle_tx(
     gateway: &Pubkey,
     token_program: &Pubkey,
     recipient_ata: &Pubkey,
+    accepted_versions: &[crate::core::tx::TxVersion],
 ) -> Result<usize, VerificationError> {
     // Token-2022 ConfidentialTransferExtension (TokenInstruction = 27) +
     // ConfidentialTransferInstruction discriminants: Transfer = 7,
@@ -675,7 +678,14 @@ pub(crate) fn verify_confidential_bundle_tx(
     const ZK_CLOSE_CONTEXT_STATE: u8 = 0;
     const RECORD_CLOSE_ACCOUNT: u8 = 3;
 
-    reject_address_lookup_tables(tx)?;
+    crate::core::tx::check_envelope(tx, accepted_versions)
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT,
+        crate::mpp::server::charge::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
+    )
+    .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
 
     let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
     let record_program = spl_record::id();

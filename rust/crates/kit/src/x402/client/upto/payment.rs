@@ -96,6 +96,9 @@ pub async fn build_upto_payload(
     // after `open`; without the declaration the transaction stays a bare open.
     let options = pc::OpenTxOptions {
         memo: requirements.extra.memo.clone(),
+        version: crate::core::tx::highest(crate::core::tx::accepted_versions(
+            requirements.extra.transaction_versions.as_deref(),
+        )),
         ..Default::default()
     };
     let open = pc::build_open_payment_channel_tx_with_options(

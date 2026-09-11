@@ -273,12 +273,12 @@ pub async fn build_subscription_activation_transaction_with_options(
 
     let mut instructions: Vec<Instruction> = Vec::new();
 
-    instructions.push(crate::core::tx::unit_price_instruction(
-        options.compute_unit_price.unwrap_or(1),
-    ));
-    instructions.push(crate::core::tx::unit_limit_instruction(
+    // Compute budget: a ComputeBudget prefix on version 0, the header config
+    // on version 1.
+    let budget = crate::core::tx::ComputeBudget::new(
         options.compute_unit_limit.unwrap_or(400_000),
-    ));
+        options.compute_unit_price.unwrap_or(1),
+    );
 
     // ATA bootstrap. The on-chain `init_subscription_authority` (and
     // every subsequent transfer) requires the subscriber's USDC ATA to
@@ -419,12 +419,15 @@ pub async fn build_subscription_activation_transaction_with_options(
     // Blockhash was already parsed above for the SA-init pre-step; reuse it
     // for the activation tx. Both transactions share the same recentBlockhash
     // so they land in the same ~150-slot window.
+    let version = crate::core::tx::highest(crate::core::tx::accepted_versions(
+        method_details.transaction_versions.as_deref(),
+    ));
     let mut tx = crate::core::tx::build_unsigned(
-        TxVersion::V0,
+        version,
         &fee_payer_pubkey,
         &instructions,
         blockhash,
-        None,
+        Some(&budget),
     )?;
 
     // Sign as subscriber; the server adds the puller and fee-payer

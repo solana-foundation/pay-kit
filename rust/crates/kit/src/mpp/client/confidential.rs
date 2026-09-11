@@ -364,6 +364,7 @@ pub async fn build_confidential_transfer_bundle(
             &[&equality_account],
             &equality_ixs,
             params.blockhash,
+            None,
         )
         .await?,
     );
@@ -392,6 +393,7 @@ pub async fn build_confidential_transfer_bundle(
             &[&validity_account],
             &validity_ixs,
             params.blockhash,
+            None,
         )
         .await?,
     );
@@ -472,17 +474,26 @@ pub async fn build_confidential_transfer_bundle(
     // Request a CU limit up front: the confidential transfer + in-tx closes
     // exceed the 200k default, so without this the gateway's simulation step
     // would reject the bundle (or validators would drop it on mainnet).
-    let cu_limit_ix =
-        crate::core::tx::unit_limit_instruction(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT);
+    let final_budget =
+        crate::core::tx::ComputeBudget::new(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
     let final_ixs = vec![
-        cu_limit_ix,
         transfer_ix,
         close(&equality_account.pubkey()),
         close(&validity_account.pubkey()),
         close(&range_account.pubkey()),
         spl_record::instruction::close_account(&record_account.pubkey(), fee_payer, fee_payer),
     ];
-    bundle.push(partial_sign_tx(signer, fee_payer, &[], &final_ixs, params.blockhash).await?);
+    bundle.push(
+        partial_sign_tx(
+            signer,
+            fee_payer,
+            &[],
+            &final_ixs,
+            params.blockhash,
+            Some(&final_budget),
+        )
+        .await?,
+    );
 
     Ok(bundle)
 }
@@ -550,6 +561,7 @@ async fn build_confidential_transfer_with_fee_bundle(
             &[&equality_account],
             &equality_ixs,
             params.blockhash,
+            None,
         )
         .await?,
     );
@@ -578,6 +590,7 @@ async fn build_confidential_transfer_with_fee_bundle(
             &[&validity_account],
             &validity_ixs,
             params.blockhash,
+            None,
         )
         .await?,
     );
@@ -600,6 +613,7 @@ async fn build_confidential_transfer_with_fee_bundle(
             &[&fee_sigma_account],
             &fee_sigma_ixs,
             params.blockhash,
+            None,
         )
         .await?,
     );
@@ -623,6 +637,7 @@ async fn build_confidential_transfer_with_fee_bundle(
             &[&fee_validity_account],
             &fee_validity_ixs,
             params.blockhash,
+            None,
         )
         .await?,
     );
@@ -697,10 +712,9 @@ async fn build_confidential_transfer_with_fee_bundle(
             &fee_payer_addr,
         )
     };
-    let cu_limit_ix =
-        crate::core::tx::unit_limit_instruction(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT);
+    let final_budget =
+        crate::core::tx::ComputeBudget::new(CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT, 0);
     let final_ixs = vec![
-        cu_limit_ix,
         transfer_ix,
         close(&equality_account.pubkey()),
         close(&validity_account.pubkey()),
@@ -709,7 +723,17 @@ async fn build_confidential_transfer_with_fee_bundle(
         close(&range_account.pubkey()),
         spl_record::instruction::close_account(&record_account.pubkey(), fee_payer, fee_payer),
     ];
-    bundle.push(partial_sign_tx(signer, fee_payer, &[], &final_ixs, params.blockhash).await?);
+    bundle.push(
+        partial_sign_tx(
+            signer,
+            fee_payer,
+            &[],
+            &final_ixs,
+            params.blockhash,
+            Some(&final_budget),
+        )
+        .await?,
+    );
 
     Ok(bundle)
 }
@@ -794,6 +818,7 @@ async fn stage_range_proof_record(
                 spl_record::instruction::write(&record_account.pubkey(), payer, 0, first),
             ],
             blockhash,
+            None,
         )
         .await?,
     );
@@ -815,13 +840,23 @@ async fn stage_range_proof_record(
             extra.extend_from_slice(trailing_signers);
             trailing_attached = true;
         }
-        txs.push(partial_sign_tx(signer, payer, &extra, &ixs, blockhash).await?);
+        txs.push(partial_sign_tx(signer, payer, &extra, &ixs, blockhash, None).await?);
         offset += chunk.len() as u64;
     }
 
     // Single-chunk proof: no write-only tx existed to carry the trailing ixs.
     if !trailing_attached {
-        txs.push(partial_sign_tx(signer, payer, trailing_signers, trailing_ixs, blockhash).await?);
+        txs.push(
+            partial_sign_tx(
+                signer,
+                payer,
+                trailing_signers,
+                trailing_ixs,
+                blockhash,
+                None,
+            )
+            .await?,
+        );
     }
 
     Ok(txs)
@@ -839,13 +874,17 @@ async fn partial_sign_tx(
     extra: &[&Keypair],
     instructions: &[Instruction],
     blockhash: Hash,
+    budget: Option<&crate::core::tx::ComputeBudget>,
 ) -> Result<String, Error> {
+    // The confidential bundle stays on version 0: its shape is the
+    // record-chunked proof staging that the 1232-byte limit forces, and
+    // collapsing it into one version-1 transaction is a separate change.
     let mut tx = crate::core::tx::build_unsigned(
         crate::core::tx::TxVersion::V0,
         fee_payer,
         instructions,
         blockhash,
-        None,
+        budget,
     )?;
 
     // Sign the sender slot only when the sender is a required signer on this tx
@@ -1036,9 +1075,16 @@ mod tests {
             100,
             &Pubkey::new_unique(),
         );
-        let b64 = partial_sign_tx(signer.as_ref(), &gateway, &[&eph], &[ix], Hash::default())
-            .await
-            .unwrap();
+        let b64 = partial_sign_tx(
+            signer.as_ref(),
+            &gateway,
+            &[&eph],
+            &[ix],
+            Hash::default(),
+            None,
+        )
+        .await
+        .unwrap();
         let tx = decode_tx(&b64);
         let keys = tx.message.static_account_keys();
 
@@ -1058,7 +1104,7 @@ mod tests {
         let gateway = Pubkey::new_unique();
         // Transfer makes `sender` a required signer; gateway is the fee payer.
         let ix = system_instruction::transfer(&sender, &gateway, 1);
-        let b64 = partial_sign_tx(&signer, &gateway, &[], &[ix], Hash::default())
+        let b64 = partial_sign_tx(&signer, &gateway, &[], &[ix], Hash::default(), None)
             .await
             .unwrap();
         let tx = decode_tx(&b64);

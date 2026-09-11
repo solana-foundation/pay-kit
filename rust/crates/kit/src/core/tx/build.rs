@@ -18,9 +18,10 @@ use crate::core::{Error, Result};
 /// unsigned transaction of `version`, all signature slots zeroed.
 ///
 /// `budget` is prepended as ComputeBudget instructions for version 0 and
-/// written into the header for version 1. Version 1 requires a budget: the
-/// runtime gives a version-1 transaction without a compute unit limit zero
-/// compute units.
+/// written into the header for version 1. A version-1 transaction without a
+/// compute unit limit is budgeted zero compute units, so `None` on version 1
+/// uses [`ComputeBudget::runtime_default`], which mirrors what an unbudgeted
+/// version-0 transaction gets.
 ///
 /// Fails when the result exceeds the version's limits. Address lookup tables
 /// are never used; every account is a static key.
@@ -47,9 +48,8 @@ pub fn build_unsigned(
             )
         }
         TxVersion::V1 => {
-            let budget = budget.ok_or_else(|| {
-                Error::Other("version 1 transactions require a compute budget".into())
-            })?;
+            let default_budget = ComputeBudget::runtime_default(instructions.len());
+            let budget = budget.unwrap_or(&default_budget);
             VersionedMessage::V1(
                 v1::Message::try_compile_with_config(
                     fee_payer,
@@ -167,7 +167,10 @@ pub fn build_unsigned_unchecked(
                 fee_payer,
                 instructions,
                 recent_blockhash,
-                budget.map(ComputeBudget::v1_config).unwrap_or_default(),
+                budget
+                    .copied()
+                    .unwrap_or(ComputeBudget::runtime_default(instructions.len()))
+                    .v1_config(),
             )
             .map_err(|e| Error::Other(format!("failed to compile v1 message: {e}")))?,
         ),
@@ -210,7 +213,11 @@ mod tests {
             }
             _ => panic!("expected v1"),
         }
-        assert!(build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), None).is_err());
+        let defaulted = build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), None).unwrap();
+        match &defaulted.message {
+            VersionedMessage::V1(m) => assert_eq!(m.config.compute_unit_limit, Some(200_000)),
+            _ => panic!("expected v1"),
+        }
     }
 
     #[test]

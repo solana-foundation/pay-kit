@@ -105,7 +105,7 @@ mod tests {
     use super::*;
     use crate::core::payment_channels::{
         build_reclaim_instruction, build_settle_and_seal_instructions, default_program_id,
-        MAX_RECLAIMS_PER_TX, MAX_VOUCHER_SETTLEMENTS_PER_TX,
+        max_reclaims_per_tx, max_voucher_settlements_per_tx,
     };
 
     fn pk(tag: u8, seed: u64) -> Pubkey {
@@ -143,50 +143,67 @@ mod tests {
         }
     }
 
+    fn fits(version: TxVersion, payer: &Pubkey, ixs: &[Instruction]) -> bool {
+        let limits = version.limits();
+        let Ok(tx) = crate::core::tx::build_unsigned_unchecked(
+            version,
+            payer,
+            ixs,
+            solana_hash::Hash::default(),
+            None,
+        ) else {
+            return false;
+        };
+        crate::core::tx::serialized_size(&tx).unwrap() <= limits.max_bytes
+            && tx.message.static_account_keys().len() <= limits.max_static_accounts
+            && limits
+                .max_instructions
+                .is_none_or(|max| tx.message.instructions().len() <= max)
+    }
+
     #[test]
     fn voucher_settlement_limit_matches_wire_size() {
         let operator = pk(0xAA, 0);
-        let mut max_fit = 0usize;
-        for n in 1..=12u64 {
-            let chans: Vec<_> = (0..n).map(voucher_settlement_instructions).collect();
-            let flat: Vec<Instruction> = chans
-                .iter()
-                .flat_map(|c| c.instructions.iter().cloned())
-                .collect();
-            let size = tx_size(TxVersion::V0, &flat, &operator).unwrap();
-            eprintln!(
-                "channels={n:2}  tx_bytes={size:4}  fits={}",
-                size <= TxVersion::V0.limits().max_bytes
-            );
-            if size <= TxVersion::V0.limits().max_bytes {
-                max_fit = n as usize;
+        for version in [TxVersion::V0, TxVersion::V1] {
+            let mut max_fit = 0usize;
+            for n in 1..=40u64 {
+                let chans: Vec<_> = (0..n).map(voucher_settlement_instructions).collect();
+                let flat: Vec<Instruction> = chans
+                    .iter()
+                    .flat_map(|c| c.instructions.iter().cloned())
+                    .collect();
+                if fits(version, &operator, &flat) {
+                    max_fit = n as usize;
+                }
             }
+            assert_eq!(
+                max_fit,
+                max_voucher_settlements_per_tx(version),
+                "version {version} voucher settlement cap must match the calibrated wire limits"
+            );
         }
-        assert_eq!(
-            max_fit, MAX_VOUCHER_SETTLEMENTS_PER_TX,
-            "voucher settlement cap must match the calibrated packet-size limit"
-        );
     }
 
     #[test]
     fn reclaim_limit_matches_wire_size_with_shared_rent_payer() {
         let operator = pk(0xAA, 0);
         let program_id = default_program_id();
-        let mut max_fit = 0usize;
-        for n in 1..=64u64 {
-            let instructions: Vec<_> = (0..n)
-                .map(|i| build_reclaim_instruction(&pk(0x03, i), &operator, &program_id))
-                .collect();
-            if tx_size(TxVersion::V0, &instructions, &operator).unwrap()
-                <= TxVersion::V0.limits().max_bytes
-            {
-                max_fit = n as usize;
+        for version in [TxVersion::V0, TxVersion::V1] {
+            let mut max_fit = 0usize;
+            for n in 1..=80u64 {
+                let instructions: Vec<_> = (0..n)
+                    .map(|i| build_reclaim_instruction(&pk(0x03, i), &operator, &program_id))
+                    .collect();
+                if fits(version, &operator, &instructions) {
+                    max_fit = n as usize;
+                }
             }
+            assert_eq!(
+                max_fit,
+                max_reclaims_per_tx(version),
+                "version {version} reclaim cap must match the calibrated wire limits"
+            );
         }
-        assert_eq!(
-            max_fit, MAX_RECLAIMS_PER_TX,
-            "reclaim cap must match the calibrated packet-size limit"
-        );
     }
 
     #[test]

@@ -28,8 +28,8 @@ use solana_pubkey::Pubkey;
 
 use crate::mpp::error::{Error, Result};
 use crate::mpp::program::payment_channels::{
-    build_open_payment_channel_tx, derive_channel_addresses, random_salt, Distribution,
-    OpenChannelParams, PaymentChannelOpenTransaction,
+    build_open_payment_channel_tx_with_options, derive_channel_addresses, random_salt,
+    Distribution, OpenChannelParams, OpenTxOptions, PaymentChannelOpenTransaction,
 };
 use crate::mpp::protocol::intents::session::{
     ClosePayload, OpenPayload, SessionAction, SessionAuthentication, SessionRequest,
@@ -536,7 +536,7 @@ pub async fn build_open_payment_channel_transaction(
         options: params.options,
     })?;
 
-    build_open_payment_channel_tx(
+    build_open_payment_channel_tx_with_options(
         params.signer,
         &open.payee,
         &open.mint,
@@ -550,6 +550,16 @@ pub async fn build_open_payment_channel_transaction(
         &open.program_id,
         &fee_payer,
         recent_blockhash,
+        &OpenTxOptions {
+            version: crate::core::tx::highest(crate::core::tx::accepted_versions(
+                params
+                    .request
+                    .method_details
+                    .transaction_versions
+                    .as_deref(),
+            )),
+            ..Default::default()
+        },
     )
     .await
     .map_err(Into::into)
@@ -592,7 +602,7 @@ pub async fn create_payment_channel_session_opener(
         authorized_signer,
         options: options.open.clone(),
     })?;
-    let tx = build_open_payment_channel_tx(
+    let tx = build_open_payment_channel_tx_with_options(
         payer_signer,
         &open.payee,
         &open.mint,
@@ -606,6 +616,12 @@ pub async fn create_payment_channel_session_opener(
         &open.program_id,
         &fee_payer,
         recent_blockhash,
+        &OpenTxOptions {
+            version: crate::core::tx::highest(crate::core::tx::accepted_versions(
+                request.method_details.transaction_versions.as_deref(),
+            )),
+            ..Default::default()
+        },
     )
     .await?;
     let mut session = ActiveSession::new(open.channel_id, session_signer);

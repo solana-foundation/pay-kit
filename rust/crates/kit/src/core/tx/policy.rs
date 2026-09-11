@@ -3,11 +3,110 @@
 //! limit. Instruction-level policy stays with each scheme.
 
 use solana_message::VersionedMessage;
+use solana_pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 
+use super::budget::DeclaredBudget;
 use super::build::check_limits;
 use super::version::TxVersion;
 use crate::core::{Error, Result};
+
+/// The `enable_tx_v1` feature gate (SIMD-0385).
+pub const TX_V1_FEATURE_GATE: Pubkey =
+    Pubkey::from_str_const("txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL");
+
+/// The Feature program, owner of every activated feature-gate account.
+pub const FEATURE_PROGRAM_ID: Pubkey =
+    Pubkey::from_str_const("Feature111111111111111111111111111111111111");
+
+/// Whether a server accepts and builds version-1 transactions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TxV1Mode {
+    /// Probe the `enable_tx_v1` gate on the configured RPC once at startup.
+    #[default]
+    Auto,
+    /// Accept and build version 1 without probing.
+    On,
+    /// Version 0 only.
+    Off,
+}
+
+/// Whether the `enable_tx_v1` gate is active on the cluster behind `rpc`: the
+/// gate account exists, is owned by the Feature program, and records an
+/// activation slot. A missing account, a system-owned placeholder (the
+/// staged-but-not-activated state) or an RPC error all read as inactive.
+pub fn tx_v1_active(rpc: &RpcClient) -> bool {
+    match rpc.get_account(&TX_V1_FEATURE_GATE) {
+        Ok(account) => account.owner == FEATURE_PROGRAM_ID && account.data.first() == Some(&1),
+        Err(_) => false,
+    }
+}
+
+impl TxV1Mode {
+    /// The accepted version set under this mode, probing the gate for `Auto`.
+    pub fn resolve(self, rpc: &RpcClient) -> Vec<TxVersion> {
+        match self {
+            TxV1Mode::Off => vec![TxVersion::V0],
+            TxV1Mode::On => vec![TxVersion::V0, TxVersion::V1],
+            TxV1Mode::Auto => {
+                if tx_v1_active(rpc) {
+                    vec![TxVersion::V0, TxVersion::V1]
+                } else {
+                    vec![TxVersion::V0]
+                }
+            }
+        }
+    }
+}
+
+/// The version a builder should emit for a counterparty that accepts
+/// `accepted`: the highest one.
+pub fn highest(accepted: &[TxVersion]) -> TxVersion {
+    accepted.iter().copied().max().unwrap_or(TxVersion::V0)
+}
+
+/// For a version-1 message, bound the header compute config with the caps a
+/// verifier applies to ComputeBudget instructions on version 0: the unit
+/// limit and the per-unit price (derived from the total fee, rounded up).
+/// Version-0 messages are left to the verifier's own instruction checks so
+/// their diagnostics are unchanged. Returns the declared budget.
+pub fn check_v1_budget_caps(
+    message: &VersionedMessage,
+    max_unit_limit: u32,
+    max_unit_price_micro_lamports: u64,
+) -> Result<Option<DeclaredBudget>> {
+    if TxVersion::of(message)? != TxVersion::V1 {
+        return Ok(None);
+    }
+    let declared = DeclaredBudget::of(message)?;
+    if let Some(limit) = declared.unit_limit {
+        if limit > max_unit_limit {
+            return Err(Error::Other(format!(
+                "compute unit limit {limit} exceeds maximum {max_unit_limit}"
+            )));
+        }
+    }
+    if let Some(price) = declared.unit_price_micro_lamports {
+        if price > max_unit_price_micro_lamports {
+            return Err(Error::Other(format!(
+                "compute unit price {price} exceeds maximum {max_unit_price_micro_lamports}"
+            )));
+        }
+    }
+    Ok(Some(declared))
+}
+
+/// What a server advertises: `None` when only the default version is
+/// accepted, so the wire shape is unchanged for version-0-only servers.
+pub fn advertised(accepted: &[TxVersion]) -> Option<Vec<TxVersion>> {
+    if accepted == super::version::DEFAULT_ACCEPTED_VERSIONS {
+        None
+    } else {
+        Some(accepted.to_vec())
+    }
+}
 
 /// Reject any message that resolves accounts through address lookup tables.
 /// Verifiers pin the fee payer and scan instruction accounts through
@@ -81,6 +180,50 @@ mod tests {
             check_envelope(&v1, &[TxVersion::V0, TxVersion::V1]).unwrap(),
             TxVersion::V1
         );
+    }
+
+    #[test]
+    fn modes_resolve_without_probing_except_auto() {
+        let rpc = RpcClient::new("http://127.0.0.1:1".to_string());
+        assert_eq!(TxV1Mode::Off.resolve(&rpc), vec![TxVersion::V0]);
+        assert_eq!(
+            TxV1Mode::On.resolve(&rpc),
+            vec![TxVersion::V0, TxVersion::V1]
+        );
+        assert_eq!(highest(&[TxVersion::V0, TxVersion::V1]), TxVersion::V1);
+        assert_eq!(highest(&[]), TxVersion::V0);
+        assert_eq!(advertised(&[TxVersion::V0]), None);
+        assert_eq!(
+            advertised(&[TxVersion::V0, TxVersion::V1]),
+            Some(vec![TxVersion::V0, TxVersion::V1])
+        );
+    }
+
+    #[test]
+    fn v1_budget_caps_apply_to_the_header() {
+        let payer = Pubkey::new_unique();
+        let ixs = [system_instruction::transfer(
+            &payer,
+            &Pubkey::new_unique(),
+            1,
+        )];
+        // 20_000 CU at 5 lamports/CU (5_000_000 µlamports) = 100_000 lamports.
+        let budget = ComputeBudget::new(20_000, 5_000_000);
+        let tx =
+            build_unsigned(TxVersion::V1, &payer, &ixs, Hash::default(), Some(&budget)).unwrap();
+        assert!(check_v1_budget_caps(&tx.message, 200_000, 5_000_000).is_ok());
+        assert!(check_v1_budget_caps(&tx.message, 10_000, 5_000_000)
+            .unwrap_err()
+            .to_string()
+            .contains("unit limit"));
+        assert!(check_v1_budget_caps(&tx.message, 200_000, 10_000)
+            .unwrap_err()
+            .to_string()
+            .contains("unit price"));
+        // Version 0 is left to the instruction-level checks.
+        let v0 =
+            build_unsigned(TxVersion::V0, &payer, &ixs, Hash::default(), Some(&budget)).unwrap();
+        assert!(check_v1_budget_caps(&v0.message, 1, 1).unwrap().is_none());
     }
 
     #[test]

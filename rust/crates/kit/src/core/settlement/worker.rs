@@ -31,7 +31,7 @@ use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::core::{
-    payment_channels::MAX_VOUCHER_SETTLEMENTS_PER_TX,
+    payment_channels::max_voucher_settlements_per_tx,
     rpc::SKIP_PREFLIGHT_SEND,
     tx::{build_unsigned, ComputeBudget, TxVersion},
     tx_pipeline::{TxPipeline, TxPipelineConfig, TxPipelineError},
@@ -99,13 +99,21 @@ impl SettlementConfig {
         Self {
             operator,
             operator_signer,
-            max_voucher_settlements_per_tx: MAX_VOUCHER_SETTLEMENTS_PER_TX,
+            max_voucher_settlements_per_tx: max_voucher_settlements_per_tx(TxVersion::V0),
             linger: Duration::from_millis(350),
             max_in_flight_tx: 16,
             confirm_attempts: 10,
             tx_version: TxVersion::V0,
             compute_budget: None,
         }
+    }
+
+    /// Flush transactions of `version`, with the voucher-settlement cap
+    /// recalibrated to that version's wire limits.
+    pub fn with_tx_version(mut self, version: TxVersion) -> Self {
+        self.tx_version = version;
+        self.max_voucher_settlements_per_tx = max_voucher_settlements_per_tx(version);
+        self
     }
 }
 
@@ -623,7 +631,7 @@ mod tests {
             channels.push((channel.to_string(), ixs));
         }
 
-        let (h, bc) = handle(MAX_VOUCHER_SETTLEMENTS_PER_TX, 5_000);
+        let (h, bc) = handle(max_voucher_settlements_per_tx(TxVersion::V0), 5_000);
         let mut tasks = Vec::new();
         for (id, ixs) in channels {
             let h = h.clone();

@@ -50,6 +50,18 @@ impl ComputeBudget {
         }
     }
 
+    /// What the runtime gives a transaction that sets no budget: 200k compute
+    /// units per instruction, capped at the per-transaction maximum, zero
+    /// priority fee. Version-1 builders use this when no budget is supplied so
+    /// the transaction is budgeted the way an unbudgeted version-0 one is.
+    pub const fn runtime_default(num_instructions: usize) -> Self {
+        let per_ix: u64 = 200_000;
+        let max: u64 = 1_400_000;
+        let limit = per_ix.saturating_mul(num_instructions as u64);
+        let limit = if limit > max { max } else { limit };
+        Self::new(limit as u32, 0)
+    }
+
     /// Total priority fee in lamports, rounded up: what a version-1 header
     /// carries in place of a per-unit price.
     pub fn priority_fee_lamports(&self) -> u64 {

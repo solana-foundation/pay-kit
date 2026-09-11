@@ -174,6 +174,8 @@ pub struct SubscriptionServer {
     store: Arc<dyn Store>,
     #[allow(dead_code)]
     rpc_url: String,
+    /// Transaction message versions accepted and advertised; see `core::tx`.
+    accepted_versions: Vec<crate::core::tx::TxVersion>,
 }
 
 impl SubscriptionServer {
@@ -248,6 +250,8 @@ impl SubscriptionServer {
             .clone()
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
 
+        // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+        let accepted_versions = vec![crate::core::tx::TxVersion::V0];
         Ok(SubscriptionServer {
             config,
             program_id,
@@ -255,7 +259,17 @@ impl SubscriptionServer {
             realm,
             store,
             rpc_url,
+            accepted_versions,
         })
+    }
+
+    /// Choose whether version-1 activation transactions are accepted and
+    /// advertised. `Auto` probes the `enable_tx_v1` gate once; the default is
+    /// version 0 only.
+    pub fn with_tx_v1(mut self, mode: crate::core::tx::TxV1Mode) -> Self {
+        use solana_rpc_client::rpc_client::RpcClient;
+        self.accepted_versions = mode.resolve(&RpcClient::new(self.rpc_url.clone()));
+        self
     }
 
     /// Generate a 402 subscription challenge for the configured amount per period.
@@ -325,7 +339,7 @@ impl SubscriptionServer {
             plan_bump: self.config.plan_bump,
             expected_period_hours,
             expected_created_at: self.config.plan_created_at,
-            transaction_versions: None,
+            transaction_versions: crate::core::tx::advertised(&self.accepted_versions),
         };
         let method_details_value = serde_json::to_value(&method_details)
             .map_err(|e| Error::Other(format!("Failed to serialize methodDetails: {e}")))?;
@@ -528,6 +542,21 @@ impl SubscriptionServer {
                     )
                 })?;
                 let mut tx = decode_base64_transaction(tx_b64)?;
+                // Envelope: accepted version, no lookup tables, size within the
+                // version's limit; then the version-1 header config against the
+                // activation compute caps.
+                crate::core::tx::check_envelope(&tx, &self.accepted_versions)
+                    .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+                crate::core::tx::check_v1_budget_caps(
+                    &tx.message,
+                    400_000,
+                    if self.config.fee_payer {
+                        10_000
+                    } else {
+                        5_000_000
+                    },
+                )
+                .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
                 let subscriber = extract_subscriber_from_tx(&tx, &request, &self.config)?;
                 let program_id = parse_pubkey(&self.program_id, "program_id")
                     .map_err(|e| VerificationError::new(e.to_string()))?;

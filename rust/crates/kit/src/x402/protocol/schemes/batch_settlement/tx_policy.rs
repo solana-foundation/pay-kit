@@ -128,6 +128,8 @@ pub struct TransactionExpectations<'a> {
     pub receiver: &'a Pubkey,
     /// `extra.memo`, when the seller declared one.
     pub memo: Option<&'a str>,
+    /// Transaction message versions the sponsor accepts; see `core::tx`.
+    pub accepted_versions: &'a [crate::core::tx::TxVersion],
 }
 
 /// A validated client transaction, ready for the sponsor to co-sign.
@@ -289,18 +291,19 @@ fn check_envelope(
 ) -> Result<Pubkey> {
     let err = |detail: String| BatchError::new(errors::INVALID_SETUP_TRANSACTION, detail);
 
-    // A lookup table would resolve accounts this validator cannot see, so every
-    // account guard below could be satisfied while the real instruction touched
-    // something else. The canonical forms need only static keys.
-    if tx
-        .message
-        .address_table_lookups()
-        .is_some_and(|lookups| !lookups.is_empty())
-    {
-        return Err(err(format!(
-            "{label} transaction must not use address lookup tables"
-        )));
-    }
+    // Envelope: accepted version, no lookup tables (a lookup table would
+    // resolve accounts this validator cannot see, so every account guard below
+    // could be satisfied while the real instruction touched something else),
+    // size within the version's limit. Then the version-1 header config is held
+    // to the caps the ComputeBudget prefix gets on version 0.
+    crate::core::tx::check_envelope(tx, expected.accepted_versions)
+        .map_err(|e| err(format!("{label} transaction: {e}")))?;
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        pc::OPEN_MAX_COMPUTE_UNIT_LIMIT,
+        pc::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    )
+    .map_err(|e| err(format!("{label} transaction: {e}")))?;
 
     let payer = pc::parse_pubkey(&expected.config.payer)
         .map_err(|e| err(format!("channelConfig.payer: {e}")))?;
@@ -786,6 +789,10 @@ mod tests {
                 token_program: &self.token_program,
                 receiver: &self.receiver,
                 memo: None,
+                accepted_versions: &[
+                    crate::core::tx::TxVersion::V0,
+                    crate::core::tx::TxVersion::V1,
+                ],
             }
         }
 
@@ -833,6 +840,83 @@ mod tests {
                 message,
             })
         }
+
+        /// [`Self::sign`] as a version-1 transaction carrying `budget` in the
+        /// header.
+        fn sign_v1(
+            &self,
+            instructions: &[Instruction],
+            budget: crate::core::tx::ComputeBudget,
+        ) -> String {
+            let tx = crate::core::tx::build_unsigned(
+                crate::core::tx::TxVersion::V1,
+                &self.fee_payer,
+                instructions,
+                Hash::new_unique(),
+                Some(&budget),
+            )
+            .unwrap();
+            let bytes = tx.message.serialize();
+            let signature = Signature::from(self.payer_key.sign(&bytes).to_bytes());
+            let signer_index = tx
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| *k == self.payer)
+                .expect("payer is a signer");
+            let mut tx = tx;
+            tx.signatures[signer_index] = signature;
+            encode(&tx)
+        }
+    }
+
+    #[test]
+    fn accepts_a_canonical_v1_open_and_caps_its_header_budget() {
+        let f = fixture();
+        let ixs = [
+            pc::build_open_instruction(&f.open_params(100_000)),
+            nonce_memo(),
+        ];
+        let tx = f.sign_v1(&ixs, crate::core::tx::ComputeBudget::new(90_000, 1_000));
+        let validated = validate_setup_transaction(
+            &tx,
+            SetupForm::Open,
+            &f.expectations(),
+            100_000,
+            Some(341_000_100),
+        )
+        .unwrap();
+        assert_eq!(validated.payer, f.payer);
+
+        // Over the version-0 unit-limit cap, expressed in the header.
+        let tx = f.sign_v1(
+            &ixs,
+            crate::core::tx::ComputeBudget::new(pc::OPEN_MAX_COMPUTE_UNIT_LIMIT + 1, 1),
+        );
+        let err = validate_setup_transaction(
+            &tx,
+            SetupForm::Open,
+            &f.expectations(),
+            100_000,
+            Some(341_000_100),
+        )
+        .unwrap_err();
+        assert!(err.detail.contains("unit limit"), "{}", err.detail);
+
+        // A sponsor that does not advertise version 1 rejects it before
+        // looking at any instruction.
+        let tx = f.sign_v1(&ixs, crate::core::tx::ComputeBudget::new(90_000, 1));
+        let mut expectations = f.expectations();
+        expectations.accepted_versions = &[crate::core::tx::TxVersion::V0];
+        let err = validate_setup_transaction(
+            &tx,
+            SetupForm::Open,
+            &expectations,
+            100_000,
+            Some(341_000_100),
+        )
+        .unwrap_err();
+        assert!(err.detail.contains("not accepted"), "{}", err.detail);
     }
 
     fn encode(tx: &VersionedTransaction) -> String {

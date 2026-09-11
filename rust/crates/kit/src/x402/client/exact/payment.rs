@@ -83,8 +83,11 @@ pub async fn build_payment(
     };
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
+    let version = crate::core::tx::highest(crate::core::tx::accepted_versions(
+        requirements.transaction_versions.as_deref(),
+    ));
     let mut tx = crate::core::tx::build_unsigned(
-        crate::core::tx::TxVersion::V0,
+        version,
         &actual_fee_payer,
         &instructions,
         blockhash,

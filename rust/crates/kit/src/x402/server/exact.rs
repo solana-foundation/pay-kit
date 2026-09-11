@@ -7,6 +7,7 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
+use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{
     error::Error,
@@ -124,6 +125,8 @@ pub enum VerifiedExactPayment {
 #[derive(Clone)]
 pub struct X402 {
     rpc: Arc<RpcClient>,
+    /// Transaction message versions accepted and advertised; see `core::tx`.
+    accepted_versions: Vec<TxVersion>,
     config: Config,
     /// Optional shared cache of a recent blockhash, refreshed out of band, so
     /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
@@ -153,17 +156,27 @@ impl X402 {
             .clone()
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
 
+        // `confirmed`, not the default `finalized`: settlement (and blockhash/
+        // simulate) shouldn't block ~13s waiting for finalization — confirmed
+        // is the settled point. Mirrors the MPP charge path.
+        let rpc = Arc::new(RpcClient::new_with_commitment(
+            rpc_url,
+            CommitmentConfig::confirmed(),
+        ));
         Ok(Self {
-            // `confirmed`, not the default `finalized`: settlement (and blockhash/
-            // simulate) shouldn't block ~13s waiting for finalization — confirmed
-            // is the settled point. Mirrors the MPP charge path.
-            rpc: Arc::new(RpcClient::new_with_commitment(
-                rpc_url,
-                CommitmentConfig::confirmed(),
-            )),
+            // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+            accepted_versions: vec![TxVersion::V0],
+            rpc,
             config,
             blockhash_cache: None,
         })
+    }
+
+    /// Choose whether version-1 transactions are accepted and advertised. The
+    /// default probes the `enable_tx_v1` gate once at construction.
+    pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
+        self.accepted_versions = mode.resolve(&self.rpc);
+        self
     }
 
     /// Attach a shared blockhash cache (refreshed by a background task) so
@@ -375,6 +388,7 @@ impl X402 {
             requirements.fee_payer = Some(true);
             requirements.fee_payer_key = Some(key.clone());
         }
+        requirements.transaction_versions = crate::core::tx::advertised(&self.accepted_versions);
         // Stable settlement memo (`extra.memo`): the client stamps it on the
         // transfer and the verifier requires an exact match. Without it the
         // client uses a random nonce.
@@ -751,6 +765,8 @@ impl X402 {
                     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, transaction)
                         .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
                 let tx = crate::core::tx::decode_bytes(&decoded)
+                    .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
+                crate::core::tx::check_envelope(&tx, &self.accepted_versions)
                     .map_err(|e| Error::Other(format!("Invalid transaction payload: {e}")))?;
 
                 // Reject up-front if the client signed against the wrong

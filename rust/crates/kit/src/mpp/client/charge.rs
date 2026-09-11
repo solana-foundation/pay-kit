@@ -359,8 +359,13 @@ pub async fn build_prepared_charge(
     let blockhash = resolve_blockhash(rpc, method_details)?;
 
     let fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
+    // Build the highest message version the challenge advertises (`[0]` when
+    // it advertises none).
+    let version = crate::core::tx::highest(crate::core::tx::accepted_versions(
+        method_details.transaction_versions.as_deref(),
+    ));
     let transaction = crate::core::tx::build_unsigned_unchecked(
-        crate::core::tx::TxVersion::V0,
+        version,
         &fee_payer,
         &instructions,
         blockhash,
@@ -2493,6 +2498,63 @@ mod tests {
         let limit = u32::from_le_bytes(limit_ix.data[1..5].try_into().unwrap());
         assert_eq!(price, 12_345);
         assert_eq!(limit, 55_555);
+    }
+
+    #[tokio::test]
+    async fn build_prepared_charge_builds_the_highest_advertised_version() {
+        let signer_pk = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            transaction_versions: Some(vec![
+                crate::core::tx::TxVersion::V0,
+                crate::core::tx::TxVersion::V1,
+            ]),
+            ..Default::default()
+        };
+        let options = BuildChargeTransactionOptions {
+            compute_budget: ComputeBudgetOptions {
+                compute_unit_price_micro_lamports: 50,
+                compute_unit_limit: 20_000,
+            },
+            ..Default::default()
+        };
+        let prepared =
+            build_prepared_charge(signer_pk, &rpc, 1_000_000, "SOL", RECIPIENT, &md, &options)
+                .await
+                .unwrap();
+
+        // Version 1: no ComputeBudget instructions; the budget is in the header
+        // (20_000 CU × 50 µlamports = 1 lamport).
+        match &prepared.transaction.message {
+            solana_message::VersionedMessage::V1(message) => {
+                assert_eq!(message.config.compute_unit_limit, Some(20_000));
+                assert_eq!(message.config.priority_fee, Some(1));
+            }
+            other => panic!("expected a version-1 message, got {other:?}"),
+        }
+        let compute_budget = crate::core::tx::COMPUTE_BUDGET_PROGRAM_ID;
+        let keys = prepared.transaction.message.static_account_keys();
+        assert!(prepared
+            .transaction
+            .message
+            .instructions()
+            .iter()
+            .all(|ix| keys[ix.program_id_index as usize] != compute_budget));
+
+        // Nothing advertised: version 0 with the two-instruction prefix.
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let prepared =
+            build_prepared_charge(signer_pk, &rpc, 1_000_000, "SOL", RECIPIENT, &md, &options)
+                .await
+                .unwrap();
+        assert!(matches!(
+            prepared.transaction.message,
+            solana_message::VersionedMessage::V0(_)
+        ));
     }
 
     #[tokio::test]

@@ -37,12 +37,10 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
-// Legacy `Transaction` is only needed by the test-only pre-broadcast helper.
-#[cfg(test)]
-use solana_transaction::Transaction;
 use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::str::FromStr;
 
+use crate::core::tx::{TxV1Mode, TxVersion};
 use crate::mpp::error::Error;
 use crate::mpp::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt,
@@ -58,8 +56,8 @@ use crate::mpp::store::{
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
 pub(crate) const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
-const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
-const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
+pub(crate) const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+pub(crate) const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 /// Tighter price cap applied when the *server* is the fee payer.
 ///
 /// In fee-sponsored pull mode the server signs the transaction before it is
@@ -290,6 +288,9 @@ pub struct ChargeOptions<'a> {
 pub struct Mpp {
     pub(crate) rpc: Arc<RpcClient>,
     pub(crate) rpc_url: String,
+    /// Transaction message versions this server accepts and advertises.
+    /// Resolved from [`TxV1Mode`] at construction; see `core::tx`.
+    pub(crate) accepted_versions: Vec<TxVersion>,
     pub(crate) realm: String,
     pub(crate) challenge_binding_secret: String,
     pub(crate) currency: String,
@@ -369,6 +370,8 @@ impl Mpp {
             resolve_server_token_program(&rpc, &config.currency, Some(&config.network))?;
 
         Ok(Mpp {
+            // Version 0 only until the host opts in with `with_tx_v1`; no RPC call here.
+            accepted_versions: vec![TxVersion::V0],
             rpc,
             rpc_url,
             realm,
@@ -392,6 +395,18 @@ impl Mpp {
     /// `charge`/`charge_with_options` embed a recent blockhash without a
     /// per-challenge RPC fetch. Falls back to a direct fetch when the cache is
     /// empty or stale.
+    /// Choose whether version-1 transactions are accepted and advertised.
+    /// `Auto` probes the `enable_tx_v1` gate once; the default is version 0 only.
+    pub fn with_tx_v1(mut self, mode: TxV1Mode) -> Self {
+        self.accepted_versions = mode.resolve(&self.rpc);
+        self
+    }
+
+    /// Transaction message versions this server accepts.
+    pub fn accepted_versions(&self) -> &[TxVersion] {
+        &self.accepted_versions
+    }
+
     pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
         self
@@ -533,6 +548,12 @@ impl Mpp {
         };
         if let Some(blockhash) = blockhash {
             details.insert("recentBlockhash".into(), serde_json::json!(blockhash));
+        }
+        if let Some(versions) = crate::core::tx::advertised(&self.accepted_versions) {
+            details.insert(
+                "transactionVersions".into(),
+                serde_json::to_value(versions).unwrap(),
+            );
         }
 
         request.method_details = Some(serde_json::Value::Object(details));
@@ -1181,7 +1202,12 @@ impl Mpp {
         check_network_blockhash(&self.network, &tx_recent_blockhash)?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
-        verify_versioned_transaction_pre_broadcast(&tx, request, method_details)?;
+        verify_versioned_transaction_pre_broadcast(
+            &tx,
+            request,
+            method_details,
+            &self.accepted_versions,
+        )?;
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", "verify_pull");
 
         // Co-sign if server is fee payer (only after verification passes).
@@ -1618,14 +1644,15 @@ pub fn check_network_blockhash(
 
 #[cfg(test)]
 fn verify_transaction_pre_broadcast(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     request: &ChargeRequest,
     method_details: &MethodDetails,
 ) -> Result<(), VerificationError> {
     verify_versioned_transaction_pre_broadcast(
-        &VersionedTransaction::from(tx.clone()),
+        tx,
         request,
         method_details,
+        &[TxVersion::V0, TxVersion::V1],
     )
 }
 
@@ -1633,8 +1660,24 @@ fn verify_versioned_transaction_pre_broadcast(
     tx: &VersionedTransaction,
     request: &ChargeRequest,
     method_details: &MethodDetails,
+    accepted_versions: &[TxVersion],
 ) -> Result<(), VerificationError> {
-    reject_address_lookup_tables(tx)?;
+    // Envelope first: accepted version, no lookup tables, size within the
+    // version's limit. Then, for version 1, the header compute config is held
+    // to the same caps the ComputeBudget instructions get on version 0.
+    crate::core::tx::check_envelope(tx, accepted_versions)
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+    let fee_sponsored = method_details.fee_payer.unwrap_or(false);
+    crate::core::tx::check_v1_budget_caps(
+        &tx.message,
+        MAX_COMPUTE_UNIT_LIMIT,
+        if fee_sponsored {
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+        } else {
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+        },
+    )
+    .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > crate::mpp::protocol::solana::MAX_SPLITS {
@@ -2003,22 +2046,6 @@ fn interpret_post_timeout_status(
             "Transaction not confirmed within timeout; final status check failed: {rpc_err}"
         ))),
     }
-}
-
-pub(crate) fn reject_address_lookup_tables(
-    tx: &VersionedTransaction,
-) -> Result<(), VerificationError> {
-    if tx
-        .message
-        .address_table_lookups()
-        .is_some_and(|lookups| !lookups.is_empty())
-    {
-        return Err(VerificationError::invalid_payload(
-            "v0 transactions with address lookup tables are not supported",
-        ));
-    }
-
-    Ok(())
 }
 
 fn expected_fee_payer(
@@ -3729,12 +3756,15 @@ mod tests {
         }
     }
 
-    fn dummy_tx(instructions: Vec<Instruction>, payer: &Pubkey) -> Transaction {
-        let message = Message::new_with_blockhash(&instructions, Some(payer), &Hash::default());
-        Transaction {
-            signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
-            message,
-        }
+    fn dummy_tx(instructions: Vec<Instruction>, payer: &Pubkey) -> VersionedTransaction {
+        crate::core::tx::build_unsigned_unchecked(
+            TxVersion::V0,
+            payer,
+            &instructions,
+            Hash::default(),
+            None,
+        )
+        .unwrap()
     }
 
     fn dummy_v0_tx(
@@ -3788,7 +3818,13 @@ mod tests {
             VersionedTransaction::from(dummy_tx(ixs, payer))
         };
         let verify = |tx: &VersionedTransaction| {
-            verify_confidential_bundle_tx(tx, &gateway, &token_program, &recipient_ata)
+            verify_confidential_bundle_tx(
+                tx,
+                &gateway,
+                &token_program,
+                &recipient_ata,
+                &[TxVersion::V0, TxVersion::V1],
+            )
         };
         let mk = |p: Pubkey| Instruction {
             program_id: p,
@@ -4136,7 +4172,13 @@ mod tests {
         let request = charge_request(amount, "SOL", &recipient);
         let method_details = MethodDetails::default();
 
-        assert!(verify_versioned_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+        assert!(verify_versioned_transaction_pre_broadcast(
+            &tx,
+            &request,
+            &method_details,
+            &[TxVersion::V0]
+        )
+        .is_ok());
     }
 
     #[test]
@@ -4157,8 +4199,13 @@ mod tests {
         let request = charge_request(amount, "SOL", &recipient);
         let method_details = MethodDetails::default();
 
-        let err =
-            verify_versioned_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        let err = verify_versioned_transaction_pre_broadcast(
+            &tx,
+            &request,
+            &method_details,
+            &[TxVersion::V0],
+        )
+        .unwrap_err();
         assert!(err.message.contains("address lookup tables"));
     }
 

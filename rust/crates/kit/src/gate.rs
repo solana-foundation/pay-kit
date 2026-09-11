@@ -36,6 +36,7 @@ use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, MethodRouter};
 
+use crate::core::tx::TxV1Mode;
 use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::TransactionSigner;
 use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
@@ -100,6 +101,9 @@ pub struct PayKitConfig {
     pub accept_push_mode: bool,
     /// Currencies the server is willing to accept (x402 multi-currency).
     pub accepted_currencies: Option<Vec<String>>,
+    /// Whether version-1 transactions (SIMD-0385) are accepted, advertised
+    /// and used for settlement. `Auto` probes the feature gate once.
+    pub tx_v1: TxV1Mode,
 }
 
 impl Default for PayKitConfig {
@@ -114,6 +118,7 @@ impl Default for PayKitConfig {
             fee_payer_signer: None,
             accept_push_mode: false,
             accepted_currencies: None,
+            tx_v1: TxV1Mode::Auto,
         }
     }
 }
@@ -183,7 +188,8 @@ impl PayKit {
             accept_push_mode: config.accept_push_mode,
             ..Default::default()
         })
-        .map_err(|e| PayKitError::Mpp(e.to_string()))?;
+        .map_err(|e| PayKitError::Mpp(e.to_string()))?
+        .with_tx_v1(config.tx_v1);
 
         let x402 = X402::new(X402Config {
             recipient: config.recipient.clone(),
@@ -193,7 +199,8 @@ impl PayKit {
             fee_payer_key,
             ..Default::default()
         })
-        .map_err(|e| PayKitError::X402(e.to_string()))?;
+        .map_err(|e| PayKitError::X402(e.to_string()))?
+        .with_tx_v1(config.tx_v1);
 
         // The `upto` scheme needs an operator signer to sign `settle_and_seal`
         // (as the zero-share channel payee) and the settlement vouchers, so it
@@ -217,7 +224,7 @@ impl PayKit {
                     fee_payer_signer: signer.clone(),
                     receiver_authorizer_signer: None,
                 })
-                .map(Arc::new)
+                .map(|upto| Arc::new(upto.with_tx_v1(config.tx_v1)))
                 .map_err(|e| PayKitError::X402(e.to_string()))
             })
             .transpose()?;
@@ -236,7 +243,7 @@ impl PayKit {
                 batch.decimals = config.decimals;
                 batch.rpc_url = config.rpc_url.clone();
                 X402BatchSettlement::new(batch)
-                    .map(Arc::new)
+                    .map(|batch| Arc::new(batch.with_tx_v1(config.tx_v1)))
                     .map_err(|e| PayKitError::X402(e.to_string()))
             })
             .transpose()?;

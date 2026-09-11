@@ -55,6 +55,9 @@ pub struct BatchTerms {
     pub amount: u64,
     /// The Memo the setup transaction must carry.
     pub memo: String,
+    /// The message version to build: the highest the sponsor advertises in
+    /// `extra.transactionVersions` (`0` when it advertises none).
+    pub tx_version: crate::core::tx::TxVersion,
 }
 
 /// Validate a challenge's terms without touching the network.
@@ -100,6 +103,9 @@ pub fn resolve_terms_with_token_program(
         withdraw_delay: extra.withdraw_delay,
         amount: requirements.amount()?,
         memo,
+        tx_version: crate::core::tx::highest(crate::core::tx::accepted_versions(
+            extra.transaction_versions.as_deref(),
+        )),
     })
 }
 
@@ -403,6 +409,7 @@ pub async fn build_deposit(
         blockhash,
         &pc::OpenTxOptions {
             memo: Some(terms.memo.clone()),
+            version: terms.tx_version,
             ..Default::default()
         },
     )
@@ -454,7 +461,14 @@ pub async fn build_top_up(
         ),
         memo_instruction(&terms.memo),
     ];
-    let transaction = sign_sponsored(signer, &terms.fee_payer, &instructions, blockhash).await?;
+    let transaction = sign_sponsored(
+        signer,
+        terms.tx_version,
+        &terms.fee_payer,
+        &instructions,
+        blockhash,
+    )
+    .await?;
     let voucher = channel.sign_next_voucher(signer, terms.amount).await?;
     Ok(BatchPayload::Deposit {
         channel_config: channel.config.clone(),
@@ -489,7 +503,14 @@ pub async fn build_refund(
     ];
     Ok(BatchPayload::Refund {
         channel_config: channel.config.clone(),
-        transaction: sign_sponsored(signer, &terms.fee_payer, &instructions, blockhash).await?,
+        transaction: sign_sponsored(
+            signer,
+            terms.tx_version,
+            &terms.fee_payer,
+            &instructions,
+            blockhash,
+        )
+        .await?,
         voucher: None,
         close_authorization: None,
     })
@@ -507,17 +528,13 @@ fn memo_instruction(memo: &str) -> Instruction {
 /// and return the base64 transaction for the sponsor to co-sign.
 async fn sign_sponsored(
     signer: &dyn TransactionSigner,
+    version: crate::core::tx::TxVersion,
     fee_payer: &Pubkey,
     instructions: &[Instruction],
     blockhash: Hash,
 ) -> Result<String, Error> {
-    let mut tx = crate::core::tx::build_unsigned(
-        crate::core::tx::TxVersion::V0,
-        fee_payer,
-        instructions,
-        blockhash,
-        None,
-    )?;
+    let mut tx =
+        crate::core::tx::build_unsigned(version, fee_payer, instructions, blockhash, None)?;
     crate::core::signing::sign_versioned_transaction_slot(signer, &mut tx)
         .await
         .map_err(|e| Error::Other(format!("transaction signing failed: {e}")))?;
@@ -748,6 +765,7 @@ mod tests {
         let program_id = pc::default_program_id();
         let expectations = TransactionExpectations {
             program_id: &program_id,
+            accepted_versions: &[crate::core::tx::TxVersion::V0],
             fee_payer: &fee_payer,
             config: channel_config,
             channel_id: channel.channel_id(),
@@ -791,6 +809,7 @@ mod tests {
         let program_id = pc::default_program_id();
         let expectations = TransactionExpectations {
             program_id: &program_id,
+            accepted_versions: &[crate::core::tx::TxVersion::V0],
             fee_payer: &fee_payer,
             config: channel.config(),
             channel_id: channel.channel_id(),
