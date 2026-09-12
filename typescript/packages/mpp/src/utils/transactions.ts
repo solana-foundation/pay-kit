@@ -6,7 +6,19 @@ import {
     getTransactionDecoder,
     type Signature,
     type TransactionPartialSigner,
+    type TransactionVersion,
 } from '@solana/kit';
+
+/** Rejection text for a legacy (unversioned) message; shared verbatim with the Rust kit. */
+export const LEGACY_TRANSACTION_ERROR = 'legacy transactions are not supported; use a version 0 or version 1 message';
+
+/**
+ * Reject a legacy (unversioned) compiled message at a server decode boundary.
+ * Version 0 and version 1 messages pass through.
+ */
+export function assertVersionedTransactionMessage(message: { readonly version: TransactionVersion }): void {
+    if (message.version === 'legacy') throw new Error(LEGACY_TRANSACTION_ERROR);
+}
 
 /** Return the deterministic transaction signature from a base64 wire transaction. */
 export function transactionSignatureFromBase64(transaction: string): Signature {

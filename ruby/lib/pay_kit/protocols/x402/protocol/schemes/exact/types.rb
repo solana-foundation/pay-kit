@@ -126,7 +126,10 @@ module PayKit::Protocols::X402
         end
 
         def parse_versioned_message(message)
-          raise "expected versioned transaction message" unless message.getbyte(0) == 0x80
+          first = message.getbyte(0)
+          raise "expected versioned transaction message" if first.nil?
+          raise TransactionCodec::LEGACY_UNSUPPORTED if (first & 0x80).zero?
+          raise "expected versioned transaction message" unless first == 0x80
           raise "transaction message header extends beyond input" if message.bytesize < 4
 
           account_count, offset = read_short_vec(message, 4)

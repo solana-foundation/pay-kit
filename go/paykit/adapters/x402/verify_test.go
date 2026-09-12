@@ -88,10 +88,12 @@ func newFixture(t *testing.T) fixture {
 
 func (f fixture) tx(extra ...solana.CompiledInstruction) *solana.Transaction {
 	ixs := append([]solana.CompiledInstruction{f.computeLimit, f.computePrice, f.transfer}, extra...)
-	return &solana.Transaction{
+	tx := &solana.Transaction{
 		Message:    solana.Message{AccountKeys: f.keys, Instructions: ixs},
 		Signatures: []solana.Signature{{}},
 	}
+	tx.Message.SetVersion(solana.MessageVersionV0)
+	return tx
 }
 
 func TestVerifyAcceptsValidTransaction(t *testing.T) {
@@ -341,6 +343,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 		},
 		Signatures: []solana.Signature{{}, solana.MustSignatureFromBase58(sampleClientSig)},
 	}
+	tx.Message.SetVersion(solana.MessageVersionV0)
 	wire, err := tx.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -544,6 +547,39 @@ func TestVerifyAndSettleRejectsUndecodableTransaction(t *testing.T) {
 	var perr *paykit.PaymentError
 	if !errorsAs(err, &perr) || perr.Code != "invalid_payload" {
 		t.Errorf("expected invalid_payload, got %v", err)
+	}
+}
+
+func TestVerifyAndSettleRejectsLegacyTransaction(t *testing.T) {
+	op := signer.Generate()
+	a := &Adapter{
+		cfg:    paykit.Config{Network: paykit.SolanaLocalnet, Stablecoins: []paykit.Stablecoin{paykit.USDC}, Operator: paykit.Operator{Signer: op, Recipient: op.Pubkey()}, X402: paykit.X402Config{Scheme: "exact"}},
+		signer: op,
+		rpc:    &fakeRPC{},
+	}
+	memo, err := solanatx.BuildMemoInstruction("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bh := solana.MustHashFromBase58(testutil.NewPrivateKey().PublicKey().String())
+	tx, err := solana.NewTransaction([]solana.Instruction{memo}, bh, solana.TransactionPayer(testutil.NewPrivateKey().PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: encoded}}
+	credJSON, _ := json.Marshal(cred)
+	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
+	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
+	var perr *paykit.PaymentError
+	if !errorsAs(err, &perr) || perr.Code != "invalid_payload" {
+		t.Fatalf("expected invalid_payload, got %v", err)
+	}
+	if perr.Err == nil || perr.Err.Error() != solanatx.ErrLegacyTransaction.Error() {
+		t.Fatalf("err = %v, want %q", perr.Err, solanatx.ErrLegacyTransaction)
 	}
 }
 

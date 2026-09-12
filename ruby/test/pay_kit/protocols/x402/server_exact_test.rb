@@ -378,6 +378,29 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "payment payload transaction is not valid base64", error.message
   end
 
+  def test_settlement_rejects_legacy_transaction
+    sent = []
+    state = build_state(sender: ->(_state, transaction) {
+      sent << transaction
+      "unit-settlement"
+    })
+    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
+      bytes = transaction.b
+      signature_count, signatures_offset = PayKit::Protocols::X402::Protocol::Schemes::Exact.read_short_vec(bytes, 0)
+      message_offset = signatures_offset + (signature_count * 64)
+      # Drop the 0x80 version prefix and the trailing empty address-table
+      # lookup vector: the same message re-framed as a legacy wire.
+      bytes.byteslice(0, message_offset) + bytes.byteslice(message_offset + 1, bytes.bytesize - message_offset - 2)
+    end
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+    end
+
+    assert_equal "legacy transactions are not supported; use a version 0 or version 1 message", error.message
+    assert_empty sent
+  end
+
   def test_settlement_rejects_transaction_amount_mismatch_before_sending
     sent = []
     state = build_state(sender: ->(_state, transaction) {

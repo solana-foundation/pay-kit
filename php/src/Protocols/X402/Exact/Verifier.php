@@ -7,7 +7,8 @@ namespace PayKit\Protocols\X402\Exact;
 use PayKit\Exception\InvalidProofException;
 use PayKit\PayCore\Solana\Mints;
 use SolanaPhpSdk\Keypair\PublicKey;
-use SolanaPhpSdk\Transaction\VersionedTransaction;
+use PayKit\Exception\LegacyTransactionException;
+use PayKit\PayCore\Solana\TransactionWire;
 use Throwable;
 
 /**
@@ -69,7 +70,11 @@ final class Verifier
         }
 
         try {
-            $tx = VersionedTransaction::deserialize($raw);
+            $tx = TransactionWire::deserialize($raw);
+        } catch (LegacyTransactionException $e) {
+            // Same reject code as any other unparseable wire; the reason
+            // text tells the client which message version to send instead.
+            throw new InvalidProofException('invalid_exact_svm_payload_transaction_parse: ' . $e->getMessage());
         } catch (Throwable) {
             throw new InvalidProofException('invalid_exact_svm_payload_transaction_parse');
         }

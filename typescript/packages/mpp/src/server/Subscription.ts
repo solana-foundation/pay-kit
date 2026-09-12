@@ -7,6 +7,7 @@ import {
     getTransactionDecoder,
     isTransactionPartialSigner,
     type TransactionPartialSigner,
+    type TransactionVersion,
 } from '@solana/kit';
 import {
     getSubscriptionAuthorityDecoder,
@@ -37,7 +38,11 @@ import {
     deriveSubscriptionPda,
     mapSubscriptionPeriodToHours,
 } from '../shared/subscription.js';
-import { coSignBase64Transaction, transactionSignatureFromBase64 } from '../utils/transactions.js';
+import {
+    assertVersionedTransactionMessage,
+    coSignBase64Transaction,
+    transactionSignatureFromBase64,
+} from '../utils/transactions.js';
 import { claimReplayKey, confirmReplayKey, inspectReplayKey, reserveReplayKey } from './replay.js';
 
 /**
@@ -653,6 +658,7 @@ type CompiledMessage = {
     instructions: readonly CompiledInstruction[];
     signerAccounts: readonly string[];
     staticAccounts: readonly string[];
+    version: TransactionVersion;
 };
 
 type CompiledInstruction = {
@@ -662,17 +668,20 @@ type CompiledInstruction = {
 };
 
 function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
+    let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
         const decoded = getTransactionDecoder().decode(txBytes);
-        const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as Omit<
+        const compiled = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as Omit<
             CompiledMessage,
             'signerAccounts'
         >;
-        return { ...message, signerAccounts: Object.keys(decoded.signatures) };
+        message = { ...compiled, signerAccounts: Object.keys(decoded.signatures) };
     } catch (e) {
         throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
     }
+    assertVersionedTransactionMessage(message);
+    return message;
 }
 
 function extractSubscriberFromTransaction(clientTxBase64: string, challenge: ChallengeRequest): string {

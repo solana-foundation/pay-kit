@@ -288,7 +288,10 @@ local function build_fixture(flat, signer_secret)
   local signer_count = 1
   local readonly_unsigned = #keys - 1
 
+  -- v0 wire: version prefix, header, keys, blockhash, instructions, and an
+  -- empty address-table-lookup vector. The server rejects legacy messages.
   local parts = {}
+  parts[#parts + 1] = string.char(0x80)
   parts[#parts + 1] = string.char(signer_count, 0, readonly_unsigned)
   parts[#parts + 1] = transaction.compact_u16(#keys)
   for _, k in ipairs(keys) do
@@ -305,6 +308,7 @@ local function build_fixture(flat, signer_secret)
     parts[#parts + 1] = transaction.compact_u16(#ix.data)
     parts[#parts + 1] = ix.data
   end
+  parts[#parts + 1] = transaction.compact_u16(0)
   local message = table.concat(parts)
 
   local signatures = transaction.compact_u16(signer_count)

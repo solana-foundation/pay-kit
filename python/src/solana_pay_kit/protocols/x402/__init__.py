@@ -422,58 +422,29 @@ class X402Adapter:
 def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     """Splice the facilitator signature into the fee-payer slot, return wire.
 
-    Legacy messages are signed over ``bytes(msg)``, v0 over
-    ``to_bytes_versioned(msg)`` (0x80 prefix). The fee payer must occupy a
-    signature slot. The v0-wire detector lives in the shared
-    :mod:`solana_pay_kit._paycore.transaction` core so neither protocol depends on the
-    other.
+    The signature covers ``to_bytes_versioned(msg)`` (0x80 prefix + v0 body).
+    The fee payer must occupy a signature slot. Legacy wires are rejected by
+    the shared :func:`require_versioned_wire` guard in
+    :mod:`solana_pay_kit._paycore.transaction` (same routing as the MPP charge
+    cosign) before ``solders`` sees the bytes.
     """
     from solders.message import to_bytes_versioned
     from solders.pubkey import Pubkey
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import VersionedTransaction
 
-    from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+    from solana_pay_kit._paycore.transaction import require_versioned_wire
 
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = Pubkey.from_string(signer.pubkey())
 
-    # SECURITY: ``solders.transaction.Transaction.from_bytes`` is lenient and
-    # silently MIS-PARSES v0 ``VersionedTransaction`` wire bytes as a legacy
-    # transaction (it does not raise), yielding a bogus header and garbage
-    # account keys. The rust x402 client (and the canonical PaymentProof
-    # builder) emit v0 messages, so we must route on the message-version
-    # prefix byte rather than trusting a legacy parse to fail. Reuses the
-    # shared ``is_v0_wire_bytes`` guard from ``solana_pay_kit._paycore.transaction``
-    # (no parallel detection logic; same routing as the MPP charge cosign).
-    if is_v0_wire_bytes(raw):
-        try:
-            vtx = VersionedTransaction.from_bytes(raw)
-        except Exception as exc:  # noqa: BLE001
-            raise InvalidProofError(
-                "invalid_exact_svm_payload_transaction_parse",
-                code="invalid_exact_svm_payload_transaction_parse",
-            ) from exc
-        account_keys = list(vtx.message.account_keys)
-        message_bytes = bytes(to_bytes_versioned(vtx.message))
-        num_required = int(vtx.message.header.num_required_signatures)
-    else:
-        try:
-            tx = Transaction.from_bytes(raw)
-        except Exception:  # noqa: BLE001 - fall back to versioned
-            try:
-                vtx = VersionedTransaction.from_bytes(raw)
-            except Exception as exc:  # noqa: BLE001
-                raise InvalidProofError(
-                    "invalid_exact_svm_payload_transaction_parse",
-                    code="invalid_exact_svm_payload_transaction_parse",
-                ) from exc
-            account_keys = list(vtx.message.account_keys)
-            message_bytes = bytes(to_bytes_versioned(vtx.message))
-            num_required = int(vtx.message.header.num_required_signatures)
-        else:
-            account_keys = list(tx.message.account_keys)
-            message_bytes = bytes(tx.message)
-            num_required = int(tx.message.header.num_required_signatures)
+    require_versioned_wire(raw, error=_transaction_parse_error)
+    try:
+        vtx = VersionedTransaction.from_bytes(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
+    account_keys = list(vtx.message.account_keys)
+    message_bytes = bytes(to_bytes_versioned(vtx.message))
+    num_required = int(vtx.message.header.num_required_signatures)
 
     try:
         idx = account_keys.index(fee_payer_pubkey)
@@ -492,25 +463,22 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     return bytes(serialized)
 
 
+def _transaction_parse_error(message: str) -> InvalidProofError:
+    """The canonical exact-scheme reject for an undecodable transaction."""
+    return InvalidProofError(message, code="invalid_exact_svm_payload_transaction_parse")
+
+
 def _transaction_signature(transaction_wire: bytes) -> str:
     """Return the deterministic first signature from a signed wire transaction."""
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import VersionedTransaction
 
-    from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+    from solana_pay_kit._paycore.transaction import require_versioned_wire
 
+    require_versioned_wire(transaction_wire, error=_transaction_parse_error)
     try:
-        if is_v0_wire_bytes(transaction_wire):
-            signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
-        else:
-            try:
-                signatures = Transaction.from_bytes(transaction_wire).signatures
-            except Exception:  # noqa: BLE001 - accept other solders versioned variants
-                signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
+        signatures = VersionedTransaction.from_bytes(transaction_wire).signatures
     except Exception as exc:  # noqa: BLE001
-        raise InvalidProofError(
-            "invalid_exact_svm_payload_transaction_parse",
-            code="invalid_exact_svm_payload_transaction_parse",
-        ) from exc
+        raise _transaction_parse_error("invalid_exact_svm_payload_transaction_parse") from exc
     if not signatures:
         raise InvalidProofError("solana_pay_kit: transaction has no signature", code="payment_invalid")
     return str(signatures[0])

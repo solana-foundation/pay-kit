@@ -572,11 +572,12 @@ func (m *Mpp) verifyTransaction(
 	if err := validateSplitsCount(details.Splits); err != nil {
 		return core.Receipt{}, err
 	}
-	tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
+	tx, err := decodeCredentialTransaction(payload.Transaction)
 	if err != nil {
 		return core.Receipt{}, err
 	}
-	// Accept legacy and v0 transactions with only static account keys, but
+	// Legacy messages are already rejected by the decoder. Accept v0
+	// transactions with only static account keys, but
 	// reject a v0 message carrying address lookup tables: the verifier
 	// cannot resolve ALT-referenced accounts locally, so a transfer hidden
 	// behind a lookup table could not be checked. Mirrors rust

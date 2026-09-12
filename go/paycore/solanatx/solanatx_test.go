@@ -2,6 +2,7 @@ package solanatx
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -294,6 +295,81 @@ func TestDecodeTransactionBase64InvalidTransaction(t *testing.T) {
 	// Valid base64 but not a valid transaction
 	if _, err := DecodeTransactionBase64("aGVsbG8="); err == nil {
 		t.Fatal("expected error for invalid transaction data")
+	}
+}
+
+// signedV0Wire returns a signed single-signature v0 SOL transfer as wire bytes.
+func signedV0Wire(t *testing.T) []byte {
+	t.Helper()
+	signer := testutil.NewPrivateKey()
+	transfer, err := BuildSOLTransfer(signer.PublicKey(), testutil.NewPrivateKey().PublicKey(), 1)
+	if err != nil {
+		t.Fatalf("build transfer failed: %v", err)
+	}
+	tx, err := NewV0Transaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(signer.PublicKey()))
+	if err != nil {
+		t.Fatalf("new transaction failed: %v", err)
+	}
+	if err := SignTransaction(tx, signer); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	return wire
+}
+
+func TestDecodeTransactionAcceptsV0(t *testing.T) {
+	tx, err := DecodeTransaction(signedV0Wire(t))
+	if err != nil {
+		t.Fatalf("decode v0 failed: %v", err)
+	}
+	if tx.Message.GetVersion() != solana.MessageVersionV0 {
+		t.Fatalf("version = %v, want v0", tx.Message.GetVersion())
+	}
+}
+
+func TestDecodeTransactionRejectsLegacy(t *testing.T) {
+	tx, err := DecodeTransaction(signedV0Wire(t))
+	if err != nil {
+		t.Fatalf("decode v0 failed: %v", err)
+	}
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	wire, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal legacy failed: %v", err)
+	}
+	if wire[65]&0x80 != 0 {
+		t.Fatalf("fixture still carries a version prefix: %#x", wire[65])
+	}
+	_, err = DecodeTransaction(wire)
+	if !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want ErrLegacyTransaction", err)
+	}
+	if err.Error() != "legacy transactions are not supported; use a version 0 or version 1 message" {
+		t.Fatalf("unexpected message %q", err)
+	}
+	if _, err := DecodeTransactionBase64(base64.StdEncoding.EncodeToString(wire)); !errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("base64 err = %v, want ErrLegacyTransaction", err)
+	}
+}
+
+func TestDecodeTransactionRejectsUnsupportedVersionCleanly(t *testing.T) {
+	// One signature: the message starts at byte 65 with the 0x80 v0 prefix.
+	// Flip it to the 0x81 (version 1) prefix, which the Go decoder does not
+	// implement: the result must be an error, never a panic or an accept.
+	wire := signedV0Wire(t)
+	if wire[65] != 0x80 {
+		t.Fatalf("message prefix = %#x, want 0x80", wire[65])
+	}
+	wire[65] = 0x81
+	if _, err := DecodeTransaction(wire); err == nil || errors.Is(err, ErrLegacyTransaction) {
+		t.Fatalf("err = %v, want unsupported-version rejection", err)
+	}
+	// A truncated version-1 payload must fail cleanly too.
+	if _, err := DecodeTransaction(wire[:70]); err == nil {
+		t.Fatal("expected truncated transaction to be rejected")
 	}
 }
 

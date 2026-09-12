@@ -17,6 +17,7 @@ from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit import LocalSigner
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit._paycore.transaction import LEGACY_TRANSACTION_REJECTED
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402.client.upto import (
     build_upto_header,
@@ -24,7 +25,7 @@ from solana_pay_kit.protocols.x402.client.upto import (
     encode_upto_header,
     parse_upto_challenge,
 )
-from solana_pay_kit.protocols.x402.upto import _decode_transaction
+from solana_pay_kit.protocols.x402.upto import _cosign_fee_payer, _decode_transaction
 from solana_pay_kit.protocols.x402.upto.types import (
     UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT,
     UPTO_SCHEME,
@@ -601,3 +602,26 @@ def test_client_emits_the_declared_memo_after_open() -> None:
     req["extra"]["memo"] = "x" * 257
     with pytest.raises(ValueError, match="memo"):
         build_upto_payload(client, req, int(time.time()) + 300)
+
+
+def test_upto_server_rejects_legacy_open_transaction() -> None:
+    """A legacy (unversioned) open transaction is rejected at both server
+    decode boundaries with the shared message under ``payment_invalid``."""
+    from solders.hash import Hash  # type: ignore[import-untyped]
+    from solders.message import Message  # type: ignore[import-untyped]
+    from solders.system_program import TransferParams, transfer  # type: ignore[import-untyped]
+    from solders.transaction import Transaction  # type: ignore[import-untyped]
+
+    operator, op = _operator()
+    fee_payer = Pubkey.from_string(op)
+    ix = transfer(TransferParams(from_pubkey=fee_payer, to_pubkey=Keypair().pubkey(), lamports=1))
+    tx = Transaction.new_unsigned(Message.new_with_blockhash([ix], fee_payer, Hash.from_string(BH)))
+    tx_b64 = base64.b64encode(bytes(tx)).decode()
+    with pytest.raises(InvalidProofError) as exc:
+        _decode_transaction(tx_b64)
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+    assert exc.value.code == "payment_invalid"
+    with pytest.raises(InvalidProofError) as exc:
+        _cosign_fee_payer(tx_b64, operator)
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+    assert exc.value.code == "payment_invalid"

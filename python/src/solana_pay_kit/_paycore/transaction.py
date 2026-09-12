@@ -11,37 +11,24 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
+#: Exact rejection text shared by every server-side decode boundary; the Rust
+#: servers emit the same string.
+LEGACY_TRANSACTION_REJECTED = "legacy transactions are not supported; use a version 0 or version 1 message"
 
-def is_v0_wire_bytes(raw: bytes) -> bool:
-    """Best-effort detection of a v0 ``VersionedTransaction`` on the wire.
 
-    SECURITY: ``solders.transaction.Transaction.from_bytes`` is lenient on
-    v0 wire bytes today: it can mis-parse a signed v0 transaction as a
-    degenerate legacy transaction whose ``instructions`` list points at
-    random ``account_keys`` entries. The downstream allowlist then rejects
-    a legitimate v0 payment with a misleading
-    ``unexpected program instruction in payment transaction: <pubkey>``
-    error sourced from the mis-parsed junk. This helper peeks at the
-    message-version prefix so callers can route v0 wire bytes straight to
-    ``VersionedTransaction.from_bytes`` instead of trusting the lenient
-    legacy parser.
+def _message_offset(raw: bytes) -> int | None:
+    """Offset of the first message byte on the wire, or ``None`` when truncated.
 
-    Wire format: ``[shortvec sig_count] [64 * sig_count signatures] [message]``.
-    Legacy messages start with the header byte ``num_required_signatures``
-    which is always ``< 0x80`` in practice (the MSB encodes a version
-    prefix on v0). v0 messages start with ``0x80 | version`` so the high
-    bit is set. We accept multi-byte compact-u16 lengths but cap at three
-    bytes (Solana hard caps signatures well below ``128 * 128``).
+    Wire format: ``[compact-u16 sig_count] [64 * sig_count signatures] [message]``.
+    We accept multi-byte compact-u16 lengths but cap at three bytes (Solana
+    hard caps signatures well below ``128 * 128``).
     """
-    if not raw:
-        return False
-    # Parse compact-u16 sig_count.
     sig_count = 0
     shift = 0
     offset = 0
     for _ in range(3):  # compact-u16 is at most 3 bytes
         if offset >= len(raw):
-            return False
+            return None
         byte = raw[offset]
         offset += 1
         sig_count |= (byte & 0x7F) << shift
@@ -50,10 +37,39 @@ def is_v0_wire_bytes(raw: bytes) -> bool:
         shift += 7
     msg_start = offset + sig_count * 64
     if msg_start >= len(raw):
-        return False
-    # MessageV0 prefix is 0x80 | version; legacy header byte
-    # (num_required_signatures) never sets the MSB for any realistic tx.
-    return (raw[msg_start] & 0x80) != 0
+        return None
+    return msg_start
+
+
+def is_v0_wire_bytes(raw: bytes) -> bool:
+    """Best-effort detection of a versioned ``VersionedTransaction`` on the wire.
+
+    Legacy messages start with the header byte ``num_required_signatures``
+    which is always ``< 0x80`` in practice; versioned messages start with
+    ``0x80 | version`` so the high bit is set. ``solders`` parses either shape
+    through ``Transaction.from_bytes`` (leniently, mis-reading v0 bytes as a
+    degenerate legacy transaction) or ``VersionedTransaction.from_bytes``, so
+    callers peek at the prefix instead of trusting a parse to fail.
+    """
+    msg_start = _message_offset(raw)
+    return msg_start is not None and (raw[msg_start] & 0x80) != 0
+
+
+def require_versioned_wire(raw: bytes, error: Callable[[str], Exception] = ValueError) -> None:
+    """Reject a legacy (unversioned) transaction wire before it is decoded.
+
+    Every server-side decode of a client-supplied transaction calls this first:
+    legacy messages are not supported anywhere in pay-kit, and both ``solders``
+    parsers would otherwise accept one. Raises ``error(LEGACY_TRANSACTION_REJECTED)``
+    when the message byte carries no version prefix, so each boundary maps the
+    rejection onto the error code it already uses for a malformed payload. A
+    wire too short to reach the message byte is left to the caller's decoder,
+    which reports it as malformed. Version 1 (``0x81``) passes the guard and is
+    rejected by ``VersionedTransaction.from_bytes`` until solders implements it.
+    """
+    msg_start = _message_offset(raw)
+    if msg_start is not None and (raw[msg_start] & 0x80) == 0:
+        raise error(LEGACY_TRANSACTION_REJECTED)
 
 
 def build_partially_signed_v0_transaction(

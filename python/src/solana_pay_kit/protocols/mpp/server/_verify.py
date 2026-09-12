@@ -25,7 +25,7 @@ from solana_pay_kit._paycore.solana import (
     is_native_sol,
     resolve_mint,
 )
-from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+from solana_pay_kit._paycore.transaction import require_versioned_wire
 from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from solana_pay_kit.protocols.mpp.server._tx_decode import (
     _COMPUTE_BUDGET_PROGRAM,
@@ -36,6 +36,7 @@ from solana_pay_kit.protocols.mpp.server._tx_decode import (
     _build_expected_transfers,
     _decode_legacy_payment_instructions,
     _expected_memos,
+    _invalid_payload_type,
     _validate_compute_budget_instruction,
     _verify_ata_owner,
     _verify_parsed_memo_instructions,
@@ -48,59 +49,28 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
     """Co-sign a client transaction with the server's fee payer keypair.
 
     The fee payer occupies the first signer slot in Solana transactions. We
-    serialize the message in the correct shape for its version (legacy uses
-    ``bytes(msg)``; v0 uses ``to_bytes_versioned(msg)`` which prepends the
-    ``0x80`` version tag), sign with the fee-payer private key, and splice
-    the resulting signature into the signature array at the slot matching
-    the fee-payer pubkey.
+    sign ``to_bytes_versioned(msg)`` (the ``0x80`` version tag plus the v0
+    body, exactly what the wire carries) with the fee-payer private key and
+    splice the resulting signature into the signature array at the slot
+    matching the fee-payer pubkey. Legacy wires are rejected up-front.
 
     Mirrors the cosign step in rust/src/server/charge.rs verify_pull.
     """
     from solders.message import to_bytes_versioned
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = fee_payer.pubkey()
 
-    # Route v0 wire bytes straight to VersionedTransaction: the legacy parser
-    # is lenient and can mis-parse a v0 message (see is_v0_wire_bytes).
-    tx = None
-    if not is_v0_wire_bytes(raw):
-        try:
-            tx = Transaction.from_bytes(raw)
-        except Exception:
-            tx = None
-    if tx is None:
-        try:
-            vtx = VersionedTransaction.from_bytes(raw)
-        except Exception as exc:
-            raise PaymentError(
-                f"could not decode transaction for fee payer co-sign: {exc}",
-                code="invalid-payload-type",
-            ) from exc
-        account_keys = list(vtx.message.account_keys)
-        try:
-            idx = account_keys.index(fee_payer_pubkey)
-        except ValueError as exc:
-            raise PaymentError(
-                "fee payer pubkey not present in transaction accounts",
-                code="invalid-payload",
-            ) from exc
-        num_required = int(vtx.message.header.num_required_signatures)
-        _assert_signature_slot(idx, num_required)
-        # v0 messages are signed over ``to_bytes_versioned(msg)`` which
-        # prepends the 0x80 version byte.
-        message_bytes = bytes(to_bytes_versioned(vtx.message))
-        sig_bytes = bytes(fee_payer.sign_message(message_bytes))
-        # Manual splice in the on-wire bytes preserves the rest of the
-        # transaction exactly. Wire format: [num_sigs (compact-u16)] [sigs]
-        # [message...]. num_sigs < 128 so it is a 1-byte prefix.
-        serialized = bytearray(raw)
-        sig_start = 1 + idx * 64
-        serialized[sig_start : sig_start + 64] = sig_bytes
-        return base64.b64encode(bytes(serialized)).decode("ascii")
-
-    account_keys = list(tx.message.account_keys)
+    require_versioned_wire(raw, error=_invalid_payload_type)
+    try:
+        vtx = VersionedTransaction.from_bytes(raw)
+    except Exception as exc:
+        raise PaymentError(
+            f"could not decode transaction for fee payer co-sign: {exc}",
+            code="invalid-payload-type",
+        ) from exc
+    account_keys = list(vtx.message.account_keys)
     try:
         idx = account_keys.index(fee_payer_pubkey)
     except ValueError as exc:
@@ -108,12 +78,13 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
             "fee payer pubkey not present in transaction accounts",
             code="invalid-payload",
         ) from exc
-    num_required = int(tx.message.header.num_required_signatures)
+    num_required = int(vtx.message.header.num_required_signatures)
     _assert_signature_slot(idx, num_required)
-
-    # Legacy Transaction: sign ``bytes(msg)`` directly.
-    message_bytes = bytes(tx.message)
+    message_bytes = bytes(to_bytes_versioned(vtx.message))
     sig_bytes = bytes(fee_payer.sign_message(message_bytes))
+    # Manual splice in the on-wire bytes preserves the rest of the
+    # transaction exactly. Wire format: [num_sigs (compact-u16)] [sigs]
+    # [message...]. num_sigs < 128 so it is a 1-byte prefix.
     serialized = bytearray(raw)
     sig_start = 1 + idx * 64
     serialized[sig_start : sig_start + 64] = sig_bytes
@@ -331,52 +302,24 @@ def _validate_instruction_allowlist(
     burn, BPF program calls, sysvar reads, etc.) is rejected before
     broadcast with a ``payment-invalid`` canonical code.
     """
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
-    message: Any = None
-    message_instructions: list[Any] = []
-    # Route v0 wire bytes straight to VersionedTransaction; the legacy
-    # parser in solders is lenient and can mis-parse a signed v0 tx as a
-    # degenerate legacy tx whose instructions point at random account
-    # keys. The allowlist would then reject the legitimate v0 payment
-    # with a misleading "unexpected program instruction" error sourced
-    # from junk bytes. See is_v0_wire_bytes.
-    parsed = False
-    if is_v0_wire_bytes(raw):
-        try:
-            vtx = VersionedTransaction.from_bytes(raw)
-        except Exception:
-            vtx = None
-        if vtx is not None:
-            if getattr(vtx.message, "address_table_lookups", None):
-                raise PaymentError(
-                    "v0 transactions with address lookup tables are not supported",
-                    code="invalid-payload",
-                ) from None
-            message = vtx.message
-            message_instructions = list(vtx.message.instructions)
-            parsed = True
-    if not parsed:
-        try:
-            tx = Transaction.from_bytes(raw)
-            message = tx.message
-            message_instructions = list(tx.message.instructions)
-        except Exception:
-            try:
-                vtx = VersionedTransaction.from_bytes(raw)
-            except Exception as exc:
-                raise PaymentError(
-                    "unsupported transaction shape for instruction allowlist",
-                    code="invalid-payload-type",
-                ) from exc
-            if getattr(vtx.message, "address_table_lookups", None):
-                raise PaymentError(
-                    "v0 transactions with address lookup tables are not supported",
-                    code="invalid-payload",
-                ) from None
-            message = vtx.message
-            message_instructions = list(vtx.message.instructions)
+    require_versioned_wire(raw, error=_invalid_payload_type)
+    try:
+        vtx = VersionedTransaction.from_bytes(raw)
+    except Exception as exc:
+        raise PaymentError(
+            "unsupported transaction shape for instruction allowlist",
+            code="invalid-payload-type",
+        ) from exc
+    if getattr(vtx.message, "address_table_lookups", None):
+        raise PaymentError(
+            "v0 transactions with address lookup tables are not supported",
+            code="invalid-payload",
+        )
+    message = vtx.message
+    message_instructions = list(message.instructions)
 
     account_keys = [str(key) for key in message.account_keys]
     if not account_keys:

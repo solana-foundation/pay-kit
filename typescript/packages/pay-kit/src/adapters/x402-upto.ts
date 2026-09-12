@@ -15,7 +15,7 @@ import type { PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
-import { errorMessage, x402PaymentHeader } from './x402-shared.js';
+import { errorMessage, rejectLegacyTransaction, x402PaymentHeader } from './x402-shared.js';
 
 /** Settlement-response header mirrored by the x402 SDK family. */
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
@@ -168,6 +168,10 @@ export class X402Upto {
         } catch (error) {
             throw new InvalidProofError('invalid_x402_payment_header', errorMessage(error));
         }
+        rejectLegacyTransaction(
+            (payload.payload as { openTransaction?: unknown } | undefined)?.openTransaction,
+            'invalid_upto_svm_payload_open_transaction',
+        );
 
         // Bind the authorization's openSlot to the challenged recentSlot
         // BEFORE the facilitator broadcasts the open: the facilitator already

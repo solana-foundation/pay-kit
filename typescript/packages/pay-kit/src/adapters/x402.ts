@@ -17,7 +17,7 @@ import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2 } from '../protocol.js';
-import { errorMessage, x402PaymentHeader } from './x402-shared.js';
+import { errorMessage, rejectLegacyTransaction, x402PaymentHeader } from './x402-shared.js';
 
 /** x402 v2 protocol version advertised in the challenge envelope. */
 const X402_VERSION = 2;
@@ -133,6 +133,10 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             } catch (error) {
                 throw new InvalidProofError('invalid_x402_payment_header', errorMessage(error));
             }
+            rejectLegacyTransaction(
+                (payload.payload as { transaction?: unknown } | undefined)?.transaction,
+                'invalid_exact_svm_payload_transaction_could_not_be_decoded',
+            );
 
             const requirements = requirementsFor(gate);
             const verification = await facilitator.verify(payload, requirements);

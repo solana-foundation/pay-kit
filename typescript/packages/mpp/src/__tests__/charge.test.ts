@@ -3278,6 +3278,29 @@ test('#25 client-paid compute-unit price above the tight cap still passes (gener
     ).resolves.toBeUndefined();
 });
 
+test('verifyChargeTransaction rejects a legacy (unversioned) transaction', async () => {
+    const authority = await generateKeyPairSigner();
+    const txMessage = pipe(
+        createTransactionMessage({ version: 'legacy' }),
+        msg => setTransactionMessageFeePayerSigner(authority, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg =>
+            appendTransactionMessageInstructions(
+                [getTransferSolInstruction({ source: authority, destination: address(RECIPIENT), amount: 1_000_000n })],
+                msg,
+            ),
+    );
+    const tx = getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+    await expect(
+        verifyChargeTransaction(tx, {
+            amount: '1000000',
+            currency: 'sol',
+            methodDetails: { network: 'devnet' },
+            recipient: RECIPIENT,
+        }),
+    ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
+});
+
 // #3 — post-timeout definitive status interpretation
 test('#3 interpretPostTimeoutStatus: landed cleanly returns confirmed', () => {
     expect(interpretPostTimeoutStatus({ err: null })).toEqual({ kind: 'confirmed' });

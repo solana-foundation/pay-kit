@@ -35,17 +35,19 @@ end)
 helper.test('Signer:sign_transaction patches the signature slot for the fee payer', function()
   local pk, sk = fresh_keypair()
   local s = signer.from_bytes(sk)
-  -- Build a minimal legacy transaction whose account_keys[0] is the signer's
+  -- Build a minimal v0 transaction whose account_keys[0] is the signer's
   -- public key, with required_signatures = 1. A placeholder all-zero
   -- signature occupies slot 1 and should be replaced after sign_transaction.
   local placeholder = string.rep('\0', 64)
   local blockhash = string.rep('\xc3', 32)
   local message = table.concat({
+    string.char(0x80),
     string.char(1, 0, 0),
     transaction.compact_u16(1),
     pk,
     blockhash,
-    transaction.compact_u16(0),
+    transaction.compact_u16(0),   -- 0 instructions
+    transaction.compact_u16(0),   -- 0 address-table lookups
   })
   local raw = table.concat({
     transaction.compact_u16(1),
@@ -65,11 +67,13 @@ helper.test('Signer:sign_transaction rejects a transaction without the signer sl
   local placeholder = string.rep('\0', 64)
   local blockhash = string.rep('\xc3', 32)
   local message = table.concat({
+    string.char(0x80),
     string.char(1, 0, 0),
     transaction.compact_u16(1),
     random_key,
     blockhash,
-    transaction.compact_u16(0),
+    transaction.compact_u16(0),   -- 0 instructions
+    transaction.compact_u16(0),   -- 0 address-table lookups
   })
   local raw = table.concat({
     transaction.compact_u16(1),

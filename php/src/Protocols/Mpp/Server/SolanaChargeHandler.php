@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 use PayKit\PayCore\Rpc\RpcGateway;
+use PayKit\PayCore\Solana\TransactionWire;
 use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
@@ -15,9 +16,6 @@ use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
-use SolanaPhpSdk\Transaction\Transaction;
-use SolanaPhpSdk\Transaction\VersionedTransaction;
-use SolanaPhpSdk\Util\Base58;
 
 /**
  * High-level Solana charge server: verify → optional co-sign → broadcast →
@@ -273,19 +271,11 @@ final class SolanaChargeHandler
             throw new InvalidArgumentException('invalid transaction payload');
         }
 
-        if (VersionedTransaction::peekVersion($wire) === 'legacy') {
-            $tx = Transaction::deserialize($wire);
-            if ($this->feePayer !== null) {
-                $tx->partialSign($this->feePayer);
-            }
-            $signed = $tx->serialize();
-        } else {
-            $tx = VersionedTransaction::deserialize($wire);
-            if ($this->feePayer !== null) {
-                $tx->partialSign($this->feePayer);
-            }
-            $signed = $tx->serialize();
+        $tx = TransactionWire::deserialize($wire);
+        if ($this->feePayer !== null) {
+            $tx->partialSign($this->feePayer);
         }
+        $signed = $tx->serialize();
 
         $signature = $this->rpc->sendRawTransaction($signed, [
             'encoding' => 'base64',
@@ -343,12 +333,8 @@ final class SolanaChargeHandler
             if ($wire === false) {
                 return false;
             }
-            // Legacy `Message` stores the blockhash as raw 32 bytes; v0
-            // `MessageV0` stores it as a base58 string. Normalize to base58
-            // before checking the Surfpool prefix.
-            $blockhash = VersionedTransaction::peekVersion($wire) === 'legacy'
-                ? Base58::encode(Transaction::deserialize($wire)->message->recentBlockhash)
-                : VersionedTransaction::deserialize($wire)->message->recentBlockhash;
+            // `MessageV0` stores the blockhash as a base58 string.
+            $blockhash = TransactionWire::deserialize($wire)->message->recentBlockhash;
         } catch (Throwable) {
             return false;
         }

@@ -23,7 +23,7 @@ import pytest
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
-from solders.message import MessageV0
+from solders.message import MessageV0, to_bytes_versioned
 from solders.pubkey import Pubkey
 
 import solana_pay_kit.protocols.x402 as xmod
@@ -297,7 +297,7 @@ def _legacy_envelope(adapter, gate, op_kp, *, network=SOLANA_DEVNET_NAME, versio
     wire = bytearray()
     wire.append(num)
     wire.extend(bytes(64) * num)
-    wire.extend(bytes(msg))
+    wire.extend(bytes(to_bytes_versioned(msg)))
     tx_b64 = base64.b64encode(bytes(wire)).decode()
     # Legacy envelope: top-level scheme + plain network, NO accepted object.
     envelope: dict = {

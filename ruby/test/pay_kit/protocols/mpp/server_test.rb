@@ -693,10 +693,23 @@ class TransactionVerifierTest < Minitest::Test
     assert_match(/Unsupported network/, result.reason)
   end
 
+  def test_rejects_legacy_transaction_payload
+    request = charge_request
+    tx = Base64.strict_encode64(legacy_transaction(
+      account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    ))
+
+    result = @verifier.verify_transaction_payload(tx, request)
+
+    refute result.ok?
+    assert_equal "legacy transactions are not supported; use a version 0 or version 1 message", result.reason
+  end
+
   private
 
   def tx_base64(account_keys:, instructions:)
-    Base64.strict_encode64(legacy_transaction(account_keys: account_keys, instructions: instructions))
+    Base64.strict_encode64(v0_transaction(account_keys: account_keys, instructions: instructions))
   end
 end
 
@@ -733,7 +746,7 @@ class ChargeHandlerTest < Minitest::Test
 
   def test_settles_push_signature_by_fetching_transaction
     request = charge_request
-    transaction = Base64.strict_encode64(legacy_transaction(
+    transaction = Base64.strict_encode64(v0_transaction(
       account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
@@ -785,7 +798,7 @@ class ChargeHandlerTest < Minitest::Test
 
   def test_pull_mode_reports_simulation_and_confirmation_failures
     request = charge_request
-    transaction = Base64.strict_encode64(legacy_transaction(
+    transaction = Base64.strict_encode64(v0_transaction(
       account_keys: [pubkey(1), request.recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
@@ -872,7 +885,7 @@ class ChargeHandlerTest < Minitest::Test
   end
 
   def transaction_response
-    transaction = Base64.strict_encode64(legacy_transaction(
+    transaction = Base64.strict_encode64(v0_transaction(
       account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))

@@ -15,6 +15,7 @@ from solders.transaction import Transaction, VersionedTransaction  # type: ignor
 
 from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit._paycore.transaction import LEGACY_TRANSACTION_REJECTED
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     OpenChannelParams,
@@ -44,7 +45,8 @@ class _Fixture:
     payer: Keypair
 
 
-def _fixture(*, v0: bool = False) -> _Fixture:
+def _fixture(*, legacy: bool = False) -> _Fixture:
+    """Build an open payload; ``legacy=True`` compiles the rejected unversioned wire."""
     payer = Keypair.from_seed(bytes([1] * 32))
     payee = Keypair.from_seed(bytes([2] * 32)).pubkey()
     authorized = Keypair.from_seed(bytes([3] * 32)).pubkey()
@@ -66,13 +68,13 @@ def _fixture(*, v0: bool = False) -> _Fixture:
             program_id=PROGRAM_ID,
         )
     )
-    if v0:
-        message = MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default())
-        transaction = VersionedTransaction(message, [payer])
-    else:
+    if legacy:
         transaction = Transaction(
             [payer], Message.new_with_blockhash([instruction], payer.pubkey(), Hash.default()), Hash.default()
         )
+    else:
+        message = MessageV0.try_compile(payer.pubkey(), [instruction], [], Hash.default())
+        transaction = VersionedTransaction(message, [payer])
     payload = OpenPayload(
         channel_id=str(channel),
         payer=str(payer.pubkey()),
@@ -113,13 +115,20 @@ def _context(recent_blockhash: str | None = None, recent_slot: int = 42) -> Sess
     )
 
 
-@pytest.mark.parametrize("v0", [False, True])
-async def test_verify_open_tx_accepts_exact_legacy_and_v0(v0: bool) -> None:
-    fixture = _fixture(v0=v0)
+async def test_verify_open_tx_accepts_exact_v0() -> None:
+    fixture = _fixture()
     result = await verify_open_tx(fixture.expected, fixture.payload, None)
     assert result.channel_id == fixture.payload.channel_id
     assert result.deposit == 1_000
     assert result.open_slot == 42
+
+
+async def test_verify_open_tx_rejects_legacy_transaction() -> None:
+    fixture = _fixture(legacy=True)
+    with pytest.raises(PaymentError) as exc:
+        await verify_open_tx(fixture.expected, fixture.payload, None)
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+    assert exc.value.code == "invalid-payload"
 
 
 @pytest.mark.parametrize(
@@ -147,12 +156,11 @@ async def test_verify_open_tx_rejects_challenge_policy_mismatch() -> None:
         await verify_open_tx(fixture.expected, fixture.payload, None)
 
 
-@pytest.mark.parametrize("v0", [False, True])
-async def test_verify_open_tx_rejects_wrong_challenged_blockhash(v0: bool) -> None:
+async def test_verify_open_tx_rejects_wrong_challenged_blockhash() -> None:
     # The fixture transaction compiles against Hash.default(); a challenge
     # that advertised a different recentBlockhash means the transaction was
     # not built for this challenge — rejected before broadcast.
-    fixture = _fixture(v0=v0)
+    fixture = _fixture()
     fixture.expected.recent_blockhash = str(Hash.new_unique())
     with pytest.raises(PaymentError, match="challenged recentBlockhash"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
@@ -204,9 +212,9 @@ async def test_verify_open_tx_requires_transaction() -> None:
 
 async def test_verify_open_tx_rejects_missing_payer_signature() -> None:
     fixture = _fixture()
-    transaction = Transaction.from_bytes(base64.b64decode(fixture.payload.transaction))
+    transaction = VersionedTransaction.from_bytes(base64.b64decode(fixture.payload.transaction))
     fixture.payload.transaction = base64.b64encode(
-        bytes(Transaction.populate(transaction.message, [Signature.default()]))
+        bytes(VersionedTransaction.populate(transaction.message, [Signature.default()]))
     ).decode()
     with pytest.raises(PaymentError, match="payer signature is missing"):
         await verify_open_tx(fixture.expected, fixture.payload, None)
@@ -377,7 +385,7 @@ class _MainnetLikeRpc:
 
 
 def _first_signature(raw_tx: bytes) -> str:
-    return str(Transaction.from_bytes(raw_tx).signatures[0])
+    return str(VersionedTransaction.from_bytes(raw_tx).signatures[0])
 
 
 _LANDED_CLEAN = {"err": None, "confirmationStatus": "finalized"}

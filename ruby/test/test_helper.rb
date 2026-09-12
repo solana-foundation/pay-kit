@@ -74,17 +74,31 @@ module RubyMppTestHelpers
     [program_index].pack("C") + compact_u16(accounts.length) + accounts.pack("C*") + compact_u16(data.bytesize) + data
   end
 
+  # Build a v0 transaction wire (0x80 version prefix, empty address-table
+  # lookup vector). This is the only client wire the server accepts.
+  def v0_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil)
+    sigs = signatures || ["\x00".b * 64]
+    message = [0x80].pack("C") + message_body(account_keys, instructions, recent_blockhash, sigs.length) + compact_u16(0)
+    compact_u16(sigs.length) + sigs.join + message
+  end
+
+  # Build a legacy (unprefixed) transaction wire. Only used to assert the
+  # server rejects it.
   def legacy_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil)
+    sigs = signatures || ["\x00".b * 64]
+    compact_u16(sigs.length) + sigs.join + message_body(account_keys, instructions, recent_blockhash, sigs.length)
+  end
+
+  def message_body(account_keys, instructions, recent_blockhash, required_signatures)
     keys = account_keys.map { |key| ::PayCore::Solana::Base58.decode(key) }
     message = +""
-    message << [signatures&.length || 1, 0, 0].pack("C*")
+    message << [required_signatures, 0, 0].pack("C*")
     message << compact_u16(keys.length)
     keys.each { |key| message << key }
     message << ::PayCore::Solana::Base58.decode(recent_blockhash)
     message << compact_u16(instructions.length)
     instructions.each { |ix| message << ix }
-    sigs = signatures || ["\x00".b * 64]
-    compact_u16(sigs.length) + sigs.join + message
+    message
   end
 
   def charge_request(overrides = {})

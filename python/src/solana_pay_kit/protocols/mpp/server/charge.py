@@ -520,6 +520,8 @@ class Mpp:
         # check fails fast before the full verification + broadcast pipeline.
         try:
             blockhash_b58 = _extract_recent_blockhash(payload.transaction)
+        except PaymentError:
+            raise
         except Exception as exc:  # noqa: BLE001 — propagate decode failures as invalid payload
             raise PaymentError(
                 f"could not decode transaction to read blockhash: {exc}",

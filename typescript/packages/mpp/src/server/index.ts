@@ -24,5 +24,6 @@ export {
 } from './session/on-chain.js';
 export { buildAndSignWireTransaction } from './session/wire-tx.js';
 export { subscription } from './Subscription.js';
+export { assertVersionedTransactionMessage, LEGACY_TRANSACTION_ERROR } from '../utils/transactions.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/server'
 export { Mppx, Expires, Store } from 'mppx/server';

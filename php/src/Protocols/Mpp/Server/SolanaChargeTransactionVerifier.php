@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Throwable;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\PayCore\Solana\Mints;
+use PayKit\PayCore\Solana\TransactionWire;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
@@ -16,8 +17,6 @@ use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\MemoProgram;
 use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
-use SolanaPhpSdk\Transaction\Transaction;
-use SolanaPhpSdk\Transaction\VersionedTransaction;
 use SolanaPhpSdk\Util\Base58;
 
 /**
@@ -290,20 +289,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
      */
     private function decodeTransaction(string $wire): array
     {
-        $version = VersionedTransaction::peekVersion($wire);
-        if ($version === 'legacy') {
-            $transaction = Transaction::deserialize($wire);
-            return [
-                'accountKeys' => $transaction->message->accountKeys,
-                'instructions' => $transaction->message->instructions,
-            ];
-        }
-
-        if ($version !== 0) {
-            throw new InvalidArgumentException('unsupported transaction version');
-        }
-
-        $transaction = VersionedTransaction::deserialize($wire);
+        $transaction = TransactionWire::deserialize($wire);
         if ($transaction->message->addressTableLookups !== []) {
             throw new InvalidArgumentException('v0 address lookup tables are not supported');
         }

@@ -25,6 +25,7 @@ from solana_pay_kit._paycore.solana import (
     MethodDetails,
     Split,
 )
+from solana_pay_kit._paycore.transaction import LEGACY_TRANSACTION_REJECTED
 from solana_pay_kit.protocols.mpp.server import charge as M
 
 # ---------------------------------------------------------------------------
@@ -455,12 +456,35 @@ def _build_simple_legacy_tx() -> str:
     return base64.b64encode(bytes(tx)).decode("ascii")
 
 
-def test_extract_recent_blockhash_legacy():
-    tx_b64 = _build_simple_legacy_tx()
-    bh = M._extract_recent_blockhash(tx_b64)
-    # Default Hash → base58 representation of all-zeros = "11111111111111111111111111111111".
-    assert isinstance(bh, str)
-    assert len(bh) > 0
+def _build_simple_v0_tx() -> str:
+    from solders.hash import Hash
+    from solders.message import MessageV0
+    from solders.transaction import VersionedTransaction
+
+    src = Keypair()
+    dst = Keypair()
+    ix = transfer(TransferParams(from_pubkey=src.pubkey(), to_pubkey=dst.pubkey(), lamports=1))
+    msg = MessageV0.try_compile(src.pubkey(), [ix], [], Hash.default())
+    return base64.b64encode(bytes(VersionedTransaction(msg, [src]))).decode("ascii")
+
+
+def test_extract_recent_blockhash_v0():
+    # Default Hash -> base58 of all-zeros.
+    assert M._extract_recent_blockhash(_build_simple_v0_tx()) == "11111111111111111111111111111111"
+
+
+def test_extract_recent_blockhash_rejects_legacy():
+    with pytest.raises(PaymentError) as exc:
+        M._extract_recent_blockhash(_build_simple_legacy_tx())
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+    assert exc.value.code == "invalid-payload-type"
+
+
+def test_decode_legacy_payment_instructions_rejects_legacy():
+    with pytest.raises(PaymentError) as exc:
+        M._decode_legacy_payment_instructions(_build_simple_legacy_tx())
+    assert str(exc.value) == LEGACY_TRANSACTION_REJECTED
+    assert exc.value.code == "invalid-payload-type"
 
 
 def test_decode_legacy_payment_instructions_invalid_base64():
@@ -471,7 +495,7 @@ def test_decode_legacy_payment_instructions_invalid_base64():
 
 
 def test_decode_legacy_payment_instructions_short_random_raises_invalid_payload_type():
-    # Random short bytes will fail both legacy and versioned decode.
+    # Random short bytes never reach the message byte: the guard defers to the decoder.
     bad = base64.b64encode(b"\x00\x01\x02\x03").decode()
     with pytest.raises(PaymentError) as exc:
         M._decode_legacy_payment_instructions(bad)

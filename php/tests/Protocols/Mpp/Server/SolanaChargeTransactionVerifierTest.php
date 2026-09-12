@@ -16,8 +16,10 @@ use SolanaPhpSdk\Programs\MemoProgram;
 use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 use SolanaPhpSdk\Transaction\AccountMeta;
+use SolanaPhpSdk\Transaction\MessageV0;
 use SolanaPhpSdk\Transaction\Transaction;
 use SolanaPhpSdk\Transaction\TransactionInstruction;
+use SolanaPhpSdk\Transaction\VersionedTransaction;
 use SolanaPhpSdk\Util\Base58;
 
 final class SolanaChargeTransactionVerifierTest extends TestCase
@@ -663,13 +665,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         ];
         array_push($instructions, ...$extraInstructions);
 
-        $transaction = Transaction::new(
-            $instructions,
-            $fixture['payer'],
-            str_repeat("\x09", 32),
-        );
-
-        return base64_encode($transaction->serialize(verifySignatures: false));
+        return $this->v0TransactionBase64($fixture['payer'], $instructions);
     }
 
     /**
@@ -801,13 +797,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $instructions[] = MemoProgram::create('split memo');
         array_push($instructions, ...$extraInstructions);
 
-        $transaction = Transaction::new(
-            $instructions,
-            $fixture['feePayer'],
-            str_repeat("\x09", 32),
-        );
-
-        return base64_encode($transaction->serialize(verifySignatures: false));
+        return $this->v0TransactionBase64($fixture['feePayer'], $instructions);
     }
 
     /**
@@ -820,11 +810,35 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $instructions[] = SystemProgram::transfer($fixture['payer'], $fixture['splitRecipient'], 250);
         $instructions[] = MemoProgram::create('order-123');
         $instructions[] = MemoProgram::create('split memo');
+        return $this->v0TransactionBase64($fixture['feePayer'], $instructions);
+    }
+
+    public function testRejectsLegacyTransaction(): void
+    {
+        $fixture = $this->fixture();
+        // Legacy (unprefixed) message: the decode boundary must reject it
+        // before any structural rule runs, with the canonical reason text.
         $transaction = Transaction::new(
-            $instructions,
+            [SystemProgram::transfer($fixture['payer'], $fixture['recipient'], 1000)],
             $fixture['feePayer'],
             str_repeat("\x09", 32),
         );
+
+        $result = $this->verify($this->solRequest($fixture), base64_encode($transaction->serialize(verifySignatures: false)));
+
+        self::assertFalse($result->ok);
+        self::assertSame('legacy transactions are not supported; use a version 0 or version 1 message', $result->reason);
+    }
+
+    /**
+     * Compile a v0 (versioned) transaction: the only client wire the server
+     * accepts.
+     *
+     * @param array<int, TransactionInstruction> $instructions
+     */
+    private function v0TransactionBase64(PublicKey $payer, array $instructions): string
+    {
+        $transaction = new VersionedTransaction(MessageV0::compile($payer, $instructions, str_repeat("\x09", 32)));
 
         return base64_encode($transaction->serialize(verifySignatures: false));
     }

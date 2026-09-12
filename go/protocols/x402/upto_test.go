@@ -1326,6 +1326,45 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	}
 }
 
+// TestUptoVerifyOpenRejectsLegacyOpenTransaction pins the shared decode
+// boundary: an otherwise-valid open transaction encoded as a legacy
+// (unversioned) message is rejected before any instruction or RPC check.
+func TestUptoVerifyOpenRejectsLegacyOpenTransaction(t *testing.T) {
+	operatorKey := testutil.NewPrivateKey()
+	payerKey := testutil.NewPrivateKey()
+	payee := operatorKey.PublicKey()
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	salt := uint64(7)
+	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt, 55_555)
+	params := paymentchannels.OpenChannelParams{
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Salt: salt, OpenSlot: 55_555, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	openIx, _ := paymentchannels.BuildOpenInstruction(params)
+	tx, _ := solanatx.NewV0Transaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	solanatx.SignTransaction(tx, payerSigner{payerKey})
+	tx.Message.SetVersion(solana.MessageVersionLegacy)
+	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
+	engine, _ := NewX402Upto(UptoConfig{
+		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
+		FeePayerSigner:          signerSigner{operatorKey},
+		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RecentSlotProvider:      func() (uint64, error) { return 55_555, nil },
+	})
+	engine.SetRPCForTests(newUptoTestRPC())
+	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
+		Nonce: "7", OpenSlot: "55555", AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
+	}}
+	raw, _ := json.Marshal(env)
+	_, err := engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
+	if err == nil || err.Error() != solanatx.ErrLegacyTransaction.Error() {
+		t.Fatalf("err = %v, want %q", err, solanatx.ErrLegacyTransaction)
+	}
+}
+
 // TestUptoVerifyOpenRejectsWrongRentPayer exercises the on-chain rent-payer binding.
 func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 	operatorKey := testutil.NewPrivateKey()

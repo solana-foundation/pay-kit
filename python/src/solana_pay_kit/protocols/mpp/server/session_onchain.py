@@ -174,39 +174,26 @@ def _reject_address_lookup_tables(message: Any) -> None:
 
 
 def _decode_transaction(transaction_b64: str) -> tuple[bytes, Any, list[str], list, list[Signature]]:
-    """Decode a base64 (legacy or v0) transaction into ``(account_keys,
-    instructions, signatures)`` as base58 strings / compiled-instruction
-    objects.
+    """Decode a base64 v0 transaction into ``(account_keys, instructions,
+    signatures)`` as base58 strings / compiled-instruction objects.
 
-    A v0 transaction that references address lookup tables is rejected: the
-    open verifier only sees the static account keys, so an ALT could hide the
-    accounts it validates. See :func:`_reject_address_lookup_tables`.
+    Legacy wires are rejected by ``require_versioned_wire``. A v0 transaction
+    that references address lookup tables is rejected: the open verifier only
+    sees the static account keys, so an ALT could hide the accounts it
+    validates. See :func:`_reject_address_lookup_tables`.
     """
-    from solders.transaction import Transaction, VersionedTransaction
+    from solders.transaction import VersionedTransaction
 
-    from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+    from solana_pay_kit._paycore.transaction import require_versioned_wire
 
     raw = base64.b64decode(transaction_b64, validate=True)
-    message = None
-    signatures: list = []
-    if is_v0_wire_bytes(raw):
-        vtx = VersionedTransaction.from_bytes(raw)
-        message = vtx.message
-        _reject_address_lookup_tables(message)
-        signatures = list(vtx.signatures)
-    else:
-        try:
-            tx = Transaction.from_bytes(raw)
-            message = tx.message
-            signatures = list(tx.signatures)
-        except Exception:
-            vtx = VersionedTransaction.from_bytes(raw)
-            message = vtx.message
-            _reject_address_lookup_tables(message)
-            signatures = list(vtx.signatures)
+    require_versioned_wire(raw, error=lambda message: PaymentError(message, code="invalid-payload"))
+    vtx = VersionedTransaction.from_bytes(raw)
+    message = vtx.message
+    _reject_address_lookup_tables(message)
     account_keys = [str(key) for key in message.account_keys]
     instructions = list(message.instructions)
-    return raw, message, account_keys, instructions, signatures
+    return raw, message, account_keys, instructions, list(vtx.signatures)
 
 
 def top_up_transaction_signature(transaction_b64: str) -> str | None:
@@ -227,12 +214,10 @@ def top_up_transaction_signature(transaction_b64: str) -> str | None:
 
 
 def _signed_message_bytes(message: Any) -> bytes:
-    """Return the exact legacy or versioned bytes covered by signatures."""
-    from solders.message import MessageV0, to_bytes_versioned  # type: ignore[import-untyped]
+    """Return the exact versioned bytes covered by signatures (0x80 prefix + body)."""
+    from solders.message import to_bytes_versioned  # type: ignore[import-untyped]
 
-    if isinstance(message, MessageV0):
-        return bytes(to_bytes_versioned(message))
-    return bytes(message)
+    return bytes(to_bytes_versioned(message))
 
 
 async def verify_open_tx(
@@ -243,8 +228,8 @@ async def verify_open_tx(
     """Decode and validate a client-submitted payment-channel open transaction
     against the session challenge.
 
-    Both legacy and v0 transaction encodings are accepted. The compiled
-    message must use the challenged ``expected.recent_blockhash``, the embedded
+    Only v0 transaction encodings are accepted (legacy wires are rejected).
+    The compiled message must use the challenged ``expected.recent_blockhash``, the embedded
     open instruction must target the configured payment-channels program, the
     payee must equal the challenge recipient, the mint must match the challenge
     currency/network, the authorizedSigner (slot 4) must match the payload, the

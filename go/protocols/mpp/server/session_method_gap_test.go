@@ -76,7 +76,7 @@ func TestSessionOpenPullRequiresStrategyAtHandler(t *testing.T) {
 }
 
 func TestSessionServerSubmitterPreVerificationFailure(t *testing.T) {
-	fixture := buildOpenTxFixture(t, false)
+	fixture := buildOpenTxFixture(t)
 	fake := testutil.NewFakeRPC()
 	// The session recipient differs from the fixture payee, so the decode-only
 	// pre-verification fails before any broadcast.

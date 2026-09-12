@@ -11,6 +11,7 @@ package solanatx
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math/bits"
 	"strconv"
@@ -141,17 +142,39 @@ func EncodeTransactionBase64(tx *solana.Transaction) (string, error) {
 	return base64.StdEncoding.EncodeToString(wire), nil
 }
 
-// DecodeTransactionBase64 decodes a base64 wire transaction.
+// ErrLegacyTransaction is returned by DecodeTransaction for a message with
+// no version prefix byte. Servers reject legacy messages everywhere; the text
+// matches the Rust server (core/tx/version.rs).
+var ErrLegacyTransaction = errors.New("legacy transactions are not supported; use a version 0 or version 1 message")
+
+// DecodeTransaction decodes a wire transaction supplied by a client and
+// enforces the message-version policy every server verifier shares: version
+// 0 is accepted, a legacy message fails with ErrLegacyTransaction, and any
+// other version (version 1 is not implemented in Go) is rejected cleanly.
+func DecodeTransaction(wire []byte) (*solana.Transaction, error) {
+	tx := new(solana.Transaction)
+	if err := tx.UnmarshalWithDecoder(bin.NewBinDecoder(wire)); err != nil {
+		return nil, err
+	}
+	switch version := tx.Message.GetVersion(); version {
+	case solana.MessageVersionV0:
+		return tx, nil
+	case solana.MessageVersionLegacy:
+		return nil, ErrLegacyTransaction
+	default:
+		// solana-go stores the prefix byte minus 0x7f, so v0 is 1 and v1 is 2.
+		return nil, fmt.Errorf("unsupported transaction message version %d", int(version)-1)
+	}
+}
+
+// DecodeTransactionBase64 decodes a base64 wire transaction through
+// DecodeTransaction.
 func DecodeTransactionBase64(encoded string) (*solana.Transaction, error) {
 	wire, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, err
 	}
-	tx := new(solana.Transaction)
-	if err := tx.UnmarshalWithDecoder(bin.NewBinDecoder(wire)); err != nil {
-		return nil, err
-	}
-	return tx, nil
+	return DecodeTransaction(wire)
 }
 
 // SignTransaction signs a transaction for a single signer without requiring a solana.PrivateKey getter.

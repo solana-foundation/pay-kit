@@ -16,6 +16,7 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -96,9 +97,9 @@ type VerifyOpenTxResult struct {
 // VerifyOpenTx decodes and validates a client-submitted payment-channel open
 // transaction against the session challenge.
 //
-// Both legacy and v0 transaction encodings are accepted (clients across the
-// language SDKs emit either), but a v0 transaction that uses address lookup
-// tables is rejected: the account checks below read the static account keys,
+// Only version 0 transactions are accepted: a legacy message is rejected by
+// the shared decoder, and a v0 transaction that uses address lookup tables is
+// rejected because the account checks below read the static account keys,
 // so an ALT could hide the real accounts behind the fee-payer co-sign guard.
 // The embedded open
 // instruction must target the configured payment-channels program, the payee
@@ -120,9 +121,9 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		return VerifyOpenTxResult{}, fmt.Errorf("openPayload.transaction is required for push-mode open verification")
 	}
 
-	tx, err := solanatx.DecodeTransactionBase64(*payload.Transaction)
+	tx, err := decodeOpenTransaction(*payload.Transaction)
 	if err != nil {
-		return VerifyOpenTxResult{}, fmt.Errorf("decode open transaction: %w", err)
+		return VerifyOpenTxResult{}, err
 	}
 
 	// Reject v0 transactions that use address lookup tables. The fee-payer
@@ -480,9 +481,9 @@ func SubmitOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	if err != nil {
 		return SubmitOpenTxResult{}, err
 	}
-	tx, err := solanatx.DecodeTransactionBase64(*payload.Transaction)
+	tx, err := decodeOpenTransaction(*payload.Transaction)
 	if err != nil {
-		return SubmitOpenTxResult{}, fmt.Errorf("decode open transaction: %w", err)
+		return SubmitOpenTxResult{}, err
 	}
 	// Complete the fee-payer signature when the client left the slot for the
 	// server (the createServerOpenedPaymentChannelSessionOpener flow builds
@@ -504,6 +505,20 @@ func SubmitOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		return SubmitOpenTxResult{}, fmt.Errorf("confirm open transaction: %w", err)
 	}
 	return SubmitOpenTxResult{VerifyOpenTxResult: verified, Signature: signature.String()}, nil
+}
+
+// decodeOpenTransaction decodes a client-submitted open transaction. The
+// legacy-message rejection is surfaced verbatim so every server path reports
+// the same text; other decode failures name the open transaction.
+func decodeOpenTransaction(encoded string) (*solana.Transaction, error) {
+	tx, err := solanatx.DecodeTransactionBase64(encoded)
+	if err != nil {
+		if errors.Is(err, solanatx.ErrLegacyTransaction) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("decode open transaction: %w", err)
+	}
+	return tx, nil
 }
 
 // signerIsRequired reports whether key is one of the transaction's required

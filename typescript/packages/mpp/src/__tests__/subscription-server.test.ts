@@ -116,6 +116,7 @@ async function buildActivationTransactionBase64(
         feePayerKey?: string;
         memo?: string;
         receiver?: string;
+        version?: 'legacy' | 0;
     } = {},
 ): Promise<{
     subscriber: TransactionSigner & MessagePartialSigner;
@@ -186,7 +187,7 @@ async function buildActivationTransactionBase64(
     if (options.memo !== undefined) instructions.push(memoIx);
 
     const txMessage = pipe(
-        createTransactionMessage({ version: 0 }),
+        createTransactionMessage({ version: options.version ?? 0 }),
         msg => setTransactionMessageFeePayerSigner(subscriber, msg),
         msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
         msg => appendTransactionMessageInstructions(instructions, msg),
@@ -515,6 +516,16 @@ describe('validateActivationInstructions', () => {
         await expect(__testing.validateActivationInstructions('not-a-real-tx', challenge, RECIPIENT)).rejects.toThrow(
             /Invalid transaction/,
         );
+    });
+
+    test('rejects a legacy (unversioned) activation transaction', async () => {
+        const { subscriberAddress, transaction } = await buildActivationTransactionBase64({ version: 'legacy' });
+        expect(() => __testing.extractSubscriberFromTransaction(transaction, challenge)).toThrow(
+            'legacy transactions are not supported; use a version 0 or version 1 message',
+        );
+        await expect(
+            __testing.validateActivationInstructions(transaction, challenge, subscriberAddress),
+        ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
     });
 
     test('rejects transfer_subscription to an ATA owned by another recipient', async () => {

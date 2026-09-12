@@ -35,7 +35,7 @@ func VerifyChargeTransactionPreBroadcast(
 	if err := validateSplitsCount(details.Splits); err != nil {
 		return err
 	}
-	tx, err := solanatx.DecodeTransactionBase64(transactionBase64)
+	tx, err := decodeCredentialTransaction(transactionBase64)
 	if err != nil {
 		return err
 	}
@@ -58,4 +58,15 @@ func VerifyChargeTransactionPreBroadcast(
 		return core.WrapError(core.ErrCodeInvalidConfig, "invalid recipient", err)
 	}
 	return verifyTransfersAgainstChallenge(tx, amount, request.Currency, recipient, request.ExternalID, details)
+}
+
+// decodeCredentialTransaction decodes a client-supplied credential
+// transaction. Every decode failure, including the shared legacy-message
+// rejection, is reported as an invalid payload.
+func decodeCredentialTransaction(transactionBase64 string) (*solana.Transaction, error) {
+	tx, err := solanatx.DecodeTransactionBase64(transactionBase64)
+	if err != nil {
+		return nil, &core.Error{Code: core.ErrCodeInvalidPayload, Message: err.Error(), Err: err}
+	}
+	return tx, nil
 }

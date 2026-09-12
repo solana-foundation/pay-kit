@@ -14,6 +14,7 @@ import struct
 from typing import Any, cast
 
 from solana_pay_kit._paycore.mints import derive_ata
+from solana_pay_kit._paycore.transaction import require_versioned_wire
 from solana_pay_kit.errors import InvalidProofError
 
 __all__ = [
@@ -106,6 +107,10 @@ class ExactVerifier:
                 code="invalid_exact_svm_payload_base64",
             )
 
+        require_versioned_wire(
+            raw,
+            error=lambda message: InvalidProofError(message, code="invalid_exact_svm_payload_transaction_parse"),
+        )
         try:
             tx = VersionedTransaction.from_bytes(raw)
         except Exception as exc:  # noqa: BLE001

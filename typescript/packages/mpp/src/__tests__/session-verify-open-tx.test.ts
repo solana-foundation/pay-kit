@@ -6,8 +6,8 @@
  * verifyOpenTx API, plus coverage for the verifier checks that landed with
  * it:
  *
- *   - verifyOpenTx accepts both legacy and v0 transaction encodings and
- *     rejects malformed wire bytes.
+ *   - verifyOpenTx accepts v0 transaction encodings and rejects legacy
+ *     (unversioned) messages and malformed wire bytes.
  *   - verifyOpenTx rejects v0 opens carrying address-lookup tables — every
  *     account it inspects must be static.
  *   - verifyOpenTx binds the open instruction's accounts (payee, mint,
@@ -183,18 +183,14 @@ describe('verifyOpenTx transaction shape', () => {
         expect(verified.salt).toBe(7n);
     });
 
-    test('accepts a legacy-encoded open transaction (Rust client wire format)', async () => {
+    test('rejects a legacy-encoded open transaction', async () => {
         const { expected, open, openPayload } = await verifiedOpenFixture();
         const legacyTransaction = reencodeAsLegacy(open.transaction);
         expect(legacyTransaction).not.toBe(open.transaction);
 
-        const verified = await verifyOpenTx({
-            expected,
-            openPayload: { ...openPayload, transaction: legacyTransaction },
-        });
-        expect(verified.channelId).toBe(open.channelId);
-        expect(verified.deposit).toBe(5_000n);
-        expect(verified.salt).toBe(7n);
+        await expect(
+            verifyOpenTx({ expected, openPayload: { ...openPayload, transaction: legacyTransaction } }),
+        ).rejects.toThrow('legacy transactions are not supported; use a version 0 or version 1 message');
     });
 
     test('rejects a v0 open carrying an address-lookup table', async () => {
