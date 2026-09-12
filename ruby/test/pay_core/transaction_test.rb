@@ -99,6 +99,8 @@ class TransactionTest < Minitest::Test
   def test_from_base64_invalid_and_cursor_boundaries
     assert_raises(ArgumentError) { ::PayCore::Solana::Transaction.from_base64("%%%") }
     assert_equal [0x80, 0x01].pack("C*"), ::PayCore::Solana::Transaction.compact_u16(128)
+    assert_equal [128, 2], ::PayCore::Solana::Transaction.read_short_vec("\x80\x01".b, 0)
+    assert_raises(ArgumentError) { ::PayCore::Solana::Transaction.read_short_vec("".b, 0) }
     cursor = ::PayCore::Solana::Cursor.new("\xff\xff\xff\xff".b)
     assert_raises(ArgumentError) { cursor.compact_u16 }
     assert_raises(ArgumentError) { ::PayCore::Solana::Cursor.new("").peek }
